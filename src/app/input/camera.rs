@@ -394,7 +394,7 @@ impl ViewBookmarks {
 /// captures. gamemd reads the *view's* coordinate, not the cursor's, so a
 /// bookmark records where the player is looking rather than where the mouse
 /// happens to sit.
-fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
+pub(crate) fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
     let (tactical_w, tactical_h) =
         tactical_viewport_size_px(state.render_width(), state.render_height());
     let world_x = state.match_state.input.camera_x + tactical_w as f32 / (2.0 * state.match_state.input.zoom_level);

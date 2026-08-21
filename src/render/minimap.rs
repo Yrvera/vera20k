@@ -2,14 +2,14 @@
 //!
 //! Shows terrain as colored pixels and entity positions as colored dots
 //! in the native 140x108 radar aperture.
-//! A white rectangle indicates the current camera viewport.
+//! A side-colored one-pixel rectangle indicates the current camera viewport.
 //!
 //! ## Implementation
 //! - Terrain image is generated at map load and whenever mutable MapClass
 //!   LocalSize authority changes.
 //! - Unit dots are overlaid on demand by copying the base image and stamping dots.
 //! - The combined image is only re-uploaded when sim/fog state changes.
-//! - A separate 2x2 white pixel texture is used for the viewport rectangle lines.
+//! - A separate 2x2 white pixel texture is tinted for the viewport rectangle lines.
 //!
 //! ## Screen-space rendering trick
 //! The batch shader subtracts camera_pos from world positions. To render UI elements
@@ -34,7 +34,7 @@ use crate::sim::vision::FogState;
 use std::collections::{BTreeMap, HashMap};
 
 use super::minimap_helpers::{
-    COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_HEIGHT, MINIMAP_WIDTH, VIEWPORT_LINE_THICKNESS,
+    COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_HEIGHT, MINIMAP_WIDTH,
     RadarSurfacePixel, cell_visibility_color, dim_color, set_pixel, surface_visibility_color,
 };
 use super::radar_tracker::{
@@ -50,10 +50,13 @@ use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 use super::minimap_legacy_events::draw_legacy_sim_radar_events;
 use super::minimap_projection::{
     MinimapPlayfieldProjection, aperture_pixel, generated_primary_copy_frame,
-    minimap_screen_point_to_camera_top_left, rasterize_native_terrain,
+    rasterize_native_terrain,
 };
+#[cfg(test)]
+use super::minimap_projection::minimap_screen_point_to_camera_top_left;
 use super::native_radar_surface::NativeRadarSurfaceGeometry;
 use super::native_radar_terrain::NativeRadarTerrainSurface;
+use super::native_radar_viewport::NativeRadarViewportState;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,10 +107,10 @@ pub struct MinimapRenderer {
     /// Tiny 2x2 white pixel texture for drawing the viewport rectangle lines.
     white_texture: BatchTexture,
     /// Cached world bounds for coordinate mapping.
-    world_origin_x: f32,
-    world_origin_y: f32,
-    world_width: f32,
-    world_height: f32,
+    pub(super) world_origin_x: f32,
+    pub(super) world_origin_y: f32,
+    pub(super) world_width: f32,
+    pub(super) world_height: f32,
     terrain_pixels: Vec<TerrainPixel>,
     /// Exact generated-primary pixels, including each pixel's native inverse
     /// shroud/fog cell and packed terrain color.
@@ -116,12 +119,12 @@ pub struct MinimapRenderer {
     /// raw RGB before sampling; only the mapless fallback stamps them later.
     overlay_pixels: Vec<OverlayPixel>,
     /// Legacy mapless aspect-fit sub-region within the native aperture.
-    map_offset_x: f32,
-    map_offset_y: f32,
-    map_pixel_w: f32,
-    map_pixel_h: f32,
+    pub(super) map_offset_x: f32,
+    pub(super) map_offset_y: f32,
+    pub(super) map_pixel_w: f32,
+    pub(super) map_pixel_h: f32,
     /// Exact generated primary-surface geometry used by native radar events.
-    native_radar_surface: Option<NativeRadarSurfaceGeometry>,
+    pub(super) native_radar_surface: Option<NativeRadarSurfaceGeometry>,
     native_radar_terrain: Option<NativeRadarTerrainSurface>,
     /// BRIDGE1 frame-0 SHP header RGB used by CellClass flag-0x100 cells.
     structural_bridge_radar_color: [u8; 3],
@@ -132,13 +135,15 @@ pub struct MinimapRenderer {
     /// Last local owner used for fog-aware refresh.
     last_visibility_owner: Option<InternedId>,
     last_radar_terrain_dirty_generation: u64,
-    playfield_bounds: Option<PlayfieldBounds>,
+    pub(super) playfield_bounds: Option<PlayfieldBounds>,
     installed_playfield_authority: Option<PlayfieldAuthorityStamp>,
     /// Client-local +0x423/discovery cache; never snapshot/hash authority.
-    radar_tracker: RetainedRadarTracker,
+    pub(super) radar_tracker: RetainedRadarTracker,
     /// Client-local type-5 live array and accepted-cell review ring. Native
     /// owns both beside RadarClass surfaces, never in serialized world state.
     radar_events: ClientRadarEvents,
+    /// Client-local `RadarClass+0x14DC..0x14F8` current/previous rectangle.
+    pub(super) viewport_state: NativeRadarViewportState,
 }
 
 impl MinimapRenderer {
@@ -221,6 +226,7 @@ impl MinimapRenderer {
             }),
             radar_tracker: RetainedRadarTracker::default(),
             radar_events: ClientRadarEvents::default(),
+            viewport_state: NativeRadarViewportState::default(),
         }
     }
 
@@ -281,6 +287,7 @@ impl MinimapRenderer {
         self.last_sim_tick = u64::MAX;
         self.last_fog_generation = u64::MAX;
         self.last_radar_terrain_dirty_generation = u64::MAX;
+        self.viewport_state.reset_for_rebuild();
         if action40_rebuild {
             // FUN_00655990 clears +0x423; FUN_006E21E0 then forces Buildings.
             self.radar_tracker.reset_for_action40();
@@ -339,6 +346,7 @@ impl MinimapRenderer {
         self.installed_playfield_authority = None;
         self.radar_tracker.reset_for_load_or_view();
         self.radar_events.reset_for_load_or_view();
+        self.viewport_state.reset_for_rebuild();
     }
 
     /// Update the minimap texture with unit dot overlays from the ECS world.
@@ -839,135 +847,6 @@ impl MinimapRenderer {
         }
     }
 
-    /// Return true if a screen-space cursor position is inside the minimap rectangle.
-    pub fn contains_screen_point_in_rect(
-        &self,
-        screen_x: f32,
-        screen_y: f32,
-        rect_x: f32,
-        rect_y: f32,
-        rect_w: f32,
-        rect_h: f32,
-    ) -> bool {
-        screen_x >= rect_x
-            && screen_x <= rect_x + rect_w
-            && screen_y >= rect_y
-            && screen_y <= rect_y + rect_h
-    }
-
-    /// Convert a screen-space minimap click/drag point to camera top-left world position.
-    pub fn camera_top_left_for_screen_point_in_rect(
-        &self,
-        screen_x: f32,
-        screen_y: f32,
-        screen_w: f32,
-        screen_h: f32,
-        rect_x: f32,
-        rect_y: f32,
-        rect_w: f32,
-        rect_h: f32,
-    ) -> (f32, f32) {
-        minimap_screen_point_to_camera_top_left(
-            screen_x,
-            screen_y,
-            screen_w,
-            screen_h,
-            rect_x,
-            rect_y,
-            rect_w,
-            rect_h,
-            self.world_origin_x,
-            self.world_origin_y,
-            self.world_width,
-            self.world_height,
-            self.map_offset_x,
-            self.map_offset_y,
-            self.map_pixel_w,
-            self.map_pixel_h,
-        )
-    }
-
-    /// Build SpriteInstances for the camera viewport rectangle on the minimap.
-    pub fn build_viewport_rect_in_rect(
-        &self,
-        camera_x: f32,
-        camera_y: f32,
-        screen_w: f32,
-        screen_h: f32,
-        rect_x: f32,
-        rect_y: f32,
-        rect_w: f32,
-        rect_h: f32,
-    ) -> Vec<SpriteInstance> {
-        let width = MINIMAP_WIDTH as f32;
-        let height = MINIMAP_HEIGHT as f32;
-        let nx_left = (camera_x - self.world_origin_x) / self.world_width;
-        let ny_top = (camera_y - self.world_origin_y) / self.world_height;
-        let nx_right = (camera_x + screen_w - self.world_origin_x) / self.world_width;
-        let ny_bottom = (camera_y + screen_h - self.world_origin_y) / self.world_height;
-        let left = ((nx_left * self.map_pixel_w + self.map_offset_x) / width * rect_w)
-            .clamp(0.0, rect_w);
-        let top = ((ny_top * self.map_pixel_h + self.map_offset_y) / height * rect_h)
-            .clamp(0.0, rect_h);
-        let right = ((nx_right * self.map_pixel_w + self.map_offset_x) / width * rect_w)
-            .clamp(0.0, rect_w);
-        let bottom = ((ny_bottom * self.map_pixel_h + self.map_offset_y) / height * rect_h)
-            .clamp(0.0, rect_h);
-
-        let vp_w: f32 = right - left;
-        let vp_h: f32 = bottom - top;
-        let t: f32 = VIEWPORT_LINE_THICKNESS;
-
-        let mut lines: Vec<SpriteInstance> = Vec::with_capacity(4);
-
-        // Top edge.
-        lines.push(SpriteInstance {
-            position: [camera_x + rect_x + left, camera_y + rect_y + top],
-            size: [vp_w, t],
-            uv_origin: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
-            depth: MINIMAP_DEPTH,
-            tint: [1.0, 1.0, 1.0],
-            alpha: 1.0,
-            ..Default::default()
-        });
-        // Bottom edge.
-        lines.push(SpriteInstance {
-            position: [camera_x + rect_x + left, camera_y + rect_y + bottom - t],
-            size: [vp_w, t],
-            uv_origin: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
-            depth: MINIMAP_DEPTH,
-            tint: [1.0, 1.0, 1.0],
-            alpha: 1.0,
-            ..Default::default()
-        });
-        // Left edge.
-        lines.push(SpriteInstance {
-            position: [camera_x + rect_x + left, camera_y + rect_y + top],
-            size: [t, vp_h],
-            uv_origin: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
-            depth: MINIMAP_DEPTH,
-            tint: [1.0, 1.0, 1.0],
-            alpha: 1.0,
-            ..Default::default()
-        });
-        // Right edge.
-        lines.push(SpriteInstance {
-            position: [camera_x + rect_x + right - t, camera_y + rect_y + top],
-            size: [t, vp_h],
-            uv_origin: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
-            depth: MINIMAP_DEPTH,
-            tint: [1.0, 1.0, 1.0],
-            alpha: 1.0,
-            ..Default::default()
-        });
-
-        lines
-    }
-
     /// Get a reference to the minimap texture for drawing.
     pub fn map_texture(&self) -> &BatchTexture {
         &self.map_texture
@@ -979,6 +858,7 @@ impl MinimapRenderer {
     }
 }
 
+#[cfg(test)]
 fn minimap_entity_in_playfield(
     playfield_authority_configured: bool,
     entity: &crate::sim::game_entity::GameEntity,

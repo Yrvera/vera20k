@@ -250,16 +250,13 @@ impl NativeRadarSurfaceGeometry {
         self.zoom
     }
 
+    /// `RadarClass::GetObjectAtRadarPixel @ 0x00656750` fallback inverse.
+    ///
+    /// The binary uses the same x87 divide/half/+0.5/ftol sequence as
+    /// `RenderCellPixel`; returning the packed words preserves native wrapping
+    /// for an edge pixel instead of imposing a rectangular Rust admission.
     pub fn surface_pixel_to_cell(self, pixel: (i32, i32)) -> Option<(u16, u16)> {
-        let inv_zoom = 1.0 / self.zoom;
-        let raw_x = pixel.0 as f32 * inv_zoom;
-        let raw_y = pixel.1 as f32 * inv_zoom;
-        let x = (raw_x + raw_y - self.raw_offset_x as f32 + self.raw_offset_y as f32) * 0.5;
-        let y = (raw_y - raw_x + self.raw_offset_y as f32 + self.raw_offset_x as f32) * 0.5;
-        let x = x.round() as i32;
-        let y = y.round() as i32;
-        (x >= 0 && y >= 0 && x <= i32::from(u16::MAX) && y <= i32::from(u16::MAX))
-            .then_some((x as u16, y as u16))
+        Some(self.surface_pixel_to_visibility_cell(pixel))
     }
 
     pub const fn generated_size(self) -> (i32, i32) {

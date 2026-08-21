@@ -778,6 +778,10 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     let minimap_rect = active_minimap_screen_rect(state);
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let tactical_center_cell = crate::app::input::camera::tactical_centre_cell(state);
+    let sidebar_color = crate::render::sidebar_text::side_highlight_color(
+        crate::app::presentation::sidebar_render::current_sidebar_theme(state),
+    );
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state
@@ -785,39 +789,34 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
 
-    let minimap = if minimap_visible {
-        match &state.match_state.match_presentation.minimap {
-            Some(mm) => vec![mm.build_minimap_instance_in_rect(
-                state.match_state.input.camera_x,
-                state.match_state.input.camera_y,
-                minimap_rect.x,
-                minimap_rect.y,
-                minimap_rect.w,
-                minimap_rect.h,
-            )],
-            None => Vec::new(),
-        }
-    } else {
-        Vec::new()
-    };
-    let viewport_rect = if minimap_visible {
-        // Viewport rect shows the visible world area — shrinks when zoomed in.
-        let z = state.match_state.input.zoom_level;
-        match &state.match_state.match_presentation.minimap {
-            Some(mm) => mm.build_viewport_rect_in_rect(
-                state.match_state.input.camera_x,
-                state.match_state.input.camera_y,
-                tactical_w as f32 / z,
-                tactical_h as f32 / z,
-                minimap_rect.x,
-                minimap_rect.y,
-                minimap_rect.w,
-                minimap_rect.h,
+    let (minimap, viewport_rect) = if minimap_visible {
+        match &mut state.match_state.match_presentation.minimap {
+            Some(mm) => (
+                vec![mm.build_minimap_instance_in_rect(
+                    state.match_state.input.camera_x,
+                    state.match_state.input.camera_y,
+                    minimap_rect.x,
+                    minimap_rect.y,
+                    minimap_rect.w,
+                    minimap_rect.h,
+                )],
+                mm.build_viewport_rect_in_rect(
+                    state.match_state.input.camera_x,
+                    state.match_state.input.camera_y,
+                    tactical_center_cell,
+                    tactical_w as i32,
+                    tactical_h as i32,
+                    minimap_rect.x,
+                    minimap_rect.y,
+                    minimap_rect.w,
+                    minimap_rect.h,
+                    sidebar_color,
+                ),
             ),
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         }
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     let sidebar = view

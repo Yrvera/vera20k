@@ -25,9 +25,6 @@ pub(super) const MINIMAP_MARGIN: f32 = 10.0;
 /// Depth value for minimap elements — always drawn in front of everything.
 pub(super) const MINIMAP_DEPTH: f32 = 0.0;
 
-/// Thickness of the viewport rectangle outline in pixels.
-pub(super) const VIEWPORT_LINE_THICKNESS: f32 = 2.0;
-
 /// Shrouded / unexplored area color (pure black, matches original PutPixel(0)).
 pub(super) const COLOR_SHROUD: [u8; 4] = [0, 0, 0, 255];
 

@@ -239,141 +239,55 @@ pub(crate) fn try_begin_minimap_drag(state: &mut AppState) -> bool {
     if !is_cursor_over_minimap(state) {
         return false;
     }
-    // If units are selected, left-click on minimap issues a move order
-    // to the clicked world position instead of dragging the camera.
-    if minimap_move_order_if_selected(state) {
-        return true;
-    }
+    // RadarClass input @ 0x006539D0 routes ordinary selected objects to the
+    // camera branch before DisplayClass::BandBox_LeftUp. A minimap press never
+    // gains selected-unit Move/AttackMove precedence.
     state.match_state.input.minimap_dragging = true;
     state.match_state.input.selection_state.cancel_drag();
     update_camera_from_minimap_cursor(state);
     true
 }
 
-/// If there are selected mobile units, issue a move command to the minimap
-/// click location and return true. Otherwise return false (caller does camera drag).
-fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
-    let selected_ids = crate::app::input::dispatch::selected_stable_ids_in_order(state);
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        return false;
-    };
-    if selected_ids.is_empty() {
-        return false;
-    }
-    // Convert minimap cursor position to world iso coordinates.
-    let (target_rx, target_ry) = match minimap_cursor_to_iso(state) {
-        Some(coords) => coords,
-        None => return false,
-    };
-    let owner = crate::app::input::commands::preferred_local_owner_name(state)
-        .unwrap_or_else(|| "Americans".to_string());
-    let owner_id = sim.interner.get(&owner).unwrap_or_default();
-    let execute_tick = sim.session.tick;
-    let order_mode = state.match_state.input.queued_order_mode;
-    let shift_held: bool = crate::app::input::dispatch::is_shift_held(state);
-    let mut queued: Vec<crate::sim::command::CommandEnvelope> = Vec::new();
-    for &entity_id in &selected_ids {
-        let Some(entity) = sim.entities().get(entity_id) else {
-            continue;
-        };
-        // Only issue move to non-structure entities.
-        if entity.category == crate::map::entities::EntityCategory::Structure {
-            continue;
-        }
-        let mut goal = (target_rx, target_ry);
-        if let Some(grid) = sim.path_grid() {
-            if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
-                if let Some(nearest) =
-                    crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(grid, goal, 12)
-                {
-                    goal = nearest;
-                }
-            }
-        }
-        let command = match order_mode {
-            crate::app::presentation::render::OrderMode::AttackMove => crate::sim::command::Command::AttackMove {
-                entity_id,
-                target_rx: goal.0,
-                target_ry: goal.1,
-                queue: shift_held,
-            },
-            _ => crate::sim::command::Command::Move {
-                entity_id,
-                target_rx: goal.0,
-                target_ry: goal.1,
-                queue: shift_held,
-                group_id: None,
-            },
-        };
-        queued.push(crate::sim::command::CommandEnvelope::new(
-            owner_id,
-            execute_tick,
-            command,
-        ));
-    }
-    if queued.is_empty() {
-        return false;
-    }
-    // Reset order mode after issuing the command (like the main viewport does).
-    if order_mode != crate::app::presentation::render::OrderMode::Move {
-        state.match_state.input.queued_order_mode = crate::app::presentation::render::OrderMode::Move;
-    }
-    if let Some(sim) = state.match_state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
-        let queued = queued
-            .into_iter()
-            .filter_map(|envelope| {
-                crate::app::input::commands::roundtrip_ordinary_local_move(sim, envelope)
-            })
-            .collect::<Vec<_>>();
-        sim.queue_commands(queued);
-    }
-    true
-}
-
-/// Convert the current minimap cursor position to iso (rx, ry) coordinates.
-/// Returns None if no minimap is available.
-fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
-    let minimap = state.match_state.match_presentation.minimap.as_ref()?;
-    let (tactical_w, tactical_h) =
-        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
-    let tactical_w = tactical_w as f32;
-    let tactical_h = tactical_h as f32;
-    let z = state.match_state.input.zoom_level;
-    let rect = active_minimap_screen_rect(state);
-    // camera_top_left_for_screen_point_in_rect returns the camera top-left that
-    // would center the viewport on the clicked point. We want the world center point.
-    // Visible world area = screen / zoom.
-    let (cam_x, cam_y) = minimap.camera_top_left_for_screen_point_in_rect(
-        state.match_state.input.cursor_x,
-        state.match_state.input.cursor_y,
-        tactical_w / z,
-        tactical_h / z,
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-    );
-    // The center of the viewport is what was clicked.
-    let world_x = cam_x + tactical_w / (2.0 * z);
-    let world_y = cam_y + tactical_h / (2.0 * z);
-    Some(crate::app::match_runtime::sim_tick::world_point_to_cell(
-        world_x,
-        world_y,
-        &state.height_map(),
-        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
-    ))
-}
-
 pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
-    let Some(minimap) = &state.match_state.match_presentation.minimap else {
+    let rect = active_minimap_screen_rect(state);
+    let Some(minimap) = state.match_state.match_presentation.minimap.as_ref() else {
         return;
     };
+    let entities = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|runtime| runtime.view().entities());
+    let native_cell = entities.and_then(|entities| {
+        minimap.native_click_cell_in_rect(
+            state.match_state.input.cursor_x,
+            state.match_state.input.cursor_y,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            entities,
+        )
+    });
+    if let Some((rx, ry)) = native_cell {
+        // `0x00653EA0 -> FUN_006D6070` writes current and desired viewport
+        // together. Rust has one immediate camera point; center_camera_on_cell
+        // applies the already-verified native tactical clamp synchronously.
+        crate::app::input::camera::center_camera_on_cell(state, rx, ry);
+        return;
+    }
+    if minimap.has_playfield_authority() {
+        // A live map whose generated surface is unavailable must not silently
+        // approximate the click through the old normalized 200x200 transform.
+        return;
+    }
+
+    // Mapless/headless presentation fixture adapter only.
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let z = state.match_state.input.zoom_level;
-    let rect = active_minimap_screen_rect(state);
     let (cx, cy) = minimap.camera_top_left_for_screen_point_in_rect(
         state.match_state.input.cursor_x,
         state.match_state.input.cursor_y,
@@ -387,6 +301,24 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     state.match_state.input.camera_x = cx;
     state.match_state.input.camera_y = cy;
     crate::app::input::camera::clamp_camera_to_playable_area(state, sw, sh);
+}
+
+/// Live generated-primary screen rectangle used by the retained input region.
+/// Centered letterbox margins are not part of RadarClass's click surface.
+pub(crate) fn active_minimap_content_screen_rect(state: &AppState) -> crate::sidebar::Rect {
+    let aperture = active_minimap_screen_rect(state);
+    let Some(minimap) = state.match_state.match_presentation.minimap.as_ref() else {
+        return crate::sidebar::Rect { x: aperture.x, y: aperture.y, w: 0.0, h: 0.0 };
+    };
+    let Some([x, y, w, h]) = minimap.content_screen_rect_in_rect(
+        aperture.x,
+        aperture.y,
+        aperture.w,
+        aperture.h,
+    ) else {
+        return crate::sidebar::Rect { x: aperture.x, y: aperture.y, w: 0.0, h: 0.0 };
+    };
+    crate::sidebar::Rect { x, y, w, h }
 }
 
 pub(crate) fn active_minimap_screen_rect(state: &AppState) -> crate::sidebar::Rect {

@@ -415,6 +415,17 @@ impl RetainedRadarTracker {
         winners
     }
 
+    /// `RadarClass::GetObjectAtRadarPixel @ 0x00656750` scans the selected
+    /// bucket from back to front and returns the first exact-coordinate object.
+    /// This is deliberately the reverse of `RenderCellPixel`'s forward scan.
+    pub fn object_at_pixel(&self, x: i32, y: i32) -> Option<u64> {
+        self.buckets[tracker_bucket(x, y)]
+            .iter()
+            .rev()
+            .find(|entry| entry.x == x && entry.y == y)
+            .map(|entry| entry.stable_id)
+    }
+
     #[cfg(test)]
     pub(super) fn is_registered(&self, stable_id: u64) -> bool {
         self.objects
@@ -661,5 +672,15 @@ mod tests {
         tracker.update_object(newer, true);
         tracker.update_object(older, true);
         assert_eq!(tracker.entries_at(40, 60), vec![2, 1]);
+    }
+
+    #[test]
+    fn radar_click_lookup_reverse_scans_exact_coordinate_bucket() {
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(update(1, false), false);
+        tracker.update_object(update(2, false), false);
+        assert_eq!(tracker.entries_at(40, 60), vec![1, 2]);
+        assert_eq!(tracker.object_at_pixel(40, 60), Some(2));
+        assert_eq!(tracker.object_at_pixel(41, 60), None);
     }
 }
