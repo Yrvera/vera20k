@@ -87,27 +87,43 @@ impl<'a> CurrentRadarCellAuthority<'a> {
             .resolved_terrain
             .and_then(|terrain| terrain.cell(rx, ry))
             .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+        let runtime_bridge_cell = self.bridge_state.and_then(|state| state.cell(rx, ry));
         let structural_bridge_present = structural_high_identity
-            && self
-                .bridge_state
-                .and_then(|state| state.cell(rx, ry))
-                .is_some_and(|cell| {
-                    cell.deck_present
-                        && BridgeRuntimeState::effective_render_state(cell).is_some()
-                });
-        let overlay = self.overlay_grid.and_then(|grid| {
-            let cell = grid.cell(rx, ry);
-            cell.overlay_id.map(|overlay_id| {
-                minimap_overlay_datum(
-                    rx,
-                    ry,
-                    overlay_id,
-                    cell.overlay_data,
-                    self.overlay_registry,
-                    self.rules,
-                )
+            && runtime_bridge_cell.is_some_and(|cell| {
+                cell.deck_present && BridgeRuntimeState::effective_render_state(cell).is_some()
+            });
+        let overlay = if structural_high_identity {
+            // High walkers keep their current Cell+0x44 identity only in
+            // BridgeRuntimeState. OverlayGrid intentionally mirrors low
+            // surfaces, so consulting it here can revive stale 0xCD after a
+            // restored 0xE7/0xE8 collapse. Native -1 is Rust 0xFF.
+            runtime_bridge_cell.and_then(|cell| {
+                (cell.overlay_byte != u8::MAX).then(|| {
+                    minimap_overlay_datum(
+                        rx,
+                        ry,
+                        cell.overlay_byte,
+                        0,
+                        self.overlay_registry,
+                        self.rules,
+                    )
+                })
             })
-        });
+        } else {
+            self.overlay_grid.and_then(|grid| {
+                let cell = grid.cell(rx, ry);
+                cell.overlay_id.map(|overlay_id| {
+                    minimap_overlay_datum(
+                        rx,
+                        ry,
+                        overlay_id,
+                        cell.overlay_data,
+                        self.overlay_registry,
+                        self.rules,
+                    )
+                })
+            })
+        };
         current_cell_radar_source(
             terrain_object_present,
             structural_bridge_present,

@@ -23,6 +23,7 @@ use crate::sim::world::Simulation;
 const SIDE: u16 = 64;
 const BRIDGE_COLOR: [u8; 3] = [5, 6, 7];
 const LOW_BRIDGE_COLOR: [u8; 3] = [31, 32, 33];
+const LOW_BRIDGE_CD_COLOR: [u8; 3] = [41, 42, 43];
 const OVERLAY_COLOR: [u8; 3] = [11, 12, 13];
 const BASE_COLOR: [u8; 3] = [10, 20, 30];
 
@@ -135,6 +136,7 @@ fn colors() -> HashMap<(u8, u8), [u8; 3]> {
     HashMap::from([
         ((24, 0), BRIDGE_COLOR),
         ((0x4A, 1), LOW_BRIDGE_COLOR),
+        ((0xCD, 1), LOW_BRIDGE_CD_COLOR),
         ((10, 4), OVERLAY_COLOR),
     ])
 }
@@ -215,6 +217,21 @@ fn runtime_with_overlay(
     )
 }
 
+fn structural_runtime_with_stale_grid(
+    resolved: ResolvedTerrainGrid,
+    cell: (u16, u16),
+    runtime_overlay: u8,
+) -> SimRuntime {
+    let mut bridge_state = bridge_state_at(cell, true);
+    let runtime_cell = bridge_state.cell_mut(cell.0, cell.1).unwrap();
+    runtime_cell.deck_present = true;
+    runtime_cell.damage_state = DamageState::Destroyed;
+    runtime_cell.overlay_byte = runtime_overlay;
+    let mut stale_overlay_grid = OverlayGrid::new(SIDE, SIDE);
+    stale_overlay_grid.place_overlay(cell.0, cell.1, 0xCD, 0);
+    live_runtime(resolved, bridge_state, stale_overlay_grid)
+}
+
 #[test]
 fn gsi_04_01_structural_high_bridge_wins_in_full_and_incremental_paths() {
     let (grid, mut resolved) = fixture(None);
@@ -222,7 +239,7 @@ fn gsi_04_01_structural_high_bridge_wins_in_full_and_incremental_paths() {
     resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags =
         BRIDGE_FLAG_STRUCTURAL;
     let colors = colors();
-    let stale_low = runtime_with_overlay(
+    let stale_destroyed = runtime_with_overlay(
         resolved.clone(),
         cell,
         Some(false),
@@ -238,8 +255,8 @@ fn gsi_04_01_structural_high_bridge_wins_in_full_and_incremental_paths() {
     let full = projection(&grid, &current_high, &[], expanded_bounds(), &colors);
     assert_eq!(raw_pair(&full, cell), [BRIDGE_COLOR; 2]);
 
-    let mut incremental = projection(&grid, &stale_low, &[], expanded_bounds(), &colors);
-    assert_eq!(raw_pair(&incremental, cell), [LOW_BRIDGE_COLOR; 2]);
+    let mut incremental = projection(&grid, &stale_destroyed, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
     apply_incremental(&mut incremental, &current_high, cell, &colors);
     assert_eq!(raw_pair(&incremental, cell), [BRIDGE_COLOR; 2]);
 }
@@ -250,21 +267,63 @@ fn gsi_04_01_intact_low_overlay_stays_overlay_in_full_and_incremental_paths() {
     let cell = central_cell(&grid, expanded_bounds());
     let colors = colors();
     let absent = runtime_with_overlay(resolved.clone(), cell, None, None);
-    let intact_low = runtime_with_overlay(
-        resolved,
-        cell,
-        Some(true),
-        Some((0x4A, 9)),
-    );
+    for (overlay_id, expected) in [
+        (0x4A, LOW_BRIDGE_COLOR),
+        (0xCD, LOW_BRIDGE_CD_COLOR),
+    ] {
+        let intact_low = runtime_with_overlay(
+            resolved.clone(),
+            cell,
+            Some(true),
+            Some((overlay_id, 9)),
+        );
 
-    let full = projection(&grid, &intact_low, &[], expanded_bounds(), &colors);
-    assert_eq!(raw_pair(&full, cell), [LOW_BRIDGE_COLOR; 2]);
-    assert_ne!(raw_pair(&full, cell), [BRIDGE_COLOR; 2]);
+        let full = projection(&grid, &intact_low, &[], expanded_bounds(), &colors);
+        assert_eq!(raw_pair(&full, cell), [expected; 2]);
+        assert_ne!(raw_pair(&full, cell), [BRIDGE_COLOR; 2]);
 
-    let mut incremental = projection(&grid, &absent, &[], expanded_bounds(), &colors);
-    assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
-    apply_incremental(&mut incremental, &intact_low, cell, &colors);
-    assert_eq!(raw_pair(&incremental, cell), [LOW_BRIDGE_COLOR; 2]);
+        let mut incremental = projection(&grid, &absent, &[], expanded_bounds(), &colors);
+        assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
+        apply_incremental(&mut incremental, &intact_low, cell, &colors);
+        assert_eq!(raw_pair(&incremental, cell), [expected; 2]);
+    }
+}
+
+#[test]
+fn gsi_04_01_high_collapse_uses_runtime_overlay_then_repairs_in_full_and_incremental_paths() {
+    let (grid, mut resolved) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags =
+        BRIDGE_FLAG_STRUCTURAL;
+    let colors = colors();
+    let repaired = structural_runtime_with_stale_grid(resolved.clone(), cell, 0xCD);
+
+    let repaired_full = projection(&grid, &repaired, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&repaired_full, cell), [BRIDGE_COLOR; 2]);
+
+    for destroyed_overlay in [0xE7, 0xE8, u8::MAX] {
+        let destroyed = structural_runtime_with_stale_grid(
+            resolved.clone(),
+            cell,
+            destroyed_overlay,
+        );
+        // This is the same full projection used for load/action-40 rebuilds.
+        let full = projection(&grid, &destroyed, &[], expanded_bounds(), &colors);
+        assert_eq!(raw_pair(&full, cell), [BASE_COLOR; 2]);
+        assert!(
+            full.overlay_pixels
+                .iter()
+                .all(|pixel| (pixel.rx, pixel.ry) != cell),
+            "runtime collapsed overlay {destroyed_overlay:#04X} must beat stale OverlayGrid 0xCD",
+        );
+
+        let mut incremental = projection(&grid, &repaired, &[], expanded_bounds(), &colors);
+        assert_eq!(raw_pair(&incremental, cell), [BRIDGE_COLOR; 2]);
+        apply_incremental(&mut incremental, &destroyed, cell, &colors);
+        assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
+        apply_incremental(&mut incremental, &repaired, cell, &colors);
+        assert_eq!(raw_pair(&incremental, cell), [BRIDGE_COLOR; 2]);
+    }
 }
 
 #[test]
