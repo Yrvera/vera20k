@@ -35,8 +35,8 @@ use std::collections::BTreeMap;
 
 use super::minimap_helpers::{
     COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_SIZE, VIEWPORT_LINE_THICKNESS,
-    cell_visibility_color, compute_aspect_fit, dim_color, draw_line,
-    radar_color_for_cell, set_pixel, terrain_brightness_for_theater, world_to_minimap_pixel,
+    cell_visibility_color, compute_aspect_fit, dim_color, radar_color_for_cell, set_pixel,
+    terrain_brightness_for_theater, world_to_minimap_pixel,
 };
 use super::radar_tracker::{
     RadarProjectionFacts, RetainedRadarTracker, radar_entity_owner_color,
@@ -47,6 +47,8 @@ use super::radar_visibility::build_radar_object_update;
 use super::radar_tracker::RadarTrackerEntry;
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
 use super::minimap_helpers::{OverlayPixel, TerrainPixel};
+use super::minimap_legacy_events::draw_legacy_sim_radar_events;
+use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 
 pub(crate) type MinimapOverlayDatum = (u16, u16, OverlayClassification, u8, Option<[u8; 4]>);
 
@@ -262,6 +264,9 @@ pub struct MinimapRenderer {
     installed_playfield_authority: Option<PlayfieldAuthorityStamp>,
     /// Client-local +0x423/discovery cache; never snapshot/hash authority.
     radar_tracker: RetainedRadarTracker,
+    /// Client-local type-5 live array and accepted-cell review ring. Native
+    /// owns both beside RadarClass surfaces, never in serialized world state.
+    radar_events: ClientRadarEvents,
 }
 
 impl MinimapRenderer {
@@ -325,6 +330,7 @@ impl MinimapRenderer {
                 revision: playfield_revision,
             }),
             radar_tracker: RetainedRadarTracker::default(),
+            radar_events: ClientRadarEvents::default(),
         }
     }
 
@@ -378,6 +384,7 @@ impl MinimapRenderer {
         } else {
             // A stale/restore reconcile is not itself an action-40 firing.
             self.radar_tracker.reset_for_load_or_view();
+            self.radar_events.reset_for_load_or_view();
         }
 
         gpu.queue.write_texture(
@@ -428,6 +435,7 @@ impl MinimapRenderer {
         self.last_radar_terrain_dirty_generation = u64::MAX;
         self.installed_playfield_authority = None;
         self.radar_tracker.reset_for_load_or_view();
+        self.radar_events.reset_for_load_or_view();
     }
 
     /// Update the minimap texture with unit dot overlays from the ECS world.
@@ -474,6 +482,7 @@ impl MinimapRenderer {
             // view-owner switch must rebuild, not reuse the other client's
             // ordered tracker.
             self.radar_tracker.reset_for_load_or_view();
+            self.radar_events.reset_for_load_or_view();
         }
         self.last_sim_tick = sim_tick;
         self.last_fog_generation = fog_generation;
@@ -523,6 +532,7 @@ impl MinimapRenderer {
 
         // Trigger/action precedes LogicClass: action 40 clears all, forces the
         // reverse Building tail, then mobiles return on ordinary +0x4A0 visits.
+        let projection = self.radar_projection_facts();
         self.radar_tracker.remove_absent_or_ineligible(entities);
         if self.radar_tracker.take_action40_building_tail_pending() {
             for stable_id in entities.keys_sorted().into_iter().rev() {
@@ -544,11 +554,13 @@ impl MinimapRenderer {
                     game_mode_nonzero,
                     rules,
                     interner,
-                    self.radar_projection_facts(),
+                    projection,
                     self.playfield_bounds,
                     resolved_terrain,
                 );
-                self.radar_tracker.update_object(update, true);
+                if let Some(event) = self.radar_tracker.update_object(update, true) {
+                    self.create_enemy_sensed_event(event, sim_tick, rules);
+                }
             }
         }
         for &stable_id in logic_order {
@@ -564,12 +576,20 @@ impl MinimapRenderer {
                 game_mode_nonzero,
                 rules,
                 interner,
-                self.radar_projection_facts(),
+                projection,
                 self.playfield_bounds,
                 resolved_terrain,
             );
-            self.radar_tracker.update_object(update, false);
+            if let Some(event) = self.radar_tracker.update_object(update, false) {
+                self.create_enemy_sensed_event(event, sim_tick, rules);
+            }
         }
+        self.radar_events.finish_baseline();
+        let default_event_config = crate::rules::radar_event_config::RadarEventConfig::default();
+        let event_config = rules
+            .map(|rules| &rules.radar_event_config)
+            .unwrap_or(&default_event_config);
+        self.radar_events.advance_to_frame(sim_tick, event_config);
 
         // RenderCellPixel @ 0x00655C50 scans each ordered bucket forward and
         // the first eligible exact-coordinate object supplies the owner color.
@@ -605,99 +625,23 @@ impl MinimapRenderer {
             }
         }
 
-        // Draw animated radar event diamonds on top of everything.
+        // Preserve not-yet-migrated event types on their historical renderer.
         if let Some(events) = radar_events {
-            let config = rules.map(|r| &r.radar_event_config);
-            for event in events.iter() {
-                if !event.event_type.draws_on_minimap() {
-                    continue;
-                }
-                if !self.playfield_bounds.is_some_and(|bounds| {
-                    bounds.contains_geometry_packed(i32::from(event.rx), i32::from(event.ry))
-                }) {
-                    continue;
-                }
-                // Player-scoped events (BaseUnderAttack/HarvesterUnderAttack) draw
-                // only on their owner's minimap. Owner-less events are global.
-                // With no visibility owner (sandbox full-vis), draw everything.
-                if let Some(ev_owner) = event.owner {
-                    if visibility_owner.is_some_and(|vo| vo != ev_owner) {
-                        continue;
-                    }
-                }
-                let (sx, sy) = crate::map::terrain::iso_to_screen(event.rx, event.ry, 0);
-                let (cx, cy) = world_to_minimap_pixel(
-                    sx,
-                    sy,
-                    self.world_origin_x,
-                    self.world_origin_y,
-                    self.world_width,
-                    self.world_height,
-                    self.map_offset_x,
-                    self.map_offset_y,
-                    self.map_pixel_w,
-                    self.map_pixel_h,
-                );
-                let progress: f32 = event.progress();
-                let min_radius: f32 = config.map_or(8.0, |c| c.min_radius);
-                let start_radius: f32 = min_radius * 4.0;
-                let radius: f32 = start_radius + (min_radius - start_radius) * progress;
-                // Brightness pulses via sin wave.
-                let color_speed: f32 = config.map_or(0.1, |c| c.color_speed);
-                let pulse: f32 = 0.6 + 0.4 * (event.age_frames as f32 * color_speed).sin().abs();
-                let base_color = event.event_type.color();
-                let r: u8 = (base_color[0] as f32 * pulse).min(255.0) as u8;
-                let g: u8 = (base_color[1] as f32 * pulse).min(255.0) as u8;
-                let b: u8 = (base_color[2] as f32 * pulse).min(255.0) as u8;
-                let color: [u8; 4] = [r, g, b, 255];
-                // Compute 4 diamond corners from rotation angle + radius.
-                let rotation = event.rotation_radians();
-                let cos_a = rotation.cos();
-                let sin_a = rotation.sin();
-                // Outer bright diamond.
-                let cxi = cx as i32;
-                let cyi = cy as i32;
-                let corners: [(i32, i32); 4] = [
-                    (cxi + (radius * cos_a) as i32, cyi + (radius * sin_a) as i32),
-                    (cxi - (radius * sin_a) as i32, cyi + (radius * cos_a) as i32),
-                    (cxi - (radius * cos_a) as i32, cyi - (radius * sin_a) as i32),
-                    (cxi + (radius * sin_a) as i32, cyi - (radius * cos_a) as i32),
-                ];
-                for i in 0..4 {
-                    let (x0, y0) = corners[i];
-                    let (x1, y1) = corners[(i + 1) % 4];
-                    draw_line(rgba, size, x0, y0, x1, y1, color);
-                }
-                // Inner dim diamond (70% radius, 50% brightness).
-                let inner_r = radius * 0.7;
-                if inner_r >= 1.0 {
-                    let dim_color_val = dim_color(color, 0.5);
-                    let inner: [(i32, i32); 4] = [
-                        (
-                            cxi + (inner_r * cos_a) as i32,
-                            cyi + (inner_r * sin_a) as i32,
-                        ),
-                        (
-                            cxi - (inner_r * sin_a) as i32,
-                            cyi + (inner_r * cos_a) as i32,
-                        ),
-                        (
-                            cxi - (inner_r * cos_a) as i32,
-                            cyi - (inner_r * sin_a) as i32,
-                        ),
-                        (
-                            cxi + (inner_r * sin_a) as i32,
-                            cyi - (inner_r * cos_a) as i32,
-                        ),
-                    ];
-                    for i in 0..4 {
-                        let (x0, y0) = inner[i];
-                        let (x1, y1) = inner[(i + 1) % 4];
-                        draw_line(rgba, size, x0, y0, x1, y1, dim_color_val);
-                    }
-                }
-            }
+            draw_legacy_sim_radar_events(
+                rgba,
+                size,
+                events,
+                rules.map(|rules| &rules.radar_event_config),
+                self.playfield_bounds,
+                visibility_owner,
+                projection,
+            );
         }
+        // `RadarClass::Update @ 0x00656EC0` composes object pixels, then the
+        // ascending radar-event array, then SpySatellite vision. Rust's SpySat
+        // materialization is already present in the fog/base inputs; the type-5
+        // outline must nevertheless remain after object pixels here.
+        self.radar_events.draw_type5(rgba, size, size);
 
         // Rewrite existing GPU texture instead of creating a new one.
         gpu.queue.write_texture(
@@ -732,6 +676,47 @@ impl MinimapRenderer {
             map_pixel_w: self.map_pixel_w,
             map_pixel_h: self.map_pixel_h,
         }
+    }
+
+    fn create_enemy_sensed_event(
+        &mut self,
+        event: super::radar_tracker::RadarSensedPresentationEvent,
+        sim_tick: u64,
+        rules: Option<&RuleSet>,
+    ) {
+        let (sx, sy) = crate::map::terrain::iso_to_screen(event.cell.0, event.cell.1, 0);
+        let (x, y) = world_to_minimap_pixel(
+            sx,
+            sy,
+            self.world_origin_x,
+            self.world_origin_y,
+            self.world_width,
+            self.world_height,
+            self.map_offset_x,
+            self.map_offset_y,
+            self.map_pixel_w,
+            self.map_pixel_h,
+        );
+        let default_config = crate::rules::radar_event_config::RadarEventConfig::default();
+        let config = rules
+            .map(|rules| &rules.radar_event_config)
+            .unwrap_or(&default_config);
+        self.radar_events.create_enemy_sensed(
+            EnemySensedSource {
+                cell: event.cell,
+                radar_pixel: (x as i32, y as i32),
+            },
+            sim_tick,
+            (MINIMAP_SIZE as i32, MINIMAP_SIZE as i32),
+            config,
+        );
+    }
+
+    pub(crate) fn cycle_enemy_sensed_event(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<(u16, u16)> {
+        self.radar_events.cycle_cell(now)
     }
 
     fn apply_bridge_terrain_dirty_cells(

@@ -33,12 +33,7 @@ fn radar_current_coord_leptons(
     entity: &crate::sim::game_entity::GameEntity,
     foundation: Option<(u32, u32)>,
 ) -> (i32, i32) {
-    let mut x = i32::from(entity.position.rx)
-        .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
-        .wrapping_add(entity.position.sub_x.to_num::<i32>());
-    let mut y = i32::from(entity.position.ry)
-        .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
-        .wrapping_add(entity.position.sub_y.to_num::<i32>());
+    let (mut x, mut y) = radar_raw_coord_leptons(entity);
     if let Some((width, height)) = foundation {
         // BuildingClass::GetCoords projects the north-west anchor to the
         // foundation centre before +0x324's fresh mode-one query.
@@ -56,6 +51,16 @@ fn radar_current_coord_leptons(
     (x, y)
 }
 
+fn radar_raw_coord_leptons(entity: &crate::sim::game_entity::GameEntity) -> (i32, i32) {
+    let x = i32::from(entity.position.rx)
+        .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+        .wrapping_add(entity.position.sub_x.to_num::<i32>());
+    let y = i32::from(entity.position.ry)
+        .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+        .wrapping_add(entity.position.sub_y.to_num::<i32>());
+    (x, y)
+}
+
 fn radar_packed_cell_from_leptons(x: i32, y: i32) -> (i32, i32) {
     // Coord2Cell uses signed division and then narrows to signed words.
     (
@@ -67,6 +72,19 @@ fn radar_packed_cell_from_leptons(x: i32, y: i32) -> (i32, i32) {
 fn radar_fog_cell_from_leptons(x: i32, y: i32) -> Option<(u16, u16)> {
     let (x, y) = radar_packed_cell_from_leptons(x, y);
     (x >= 0 && y >= 0).then_some((x as u16, y as u16))
+}
+
+fn enemy_sensed_prefilter(entity: &crate::sim::game_entity::GameEntity) -> bool {
+    if entity.category == EntityCategory::Structure {
+        true
+    } else if entity.category == EntityCategory::Aircraft {
+        entity
+            .aircraft_ammo
+            .as_ref()
+            .is_none_or(|ammo| (ammo.current as i8) < 0)
+    } else {
+        entity.low_bridge_tube_state.is_none()
+    }
 }
 
 fn radar_fresh_mode_one_membership(
@@ -320,6 +338,16 @@ pub(super) fn build_radar_object_update(
     });
     let (coord_x, coord_y) = radar_current_coord_leptons(entity, foundation);
     let current_cell = radar_fog_cell_from_leptons(coord_x, coord_y);
+    // The type-5 call at `0x0070DA95..0x0070DAD7` converts raw Object+0x9C,
+    // not BuildingClass's centre-adjusted +0x324 coordinate.
+    let (raw_x, raw_y) = radar_raw_coord_leptons(entity);
+    let event_source_cell = radar_fog_cell_from_leptons(raw_x, raw_y);
+    // `TechnoClass::IdleAnimDispatch @ 0x0070DA79..0x0070DAD7` rejects a
+    // FootClass object while its signed `+0x684` byte is nonnegative. For
+    // Unit/Infantry that byte is the active TubeClass index; Aircraft uses the
+    // same inherited byte as its finite current-ammo value. Buildings do not
+    // carry the FootClass flag and bypass this prefilter.
+    let enemy_sensed_prefilter = enemy_sensed_prefilter(entity);
     let discovery_observed = full_visibility
         || local_owner.is_none()
         || local_owner.is_some_and(|local_owner| {
@@ -404,6 +432,8 @@ pub(super) fn build_radar_object_update(
         stable_id: entity.stable_id,
         owner: entity.owner,
         origin: (origin.0 as i32, origin.1 as i32),
+        event_source_cell,
+        enemy_sensed_prefilter,
         foundation,
         radar_scale: projection.cell_axis_scale(),
         discovery_observed,
@@ -424,6 +454,10 @@ mod tests {
     use crate::map::bridge_facts::BridgeCellFacts;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::components::DriveCoord;
+    use crate::sim::docking::aircraft_dock::AircraftAmmo;
+    use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
+    use crate::map::tube_facts::TubeId;
 
     fn mobile() -> RadarMobileVisibilityFacts {
         RadarMobileVisibilityFacts {
@@ -455,6 +489,56 @@ mod tests {
             has_sensor: false,
             allied_with_current_player: false,
         }
+    }
+
+    #[test]
+    fn enemy_sensed_prefilter_maps_native_foot_signed_684() {
+        let mut entity = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "MTNK",
+            "Soviet",
+            4,
+            5,
+        );
+        assert!(enemy_sensed_prefilter(&entity));
+        entity.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+            tube_id: TubeId(2),
+            cursor: 0,
+            target: DriveCoord { x: 0, y: 0, z: 0 },
+        });
+        assert!(!enemy_sensed_prefilter(&entity));
+
+        entity.category = EntityCategory::Aircraft;
+        entity.low_bridge_tube_state = None;
+        entity.aircraft_ammo = Some(AircraftAmmo::new(3));
+        assert!(!enemy_sensed_prefilter(&entity));
+        entity.aircraft_ammo = None;
+        assert!(enemy_sensed_prefilter(&entity), "Ammo=-1 keeps the signed byte negative");
+
+        entity.category = EntityCategory::Structure;
+        entity.aircraft_ammo = Some(AircraftAmmo::new(3));
+        assert!(enemy_sensed_prefilter(&entity), "Building lacks AbstractFlags IsFoot");
+    }
+
+    #[test]
+    fn enemy_sensed_source_uses_raw_building_anchor_not_visibility_center() {
+        let mut entity = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "BLDG",
+            "Enemy",
+            4,
+            5,
+        );
+        entity.category = EntityCategory::Structure;
+        entity.foundation = "3x2".to_string();
+        let raw = radar_raw_coord_leptons(&entity);
+        let visibility = radar_current_coord_leptons(&entity, Some((3, 2)));
+        assert_eq!(radar_fog_cell_from_leptons(raw.0, raw.1), Some((4, 5)));
+        assert_ne!(
+            radar_fog_cell_from_leptons(visibility.0, visibility.1),
+            Some((4, 5)),
+            "BuildingClass +0x324 may center its query, but 0x70DAD7 packs Object+0x9C"
+        );
     }
 
     fn flat_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {

@@ -163,6 +163,8 @@ pub(super) struct RadarObjectUpdate {
     pub stable_id: u64,
     pub owner: InternedId,
     pub origin: (i32, i32),
+    pub event_source_cell: Option<(u16, u16)>,
+    pub enemy_sensed_prefilter: bool,
     pub foundation: Option<(u32, u32)>,
     pub radar_scale: f32,
     pub discovery_observed: bool,
@@ -174,6 +176,7 @@ pub(super) struct RadarObjectUpdate {
 pub(super) struct RadarSensedPresentationEvent {
     pub stable_id: u64,
     pub out_code: u8,
+    pub cell: (u16, u16),
 }
 
 /// Client-local equivalent of RadarClass+0x1258 plus the per-object cached
@@ -315,10 +318,17 @@ impl RetainedRadarTracker {
                 .collect();
             self.register(update.stable_id, &pixels, update.local_front);
         }
-        (visibility.out_code != 0).then_some(RadarSensedPresentationEvent {
-            stable_id: update.stable_id,
-            out_code: visibility.out_code,
-        })
+        if visibility.out_code != 0 && update.enemy_sensed_prefilter {
+            update
+                .event_source_cell
+                .map(|cell| RadarSensedPresentationEvent {
+                    stable_id: update.stable_id,
+                    out_code: visibility.out_code,
+                    cell,
+                })
+        } else {
+            None
+        }
     }
 
     /// AddObjectToTracker @ 0x00655560: reject an exact duplicate, insert the
@@ -480,6 +490,8 @@ mod tests {
             stable_id,
             owner: test_intern(if local_front { "Local" } else { "Enemy" }),
             origin: (40, 60),
+            event_source_cell: Some((10, 20)),
+            enemy_sensed_prefilter: true,
             foundation: None,
             radar_scale: 1.0,
             discovery_observed: true,
@@ -549,6 +561,7 @@ mod tests {
             Some(RadarSensedPresentationEvent {
                 stable_id: 1,
                 out_code: 1,
+                cell: (10, 20),
             })
         );
         sensed.visibility = RadarRegistrationVisibilityFacts::Mobile(
@@ -560,6 +573,20 @@ mod tests {
             },
         );
         assert_eq!(tracker.update_object(sensed, false), None);
+        sensed.visibility = RadarRegistrationVisibilityFacts::Mobile(
+            RadarMobileVisibilityFacts {
+                cloak_state: 2,
+                has_sensor: true,
+                allied_with_current_player: false,
+                ..visible_mobile_facts()
+            },
+        );
+        sensed.enemy_sensed_prefilter = false;
+        assert_eq!(
+            tracker.update_object(sensed, false),
+            None,
+            "native Foot/+0x684 prefilter rejects before CreateRadarEvent"
+        );
     }
 
     #[test]

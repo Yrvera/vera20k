@@ -187,6 +187,7 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
         Some(crate::render::radar_tracker::RadarSensedPresentationEvent {
             stable_id: sub,
             out_code: 1,
+            cell,
         })
     );
     assert!(tracker.is_registered(sub));
