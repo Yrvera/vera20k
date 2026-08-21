@@ -16,9 +16,16 @@ pub(super) struct NativeRadarCellColors {
     pub right: [u8; 3],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeRadarCellUpdate {
+    pub base: NativeRadarCellColors,
+    pub override_color: Option<[u8; 3]>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct NativeRadarTerrainSurface {
     geometry: NativeRadarSurfaceGeometry,
+    terrain_brightness: f32,
     base_cells: Vec<NativeRadarCellColors>,
     overrides: BTreeMap<(u16, u16), [u8; 3]>,
     raw_rgb: Vec<[u8; 3]>,
@@ -30,11 +37,13 @@ impl NativeRadarTerrainSurface {
         geometry: NativeRadarSurfaceGeometry,
         base_cells: Vec<NativeRadarCellColors>,
         overrides: BTreeMap<(u16, u16), [u8; 3]>,
+        terrain_brightness: f32,
     ) -> Self {
         let raw_size = geometry.raw_size();
         let generated_size = geometry.generated_size();
         let mut surface = Self {
             geometry,
+            terrain_brightness,
             base_cells,
             overrides,
             raw_rgb: vec![[0; 3]; area(raw_size)],
@@ -48,6 +57,10 @@ impl NativeRadarTerrainSurface {
         self.geometry
     }
 
+    pub const fn terrain_brightness(&self) -> f32 {
+        self.terrain_brightness
+    }
+
     pub fn generated_rgb565(&self) -> &[u16] {
         &self.generated_rgb565
     }
@@ -57,18 +70,26 @@ impl NativeRadarTerrainSurface {
         &self.raw_rgb
     }
 
-    pub fn set_cell_overrides(
+    pub fn set_cell_states(
         &mut self,
-        changes: impl IntoIterator<Item = ((u16, u16), Option<[u8; 3]>)>,
+        changes: impl IntoIterator<Item = NativeRadarCellUpdate>,
     ) -> bool {
         let mut changed = false;
-        for (cell, color) in changes {
-            match color {
+        for update in changes {
+            if let Some(base) = self
+                .base_cells
+                .iter_mut()
+                .find(|base| base.cell == update.base.cell)
+            {
+                changed |= *base != update.base;
+                *base = update.base;
+            }
+            match update.override_color {
                 Some(color) => {
-                    changed |= self.overrides.insert(cell, color) != Some(color);
+                    changed |= self.overrides.insert(update.base.cell, color) != Some(color);
                 }
                 None => {
-                    changed |= self.overrides.remove(&cell).is_some();
+                    changed |= self.overrides.remove(&update.base.cell).is_some();
                 }
             }
         }

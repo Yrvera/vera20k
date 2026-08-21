@@ -433,6 +433,11 @@ pub struct ResolvedTerrainGrid {
     /// Selected TMP subimage-pointer validity, aligned with `cells`. Black
     /// header RGB remains valid and therefore cannot be used as the sentinel.
     radar_color_valid: Vec<bool>,
+    /// Parsed first sibling TMP radar metadata for pristine cells whose
+    /// subimage advertises damaged data. `None` means native VariantCount is
+    /// below two (or the sibling could not be loaded), so bit 0x2000 wraps to
+    /// the pristine chain head instead of inventing a damaged color.
+    damaged_radar_metadata: Vec<Option<RadarColorMetadata>>,
     tube_facts: Vec<TubeFact>,
     /// Theater `[General] ClearTile` resolved to a flat tile id.
     ///
@@ -466,6 +471,7 @@ impl ResolvedTerrainGrid {
             .iter()
             .map(|cell| cell.radar_left != [0, 0, 0] || cell.radar_right != [0, 0, 0])
             .collect();
+        let damaged_radar_metadata = vec![None; cells.len()];
         Self {
             width,
             height,
@@ -474,6 +480,7 @@ impl ResolvedTerrainGrid {
             dummy_cell_slope_type: 0,
             native_allocated: None,
             radar_color_valid,
+            damaged_radar_metadata,
             tube_facts,
             clear_tile_id: 0,
             tile_registry_len: None,
@@ -490,6 +497,37 @@ impl ResolvedTerrainGrid {
 
     pub fn width(&self) -> u16 {
         self.width
+    }
+
+    pub(crate) fn current_tile_radar_metadata(
+        &self,
+        rx: u16,
+        ry: u16,
+        damaged_variant: bool,
+    ) -> Option<RadarColorMetadata> {
+        let index = self.index(rx, ry)?;
+        if damaged_variant
+            && let Some(metadata) = self.damaged_radar_metadata.get(index).copied().flatten()
+        {
+            return Some(metadata);
+        }
+        let cell = self.cells.get(index)?;
+        Some(RadarColorMetadata {
+            left: cell.radar_left,
+            right: cell.radar_right,
+            valid: self.radar_color_valid.get(index).copied().unwrap_or(false),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_damaged_radar_metadata(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        metadata: RadarColorMetadata,
+    ) {
+        let index = self.index(rx, ry).expect("test damaged-radar cell exists");
+        self.damaged_radar_metadata[index] = Some(metadata);
     }
 
     pub fn height(&self) -> u16 {
@@ -804,6 +842,7 @@ impl ResolvedTerrainGrid {
                 dummy_cell_slope_type: 0,
                 native_allocated: materialized_size_diamond.then(Vec::new),
                 radar_color_valid: Vec::new(),
+                damaged_radar_metadata: Vec::new(),
                 tube_facts: Vec::new(),
                 clear_tile_id,
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
@@ -916,6 +955,7 @@ impl ResolvedTerrainGrid {
         let mut cells: Vec<ResolvedTerrainCell> =
             Vec::with_capacity(width as usize * height as usize);
         let mut radar_color_valid = Vec::with_capacity(cells.capacity());
+        let mut damaged_radar_metadata = Vec::with_capacity(cells.capacity());
         let mut cliff_back_eligibility: Vec<CliffBackEligibility> =
             Vec::with_capacity(width as usize * height as usize);
         let mut tile_animations: Vec<TerrainTileAnimation> = Vec::new();
@@ -1021,6 +1061,15 @@ impl ResolvedTerrainGrid {
                         metadata.has_ramp = slope_type != 0;
                     }
                 }
+                let damaged_radar = damaged_variant_radar_metadata(
+                    &mut metadata_cache,
+                    theater_data,
+                    asset_manager,
+                    terrain_rules,
+                    pristine_key,
+                    &metadata,
+                    &mut warned_unknown_land_types,
+                );
                 let terrain_object_occupation = terrain_objects.get(&(rx, ry)).copied();
                 let terrain_object_blocks =
                     terrain_object_occupation.is_some_and(|occupation| occupation != 0);
@@ -1174,6 +1223,7 @@ impl ResolvedTerrainGrid {
                 let is_wood_bridge_repair_tile =
                     is_wood_bridge_repair_tile(theater_data, stored_final_tile_index);
                 radar_color_valid.push(metadata.subtile_entry_valid == Some(true));
+                damaged_radar_metadata.push(damaged_radar);
                 cells.push(ResolvedTerrainCell {
                     rx,
                     ry,
@@ -1544,6 +1594,7 @@ impl ResolvedTerrainGrid {
             dummy_cell_slope_type: 0,
             native_allocated,
             radar_color_valid,
+            damaged_radar_metadata,
             tube_facts,
             clear_tile_id,
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
@@ -1622,6 +1673,10 @@ impl ResolvedTerrainGrid {
 struct TileMetadata {
     tileset_index: Option<u16>,
     has_tmp_metadata: bool,
+    /// The independent TMP file parsed successfully. This stays true for a
+    /// sparse/missing requested subimage, which native distinguishes from an
+    /// absent damaged sibling chain.
+    tmp_file_valid: bool,
     /// Result of the active CellClass subtile-entry check. `None` means this
     /// synthetic/tooling path had no TMP data source to check.
     subtile_entry_valid: Option<bool>,
@@ -1664,6 +1719,7 @@ impl Default for TileMetadata {
         Self {
             tileset_index: None,
             has_tmp_metadata: false,
+            tmp_file_valid: false,
             subtile_entry_valid: None,
             template_width_cells: 0,
             template_height_cells: 0,
@@ -1934,6 +1990,58 @@ fn apply_selected_presentation_metadata(pristine: &mut TileMetadata, selected: &
     pristine.render_offset_y = selected.render_offset_y;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RadarColorMetadata {
+    pub left: [u8; 3],
+    pub right: [u8; 3],
+    pub valid: bool,
+}
+
+fn damaged_variant_radar_metadata(
+    cache: &mut HashMap<TileKey, TileMetadata>,
+    theater_data: Option<&TheaterData>,
+    asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+    terrain_rules: Option<&TerrainRules>,
+    pristine_key: TileKey,
+    pristine: &TileMetadata,
+    warned_unknown_land_types: &mut HashSet<u8>,
+) -> Option<RadarColorMetadata> {
+    if !pristine.has_damaged_data
+        || !theater_data.is_some_and(|theater| {
+            theater.lookup.total_file_count(pristine_key.tile_id) >= 2
+        })
+    {
+        return None;
+    }
+    let damaged = cached_tile_metadata(
+        cache,
+        theater_data,
+        asset_manager,
+        terrain_rules,
+        TileKey {
+            variant: 1,
+            ..pristine_key
+        },
+        warned_unknown_land_types,
+    );
+    // A missing/corrupt independent file never enters native's variant chain,
+    // so the selector wraps to pristine. A parsed file with no requested
+    // subimage does enter the chain and GetRadarColor returns fixed gray.
+    retained_damaged_radar_metadata(pristine, Some(&damaged))
+}
+
+fn retained_damaged_radar_metadata(
+    pristine: &TileMetadata,
+    damaged: Option<&TileMetadata>,
+) -> Option<RadarColorMetadata> {
+    let damaged = damaged.filter(|metadata| pristine.has_damaged_data && metadata.tmp_file_valid)?;
+    Some(RadarColorMetadata {
+        left: damaged.radar_left,
+        right: damaged.radar_right,
+        valid: damaged.subtile_entry_valid == Some(true),
+    })
+}
+
 fn load_tile_metadata(
     theater_data: Option<&TheaterData>,
     asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
@@ -1968,6 +2076,7 @@ fn load_tile_metadata(
         mark_invalid_subtile_metadata(&mut metadata, terrain_rules);
         return metadata;
     };
+    metadata.tmp_file_valid = true;
     merge_tmp_file_metadata(
         &mut metadata,
         &tmp,
@@ -2362,6 +2471,10 @@ fn materialize_map_load_cells(
     }
     cells
 }
+
+#[cfg(test)]
+#[path = "resolved_terrain_damaged_radar_tests.rs"]
+mod damaged_radar_tests;
 
 #[cfg(test)]
 mod tests {

@@ -156,6 +156,20 @@ pub(super) fn radar_colors_for_cell(
     radar_color_valid: bool,
     terrain_brightness: f32,
 ) -> ([u8; 3], [u8; 3]) {
+    radar_colors_for_tmp_metadata(
+        cell.radar_left,
+        cell.radar_right,
+        radar_color_valid,
+        terrain_brightness,
+    )
+}
+
+pub(super) fn radar_colors_for_tmp_metadata(
+    radar_left: [u8; 3],
+    _radar_right: [u8; 3],
+    radar_color_valid: bool,
+    terrain_brightness: f32,
+) -> ([u8; 3], [u8; 3]) {
     if !radar_color_valid {
         return ([60, 60, 60], [60, 60, 60]);
     }
@@ -163,7 +177,7 @@ pub(super) fn radar_colors_for_cell(
     // and `Math__ftol` truncates. `CellClass::GetRadarColor @ 0x0047C060`
     // then reads only TMP +0x2B..0x2D (RadarLeft), unsigned-shifts each byte,
     // and copies the same triple to both raw footprint pixels.
-    let color = cell.radar_left.map(|channel| {
+    let color = radar_left.map(|channel| {
         ((f32::from(channel) * terrain_brightness)
             .clamp(0.0, 255.0)
             .trunc() as u8)

@@ -12,7 +12,9 @@ use super::minimap_helpers::{
 };
 use super::minimap_projection::{aperture_pixel, rasterize_native_terrain};
 use super::native_radar_surface::NativeRadarSurfaceGeometry;
-use super::native_radar_terrain::NativeRadarTerrainSurface;
+use super::native_radar_terrain::{
+    NativeRadarCellColors, NativeRadarCellUpdate, NativeRadarTerrainSurface,
+};
 
 pub(super) struct RadarTerrainUpdateLayers<'a> {
     pub base_rgba: &'a mut Vec<u8>,
@@ -37,7 +39,29 @@ pub(super) fn apply_radar_terrain_dirty_cells(
     cells: &[(u16, u16)],
 ) {
     let mut native_changes = Vec::new();
+    let terrain_brightness = layers
+        .native_terrain
+        .as_ref()
+        .map_or(1.0, NativeRadarTerrainSurface::terrain_brightness);
     for &(rx, ry) in cells {
+        let source = authority.source(
+            rx,
+            ry,
+            structural_bridge_color,
+            overlay_radar_colors,
+        );
+        if let Some((left, right)) =
+            authority.tile_radar_colors(rx, ry, terrain_brightness)
+        {
+            native_changes.push(NativeRadarCellUpdate {
+                base: NativeRadarCellColors {
+                    cell: (rx, ry),
+                    left,
+                    right,
+                },
+                override_color: source.map(|(color, _)| color),
+            });
+        }
         let Some(terrain_pixel) = layers
             .terrain_pixels
             .iter()
@@ -59,15 +83,8 @@ pub(super) fn apply_radar_terrain_dirty_cells(
             );
         }
 
-        let source = authority.source(
-            rx,
-            ry,
-            structural_bridge_color,
-            overlay_radar_colors,
-        );
         if let Some((native_color, classification)) = source {
             let color = [native_color[0], native_color[1], native_color[2], 255];
-            native_changes.push(((rx, ry), Some(native_color)));
             if let Some(existing) = layers
                 .overlay_pixels
                 .iter_mut()
@@ -88,14 +105,13 @@ pub(super) fn apply_radar_terrain_dirty_cells(
                 });
             }
         } else {
-            native_changes.push(((rx, ry), None));
             layers
                 .overlay_pixels
                 .retain(|pixel| !(pixel.rx == rx && pixel.ry == ry));
         }
     }
     if let Some(surface) = layers.native_terrain
-        && surface.set_cell_overrides(native_changes)
+        && surface.set_cell_states(native_changes)
     {
         let (rgba, pixels) = rasterize_native_terrain(surface);
         *layers.base_rgba = rgba;

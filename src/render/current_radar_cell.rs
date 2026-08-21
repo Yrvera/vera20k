@@ -15,6 +15,7 @@ use crate::sim::runtime::SimRuntime;
 
 use super::minimap_helpers::{
     OverlayClassification, current_cell_radar_source, minimap_overlay_datum,
+    radar_colors_for_tmp_metadata,
 };
 
 /// Read-only live CellClass authority for one retained-radar reconstruction.
@@ -58,6 +59,32 @@ impl<'a> CurrentRadarCellAuthority<'a> {
             Some(&runtime.resources.overlay_registry),
             Some(&runtime.resources.rules),
         )
+    }
+
+    /// Current tile branch of `CellClass::GetRadarColor @ 0x0047C060`.
+    /// Bit 0x2000 selects the first sibling TMP only when the pristine
+    /// subimage advertised damaged data and the sibling entered the native
+    /// variant chain. Both metadata triples remain retained even though this
+    /// active function reads RadarLeft and duplicates it into the raw pair.
+    pub(crate) fn tile_radar_colors(
+        self,
+        rx: u16,
+        ry: u16,
+        terrain_brightness: f32,
+    ) -> Option<([u8; 3], [u8; 3])> {
+        let damaged_variant = self
+            .bridge_state
+            .and_then(|state| state.cell(rx, ry))
+            .is_some_and(|cell| cell.damaged_variant);
+        let metadata = self
+            .resolved_terrain?
+            .current_tile_radar_metadata(rx, ry, damaged_variant)?;
+        Some(radar_colors_for_tmp_metadata(
+            metadata.left,
+            metadata.right,
+            metadata.valid,
+            terrain_brightness,
+        ))
     }
 
     /// Resolve the current source branch for `CellClass::GetRadarColor`.

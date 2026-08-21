@@ -4,7 +4,9 @@ use crate::map::bridge_facts::{
     Axis, BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts, BridgeheadAnchorClass,
 };
 use crate::map::playfield::PlayfieldBounds;
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{
+    RadarColorMetadata, ResolvedTerrainCell, ResolvedTerrainGrid,
+};
 use crate::map::terrain::{TerrainGrid, build_terrain_grid_from_resolved};
 use crate::render::minimap::{MinimapCellRadarSource, MinimapOverlayDatum};
 use crate::render::minimap_helpers::OverlayClassification;
@@ -324,6 +326,75 @@ fn gsi_04_01_high_collapse_uses_runtime_overlay_then_repairs_in_full_and_increme
         apply_incremental(&mut incremental, &repaired, cell, &colors);
         assert_eq!(raw_pair(&incremental, cell), [BRIDGE_COLOR; 2]);
     }
+}
+
+#[test]
+fn gsi_04_01_damaged_tmp_pair_rebuilds_and_repairs_in_full_and_incremental_paths() {
+    const DAMAGED_RAW_LEFT: [u8; 3] = [200, 100, 50];
+    const DAMAGED_RAW_RIGHT: [u8; 3] = [7, 8, 9];
+    const DAMAGED_COLOR: [u8; 3] = [100, 50, 25];
+
+    let (grid, mut resolved) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    resolved.cell_mut(cell.0, cell.1).unwrap().has_damaged_data = true;
+    resolved.test_set_damaged_radar_metadata(
+        cell.0,
+        cell.1,
+        RadarColorMetadata {
+            left: DAMAGED_RAW_LEFT,
+            right: DAMAGED_RAW_RIGHT,
+            valid: true,
+        },
+    );
+    assert_eq!(
+        resolved
+            .current_tile_radar_metadata(cell.0, cell.1, true)
+            .unwrap()
+            .right,
+        DAMAGED_RAW_RIGHT,
+        "the independent damaged TMP's exact right metadata remains retained",
+    );
+
+    let colors = colors();
+    let pristine_state = bridge_state_at(cell, true);
+    let pristine = live_runtime(
+        resolved.clone(),
+        pristine_state.clone(),
+        OverlayGrid::new(SIDE, SIDE),
+    );
+    let pristine_full = projection(&grid, &pristine, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&pristine_full, cell), [BASE_COLOR; 2]);
+
+    let mut damaged_state = pristine_state;
+    assert_eq!(
+        damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, true, &resolved),
+        1,
+    );
+    let damaged = live_runtime(
+        resolved.clone(),
+        damaged_state.clone(),
+        OverlayGrid::new(SIDE, SIDE),
+    );
+    let damaged_full = projection(&grid, &damaged, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&damaged_full, cell), [DAMAGED_COLOR; 2]);
+
+    let mut incremental = pristine_full;
+    apply_incremental(&mut incremental, &damaged, cell, &colors);
+    assert_eq!(raw_pair(&incremental, cell), [DAMAGED_COLOR; 2]);
+
+    assert_eq!(
+        damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, false, &resolved),
+        1,
+    );
+    let repaired = live_runtime(
+        resolved,
+        damaged_state,
+        OverlayGrid::new(SIDE, SIDE),
+    );
+    let repaired_full = projection(&grid, &repaired, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&repaired_full, cell), [BASE_COLOR; 2]);
+    apply_incremental(&mut incremental, &repaired, cell, &colors);
+    assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
 }
 
 #[test]

@@ -53,6 +53,7 @@ fn overlay_color_replaces_both_halves_before_weighted_generation() {
             right: [40, 50, 60],
         }],
         BTreeMap::from([((0, 0), [77, 88, 99])]),
+        1.0,
     );
     assert_eq!(surface.raw_rgb, vec![[77, 88, 99], [77, 88, 99]]);
     assert!(

@@ -187,6 +187,11 @@ impl MinimapPlayfieldProjection {
             }
         }
         let base_cell_colors = |cell: &crate::map::terrain::TerrainCell| {
+            if let Some(colors) = current_cell_authority.and_then(|authority| {
+                authority.tile_radar_colors(cell.rx, cell.ry, terrain_brightness)
+            }) {
+                return colors;
+            }
             let valid = resolved_terrain
                 .is_some_and(|terrain| terrain.radar_color_valid(cell.rx, cell.ry));
             radar_colors_for_cell(cell, valid, terrain_brightness)
@@ -324,8 +329,14 @@ impl MinimapPlayfieldProjection {
             }
         }
 
-        let native_radar_terrain = native_radar_surface
-            .map(|surface| NativeRadarTerrainSurface::new(surface, native_cells, native_overrides));
+        let native_radar_terrain = native_radar_surface.map(|surface| {
+            NativeRadarTerrainSurface::new(
+                surface,
+                native_cells,
+                native_overrides,
+                terrain_brightness,
+            )
+        });
         let surface_pixels = if let Some(surface) = &native_radar_terrain {
             let (native_rgba, pixels) = rasterize_native_terrain(surface);
             base_rgba = native_rgba;
