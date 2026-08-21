@@ -79,6 +79,32 @@ fn signed_tracker_or_inverse_cell(
     tracker_cell.unwrap_or_else(|| surface.surface_pixel_to_signed_cell(pixel))
 }
 
+fn tracker_object_signed_cell(
+    tracker: &super::radar_tracker::RetainedRadarTracker,
+    entities: &crate::sim::entity_store::EntityStore,
+    pixel: (i32, i32),
+) -> Option<(i16, i16)> {
+    let stable_id = tracker.object_at_pixel(pixel.0, pixel.1)?;
+    let entity = entities.get(stable_id)?;
+    // `RadarClass::GetObjectAtRadarPixel @ 0x00656750` returns the tracker
+    // object, then its caller dispatches ObjectClass vtable +0x48. Buildings
+    // therefore center through `BuildingClass::GetCoords @ 0x00447AC0`.
+    let (x, y) = super::radar_visibility::radar_object_get_coords_leptons(entity);
+    Some((
+        crate::util::direction_tables::lepton_to_cell(x) as i16,
+        crate::util::direction_tables::lepton_to_cell(y) as i16,
+    ))
+}
+
+fn native_camera_cell_from_signed(
+    signed: (i16, i16),
+    map_size: (i32, i32),
+    tactical_size: (i32, i32),
+) -> (u16, u16) {
+    let clamped = clamp_native_radar_click_cell(signed, map_size, tactical_size);
+    (clamped.0 as u16, clamped.1 as u16)
+}
+
 impl MinimapRenderer {
     /// Return true only inside the generated primary when native authority is
     /// installed. Native `0x006539D0` rejects the centered letterbox margins.
@@ -140,27 +166,9 @@ impl MinimapRenderer {
         let surface = self.native_radar_surface?;
         let pixel = NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h])
             .screen_to_surface_pixel((screen_x, screen_y))?;
-        let tracker_cell = if let Some(stable_id) =
-            self.radar_tracker.object_at_pixel(pixel.0, pixel.1)
-            && let Some(entity) = entities.get(stable_id)
-        {
-            let leptons = crate::util::lepton::LEPTONS_PER_CELL_I32;
-            let x = i32::from(entity.position.rx)
-                .wrapping_mul(leptons)
-                .wrapping_add(entity.position.sub_x.to_num::<i32>());
-            let y = i32::from(entity.position.ry)
-                .wrapping_mul(leptons)
-                .wrapping_add(entity.position.sub_y.to_num::<i32>());
-            Some((
-                crate::util::direction_tables::lepton_to_cell(x) as i16,
-                crate::util::direction_tables::lepton_to_cell(y) as i16,
-            ))
-        } else {
-            None
-        };
+        let tracker_cell = tracker_object_signed_cell(&self.radar_tracker, entities, pixel);
         let signed = signed_tracker_or_inverse_cell(surface, pixel, tracker_cell);
-        let clamped = clamp_native_radar_click_cell(signed, map_size, tactical_size);
-        Some((clamped.0 as u16, clamped.1 as u16))
+        Some(native_camera_cell_from_signed(signed, map_size, tactical_size))
     }
 
     pub(crate) const fn has_playfield_authority(&self) -> bool {
@@ -236,6 +244,41 @@ impl MinimapRenderer {
 mod tests {
     use super::*;
     use crate::render::native_radar_surface::NativeRadarSurfaceGeometry;
+    use crate::render::radar_tracker::{RadarObjectUpdate, RetainedRadarTracker};
+    use crate::render::radar_visibility::{
+        RadarMobileVisibilityFacts, RadarRegistrationVisibilityFacts,
+    };
+    use crate::sim::intern::test_intern;
+
+    fn tracker_update(stable_id: u64, foundation: Option<(u32, u32)>) -> RadarObjectUpdate {
+        RadarObjectUpdate {
+            stable_id,
+            owner: test_intern("Enemy"),
+            origin: (40, 60),
+            event_source_cell: None,
+            enemy_sensed_prefilter: true,
+            foundation,
+            radar_scale: 1.0,
+            discovery_observed: true,
+            visibility: RadarRegistrationVisibilityFacts::Mobile(
+                RadarMobileVisibilityFacts {
+                    type_invisible: false,
+                    sinking: false,
+                    object_alive: true,
+                    in_limbo: false,
+                    owner_is_human_player: false,
+                    fresh_in_playfield: true,
+                    shrouded: false,
+                    cloak_state: 0,
+                    has_sensor: false,
+                    allied_with_current_player: false,
+                    height_leptons: 0,
+                    veteran_radar_invisible: false,
+                },
+            ),
+            local_front: false,
+        }
+    }
 
     #[test]
     fn native_click_clamp_preserves_signed_words_and_strict_branch_equality() {
@@ -330,5 +373,44 @@ mod tests {
             });
             assert_eq!(cells, expected);
         }
+    }
+
+    #[test]
+    fn native_tracker_reverse_hit_uses_building_getcoords_for_camera_cell() {
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(tracker_update(1, None), false);
+        tracker.update_object(tracker_update(2, Some((4, 3))), false);
+        assert_eq!(tracker.object_at_pixel(40, 60), Some(2), "native reverse bucket scan");
+
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mobile = crate::sim::game_entity::GameEntity::test_default(
+            1, "MTNK", "Enemy", 60, 60,
+        );
+        entities.insert(mobile);
+        let mut building = crate::sim::game_entity::GameEntity::test_default(
+            2, "BLDG", "Enemy", 60, 60,
+        );
+        building.category = crate::map::entities::EntityCategory::Structure;
+        building.foundation = "4x3".to_string();
+        building.position.sub_x = crate::util::fixed_math::SimFixed::from_num(200);
+        building.position.sub_y = crate::util::fixed_math::SimFixed::from_num(33);
+        entities.insert(building);
+
+        let signed = tracker_object_signed_cell(&tracker, &entities, (40, 60));
+        assert_eq!(signed, Some((62, 61)), "4x3 foundation centre truncates after subcell");
+        assert_eq!(
+            native_camera_cell_from_signed(signed.unwrap(), (100, 100), (632, 570)),
+            (62, 61),
+            "the exact tracker GetCoords cell is the immediate camera centre"
+        );
+
+        let edge = entities.get_mut(2).unwrap();
+        edge.position.rx = u16::MAX;
+        edge.position.ry = u16::MAX;
+        assert_eq!(
+            tracker_object_signed_cell(&tracker, &entities, (40, 60)),
+            Some((1, 0)),
+            "GetCoords converts to wrapping native signed cell words"
+        );
     }
 }

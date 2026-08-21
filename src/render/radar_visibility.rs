@@ -29,21 +29,22 @@ pub(super) fn radar_owner_is_human_player(
     }
 }
 
-fn radar_current_coord_leptons(
+/// ObjectClass virtual `GetCoords` used by radar visibility and radar clicks.
+/// `BuildingClass::GetCoords @ 0x00447AC0` projects the stored foundation-origin
+/// coordinate to its geometric centre; mobiles inherit the raw Object result.
+pub(super) fn radar_object_get_coords_leptons(
     entity: &crate::sim::game_entity::GameEntity,
-    foundation: Option<(u32, u32)>,
 ) -> (i32, i32) {
     let (mut x, mut y) = radar_raw_coord_leptons(entity);
-    if let Some((width, height)) = foundation {
-        // BuildingClass::GetCoords projects the north-west anchor to the
-        // foundation centre before +0x324's fresh mode-one query.
+    if entity.category == EntityCategory::Structure {
+        let (width, height) = crate::rules::foundation::foundation_dimensions(&entity.foundation);
         x = x.wrapping_add(
-            (width as i32)
+            i32::from(width)
                 .wrapping_sub(1)
                 .wrapping_mul(crate::util::lepton::CELL_CENTER_LEPTON_I32),
         );
         y = y.wrapping_add(
-            (height as i32)
+            i32::from(height)
                 .wrapping_sub(1)
                 .wrapping_mul(crate::util::lepton::CELL_CENTER_LEPTON_I32),
         );
@@ -89,7 +90,6 @@ fn enemy_sensed_prefilter(entity: &crate::sim::game_entity::GameEntity) -> bool 
 
 fn radar_fresh_mode_one_membership(
     entity: &crate::sim::game_entity::GameEntity,
-    foundation: Option<(u32, u32)>,
     playfield_bounds: Option<crate::map::playfield::PlayfieldBounds>,
     resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
 ) -> bool {
@@ -103,7 +103,7 @@ fn radar_fresh_mode_one_membership(
         // cannot be replaced by a rectangular or geometry-only approximation.
         return false;
     };
-    let (x, y) = radar_current_coord_leptons(entity, foundation);
+    let (x, y) = radar_object_get_coords_leptons(entity);
     crate::sim::cell_rect::cell_is_in_playfield_leptons(
         (x, y, 0),
         Some(bounds),
@@ -113,10 +113,9 @@ fn radar_fresh_mode_one_membership(
 
 fn radar_get_height_leptons(
     entity: &crate::sim::game_entity::GameEntity,
-    foundation: Option<(u32, u32)>,
     resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
 ) -> i32 {
-    let (x, y) = radar_current_coord_leptons(entity, foundation);
+    let (x, y) = radar_object_get_coords_leptons(entity);
     let (rx, ry) = radar_packed_cell_from_leptons(x, y);
     let ground = resolved_terrain
         .and_then(|terrain| {
@@ -344,7 +343,7 @@ pub(super) fn build_radar_object_update(
     let owner_is_human_player = local_owner.is_none_or(|local_owner| {
         radar_owner_is_human_player(entity.owner, local_owner, houses, game_mode_nonzero)
     });
-    let (coord_x, coord_y) = radar_current_coord_leptons(entity, foundation);
+    let (coord_x, coord_y) = radar_object_get_coords_leptons(entity);
     let current_cell = radar_fog_cell_from_leptons(coord_x, coord_y);
     // The type-5 call at `0x0070DA95..0x0070DAD7` converts raw Object+0x9C,
     // not BuildingClass's centre-adjusted +0x324 coordinate.
@@ -387,7 +386,6 @@ pub(super) fn build_radar_object_update(
         object.is_some_and(|object| object.invisible || object.invisible_in_game);
     let fresh_in_playfield = radar_fresh_mode_one_membership(
         entity,
-        foundation,
         playfield_bounds,
         resolved_terrain,
     );
@@ -430,7 +428,7 @@ pub(super) fn build_radar_object_update(
             cloak_state,
             has_sensor,
             allied_with_current_player,
-            height_leptons: radar_get_height_leptons(entity, None, resolved_terrain),
+            height_leptons: radar_get_height_leptons(entity, resolved_terrain),
             veteran_radar_invisible,
         })
     };
@@ -539,13 +537,44 @@ mod tests {
         entity.category = EntityCategory::Structure;
         entity.foundation = "3x2".to_string();
         let raw = radar_raw_coord_leptons(&entity);
-        let visibility = radar_current_coord_leptons(&entity, Some((3, 2)));
+        let visibility = radar_object_get_coords_leptons(&entity);
         assert_eq!(radar_fog_cell_from_leptons(raw.0, raw.1), Some((4, 5)));
         assert_ne!(
             radar_fog_cell_from_leptons(visibility.0, visibility.1),
             Some((4, 5)),
             "BuildingClass +0x324 may center its query, but 0x70DAD7 packs Object+0x9C"
         );
+    }
+
+    #[test]
+    fn radar_object_get_coords_centralizes_mobile_and_building_foundation_centres() {
+        let mut entity = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "BLDG",
+            "Enemy",
+            10,
+            20,
+        );
+        entity.position.sub_x = crate::util::fixed_math::SimFixed::from_num(200);
+        entity.position.sub_y = crate::util::fixed_math::SimFixed::from_num(33);
+        let raw = (10 * 256 + 200, 20 * 256 + 33);
+
+        assert_eq!(radar_object_get_coords_leptons(&entity), raw, "mobile GetCoords is raw");
+        entity.category = EntityCategory::Structure;
+        for (foundation, expected) in [
+            ("1x1", raw),
+            ("2x2", (raw.0 + 128, raw.1 + 128)),
+            ("4x3", (raw.0 + 384, raw.1 + 256)),
+            ("", raw),
+            ("not-a-native-foundation", raw),
+        ] {
+            entity.foundation = foundation.to_string();
+            assert_eq!(
+                radar_object_get_coords_leptons(&entity),
+                expected,
+                "foundation {foundation:?}"
+            );
+        }
     }
 
     #[test]
@@ -887,7 +916,6 @@ mod tests {
         entity.in_playfield = false;
         assert!(radar_fresh_mode_one_membership(
             &entity,
-            None,
             Some(bounds),
             Some(&terrain),
         ));
@@ -896,13 +924,11 @@ mod tests {
         entity.position.ry = 2;
         assert!(!radar_fresh_mode_one_membership(
             &entity,
-            None,
             Some(bounds),
             Some(&terrain),
         ));
         assert!(!radar_fresh_mode_one_membership(
             &entity,
-            None,
             Some(bounds),
             None,
         ));
