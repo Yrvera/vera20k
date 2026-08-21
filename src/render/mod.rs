@@ -31,6 +31,7 @@ pub mod loading_screen_chrome;
 pub mod locomotor_visual;
 pub mod main_menu_shell_chrome;
 pub mod minimap;
+mod current_radar_cell;
 mod minimap_interaction;
 mod minimap_helpers;
 mod minimap_legacy_events;

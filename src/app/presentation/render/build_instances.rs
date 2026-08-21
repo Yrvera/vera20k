@@ -574,11 +574,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             state.overlay_registry(),
             state.rules(),
         );
-        let resolved_terrain = state
-            .match_state
-            .sim_runtime
-            .as_ref()
-            .and_then(|runtime| runtime.view().resolved_terrain());
+        let runtime = state.match_state.sim_runtime.as_ref();
         let presentation = &mut state.match_state.match_presentation;
         if let (Some(minimap), Some(grid)) =
             (presentation.minimap.as_mut(), presentation.terrain_grid.as_ref())
@@ -586,7 +582,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             minimap.reconcile_playfield(
                 &state.renderer.gpu,
                 grid,
-                resolved_terrain,
+                runtime,
                 &overlay_data,
                 &presentation.overlay_radar_colors,
                 &presentation.theater_name,

@@ -33,6 +33,7 @@ use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 use std::collections::{BTreeMap, HashMap};
 
+use super::current_radar_cell::CurrentRadarCellAuthority;
 use super::minimap_helpers::{
     COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_HEIGHT, MINIMAP_WIDTH,
     RadarSurfacePixel, cell_visibility_color, dim_color, set_pixel, surface_visibility_color,
@@ -173,6 +174,7 @@ impl MinimapRenderer {
             overlay_radar_colors,
             theater_name,
             playfield_bounds,
+            None,
         );
 
         let (map_texture_raw, map_texture) =
@@ -237,7 +239,7 @@ impl MinimapRenderer {
         &mut self,
         gpu: &GpuContext,
         grid: &TerrainGrid,
-        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        runtime: Option<&crate::sim::runtime::SimRuntime>,
         overlay_data: &[MinimapOverlayDatum],
         overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
         theater_name: &str,
@@ -257,6 +259,9 @@ impl MinimapRenderer {
         }
 
         let action40_rebuild = self.installed_playfield_authority.is_some();
+        let resolved_terrain =
+            runtime.and_then(|runtime| runtime.simulation.resolved_terrain.as_ref());
+        let current_cell_authority = runtime.map(CurrentRadarCellAuthority::from_runtime);
         let projection = MinimapPlayfieldProjection::derive(
             grid,
             resolved_terrain,
@@ -264,6 +269,7 @@ impl MinimapRenderer {
             overlay_radar_colors,
             theater_name,
             playfield_bounds,
+            current_cell_authority,
         );
         self.base_terrain_rgba = projection.base_rgba;
         self.world_origin_x = projection.world_origin_x;
@@ -338,10 +344,9 @@ impl MinimapRenderer {
     pub fn mark_stale(&mut self) {
         self.last_sim_tick = u64::MAX;
         self.last_fog_generation = u64::MAX;
-        // The restored sim's radar-terrain dirty generation restarts too.
-        // Known residual: base-terrain pixels patched by the abandoned
-        // timeline (destroyed-bridge cells) are not re-derived here because
-        // the restored sim's dirty list is empty; see the load-path notes.
+        // The restored sim's radar-terrain dirty generation restarts too. The
+        // next full reconcile derives from restored live CellClass authority;
+        // it never relies on a dirty replay from the abandoned timeline.
         self.last_radar_terrain_dirty_generation = u64::MAX;
         self.installed_playfield_authority = None;
         self.radar_tracker.reset_for_load_or_view();
@@ -727,40 +732,20 @@ impl MinimapRenderer {
                 );
             }
 
-            let terrain_object_present = resolved_terrain
-                .and_then(|terrain| terrain.cell(rx, ry))
-                .is_some_and(|cell| cell.terrain_object_occupation.is_some());
-            let bridge_visible = bridge_state
-                .and_then(|state| state.cell(rx, ry))
-                .is_some_and(|cell| {
-                    cell.deck_present
-                        && crate::sim::bridge_state::BridgeRuntimeState::effective_render_state(
-                            cell,
-                        )
-                        .is_some()
-            });
-
-            let overlay_datum = overlay_grid.and_then(|grid| {
-                let cell = grid.cell(rx, ry);
-                cell.overlay_id.map(|overlay_id| {
-                    minimap_overlay_datum(
-                        rx,
-                        ry,
-                        overlay_id,
-                        cell.overlay_data,
-                        overlay_registry,
-                        rules,
-                    )
-                })
-            });
             // `CellClass::GetRadarColor @ 0x0047C060` is re-run for each
             // invalidated cell. Preserve its exact priority rather than the
             // former bridge-only patch: TerrainClass, structural bridge, then
             // the current mutable overlay byte/frame, else selected TMP.
-            let source = super::minimap_helpers::current_cell_radar_source(
-                terrain_object_present,
-                bridge_visible,
-                overlay_datum,
+            let source = CurrentRadarCellAuthority::new(
+                resolved_terrain,
+                bridge_state,
+                overlay_grid,
+                overlay_registry,
+                rules,
+            )
+            .source(
+                rx,
+                ry,
                 bridge_color,
                 overlay_radar_colors,
             );

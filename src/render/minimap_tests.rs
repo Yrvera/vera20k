@@ -460,13 +460,13 @@ fn playfield_projection_shrinks_and_reexpands_exact_mode_zero_membership() {
     let colors = HashMap::new();
 
     let initial = MinimapPlayfieldProjection::derive(
-        &grid, None, &overlays, &colors, "TEMPERATE", Some(expanded),
+        &grid, None, &overlays, &colors, "TEMPERATE", Some(expanded), None,
     );
     let shrunk = MinimapPlayfieldProjection::derive(
-        &grid, None, &overlays, &colors, "TEMPERATE", Some(shrunken),
+        &grid, None, &overlays, &colors, "TEMPERATE", Some(shrunken), None,
     );
     let reexpanded = MinimapPlayfieldProjection::derive(
-        &grid, None, &overlays, &colors, "TEMPERATE", Some(expanded),
+        &grid, None, &overlays, &colors, "TEMPERATE", Some(expanded), None,
     );
 
     let initial_cells: BTreeSet<_> = initial
@@ -581,7 +581,7 @@ fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_re
         &overlays,
         &colors,
         "TEMPERATE",
-        Some(expanded_playfield()),
+        Some(expanded_playfield()), None,
     );
     let rebuilt = MinimapPlayfieldProjection::derive(
         &grid,
@@ -589,7 +589,7 @@ fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_re
         &overlays,
         &colors,
         "TEMPERATE",
-        Some(shrunken_playfield()),
+        Some(shrunken_playfield()), None,
     );
     let initial_surface = initial.native_radar_surface.expect("initial primary surface");
     let rebuilt_surface = rebuilt.native_radar_surface.expect("rebuilt primary surface");
@@ -722,7 +722,7 @@ fn playfield_projection_updates_camera_bounds_and_click_inverse_mapping() {
         &[],
         &HashMap::new(),
         "TEMPERATE",
-        Some(shrunken_playfield()),
+        Some(shrunken_playfield()), None,
     );
     let rect = (10.0, 20.0, 300.0, 240.0);
     let tex_x = projection.map_offset_x + projection.map_pixel_w * 0.5;

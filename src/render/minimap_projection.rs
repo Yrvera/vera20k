@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::map::playfield::PlayfieldBounds;
 use crate::map::terrain::{PlayfieldPresentationGeometry, TerrainGrid};
 
+use super::current_radar_cell::CurrentRadarCellAuthority;
 use super::minimap::{MinimapCellRadarSource, MinimapOverlayDatum};
 use super::minimap_helpers::{
     COLOR_SHROUD, MINIMAP_HEIGHT, MINIMAP_WIDTH, OverlayPixel,
@@ -124,6 +125,7 @@ impl MinimapPlayfieldProjection {
         overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
         theater_name: &str,
         bounds: Option<PlayfieldBounds>,
+        current_cell_authority: Option<CurrentRadarCellAuthority<'_>>,
     ) -> Self {
         let mut base_rgba = vec![0u8; (MINIMAP_WIDTH * MINIMAP_HEIGHT * 4) as usize];
         for pixel in base_rgba.chunks_exact_mut(4) {
@@ -189,19 +191,28 @@ impl MinimapPlayfieldProjection {
                 .is_some_and(|terrain| terrain.radar_color_valid(cell.rx, cell.ry));
             radar_colors_for_cell(cell, valid, terrain_brightness)
         };
-        let cell_source = |cell: &crate::map::terrain::TerrainCell| {
+        let structural_color = structural_bridge_radar_color(overlay_radar_colors);
+        let fallback_cell_source = |cell: &crate::map::terrain::TerrainCell| {
             let resolved = resolved_terrain.and_then(|terrain| terrain.cell(cell.rx, cell.ry));
             let terrain_object = terrain_object_cells.contains(&(cell.rx, cell.ry))
                 || resolved.is_some_and(|cell| cell.terrain_object_occupation.is_some());
-            if terrain_object {
-                Some([200, 200, 160])
-            } else if resolved.is_some_and(|cell| cell.bridge_facts.has_structural_bridge()) {
-                Some(structural_bridge_radar_color(overlay_radar_colors))
-            } else {
-                overlays_by_cell
-                    .get(&(cell.rx, cell.ry))
-                    .and_then(|datum| overlay_radar_color(*datum, overlay_radar_colors))
-            }
+            let structural_bridge =
+                resolved.is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+            super::minimap_helpers::current_cell_radar_source(
+                terrain_object,
+                structural_bridge,
+                overlays_by_cell.get(&(cell.rx, cell.ry)).copied(),
+                structural_color,
+                overlay_radar_colors,
+            )
+        };
+        let cell_source = |cell: &crate::map::terrain::TerrainCell| {
+            current_cell_authority.map_or_else(
+                || fallback_cell_source(cell),
+                |authority| {
+                    authority.source(cell.rx, cell.ry, structural_color, overlay_radar_colors)
+                },
+            )
         };
 
         // `FillTerrainColors @ 0x00654EA0` walks MapClass's allocation-backed
@@ -256,12 +267,36 @@ impl MinimapPlayfieldProjection {
         let native_overrides = if native_radar_surface.is_some() {
             grid.cells
                 .iter()
-                .filter_map(|cell| cell_source(cell).map(|color| ((cell.rx, cell.ry), color)))
+                .filter_map(|cell| {
+                    cell_source(cell).map(|(color, _)| ((cell.rx, cell.ry), color))
+                })
                 .collect()
         } else {
             BTreeMap::new()
         };
-        if let Some(bounds) = bounds {
+        if let Some(bounds) = bounds
+            && current_cell_authority.is_some()
+        {
+            for cell in &grid.cells {
+                if !bounds.contains_geometry_packed(i32::from(cell.rx), i32::from(cell.ry)) {
+                    continue;
+                }
+                let Some((native_color, classification)) = cell_source(cell) else {
+                    continue;
+                };
+                let Some((px, py)) = project_cell(cell.rx, cell.ry) else {
+                    continue;
+                };
+                overlay_pixels.push(OverlayPixel {
+                    rx: cell.rx,
+                    ry: cell.ry,
+                    px,
+                    py,
+                    color: [native_color[0], native_color[1], native_color[2], 255],
+                    classification,
+                });
+            }
+        } else if let Some(bounds) = bounds {
             for &datum in overlay_data {
                 if !bounds.contains_geometry_packed(i32::from(datum.rx), i32::from(datum.ry)) {
                     continue;

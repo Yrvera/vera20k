@@ -76,6 +76,7 @@ fn projection_raw_fill_keeps_clipped_edges_and_final_source_row() {
         &HashMap::new(),
         "TEMPERATE",
         Some(wide_bounds()),
+        None,
     );
     let geometry = projection.native_radar_surface.expect("native surface");
     assert_eq!(geometry.raw_size(), (146, 110));
@@ -142,6 +143,7 @@ fn action40_projection_rebuild_regenerates_every_pixel_without_stale_raw_data() 
         &HashMap::new(),
         "TEMPERATE",
         Some(wide_bounds()),
+        None,
     );
     let rebuilt = MinimapPlayfieldProjection::derive(
         &grid,
@@ -150,6 +152,7 @@ fn action40_projection_rebuild_regenerates_every_pixel_without_stale_raw_data() 
         &HashMap::new(),
         "TEMPERATE",
         Some(shrunken_bounds()),
+        None,
     );
     let initial_geometry = initial.native_radar_surface.expect("initial surface");
     let rebuilt_geometry = rebuilt.native_radar_surface.expect("rebuilt surface");
@@ -279,6 +282,7 @@ fn cell_get_radar_color_precedence_feeds_raw_surface_before_weighted_generation(
         &colors,
         "TEMPERATE",
         Some(wide_bounds()),
+        None,
     );
     let geometry = projection.native_radar_surface.expect("surface");
     let terrain = projection
