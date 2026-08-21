@@ -111,9 +111,11 @@ pub(super) fn rasterize_native_terrain(
 }
 
 impl MinimapPlayfieldProjection {
-    /// Terrain/overlays use mode zero; generated radar bounds use native mode
-    /// one. All retained pixels are generated-surface local, and the only
-    /// later transform is RebuildRadarSurfaces' centered aperture copy.
+    /// Raw terrain enumerates every allocated Size-diamond cell; retained
+    /// terrain/overlay metadata uses mode zero; generated radar bounds use
+    /// native mode one. All retained pixels are generated-surface local, and
+    /// the only later transform is RebuildRadarSurfaces' centered aperture
+    /// copy.
     pub(super) fn derive(
         grid: &TerrainGrid,
         resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
@@ -169,7 +171,27 @@ impl MinimapPlayfieldProjection {
         let mut terrain_pixels =
             Vec::with_capacity(geometry.map_or(0, |geometry| geometry.valid_cell_count));
 
-        let mut native_cells = Vec::new();
+        // `FillTerrainColors @ 0x00654EA0` walks MapClass's allocation-backed
+        // CellIterator and clips each raw 2x1 footprint against the source
+        // rectangle. It does not call IsCellInPlayfield and does not require
+        // the cell center to land inside the generated surface. Production
+        // TerrainGrid is built from ResolvedTerrainGrid::iter(), the same
+        // allocated Size-diamond authority (`0x00578350/0x00578290`).
+        let native_cells = if native_radar_surface.is_some() {
+            grid.cells
+                .iter()
+                .map(|cell| {
+                    let (left, right) = radar_colors_for_cell(cell, terrain_brightness);
+                    NativeRadarCellColors {
+                        cell: (cell.rx, cell.ry),
+                        left,
+                        right,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         if let Some(bounds) = bounds {
             for cell in &grid.cells {
@@ -185,12 +207,6 @@ impl MinimapPlayfieldProjection {
                 {
                     set_pixel(&mut base_rgba, MINIMAP_WIDTH, dest_x, dest_y, color);
                 }
-                let (left, right) = radar_colors_for_cell(cell, terrain_brightness);
-                native_cells.push(NativeRadarCellColors {
-                    cell: (cell.rx, cell.ry),
-                    left,
-                    right,
-                });
                 terrain_pixels.push(TerrainPixel {
                     rx: cell.rx,
                     ry: cell.ry,
@@ -203,35 +219,44 @@ impl MinimapPlayfieldProjection {
 
         let mut overlay_pixels = Vec::new();
         let mut native_overrides = BTreeMap::new();
+        let overlay_color =
+            |classification: OverlayClassification, density: u8, precomputed: Option<[u8; 4]>| {
+                let color = precomputed.or_else(|| classification.color(density))?;
+                let native_color = if classification == OverlayClassification::Bridge {
+                    dim_color(color, 0.5)
+                } else {
+                    color
+                };
+                Some((color, native_color))
+            };
+        if native_radar_surface.is_some() {
+            for &(rx, ry, classification, density, precomputed) in overlay_data {
+                let Some((_, native_color)) = overlay_color(classification, density, precomputed)
+                else {
+                    continue;
+                };
+                native_overrides.insert(
+                    (rx, ry),
+                    [native_color[0], native_color[1], native_color[2]],
+                );
+            }
+        }
         if let Some(bounds) = bounds {
             for &(rx, ry, classification, density, precomputed) in overlay_data {
                 if !bounds.contains_geometry_packed(i32::from(rx), i32::from(ry)) {
                     continue;
                 }
-                let color = if let Some(color) = precomputed {
-                    color
-                } else if let Some(color) = classification.color(density) {
-                    color
-                } else {
+                let Some((color, _)) = overlay_color(classification, density, precomputed) else {
                     continue;
                 };
                 let Some((px, py)) = project_cell(rx, ry) else {
                     continue;
-                };
-                let native_color = if classification == OverlayClassification::Bridge {
-                    dim_color(color, 0.5)
-                } else {
-                    color
                 };
                 if native_radar_surface.is_none()
                     && let Some((dest_x, dest_y)) = aperture_pixel(None, (px, py))
                 {
                     set_pixel(&mut base_rgba, MINIMAP_WIDTH, dest_x, dest_y, color);
                 }
-                native_overrides.insert(
-                    (rx, ry),
-                    [native_color[0], native_color[1], native_color[2]],
-                );
                 overlay_pixels.push(OverlayPixel {
                     rx,
                     ry,
@@ -243,9 +268,8 @@ impl MinimapPlayfieldProjection {
             }
         }
 
-        let native_radar_terrain = native_radar_surface.map(|surface| {
-            NativeRadarTerrainSurface::new(surface, native_cells, native_overrides)
-        });
+        let native_radar_terrain = native_radar_surface
+            .map(|surface| NativeRadarTerrainSurface::new(surface, native_cells, native_overrides));
         let surface_pixels = if let Some(surface) = &native_radar_terrain {
             let (native_rgba, pixels) = rasterize_native_terrain(surface);
             base_rgba = native_rgba;
@@ -272,6 +296,10 @@ impl MinimapPlayfieldProjection {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native_radar_projection_tests.rs"]
+mod tests;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn minimap_screen_point_to_camera_top_left(

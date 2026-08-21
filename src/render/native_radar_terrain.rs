@@ -52,6 +52,11 @@ impl NativeRadarTerrainSurface {
         &self.generated_rgb565
     }
 
+    #[cfg(test)]
+    pub(super) fn raw_rgb(&self) -> &[[u8; 3]] {
+        &self.raw_rgb
+    }
+
     pub fn set_cell_overrides(
         &mut self,
         changes: impl IntoIterator<Item = ((u16, u16), Option<[u8; 3]>)>,
