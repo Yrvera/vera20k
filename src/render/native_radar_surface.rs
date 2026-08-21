@@ -198,6 +198,14 @@ impl NativeRadarSurfaceGeometry {
         (cell_x as u16, cell_y as u16)
     }
 
+    /// Signed-word result consumed by the radar input handler at
+    /// `0x00653ABC..0x00653E66`. Do not reinterpret these words as unsigned
+    /// before that handler applies its map/tactical-view clamp.
+    pub fn surface_pixel_to_signed_cell(self, pixel: (i32, i32)) -> (i16, i16) {
+        let packed = self.surface_pixel_to_visibility_cell(pixel);
+        (packed.0 as i16, packed.1 as i16)
+    }
+
     /// `FUN_006557F0 @ 0x006557F0`, relative to the generated primary
     /// surface. `TechnoClass+0x4A0 @ 0x0070D990` uses this exact current-world
     /// projection for its cached tracker coordinate.
@@ -256,7 +264,8 @@ impl NativeRadarSurfaceGeometry {
     /// `RenderCellPixel`; returning the packed words preserves native wrapping
     /// for an edge pixel instead of imposing a rectangular Rust admission.
     pub fn surface_pixel_to_cell(self, pixel: (i32, i32)) -> Option<(u16, u16)> {
-        Some(self.surface_pixel_to_visibility_cell(pixel))
+        let signed = self.surface_pixel_to_signed_cell(pixel);
+        Some((signed.0 as u16, signed.1 as u16))
     }
 
     pub const fn generated_size(self) -> (i32, i32) {

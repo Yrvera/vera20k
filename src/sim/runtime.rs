@@ -168,6 +168,16 @@ impl<'a> SimView<'a> {
             self.simulation.playfield_revision,
         )
     }
+
+    /// Full MapClass Size dimensions retained beside normalized LocalSize.
+    /// Radar input `0x00653D92..0x00653DE3` reads both values before resolving
+    /// its signed click cell through `MapClass::Get_CellClass`.
+    pub(crate) fn playfield_map_size(&self) -> Option<(i32, i32)> {
+        Some((
+            self.simulation.playfield_bounds?.base,
+            self.simulation.playfield_size_height?,
+        ))
+    }
 }
 
 impl SimRuntime {

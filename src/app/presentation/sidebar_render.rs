@@ -253,12 +253,19 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     let Some(minimap) = state.match_state.match_presentation.minimap.as_ref() else {
         return;
     };
-    let entities = state
+    let runtime = state
         .match_state
         .sim_runtime
-        .as_ref()
-        .map(|runtime| runtime.view().entities());
-    let native_cell = entities.and_then(|entities| {
+        .as_ref();
+    let native_facts = runtime.and_then(|runtime| {
+        let view = runtime.view();
+        Some((view.entities(), view.playfield_map_size()?))
+    });
+    let (tactical_w, tactical_h) = crate::app::input::camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
+    let native_cell = native_facts.and_then(|(entities, map_size)| {
         minimap.native_click_cell_in_rect(
             state.match_state.input.cursor_x,
             state.match_state.input.cursor_y,
@@ -267,6 +274,8 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
             rect.w,
             rect.h,
             entities,
+            map_size,
+            (tactical_w as i32, tactical_h as i32),
         )
     });
     if let Some((rx, ry)) = native_cell {
