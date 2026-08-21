@@ -570,9 +570,8 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
         let overlay_data = crate::app::loading::transitions::build_minimap_overlay_data(
             state.match_state.match_presentation.overlays.as_slice(),
             &state.match_state.match_presentation.terrain_objects,
-            &state.match_state.match_presentation.overlay_names,
+            state.overlay_registry(),
             state.rules(),
-            &state.match_state.match_presentation.tiberium_radar_colors,
         );
         let resolved_terrain = state
             .match_state
@@ -588,6 +587,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
                 grid,
                 resolved_terrain,
                 &overlay_data,
+                &presentation.overlay_radar_colors,
                 &presentation.theater_name,
                 playfield_bounds,
                 playfield_revision,
@@ -618,6 +618,9 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             Some(view.radar_events()),
             Some(view.interner()),
             view.bridge_state(),
+            view.overlay_grid(),
+            Some(&rt.resources.overlay_registry),
+            &state.match_state.match_presentation.overlay_radar_colors,
             view.resolved_terrain(),
             radar_dirty_cells,
             radar_dirty_generation,

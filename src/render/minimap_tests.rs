@@ -13,7 +13,28 @@ use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::sim::components::Position;
 use crate::sim::intern::test_intern;
 use crate::sim::vision::FogState;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+fn overlay_datum(
+    rx: u16,
+    ry: u16,
+    classification: OverlayClassification,
+    overlay_id: u8,
+    frame: u8,
+    is_tiberium: bool,
+) -> MinimapOverlayDatum {
+    MinimapOverlayDatum {
+        rx,
+        ry,
+        classification,
+        source: MinimapCellRadarSource::Overlay {
+            overlay_id,
+            frame,
+            is_tiberium,
+            has_tiberium_type: is_tiberium,
+        },
+    }
+}
 
 fn playfield_projection_grid(side: u16) -> TerrainGrid {
     let mut cells = Vec::new();
@@ -431,17 +452,21 @@ fn playfield_projection_shrinks_and_reexpands_exact_mode_zero_membership() {
         .map(|cell| (cell.rx, cell.ry))
         .expect("diamond filler cell");
     let overlays = [
-        (shared.0, shared.1, OverlayClassification::Ore, 5, None),
-        (readded.0, readded.1, OverlayClassification::Gem, 7, None),
-        (outside.0, outside.1, OverlayClassification::Wall, 0, None),
+        overlay_datum(shared.0, shared.1, OverlayClassification::Ore, 102, 5, true),
+        overlay_datum(readded.0, readded.1, OverlayClassification::Gem, 27, 7, true),
+        overlay_datum(outside.0, outside.1, OverlayClassification::Wall, 0, 0, false),
     ];
+    let colors = HashMap::new();
 
-    let initial =
-        MinimapPlayfieldProjection::derive(&grid, None, &overlays, "TEMPERATE", Some(expanded));
-    let shrunk =
-        MinimapPlayfieldProjection::derive(&grid, None, &overlays, "TEMPERATE", Some(shrunken));
-    let reexpanded =
-        MinimapPlayfieldProjection::derive(&grid, None, &overlays, "TEMPERATE", Some(expanded));
+    let initial = MinimapPlayfieldProjection::derive(
+        &grid, None, &overlays, &colors, "TEMPERATE", Some(expanded),
+    );
+    let shrunk = MinimapPlayfieldProjection::derive(
+        &grid, None, &overlays, &colors, "TEMPERATE", Some(shrunken),
+    );
+    let reexpanded = MinimapPlayfieldProjection::derive(
+        &grid, None, &overlays, &colors, "TEMPERATE", Some(expanded),
+    );
 
     let initial_cells: BTreeSet<_> = initial
         .terrain_pixels
@@ -540,17 +565,20 @@ fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_re
         })
         .map(|cell| (cell.rx, cell.ry))
         .expect("cell retained by action-40 contraction");
-    let overlays = [(
+    let overlays = [overlay_datum(
         cell.0,
         cell.1,
         OverlayClassification::Ore,
+        102,
         3,
-        Some([77, 88, 99, 255]),
+        true,
     )];
+    let colors = HashMap::from([((102, 3), [77, 88, 99])]);
     let initial = MinimapPlayfieldProjection::derive(
         &grid,
         Some(&terrain),
         &overlays,
+        &colors,
         "TEMPERATE",
         Some(expanded_playfield()),
     );
@@ -558,6 +586,7 @@ fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_re
         &grid,
         Some(&terrain),
         &overlays,
+        &colors,
         "TEMPERATE",
         Some(shrunken_playfield()),
     );
@@ -690,6 +719,7 @@ fn playfield_projection_updates_camera_bounds_and_click_inverse_mapping() {
         &grid,
         None,
         &[],
+        &HashMap::new(),
         "TEMPERATE",
         Some(shrunken_playfield()),
     );

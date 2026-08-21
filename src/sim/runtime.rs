@@ -140,6 +140,10 @@ impl<'a> SimView<'a> {
         self.simulation.bridge_state.as_ref()
     }
 
+    pub(crate) fn overlay_grid(&self) -> Option<&'a crate::sim::overlay_grid::OverlayGrid> {
+        self.simulation.overlay_grid.as_ref()
+    }
+
     /// LogicClass active-object order — presentation draws in this order.
     pub(crate) fn tactical_registration_order(&self) -> &'a [u64] {
         self.simulation.tactical_registration_order()

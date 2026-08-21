@@ -454,7 +454,7 @@ impl App {
                 cell_tags: HashMap::new(),
                 tags: HashMap::new(),
                 overlay_names: BTreeMap::new(),
-                tiberium_radar_colors: HashMap::new(),
+                overlay_radar_colors: HashMap::new(),
                 house_color_map: HashMap::new(),
                 house_roster: HouseRoster::default(),
                 lighting_grid: CellLightGrid::new(),

@@ -430,6 +430,9 @@ pub struct ResolvedTerrainGrid {
     /// Production-only membership for native Size-diamond CellClass slots.
     /// `None` keeps synthetic/from_cells grids rectangular for focused tests.
     native_allocated: Option<Vec<bool>>,
+    /// Selected TMP subimage-pointer validity, aligned with `cells`. Black
+    /// header RGB remains valid and therefore cannot be used as the sentinel.
+    radar_color_valid: Vec<bool>,
     tube_facts: Vec<TubeFact>,
     /// Theater `[General] ClearTile` resolved to a flat tile id.
     ///
@@ -459,6 +462,10 @@ impl ResolvedTerrainGrid {
         cells: Vec<ResolvedTerrainCell>,
         tube_facts: Vec<TubeFact>,
     ) -> Self {
+        let radar_color_valid = cells
+            .iter()
+            .map(|cell| cell.radar_left != [0, 0, 0] || cell.radar_right != [0, 0, 0])
+            .collect();
         Self {
             width,
             height,
@@ -466,6 +473,7 @@ impl ResolvedTerrainGrid {
             dummy_cell_level: 0,
             dummy_cell_slope_type: 0,
             native_allocated: None,
+            radar_color_valid,
             tube_facts,
             clear_tile_id: 0,
             tile_registry_len: None,
@@ -556,6 +564,22 @@ impl ResolvedTerrainGrid {
 
     pub fn cell(&self, rx: u16, ry: u16) -> Option<&ResolvedTerrainCell> {
         self.index(rx, ry).and_then(|i| self.cells.get(i))
+    }
+
+    pub fn radar_color_valid(&self, rx: u16, ry: u16) -> bool {
+        self.index(rx, ry)
+            .and_then(|index| self.radar_color_valid.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_radar_color_valid(&mut self, rx: u16, ry: u16, valid: bool) {
+        if let Some(index) = self.index(rx, ry)
+            && let Some(slot) = self.radar_color_valid.get_mut(index)
+        {
+            *slot = valid;
+        }
     }
 
     /// Mutable access to a cell by map coordinates.
@@ -779,6 +803,7 @@ impl ResolvedTerrainGrid {
                 dummy_cell_level: 0,
                 dummy_cell_slope_type: 0,
                 native_allocated: materialized_size_diamond.then(Vec::new),
+                radar_color_valid: Vec::new(),
                 tube_facts: Vec::new(),
                 clear_tile_id,
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
@@ -890,6 +915,7 @@ impl ResolvedTerrainGrid {
 
         let mut cells: Vec<ResolvedTerrainCell> =
             Vec::with_capacity(width as usize * height as usize);
+        let mut radar_color_valid = Vec::with_capacity(cells.capacity());
         let mut cliff_back_eligibility: Vec<CliffBackEligibility> =
             Vec::with_capacity(width as usize * height as usize);
         let mut tile_animations: Vec<TerrainTileAnimation> = Vec::new();
@@ -1147,6 +1173,7 @@ impl ResolvedTerrainGrid {
                 };
                 let is_wood_bridge_repair_tile =
                     is_wood_bridge_repair_tile(theater_data, stored_final_tile_index);
+                radar_color_valid.push(metadata.subtile_entry_valid == Some(true));
                 cells.push(ResolvedTerrainCell {
                     rx,
                     ry,
@@ -1516,6 +1543,7 @@ impl ResolvedTerrainGrid {
             dummy_cell_level: 0,
             dummy_cell_slope_type: 0,
             native_allocated,
+            radar_color_valid,
             tube_facts,
             clear_tile_id,
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
@@ -1901,6 +1929,7 @@ fn cached_tile_metadata(
 fn apply_selected_presentation_metadata(pristine: &mut TileMetadata, selected: &TileMetadata) {
     pristine.radar_left = selected.radar_left;
     pristine.radar_right = selected.radar_right;
+    pristine.subtile_entry_valid = selected.subtile_entry_valid;
     pristine.render_offset_x = selected.render_offset_x;
     pristine.render_offset_y = selected.render_offset_y;
 }

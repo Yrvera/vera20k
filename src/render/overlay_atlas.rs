@@ -753,68 +753,39 @@ fn forced_tiberium_image_name() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Compute average color from an RGBA pixel buffer, ignoring fully transparent pixels.
-fn average_frame_color(rgba: &[u8]) -> [u8; 3] {
-    let (mut r_sum, mut g_sum, mut b_sum, mut count) = (0u32, 0u32, 0u32, 0u32);
-    for pixel in rgba.chunks_exact(4) {
-        if pixel[3] > 0 {
-            r_sum += pixel[0] as u32;
-            g_sum += pixel[1] as u32;
-            b_sum += pixel[2] as u32;
-            count += 1;
-        }
-    }
-    if count == 0 {
-        return [0, 0, 0];
-    }
-    [
-        (r_sum / count) as u8,
-        (g_sum / count) as u8,
-        (b_sum / count) as u8,
-    ]
-}
-
-/// Compute average radar color for each tiberium overlay (id, frame) pair.
-/// Renders each tiberium SHP frame with the tiberium palette and averages
-/// the non-transparent pixels to get the representative radar color.
-pub fn compute_tiberium_radar_colors(
+/// Read exact SHP-frame radar metadata for every runtime-addressable overlay.
+///
+/// `CellClass::GetRadarColor @ 0x0047C060` selects frame 1 for the two low-
+/// bridge ranges and the cell data byte otherwise. `OverlayClass::GetRadarColor
+/// @ 0x005FED00` / `GetTiberiumRadarColor @ 0x0069E860` read bytes 0x0C..0x0E
+/// from that frame header; rendered-pixel averages and palettes are not part of
+/// this path. Runtime ore growth, wall damage/placement and other OverlayData
+/// writers can select a frame absent from the initial map, so the client-local
+/// table retains every parsed frame. BRIDGE1/frame 0 remains covered even when
+/// no BRIDGE1 map-pack entry survives on a structural cell.
+pub fn compute_overlay_radar_colors(
     asset_manager: &AssetManager,
-    tib_palette: &Palette,
     overlay_registry: &OverlayTypeRegistry,
-    overlay_entries: &[OverlayEntry],
     overlay_names: &BTreeMap<u8, String>,
     theater_ext: &str,
     rules_ini: &IniFile,
     art_registry: &ArtRegistry,
 ) -> HashMap<(u8, u8), [u8; 3]> {
-    // Collect unique (overlay_id, frame) pairs for tiberium overlays.
-    let mut needed: HashSet<(u8, u8)> = HashSet::new();
-    for entry in overlay_entries {
-        let is_tiberium: bool = overlay_registry
-            .flags(entry.overlay_id)
-            .map(|f| f.tiberium)
-            .unwrap_or(false);
-        if is_tiberium {
-            needed.insert((entry.overlay_id, entry.frame));
-        }
-    }
-
-    if needed.is_empty() {
-        return HashMap::new();
-    }
-
-    // Group by overlay_id so we load each SHP only once.
-    let mut ids: HashSet<u8> = HashSet::new();
-    for &(id, _) in &needed {
-        ids.insert(id);
-    }
+    let ids: HashSet<u8> = (0..overlay_registry.len())
+        .filter_map(|id| u8::try_from(id).ok())
+        .chain(overlay_names.keys().copied())
+        .chain(std::iter::once(24))
+        .collect();
 
     // Cache: overlay_id -> loaded ShpFile
     let mut shp_cache: HashMap<u8, ShpFile> = HashMap::new();
     for &overlay_id in &ids {
-        let name: &str = match overlay_names.get(&overlay_id) {
-            Some(n) => n.as_str(),
-            None => continue,
+        let Some(name) = overlay_names
+            .get(&overlay_id)
+            .map(String::as_str)
+            .or_else(|| overlay_registry.name(overlay_id))
+        else {
+            continue;
         };
         let image_id: String = art_registry.resolve_overlay_image_id(name, rules_ini);
         let candidates: Vec<String> = art_data::overlay_shp_candidates(
@@ -837,28 +808,23 @@ pub fn compute_tiberium_radar_colors(
         }
     }
 
-    let mut result: HashMap<(u8, u8), [u8; 3]> = HashMap::with_capacity(needed.len());
-    for &(overlay_id, frame) in &needed {
-        let Some(shp) = shp_cache.get(&overlay_id) else {
-            continue;
-        };
-        let frame_idx: usize = frame as usize;
-        if frame_idx >= shp.frames.len() {
-            continue;
-        }
-        let rgba: Vec<u8> = match shp.frame_to_rgba(frame_idx, tib_palette) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        let color: [u8; 3] = average_frame_color(&rgba);
-        // Skip pure black — likely empty/failed frames.
-        if color != [0, 0, 0] {
-            result.insert((overlay_id, frame), color);
+    let mut result: HashMap<(u8, u8), [u8; 3]> = HashMap::new();
+    for (&overlay_id, shp) in &shp_cache {
+        for (frame, header) in shp
+            .frames
+            .iter()
+            .take(usize::from(u8::MAX) + 1)
+            .enumerate()
+        {
+            if let Ok(frame) = u8::try_from(frame) {
+                // Black is data, not an absence sentinel (e.g. retail bridge.tem).
+                result.insert((overlay_id, frame), header.radar_color);
+            }
         }
     }
 
     log::info!(
-        "Computed tiberium radar colors: {} entries from {} overlay IDs",
+        "Loaded overlay SHP-header radar colors: {} entries from {} overlay IDs",
         result.len(),
         ids.len(),
     );
@@ -989,6 +955,10 @@ fn render_smudge_sprite(
         offset_y,
     })
 }
+
+#[cfg(test)]
+#[path = "overlay_atlas_radar_tests.rs"]
+mod radar_tests;
 
 #[cfg(test)]
 mod tests {

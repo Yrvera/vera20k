@@ -2,9 +2,10 @@ use super::*;
 use crate::map::bridge_facts::BridgeCellFacts;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::map::terrain::{TerrainGrid, build_terrain_grid_from_resolved};
+use crate::render::minimap_helpers::OverlayClassification;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53, X87Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 const SIZE_WIDTH: u16 = 80;
 const SIZE_HEIGHT: u16 = 60;
@@ -72,6 +73,7 @@ fn projection_raw_fill_keeps_clipped_edges_and_final_source_row() {
         &grid,
         Some(&resolved),
         &[],
+        &HashMap::new(),
         "TEMPERATE",
         Some(wide_bounds()),
     );
@@ -84,13 +86,13 @@ fn projection_raw_fill_keeps_clipped_edges_and_final_source_row() {
         .as_ref()
         .expect("native terrain");
     let raw = surface.raw_rgb();
-    assert_eq!(raw[15 * 146], [50, 60, 70], "left clip keeps right");
+    assert_eq!(raw[15 * 146], [10, 15, 20], "left clip keeps right");
     assert_eq!(raw[15 * 146 + 145], [80, 90, 100], "right clip keeps left");
     assert_eq!(geometry.cell_to_raw_pixel((97, 97)), (75, 109));
     assert_eq!(geometry.cell_to_surface_pixel((97, 97)).1, 104);
     assert_eq!(
         &raw[109 * 146 + 75..109 * 146 + 77],
-        &[[100, 10, 10], [10, 100, 10]]
+        &[[100, 10, 10], [100, 10, 10]]
     );
 
     // `Math__ftol @ 0x007C5F00` runs under live CW 0x0E7F (truncate).
@@ -137,6 +139,7 @@ fn action40_projection_rebuild_regenerates_every_pixel_without_stale_raw_data() 
         &grid,
         Some(&resolved),
         &[],
+        &HashMap::new(),
         "TEMPERATE",
         Some(wide_bounds()),
     );
@@ -144,6 +147,7 @@ fn action40_projection_rebuild_regenerates_every_pixel_without_stale_raw_data() 
         &grid,
         Some(&resolved),
         &[],
+        &HashMap::new(),
         "TEMPERATE",
         Some(shrunken_bounds()),
     );
@@ -167,11 +171,97 @@ fn action40_projection_rebuild_regenerates_every_pixel_without_stale_raw_data() 
     );
 }
 
+#[test]
+fn cell_get_radar_color_precedence_feeds_raw_surface_before_weighted_generation() {
+    let (mut grid, mut resolved) = fixture();
+    resolved
+        .cell_mut(50, 50)
+        .expect("terrain object cell")
+        .terrain_object_occupation = Some(0);
+    resolved
+        .cell_mut(50, 51)
+        .expect("structural bridge cell")
+        .bridge_facts
+        .raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+    resolved.test_set_radar_color_valid(51, 50, false);
+    resolved.test_set_radar_color_valid(52, 50, true);
+    let black = grid
+        .cells
+        .iter_mut()
+        .find(|cell| (cell.rx, cell.ry) == (52, 50))
+        .expect("valid black TMP cell");
+    black.radar_left = [0; 3];
+    black.radar_right = [99; 3];
+    let overlays = [
+        MinimapOverlayDatum {
+            rx: 50,
+            ry: 50,
+            classification: OverlayClassification::Wall,
+            source: MinimapCellRadarSource::Overlay {
+                overlay_id: 10,
+                frame: 4,
+                is_tiberium: false,
+                has_tiberium_type: false,
+            },
+        },
+        MinimapOverlayDatum {
+            rx: 50,
+            ry: 51,
+            classification: OverlayClassification::Wall,
+            source: MinimapCellRadarSource::Overlay {
+                overlay_id: 10,
+                frame: 4,
+                is_tiberium: false,
+                has_tiberium_type: false,
+            },
+        },
+        MinimapOverlayDatum {
+            rx: 97,
+            ry: 97,
+            classification: OverlayClassification::Wall,
+            source: MinimapCellRadarSource::Overlay {
+                overlay_id: 10,
+                frame: 4,
+                is_tiberium: false,
+                has_tiberium_type: false,
+            },
+        },
+    ];
+    let colors = HashMap::from([
+        ((24, 0), [5, 6, 7]),
+        ((10, 4), [11, 12, 13]),
+    ]);
+    let projection = MinimapPlayfieldProjection::derive(
+        &grid,
+        Some(&resolved),
+        &overlays,
+        &colors,
+        "TEMPERATE",
+        Some(wide_bounds()),
+    );
+    let geometry = projection.native_radar_surface.expect("surface");
+    let raw = projection
+        .native_radar_terrain
+        .expect("terrain")
+        .raw_rgb()
+        .to_vec();
+    let pair = |cell| {
+        let (x, y) = geometry.cell_to_raw_pixel(cell);
+        [raw[(y * 146 + x) as usize], raw[(y * 146 + x + 1) as usize]]
+    };
+
+    assert_eq!(pair((50, 50)), [[200, 200, 160]; 2], "TerrainClass wins");
+    assert_eq!(pair((50, 51)), [[5, 6, 7]; 2], "flag 0x100 uses BRIDGE1 f0");
+    assert_eq!(pair((97, 97)), [[11, 12, 13]; 2], "ordinary overlay wins TMP");
+    assert_eq!(pair((51, 50)), [[60, 60, 60]; 2], "missing subimage fallback");
+    assert_eq!(pair((52, 50)), [[0, 0, 0]; 2], "valid black remains black");
+}
+
 fn reference_raw(grid: &TerrainGrid, geometry: NativeRadarSurfaceGeometry) -> Vec<[u8; 3]> {
     let size = geometry.raw_size();
     let mut raw = vec![[0; 3]; (size.0 * size.1) as usize];
     for cell in &grid.cells {
-        let (left, right) = radar_colors_for_cell(cell, 0.5);
+        let (left, right) = radar_colors_for_cell(cell, true, 1.0);
         let origin = geometry.cell_to_raw_pixel((cell.rx, cell.ry));
         for (dx, color) in [(0, left), (1, right)] {
             let x = origin.0 + dx;

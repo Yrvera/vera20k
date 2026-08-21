@@ -55,9 +55,8 @@ pub(crate) struct MatchPresentationState {
     pub(crate) tags: TagMap,
     /// Overlay ID → type name mapping for atlas lookups at render time.
     pub(crate) overlay_names: BTreeMap<u8, String>,
-    /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
-    /// extracted from SHP frames for minimap radar display.
-    pub(crate) tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]>,
+    /// Exact SHP frame-header radar RGB for each native-selected overlay frame.
+    pub(crate) overlay_radar_colors: HashMap<(u8, u8), [u8; 3]>,
     /// Owner name → house color index mapping for atlas key lookups.
     pub(crate) house_color_map: HouseColorMap,
     pub(crate) house_roster: HouseRoster,

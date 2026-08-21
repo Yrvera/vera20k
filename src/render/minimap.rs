@@ -31,7 +31,7 @@ use crate::rules::house_colors::HouseColorRamps;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::minimap_helpers::{
     COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_HEIGHT, MINIMAP_WIDTH, VIEWPORT_LINE_THICKNESS,
@@ -45,6 +45,7 @@ use super::radar_visibility::build_radar_object_update;
 #[cfg(test)]
 use super::radar_tracker::RadarTrackerEntry;
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
+pub(crate) use super::minimap_helpers::minimap_overlay_datum;
 use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 use super::minimap_legacy_events::draw_legacy_sim_radar_events;
 use super::minimap_projection::{
@@ -55,7 +56,24 @@ use super::native_radar_surface::NativeRadarSurfaceGeometry;
 use super::native_radar_terrain::NativeRadarTerrainSurface;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 
-pub(crate) type MinimapOverlayDatum = (u16, u16, OverlayClassification, u8, Option<[u8; 4]>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MinimapCellRadarSource {
+    Overlay {
+        overlay_id: u8,
+        frame: u8,
+        is_tiberium: bool,
+        has_tiberium_type: bool,
+    },
+    TerrainObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MinimapOverlayDatum {
+    pub rx: u16,
+    pub ry: u16,
+    pub classification: OverlayClassification,
+    pub source: MinimapCellRadarSource,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PlayfieldAuthorityStamp {
@@ -104,6 +122,8 @@ pub struct MinimapRenderer {
     /// Exact generated primary-surface geometry used by native radar events.
     native_radar_surface: Option<NativeRadarSurfaceGeometry>,
     native_radar_terrain: Option<NativeRadarTerrainSurface>,
+    /// BRIDGE1 frame-0 SHP header RGB used by CellClass flag-0x100 cells.
+    structural_bridge_radar_color: [u8; 3],
     /// Last simulation tick used to refresh the texture.
     last_sim_tick: u64,
     /// Last fog generation used to refresh the texture.
@@ -128,12 +148,13 @@ impl MinimapRenderer {
     /// available, falling back to tile classification (water/land/elevated).
     /// Overlay data is pre-classified by the caller to avoid render/ depending
     /// on map/overlay_types.
-    pub fn new(
+    pub(crate) fn new(
         gpu: &GpuContext,
         batch: &BatchRenderer,
         grid: &TerrainGrid,
         resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         overlay_data: &[MinimapOverlayDatum],
+        overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
         theater_name: &str,
         playfield_bounds: Option<PlayfieldBounds>,
         playfield_revision: u64,
@@ -143,6 +164,7 @@ impl MinimapRenderer {
             grid,
             resolved_terrain,
             overlay_data,
+            overlay_radar_colors,
             theater_name,
             playfield_bounds,
         );
@@ -184,6 +206,9 @@ impl MinimapRenderer {
             map_pixel_h: projection.map_pixel_h,
             native_radar_surface: projection.native_radar_surface,
             native_radar_terrain: projection.native_radar_terrain,
+            structural_bridge_radar_color: super::minimap_helpers::structural_bridge_radar_color(
+                overlay_radar_colors,
+            ),
             last_sim_tick: u64::MAX,
             last_fog_generation: u64::MAX,
             last_visibility_owner: None,
@@ -207,6 +232,7 @@ impl MinimapRenderer {
         grid: &TerrainGrid,
         resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         overlay_data: &[MinimapOverlayDatum],
+        overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
         theater_name: &str,
         playfield_bounds: Option<PlayfieldBounds>,
         playfield_revision: u64,
@@ -228,6 +254,7 @@ impl MinimapRenderer {
             grid,
             resolved_terrain,
             overlay_data,
+            overlay_radar_colors,
             theater_name,
             playfield_bounds,
         );
@@ -245,6 +272,8 @@ impl MinimapRenderer {
         self.map_pixel_h = projection.map_pixel_h;
         self.native_radar_surface = projection.native_radar_surface;
         self.native_radar_terrain = projection.native_radar_terrain;
+        self.structural_bridge_radar_color =
+            super::minimap_helpers::structural_bridge_radar_color(overlay_radar_colors);
         self.playfield_bounds = playfield_bounds;
         self.installed_playfield_authority = Some(authority);
         self.rgba_scratch.resize(self.base_terrain_rgba.len(), 0);
@@ -334,6 +363,9 @@ impl MinimapRenderer {
         radar_events: Option<&crate::sim::radar::RadarEventQueue>,
         interner: Option<&crate::sim::intern::StringInterner>,
         bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
+        overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
         resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
@@ -348,7 +380,15 @@ impl MinimapRenderer {
             return;
         }
         if radar_terrain_dirty_generation != self.last_radar_terrain_dirty_generation {
-            self.apply_bridge_terrain_dirty_cells(bridge_state, radar_terrain_dirty_cells);
+            self.apply_radar_terrain_dirty_cells(
+                bridge_state,
+                overlay_grid,
+                overlay_registry,
+                rules,
+                overlay_radar_colors,
+                resolved_terrain,
+                radar_terrain_dirty_cells,
+            );
         }
         if visibility_owner != self.last_visibility_owner && self.last_sim_tick != u64::MAX {
             // g_PlayerPtr controls bucket-front insertion and visibility. A
@@ -638,14 +678,21 @@ impl MinimapRenderer {
         self.radar_events.cycle_cell(now)
     }
 
-    fn apply_bridge_terrain_dirty_cells(
+    fn apply_radar_terrain_dirty_cells(
         &mut self,
         bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
+        overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        rules: Option<&RuleSet>,
+        overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
+        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         cells: &[(u16, u16)],
     ) {
-        let bridge_color = OverlayClassification::Bridge
-            .color(0)
-            .map(|c| dim_color(c, 0.5));
+        let bridge_color = [
+            self.structural_bridge_radar_color[0],
+            self.structural_bridge_radar_color[1],
+            self.structural_bridge_radar_color[2],
+        ];
         let mut native_changes = Vec::new();
         for &(rx, ry) in cells {
             let Some(terrain_pixel) = self
@@ -669,6 +716,9 @@ impl MinimapRenderer {
                 );
             }
 
+            let terrain_object_present = resolved_terrain
+                .and_then(|terrain| terrain.cell(rx, ry))
+                .is_some_and(|cell| cell.terrain_object_occupation.is_some());
             let bridge_visible = bridge_state
                 .and_then(|state| state.cell(rx, ry))
                 .is_some_and(|cell| {
@@ -677,11 +727,36 @@ impl MinimapRenderer {
                             cell,
                         )
                         .is_some()
-                });
+            });
 
-            if bridge_visible {
-                let Some(color) = bridge_color else { continue };
-                native_changes.push(((rx, ry), Some([color[0], color[1], color[2]])));
+            let overlay_datum = overlay_grid.and_then(|grid| {
+                let cell = grid.cell(rx, ry);
+                cell.overlay_id.map(|overlay_id| {
+                    minimap_overlay_datum(
+                        rx,
+                        ry,
+                        overlay_id,
+                        cell.overlay_data,
+                        overlay_registry,
+                        rules,
+                    )
+                })
+            });
+            // `CellClass::GetRadarColor @ 0x0047C060` is re-run for each
+            // invalidated cell. Preserve its exact priority rather than the
+            // former bridge-only patch: TerrainClass, structural bridge, then
+            // the current mutable overlay byte/frame, else selected TMP.
+            let source = super::minimap_helpers::current_cell_radar_source(
+                terrain_object_present,
+                bridge_visible,
+                overlay_datum,
+                bridge_color,
+                overlay_radar_colors,
+            );
+
+            if let Some((native_color, classification)) = source {
+                let color = [native_color[0], native_color[1], native_color[2], 255];
+                native_changes.push(((rx, ry), Some(native_color)));
                 if let Some(existing) = self
                     .overlay_pixels
                     .iter_mut()
@@ -690,7 +765,7 @@ impl MinimapRenderer {
                     existing.px = terrain_pixel.px;
                     existing.py = terrain_pixel.py;
                     existing.color = color;
-                    existing.classification = OverlayClassification::Bridge;
+                    existing.classification = classification;
                 } else {
                     self.overlay_pixels.push(OverlayPixel {
                         rx,
@@ -698,7 +773,7 @@ impl MinimapRenderer {
                         px: terrain_pixel.px,
                         py: terrain_pixel.py,
                         color,
-                        classification: OverlayClassification::Bridge,
+                        classification,
                     });
                 }
             } else {

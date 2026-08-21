@@ -2674,22 +2674,15 @@ pub(crate) fn build_overlay_atlas_from_map(
         })
     });
 
-    // Compute tiberium radar colors from SHP frame pixel averages.
-    let tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]> =
-        if let Some(tib_pal) = tiberium_palette.as_ref() {
-            overlay_atlas::compute_tiberium_radar_colors(
-                asset_manager,
-                tib_pal,
-                &overlay_registry,
-                &wall_overlays,
-                &overlay_names,
-                theater_ext,
-                rules_ini,
-                art_registry,
-            )
-        } else {
-            HashMap::new()
-        };
+    let overlay_radar_colors: HashMap<(u8, u8), [u8; 3]> =
+        overlay_atlas::compute_overlay_radar_colors(
+            asset_manager,
+            &overlay_registry,
+            &overlay_names,
+            theater_ext,
+            rules_ini,
+            art_registry,
+        );
 
     let atlas: Option<OverlayAtlas> = theater_palette.as_ref().and_then(|theater_pal| {
         // If no unit palette, fall back to theater palette for everything.
@@ -2750,6 +2743,6 @@ pub(crate) fn build_overlay_atlas_from_map(
         bridge_railing_atlas,
         overlay_names,
         wall_overlays,
-        tiberium_radar_colors,
+        overlay_radar_colors,
     )
 }
