@@ -184,13 +184,21 @@ fn native_viewport_outline_is_one_surface_pixel_and_uses_injected_sidebar_color(
     let screen = NativeRadarScreenGeometry::new(surface, [100.0, 50.0, 280.0, 216.0]);
     let rect = NativeRadarRect { x: 10, y: 12, w: 8, h: 6 };
     let color = [164.0 / 255.0, 210.0 / 255.0, 1.0];
-    let lines = native_viewport_outline_instances((3.0, 4.0), screen, rect, color);
+    let lines = native_viewport_outline_instances(
+        (3.0, 4.0),
+        screen,
+        rect,
+        [84.0, 0.0, 336.0, 600.0],
+        color,
+    );
     assert_eq!(lines.len(), 4);
     assert_eq!(lines[0].position, [123.0, 102.0]);
     assert_eq!(lines[0].size, [16.0, 2.0]);
-    assert_eq!(lines[1].position, [123.0, 112.0]);
-    assert_eq!(lines[2].size, [2.0, 12.0]);
-    assert_eq!(lines[3].position, [137.0, 102.0]);
+    assert_eq!(lines[1].position, [137.0, 102.0]);
+    assert_eq!(lines[1].size, [2.0, 12.0]);
+    assert_eq!(lines[2].position, [123.0, 112.0]);
+    assert_eq!(lines[3].position, [123.0, 102.0]);
+    assert_eq!(lines[3].size, [2.0, 12.0]);
     assert!(lines.iter().all(|line| line.tint == color));
 }
 
@@ -199,15 +207,204 @@ fn native_viewport_lower_right_outline_is_inclusive_and_leaves_native_final_pixe
     let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 300, 180).unwrap();
     let screen = NativeRadarScreenGeometry::new(surface, [0.0, 0.0, 140.0, 108.0]);
     let rect = NativeRadarRect { x: 129, y: 65, w: 10, h: 17 };
-    let lines = native_viewport_outline_instances((0.0, 0.0), screen, rect, [1.0; 3]);
+    let lines = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        rect,
+        [-16.0, 0.0, 168.0, 600.0],
+        [1.0; 3],
+    );
     // Generated 140x83 is centered at sidebar-aperture y=12. Inclusive axis
     // endpoints are x=129..138/y=77..93; generated x=139/y=94 remain clear.
     assert_eq!(lines[0].position, [129.0, 77.0]);
     assert_eq!(lines[0].size, [10.0, 1.0]);
-    assert_eq!(lines[1].position, [129.0, 93.0]);
-    assert_eq!(lines[1].size, [10.0, 1.0]);
-    assert_eq!(lines[2].position, [129.0, 77.0]);
-    assert_eq!(lines[2].size, [1.0, 17.0]);
-    assert_eq!(lines[3].position, [138.0, 77.0]);
+    assert_eq!(lines[1].position, [138.0, 77.0]);
+    assert_eq!(lines[1].size, [1.0, 17.0]);
+    assert_eq!(lines[2].position, [129.0, 93.0]);
+    assert_eq!(lines[2].size, [10.0, 1.0]);
+    assert_eq!(lines[3].position, [129.0, 77.0]);
     assert_eq!(lines[3].size, [1.0, 17.0]);
+}
+
+#[test]
+fn native_viewport_outline_clips_oversize_edges_to_full_sidebar_not_radar_aperture() {
+    let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 140, 108).unwrap();
+    assert_eq!(surface.generated_size(), (140, 108));
+    let screen = NativeRadarScreenGeometry::new(surface, [216.0, 49.0, 140.0, 108.0]);
+    let sidebar = [200.0, 0.0, 168.0, 300.0];
+
+    // top=-1, right=395, left=196 are outside the retained surface. The
+    // bottom line crosses the whole surface at y=198. Its x=200..215 pixels
+    // deliberately survive even though they are left of the radar aperture.
+    let lines = native_viewport_outline_instances(
+        (7.0, 11.0),
+        screen,
+        NativeRadarRect { x: -20, y: -50, w: 200, h: 200 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].position, [207.0, 209.0]);
+    assert_eq!(lines[0].size, [168.0, 1.0]);
+
+    let final_screen_x = lines[0].position[0] - 7.0;
+    let final_screen_y = lines[0].position[1] - 11.0;
+    assert_eq!([final_screen_x, final_screen_y], [200.0, 198.0]);
+    assert!(final_screen_x < 216.0, "the radar aperture must not be the clip rect");
+}
+
+#[test]
+fn native_viewport_outline_clips_all_sidebar_edges_with_inclusive_equality() {
+    let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 140, 108).unwrap();
+    let screen = NativeRadarScreenGeometry::new(surface, [216.0, 49.0, 140.0, 108.0]);
+    let sidebar = [200.0, 0.0, 168.0, 300.0];
+
+    let horizontal = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: -20, y: -49, w: 200, h: 10 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(horizontal.len(), 2);
+    assert_eq!(horizontal[0].position, [200.0, 0.0]);
+    assert_eq!(horizontal[0].size, [168.0, 1.0]);
+    assert_eq!(horizontal[1].position, [200.0, 9.0]);
+    assert_eq!(horizontal[1].size, [168.0, 1.0]);
+
+    let vertical = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: -16, y: -60, w: 168, h: 400 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(vertical.len(), 2);
+    assert_eq!(vertical[0].position, [367.0, 0.0]);
+    assert_eq!(vertical[0].size, [1.0, 300.0]);
+    assert_eq!(vertical[1].position, [200.0, 0.0]);
+    assert_eq!(vertical[1].size, [1.0, 300.0]);
+
+    // x=151 relative to the generated surface lands on the sidebar's final
+    // inclusive column (367). x=152 lands at the exclusive edge and vanishes.
+    let last_column = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: 151, y: 0, w: 1, h: 1 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(last_column.len(), 4);
+    assert!(last_column.iter().all(|line| line.position == [367.0, 49.0]));
+    assert!(last_column.iter().all(|line| line.size == [1.0, 1.0]));
+    assert!(native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: 152, y: 0, w: 1, h: 1 },
+        sidebar,
+        [1.0; 3],
+    )
+    .is_empty());
+
+    let last_row = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: 0, y: 250, w: 1, h: 1 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(last_row.len(), 4);
+    assert!(last_row.iter().all(|line| line.position == [216.0, 299.0]));
+    assert!(native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: 0, y: 251, w: 1, h: 1 },
+        sidebar,
+        [1.0; 3],
+    )
+    .is_empty());
+}
+
+#[test]
+fn native_viewport_outline_preserves_thin_zero_and_fully_outside_contracts() {
+    let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 140, 108).unwrap();
+    let screen = NativeRadarScreenGeometry::new(surface, [16.0, 49.0, 140.0, 108.0]);
+    let sidebar = [0.0, 0.0, 168.0, 300.0];
+
+    let one_pixel = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: 10, y: 10, w: 1, h: 1 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(one_pixel.len(), 4, "native calls all four line slots");
+    assert!(one_pixel.iter().all(|line| line.position == [26.0, 59.0]));
+    assert!(one_pixel.iter().all(|line| line.size == [1.0, 1.0]));
+
+    let vertical = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: 10, y: 10, w: 1, h: 3 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(vertical[0].size, [1.0, 1.0]);
+    assert_eq!(vertical[1].size, [1.0, 3.0]);
+    assert_eq!(vertical[2].position, [26.0, 61.0]);
+    assert_eq!(vertical[3].size, [1.0, 3.0]);
+
+    // The rectangle worker performs `right=x+w-1` / `bottom=y+h-1`
+    // without rejecting zero extents, yielding the four sides of a reversed
+    // 2x2 inclusive box.
+    let zero = native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: 10, y: 10, w: 0, h: 0 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(zero.len(), 4);
+    assert_eq!(zero[0].position, [25.0, 59.0]);
+    assert_eq!(zero[0].size, [2.0, 1.0]);
+    assert_eq!(zero[1].position, [25.0, 58.0]);
+    assert_eq!(zero[1].size, [1.0, 2.0]);
+    assert_eq!(zero[2].position, [25.0, 58.0]);
+    assert_eq!(zero[2].size, [2.0, 1.0]);
+    assert_eq!(zero[3].position, [26.0, 58.0]);
+    assert_eq!(zero[3].size, [1.0, 2.0]);
+
+    assert!(native_viewport_outline_instances(
+        (0.0, 0.0),
+        screen,
+        NativeRadarRect { x: -500, y: -500, w: 4, h: 4 },
+        sidebar,
+        [1.0; 3],
+    )
+    .is_empty());
+}
+
+#[test]
+fn native_viewport_outline_scales_then_clips_without_sidebar_bleed() {
+    let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 140, 108).unwrap();
+    let screen = NativeRadarScreenGeometry::new(surface, [208.0, 24.5, 70.0, 54.0]);
+    let sidebar = [200.0, 0.0, 84.0, 150.0];
+    let lines = native_viewport_outline_instances(
+        (13.0, 17.0),
+        screen,
+        NativeRadarRect { x: -20, y: -50, w: 200, h: 200 },
+        sidebar,
+        [1.0; 3],
+    );
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].position, [213.0, 116.0]);
+    assert_eq!(lines[0].size, [84.0, 0.5]);
+
+    for line in lines {
+        let left = line.position[0] - 13.0;
+        let top = line.position[1] - 17.0;
+        assert!(left >= sidebar[0] && top >= sidebar[1]);
+        assert!(left + line.size[0] <= sidebar[0] + sidebar[2]);
+        assert!(top + line.size[1] <= sidebar[1] + sidebar[3]);
+    }
 }

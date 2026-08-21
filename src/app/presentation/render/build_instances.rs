@@ -782,6 +782,18 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     let sidebar_color = crate::render::sidebar_text::side_highlight_color(
         crate::app::presentation::sidebar_render::current_sidebar_theme(state),
     );
+    // Native g_SidebarSurface is 168 x screen_height in surface-local space;
+    // SidebarClass::BlitToScreen @ 0x006A70E0 translates that retained surface
+    // to the right-sidebar destination without changing the copied extent.
+    // The live view panel is the corresponding outer UI-scaled screen frame.
+    let sidebar_surface = view.as_ref().map(|view| {
+        [
+            view.panel_rect.x,
+            view.panel_rect.y,
+            view.panel_rect.w,
+            view.panel_rect.h,
+        ]
+    });
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state
@@ -791,28 +803,32 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
 
     let (minimap, viewport_rect) = if minimap_visible {
         match &mut state.match_state.match_presentation.minimap {
-            Some(mm) => (
-                vec![mm.build_minimap_instance_in_rect(
+            Some(mm) => {
+                let minimap = vec![mm.build_minimap_instance_in_rect(
                     state.match_state.input.camera_x,
                     state.match_state.input.camera_y,
                     minimap_rect.x,
                     minimap_rect.y,
                     minimap_rect.w,
                     minimap_rect.h,
-                )],
-                mm.build_viewport_rect_in_rect(
-                    state.match_state.input.camera_x,
-                    state.match_state.input.camera_y,
-                    tactical_center_cell,
-                    tactical_w as i32,
-                    tactical_h as i32,
-                    minimap_rect.x,
-                    minimap_rect.y,
-                    minimap_rect.w,
-                    minimap_rect.h,
-                    sidebar_color,
-                ),
-            ),
+                )];
+                let viewport_rect = sidebar_surface.map_or_else(Vec::new, |sidebar_surface| {
+                    mm.build_viewport_rect_in_rect(
+                        state.match_state.input.camera_x,
+                        state.match_state.input.camera_y,
+                        tactical_center_cell,
+                        tactical_w as i32,
+                        tactical_h as i32,
+                        minimap_rect.x,
+                        minimap_rect.y,
+                        minimap_rect.w,
+                        minimap_rect.h,
+                        sidebar_surface,
+                        sidebar_color,
+                    )
+                });
+                (minimap, viewport_rect)
+            }
             None => (Vec::new(), Vec::new()),
         }
     } else {

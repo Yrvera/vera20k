@@ -206,32 +206,63 @@ pub(super) fn native_viewport_outline_instances(
     camera: (f32, f32),
     screen: NativeRadarScreenGeometry,
     rect: NativeRadarRect,
+    sidebar_surface: [f32; 4],
     tint: [f32; 3],
 ) -> Vec<SpriteInstance> {
-    let [x, y, w, h] = screen.surface_rect_to_screen(rect);
-    let (pixel_w, pixel_h) = screen.surface_scale();
-    let make = |position: [f32; 2], size: [f32; 2]| SpriteInstance {
-        position,
-        size,
-        uv_origin: [0.0, 0.0],
-        uv_size: [1.0, 1.0],
-        depth: MINIMAP_DEPTH,
-        tint,
-        alpha: 1.0,
-        ..Default::default()
-    };
-    vec![
-        make([camera.0 + x, camera.1 + y], [w, pixel_h]),
-        make(
-            [camera.0 + x, camera.1 + y + h - pixel_h],
-            [w, pixel_h],
-        ),
-        make([camera.0 + x, camera.1 + y], [pixel_w, h]),
-        make(
-            [camera.0 + x + w - pixel_w, camera.1 + y],
-            [pixel_w, h],
-        ),
-    ]
+    let left = rect.x;
+    let top = rect.y;
+    let right = left.wrapping_add(rect.w).wrapping_sub(1);
+    let bottom = top.wrapping_add(rect.h).wrapping_sub(1);
+
+    // Rectangle worker 0x007BADC0 emits top, right, bottom, left in that
+    // order. XSurface line slot 0x007BA610 then clips every inclusive segment
+    // to g_SidebarSurface, whose live extent is 168 x screen_height; it does
+    // not clip to the 140x108 radar aperture. Express each inclusive native
+    // pixel run as a half-open screen quad only after that expansion so thin,
+    // zero-sized, and reversed pathological rectangles preserve the same
+    // endpoint coverage through VERA's outer UI-scale adapter.
+    let edges = [
+        native_axis_line_rect(left, top, right, top),
+        native_axis_line_rect(right, top, right, bottom),
+        native_axis_line_rect(right, bottom, left, bottom),
+        native_axis_line_rect(left, bottom, left, top),
+    ];
+    edges
+        .into_iter()
+        .filter_map(|edge| {
+            let screen_rect = screen.surface_rect_to_screen(edge);
+            let [x, y, w, h] = clip_screen_rect(screen_rect, sidebar_surface)?;
+            Some(SpriteInstance {
+                position: [camera.0 + x, camera.1 + y],
+                size: [w, h],
+                uv_origin: [0.0, 0.0],
+                uv_size: [1.0, 1.0],
+                depth: MINIMAP_DEPTH,
+                tint,
+                alpha: 1.0,
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+fn native_axis_line_rect(x1: i32, y1: i32, x2: i32, y2: i32) -> NativeRadarRect {
+    let left = x1.min(x2);
+    let top = y1.min(y2);
+    NativeRadarRect {
+        x: left,
+        y: top,
+        w: x1.max(x2).wrapping_sub(left).wrapping_add(1),
+        h: y1.max(y2).wrapping_sub(top).wrapping_add(1),
+    }
+}
+
+fn clip_screen_rect(rect: [f32; 4], clip: [f32; 4]) -> Option<[f32; 4]> {
+    let left = rect[0].max(clip[0]);
+    let top = rect[1].max(clip[1]);
+    let right = (rect[0] + rect[2]).min(clip[0] + clip[2]);
+    let bottom = (rect[1] + rect[3]).min(clip[1] + clip[3]);
+    (left < right && top < bottom).then_some([left, top, right - left, bottom - top])
 }
 
 fn load_i32(value: i32) -> X87Value {

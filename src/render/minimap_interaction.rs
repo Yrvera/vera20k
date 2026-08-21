@@ -244,7 +244,8 @@ impl MinimapRenderer {
 
     /// Build the native camera-window rectangle after the generated content
     /// copy. The active side's exact sidebar text color is supplied by app
-    /// composition; each edge is one generated-surface pixel thick.
+    /// composition; each edge is one generated-surface pixel thick and clips
+    /// against the complete retained sidebar surface, not the radar aperture.
     pub fn build_viewport_rect_in_rect(
         &mut self,
         camera_x: f32,
@@ -256,6 +257,7 @@ impl MinimapRenderer {
         rect_y: f32,
         rect_w: f32,
         rect_h: f32,
+        sidebar_surface: [f32; 4],
         sidebar_color: [f32; 3],
     ) -> Vec<SpriteInstance> {
         let Some(surface) = self.native_radar_surface else {
@@ -270,6 +272,7 @@ impl MinimapRenderer {
             (camera_x, camera_y),
             NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h]),
             transition.current,
+            sidebar_surface,
             sidebar_color,
         )
     }
