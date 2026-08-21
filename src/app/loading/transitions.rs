@@ -302,6 +302,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
 
     // Create minimap from terrain grid with overlay data.
     if let Some(grid) = &state.match_state.match_presentation.terrain_grid {
+        let resolved_terrain = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.view().resolved_terrain());
         let overlay_data: Vec<(
             u16,
             u16,
@@ -319,6 +324,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             grid,
+            resolved_terrain,
             &overlay_data,
             &state.match_state.match_presentation.theater_name,
             playfield_bounds,

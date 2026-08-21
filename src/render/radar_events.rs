@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use crate::rules::radar_event_config::RadarEventConfig;
 use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53, X87Ordering};
 
+use super::native_radar_surface::native_event_initial_radius;
+
 const TYPE5_DEDUP_DISTANCE: i32 = 6;
 const TYPE5_VISIBLE_FRAMES: u32 = 200;
 const TYPE5_LIFETIME_FRAMES: u32 = 400;
@@ -46,11 +48,7 @@ impl ClientRadarEvent {
         surface_size: (i32, i32),
         config: &RadarEventConfig,
     ) -> Self {
-        let (x, y) = source.radar_pixel;
-        let initial_radius = x
-            .max(y)
-            .max(surface_size.0.wrapping_sub(x))
-            .max(surface_size.1.wrapping_sub(y));
+        let initial_radius = native_event_initial_radius(source.radar_pixel, surface_size);
         Self {
             source,
             created_frame: current_frame,
@@ -321,16 +319,26 @@ impl ClientRadarEvents {
         self.last_advanced_frame = Some(current_frame);
     }
 
-    pub fn draw_type5(&self, rgba: &mut [u8], width: u32, height: u32) {
+    pub fn draw_type5(
+        &self,
+        rgba: &mut [u8],
+        stride_width: u32,
+        canvas_height: u32,
+        surface_size: (i32, i32),
+    ) {
         // `TickAndDrawRadarEvents @ 0x00660000` walks ascending insertion order.
+        let clip_width = surface_size.0.max(0) as u32;
+        let clip_height = surface_size.1.max(0) as u32;
         for event in self.events.iter().filter(|event| event.needs_draw) {
             let corners = event.corners();
             let color = blend_color(TYPE5_DIM, TYPE5_BRIGHT, event.fade);
             for edge in 0..4 {
                 draw_line(
                     rgba,
-                    width,
-                    height,
+                    stride_width,
+                    canvas_height,
+                    clip_width,
+                    clip_height,
                     corners[edge],
                     corners[(edge + 1) % 4],
                     color,
@@ -378,8 +386,10 @@ fn blend_color(dim: [u8; 4], bright: [u8; 4], fade: f32) -> [u8; 4] {
 
 fn draw_line(
     rgba: &mut [u8],
-    width: u32,
-    height: u32,
+    stride_width: u32,
+    canvas_height: u32,
+    clip_width: u32,
+    clip_height: u32,
     start: (i32, i32),
     end: (i32, i32),
     color: [u8; 4],
@@ -396,8 +406,14 @@ fn draw_line(
         if x0 == x1 && y0 == y1 {
             break;
         }
-        if x0 >= 0 && y0 >= 0 && x0 < width as i32 && y0 < height as i32 {
-            let offset = ((y0 as u32 * width + x0 as u32) * 4) as usize;
+        if x0 >= 0
+            && y0 >= 0
+            && x0 < clip_width as i32
+            && y0 < clip_height as i32
+            && x0 < stride_width as i32
+            && y0 < canvas_height as i32
+        {
+            let offset = ((y0 as u32 * stride_width + x0 as u32) * 4) as usize;
             rgba[offset..offset + 4].copy_from_slice(&color);
         }
         let twice = error * 2;

@@ -48,6 +48,73 @@ fn playfield_projection_grid(side: u16) -> TerrainGrid {
     }
 }
 
+fn flat_resolved_terrain(side: u16) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+    use crate::map::bridge_facts::BridgeCellFacts;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+
+    let cells = (0..side)
+        .flat_map(|ry| {
+            (0..side).map(move |rx| ResolvedTerrainCell {
+                rx,
+                ry,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
+                level: 0,
+                filled_clear: false,
+                tileset_index: Some(0),
+                land_type: 0,
+                yr_cell_land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                height_in_pixels: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs: SpeedCostProfile::default(),
+                is_water: false,
+                is_cliff_like: false,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: true,
+                allows_tiberium: false,
+                variant: 0,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                terrain_object_occupation: None,
+                overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: TerrainClass::Clear,
+                base_speed_costs: SpeedCostProfile::default(),
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                bridge_facts: BridgeCellFacts::default(),
+                tube_index: None,
+                radar_left: [0; 3],
+                radar_right: [0; 3],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
+            })
+        })
+        .collect();
+    ResolvedTerrainGrid::from_cells(side, side, cells)
+}
+
 fn expanded_playfield() -> PlayfieldBounds {
     PlayfieldBounds {
         base: 40,
@@ -368,10 +435,12 @@ fn playfield_projection_shrinks_and_reexpands_exact_mode_zero_membership() {
         (outside.0, outside.1, OverlayClassification::Wall, 0, None),
     ];
 
-    let initial = MinimapPlayfieldProjection::derive(&grid, &overlays, "TEMPERATE", Some(expanded));
-    let shrunk = MinimapPlayfieldProjection::derive(&grid, &overlays, "TEMPERATE", Some(shrunken));
+    let initial =
+        MinimapPlayfieldProjection::derive(&grid, None, &overlays, "TEMPERATE", Some(expanded));
+    let shrunk =
+        MinimapPlayfieldProjection::derive(&grid, None, &overlays, "TEMPERATE", Some(shrunken));
     let reexpanded =
-        MinimapPlayfieldProjection::derive(&grid, &overlays, "TEMPERATE", Some(expanded));
+        MinimapPlayfieldProjection::derive(&grid, None, &overlays, "TEMPERATE", Some(expanded));
 
     let initial_cells: BTreeSet<_> = initial
         .terrain_pixels
@@ -458,6 +527,67 @@ fn playfield_revision_rebuild_gate_observes_two_successive_writers() {
 }
 
 #[test]
+fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_replay() {
+    let grid = playfield_projection_grid(64);
+    let terrain = flat_resolved_terrain(64);
+    let initial = MinimapPlayfieldProjection::derive(
+        &grid,
+        Some(&terrain),
+        &[],
+        "TEMPERATE",
+        Some(expanded_playfield()),
+    );
+    let rebuilt = MinimapPlayfieldProjection::derive(
+        &grid,
+        Some(&terrain),
+        &[],
+        "TEMPERATE",
+        Some(shrunken_playfield()),
+    );
+    let initial_surface = initial.native_radar_surface.expect("initial primary surface");
+    let rebuilt_surface = rebuilt.native_radar_surface.expect("rebuilt primary surface");
+    assert_eq!(initial_surface.raw_size(), (72, 62));
+    assert_eq!(initial_surface.generated_size(), (125, 108));
+    assert_eq!(rebuilt_surface.raw_size(), (20, 18));
+    assert_eq!(rebuilt_surface.generated_size(), (120, 108));
+
+    let cell = grid
+        .cells
+        .iter()
+        .find(|cell| {
+            shrunken_playfield()
+                .contains_geometry_packed(i32::from(cell.rx), i32::from(cell.ry))
+        })
+        .map(|cell| (cell.rx, cell.ry))
+        .expect("cell retained by action-40 contraction");
+    assert_ne!(
+        initial_surface.cell_to_surface_pixel(cell),
+        rebuilt_surface.cell_to_surface_pixel(cell),
+        "new events must use the rebuilt generated projection"
+    );
+
+    let mut events = ClientRadarEvents::default();
+    let config = crate::rules::radar_event_config::RadarEventConfig::default();
+    let source = EnemySensedSource {
+        cell,
+        radar_pixel: rebuilt_surface.cell_to_surface_pixel(cell),
+    };
+    assert!(!events.create_enemy_sensed(
+        source,
+        20,
+        rebuilt_surface.generated_size(),
+        &config,
+    ));
+    events.finish_baseline();
+    assert!(events.create_enemy_sensed(
+        source,
+        21,
+        rebuilt_surface.generated_size(),
+        &config,
+    ));
+}
+
+#[test]
 fn minimap_techno_membership_is_height_aware_at_raised_slope_edge() {
     let bounds = expanded_playfield();
     let (rx, ry) = (0u16..64)
@@ -502,8 +632,13 @@ fn playfield_projection_updates_camera_bounds_and_click_inverse_mapping() {
     assert_eq!(grid.local_bounds, Some(camera_bounds));
     assert_ne!(grid.local_bounds, Some(installed_initial));
 
-    let projection =
-        MinimapPlayfieldProjection::derive(&grid, &[], "TEMPERATE", Some(shrunken_playfield()));
+    let projection = MinimapPlayfieldProjection::derive(
+        &grid,
+        None,
+        &[],
+        "TEMPERATE",
+        Some(shrunken_playfield()),
+    );
     let rect = (10.0, 20.0, 300.0, 240.0);
     let tex_x = projection.map_offset_x + projection.map_pixel_w * 0.5;
     let tex_y = projection.map_offset_y + projection.map_pixel_h * 0.5;

@@ -113,13 +113,34 @@ fn type5_draw_is_one_cyan_outline_in_insertion_order() {
     event.fade = 1.0;
     event.expanding = false;
     let mut rgba = vec![7_u8; 24 * 24 * 4];
-    queue.draw_type5(&mut rgba, 24, 24);
+    queue.draw_type5(&mut rgba, 24, 24, (24, 24));
     let pixel = |x: usize, y: usize| {
         let offset = (y * 24 + x) * 4;
         &rgba[offset..offset + 4]
     };
     assert_eq!(pixel(16, 12), TYPE5_BRIGHT);
     assert_eq!(pixel(12, 12), [7, 7, 7, 7], "no fill or inner diamond");
+}
+
+#[test]
+fn type5_draw_clips_to_generated_primary_extent_not_host_texture() {
+    let mut queue = queue_ready();
+    let config = configured();
+    assert!(queue.create_enemy_sensed(source((1, 1), (138, 40)), 0, (140, 84), &config));
+    let event = &mut queue.events[0];
+    event.radius = 20.0;
+    event.rotation = 0.0;
+    event.fade = 1.0;
+    event.expanding = false;
+    let mut rgba = vec![7_u8; 200 * 200 * 4];
+    queue.draw_type5(&mut rgba, 200, 200, (140, 84));
+    let pixel = |x: usize, y: usize| {
+        let offset = (y * 200 + x) * 4;
+        &rgba[offset..offset + 4]
+    };
+    assert_eq!(pixel(139, 21), TYPE5_BRIGHT);
+    assert_eq!(pixel(140, 22), [7, 7, 7, 7]);
+    assert_eq!(pixel(158, 40), [7, 7, 7, 7]);
 }
 
 #[test]

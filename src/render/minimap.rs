@@ -48,6 +48,7 @@ use super::radar_tracker::RadarTrackerEntry;
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
 use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 use super::minimap_legacy_events::draw_legacy_sim_radar_events;
+use super::native_radar_surface::NativeRadarSurfaceGeometry;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 
 pub(crate) type MinimapOverlayDatum = (u16, u16, OverlayClassification, u8, Option<[u8; 4]>);
@@ -107,14 +108,16 @@ struct MinimapPlayfieldProjection {
     map_offset_y: f32,
     map_pixel_w: f32,
     map_pixel_h: f32,
+    native_radar_surface: Option<NativeRadarSurfaceGeometry>,
 }
 
 impl MinimapPlayfieldProjection {
-    /// CPU-only equivalent of active YR `ComputeRadarMapBounds` followed by
-    /// radar-surface construction: enumerate exact mode-zero-valid cells, fit
-    /// that isometric rectangle, then include only matching terrain/overlays.
+    /// CPU-only construction of the two active playfield presentation frames:
+    /// terrain/overlays use mode zero, while the generated radar surface uses
+    /// `ComputeRadarMapBounds @ 0x00654490`'s mode-one cell admission.
     fn derive(
         grid: &TerrainGrid,
+        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         overlay_data: &[MinimapOverlayDatum],
         theater_name: &str,
         bounds: Option<PlayfieldBounds>,
@@ -127,6 +130,11 @@ impl MinimapPlayfieldProjection {
 
         let geometry =
             bounds.and_then(|bounds| PlayfieldPresentationGeometry::from_grid(grid, bounds));
+        let native_radar_surface = bounds.and_then(|bounds| {
+            resolved_terrain.and_then(|terrain| {
+                NativeRadarSurfaceGeometry::from_playfield(terrain, bounds)
+            })
+        });
         let (world_origin_x, world_origin_y, world_width, world_height) = geometry
             .map(|geometry| {
                 (
@@ -223,6 +231,7 @@ impl MinimapPlayfieldProjection {
             map_offset_y,
             map_pixel_w,
             map_pixel_h,
+            native_radar_surface,
         }
     }
 }
@@ -253,6 +262,8 @@ pub struct MinimapRenderer {
     map_offset_y: f32,
     map_pixel_w: f32,
     map_pixel_h: f32,
+    /// Exact generated primary-surface geometry used by native radar events.
+    native_radar_surface: Option<NativeRadarSurfaceGeometry>,
     /// Last simulation tick used to refresh the texture.
     last_sim_tick: u64,
     /// Last fog generation used to refresh the texture.
@@ -281,6 +292,7 @@ impl MinimapRenderer {
         gpu: &GpuContext,
         batch: &BatchRenderer,
         grid: &TerrainGrid,
+        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         overlay_data: &[MinimapOverlayDatum],
         theater_name: &str,
         playfield_bounds: Option<PlayfieldBounds>,
@@ -288,8 +300,13 @@ impl MinimapRenderer {
     ) -> Self {
         let size: u32 = MINIMAP_SIZE;
         let pixel_count: usize = (size * size * 4) as usize;
-        let projection =
-            MinimapPlayfieldProjection::derive(grid, overlay_data, theater_name, playfield_bounds);
+        let projection = MinimapPlayfieldProjection::derive(
+            grid,
+            resolved_terrain,
+            overlay_data,
+            theater_name,
+            playfield_bounds,
+        );
 
         let (map_texture_raw, map_texture) =
             batch.create_updatable_texture(gpu, &projection.base_rgba, size, size);
@@ -320,6 +337,7 @@ impl MinimapRenderer {
             map_offset_y: projection.map_offset_y,
             map_pixel_w: projection.map_pixel_w,
             map_pixel_h: projection.map_pixel_h,
+            native_radar_surface: projection.native_radar_surface,
             last_sim_tick: u64::MAX,
             last_fog_generation: u64::MAX,
             last_visibility_owner: None,
@@ -359,8 +377,13 @@ impl MinimapRenderer {
         }
 
         let action40_rebuild = self.installed_playfield_authority.is_some();
-        let projection =
-            MinimapPlayfieldProjection::derive(grid, overlay_data, theater_name, playfield_bounds);
+        let projection = MinimapPlayfieldProjection::derive(
+            grid,
+            None,
+            overlay_data,
+            theater_name,
+            playfield_bounds,
+        );
         self.base_terrain_rgba = projection.base_rgba;
         self.world_origin_x = projection.world_origin_x;
         self.world_origin_y = projection.world_origin_y;
@@ -372,6 +395,7 @@ impl MinimapRenderer {
         self.map_offset_y = projection.map_offset_y;
         self.map_pixel_w = projection.map_pixel_w;
         self.map_pixel_h = projection.map_pixel_h;
+        self.native_radar_surface = projection.native_radar_surface;
         self.playfield_bounds = playfield_bounds;
         self.installed_playfield_authority = Some(authority);
         self.rgba_scratch.resize(self.base_terrain_rgba.len(), 0);
@@ -465,6 +489,13 @@ impl MinimapRenderer {
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
     ) {
+        if self.native_radar_surface.is_none() {
+            self.native_radar_surface = self.playfield_bounds.and_then(|bounds| {
+                resolved_terrain.and_then(|terrain| {
+                    NativeRadarSurfaceGeometry::from_playfield(terrain, bounds)
+                })
+            });
+        }
         let fog_generation = if full_visibility { 0 } else { fog.view_generation() };
         let visibility_owner = local_owner;
         if sim_tick == self.last_sim_tick
@@ -641,7 +672,10 @@ impl MinimapRenderer {
         // ascending radar-event array, then SpySatellite vision. Rust's SpySat
         // materialization is already present in the fog/base inputs; the type-5
         // outline must nevertheless remain after object pixels here.
-        self.radar_events.draw_type5(rgba, size, size);
+        if let Some(surface) = self.native_radar_surface {
+            self.radar_events
+                .draw_type5(rgba, size, size, surface.generated_size());
+        }
 
         // Rewrite existing GPU texture instead of creating a new one.
         gpu.queue.write_texture(
@@ -684,19 +718,12 @@ impl MinimapRenderer {
         sim_tick: u64,
         rules: Option<&RuleSet>,
     ) {
-        let (sx, sy) = crate::map::terrain::iso_to_screen(event.cell.0, event.cell.1, 0);
-        let (x, y) = world_to_minimap_pixel(
-            sx,
-            sy,
-            self.world_origin_x,
-            self.world_origin_y,
-            self.world_width,
-            self.world_height,
-            self.map_offset_x,
-            self.map_offset_y,
-            self.map_pixel_w,
-            self.map_pixel_h,
-        );
+        let Some(surface) = self.native_radar_surface else {
+            return;
+        };
+        // `InitRadarEvent @ 0x0065FB80` consumes CellToRadarPixel's point in
+        // the generated primary surface, not the Rust 200x200 texture frame.
+        let pixel = surface.cell_to_surface_pixel(event.cell);
         let default_config = crate::rules::radar_event_config::RadarEventConfig::default();
         let config = rules
             .map(|rules| &rules.radar_event_config)
@@ -704,10 +731,10 @@ impl MinimapRenderer {
         self.radar_events.create_enemy_sensed(
             EnemySensedSource {
                 cell: event.cell,
-                radar_pixel: (x as i32, y as i32),
+                radar_pixel: pixel,
             },
             sim_tick,
-            (MINIMAP_SIZE as i32, MINIMAP_SIZE as i32),
+            surface.generated_size(),
             config,
         );
     }
