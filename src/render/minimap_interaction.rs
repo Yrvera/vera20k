@@ -8,6 +8,14 @@ use super::native_radar_viewport::{
     NativeRadarScreenGeometry, native_viewport_outline_instances, native_viewport_rect,
 };
 
+/// Exact result of the native radar click's
+/// `MapClass::Get_CellClass -> CellClass::Get_Center_Coords` tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeRadarCameraTarget {
+    pub(crate) cell: (u16, u16),
+    pub(crate) world_leptons: (i32, i32, i32),
+}
+
 /// The signed-word clamp in the live RadarClass input owner
 /// `0x00653D7A..0x00653E66`.
 ///
@@ -105,6 +113,32 @@ fn native_camera_cell_from_signed(
     (clamped.0 as u16, clamped.1 as u16)
 }
 
+fn native_camera_target_from_signed(
+    signed: (i16, i16),
+    map_size: (i32, i32),
+    tactical_size: (i32, i32),
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+) -> Option<NativeRadarCameraTarget> {
+    let (rx, ry) = native_camera_cell_from_signed(signed, map_size, tactical_size);
+    let cell = terrain.cell(rx, ry)?;
+    // `CellClass::Get_Center_Coords @ 0x00480A30` reads the cell object's
+    // signed packed coordinate, forms X/Y at subcell (128,128), and asks
+    // `0x0047B3A0` for ground Z. It does not add bridge-deck height.
+    let x = i32::from(cell.rx as i16).wrapping_mul(256).wrapping_add(128);
+    let y = i32::from(cell.ry as i16).wrapping_mul(256).wrapping_add(128);
+    let z = crate::util::lepton::cellclass_ground_height_leptons(
+        cell.level,
+        cell.slope_type,
+        x,
+        y,
+    )
+    .ok()?;
+    Some(NativeRadarCameraTarget {
+        cell: (cell.rx, cell.ry),
+        world_leptons: (x, y, z),
+    })
+}
+
 impl MinimapRenderer {
     /// Return true only inside the generated primary when native authority is
     /// installed. Native `0x006539D0` rejects the centered letterbox margins.
@@ -151,7 +185,7 @@ impl MinimapRenderer {
 
     /// `RadarClass::GetObjectAtRadarPixel @ 0x00656750`: screen to generated
     /// pixel, reverse tracker lookup, then exact x87 cell inverse fallback.
-    pub(crate) fn native_click_cell_in_rect(
+    pub(crate) fn native_click_target_in_rect(
         &self,
         screen_x: f32,
         screen_y: f32,
@@ -160,15 +194,16 @@ impl MinimapRenderer {
         rect_w: f32,
         rect_h: f32,
         entities: &crate::sim::entity_store::EntityStore,
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
         map_size: (i32, i32),
         tactical_size: (i32, i32),
-    ) -> Option<(u16, u16)> {
+    ) -> Option<NativeRadarCameraTarget> {
         let surface = self.native_radar_surface?;
         let pixel = NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h])
             .screen_to_surface_pixel((screen_x, screen_y))?;
         let tracker_cell = tracker_object_signed_cell(&self.radar_tracker, entities, pixel);
         let signed = signed_tracker_or_inverse_cell(surface, pixel, tracker_cell);
-        Some(native_camera_cell_from_signed(signed, map_size, tactical_size))
+        native_camera_target_from_signed(signed, map_size, tactical_size, terrain)
     }
 
     pub(crate) const fn has_playfield_authority(&self) -> bool {
@@ -280,6 +315,74 @@ mod tests {
         }
     }
 
+    fn terrain_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+        crate::map::resolved_terrain::ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            height_in_pixels: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: Default::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn click_terrain(width: u16, height: u16) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for ry in 0..height {
+            for rx in 0..width {
+                cells.push(terrain_cell(rx, ry));
+            }
+        }
+        crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
     #[test]
     fn native_click_clamp_preserves_signed_words_and_strict_branch_equality() {
         let map = (100, 100);
@@ -300,6 +403,122 @@ mod tests {
         let signed = signed_tracker_or_inverse_cell(surface, (0, 0), None);
         assert_eq!(signed, (-4, 25));
         assert_eq!(clamp_native_radar_click_cell(signed, (100, 100), (632, 570)), (85, 114));
+    }
+
+    #[test]
+    fn native_click_target_samples_all_active_slopes_at_cell_center() {
+        let mut terrain = click_terrain(64, 64);
+        let expected_contributions = [
+            0, 45, 45, 45, 45, 0, 0, 0, 0, 90, 90, 90, 90, 90, 90, 90, 90, 45, 45,
+            45, 45,
+        ];
+        for (slope, contribution) in expected_contributions.into_iter().enumerate() {
+            let cell = terrain.cell_mut(55, 55).unwrap();
+            cell.level = 2;
+            cell.slope_type = slope as u8;
+            let target = native_camera_target_from_signed(
+                (55, 55),
+                (100, 100),
+                (632, 570),
+                &terrain,
+            )
+            .unwrap();
+            assert_eq!(target.cell, (55, 55));
+            assert_eq!(target.world_leptons, (14_208, 14_208, 180 + contribution));
+        }
+    }
+
+    #[test]
+    fn native_click_target_uses_ground_slope_for_bridge_and_fails_closed_without_cell() {
+        let mut terrain = click_terrain(64, 64);
+        let cell = terrain.cell_mut(63, 63).unwrap();
+        cell.level = 3;
+        cell.slope_type = 1;
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = true;
+        cell.bridge_deck_level = 7;
+        let target = native_camera_target_from_signed(
+            (63, 63),
+            (100, 100),
+            (632, 570),
+            &terrain,
+        )
+        .unwrap();
+        assert_eq!(target.cell, (63, 63), "last real grid cell remains available");
+        assert_eq!(target.world_leptons, (16_256, 16_256, 315));
+
+        assert_eq!(
+            native_camera_target_from_signed(
+                (64, 64),
+                (100, 100),
+                (632, 570),
+                &terrain,
+            ),
+            None,
+            "Rust has no exact shared-dummy substrate, so invalid lookup cannot flatten to Z=0",
+        );
+        terrain.test_set_native_allocated_cells(&[]);
+        assert_eq!(
+            native_camera_target_from_signed(
+                (63, 63),
+                (100, 100),
+                (632, 570),
+                &terrain,
+            ),
+            None,
+            "a Size-diamond hole is not a rectangular/level-zero fallback",
+        );
+    }
+
+    #[test]
+    fn native_click_tracker_and_empty_hit_share_the_same_cellclass_center() {
+        let terrain = click_terrain(64, 64);
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(tracker_update(1, None), false);
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        entities.insert(crate::sim::game_entity::GameEntity::test_default(
+            1, "MTNK", "Enemy", 55, 55,
+        ));
+        let tracker_signed = tracker_object_signed_cell(&tracker, &entities, (40, 60)).unwrap();
+        assert_eq!(tracker_signed, (55, 55));
+        let tracker_target = native_camera_target_from_signed(
+            tracker_signed,
+            (100, 100),
+            (632, 570),
+            &terrain,
+        );
+        let empty_target = native_camera_target_from_signed(
+            (55, 55),
+            (100, 100),
+            (632, 570),
+            &terrain,
+        );
+        assert_eq!(tracker_target, empty_target);
+    }
+
+    #[test]
+    fn native_click_cellclass_xyz_uses_the_full_6d6070_camera_projection() {
+        // Cell (55,55), Level=2, slope 1 at center: 180 base + 45 slope.
+        // Get_Center_Coords 0x00480A30 passes this complete XYZ to 0x006D6070;
+        // the latter projects/AdjustForZ before writing current and desired to
+        // one identical immediate top-left (represented by Rust's one point).
+        let world = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 225);
+        assert_eq!(world, (0.0, 1_648.0));
+        let camera = crate::app::input::camera::tactical_camera_top_left(
+            world,
+            856.0,
+            736.0,
+            1.0,
+        );
+        assert_eq!(camera, (-428.0, 1_280.0));
+        assert_eq!(
+            ((world.0 - camera.0), (world.1 - camera.1)),
+            (428.0, 368.0),
+        );
+
+        let level_only = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 180);
+        assert_eq!(level_only, (0.0, 1_654.0));
+        assert_ne!(world, level_only, "the slope contribution cannot be reconstructed from Level");
     }
 
     #[test]

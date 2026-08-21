@@ -259,14 +259,18 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
         .as_ref();
     let native_facts = runtime.and_then(|runtime| {
         let view = runtime.view();
-        Some((view.entities(), view.playfield_map_size()?))
+        Some((
+            view.entities(),
+            view.resolved_terrain()?,
+            view.playfield_map_size()?,
+        ))
     });
     let (tactical_w, tactical_h) = crate::app::input::camera::tactical_viewport_size_px(
         state.render_width(),
         state.render_height(),
     );
-    let native_cell = native_facts.and_then(|(entities, map_size)| {
-        minimap.native_click_cell_in_rect(
+    let native_target = native_facts.and_then(|(entities, terrain, map_size)| {
+        minimap.native_click_target_in_rect(
             state.match_state.input.cursor_x,
             state.match_state.input.cursor_y,
             rect.x,
@@ -274,15 +278,17 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
             rect.w,
             rect.h,
             entities,
+            terrain,
             map_size,
             (tactical_w as i32, tactical_h as i32),
         )
     });
-    if let Some((rx, ry)) = native_cell {
+    if let Some(target) = native_target {
         // `0x00653EA0 -> FUN_006D6070` writes current and desired viewport
-        // together. Rust has one immediate camera point; center_camera_on_cell
-        // applies the already-verified native tactical clamp synchronously.
-        crate::app::input::camera::center_camera_on_cell(state, rx, ry);
+        // together from the complete CellClass center XYZ. Rust has one
+        // immediate camera point representing both native fields.
+        let (x, y, z) = target.world_leptons;
+        crate::app::input::camera::center_camera_on_lepton_point(state, x, y, z);
         return;
     }
     if minimap.has_playfield_authority() {

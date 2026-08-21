@@ -100,14 +100,20 @@ pub const SUBCELL_4_Y: SimFixed = SimFixed::lit("192");
 // InRange (3D distance) constants
 // ---------------------------------------------------------------------------
 
-/// Native 104-lepton level step used by bridge and coordinate-height globals.
-/// CellClass ground interpolation has a separately initialized constant with
-/// the same retail value; keep the domains named rather than aliasing them.
+/// Native 104-lepton level step used by object, bridge, and VXL coordinate
+/// domains. CellClass terrain sampling has a distinct 90-lepton scalar; keep
+/// the domains named rather than aliasing them.
 pub const LEPTONS_PER_LEVEL: i64 = 104;
 
-/// Native CellClass ground-level increment used by the coordinate-Z evaluator.
-/// Its active initializer independently resolves to 104 leptons.
+/// Existing object/gameplay ground-Z domain. This remains 104 because those
+/// consumers model the object/VXL LevelHeight rather than CellClass's terrain
+/// surface sampler.
 pub const GROUND_LEVEL_HEIGHT_LEPTONS: i32 = 104;
+
+/// Active CellClass ground-surface scalar initialized inside `0x0047B3A0`.
+/// `CellClass::Get_Center_Coords @ 0x00480A30` samples this domain at subcell
+/// `(128,128)`; it must not be replaced by the 104-lepton object/VXL scalar.
+pub const CELLCLASS_GROUND_LEVEL_HEIGHT_LEPTONS: i32 = 90;
 
 /// Sentinel weapon range meaning "always in range". When the configured
 /// weapon range equals -512 leptons, InRange short-circuits to true regardless
@@ -130,37 +136,44 @@ pub const BRIDGE_HEIGHT_DELTA_LEPTONS: i64 = 416;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnsupportedGroundSlope(pub u8);
 
-const G: i32 = GROUND_LEVEL_HEIGHT_LEPTONS;
-const GROUND_SLOPE_RECORDS: [(i32, i32, i32, i32, i32); 21] = [
-    (0, 0, 0, 0, 0),
-    (1, 0, 0, G, 0),
-    (0, 1, 0, G, 0),
-    (-1, 0, G, G, 0),
-    (0, -1, G, G, 0),
-    (1, 1, -G, G, 0),
-    (-1, 1, 0, G, 0),
-    (-1, -1, G, G, 0),
-    (1, -1, 0, G, 0),
-    (1, 1, 0, G, 0),
-    (-1, 1, G, G, 0),
-    (-1, -1, 2 * G, G, 0),
-    (1, -1, G, G, 0),
-    (1, 1, 0, 2 * G, 0),
-    (-1, 1, G, 2 * G, 0),
-    (-1, -1, 2 * G, 2 * G, 0),
-    (1, -1, G, 2 * G, 0),
-    (0, 0, 0, G / 2, G / 2),
-    (0, 0, G, G / 2, -G / 2),
-    (0, 0, 0, G / 2, G / 2),
-    (0, 0, G, G / 2, -G / 2),
-];
+const fn ground_slope_records(g: i32) -> [(i32, i32, i32, i32, i32); 21] {
+    [
+        (0, 0, 0, 0, 0),
+        (1, 0, 0, g, 0),
+        (0, 1, 0, g, 0),
+        (-1, 0, g, g, 0),
+        (0, -1, g, g, 0),
+        (1, 1, -g, g, 0),
+        (-1, 1, 0, g, 0),
+        (-1, -1, g, g, 0),
+        (1, -1, 0, g, 0),
+        (1, 1, 0, g, 0),
+        (-1, 1, g, g, 0),
+        (-1, -1, 2 * g, g, 0),
+        (1, -1, g, g, 0),
+        (1, 1, 0, 2 * g, 0),
+        (-1, 1, g, 2 * g, 0),
+        (-1, -1, 2 * g, 2 * g, 0),
+        (1, -1, g, 2 * g, 0),
+        (0, 0, 0, g / 2, g / 2),
+        (0, 0, g, g / 2, -g / 2),
+        (0, 0, 0, g / 2, g / 2),
+        (0, 0, g, g / 2, -g / 2),
+    ]
+}
+
+const GROUND_SLOPE_RECORDS: [(i32, i32, i32, i32, i32); 21] =
+    ground_slope_records(GROUND_LEVEL_HEIGHT_LEPTONS);
+const CELLCLASS_GROUND_SLOPE_RECORDS: [(i32, i32, i32, i32, i32); 21] =
+    ground_slope_records(CELLCLASS_GROUND_LEVEL_HEIGHT_LEPTONS);
 
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Native CellClass ground-Z calculation using the signed level byte and the
-/// exact 21-entry slope coefficient table.
+/// Object/gameplay ground-Z calculation in the 104-lepton coordinate domain.
+/// CellClass terrain-surface consumers must call
+/// [`cellclass_ground_height_leptons`] instead.
 ///
 /// Residual kept outside this pure evaluator: the conditional placed-TMP
 /// lifecycle that applies per-subtile `+0x28` to CellClass Level.
@@ -170,16 +183,54 @@ pub fn ground_height_leptons(
     world_x: i32,
     world_y: i32,
 ) -> Result<i32, UnsupportedGroundSlope> {
+    ground_height_with_level_height(
+        level_byte,
+        slope,
+        world_x,
+        world_y,
+        GROUND_LEVEL_HEIGHT_LEPTONS,
+        &GROUND_SLOPE_RECORDS,
+    )
+}
+
+/// Exact terrain-surface Z used by `CellClass::GetGroundHeight @ 0x0047B3A0`.
+/// The binary sign-extends Level, biases the fixed-point base by `0.5`, chops
+/// toward zero, then evaluates the low-byte X/Y slope contribution against its
+/// separately initialized 90-lepton coefficient table.
+pub fn cellclass_ground_height_leptons(
+    level_byte: u8,
+    slope: u8,
+    world_x: i32,
+    world_y: i32,
+) -> Result<i32, UnsupportedGroundSlope> {
+    ground_height_with_level_height(
+        level_byte,
+        slope,
+        world_x,
+        world_y,
+        CELLCLASS_GROUND_LEVEL_HEIGHT_LEPTONS,
+        &CELLCLASS_GROUND_SLOPE_RECORDS,
+    )
+}
+
+fn ground_height_with_level_height(
+    level_byte: u8,
+    slope: u8,
+    world_x: i32,
+    world_y: i32,
+    level_height: i32,
+    records: &[(i32, i32, i32, i32, i32); 21],
+) -> Result<i32, UnsupportedGroundSlope> {
     let signed_level = i32::from(level_byte as i8);
     let level_numerator = signed_level
-        .wrapping_mul(GROUND_LEVEL_HEIGHT_LEPTONS)
+        .wrapping_mul(level_height)
         .wrapping_mul(256);
     let base = level_numerator.wrapping_add(128) / 256;
     if slope == 0 {
         return Ok(base);
     }
     let Some(&(coefficient_x, coefficient_y, bias_a, maximum, bias_b)) =
-        GROUND_SLOPE_RECORDS.get(slope as usize)
+        records.get(slope as usize)
     else {
         return Err(UnsupportedGroundSlope(slope));
     };
@@ -188,7 +239,7 @@ pub fn ground_height_leptons(
     let slope_numerator = local_y
         .wrapping_mul(coefficient_y)
         .wrapping_add(local_x.wrapping_mul(coefficient_x))
-        .wrapping_mul(GROUND_LEVEL_HEIGHT_LEPTONS)
+        .wrapping_mul(level_height)
         .wrapping_add(bias_a.wrapping_add(bias_b).wrapping_mul(256))
         .clamp(0, maximum.wrapping_mul(256));
     Ok(base.wrapping_mul(256).wrapping_add(slope_numerator) / 256)
@@ -423,6 +474,30 @@ mod tests {
     fn gsi_04_03b_ground_height_signed_level_and_ftol_chop() {
         assert_eq!(ground_height_leptons(0xff, 0, 0, 0), Ok(-103));
         assert_eq!(ground_height_leptons(0xff, 1, 1, 0), Ok(-102));
+    }
+
+    #[test]
+    fn gsi_04_01_cellclass_ground_height_uses_the_90_lepton_surface_domain() {
+        let center_contributions = [
+            0, 45, 45, 45, 45, 0, 0, 0, 0, 90, 90, 90, 90, 90, 90, 90, 90, 45, 45,
+            45, 45,
+        ];
+        for (slope, contribution) in center_contributions.into_iter().enumerate() {
+            assert_eq!(
+                cellclass_ground_height_leptons(2, slope as u8, 128, 128),
+                Ok(180 + contribution),
+                "active retail slope {slope}",
+            );
+        }
+        assert_eq!(
+            cellclass_ground_height_leptons(0xff, 0, 128, 128),
+            Ok(-89),
+            "0x0047B3A0 adds 0.5 then chops the signed base toward zero",
+        );
+        assert_eq!(
+            cellclass_ground_height_leptons(0, 21, 128, 128),
+            Err(UnsupportedGroundSlope(21)),
+        );
     }
 
     /// The raw level byte is sign-extended before its 104-lepton world Z goes
