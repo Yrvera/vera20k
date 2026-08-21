@@ -4764,6 +4764,25 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
         grid.cell(5, 5).overlay_id.is_none(),
         "overlay should be cleared"
     );
+    assert_eq!(
+        sim.radar_terrain_dirty_cells,
+        vec![
+            (5, 5),
+            (5, 3),
+            (6, 4),
+            (4, 4),
+            (5, 4),
+            (7, 5),
+            (6, 6),
+            (6, 5),
+            (5, 7),
+            (4, 6),
+            (5, 6),
+            (3, 5),
+            (4, 5),
+        ],
+        "direct wall damage uses the terminal DestroyOverlay visit stencil",
+    );
 
     // No persistent wall entity is created or removed.
     let remaining = sim
@@ -4844,6 +4863,12 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
         !wall_present(&sim),
         "crusher drive-over must remove the wall overlay"
     );
+    assert_eq!(
+        sim.radar_terrain_dirty_cells.len(),
+        13,
+        "crusher uses the terminal DestroyOverlay radar-dirty stencil",
+    );
+    assert_eq!(sim.radar_terrain_dirty_cells[0], (5, 5));
     assert!(
         sim.substrate
             .entities

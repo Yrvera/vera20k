@@ -123,13 +123,56 @@ fn radar_dirty_ack_rearms_same_wall_removal() {
             }],
             &registry,
         );
-        assert_eq!(sim.radar_terrain_dirty_cells, vec![cell]);
+        assert_eq!(
+            sim.radar_terrain_dirty_cells,
+            vec![
+                (4, 5),
+                (4, 3),
+                (5, 4),
+                (3, 4),
+                (4, 4),
+                (6, 5),
+                (5, 6),
+                (5, 5),
+                (4, 7),
+                (3, 6),
+                (4, 6),
+                (2, 5),
+                (3, 5),
+            ],
+        );
         assert_eq!(
             sim.radar_terrain_dirty_generation,
             expected_generation
         );
         assert!(sim.acknowledge_radar_terrain_dirty(expected_generation));
     }
+}
+
+#[test]
+fn radar_dirty_wall_partial_damage_marks_nothing() {
+    let ini = IniFile::from_str(
+        "[OverlayTypes]\n0=FILL0\n1=FILL1\n2=GAWALL\n[GAWALL]\nWall=yes\nStrength=1\nDamageLevels=4\n",
+    );
+    let registry = OverlayTypeRegistry::from_ini(&ini, Some(&ini));
+    let mut sim = Simulation::new();
+    sim.overlay_grid = Some(OverlayGrid::new(16, 16));
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_overlay(4, 5, 2, 0);
+    let _ = sim.overlay_grid.as_mut().unwrap().take_dirty_cells();
+    sim.apply_wall_damage_events(
+        &[WallDamageEvent {
+            rx: 4,
+            ry: 5,
+            damage: 1,
+        }],
+        &registry,
+    );
+    assert_eq!(sim.overlay_grid.as_ref().unwrap().cell(4, 5).overlay_data, 0x10);
+    assert!(sim.radar_terrain_dirty_cells.is_empty());
+    assert_eq!(sim.radar_terrain_dirty_generation, 0);
 }
 
 #[test]

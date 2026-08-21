@@ -724,6 +724,49 @@ pub struct WallMutation {
     pub kind: WallMutationKind,
 }
 
+/// Project one ordered `DestroyOverlay` mutation trace into native radar dirtiness.
+///
+/// `CellClass::DestroyOverlay @ 0x00480CB0` does not mark partial
+/// `DirectUpdated` damage. Each terminal `DirectRemoved` first dirties its own
+/// cell, then invokes four cardinal `PostDestructionWallCleanup` visits. Every
+/// cleanup visit calls `MarkTerrainDirty @ 0x004807C2` for N/E/S/W/self before
+/// checking whether a wall exists. Cleanup mutations therefore do not expand a
+/// second time: their cells were already covered by the owning direct removal.
+pub(crate) fn wall_radar_dirty_cells(
+    width: u16,
+    height: u16,
+    mutations: &[WallMutation],
+) -> Vec<(u16, u16)> {
+    const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
+    let mut dirty = Vec::new();
+    let mut push = |rx: i32, ry: i32| {
+        if rx >= 0 && ry >= 0 && rx < i32::from(width) && ry < i32::from(height) {
+            let cell = (rx as u16, ry as u16);
+            if !dirty.contains(&cell) {
+                dirty.push(cell);
+            }
+        }
+    };
+
+    for mutation in mutations {
+        if mutation.kind != WallMutationKind::DirectRemoved {
+            continue;
+        }
+        let rx = i32::from(mutation.rx);
+        let ry = i32::from(mutation.ry);
+        push(rx, ry);
+        for (outer_dx, outer_dy) in CARDINAL {
+            let cx = rx + outer_dx;
+            let cy = ry + outer_dy;
+            for (dx, dy) in CROSS {
+                push(cx + dx, cy + dy);
+            }
+        }
+    }
+    dirty
+}
+
 /// Result of a wall damage attempt.
 #[derive(Debug, Clone, Default)]
 pub struct WallDamageResult {
@@ -2678,6 +2721,108 @@ Strength=400
             forced_chain.cell(6, 5).overlay_data & 0xF0,
             0x10,
             "forced terminal removal chains into pristine neighbors first"
+        );
+    }
+
+    #[test]
+    fn wall_radar_dirty_only_terminal_direct_removals_expand_native_visits() {
+        let ignored = [
+            WallMutation {
+                rx: 5,
+                ry: 5,
+                kind: WallMutationKind::DirectUpdated,
+            },
+            WallMutation {
+                rx: 5,
+                ry: 4,
+                kind: WallMutationKind::CleanupUpdated,
+            },
+            WallMutation {
+                rx: 6,
+                ry: 5,
+                kind: WallMutationKind::CleanupRemoved,
+            },
+        ];
+        assert!(wall_radar_dirty_cells(12, 12, &ignored).is_empty());
+
+        let direct = [WallMutation {
+            rx: 5,
+            ry: 5,
+            kind: WallMutationKind::DirectRemoved,
+        }];
+        assert_eq!(
+            wall_radar_dirty_cells(12, 12, &direct),
+            vec![
+                (5, 5),
+                (5, 3),
+                (6, 4),
+                (4, 4),
+                (5, 4),
+                (7, 5),
+                (6, 6),
+                (6, 5),
+                (5, 7),
+                (4, 6),
+                (5, 6),
+                (3, 5),
+                (4, 5),
+            ],
+            "removed cell precedes the four N/E/S/W/self cleanup visits",
+        );
+    }
+
+    #[test]
+    fn wall_radar_dirty_clips_edges_and_expands_each_recursive_direct_remove() {
+        let edge = [WallMutation {
+            rx: 0,
+            ry: 0,
+            kind: WallMutationKind::DirectRemoved,
+        }];
+        assert_eq!(
+            wall_radar_dirty_cells(3, 3, &edge),
+            vec![(0, 0), (2, 0), (1, 1), (1, 0), (0, 2), (0, 1)],
+        );
+
+        let recursive = [
+            WallMutation {
+                rx: 5,
+                ry: 5,
+                kind: WallMutationKind::DirectRemoved,
+            },
+            WallMutation {
+                rx: 5,
+                ry: 4,
+                kind: WallMutationKind::CleanupRemoved,
+            },
+            WallMutation {
+                rx: 6,
+                ry: 5,
+                kind: WallMutationKind::DirectRemoved,
+            },
+        ];
+        assert_eq!(
+            wall_radar_dirty_cells(12, 12, &recursive),
+            vec![
+                (5, 5),
+                (5, 3),
+                (6, 4),
+                (4, 4),
+                (5, 4),
+                (7, 5),
+                (6, 6),
+                (6, 5),
+                (5, 7),
+                (4, 6),
+                (5, 6),
+                (3, 5),
+                (4, 5),
+                (6, 3),
+                (7, 4),
+                (8, 5),
+                (7, 6),
+                (6, 7),
+            ],
+            "each recursive DirectRemoved expands once; cleanup removals do not",
         );
     }
 

@@ -1535,6 +1535,25 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
         fatal.overlay_grid.as_ref().unwrap().cell(8, 5).overlay_id,
         None
     );
+    assert_eq!(
+        fatal.radar_terrain_dirty_cells,
+        vec![
+            (8, 5),
+            (8, 3),
+            (9, 4),
+            (7, 4),
+            (8, 4),
+            (10, 5),
+            (9, 6),
+            (9, 5),
+            (8, 7),
+            (7, 6),
+            (8, 6),
+            (6, 5),
+            (7, 5),
+        ],
+        "combat-result commit projects the complete DestroyOverlay visit stencil",
+    );
     let mut one_draw = SimRng::new(1);
     let _ = one_draw.next_range_u32_inclusive(0, 400);
     let _ = one_draw.next_range_u32_inclusive(4, 8);
@@ -1580,6 +1599,7 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
             .overlay_id,
         Some(0)
     );
+    assert!(boundary.radar_terrain_dirty_cells.is_empty());
     assert_eq!(boundary_rng, SimRng::new(1).state());
 }
 

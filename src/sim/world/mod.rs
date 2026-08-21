@@ -1413,12 +1413,7 @@ impl Simulation {
         self.merge_receiver_anger_state(&houses);
         let mut combat_result = combat_result;
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
-        self.mark_radar_terrain_dirty_cells(
-            combat_result
-                .wall_mutations
-                .iter()
-                .map(|mutation| (mutation.rx, mutation.ry)),
-        );
+        self.mark_wall_mutations_radar_dirty(&combat_result.wall_mutations);
         combat_result
     }
 
@@ -2848,6 +2843,21 @@ impl Simulation {
         true
     }
 
+    fn mark_wall_mutations_radar_dirty(
+        &mut self,
+        mutations: &[crate::sim::overlay_grid::WallMutation],
+    ) {
+        let Some(grid) = self.overlay_grid.as_ref() else {
+            return;
+        };
+        let dirty = crate::sim::overlay_grid::wall_radar_dirty_cells(
+            grid.width(),
+            grid.height(),
+            mutations,
+        );
+        self.mark_radar_terrain_dirty_cells(dirty);
+    }
+
     /// Ordinary per-cell movement writer (`0x006F511A..0x006F5139`): only
     /// promote 0 -> 1. A unit that walks back outside retains membership until
     /// an exact writer (teleport or Set_Clipped_LocalSize) clears it.
@@ -4041,7 +4051,7 @@ impl Simulation {
         let Some(grid) = self.overlay_grid.as_mut() else {
             return;
         };
-        let mut radar_dirty = Vec::new();
+        let mut wall_mutations = Vec::new();
 
         for event in events {
             let result = damage_wall_overlay(
@@ -4071,14 +4081,9 @@ impl Simulation {
                     );
                 }
             }
-            radar_dirty.extend(
-                result
-                    .mutations
-                    .iter()
-                    .map(|mutation| (mutation.rx, mutation.ry)),
-            );
+            wall_mutations.extend(result.mutations);
         }
-        self.mark_radar_terrain_dirty_cells(radar_dirty);
+        self.mark_wall_mutations_radar_dirty(&wall_mutations);
     }
 
     /// Movement-side wall crush: a `Crusher=yes` drive vehicle that finishes the
