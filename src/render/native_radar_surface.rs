@@ -5,7 +5,9 @@
 
 use crate::map::playfield::PlayfieldBounds;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::util::native_x87::{NativeF32Bits, X87Chop53, X87Ordering, X87Value};
+use crate::util::native_x87::{
+    NativeF32Bits, NativeF64Bits, X87Chop53, X87Ordering, X87Value,
+};
 
 pub(super) const RADAR_APERTURE_WIDTH: u32 = 140;
 pub(super) const RADAR_APERTURE_HEIGHT: u32 = 108;
@@ -158,6 +160,44 @@ impl NativeRadarSurfaceGeometry {
         (pixel_x, pixel_y)
     }
 
+    /// Raw `FillTerrainColors @ 0x00654EA0` footprint origin before the
+    /// function clips its native two-by-one cell rectangle.
+    pub const fn cell_to_raw_pixel(self, cell: (u16, u16)) -> (i32, i32) {
+        let x = cell.0 as i16 as i32;
+        let y = cell.1 as i16 as i32;
+        (
+            self.raw_offset_x.wrapping_sub(y).wrapping_add(x),
+            y.wrapping_sub(self.raw_offset_y).wrapping_add(x),
+        )
+    }
+
+    /// `RenderCellPixel @ 0x00655CB8..0x00655D03` inverse used for the
+    /// shroud/fog query belonging to one generated-primary pixel.
+    pub fn surface_pixel_to_visibility_cell(self, pixel: (i32, i32)) -> (u16, u16) {
+        let raw_x = X87Chop53::sub(
+            X87Chop53::div(X87Chop53::load_i32(pixel.0), load_f32(self.zoom))
+                .expect("positive radar zoom"),
+            X87Chop53::load_i32(self.raw_offset_x),
+        );
+        let raw_y = X87Chop53::add(
+            X87Chop53::div(X87Chop53::load_i32(pixel.1), load_f32(self.zoom))
+                .expect("positive radar zoom"),
+            X87Chop53::load_i32(self.raw_offset_y),
+        );
+        let half = X87Chop53::load_f32(NativeF32Bits::from_bits(0x3f00_0000))
+            .expect("0.5f is finite");
+        let bias = X87Chop53::load_f64(NativeF64Bits::HALF).expect("0.5 is finite");
+        let cell_x = native_ftol(X87Chop53::add(
+            X87Chop53::mul(X87Chop53::add(raw_y, raw_x), half),
+            bias,
+        )) as i16;
+        let cell_y = native_ftol(X87Chop53::add(
+            X87Chop53::mul(X87Chop53::sub(raw_y, raw_x), half),
+            bias,
+        )) as i16;
+        (cell_x as u16, cell_y as u16)
+    }
+
     /// `FUN_006557F0 @ 0x006557F0`, relative to the generated primary
     /// surface. `TechnoClass+0x4A0 @ 0x0070D990` uses this exact current-world
     /// projection for its cached tracker coordinate.
@@ -226,7 +266,6 @@ impl NativeRadarSurfaceGeometry {
         (self.generated_width, self.generated_height)
     }
 
-    #[cfg(test)]
     pub const fn raw_size(self) -> (i32, i32) {
         (self.raw_width, self.raw_height)
     }

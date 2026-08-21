@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 
 use super::minimap_helpers::{
     COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_HEIGHT, MINIMAP_WIDTH, VIEWPORT_LINE_THICKNESS,
-    cell_visibility_color, dim_color, set_pixel,
+    RadarSurfacePixel, cell_visibility_color, dim_color, set_pixel, surface_visibility_color,
 };
 use super::radar_tracker::{
     RadarProjectionFacts, RetainedRadarTracker, radar_entity_owner_color,
@@ -49,9 +49,10 @@ use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 use super::minimap_legacy_events::draw_legacy_sim_radar_events;
 use super::minimap_projection::{
     MinimapPlayfieldProjection, aperture_pixel, generated_primary_copy_frame,
-    minimap_screen_point_to_camera_top_left,
+    minimap_screen_point_to_camera_top_left, rasterize_native_terrain,
 };
 use super::native_radar_surface::NativeRadarSurfaceGeometry;
+use super::native_radar_terrain::NativeRadarTerrainSurface;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 
 pub(crate) type MinimapOverlayDatum = (u16, u16, OverlayClassification, u8, Option<[u8; 4]>);
@@ -89,15 +90,20 @@ pub struct MinimapRenderer {
     world_width: f32,
     world_height: f32,
     terrain_pixels: Vec<TerrainPixel>,
-    /// Pre-computed overlay pixels stamped between terrain and unit dots.
+    /// Exact generated-primary pixels, including each pixel's native inverse
+    /// shroud/fog cell and packed terrain color.
+    surface_pixels: Vec<RadarSurfacePixel>,
+    /// Per-cell overlay metadata. Authoritative radar surfaces bake these into
+    /// raw RGB before sampling; only the mapless fallback stamps them later.
     overlay_pixels: Vec<OverlayPixel>,
-    /// Aspect-fit sub-region within the 200×200 texture.
+    /// Legacy mapless aspect-fit sub-region within the native aperture.
     map_offset_x: f32,
     map_offset_y: f32,
     map_pixel_w: f32,
     map_pixel_h: f32,
     /// Exact generated primary-surface geometry used by native radar events.
     native_radar_surface: Option<NativeRadarSurfaceGeometry>,
+    native_radar_terrain: Option<NativeRadarTerrainSurface>,
     /// Last simulation tick used to refresh the texture.
     last_sim_tick: u64,
     /// Last fog generation used to refresh the texture.
@@ -170,12 +176,14 @@ impl MinimapRenderer {
             world_width: projection.world_width,
             world_height: projection.world_height,
             terrain_pixels: projection.terrain_pixels,
+            surface_pixels: projection.surface_pixels,
             overlay_pixels: projection.overlay_pixels,
             map_offset_x: projection.map_offset_x,
             map_offset_y: projection.map_offset_y,
             map_pixel_w: projection.map_pixel_w,
             map_pixel_h: projection.map_pixel_h,
             native_radar_surface: projection.native_radar_surface,
+            native_radar_terrain: projection.native_radar_terrain,
             last_sim_tick: u64::MAX,
             last_fog_generation: u64::MAX,
             last_visibility_owner: None,
@@ -229,12 +237,14 @@ impl MinimapRenderer {
         self.world_width = projection.world_width;
         self.world_height = projection.world_height;
         self.terrain_pixels = projection.terrain_pixels;
+        self.surface_pixels = projection.surface_pixels;
         self.overlay_pixels = projection.overlay_pixels;
         self.map_offset_x = projection.map_offset_x;
         self.map_offset_y = projection.map_offset_y;
         self.map_pixel_w = projection.map_pixel_w;
         self.map_pixel_h = projection.map_pixel_h;
         self.native_radar_surface = projection.native_radar_surface;
+        self.native_radar_terrain = projection.native_radar_terrain;
         self.playfield_bounds = playfield_bounds;
         self.installed_playfield_authority = Some(authority);
         self.rgba_scratch.resize(self.base_terrain_rgba.len(), 0);
@@ -361,8 +371,15 @@ impl MinimapRenderer {
                 for pixel in rgba.chunks_exact_mut(4) {
                     pixel.copy_from_slice(&COLOR_SHROUD);
                 }
-                for terrain_pixel in &self.terrain_pixels {
-                    let color = match cell_visibility_color(local_owner, fog, terrain_pixel) {
+                let pixels: &[RadarSurfacePixel] = if self.native_radar_terrain.is_some() {
+                    &self.surface_pixels
+                } else {
+                    // The fallback has no authoritative generated surface.
+                    // It retains the legacy per-cell presentation path.
+                    &[]
+                };
+                for terrain_pixel in pixels {
+                    let color = match surface_visibility_color(local_owner, fog, terrain_pixel) {
                         Some(color) => color,
                         None => continue,
                     };
@@ -373,12 +390,31 @@ impl MinimapRenderer {
                         set_pixel(rgba, size, x, y, color);
                     }
                 }
+                if self.native_radar_terrain.is_none() {
+                    for terrain_pixel in &self.terrain_pixels {
+                        let color = match cell_visibility_color(local_owner, fog, terrain_pixel) {
+                            Some(color) => color,
+                            None => continue,
+                        };
+                        if let Some((x, y)) =
+                            aperture_pixel(None, (terrain_pixel.px, terrain_pixel.py))
+                        {
+                            set_pixel(rgba, size, x, y, color);
+                        }
+                    }
+                }
             } else {
                 rgba.copy_from_slice(&self.base_terrain_rgba);
             }
 
-            // Stamp overlay pixels on top of terrain (ore, gems, walls, bridges, trees).
-            for overlay in &self.overlay_pixels {
+            // With authoritative native terrain, CellClass::GetRadarColor has
+            // already applied overlay precedence in the raw RGB buffer before
+            // weighted sampling. Retain the old stamp only for mapless fallback.
+            for overlay in self
+                .overlay_pixels
+                .iter()
+                .filter(|_| self.native_radar_terrain.is_none())
+            {
                 if let Some(local_owner) = local_owner.filter(|_| !full_visibility) {
                     if !fog.is_cell_revealed(local_owner, overlay.rx, overlay.ry) {
                         continue;
@@ -610,6 +646,7 @@ impl MinimapRenderer {
         let bridge_color = OverlayClassification::Bridge
             .color(0)
             .map(|c| dim_color(c, 0.5));
+        let mut native_changes = Vec::new();
         for &(rx, ry) in cells {
             let Some(terrain_pixel) = self
                 .terrain_pixels
@@ -644,6 +681,7 @@ impl MinimapRenderer {
 
             if bridge_visible {
                 let Some(color) = bridge_color else { continue };
+                native_changes.push(((rx, ry), Some([color[0], color[1], color[2]])));
                 if let Some(existing) = self
                     .overlay_pixels
                     .iter_mut()
@@ -664,16 +702,24 @@ impl MinimapRenderer {
                     });
                 }
             } else {
+                native_changes.push(((rx, ry), None));
                 self.overlay_pixels
                     .retain(|pixel| !(pixel.rx == rx && pixel.ry == ry));
             }
+        }
+        if let Some(surface) = &mut self.native_radar_terrain
+            && surface.set_cell_overrides(native_changes)
+        {
+            let (rgba, pixels) = rasterize_native_terrain(surface);
+            self.base_terrain_rgba = rgba;
+            self.surface_pixels = pixels;
         }
     }
 
     /// Build a SpriteInstance that fills the given screen rect with the minimap.
     ///
-    /// The minimap stretches to fill the entire container, matching the original
-    /// RA2 behavior where the radar fills its housing regardless of map aspect ratio.
+    /// Native's already-generated primary is copied at its own dimensions and
+    /// centered in the aperture; only the no-authority fallback fills the rect.
     pub fn build_minimap_instance_in_rect(
         &self,
         camera_x: f32,

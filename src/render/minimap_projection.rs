@@ -1,15 +1,20 @@
 //! CPU-side primary-radar projection and final aperture copy frame.
 
+use std::collections::BTreeMap;
+
 use crate::map::playfield::PlayfieldBounds;
 use crate::map::terrain::{PlayfieldPresentationGeometry, TerrainGrid};
 
 use super::minimap::MinimapOverlayDatum;
 use super::minimap_helpers::{
-    COLOR_SHROUD, MINIMAP_HEIGHT, MINIMAP_WIDTH, OverlayPixel, TerrainPixel,
-    compute_aspect_fit, radar_color_for_cell, set_pixel, terrain_brightness_for_theater,
-    world_to_minimap_pixel,
+    COLOR_SHROUD, MINIMAP_HEIGHT, MINIMAP_WIDTH, OverlayClassification, OverlayPixel,
+    RadarSurfacePixel, TerrainPixel, compute_aspect_fit, dim_color, radar_color_for_cell,
+    radar_colors_for_cell, set_pixel, terrain_brightness_for_theater, world_to_minimap_pixel,
 };
 use super::native_radar_surface::NativeRadarSurfaceGeometry;
+use super::native_radar_terrain::{
+    NativeRadarCellColors, NativeRadarTerrainSurface, unpack_rgb565,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PrimaryRadarCopyFrame {
@@ -65,12 +70,44 @@ pub(super) struct MinimapPlayfieldProjection {
     pub world_width: f32,
     pub world_height: f32,
     pub terrain_pixels: Vec<TerrainPixel>,
+    pub surface_pixels: Vec<RadarSurfacePixel>,
     pub overlay_pixels: Vec<OverlayPixel>,
     pub map_offset_x: f32,
     pub map_offset_y: f32,
     pub map_pixel_w: f32,
     pub map_pixel_h: f32,
     pub native_radar_surface: Option<NativeRadarSurfaceGeometry>,
+    pub native_radar_terrain: Option<NativeRadarTerrainSurface>,
+}
+
+pub(super) fn rasterize_native_terrain(
+    surface: &NativeRadarTerrainSurface,
+) -> (Vec<u8>, Vec<RadarSurfacePixel>) {
+    let mut rgba = vec![0u8; (MINIMAP_WIDTH * MINIMAP_HEIGHT * 4) as usize];
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&COLOR_SHROUD);
+    }
+    let geometry = surface.geometry();
+    let generated_size = geometry.generated_size();
+    let mut pixels = Vec::with_capacity(surface.generated_rgb565().len());
+    for (index, &packed) in surface.generated_rgb565().iter().enumerate() {
+        let px = index as i32 % generated_size.0;
+        let py = index as i32 / generated_size.0;
+        let color = unpack_rgb565(packed);
+        let (rx, ry) = geometry.surface_pixel_to_visibility_cell((px, py));
+        if let Some((dest_x, dest_y)) = aperture_pixel(geometry.into(), (px as u32, py as u32)) {
+            set_pixel(&mut rgba, MINIMAP_WIDTH, dest_x, dest_y, color);
+        }
+        pixels.push(RadarSurfacePixel {
+            rx,
+            ry,
+            px: px as u32,
+            py: py as u32,
+            packed_rgb565: packed,
+            color,
+        });
+    }
+    (rgba, pixels)
 }
 
 impl MinimapPlayfieldProjection {
@@ -132,6 +169,8 @@ impl MinimapPlayfieldProjection {
         let mut terrain_pixels =
             Vec::with_capacity(geometry.map_or(0, |geometry| geometry.valid_cell_count));
 
+        let mut native_cells = Vec::new();
+
         if let Some(bounds) = bounds {
             for cell in &grid.cells {
                 if !bounds.contains_geometry_packed(i32::from(cell.rx), i32::from(cell.ry)) {
@@ -141,9 +180,17 @@ impl MinimapPlayfieldProjection {
                     continue;
                 };
                 let color = radar_color_for_cell(cell, terrain_brightness);
-                if let Some((dest_x, dest_y)) = aperture_pixel(native_radar_surface, (px, py)) {
+                if native_radar_surface.is_none()
+                    && let Some((dest_x, dest_y)) = aperture_pixel(None, (px, py))
+                {
                     set_pixel(&mut base_rgba, MINIMAP_WIDTH, dest_x, dest_y, color);
                 }
+                let (left, right) = radar_colors_for_cell(cell, terrain_brightness);
+                native_cells.push(NativeRadarCellColors {
+                    cell: (cell.rx, cell.ry),
+                    left,
+                    right,
+                });
                 terrain_pixels.push(TerrainPixel {
                     rx: cell.rx,
                     ry: cell.ry,
@@ -155,6 +202,7 @@ impl MinimapPlayfieldProjection {
         }
 
         let mut overlay_pixels = Vec::new();
+        let mut native_overrides = BTreeMap::new();
         if let Some(bounds) = bounds {
             for &(rx, ry, classification, density, precomputed) in overlay_data {
                 if !bounds.contains_geometry_packed(i32::from(rx), i32::from(ry)) {
@@ -170,9 +218,20 @@ impl MinimapPlayfieldProjection {
                 let Some((px, py)) = project_cell(rx, ry) else {
                     continue;
                 };
-                if let Some((dest_x, dest_y)) = aperture_pixel(native_radar_surface, (px, py)) {
+                let native_color = if classification == OverlayClassification::Bridge {
+                    dim_color(color, 0.5)
+                } else {
+                    color
+                };
+                if native_radar_surface.is_none()
+                    && let Some((dest_x, dest_y)) = aperture_pixel(None, (px, py))
+                {
                     set_pixel(&mut base_rgba, MINIMAP_WIDTH, dest_x, dest_y, color);
                 }
+                native_overrides.insert(
+                    (rx, ry),
+                    [native_color[0], native_color[1], native_color[2]],
+                );
                 overlay_pixels.push(OverlayPixel {
                     rx,
                     ry,
@@ -184,6 +243,17 @@ impl MinimapPlayfieldProjection {
             }
         }
 
+        let native_radar_terrain = native_radar_surface.map(|surface| {
+            NativeRadarTerrainSurface::new(surface, native_cells, native_overrides)
+        });
+        let surface_pixels = if let Some(surface) = &native_radar_terrain {
+            let (native_rgba, pixels) = rasterize_native_terrain(surface);
+            base_rgba = native_rgba;
+            pixels
+        } else {
+            Vec::new()
+        };
+
         Self {
             base_rgba,
             world_origin_x,
@@ -191,12 +261,14 @@ impl MinimapPlayfieldProjection {
             world_width,
             world_height,
             terrain_pixels,
+            surface_pixels,
             overlay_pixels,
             map_offset_x,
             map_offset_y,
             map_pixel_w,
             map_pixel_h,
             native_radar_surface,
+            native_radar_terrain,
         }
     }
 }

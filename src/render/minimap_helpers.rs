@@ -122,6 +122,18 @@ pub(super) struct TerrainPixel {
     pub color: [u8; 4],
 }
 
+/// One generated-primary terrain pixel plus the exact cell gamemd queries for
+/// shroud/fog when `RenderCellPixel @ 0x00655C50` refreshes that pixel.
+#[derive(Clone, Copy)]
+pub(super) struct RadarSurfacePixel {
+    pub rx: u16,
+    pub ry: u16,
+    pub px: u32,
+    pub py: u32,
+    pub packed_rgb565: u16,
+    pub color: [u8; 4],
+}
+
 /// Compute the minimap color for a terrain cell.
 ///
 /// Uses per-tile radar colors from TMP files when available (RadarLeft/RadarRight
@@ -131,28 +143,38 @@ pub(super) fn radar_color_for_cell(
     cell: &crate::map::terrain::TerrainCell,
     terrain_brightness: f32,
 ) -> [u8; 4] {
+    let (left, right) = radar_colors_for_cell(cell, terrain_brightness);
+    [
+        ((u16::from(left[0]) + u16::from(right[0])) / 2) as u8,
+        ((u16::from(left[1]) + u16::from(right[1])) / 2) as u8,
+        ((u16::from(left[2]) + u16::from(right[2])) / 2) as u8,
+        255,
+    ]
+}
+
+/// Preserve the two raw half-pixel colors consumed by
+/// `FillTerrainColors @ 0x00654EA0`; averaging is only for legacy metadata.
+pub(super) fn radar_colors_for_cell(
+    cell: &crate::map::terrain::TerrainCell,
+    terrain_brightness: f32,
+) -> ([u8; 3], [u8; 3]) {
     let has_radar_colors: bool = cell.radar_left != [0, 0, 0] || cell.radar_right != [0, 0, 0];
     if has_radar_colors {
-        // Average left and right halves for single-pixel representation,
-        // then apply theater brightness (original halves via SHR 1).
-        let r = ((cell.radar_left[0] as u16 + cell.radar_right[0] as u16) / 2) as f32
-            * terrain_brightness;
-        let g = ((cell.radar_left[1] as u16 + cell.radar_right[1] as u16) / 2) as f32
-            * terrain_brightness;
-        let b = ((cell.radar_left[2] as u16 + cell.radar_right[2] as u16) / 2) as f32
-            * terrain_brightness;
-        [
-            r.clamp(0.0, 255.0) as u8,
-            g.clamp(0.0, 255.0) as u8,
-            b.clamp(0.0, 255.0) as u8,
-            255,
-        ]
+        let apply = |color: [u8; 3]| {
+            color.map(|channel| {
+                (channel as f32 * terrain_brightness).clamp(0.0, 255.0) as u8
+            })
+        };
+        (apply(cell.radar_left), apply(cell.radar_right))
     } else if cell.is_water {
-        dim_color(COLOR_WATER, terrain_brightness)
+        let color = dim_color(COLOR_WATER, terrain_brightness);
+        ([color[0], color[1], color[2]], [color[0], color[1], color[2]])
     } else if cell.z > 0 {
-        dim_color(COLOR_ELEVATED, terrain_brightness)
+        let color = dim_color(COLOR_ELEVATED, terrain_brightness);
+        ([color[0], color[1], color[2]], [color[0], color[1], color[2]])
     } else {
-        dim_color(COLOR_LAND, terrain_brightness)
+        let color = dim_color(COLOR_LAND, terrain_brightness);
+        ([color[0], color[1], color[2]], [color[0], color[1], color[2]])
     }
 }
 
@@ -328,4 +350,21 @@ pub fn default_minimap_rect(screen_h: f32) -> (f32, f32, f32, f32) {
     let mm_x = MINIMAP_MARGIN;
     let mm_y = screen_h - mm_h - MINIMAP_MARGIN;
     (mm_x, mm_y, mm_w, mm_h)
+}
+
+pub(super) fn surface_visibility_color(
+    local_owner: InternedId,
+    fog: &FogState,
+    pixel: &RadarSurfacePixel,
+) -> Option<[u8; 4]> {
+    if fog.is_cell_gap_covered(local_owner, pixel.rx, pixel.ry) {
+        return Some(COLOR_SHROUD);
+    }
+    if fog.is_cell_gap_fog(local_owner, pixel.rx, pixel.ry) {
+        return Some(super::native_radar_terrain::half_bright_rgb565(
+            pixel.packed_rgb565,
+        ));
+    }
+    fog.is_cell_revealed(local_owner, pixel.rx, pixel.ry)
+        .then_some(pixel.color)
 }

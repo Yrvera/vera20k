@@ -35,6 +35,7 @@ mod minimap_helpers;
 mod minimap_legacy_events;
 mod minimap_projection;
 mod native_radar_surface;
+mod native_radar_terrain;
 mod radar_events;
 mod radar_tracker;
 mod radar_visibility;

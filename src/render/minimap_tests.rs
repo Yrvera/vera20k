@@ -601,7 +601,24 @@ fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_re
     );
     let destination = rebuilt_surface.surface_to_aperture_pixel(rebuilt_local);
     let offset = ((destination.1 as u32 * MINIMAP_WIDTH + destination.0 as u32) * 4) as usize;
-    assert_eq!(&rebuilt.base_rgba[offset..offset + 4], &[77, 88, 99, 255]);
+    assert_eq!(
+        &rebuilt.base_rgba[offset..offset + 4],
+        &[72, 88, 96, 255],
+        "terrain reaches the aperture only after native RGB565 packing"
+    );
+    assert_ne!(
+        initial
+            .native_radar_terrain
+            .as_ref()
+            .expect("initial terrain surface")
+            .generated_rgb565(),
+        rebuilt
+            .native_radar_terrain
+            .as_ref()
+            .expect("rebuilt terrain surface")
+            .generated_rgb565(),
+        "action 40 must regenerate the full sampled surface, not retain stale pixels"
+    );
 
     let mut events = ClientRadarEvents::default();
     let config = crate::rules::radar_event_config::RadarEventConfig::default();
