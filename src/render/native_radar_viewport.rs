@@ -209,6 +209,44 @@ pub(super) fn native_viewport_outline_instances(
     sidebar_surface: [f32; 4],
     tint: [f32; 3],
 ) -> Vec<SpriteInstance> {
+    native_radar_outline_instances(camera, screen, rect, sidebar_surface, tint)
+}
+
+/// `RadarClass::Update @ 0x00657669..0x006576A2` final retained-radar write.
+///
+/// Native submits `(origin_x - 1, origin_y - 1, generated_w + 2,
+/// generated_h + 2)` after the camera-window outline. Keeping this stateless
+/// means an ordinary redraw, a force-reset, and an action-40 surface rebuild
+/// all consume the currently installed generated-primary dimensions.
+pub(super) fn native_content_boundary_outline_instances(
+    camera: (f32, f32),
+    screen: NativeRadarScreenGeometry,
+    surface: NativeRadarSurfaceGeometry,
+    sidebar_surface: [f32; 4],
+    tint: [f32; 3],
+) -> Vec<SpriteInstance> {
+    let size = surface.generated_size();
+    native_radar_outline_instances(
+        camera,
+        screen,
+        NativeRadarRect {
+            x: -1,
+            y: -1,
+            w: size.0.wrapping_add(2),
+            h: size.1.wrapping_add(2),
+        },
+        sidebar_surface,
+        tint,
+    )
+}
+
+fn native_radar_outline_instances(
+    camera: (f32, f32),
+    screen: NativeRadarScreenGeometry,
+    rect: NativeRadarRect,
+    sidebar_surface: [f32; 4],
+    tint: [f32; 3],
+) -> Vec<SpriteInstance> {
     let left = rect.x;
     let top = rect.y;
     let right = left.wrapping_add(rect.w).wrapping_sub(1);

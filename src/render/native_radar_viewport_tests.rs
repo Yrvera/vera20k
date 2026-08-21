@@ -408,3 +408,85 @@ fn native_viewport_outline_scales_then_clips_without_sidebar_bleed() {
         assert!(top + line.size[1] <= sidebar[1] + sidebar[3]);
     }
 }
+
+#[test]
+fn native_content_boundary_is_generated_size_plus_two_for_wide_and_tall() {
+    let color = [160.0 / 255.0, 208.0 / 255.0, 248.0 / 255.0];
+    let sidebar = [0.0, 0.0, 168.0, 300.0];
+
+    let wide = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 300, 180).unwrap();
+    assert_eq!(wide.generated_size(), (140, 83));
+    let wide_lines = native_content_boundary_outline_instances(
+        (0.0, 0.0),
+        NativeRadarScreenGeometry::new(wide, [16.0, 49.0, 140.0, 108.0]),
+        wide,
+        sidebar,
+        color,
+    );
+    assert_eq!(wide_lines.len(), 4);
+    assert_eq!(wide_lines[0].position, [15.0, 60.0]);
+    assert_eq!(wide_lines[0].size, [142.0, 1.0]);
+    assert_eq!(wide_lines[1].position, [156.0, 60.0]);
+    assert_eq!(wide_lines[1].size, [1.0, 85.0]);
+    assert_eq!(wide_lines[2].position, [15.0, 144.0]);
+    assert_eq!(wide_lines[3].position, [15.0, 60.0]);
+    assert!(wide_lines.iter().all(|line| line.tint == color));
+
+    let tall = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 180, 300).unwrap();
+    assert_eq!(tall.generated_size(), (64, 108));
+    let tall_lines = native_content_boundary_outline_instances(
+        (0.0, 0.0),
+        NativeRadarScreenGeometry::new(tall, [16.0, 49.0, 140.0, 108.0]),
+        tall,
+        sidebar,
+        color,
+    );
+    assert_eq!(tall_lines.len(), 4);
+    assert_eq!(tall_lines[0].position, [53.0, 48.0]);
+    assert_eq!(tall_lines[0].size, [66.0, 1.0]);
+    assert_eq!(tall_lines[1].position, [118.0, 48.0]);
+    assert_eq!(tall_lines[1].size, [1.0, 110.0]);
+    assert_eq!(tall_lines[2].position, [53.0, 157.0]);
+    assert_eq!(tall_lines[3].position, [53.0, 48.0]);
+}
+
+#[test]
+fn native_content_boundary_clips_to_sidebar_edges_not_generated_content() {
+    let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 140, 108).unwrap();
+    let lines = native_content_boundary_outline_instances(
+        (7.0, 11.0),
+        NativeRadarScreenGeometry::new(surface, [0.0, 0.0, 140.0, 108.0]),
+        surface,
+        [0.0, 0.0, 141.0, 108.0],
+        [1.0; 3],
+    );
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].position, [147.0, 11.0]);
+    assert_eq!(lines[0].size, [1.0, 108.0]);
+    assert_eq!(lines[0].position[0] - 7.0, 140.0);
+}
+
+#[test]
+fn native_content_boundary_rebuild_uses_current_surface_without_stale_state() {
+    let wide = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 300, 180).unwrap();
+    let tall = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 180, 300).unwrap();
+    let screen_rect = [16.0, 49.0, 140.0, 108.0];
+    let sidebar = [0.0, 0.0, 168.0, 300.0];
+    let build = |surface| {
+        native_content_boundary_outline_instances(
+            (0.0, 0.0),
+            NativeRadarScreenGeometry::new(surface, screen_rect),
+            surface,
+            sidebar,
+            [1.0; 3],
+        )
+        .into_iter()
+        .map(|line| (line.position, line.size))
+        .collect::<Vec<_>>()
+    };
+
+    let before_action40 = build(wide);
+    let after_action40 = build(tall);
+    assert_ne!(before_action40, after_action40);
+    assert_eq!(build(tall), after_action40, "equal rebuilds derive the same current frame");
+}

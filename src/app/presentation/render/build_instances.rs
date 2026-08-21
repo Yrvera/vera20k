@@ -113,6 +113,7 @@ pub(super) struct SidebarInstances {
     pub text: Vec<SpriteInstance>,
     pub minimap: Vec<SpriteInstance>,
     pub viewport_rect: Vec<SpriteInstance>,
+    pub content_boundary: Vec<SpriteInstance>,
     pub radar_anim: Vec<SpriteInstance>,
     pub view: Option<SidebarView>,
 }
@@ -779,7 +780,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let tactical_center_cell = crate::app::input::camera::tactical_centre_cell(state);
-    let sidebar_color = crate::render::sidebar_text::side_highlight_color(
+    let sidebar_color = crate::render::sidebar_text::native_radar_outline_color(
         crate::app::presentation::sidebar_render::current_sidebar_theme(state),
     );
     // Native g_SidebarSurface is 168 x screen_height in surface-local space;
@@ -801,7 +802,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
 
-    let (minimap, viewport_rect) = if minimap_visible {
+    let (minimap, viewport_rect, content_boundary) = if minimap_visible {
         match &mut state.match_state.match_presentation.minimap {
             Some(mm) => {
                 let minimap = vec![mm.build_minimap_instance_in_rect(
@@ -827,12 +828,25 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
                         sidebar_color,
                     )
                 });
-                (minimap, viewport_rect)
+                let content_boundary =
+                    sidebar_surface.map_or_else(Vec::new, |sidebar_surface| {
+                        mm.build_content_boundary_in_rect(
+                            state.match_state.input.camera_x,
+                            state.match_state.input.camera_y,
+                            minimap_rect.x,
+                            minimap_rect.y,
+                            minimap_rect.w,
+                            minimap_rect.h,
+                            sidebar_surface,
+                            sidebar_color,
+                        )
+                    });
+                (minimap, viewport_rect, content_boundary)
             }
-            None => (Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), Vec::new()),
         }
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new())
     };
 
     let sidebar = view
@@ -901,6 +915,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         text,
         minimap,
         viewport_rect,
+        content_boundary,
         radar_anim,
         view,
     }

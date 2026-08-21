@@ -5,7 +5,8 @@ use crate::render::batch::SpriteInstance;
 use super::minimap::MinimapRenderer;
 use super::minimap_projection::minimap_screen_point_to_camera_top_left;
 use super::native_radar_viewport::{
-    NativeRadarScreenGeometry, native_viewport_outline_instances, native_viewport_rect,
+    NativeRadarScreenGeometry, native_content_boundary_outline_instances,
+    native_viewport_outline_instances, native_viewport_rect,
 };
 
 /// Exact result of the native radar click's
@@ -272,6 +273,33 @@ impl MinimapRenderer {
             (camera_x, camera_y),
             NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h]),
             transition.current,
+            sidebar_surface,
+            sidebar_color,
+        )
+    }
+
+    /// Build the generated-content boundary that native submits after the
+    /// camera window at `RadarClass::Update @ 0x00657669..0x006576A2`.
+    /// Absence of the generated MapClass-owned surface fails closed; there is
+    /// no legacy rectangular substitute on the parity path.
+    pub fn build_content_boundary_in_rect(
+        &self,
+        camera_x: f32,
+        camera_y: f32,
+        rect_x: f32,
+        rect_y: f32,
+        rect_w: f32,
+        rect_h: f32,
+        sidebar_surface: [f32; 4],
+        sidebar_color: [f32; 3],
+    ) -> Vec<SpriteInstance> {
+        let Some(surface) = self.native_radar_surface else {
+            return Vec::new();
+        };
+        native_content_boundary_outline_instances(
+            (camera_x, camera_y),
+            NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h]),
+            surface,
             sidebar_surface,
             sidebar_color,
         )

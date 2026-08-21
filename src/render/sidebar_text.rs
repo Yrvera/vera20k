@@ -24,6 +24,29 @@ pub fn side_highlight_color(theme: SidebarTheme) -> [f32; 3] {
     }
 }
 
+/// Packed `RadarClass+0x1208` color expanded back to the presentation frame.
+///
+/// `SetSidebarTextColor @ 0x0072F440` selects the exact RGB table above;
+/// `RadarClass::Init_For_House @ 0x00652E90` then packs it through the active
+/// retail 16-bit DirectDraw descriptor before `Update @ 0x00656EC0` submits
+/// both retained radar rectangles. This is deliberately not a color inferred
+/// from radar/chrome art or a UI-theme palette.
+pub fn native_radar_outline_color(theme: SidebarTheme) -> [f32; 3] {
+    let source = side_highlight_color(theme);
+    let to_byte = |channel: f32| (channel * 255.0).round() as u8;
+    let packed = super::native_radar_terrain::pack_rgb565(
+        to_byte(source[0]),
+        to_byte(source[1]),
+        to_byte(source[2]),
+    );
+    let expanded = super::native_radar_terrain::unpack_rgb565(packed);
+    [
+        expanded[0] as f32 / 255.0,
+        expanded[1] as f32 / 255.0,
+        expanded[2] as f32 / 255.0,
+    ]
+}
+
 // --- Plain pass-throughs preserved for existing single-color callers ---
 
 pub fn text_width(font: &BitFont, text: &str) -> f32 {
@@ -153,6 +176,17 @@ mod tests {
         assert_eq!(side_highlight_color(SidebarTheme::Allied), HIGHLIGHT_ALLIED);
         assert_eq!(side_highlight_color(SidebarTheme::Soviet), HIGHLIGHT_SOVIET);
         assert_eq!(side_highlight_color(SidebarTheme::Yuri), HIGHLIGHT_YURI);
+    }
+
+    #[test]
+    fn native_radar_outline_color_uses_packed_sidebar_text_color() {
+        assert_eq!(
+            native_radar_outline_color(SidebarTheme::Allied),
+            [160.0 / 255.0, 208.0 / 255.0, 248.0 / 255.0],
+        );
+        let soviet = [248.0 / 255.0, 252.0 / 255.0, 0.0];
+        assert_eq!(native_radar_outline_color(SidebarTheme::Soviet), soviet);
+        assert_eq!(native_radar_outline_color(SidebarTheme::Yuri), soviet);
     }
 
     #[test]

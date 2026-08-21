@@ -314,6 +314,11 @@ fn upload_to_gpu(
     // Sidebar + minimap
     pool.upload(&state.renderer.gpu, "minimap", &sidebar.minimap);
     pool.upload(&state.renderer.gpu, "viewport_rect", &sidebar.viewport_rect);
+    pool.upload(
+        &state.renderer.gpu,
+        "radar_content_boundary",
+        &sidebar.content_boundary,
+    );
     pool.upload(&state.renderer.gpu, "sidebar", &sidebar.sidebar);
     pool.upload(&state.renderer.gpu, "sidebar_chrome", &sidebar.chrome);
     pool.upload(&state.renderer.gpu, "radar_anim", &sidebar.radar_anim);
@@ -342,6 +347,7 @@ mod tests {
             text: Vec::new(),
             minimap: vec![sprite],
             viewport_rect: vec![sprite; 4],
+            content_boundary: vec![sprite; 4],
             radar_anim: vec![sprite; 2],
             view: None,
         };
@@ -350,5 +356,6 @@ mod tests {
         assert_eq!(counts.minimap, 1);
         assert_eq!(counts.viewport_rect, 4);
         assert_eq!(counts.radar_animation, 2);
+        assert_eq!(instances.content_boundary.len(), 4);
     }
 }
