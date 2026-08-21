@@ -99,9 +99,22 @@ pub(super) fn native_viewport_rect(
     tactical_height: i32,
 ) -> NativeRadarRect {
     let center = surface.cell_to_surface_pixel(center_cell);
+    native_viewport_rect_from_center(surface, center, tactical_width, tactical_height)
+}
+
+fn native_viewport_rect_from_center(
+    surface: NativeRadarSurfaceGeometry,
+    center: (i32, i32),
+    tactical_width: i32,
+    tactical_height: i32,
+) -> NativeRadarRect {
     let zoom = load_f32(surface.zoom());
     let denom_x = div(load_constant(60.0), zoom);
-    let denom_y = div(load_constant(30.0), zoom);
+    // `0x00657031..0x00657054` executes FSTP dword before either vertical
+    // division. Keeping the quotient in extended precision changes boundary
+    // results (for example raw 19x10, tactical height 570: 280 instead of
+    // native 279).
+    let denom_y = load_f32(store_f32(div(load_constant(30.0), zoom)));
     let width_twice = add(load_i32(tactical_width), load_i32(tactical_width));
     let height_twice = add(load_i32(tactical_height), load_i32(tactical_height));
     let w = native_ftol(add(div(width_twice, denom_x), load_constant(1.0)));
@@ -231,6 +244,14 @@ fn load_constant(value: f32) -> X87Value {
 
 fn load_f32(value: f32) -> X87Value {
     X87Chop53::load_f32(NativeF32Bits::from_bits(value.to_bits())).expect("finite radar value")
+}
+
+fn store_f32(value: X87Value) -> f32 {
+    f32::from_bits(
+        X87Chop53::store_f32(value)
+            .expect("native radar viewport value remains finite")
+            .bits(),
+    )
 }
 
 fn add(lhs: X87Value, rhs: X87Value) -> X87Value {
