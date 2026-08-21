@@ -16,13 +16,46 @@ use super::native_radar_terrain::{
     NativeRadarCellColors, NativeRadarCellUpdate, NativeRadarTerrainSurface,
 };
 
-pub(super) struct RadarTerrainUpdateLayers<'a> {
+pub(crate) struct RadarTerrainUpdateLayers<'a> {
     pub base_rgba: &'a mut Vec<u8>,
     pub terrain_pixels: &'a [TerrainPixel],
     pub surface_pixels: &'a mut Vec<RadarSurfacePixel>,
     pub overlay_pixels: &'a mut Vec<OverlayPixel>,
     pub native_surface: Option<NativeRadarSurfaceGeometry>,
     pub native_terrain: &'a mut Option<NativeRadarTerrainSurface>,
+}
+
+/// Apply one newly published simulation batch through the retained radar
+/// terrain layers and return the generation to acknowledge after presentation
+/// uploads complete.
+///
+/// This is the CPU transaction used by the production minimap update. Keeping
+/// its generation gate beside the exact current-cell updater lets headless
+/// integration tests exercise the same application path without constructing
+/// a GPU surface. A skipped presentation update never calls this function and
+/// therefore never advances `last_generation` or acknowledges the sim batch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_radar_terrain_dirty_generation(
+    layers: RadarTerrainUpdateLayers<'_>,
+    authority: CurrentRadarCellAuthority<'_>,
+    structural_bridge_color: [u8; 3],
+    overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
+    cells: &[(u16, u16)],
+    generation: u64,
+    last_generation: &mut u64,
+) -> Option<u64> {
+    if generation == *last_generation {
+        return None;
+    }
+    apply_radar_terrain_dirty_cells(
+        layers,
+        authority,
+        structural_bridge_color,
+        overlay_radar_colors,
+        cells,
+    );
+    *last_generation = generation;
+    (!cells.is_empty()).then_some(generation)
 }
 
 /// Re-run the current CellClass radar source for one acknowledged dirty batch.

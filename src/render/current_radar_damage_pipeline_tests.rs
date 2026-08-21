@@ -1,6 +1,9 @@
 use super::*;
 
+use std::collections::BTreeMap;
+
 use crate::map::bridge_facts::{Axis, BridgeCellFacts, BridgeheadAnchorClass};
+use crate::map::entities::EntityCategory;
 use crate::map::playfield::PlayfieldBounds;
 use crate::map::resolved_terrain::{
     RadarColorMetadata, ResolvedTerrainCell, ResolvedTerrainGrid,
@@ -8,7 +11,7 @@ use crate::map::resolved_terrain::{
 use crate::map::terrain::build_terrain_grid_from_resolved;
 use crate::render::minimap_projection::MinimapPlayfieldProjection;
 use crate::render::radar_terrain_updates::{
-    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_cells,
+    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_generation,
 };
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
@@ -17,6 +20,12 @@ use crate::sim::bridge_state::{
     AnchorSpan, BridgeCellRole, BridgeDamageEvent, BridgeRuntimeCell, BridgeRuntimeState,
     DamageState, Direction,
 };
+use crate::sim::combat::AttackTarget;
+use crate::sim::command::Command;
+use crate::sim::components::Health;
+use crate::sim::game_entity::GameEntity;
+use crate::sim::runtime::SimRuntime;
+use crate::sim::world::TickLane;
 use crate::sim::world::Simulation;
 
 const SIDE: u16 = 64;
@@ -135,8 +144,18 @@ fn simulation_fixture() -> (Simulation, crate::map::terrain::TerrainGrid) {
         bridge_cell(BridgeCellRole::Anchor, Some(1), 0),
     );
     for &(rx, ry) in &FLOOD {
-        bridge_state.test_seed_cell(rx, ry, bridge_cell(BridgeCellRole::Anchor, None, 0));
+        let overlay = if (rx, ry) == FLOOD[0] { 0xD1 } else { 0 };
+        bridge_state.test_seed_cell(
+            rx,
+            ry,
+            bridge_cell(BridgeCellRole::Anchor, None, overlay),
+        );
     }
+    bridge_state.test_seed_cell(
+        REPAIR_START.0,
+        REPAIR_START.1,
+        bridge_cell(BridgeCellRole::Anchor, None, 0xD1),
+    );
     bridge_state.test_seed_anchor_span(AnchorSpan {
         id: 1,
         anchor: CENTER,
@@ -183,8 +202,14 @@ fn raw_pair(projection: &MinimapPlayfieldProjection, cell: (u16, u16)) -> [[u8; 
     [raw[index], raw[index + 1]]
 }
 
-fn apply_queue(projection: &mut MinimapPlayfieldProjection, sim: &Simulation) {
-    apply_radar_terrain_dirty_cells(
+fn apply_runtime_queue(
+    projection: &mut MinimapPlayfieldProjection,
+    runtime: &SimRuntime,
+    last_generation: &mut u64,
+) -> Option<u64> {
+    let view = runtime.view();
+    let (cells, generation) = view.radar_terrain_dirty();
+    apply_radar_terrain_dirty_generation(
         RadarTerrainUpdateLayers {
             base_rgba: &mut projection.base_rgba,
             terrain_pixels: &projection.terrain_pixels,
@@ -194,78 +219,198 @@ fn apply_queue(projection: &mut MinimapPlayfieldProjection, sim: &Simulation) {
             native_terrain: &mut projection.native_radar_terrain,
         },
         CurrentRadarCellAuthority::new(
-            sim.resolved_terrain.as_ref(),
-            sim.bridge_state.as_ref(),
-            sim.overlay_grid.as_ref(),
-            None,
-            None,
+            view.resolved_terrain(),
+            view.bridge_state(),
+            view.overlay_grid(),
+            Some(&runtime.resources.overlay_registry),
+            Some(&runtime.resources.rules),
         ),
         [0, 0, 0],
         &HashMap::new(),
-        &sim.radar_terrain_dirty_cells,
+        cells,
+        generation,
+        last_generation,
+    )
+}
+
+fn production_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=ENGI\n\n\
+         [VehicleTypes]\n0=MTNK\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n0=CABHUT\n1=TARGB\n\n\
+         [ENGI]\nStrength=75\nArmor=none\nSpeed=4\nPrimary=none\nEngineer=yes\n\n\
+         [MTNK]\nStrength=10000\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+         [CABHUT]\nStrength=200\nArmor=concrete\nFoundation=1x1\nBridgeRepairHut=yes\n\n\
+         [TARGB]\nStrength=10000\nArmor=heavy\nFoundation=1x1\n\n\
+         [105mm]\nDamage=1501\nROF=50\nRange=6\nWarhead=AP\n\n\
+         [AP]\nWall=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\n\
+         [AudioVisual]\nRepairBridgeSound=BridgeRepaired\n",
+    ))
+    .expect("production bridge damage/repair rules")
+}
+
+fn spawn(
+    sim: &mut Simulation,
+    owner_name: &str,
+    type_name: &str,
+    category: EntityCategory,
+    cell: (u16, u16),
+    z: u8,
+    health: u16,
+    facing: u8,
+) -> u64 {
+    let owner = sim.interner.intern(owner_name);
+    let type_ref = sim.interner.intern(type_name);
+    let id = sim.allocate_stable_id();
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
+        id,
+        cell.0,
+        cell.1,
+        z,
+        facing,
+        owner,
+        Health {
+            current: health,
+            max: health,
+        },
+        type_ref,
+        category,
+        0,
+        5,
+        category == EntityCategory::Unit,
     );
+    entity.in_playfield = true;
+    sim.substrate.entities.insert(entity);
+    assert!(matches!(
+        sim.reveal(id),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
+    id
 }
 
 #[test]
-fn gsi_04_01_bridge_damage_producer_queues_exact_flood_and_rearms_after_repair_ack() {
+fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair() {
     let (mut sim, grid) = simulation_fixture();
+    let rules = production_rules();
+    sim.resolve_type_handles(&rules);
+    let attacker = spawn(
+        &mut sim,
+        "Americans",
+        "MTNK",
+        EntityCategory::Unit,
+        CENTER,
+        4,
+        10_000,
+        64,
+    );
+    let target = spawn(
+        &mut sim,
+        "Soviets",
+        "TARGB",
+        EntityCategory::Structure,
+        CENTER,
+        4,
+        10_000,
+        192,
+    );
+    sim.add_entity_occupancy(target);
+    let owner = sim.interner.get("Americans").expect("owner interned");
+    sim.fog = crate::sim::vision::FogState {
+        width: SIDE,
+        height: SIDE,
+        ..Default::default()
+    };
+    crate::sim::vision::reveal_radius(&mut sim.fog, owner, CENTER.0, CENTER.1, 6);
+    sim.substrate
+        .entities
+        .get_mut(attacker)
+        .expect("attacker")
+        .attack_target = Some(AttackTarget::new(target));
     let mut radar = projection(&sim, &grid);
+    let mut last_generation = 0;
     assert_eq!(raw_pair(&radar, FLOOD[0]), [PRISTINE; 2]);
 
-    let rules = RuleSet::from_ini(&IniFile::from_str("[General]\n"))
-        .expect("minimal bridge damage rules");
-    sim.resolve_type_handles(&rules);
-    let collapsed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
-        &mut sim,
-        &rules,
-        &[BridgeDamageEvent {
-            rx: CENTER.0,
-            ry: CENTER.1,
-            damage: 1501,
-            warhead_ref: Default::default(),
-            is_ion_cannon: false,
-            impact_z: 4,
-        }],
+    let mut runtime = SimRuntime::from_simulation(sim);
+    runtime.resources.rules = rules;
+    let mut fire_count = 0;
+    for _ in 0..32 {
+        let output = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+        fire_count += output.fire_events.len();
+        if runtime.simulation.radar_terrain_dirty_generation != 0 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        runtime.simulation.radar_terrain_dirty_cells,
+        FLOOD,
+        "fires={fire_count}, attacker_target={:?}, visible={}, logic={:?}",
+        runtime
+            .simulation
+            .substrate
+            .entities
+            .get(attacker)
+            .and_then(|entity| entity.attack_target.clone()),
+        runtime
+            .simulation
+            .fog
+            .is_cell_visible(owner, CENTER.0, CENTER.1),
+        runtime.simulation.tactical_registration_order(),
     );
-    assert!(!collapsed, "first state-machine hit is absorbed");
-    assert_eq!(sim.radar_terrain_dirty_cells, FLOOD);
-    assert_eq!(sim.radar_terrain_dirty_generation, 1);
-    apply_queue(&mut radar, &sim);
+    assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 1);
+    let consumed = apply_runtime_queue(&mut radar, &runtime, &mut last_generation);
+    assert_eq!(consumed, Some(1));
     for cell in FLOOD {
         assert_eq!(raw_pair(&radar, cell), [DAMAGED; 2]);
     }
-    assert!(sim.acknowledge_radar_terrain_dirty(1));
+    assert!(runtime.acknowledge_radar_terrain_dirty(consumed.unwrap()));
+    assert!(runtime.simulation.radar_terrain_dirty_cells.is_empty());
 
-    sim.bridge_state
-        .as_mut()
-        .unwrap()
-        .cell_mut(FLOOD[0].0, FLOOD[0].1)
-        .unwrap()
-        .overlay_byte = 0xD1;
-    sim.bridge_state.as_mut().unwrap().test_seed_cell(
-        REPAIR_START.0,
-        REPAIR_START.1,
-        bridge_cell(BridgeCellRole::Anchor, None, 0xD1),
+    let cabhut = spawn(
+        &mut runtime.simulation,
+        "Soviets",
+        "CABHUT",
+        EntityCategory::Structure,
+        FLOOD[0],
+        4,
+        200,
+        0,
     );
-    let repair = sim
-        .bridge_state
-        .as_mut()
-        .unwrap()
-        .repair_bridge_from_engineer_scan(
-            &[FLOOD[0]],
-            &mut sim.mapgen_rng,
-            sim.resolved_terrain.as_ref().unwrap(),
-        );
-    assert_eq!(repair.radar_cells, FLOOD);
-    sim.mark_radar_terrain_dirty_cells(repair.radar_cells);
-    assert_eq!(sim.radar_terrain_dirty_generation, 2);
-    assert_eq!(sim.radar_terrain_dirty_cells, FLOOD);
-    apply_queue(&mut radar, &sim);
+    let engineer = spawn(
+        &mut runtime.simulation,
+        "Americans",
+        "ENGI",
+        EntityCategory::Infantry,
+        FLOOD[0],
+        4,
+        75,
+        0,
+    );
+    assert!(runtime.simulation.apply_command(
+        "Americans",
+        &Command::CaptureBuilding {
+            engineer_id: engineer,
+            target_building_id: cabhut,
+        },
+        Some(&runtime.resources.rules),
+        None,
+        &BTreeMap::new(),
+    ));
+    let _ = runtime.advance_frame(&[], 67, TickLane::Ordinary);
+
+    assert!(runtime.simulation.substrate.entities.get(engineer).is_none());
+    assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 2);
+    for cell in FLOOD {
+        assert!(runtime.simulation.radar_terrain_dirty_cells.contains(&cell));
+    }
+    let consumed = apply_runtime_queue(&mut radar, &runtime, &mut last_generation);
+    assert_eq!(consumed, Some(2));
     for cell in FLOOD {
         assert_eq!(raw_pair(&radar, cell), [PRISTINE; 2]);
     }
-    assert!(sim.acknowledge_radar_terrain_dirty(2));
-    assert!(sim.radar_terrain_dirty_cells.is_empty());
+    assert!(runtime.acknowledge_radar_terrain_dirty(consumed.unwrap()));
+    assert!(runtime.simulation.radar_terrain_dirty_cells.is_empty());
 }
 
 #[test]

@@ -59,7 +59,7 @@ use super::native_radar_terrain::NativeRadarTerrainSurface;
 use super::native_radar_viewport::NativeRadarViewportState;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 use super::radar_terrain_updates::{
-    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_cells,
+    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_generation,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,32 +392,28 @@ impl MinimapRenderer {
         {
             return None;
         }
-        let consumed_radar_terrain_generation = (radar_terrain_dirty_generation
-            != self.last_radar_terrain_dirty_generation
-            && !radar_terrain_dirty_cells.is_empty())
-        .then_some(radar_terrain_dirty_generation);
-        if radar_terrain_dirty_generation != self.last_radar_terrain_dirty_generation {
-            apply_radar_terrain_dirty_cells(
-                RadarTerrainUpdateLayers {
-                    base_rgba: &mut self.base_terrain_rgba,
-                    terrain_pixels: &self.terrain_pixels,
-                    surface_pixels: &mut self.surface_pixels,
-                    overlay_pixels: &mut self.overlay_pixels,
-                    native_surface: self.native_radar_surface,
-                    native_terrain: &mut self.native_radar_terrain,
-                },
-                CurrentRadarCellAuthority::new(
-                    resolved_terrain,
-                    bridge_state,
-                    overlay_grid,
-                    overlay_registry,
-                    rules,
-                ),
-                self.structural_bridge_radar_color,
-                overlay_radar_colors,
-                radar_terrain_dirty_cells,
-            );
-        }
+        let consumed_radar_terrain_generation = apply_radar_terrain_dirty_generation(
+            RadarTerrainUpdateLayers {
+                base_rgba: &mut self.base_terrain_rgba,
+                terrain_pixels: &self.terrain_pixels,
+                surface_pixels: &mut self.surface_pixels,
+                overlay_pixels: &mut self.overlay_pixels,
+                native_surface: self.native_radar_surface,
+                native_terrain: &mut self.native_radar_terrain,
+            },
+            CurrentRadarCellAuthority::new(
+                resolved_terrain,
+                bridge_state,
+                overlay_grid,
+                overlay_registry,
+                rules,
+            ),
+            self.structural_bridge_radar_color,
+            overlay_radar_colors,
+            radar_terrain_dirty_cells,
+            radar_terrain_dirty_generation,
+            &mut self.last_radar_terrain_dirty_generation,
+        );
         if visibility_owner != self.last_visibility_owner && self.last_sim_tick != u64::MAX {
             // g_PlayerPtr controls bucket-front insertion and visibility. A
             // view-owner switch must rebuild, not reuse the other client's
@@ -428,7 +424,6 @@ impl MinimapRenderer {
         self.last_sim_tick = sim_tick;
         self.last_fog_generation = fog_generation;
         self.last_visibility_owner = visibility_owner;
-        self.last_radar_terrain_dirty_generation = radar_terrain_dirty_generation;
 
         let size: u32 = MINIMAP_WIDTH;
         {
