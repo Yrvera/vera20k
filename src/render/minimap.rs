@@ -59,7 +59,7 @@ use super::native_radar_terrain::NativeRadarTerrainSurface;
 use super::native_radar_viewport::NativeRadarViewportState;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 use super::radar_terrain_updates::{
-    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_generation,
+    RadarTerrainUpdateLayers, stage_radar_terrain_dirty_generation,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,7 +392,7 @@ impl MinimapRenderer {
         {
             return None;
         }
-        let consumed_radar_terrain_generation = apply_radar_terrain_dirty_generation(
+        let staged_radar_terrain_update = stage_radar_terrain_dirty_generation(
             RadarTerrainUpdateLayers {
                 base_rgba: &mut self.base_terrain_rgba,
                 terrain_pixels: &self.terrain_pixels,
@@ -412,7 +412,7 @@ impl MinimapRenderer {
             overlay_radar_colors,
             radar_terrain_dirty_cells,
             radar_terrain_dirty_generation,
-            &mut self.last_radar_terrain_dirty_generation,
+            self.last_radar_terrain_dirty_generation,
         );
         if visibility_owner != self.last_visibility_owner && self.last_sim_tick != u64::MAX {
             // g_PlayerPtr controls bucket-front insertion and visibility. A
@@ -421,10 +421,6 @@ impl MinimapRenderer {
             self.radar_tracker.reset_for_load_or_view();
             self.radar_events.reset_for_load_or_view();
         }
-        self.last_sim_tick = sim_tick;
-        self.last_fog_generation = fog_generation;
-        self.last_visibility_owner = visibility_owner;
-
         let size: u32 = MINIMAP_WIDTH;
         {
             let rgba: &mut Vec<u8> = &mut self.rgba_scratch;
@@ -631,26 +627,30 @@ impl MinimapRenderer {
             );
         }
 
-        // Rewrite existing GPU texture instead of creating a new one.
-        gpu.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.map_texture_raw,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size * 4),
-                rows_per_image: Some(MINIMAP_HEIGHT),
-            },
-            wgpu::Extent3d {
-                width: size,
-                height: MINIMAP_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-        );
+        let consumed_radar_terrain_generation = staged_radar_terrain_update
+            .finish_infallible(&mut self.last_radar_terrain_dirty_generation, || {
+                gpu.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.map_texture_raw,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size * 4),
+                        rows_per_image: Some(MINIMAP_HEIGHT),
+                    },
+                    wgpu::Extent3d {
+                        width: size,
+                        height: MINIMAP_HEIGHT,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            });
+        self.last_sim_tick = sim_tick;
+        (self.last_fog_generation, self.last_visibility_owner) = (fog_generation, visibility_owner);
         consumed_radar_terrain_generation
     }
 

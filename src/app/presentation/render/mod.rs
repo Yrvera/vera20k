@@ -23,6 +23,7 @@ mod build_instances;
 mod draw_passes;
 pub(crate) mod draw_plan_lowering;
 mod merge_passes;
+pub(crate) mod minimap_transaction;
 
 use anyhow::Result;
 

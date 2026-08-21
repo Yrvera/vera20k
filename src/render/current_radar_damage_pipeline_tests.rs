@@ -11,7 +11,7 @@ use crate::map::resolved_terrain::{
 use crate::map::terrain::build_terrain_grid_from_resolved;
 use crate::render::minimap_projection::MinimapPlayfieldProjection;
 use crate::render::radar_terrain_updates::{
-    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_generation,
+    RadarTerrainUpdateLayers, stage_radar_terrain_dirty_generation,
 };
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
@@ -202,34 +202,54 @@ fn raw_pair(projection: &MinimapPlayfieldProjection, cell: (u16, u16)) -> [[u8; 
     [raw[index], raw[index + 1]]
 }
 
-fn apply_runtime_queue(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InjectedUploadFailure;
+
+fn present_runtime_projection(
     projection: &mut MinimapPlayfieldProjection,
-    runtime: &SimRuntime,
+    runtime: &mut SimRuntime,
     last_generation: &mut u64,
-) -> Option<u64> {
-    let view = runtime.view();
-    let (cells, generation) = view.radar_terrain_dirty();
-    apply_radar_terrain_dirty_generation(
-        RadarTerrainUpdateLayers {
-            base_rgba: &mut projection.base_rgba,
-            terrain_pixels: &projection.terrain_pixels,
-            surface_pixels: &mut projection.surface_pixels,
-            overlay_pixels: &mut projection.overlay_pixels,
-            native_surface: projection.native_radar_surface,
-            native_terrain: &mut projection.native_radar_terrain,
+    uploaded_rgba: &mut Vec<u8>,
+    fail_upload: bool,
+) -> Result<
+    crate::app::presentation::render::minimap_transaction::MinimapPresentationCommit,
+    InjectedUploadFailure,
+> {
+    crate::app::presentation::render::minimap_transaction::present_minimap_frame(
+        runtime,
+        |runtime| {
+            let view = runtime.view();
+            let (cells, generation) = view.radar_terrain_dirty();
+            let staged = stage_radar_terrain_dirty_generation(
+                RadarTerrainUpdateLayers {
+                    base_rgba: &mut projection.base_rgba,
+                    terrain_pixels: &projection.terrain_pixels,
+                    surface_pixels: &mut projection.surface_pixels,
+                    overlay_pixels: &mut projection.overlay_pixels,
+                    native_surface: projection.native_radar_surface,
+                    native_terrain: &mut projection.native_radar_terrain,
+                },
+                CurrentRadarCellAuthority::new(
+                    view.resolved_terrain(),
+                    view.bridge_state(),
+                    view.overlay_grid(),
+                    Some(&runtime.resources.overlay_registry),
+                    Some(&runtime.resources.rules),
+                ),
+                [0, 0, 0],
+                &HashMap::new(),
+                cells,
+                generation,
+                *last_generation,
+            );
+            staged.finish_with_upload(last_generation, || {
+                if fail_upload {
+                    return Err(InjectedUploadFailure);
+                }
+                uploaded_rgba.clone_from(&projection.base_rgba);
+                Ok(())
+            })
         },
-        CurrentRadarCellAuthority::new(
-            view.resolved_terrain(),
-            view.bridge_state(),
-            view.overlay_grid(),
-            Some(&runtime.resources.overlay_registry),
-            Some(&runtime.resources.rules),
-        ),
-        [0, 0, 0],
-        &HashMap::new(),
-        cells,
-        generation,
-        last_generation,
     )
 }
 
@@ -359,12 +379,33 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
         runtime.simulation.tactical_registration_order(),
     );
     assert_eq!(runtime.simulation.radar_terrain_dirty_generation, 1);
-    let consumed = apply_runtime_queue(&mut radar, &runtime, &mut last_generation);
-    assert_eq!(consumed, Some(1));
+    let mut uploaded_rgba = Vec::new();
+    let failed = present_runtime_projection(
+        &mut radar,
+        &mut runtime,
+        &mut last_generation,
+        &mut uploaded_rgba,
+        true,
+    );
+    assert_eq!(failed, Err(InjectedUploadFailure));
+    assert_eq!(last_generation, 0);
+    assert!(uploaded_rgba.is_empty());
+    assert_eq!(runtime.simulation.radar_terrain_dirty_cells, FLOOD);
+
+    let completed = present_runtime_projection(
+        &mut radar,
+        &mut runtime,
+        &mut last_generation,
+        &mut uploaded_rgba,
+        false,
+    )
+    .expect("damage frame composition and upload retry completes");
+    assert_eq!(completed.consumed_generation, Some(1));
+    assert!(completed.acknowledged);
+    assert_eq!(uploaded_rgba, radar.base_rgba);
     for cell in FLOOD {
         assert_eq!(raw_pair(&radar, cell), [DAMAGED; 2]);
     }
-    assert!(runtime.acknowledge_radar_terrain_dirty(consumed.unwrap()));
     assert!(runtime.simulation.radar_terrain_dirty_cells.is_empty());
 
     let cabhut = spawn(
@@ -404,12 +445,20 @@ fn gsi_04_01_production_tick_presents_damage_then_rearms_through_engineer_repair
     for cell in FLOOD {
         assert!(runtime.simulation.radar_terrain_dirty_cells.contains(&cell));
     }
-    let consumed = apply_runtime_queue(&mut radar, &runtime, &mut last_generation);
-    assert_eq!(consumed, Some(2));
+    let completed = present_runtime_projection(
+        &mut radar,
+        &mut runtime,
+        &mut last_generation,
+        &mut uploaded_rgba,
+        false,
+    )
+    .expect("repair frame composition and upload completes");
+    assert_eq!(completed.consumed_generation, Some(2));
+    assert!(completed.acknowledged);
+    assert_eq!(uploaded_rgba, radar.base_rgba);
     for cell in FLOOD {
         assert_eq!(raw_pair(&radar, cell), [PRISTINE; 2]);
     }
-    assert!(runtime.acknowledge_radar_terrain_dirty(consumed.unwrap()));
     assert!(runtime.simulation.radar_terrain_dirty_cells.is_empty());
 }
 

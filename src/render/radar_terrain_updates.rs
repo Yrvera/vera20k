@@ -25,27 +25,63 @@ pub(crate) struct RadarTerrainUpdateLayers<'a> {
     pub native_terrain: &'a mut Option<NativeRadarTerrainSurface>,
 }
 
-/// Apply one newly published simulation batch through the retained radar
-/// terrain layers and return the generation to acknowledge after presentation
-/// uploads complete.
+/// A retained-radar terrain update staged before final frame composition.
 ///
-/// This is the CPU transaction used by the production minimap update. Keeping
-/// its generation gate beside the exact current-cell updater lets headless
-/// integration tests exercise the same application path without constructing
-/// a GPU surface. A skipped presentation update never calls this function and
-/// therefore never advances `last_generation` or acknowledges the sim batch.
+/// CPU pixels may already have changed when an upload fails. The retained
+/// generation is deliberately committed only by [`Self::finish_with_upload`],
+/// so the next presentation visit re-runs the idempotent CellClass projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StagedRadarTerrainUpdate {
+    observed_generation: u64,
+    acknowledge_generation: Option<u64>,
+}
+
+impl StagedRadarTerrainUpdate {
+    /// Run the presentation-owned upload and commit its retained generation
+    /// only after that boundary reports success.
+    pub(crate) fn finish_with_upload<E>(
+        self,
+        last_generation: &mut u64,
+        upload: impl FnOnce() -> Result<(), E>,
+    ) -> Result<Option<u64>, E> {
+        upload()?;
+        *last_generation = self.observed_generation;
+        Ok(self.acknowledge_generation)
+    }
+
+    pub(crate) fn finish_infallible(
+        self,
+        last_generation: &mut u64,
+        upload: impl FnOnce(),
+    ) -> Option<u64> {
+        match self.finish_with_upload(last_generation, || {
+            upload();
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(generation) => generation,
+            Err(never) => match never {},
+        }
+    }
+}
+
+/// Stage one newly published simulation batch through the retained radar
+/// terrain layers. Final upload and acknowledgement are separate ordered
+/// commits; see [`StagedRadarTerrainUpdate::finish_with_upload`].
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_radar_terrain_dirty_generation(
+pub(crate) fn stage_radar_terrain_dirty_generation(
     layers: RadarTerrainUpdateLayers<'_>,
     authority: CurrentRadarCellAuthority<'_>,
     structural_bridge_color: [u8; 3],
     overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
     cells: &[(u16, u16)],
     generation: u64,
-    last_generation: &mut u64,
-) -> Option<u64> {
-    if generation == *last_generation {
-        return None;
+    last_generation: u64,
+) -> StagedRadarTerrainUpdate {
+    if generation == last_generation {
+        return StagedRadarTerrainUpdate {
+            observed_generation: generation,
+            acknowledge_generation: None,
+        };
     }
     apply_radar_terrain_dirty_cells(
         layers,
@@ -54,8 +90,10 @@ pub(crate) fn apply_radar_terrain_dirty_generation(
         overlay_radar_colors,
         cells,
     );
-    *last_generation = generation;
-    (!cells.is_empty()).then_some(generation)
+    StagedRadarTerrainUpdate {
+        observed_generation: generation,
+        acknowledge_generation: (!cells.is_empty()).then_some(generation),
+    }
 }
 
 /// Re-run the current CellClass radar source for one acknowledged dirty batch.

@@ -592,48 +592,47 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
         }
     }
 
-    let consumed_radar_terrain_generation = if let (Some(minimap), Some(rt)) = (
-        &mut state.match_state.match_presentation.minimap,
-        state.match_state.sim_runtime.as_ref(),
+    let full_visibility = state.match_state.sandbox_full_visibility;
+    let presentation = &mut state.match_state.match_presentation;
+    if let (Some(minimap), Some(runtime)) = (
+        presentation.minimap.as_mut(),
+        state.match_state.sim_runtime.as_mut(),
     ) {
-        // F10 cone: render-feed reads go through SimView getters (the split
-        // borrow against `&mut state.minimap` keeps the field chain to `rt`).
-        let view = rt.view();
-        let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
-        minimap.update_unit_dots(
-            &state.renderer.gpu,
-            view.entities(),
-            view.tactical_registration_order(),
-            view.houses(),
-            &state.match_state.match_presentation.house_color_map,
-            view.session().tick,
-            local_owner
-                .as_deref()
-                .and_then(|owner| view.interner().get(owner)),
-            view.fog(),
-            state.match_state.sandbox_full_visibility,
-            view.session().game_mode_nonzero,
-            Some(&rt.resources.rules),
-            Some(view.radar_events()),
-            Some(view.interner()),
-            view.bridge_state(),
-            view.overlay_grid(),
-            Some(&rt.resources.overlay_registry),
-            &state.match_state.match_presentation.overlay_radar_colors,
-            view.resolved_terrain(),
-            radar_dirty_cells,
-            radar_dirty_generation,
-        )
-    } else {
-        None
-    };
-    if let Some(generation) = consumed_radar_terrain_generation
-        && let Some(runtime) = state.match_state.sim_runtime.as_mut()
-    {
-        // `RadarClass` dirty-list processing @ 0x00655250 clears only after
-        // the radar update. A missing minimap/renderer or a frame that skips
-        // this call never acknowledges, retaining the cells for a later draw.
-        let _ = runtime.acknowledge_radar_terrain_dirty(generation);
+        let transaction = super::minimap_transaction::present_minimap_frame(runtime, |runtime| {
+            // F10 cone: render-feed reads go through SimView getters. The
+            // production transaction includes composition, queue upload, and
+            // only then the simulation acknowledgement.
+            let view = runtime.view();
+            let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
+            Ok::<_, std::convert::Infallible>(minimap.update_unit_dots(
+                &state.renderer.gpu,
+                view.entities(),
+                view.tactical_registration_order(),
+                view.houses(),
+                &presentation.house_color_map,
+                view.session().tick,
+                local_owner
+                    .as_deref()
+                    .and_then(|owner| view.interner().get(owner)),
+                view.fog(),
+                full_visibility,
+                view.session().game_mode_nonzero,
+                Some(&runtime.resources.rules),
+                Some(view.radar_events()),
+                Some(view.interner()),
+                view.bridge_state(),
+                view.overlay_grid(),
+                Some(&runtime.resources.overlay_registry),
+                &presentation.overlay_radar_colors,
+                view.resolved_terrain(),
+                radar_dirty_cells,
+                radar_dirty_generation,
+            ))
+        });
+        match transaction {
+            Ok(_) => {}
+            Err(never) => match never {},
+        }
     }
 }
 
