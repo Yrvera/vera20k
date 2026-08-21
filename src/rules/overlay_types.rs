@@ -13,6 +13,7 @@
 use crate::rules::ini_parser::IniFile;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainRules};
 use crate::rules::tiberium_type::{TiberiumType, TiberiumTypeId, TiberiumTypeRegistry};
+use std::collections::HashSet;
 
 const STOCK_FLAT_RIPARIUS_VARIANT_COUNT: usize = 12;
 const TIBERIUM_FLAT_VARIANT_COUNT: usize = 12;
@@ -122,8 +123,11 @@ pub struct OverlayTypeFlags {
     pub crate_type: bool,
     /// `Overrides=yes` protects an existing overlay from ordinary runtime placement.
     pub overrides: bool,
-    /// A non-empty `CellAnim=` supplies valid overlay art even when no SHP resolves.
-    pub has_cell_anim: bool,
+    /// Parsed `CellAnim=` AnimType identity (`OverlayTypeClass+0x29C`).
+    ///
+    /// `OverlayTypeClass::ReadINI @ 0x005FE770` resolves this name through
+    /// `AnimTypeClass::FindByName`; it is not the overlay's own SHP image.
+    pub cell_anim: Option<String>,
     /// IsRubble=yes — explicitly returns reduced ZoneType 0 after earlier overlay checks.
     pub is_rubble: bool,
     /// IsARock=yes — reduced ZoneType 6.
@@ -181,7 +185,7 @@ impl Default for OverlayTypeFlags {
             crushable: false,
             crate_type: false,
             overrides: false,
-            has_cell_anim: false,
+            cell_anim: None,
             is_rubble: false,
             is_a_rock: false,
             land_wheel_speed_zero: false,
@@ -277,6 +281,21 @@ impl OverlayTypeRegistry {
         let clear_speed_costs = clear_semantics.map(|semantics| semantics.speed_costs);
         let clear_ground_blocked =
             clear_semantics.is_some_and(|semantics| semantics.ground_blocked);
+        // `OverlayTypeClass::ReadINI @ 0x005FE770` uses
+        // `AnimTypeClass::FindByName`: an unknown CellAnim name leaves +0x29C
+        // null rather than becoming an unresolved filename.
+        let registered_anim_types: HashSet<String> = ini
+            .section("Animations")
+            .map(|section| {
+                section
+                    .get_values()
+                    .into_iter()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_ascii_uppercase)
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut flags: Vec<OverlayTypeFlags> = Vec::with_capacity(names.len());
         for (idx, name) in names.iter().enumerate() {
             let upper_name = name.to_ascii_uppercase();
@@ -326,9 +345,12 @@ impl OverlayTypeRegistry {
                     crushable: type_section.get_bool("Crushable").unwrap_or(false),
                     crate_type: type_section.get_bool("Crate").unwrap_or(false),
                     overrides: type_section.get_bool("Overrides").unwrap_or(false),
-                    has_cell_anim: type_section
+                    cell_anim: type_section
                         .get("CellAnim")
-                        .is_some_and(|value| !value.trim().is_empty()),
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_ascii_uppercase)
+                        .filter(|value| registered_anim_types.contains(value)),
                     is_rubble: type_section.get_bool("IsRubble").unwrap_or(false),
                     is_a_rock: type_section.get_bool("IsARock").unwrap_or(false),
                     land_wheel_speed_zero,

@@ -49,35 +49,64 @@ impl Drop for RadarTestDirectory {
 }
 
 #[test]
-fn overlay_radar_loader_uses_stock_header_rgb_and_native_frame_selection() {
+fn overlay_radar_loader_separates_cell_anim_from_overlay_own_shp() {
     let directory = RadarTestDirectory::new();
-    let mut tib = vec![[0, 0, 0]; 12];
-    tib[11] = [169, 155, 61]; // retail TIB01 frame 11
-    directory.write_shp("TIB01.SHP", &tib);
+    let mut own_tib = vec![[0, 0, 0]; 12];
+    own_tib[11] = [169, 155, 61]; // retail TIB01 frame 11: ignored without CellAnim
+    directory.write_shp("TIB01.SHP", &own_tib);
+    own_tib[11] = [201, 202, 203];
+    directory.write_shp("TIBANIM.SHP", &own_tib);
+    let mut twinkle = vec![[0, 0, 0]; 12];
+    twinkle[11] = [31, 41, 59];
+    directory.write_shp("TWNK1.SHP", &twinkle);
+    directory.write_shp("PLAIN.SHP", &[[8, 9, 10]]);
+    directory.write_shp("PLAINFALLBACK.SHP", &[[21, 22, 23]]);
     directory.write_shp("BRIDGE1.SHP", &[[0, 0, 6]]); // retail bridge.tem f0
-    let mut low_bridge = vec![[0, 0, 0]; 8];
-    low_bridge[1] = [7, 8, 9];
-    low_bridge[7] = [70, 80, 90];
-    directory.write_shp("LOBRDG01.SHP", &low_bridge);
     let assets = AssetManager::from_loose_root_for_test(directory.path());
-    let registry = OverlayTypeRegistry::empty();
-    let rules = IniFile::from_str("");
-    let art = ArtRegistry::from_ini(&rules);
-    let names = BTreeMap::from([
-        (24, "BRIDGE1".to_string()),
-        (74, "LOBRDG01".to_string()),
-        (102, "TIB01".to_string()),
-    ]);
-    let colors =
-        compute_overlay_radar_colors(&assets, &registry, &names, "tem", &rules, &art);
-
-    assert_eq!(colors.get(&(102, 11)), Some(&[169, 155, 61]));
-    assert_eq!(colors.get(&(24, 0)), Some(&[0, 0, 6]));
-    assert_eq!(colors.get(&(74, 1)), Some(&[7, 8, 9]));
-    assert_eq!(
-        colors.get(&(74, 7)),
-        Some(&[70, 80, 90]),
-        "all runtime-addressable frames stay loaded for dirty visits",
+    let rules = IniFile::from_str(
+        "[OverlayTypes]\n\
+         0=TIB01\n1=TIBANIM\n2=TIBMISSING\n3=PLAIN\n4=PLAINFALLBACKOVL\n5=TIBUNKNOWN\n\
+         [Animations]\n0=TWNK1\n1=MISSINGANIM\n2=PLAINFALLBACK\n\
+         [TIB01]\nTiberium=yes\n\
+         [TIBANIM]\nTiberium=yes\nCellAnim=TWNK1\n\
+         [TIBMISSING]\nTiberium=yes\nCellAnim=MISSINGANIM\n\
+         [PLAINFALLBACKOVL]\nCellAnim=PLAINFALLBACK\n\
+         [TIBUNKNOWN]\nTiberium=yes\nCellAnim=NOTREGISTERED\n",
     );
-    assert!(!colors.keys().any(|&(id, _)| id == 100), "missing asset stays absent");
+    let registry = OverlayTypeRegistry::from_ini(&rules, None);
+    let art = ArtRegistry::from_ini(&rules);
+    let names = BTreeMap::from([(24, "BRIDGE1".to_string())]);
+    let colors = compute_overlay_radar_colors(
+        &assets,
+        &registry,
+        &names,
+        "tem",
+        "TEMPERATE",
+        &rules,
+        &art,
+    );
+
+    assert_eq!(registry.flags(0).and_then(|flags| flags.cell_anim.as_deref()), None);
+    assert_eq!(
+        registry.flags(1).and_then(|flags| flags.cell_anim.as_deref()),
+        Some("TWNK1"),
+    );
+    assert_eq!(
+        registry.flags(5).and_then(|flags| flags.cell_anim.as_deref()),
+        None,
+        "FindByName failure leaves the native pointer null",
+    );
+    assert!(!colors.contains_key(&(0, 11)), "stock TIB01 own SHP is ignored");
+    assert_eq!(
+        colors.get(&(1, 11)),
+        Some(&[31, 41, 59]),
+        "tiberium reads the referenced CellAnim SHP, not TIBANIM.SHP",
+    );
+    assert!(!colors.contains_key(&(2, 11)), "missing CellAnim SHP stays absent");
+    assert_eq!(colors.get(&(3, 0)), Some(&[8, 9, 10]));
+    assert!(
+        !colors.contains_key(&(4, 0)),
+        "non-tiberium radar sourcing remains on the overlay's own missing SHP",
+    );
+    assert_eq!(colors.get(&(24, 0)), Some(&[0, 0, 6]));
 }

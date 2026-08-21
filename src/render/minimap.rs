@@ -62,6 +62,7 @@ pub(crate) enum MinimapCellRadarSource {
         overlay_id: u8,
         frame: u8,
         is_tiberium: bool,
+        has_cell_anim: bool,
         has_tiberium_type: bool,
     },
     TerrainObject,

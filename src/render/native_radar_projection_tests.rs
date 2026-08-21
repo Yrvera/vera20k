@@ -201,6 +201,7 @@ fn cell_get_radar_color_precedence_feeds_raw_surface_before_weighted_generation(
                 overlay_id: 10,
                 frame: 4,
                 is_tiberium: false,
+                has_cell_anim: false,
                 has_tiberium_type: false,
             },
         },
@@ -212,6 +213,7 @@ fn cell_get_radar_color_precedence_feeds_raw_surface_before_weighted_generation(
                 overlay_id: 10,
                 frame: 4,
                 is_tiberium: false,
+                has_cell_anim: false,
                 has_tiberium_type: false,
             },
         },
@@ -223,13 +225,52 @@ fn cell_get_radar_color_precedence_feeds_raw_surface_before_weighted_generation(
                 overlay_id: 10,
                 frame: 4,
                 is_tiberium: false,
+                has_cell_anim: false,
                 has_tiberium_type: false,
+            },
+        },
+        MinimapOverlayDatum {
+            rx: 90,
+            ry: 90,
+            classification: OverlayClassification::Ore,
+            source: MinimapCellRadarSource::Overlay {
+                overlay_id: 102,
+                frame: 11,
+                is_tiberium: true,
+                has_cell_anim: false,
+                has_tiberium_type: true,
+            },
+        },
+        MinimapOverlayDatum {
+            rx: 85,
+            ry: 85,
+            classification: OverlayClassification::Ore,
+            source: MinimapCellRadarSource::Overlay {
+                overlay_id: 103,
+                frame: 11,
+                is_tiberium: true,
+                has_cell_anim: true,
+                has_tiberium_type: true,
+            },
+        },
+        MinimapOverlayDatum {
+            rx: 80,
+            ry: 80,
+            classification: OverlayClassification::Ore,
+            source: MinimapCellRadarSource::Overlay {
+                overlay_id: 104,
+                frame: 11,
+                is_tiberium: true,
+                has_cell_anim: true,
+                has_tiberium_type: true,
             },
         },
     ];
     let colors = HashMap::from([
         ((24, 0), [5, 6, 7]),
         ((10, 4), [11, 12, 13]),
+        ((102, 11), [169, 155, 61]),
+        ((103, 11), [31, 41, 59]),
     ]);
     let projection = MinimapPlayfieldProjection::derive(
         &grid,
@@ -240,11 +281,10 @@ fn cell_get_radar_color_precedence_feeds_raw_surface_before_weighted_generation(
         Some(wide_bounds()),
     );
     let geometry = projection.native_radar_surface.expect("surface");
-    let raw = projection
+    let terrain = projection
         .native_radar_terrain
-        .expect("terrain")
-        .raw_rgb()
-        .to_vec();
+        .expect("terrain");
+    let raw = terrain.raw_rgb().to_vec();
     let pair = |cell| {
         let (x, y) = geometry.cell_to_raw_pixel(cell);
         [raw[(y * 146 + x) as usize], raw[(y * 146 + x + 1) as usize]]
@@ -253,8 +293,20 @@ fn cell_get_radar_color_precedence_feeds_raw_surface_before_weighted_generation(
     assert_eq!(pair((50, 50)), [[200, 200, 160]; 2], "TerrainClass wins");
     assert_eq!(pair((50, 51)), [[5, 6, 7]; 2], "flag 0x100 uses BRIDGE1 f0");
     assert_eq!(pair((97, 97)), [[11, 12, 13]; 2], "ordinary overlay wins TMP");
+    assert_eq!(
+        pair((90, 90)),
+        [[170, 170, 130]; 2],
+        "stock no-CellAnim tiberium ignores its own SHP header",
+    );
+    assert_eq!(pair((85, 85)), [[31, 41, 59]; 2], "CellAnim header wins");
+    assert_eq!(pair((80, 80)), [[0, 0, 0]; 2], "missing CellAnim is black");
     assert_eq!(pair((51, 50)), [[60, 60, 60]; 2], "missing subimage fallback");
     assert_eq!(pair((52, 50)), [[0, 0, 0]; 2], "valid black remains black");
+    assert_eq!(
+        terrain.generated_rgb565(),
+        reference_generate(&raw, geometry.raw_size(), geometry.generated_size()),
+        "corrected tiberium raw colors feed every weighted generated pixel",
+    );
 }
 
 fn reference_raw(grid: &TerrainGrid, geometry: NativeRadarSurfaceGeometry) -> Vec<[u8; 3]> {

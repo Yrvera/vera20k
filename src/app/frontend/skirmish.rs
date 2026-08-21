@@ -2680,6 +2680,7 @@ pub(crate) fn build_overlay_atlas_from_map(
             &overlay_registry,
             &overlay_names,
             theater_ext,
+            &map_data.header.theater,
             rules_ini,
             art_registry,
         );

@@ -31,6 +31,7 @@ fn overlay_datum(
             overlay_id,
             frame,
             is_tiberium,
+            has_cell_anim: false,
             has_tiberium_type: is_tiberium,
         },
     }
@@ -632,8 +633,8 @@ fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_re
     let offset = ((destination.1 as u32 * MINIMAP_WIDTH + destination.0 as u32) * 4) as usize;
     assert_eq!(
         &rebuilt.base_rgba[offset..offset + 4],
-        &[72, 88, 96, 255],
-        "terrain reaches the aperture only after native RGB565 packing"
+        &[168, 168, 128, 255],
+        "stock no-CellAnim tiberium reaches the aperture as packed khaki"
     );
     assert_ne!(
         initial

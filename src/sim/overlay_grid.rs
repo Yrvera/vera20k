@@ -225,7 +225,7 @@ impl OverlayGrid {
                 continue;
             };
             let accepted_flags = registry.flags(entry.overlay_id).filter(|flags| {
-                (shp_available.contains(&entry.overlay_id) || flags.has_cell_anim)
+                (shp_available.contains(&entry.overlay_id) || flags.cell_anim.is_some())
                     && !(game_mode_nonzero && flags.crate_type)
             });
             if let Some(flags) = accepted_flags
@@ -1355,6 +1355,7 @@ mod tests {
              1=CRATEOVL\n\
              3=WALL\n\
              6=TIBERIUM\n\
+             [Animations]\n0=SPARK\n\
              [PROTECTED]\nOverrides=yes\n\
              [REPLACEABLE]\nOverrides=no\n\
              [NEWROCK]\nIsARock=yes\n\

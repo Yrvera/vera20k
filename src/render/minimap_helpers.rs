@@ -88,6 +88,7 @@ pub(crate) fn minimap_overlay_datum(
         .and_then(|registry| registry.name(overlay_id))
         .unwrap_or("");
     let is_tiberium = flags.is_some_and(|flags| flags.tiberium);
+    let has_cell_anim = flags.is_some_and(|flags| flags.cell_anim.is_some());
     let classification = if is_tiberium {
         if name
             .get(..3)
@@ -119,6 +120,7 @@ pub(crate) fn minimap_overlay_datum(
             overlay_id,
             frame,
             is_tiberium,
+            has_cell_anim,
             has_tiberium_type,
         },
     }
@@ -189,6 +191,7 @@ pub(super) fn overlay_radar_color(
         overlay_id,
         frame,
         is_tiberium,
+        has_cell_anim,
         has_tiberium_type,
     } = datum.source
     else {
@@ -203,10 +206,22 @@ pub(super) fn overlay_radar_color(
         frame
     };
     if is_tiberium {
-        return colors
-            .get(&(overlay_id, frame))
-            .copied()
-            .or_else(|| has_tiberium_type.then_some([170, 170, 130]));
+        // `CellClass::GetRadarColor @ 0x0047C060` reads the resolved
+        // OverlayType+0x29C CellAnim pointer. A non-null pointer delegates to
+        // that AnimType's SHP and missing/out-of-range frames are black. Only
+        // the null-pointer mapped-tiberium branch uses fixed khaki. Retail
+        // RULESMD has no active `CellAnim=` entry (including TIB*/GEM*), so
+        // stock ore/gems take this khaki branch despite their own SHP files.
+        return if has_cell_anim {
+            Some(
+                colors
+                    .get(&(overlay_id, frame))
+                    .copied()
+                    .unwrap_or([0, 0, 0]),
+            )
+        } else {
+            has_tiberium_type.then_some([170, 170, 130])
+        };
     }
     let [r, g, b] = colors
         .get(&(overlay_id, frame))
@@ -459,6 +474,7 @@ mod radar_color_tests {
         overlay_id: u8,
         frame: u8,
         is_tiberium: bool,
+        has_cell_anim: bool,
         has_tiberium_type: bool,
     ) -> MinimapOverlayDatum {
         MinimapOverlayDatum {
@@ -469,6 +485,7 @@ mod radar_color_tests {
                 overlay_id,
                 frame,
                 is_tiberium,
+                has_cell_anim,
                 has_tiberium_type,
             },
         }
@@ -506,34 +523,37 @@ mod radar_color_tests {
             ((127, 4), [10, 20, 30]),
             ((147, 4), [40, 50, 60]),
         ]);
-        assert_eq!(overlay_radar_color(overlay(100, 9, false, false), &colors), None);
         assert_eq!(
-            overlay_radar_color(overlay(74, 7, false, false), &colors),
+            overlay_radar_color(overlay(100, 9, false, false, false), &colors),
+            None
+        );
+        assert_eq!(
+            overlay_radar_color(overlay(74, 7, false, false, false), &colors),
             Some([1, 2, 3]),
             "low bridge range forces frame 1",
         );
         assert_eq!(
-            overlay_radar_color(overlay(127, 4, false, false), &colors),
+            overlay_radar_color(overlay(127, 4, false, false, false), &colors),
             Some([10, 30, 20]),
             "OverlayClass swaps G/B only in the special ID ranges",
         );
         assert_eq!(
-            overlay_radar_color(overlay(147, 4, true, true), &colors),
+            overlay_radar_color(overlay(147, 4, true, true, true), &colors),
             Some([40, 50, 60]),
             "direct tiberium header path bypasses OverlayClass byte swap",
         );
         assert_eq!(
-            overlay_radar_color(overlay(10, 2, false, false), &colors),
+            overlay_radar_color(overlay(10, 2, false, false, false), &colors),
             Some([0, 0, 0]),
             "missing ordinary overlay image is black",
         );
         assert_eq!(
-            overlay_radar_color(overlay(102, 11, true, true), &colors),
+            overlay_radar_color(overlay(102, 11, true, false, true), &colors),
             Some([170, 170, 130]),
-            "mapped tiberium with no alternate image is khaki",
+            "stock mapped tiberium with no CellAnim is khaki",
         );
         assert_eq!(
-            overlay_radar_color(overlay(102, 11, true, false), &colors),
+            overlay_radar_color(overlay(102, 11, true, false, false), &colors),
             None,
             "unmapped tiberium falls through to TMP terrain",
         );
@@ -545,7 +565,19 @@ mod radar_color_tests {
         };
         assert_eq!(overlay_radar_color(terrain, &colors), Some([200, 200, 160]));
 
-        let live_overlay = overlay(127, 4, false, false);
+        assert_eq!(
+            overlay_radar_color(overlay(147, 3, true, true, true), &colors),
+            Some([0, 0, 0]),
+            "missing CellAnim frame is black, never khaki",
+        );
+        let own_shp = HashMap::from([((102, 11), [9, 8, 7])]);
+        assert_eq!(
+            overlay_radar_color(overlay(102, 11, true, false, true), &own_shp),
+            Some([170, 170, 130]),
+            "stock no-CellAnim tiberium ignores its own overlay SHP",
+        );
+
+        let live_overlay = overlay(127, 4, false, false, false);
         assert_eq!(
             current_cell_radar_source(true, true, Some(live_overlay), [4, 5, 6], &colors),
             Some(([200, 200, 160], OverlayClassification::TerrainObject)),

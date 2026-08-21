@@ -759,15 +759,17 @@ fn forced_tiberium_image_name() -> Option<&'static str> {
 /// bridge ranges and the cell data byte otherwise. `OverlayClass::GetRadarColor
 /// @ 0x005FED00` / `GetTiberiumRadarColor @ 0x0069E860` read bytes 0x0C..0x0E
 /// from that frame header; rendered-pixel averages and palettes are not part of
-/// this path. Runtime ore growth, wall damage/placement and other OverlayData
-/// writers can select a frame absent from the initial map, so the client-local
-/// table retains every parsed frame. BRIDGE1/frame 0 remains covered even when
-/// no BRIDGE1 map-pack entry survives on a structural cell.
+/// this path. Tiberium is deliberately different: `OverlayTypeClass::ReadINI
+/// @ 0x005FE770` proves `OverlayType+0x29C` is the separately resolved
+/// `CellAnim=` AnimType, so `CellClass::GetRadarColor` never reads the ore/gem
+/// overlay's own SHP here. Runtime writers can select a frame absent from the
+/// initial map, so the client-local table retains every parsed source frame.
 pub fn compute_overlay_radar_colors(
     asset_manager: &AssetManager,
     overlay_registry: &OverlayTypeRegistry,
     overlay_names: &BTreeMap<u8, String>,
     theater_ext: &str,
+    theater_name: &str,
     rules_ini: &IniFile,
     art_registry: &ArtRegistry,
 ) -> HashMap<(u8, u8), [u8; 3]> {
@@ -787,24 +789,38 @@ pub fn compute_overlay_radar_colors(
         else {
             continue;
         };
-        let image_id: String = art_registry.resolve_overlay_image_id(name, rules_ini);
-        let candidates: Vec<String> = art_data::overlay_shp_candidates(
-            Some(art_registry),
-            name,
-            &image_id,
-            theater_ext,
-            "", // theater_name not needed for basic candidate generation
-        );
-
-        for candidate in &candidates {
-            let Some(data) = asset_manager.get_ref(candidate) else {
-                continue;
-            };
-            let Ok(shp) = ShpFile::from_bytes(data) else {
-                continue;
-            };
+        let load = |candidates: Vec<String>| {
+            candidates.iter().find_map(|candidate| {
+                asset_manager
+                    .get_ref(candidate)
+                    .and_then(|data| ShpFile::from_bytes(data).ok())
+            })
+        };
+        let flags = overlay_registry.flags(overlay_id);
+        let is_tiberium = flags.is_some_and(|flags| flags.tiberium);
+        let shp = if is_tiberium {
+            flags.and_then(|flags| flags.cell_anim.as_deref()).and_then(|anim| {
+                let image_id = art_registry.resolve_effective_image_id(anim, anim);
+                load(art_data::anim_shp_candidates(
+                    Some(art_registry),
+                    anim,
+                    &image_id,
+                    theater_ext,
+                    theater_name,
+                ))
+            })
+        } else {
+            let image_id = art_registry.resolve_overlay_image_id(name, rules_ini);
+            load(art_data::overlay_shp_candidates(
+                Some(art_registry),
+                name,
+                &image_id,
+                theater_ext,
+                theater_name,
+            ))
+        };
+        if let Some(shp) = shp {
             shp_cache.insert(overlay_id, shp);
-            break;
         }
     }
 
