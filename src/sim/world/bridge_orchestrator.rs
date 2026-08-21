@@ -84,6 +84,15 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
     // Run dispatch loop with split borrows: bridge_state &mut, terrain &,
     // rng &mut. Outcomes are collected for the cascade phase below.
     let outcomes: Vec<StateOutcome> = run_dispatch_loop(sim, events, bridge_strength);
+    // `ToggleBridgePavement @ 0x0056E990` marks each changed cell before its
+    // direction-0..7 recursion. Outcomes retain that pre-order per event.
+    // Keep this sequence until the collapse dirty set is known so the Rust
+    // presentation generation advances once for the native damage batch.
+    let damaged_variant_dirty: Vec<(u16, u16)> =
+        outcomes
+            .iter()
+            .flat_map(|outcome| outcome.damaged_variant_cells().iter().copied())
+            .collect();
     project_pending_low_bridge_overlay_writes(sim, overlay_registry);
 
     // Aggregate destroyed cells + the subset receiving BlowUpBridge from
@@ -157,7 +166,11 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
     // an already-Destroyed perpendicular neighbor); the minimap recomputes its
     // color from current bridge state, so over-marking is a render-side no-op.
     radar_dirty.extend(destroyed_set.iter().copied());
-    sim.mark_radar_terrain_dirty_cells(radar_dirty.iter().copied());
+    sim.mark_radar_terrain_dirty_cells(
+        damaged_variant_dirty
+            .into_iter()
+            .chain(radar_dirty.iter().copied()),
+    );
 
     // state_changed = "at least one cell collapsed this batch". The destroyed_set
     // is built from StateOutcome::Collapsed outcomes earlier in this function;
@@ -491,6 +504,12 @@ fn apply_hut_bridge_execution(
         return false;
     }
 
+    let damaged_variant_dirty: Vec<(u16, u16)> =
+        outcomes
+            .iter()
+            .flat_map(|outcome| outcome.damaged_variant_cells().iter().copied())
+            .collect();
+
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
     let mut rim_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
@@ -535,7 +554,11 @@ fn apply_hut_bridge_execution(
 
     // BR-16: feed the minimap radar-dirty channel (see apply_bridge_damage_events).
     radar_dirty.extend(destroyed_set.iter().copied());
-    sim.mark_radar_terrain_dirty_cells(radar_dirty.iter().copied());
+    sim.mark_radar_terrain_dirty_cells(
+        damaged_variant_dirty
+            .into_iter()
+            .chain(radar_dirty.iter().copied()),
+    );
 
     !destroyed_set.is_empty() || extra_zones_dirty || extra_adjacent_dirty_anchor.is_some()
 }
@@ -1036,8 +1059,8 @@ fn run_hut_collapse_bounded(
             let outcome = call_destroy_per_family(bridge_state, terrain, family, cur);
             match outcome {
                 StateOutcome::NoChange => {}
-                StateOutcome::Absorbed => {
-                    outcomes.push(StateOutcome::Absorbed);
+                absorbed @ StateOutcome::Absorbed { .. } => {
+                    outcomes.push(absorbed);
                     // Retry: the cell took a state step but is not yet
                     // collapsed — another call may push it to Destroyed.
                 }
@@ -2186,7 +2209,7 @@ mod tests {
                 .expect("bridge state")
                 .destroy_bridge_low(0, 1, terrain)
         };
-        assert!(matches!(first, StateOutcome::Absorbed));
+        assert!(matches!(first, StateOutcome::Absorbed { .. }));
         project_pending_low_bridge_overlay_writes(&mut sim, Some(&registry));
         gsi_04_13_assert_ground_surface(&sim, LandType::Road.as_index());
         for ry in 0..3 {

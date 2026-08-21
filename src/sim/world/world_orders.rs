@@ -469,9 +469,9 @@ impl Simulation {
                 outcome.zones_dirty,
             );
 
-            // Step C: terrain/radar dirty propagation. The walker only emits
-            // cells for destroyed-anchor restoration, matching gamemd's
-            // `MarkTerrainDirty` gate.
+            // Step C: terrain/radar dirty propagation. The walker emits each
+            // `ToggleBridgePavement @ 0x0056E990` damage-selector clear in
+            // native traversal order, followed by destroyed-anchor restores.
             self.mark_radar_terrain_dirty_cells(outcome.radar_cells.iter().copied());
 
             // Step D: engineer consumed.

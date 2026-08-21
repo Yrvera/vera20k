@@ -164,3 +164,7 @@ impl<'a> CurrentRadarCellAuthority<'a> {
 #[cfg(test)]
 #[path = "current_radar_cell_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "current_radar_damage_pipeline_tests.rs"]
+mod damage_pipeline_tests;

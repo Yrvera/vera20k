@@ -1290,7 +1290,7 @@ fn make_body_driver_test_state() -> BridgeRuntimeState {
 fn body_driver_anchor_healthy_advances_to_damaged_returns_absorbed() {
     let mut state = make_body_driver_test_state();
     let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
-    assert!(matches!(outcome, StateOutcome::Absorbed));
+    assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
     assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Damaged);
 }
 
@@ -1299,7 +1299,7 @@ fn body_driver_non_anchor_body_cell_follows_to_anchor() {
     let mut state = make_body_driver_test_state();
     // Damage on a body cell, not the anchor.
     let outcome = state.body_cell_advance_state(5, 4, true, &flood_fill_terrain(20, 20, 0));
-    assert!(matches!(outcome, StateOutcome::Absorbed));
+    assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
     // Anchor's damage_state advanced, not the input body cell's.
     assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Damaged);
     assert_eq!(
@@ -1321,6 +1321,7 @@ fn body_driver_damaged_anchor_collapses_and_emits_set_bridge_direction() {
             adjacent_bridges_dirty,
             zones_dirty,
             radar_cells,
+            ..
         } => {
             assert!(binary_success);
             assert!(destroyed_cells.contains(&(5, 5)));
@@ -1674,7 +1675,7 @@ fn bridgehead_advance_first_hit_writes_anchor_damaged() {
     );
 
     let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
-    assert_eq!(outcome, StateOutcome::Absorbed);
+    assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
 
     // Bridgehead's own damage_state is NOT modified.
     let post_bridgehead = *state.cell(2, 4).unwrap();
@@ -1708,7 +1709,7 @@ fn bridgehead_advance_repeat_high_hit_collapses_about_to_fall_slot() {
     let mut state = make_bridgehead_state_ns();
     let terrain = make_bridgehead_terrain_ns();
     let first = state.bridgehead_advance_state(2, 4, true, &terrain);
-    assert_eq!(first, StateOutcome::Absorbed);
+    assert!(matches!(first, StateOutcome::Absorbed { .. }));
 
     let second = state.bridgehead_advance_state(2, 4, true, &terrain);
     match second {
@@ -1719,6 +1720,7 @@ fn bridgehead_advance_repeat_high_hit_collapses_about_to_fall_slot() {
             adjacent_bridges_dirty,
             zones_dirty,
             radar_cells,
+            ..
         } => {
             assert!(binary_success);
             assert_eq!(destroyed_cells, vec![(2, 1), (2, 2), (2, 3)]);
@@ -1758,10 +1760,10 @@ fn bridgehead_advance_repeat_high_hit_collapses_about_to_fall_slot() {
 fn bridgehead_advance_repeat_low_hit_collapses_but_returns_false() {
     let mut state = make_bridgehead_state_ns();
     let terrain = make_bridgehead_terrain_ns();
-    assert_eq!(
+    assert!(matches!(
         state.bridgehead_advance_state(2, 4, false, &terrain),
-        StateOutcome::Absorbed
-    );
+        StateOutcome::Absorbed { .. }
+    ));
 
     let second = state.bridgehead_advance_state(2, 4, false, &terrain);
     match second {
@@ -1899,7 +1901,7 @@ fn bridgehead_advance_walks_through_odd_intermediate() {
         c.template_height = 5;
     }
     let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
-    assert_eq!(outcome, StateOutcome::Absorbed);
+    assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
     assert_eq!(
         state.cell(2, 2).unwrap().bridgehead_anchor_class,
         BridgeheadAnchorClass::AboutToFall,
@@ -2296,8 +2298,8 @@ fn flood_fill_kickoff_skips_when_no_damaged_data() {
     if let Some(c) = terrain.cell_mut(5, 5) {
         c.has_damaged_data = false;
     }
-    let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
-    assert_eq!(count, 0);
+    let changed = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+    assert!(changed.is_empty());
     assert!(!bs.cell(5, 5).unwrap().damaged_variant);
     assert!(!bs.cell(5, 6).unwrap().damaged_variant);
 }
@@ -2317,8 +2319,22 @@ fn flood_fill_propagates_to_same_tile_id_neighbors() {
     ];
     let mut bs = flood_fill_bridge_state(&coords);
     let terrain = flood_fill_terrain(10, 10, 42);
-    let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
-    assert_eq!(count, 9);
+    let changed = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+    assert_eq!(
+        changed,
+        vec![
+            (5, 5),
+            (5, 4),
+            (6, 4),
+            (6, 5),
+            (6, 6),
+            (5, 6),
+            (4, 6),
+            (4, 5),
+            (4, 4),
+        ],
+        "0x0056E990 marks before direction-0..7 recursive descent",
+    );
     for &(rx, ry) in &coords {
         assert!(
             bs.cell(rx, ry).unwrap().damaged_variant,
@@ -2355,8 +2371,8 @@ fn flood_fill_idempotent_when_already_in_target_state() {
         c.damaged_variant = true;
     }
     let terrain = flood_fill_terrain(10, 10, 42);
-    let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
-    assert_eq!(count, 0, "no mutation when already in target state");
+    let changed = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+    assert!(changed.is_empty(), "no mutation when already in target state");
 }
 
 #[test]
@@ -2374,8 +2390,8 @@ fn flood_fill_eight_directions_includes_diagonals() {
     ];
     let mut bs = flood_fill_bridge_state(&coords);
     let terrain = flood_fill_terrain(10, 10, 42);
-    let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
-    assert_eq!(count, 9);
+    let changed = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+    assert_eq!(changed.len(), 9);
     assert!(bs.cell(4, 4).unwrap().damaged_variant, "NW diagonal hit");
     assert!(bs.cell(6, 4).unwrap().damaged_variant, "NE diagonal hit");
     assert!(bs.cell(4, 6).unwrap().damaged_variant, "SW diagonal hit");
@@ -2392,8 +2408,8 @@ fn flood_fill_clear_propagates_state_false() {
         }
     }
     let terrain = flood_fill_terrain(10, 10, 42);
-    let count = bs.apply_damaged_variant_flood_fill(5, 5, false, &terrain);
-    assert_eq!(count, 3);
+    let changed = bs.apply_damaged_variant_flood_fill(5, 5, false, &terrain);
+    assert_eq!(changed, vec![(5, 5), (5, 6), (5, 7)]);
     for &(rx, ry) in &coords {
         assert!(!bs.cell(rx, ry).unwrap().damaged_variant);
     }
@@ -2403,8 +2419,8 @@ fn flood_fill_clear_propagates_state_false() {
 fn flood_fill_off_map_returns_zero() {
     let mut bs = flood_fill_bridge_state(&[(5, 5)]);
     let terrain = flood_fill_terrain(10, 10, 42);
-    let count = bs.apply_damaged_variant_flood_fill(99, 99, true, &terrain);
-    assert_eq!(count, 0);
+    let changed = bs.apply_damaged_variant_flood_fill(99, 99, true, &terrain);
+    assert!(changed.is_empty());
 }
 
 #[test]
@@ -2414,8 +2430,8 @@ fn flood_fill_sentinel_tile_id_returns_zero() {
     if let Some(c) = terrain.cell_mut(5, 5) {
         c.final_tile_index = 0xFFFF;
     }
-    let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
-    assert_eq!(count, 0);
+    let changed = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+    assert!(changed.is_empty());
 }
 
 /// Synthetic 3x3 grid with a single bridge anchor cell at (1,1).
@@ -2538,30 +2554,26 @@ fn apply_damage_dispatch_bands_are_narrower_than_the_walker_bands() {
 /// RESIDUAL — gamemd addresses 0x00572230 (and its fifteen compiled twins,
 /// enumerated on `crate::sim::bridge_specs::RampOutcome`).
 ///
-/// Mechanism: after the state-byte promotion this crate does model, every
-/// ramp updater unconditionally computes
+/// Mechanism: after the state-byte promotion, every ramp updater computes
 /// `cell+0x38 - g_BridgeSet_TileSetBase + 1` on the perpendicular target and
-/// branches on three runtime tile-class constants: two of them call
-/// `MapClass::ToggleBridgePavement` 0x0056E990 with `(coord, 1, 0)`, and two
-/// more call `MapClass::FloodFillIsoTileType` to repaint the ramp iso-tile
-/// across its connected region. VERA runs neither.
+/// branches on three runtime tile-class constants. VERA now models the
+/// `MapClass::ToggleBridgePavement` 0x0056E990 damaged-TMP selector and exact
+/// flood/dirty order. The alternate calls to `MapClass::FloodFillIsoTileType`
+/// that repaint a connected ramp iso-tile remain unported.
 ///
 /// Trigger: any damage or collapse step on a bridge whose anchor has a ramp
 /// or bridgehead neighbour — i.e. essentially every hit that damages a span.
 ///
-/// Effect: the ramp keeps its intact iso-tile art and its pavement state after
-/// the span it leads to has been damaged or dropped. The bridge deck changes,
-/// the approach ramp does not.
+/// Effect: affected alternate-class ramps keep their prior iso-tile art after
+/// the span changes; damaged-TMP ramps do switch and now redraw correctly.
 ///
 /// Frequency: high on any map with a bridge that gets attacked, which is most
 /// matches on most retail maps carrying one. The residual is purely visual —
 /// no pathing, damage or RNG consequence was found in 0x00572230.
 #[test]
-#[ignore = "gamemd ramp updaters also toggle pavement and flood-fill the ramp iso-tile; VERA only promotes the state byte"]
-fn ramp_pavement_and_isotile_branch_is_unported() {
-    panic!(
-        "unimplemented: ToggleBridgePavement / FloodFillIsoTileType branch of the ramp updaters"
-    );
+#[ignore = "gamemd's alternate ramp tile classes call FloodFillIsoTileType; only the damaged-TMP ToggleBridgePavement branch is ported"]
+fn ramp_isotile_repaint_branch_is_unported() {
+    panic!("unimplemented: FloodFillIsoTileType branch of the ramp updaters");
 }
 
 /// RESIDUAL - gamemd addresses 0x00576770 `MapClass::UpdateAdjacentBridges_High`,

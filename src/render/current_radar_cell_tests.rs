@@ -368,7 +368,7 @@ fn gsi_04_01_damaged_tmp_pair_rebuilds_and_repairs_in_full_and_incremental_paths
     let mut damaged_state = pristine_state;
     assert_eq!(
         damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, true, &resolved),
-        1,
+        vec![cell],
     );
     let damaged = live_runtime(
         resolved.clone(),
@@ -384,7 +384,7 @@ fn gsi_04_01_damaged_tmp_pair_rebuilds_and_repairs_in_full_and_incremental_paths
 
     assert_eq!(
         damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, false, &resolved),
-        1,
+        vec![cell],
     );
     let repaired = live_runtime(
         resolved,

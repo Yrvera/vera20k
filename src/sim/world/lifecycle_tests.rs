@@ -436,7 +436,7 @@ fn gsi_04_12_common_raw_occupation_structural_deck_unit_tracks_production_collap
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
-            StateOutcome::Absorbed
+            StateOutcome::Absorbed { .. }
         ));
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
@@ -845,7 +845,7 @@ fn gsi_04_12_object_raw_occupation_deck_clear_rechecks_live_structural_state() {
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
-            StateOutcome::Absorbed
+            StateOutcome::Absorbed { .. }
         ));
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
@@ -4064,7 +4064,7 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(6, 7, true, terrain),
-            StateOutcome::Absorbed
+            StateOutcome::Absorbed { .. }
         ));
         assert!(matches!(
             bridge_state.body_cell_advance_state(6, 7, true, terrain),
