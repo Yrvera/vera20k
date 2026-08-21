@@ -1709,6 +1709,15 @@ impl Simulation {
         under_attack_events: Vec<crate::sim::combat::UnderAttackEvent>,
         terrain_navigation_changed_cells: Vec<(u16, u16)>,
     ) {
+        // gamemd-derived: `BulletClass::AI @ 0x004666E0` reaches
+        // `CellClass::DestroyOverlay @ 0x00480CB0` inside the Bullet's Logic
+        // slot, where terminal removal calls `MarkTerrainDirty @ 0x004807C2`
+        // synchronously. Combat owns the detached overlay mutation; this is the
+        // first restored-world consumer of `DeathEffects`. The caller's earlier
+        // shrapnel admission preserves Detonate's shrapnel-before-DamageArea
+        // ordering; publish the trace before consuming later death effects.
+        self.mark_wall_mutations_radar_dirty(&effects.wall_mutations);
+
         let dead_infos: Vec<(InternedId, EntityCategory)> = effects
             .despawned_ids
             .iter()
