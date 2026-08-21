@@ -1,7 +1,7 @@
 //! Minimap (radar view) — tiny overhead view of the entire map.
 //!
 //! Shows terrain as colored pixels and entity positions as colored dots
-//! in a fixed-size square at the bottom-left corner of the screen.
+//! in the native 140x108 radar aperture.
 //! A white rectangle indicates the current camera viewport.
 //!
 //! ## Implementation
@@ -24,7 +24,7 @@
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseColorMap;
 use crate::map::playfield::PlayfieldBounds;
-use crate::map::terrain::{PlayfieldPresentationGeometry, TerrainGrid};
+use crate::map::terrain::TerrainGrid;
 use crate::render::batch::{BatchRenderer, BatchTexture, SpriteInstance};
 use crate::render::gpu::GpuContext;
 use crate::rules::house_colors::HouseColorRamps;
@@ -34,9 +34,8 @@ use crate::sim::vision::FogState;
 use std::collections::BTreeMap;
 
 use super::minimap_helpers::{
-    COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_SIZE, VIEWPORT_LINE_THICKNESS,
-    cell_visibility_color, compute_aspect_fit, dim_color, radar_color_for_cell, set_pixel,
-    terrain_brightness_for_theater, world_to_minimap_pixel,
+    COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_HEIGHT, MINIMAP_WIDTH, VIEWPORT_LINE_THICKNESS,
+    cell_visibility_color, dim_color, set_pixel,
 };
 use super::radar_tracker::{
     RadarProjectionFacts, RetainedRadarTracker, radar_entity_owner_color,
@@ -48,6 +47,10 @@ use super::radar_tracker::RadarTrackerEntry;
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
 use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 use super::minimap_legacy_events::draw_legacy_sim_radar_events;
+use super::minimap_projection::{
+    MinimapPlayfieldProjection, aperture_pixel, generated_primary_copy_frame,
+    minimap_screen_point_to_camera_top_left,
+};
 use super::native_radar_surface::NativeRadarSurfaceGeometry;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
 
@@ -67,179 +70,10 @@ fn playfield_authority_needs_reconcile(
     installed != Some(PlayfieldAuthorityStamp { bounds, revision })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn minimap_screen_point_to_camera_top_left(
-    screen_x: f32,
-    screen_y: f32,
-    screen_w: f32,
-    screen_h: f32,
-    rect_x: f32,
-    rect_y: f32,
-    rect_w: f32,
-    rect_h: f32,
-    world_origin_x: f32,
-    world_origin_y: f32,
-    world_width: f32,
-    world_height: f32,
-    map_offset_x: f32,
-    map_offset_y: f32,
-    map_pixel_w: f32,
-    map_pixel_h: f32,
-) -> (f32, f32) {
-    let size = MINIMAP_SIZE as f32;
-    let tex_x = (screen_x - rect_x) / rect_w.max(1.0) * size;
-    let tex_y = (screen_y - rect_y) / rect_h.max(1.0) * size;
-    let nx = ((tex_x - map_offset_x) / map_pixel_w.max(1.0)).clamp(0.0, 1.0);
-    let ny = ((tex_y - map_offset_y) / map_pixel_h.max(1.0)).clamp(0.0, 1.0);
-    let world_x = world_origin_x + nx * world_width;
-    let world_y = world_origin_y + ny * world_height;
-    (world_x - screen_w * 0.5, world_y - screen_h * 0.5)
-}
-
-struct MinimapPlayfieldProjection {
-    base_rgba: Vec<u8>,
-    world_origin_x: f32,
-    world_origin_y: f32,
-    world_width: f32,
-    world_height: f32,
-    terrain_pixels: Vec<TerrainPixel>,
-    overlay_pixels: Vec<OverlayPixel>,
-    map_offset_x: f32,
-    map_offset_y: f32,
-    map_pixel_w: f32,
-    map_pixel_h: f32,
-    native_radar_surface: Option<NativeRadarSurfaceGeometry>,
-}
-
-impl MinimapPlayfieldProjection {
-    /// CPU-only construction of the two active playfield presentation frames:
-    /// terrain/overlays use mode zero, while the generated radar surface uses
-    /// `ComputeRadarMapBounds @ 0x00654490`'s mode-one cell admission.
-    fn derive(
-        grid: &TerrainGrid,
-        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        overlay_data: &[MinimapOverlayDatum],
-        theater_name: &str,
-        bounds: Option<PlayfieldBounds>,
-    ) -> Self {
-        let size = MINIMAP_SIZE;
-        let mut base_rgba = vec![0u8; (size * size * 4) as usize];
-        for pixel in base_rgba.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&COLOR_SHROUD);
-        }
-
-        let geometry =
-            bounds.and_then(|bounds| PlayfieldPresentationGeometry::from_grid(grid, bounds));
-        let native_radar_surface = bounds.and_then(|bounds| {
-            resolved_terrain.and_then(|terrain| {
-                NativeRadarSurfaceGeometry::from_playfield(terrain, bounds)
-            })
-        });
-        let (world_origin_x, world_origin_y, world_width, world_height) = geometry
-            .map(|geometry| {
-                (
-                    geometry.origin_x,
-                    geometry.origin_y,
-                    geometry.world_width.max(1.0),
-                    geometry.world_height.max(1.0),
-                )
-            })
-            .unwrap_or((0.0, 0.0, 1.0, 1.0));
-        let (map_offset_x, map_offset_y, map_pixel_w, map_pixel_h) =
-            compute_aspect_fit(world_width, world_height);
-        let terrain_brightness = terrain_brightness_for_theater(theater_name);
-        let mut terrain_pixels =
-            Vec::with_capacity(geometry.map_or(0, |geometry| geometry.valid_cell_count));
-
-        if let Some(bounds) = bounds {
-            for cell in &grid.cells {
-                if !bounds.contains_geometry_packed(i32::from(cell.rx), i32::from(cell.ry)) {
-                    continue;
-                }
-                let (sx, sy) = crate::map::terrain::iso_to_screen(cell.rx, cell.ry, 0);
-                let (px, py) = world_to_minimap_pixel(
-                    sx,
-                    sy,
-                    world_origin_x,
-                    world_origin_y,
-                    world_width,
-                    world_height,
-                    map_offset_x,
-                    map_offset_y,
-                    map_pixel_w,
-                    map_pixel_h,
-                );
-                let color = radar_color_for_cell(cell, terrain_brightness);
-                set_pixel(&mut base_rgba, size, px, py, color);
-                terrain_pixels.push(TerrainPixel {
-                    rx: cell.rx,
-                    ry: cell.ry,
-                    px,
-                    py,
-                    color,
-                });
-            }
-        }
-
-        let mut overlay_pixels = Vec::new();
-        if let Some(bounds) = bounds {
-            for &(rx, ry, classification, density, precomputed) in overlay_data {
-                if !bounds.contains_geometry_packed(i32::from(rx), i32::from(ry)) {
-                    continue;
-                }
-                let color = if let Some(color) = precomputed {
-                    color
-                } else if let Some(color) = classification.color(density) {
-                    color
-                } else {
-                    continue;
-                };
-                let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-                let (px, py) = world_to_minimap_pixel(
-                    sx,
-                    sy,
-                    world_origin_x,
-                    world_origin_y,
-                    world_width,
-                    world_height,
-                    map_offset_x,
-                    map_offset_y,
-                    map_pixel_w,
-                    map_pixel_h,
-                );
-                set_pixel(&mut base_rgba, size, px, py, color);
-                overlay_pixels.push(OverlayPixel {
-                    rx,
-                    ry,
-                    px,
-                    py,
-                    color,
-                    classification,
-                });
-            }
-        }
-
-        Self {
-            base_rgba,
-            world_origin_x,
-            world_origin_y,
-            world_width,
-            world_height,
-            terrain_pixels,
-            overlay_pixels,
-            map_offset_x,
-            map_offset_y,
-            map_pixel_w,
-            map_pixel_h,
-            native_radar_surface,
-        }
-    }
-}
-
 /// Minimap renderer — manages terrain image, unit overlay, and viewport rectangle.
 pub struct MinimapRenderer {
-    /// Base terrain image (RGBA, MINIMAP_SIZE x MINIMAP_SIZE), rebuilt on a
-    /// playfield-authority revision.
+    /// Base terrain image in the fixed native 140x108 radar aperture, rebuilt
+    /// on a playfield-authority revision.
     base_terrain_rgba: Vec<u8>,
     /// GPU texture containing the current minimap image (terrain + unit dots).
     map_texture: BatchTexture,
@@ -298,8 +132,7 @@ impl MinimapRenderer {
         playfield_bounds: Option<PlayfieldBounds>,
         playfield_revision: u64,
     ) -> Self {
-        let size: u32 = MINIMAP_SIZE;
-        let pixel_count: usize = (size * size * 4) as usize;
+        let pixel_count: usize = (MINIMAP_WIDTH * MINIMAP_HEIGHT * 4) as usize;
         let projection = MinimapPlayfieldProjection::derive(
             grid,
             resolved_terrain,
@@ -309,14 +142,19 @@ impl MinimapRenderer {
         );
 
         let (map_texture_raw, map_texture) =
-            batch.create_updatable_texture(gpu, &projection.base_rgba, size, size);
+            batch.create_updatable_texture(
+                gpu,
+                &projection.base_rgba,
+                MINIMAP_WIDTH,
+                MINIMAP_HEIGHT,
+            );
         let white_texture: BatchTexture = create_white_texture(gpu, batch);
         let rgba_scratch: Vec<u8> = vec![0u8; pixel_count];
 
         log::info!(
             "Minimap created: {}x{} px, {} terrain cells, {} overlay pixels",
-            size,
-            size,
+            MINIMAP_WIDTH,
+            MINIMAP_HEIGHT,
             projection.terrain_pixels.len(),
             projection.overlay_pixels.len(),
         );
@@ -359,6 +197,7 @@ impl MinimapRenderer {
         &mut self,
         gpu: &GpuContext,
         grid: &TerrainGrid,
+        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         overlay_data: &[MinimapOverlayDatum],
         theater_name: &str,
         playfield_bounds: Option<PlayfieldBounds>,
@@ -379,7 +218,7 @@ impl MinimapRenderer {
         let action40_rebuild = self.installed_playfield_authority.is_some();
         let projection = MinimapPlayfieldProjection::derive(
             grid,
-            None,
+            resolved_terrain,
             overlay_data,
             theater_name,
             playfield_bounds,
@@ -421,12 +260,12 @@ impl MinimapRenderer {
             &self.base_terrain_rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(MINIMAP_SIZE * 4),
-                rows_per_image: Some(MINIMAP_SIZE),
+                bytes_per_row: Some(MINIMAP_WIDTH * 4),
+                rows_per_image: Some(MINIMAP_HEIGHT),
             },
             wgpu::Extent3d {
-                width: MINIMAP_SIZE,
-                height: MINIMAP_SIZE,
+                width: MINIMAP_WIDTH,
+                height: MINIMAP_HEIGHT,
                 depth_or_array_layers: 1,
             },
         );
@@ -489,13 +328,6 @@ impl MinimapRenderer {
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
     ) {
-        if self.native_radar_surface.is_none() {
-            self.native_radar_surface = self.playfield_bounds.and_then(|bounds| {
-                resolved_terrain.and_then(|terrain| {
-                    NativeRadarSurfaceGeometry::from_playfield(terrain, bounds)
-                })
-            });
-        }
         let fog_generation = if full_visibility { 0 } else { fog.view_generation() };
         let visibility_owner = local_owner;
         if sim_tick == self.last_sim_tick
@@ -520,7 +352,7 @@ impl MinimapRenderer {
         self.last_visibility_owner = visibility_owner;
         self.last_radar_terrain_dirty_generation = radar_terrain_dirty_generation;
 
-        let size: u32 = MINIMAP_SIZE;
+        let size: u32 = MINIMAP_WIDTH;
         {
             let rgba: &mut Vec<u8> = &mut self.rgba_scratch;
 
@@ -534,7 +366,12 @@ impl MinimapRenderer {
                         Some(color) => color,
                         None => continue,
                     };
-                    set_pixel(rgba, size, terrain_pixel.px, terrain_pixel.py, color);
+                    if let Some((x, y)) = aperture_pixel(
+                        self.native_radar_surface,
+                        (terrain_pixel.px, terrain_pixel.py),
+                    ) {
+                        set_pixel(rgba, size, x, y, color);
+                    }
                 }
             } else {
                 rgba.copy_from_slice(&self.base_terrain_rgba);
@@ -550,13 +387,21 @@ impl MinimapRenderer {
                     if overlay.classification == OverlayClassification::Bridge {
                         color = dim_color(color, 0.5);
                     }
-                    set_pixel(rgba, size, overlay.px, overlay.py, color);
+                    if let Some((x, y)) =
+                        aperture_pixel(self.native_radar_surface, (overlay.px, overlay.py))
+                    {
+                        set_pixel(rgba, size, x, y, color);
+                    }
                 } else {
                     let mut color = overlay.color;
                     if overlay.classification == OverlayClassification::Bridge {
                         color = dim_color(color, 0.5);
                     }
-                    set_pixel(rgba, size, overlay.px, overlay.py, color);
+                    if let Some((x, y)) =
+                        aperture_pixel(self.native_radar_surface, (overlay.px, overlay.py))
+                    {
+                        set_pixel(rgba, size, x, y, color);
+                    }
                 }
             }
         }
@@ -652,7 +497,12 @@ impl MinimapRenderer {
             };
             let color = radar_entity_owner_color(entity, interner, house_colors, ramps);
             if entry.x >= 0 && entry.y >= 0 {
-                set_pixel(rgba, size, entry.x as u32, entry.y as u32, color);
+                if let Some((x, y)) = aperture_pixel(
+                    self.native_radar_surface,
+                    (entry.x as u32, entry.y as u32),
+                ) {
+                    set_pixel(rgba, size, x, y, color);
+                }
             }
         }
 
@@ -673,8 +523,13 @@ impl MinimapRenderer {
         // materialization is already present in the fog/base inputs; the type-5
         // outline must nevertheless remain after object pixels here.
         if let Some(surface) = self.native_radar_surface {
-            self.radar_events
-                .draw_type5(rgba, size, size, surface.generated_size());
+            self.radar_events.draw_type5(
+                rgba,
+                MINIMAP_WIDTH,
+                MINIMAP_HEIGHT,
+                surface.generated_size(),
+                surface.aperture_offset(),
+            );
         }
 
         // Rewrite existing GPU texture instead of creating a new one.
@@ -689,11 +544,11 @@ impl MinimapRenderer {
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(size * 4),
-                rows_per_image: Some(size),
+                rows_per_image: Some(MINIMAP_HEIGHT),
             },
             wgpu::Extent3d {
                 width: size,
-                height: size,
+                height: MINIMAP_HEIGHT,
                 depth_or_array_layers: 1,
             },
         );
@@ -701,6 +556,7 @@ impl MinimapRenderer {
 
     fn radar_projection_facts(&self) -> RadarProjectionFacts {
         RadarProjectionFacts {
+            native_surface: self.native_radar_surface,
             world_origin_x: self.world_origin_x,
             world_origin_y: self.world_origin_y,
             world_width: self.world_width,
@@ -763,13 +619,18 @@ impl MinimapRenderer {
             else {
                 continue;
             };
-            set_pixel(
-                &mut self.base_terrain_rgba,
-                MINIMAP_SIZE,
-                terrain_pixel.px,
-                terrain_pixel.py,
-                terrain_pixel.color,
-            );
+            if let Some((x, y)) = aperture_pixel(
+                self.native_radar_surface,
+                (terrain_pixel.px, terrain_pixel.py),
+            ) {
+                set_pixel(
+                    &mut self.base_terrain_rgba,
+                    MINIMAP_WIDTH,
+                    x,
+                    y,
+                    terrain_pixel.color,
+                );
+            }
 
             let bridge_visible = bridge_state
                 .and_then(|state| state.cell(rx, ry))
@@ -822,11 +683,31 @@ impl MinimapRenderer {
         width: f32,
         height: f32,
     ) -> SpriteInstance {
+        let (position, size, uv_origin, uv_size) = self.native_radar_surface.map_or(
+            (
+                [camera_x + screen_x, camera_y + screen_y],
+                [width, height],
+                [0.0, 0.0],
+                [1.0, 1.0],
+            ),
+            |surface| {
+                let copy = generated_primary_copy_frame(surface, width, height);
+                (
+                    [
+                        camera_x + screen_x + copy.offset[0],
+                        camera_y + screen_y + copy.offset[1],
+                    ],
+                    copy.size,
+                    copy.uv_origin,
+                    copy.uv_size,
+                )
+            },
+        );
         SpriteInstance {
-            position: [camera_x + screen_x, camera_y + screen_y],
-            size: [width, height],
-            uv_origin: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
+            position,
+            size,
+            uv_origin,
+            uv_size,
             depth: MINIMAP_DEPTH,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
@@ -894,21 +775,20 @@ impl MinimapRenderer {
         rect_w: f32,
         rect_h: f32,
     ) -> Vec<SpriteInstance> {
-        let size = MINIMAP_SIZE as f32;
-        // World coords → normalized 0..1 → texture pixel via aspect-fit → screen proportion.
-        let nx_left: f32 = (camera_x - self.world_origin_x) / self.world_width;
-        let ny_top: f32 = (camera_y - self.world_origin_y) / self.world_height;
-        let nx_right: f32 = (camera_x + screen_w - self.world_origin_x) / self.world_width;
-        let ny_bottom: f32 = (camera_y + screen_h - self.world_origin_y) / self.world_height;
-
-        let left: f32 =
-            ((nx_left * self.map_pixel_w + self.map_offset_x) / size * rect_w).clamp(0.0, rect_w);
-        let top: f32 =
-            ((ny_top * self.map_pixel_h + self.map_offset_y) / size * rect_h).clamp(0.0, rect_h);
-        let right: f32 =
-            ((nx_right * self.map_pixel_w + self.map_offset_x) / size * rect_w).clamp(0.0, rect_w);
-        let bottom: f32 =
-            ((ny_bottom * self.map_pixel_h + self.map_offset_y) / size * rect_h).clamp(0.0, rect_h);
+        let width = MINIMAP_WIDTH as f32;
+        let height = MINIMAP_HEIGHT as f32;
+        let nx_left = (camera_x - self.world_origin_x) / self.world_width;
+        let ny_top = (camera_y - self.world_origin_y) / self.world_height;
+        let nx_right = (camera_x + screen_w - self.world_origin_x) / self.world_width;
+        let ny_bottom = (camera_y + screen_h - self.world_origin_y) / self.world_height;
+        let left = ((nx_left * self.map_pixel_w + self.map_offset_x) / width * rect_w)
+            .clamp(0.0, rect_w);
+        let top = ((ny_top * self.map_pixel_h + self.map_offset_y) / height * rect_h)
+            .clamp(0.0, rect_h);
+        let right = ((nx_right * self.map_pixel_w + self.map_offset_x) / width * rect_w)
+            .clamp(0.0, rect_w);
+        let bottom = ((ny_bottom * self.map_pixel_h + self.map_offset_y) / height * rect_h)
+            .clamp(0.0, rect_h);
 
         let vp_w: f32 = right - left;
         let vp_h: f32 = bottom - top;

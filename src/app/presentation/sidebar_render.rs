@@ -393,18 +393,20 @@ pub(crate) fn active_minimap_screen_rect(state: &AppState) -> crate::sidebar::Re
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     if current_sidebar_chrome(state).is_some() {
-        // These position the minimap content exactly inside the BKGDLG.SHP chrome border.
-        const MINIMAP_LEFT: f32 = 13.0;
-        const MINIMAP_TOP: f32 = 0.0;
+        // One_Time @ 0x00652CF0 installs the 140x108 aperture. Ordinary
+        // Init_For_House places it at sidebar+16, y=49; Update @ 0x00656EC0
+        // copies the centered generated primary surface into it 1:1.
+        const MINIMAP_LEFT: f32 = 16.0;
+        const MINIMAP_TOP_FROM_CHROME: f32 = -1.0;
         const MINIMAP_WIDTH: f32 = 140.0;
-        const MINIMAP_HEIGHT: f32 = 120.0;
+        const MINIMAP_HEIGHT: f32 = 108.0;
 
         let spec = state.match_state.match_presentation.sidebar_layout_spec;
         let s = state.match_state.match_presentation.ui_scale;
         let sidebar_x = sw - spec.sidebar_width + spec.x_offset;
         crate::sidebar::Rect {
             x: sidebar_x + MINIMAP_LEFT * s,
-            y: spec.top_inset + MINIMAP_TOP * s,
+            y: spec.top_inset + MINIMAP_TOP_FROM_CHROME * s,
             w: MINIMAP_WIDTH * s,
             h: MINIMAP_HEIGHT * s,
         }

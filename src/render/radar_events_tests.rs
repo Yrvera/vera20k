@@ -113,7 +113,7 @@ fn type5_draw_is_one_cyan_outline_in_insertion_order() {
     event.fade = 1.0;
     event.expanding = false;
     let mut rgba = vec![7_u8; 24 * 24 * 4];
-    queue.draw_type5(&mut rgba, 24, 24, (24, 24));
+    queue.draw_type5(&mut rgba, 24, 24, (24, 24), (0, 0));
     let pixel = |x: usize, y: usize| {
         let offset = (y * 24 + x) * 4;
         &rgba[offset..offset + 4]
@@ -133,7 +133,7 @@ fn type5_draw_clips_to_generated_primary_extent_not_host_texture() {
     event.fade = 1.0;
     event.expanding = false;
     let mut rgba = vec![7_u8; 200 * 200 * 4];
-    queue.draw_type5(&mut rgba, 200, 200, (140, 84));
+    queue.draw_type5(&mut rgba, 200, 200, (140, 84), (0, 0));
     let pixel = |x: usize, y: usize| {
         let offset = (y * 200 + x) * 4;
         &rgba[offset..offset + 4]
@@ -141,6 +141,26 @@ fn type5_draw_clips_to_generated_primary_extent_not_host_texture() {
     assert_eq!(pixel(139, 21), TYPE5_BRIGHT);
     assert_eq!(pixel(140, 22), [7, 7, 7, 7]);
     assert_eq!(pixel(158, 40), [7, 7, 7, 7]);
+}
+
+#[test]
+fn type5_draw_applies_only_the_centered_primary_surface_copy() {
+    let mut queue = queue_ready();
+    let config = configured();
+    assert!(queue.create_enemy_sensed(source((1, 1), (10, 10)), 0, (64, 108), &config));
+    let event = &mut queue.events[0];
+    event.radius = 4.0;
+    event.rotation = 0.0;
+    event.fade = 1.0;
+    event.expanding = false;
+    let mut rgba = vec![7_u8; 140 * 108 * 4];
+    queue.draw_type5(&mut rgba, 140, 108, (64, 108), (38, 0));
+    let pixel = |x: usize, y: usize| {
+        let offset = (y * 140 + x) * 4;
+        &rgba[offset..offset + 4]
+    };
+    assert_eq!(pixel(52, 10), TYPE5_BRIGHT);
+    assert_eq!(pixel(14, 10), [7, 7, 7, 7], "no untransformed event copy");
 }
 
 #[test]

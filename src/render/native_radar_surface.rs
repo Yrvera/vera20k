@@ -7,10 +7,13 @@ use crate::map::playfield::PlayfieldBounds;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::util::native_x87::{NativeF32Bits, X87Chop53, X87Ordering, X87Value};
 
-const MAX_RADAR_WIDTH: i32 = 140;
-const MAX_RADAR_HEIGHT: i32 = 108;
+pub(super) const RADAR_APERTURE_WIDTH: u32 = 140;
+pub(super) const RADAR_APERTURE_HEIGHT: u32 = 108;
+const MAX_RADAR_WIDTH: i32 = RADAR_APERTURE_WIDTH as i32;
+const MAX_RADAR_HEIGHT: i32 = RADAR_APERTURE_HEIGHT as i32;
 const MAX_RADAR_WIDTH_BITS: u32 = 0x430c_0000;
 const MAX_RADAR_HEIGHT_BITS: u32 = 0x42d8_0000;
+const ONE_OVER_CELL_BITS: u32 = 0x3b80_0000;
 
 /// The raw isometric transform plus the generated primary-surface dimensions.
 ///
@@ -112,7 +115,7 @@ impl NativeRadarSurfaceGeometry {
         )
     }
 
-    fn from_raw_rect(
+    pub(super) fn from_raw_rect(
         raw_offset_x: i32,
         raw_offset_y: i32,
         raw_width: i32,
@@ -153,6 +156,70 @@ impl NativeRadarSurfaceGeometry {
             pixel_x = 0;
         }
         (pixel_x, pixel_y)
+    }
+
+    /// `FUN_006557F0 @ 0x006557F0`, relative to the generated primary
+    /// surface. `TechnoClass+0x4A0 @ 0x0070D990` uses this exact current-world
+    /// projection for its cached tracker coordinate.
+    pub fn world_to_surface_pixel(
+        self,
+        world_x_leptons: i32,
+        world_y_leptons: i32,
+        clamp: bool,
+    ) -> (i32, i32) {
+        let raw_x = self
+            .raw_offset_x
+            .wrapping_mul(256)
+            .wrapping_sub(world_y_leptons)
+            .wrapping_add(world_x_leptons);
+        let raw_y = world_y_leptons
+            .wrapping_sub(self.raw_offset_y.wrapping_mul(256))
+            .wrapping_add(world_x_leptons);
+        let project = |raw| {
+            native_ftol(X87Chop53::mul(
+                X87Chop53::mul(X87Chop53::load_i32(raw), load_f32(self.zoom)),
+                load_constant(ONE_OVER_CELL_BITS),
+            ))
+        };
+        let mut pixel = (
+            project(raw_x),
+            project(raw_y),
+        );
+        if clamp {
+            pixel.0 = pixel.0.clamp(0, self.generated_width.wrapping_sub(1));
+            pixel.1 = pixel.1.clamp(0, self.generated_height.wrapping_sub(1));
+        }
+        pixel
+    }
+
+    /// `RebuildRadarSurfaces @ 0x00654650` centers the generated primary
+    /// surface in the fixed 140x108 aperture using signed integer division.
+    pub const fn aperture_offset(self) -> (i32, i32) {
+        (
+            (MAX_RADAR_WIDTH - self.generated_width) / 2,
+            (MAX_RADAR_HEIGHT - self.generated_height) / 2,
+        )
+    }
+
+    pub const fn surface_to_aperture_pixel(self, pixel: (i32, i32)) -> (i32, i32) {
+        let offset = self.aperture_offset();
+        (pixel.0 + offset.0, pixel.1 + offset.1)
+    }
+
+    pub const fn zoom(self) -> f32 {
+        self.zoom
+    }
+
+    pub fn surface_pixel_to_cell(self, pixel: (i32, i32)) -> Option<(u16, u16)> {
+        let inv_zoom = 1.0 / self.zoom;
+        let raw_x = pixel.0 as f32 * inv_zoom;
+        let raw_y = pixel.1 as f32 * inv_zoom;
+        let x = (raw_x + raw_y - self.raw_offset_x as f32 + self.raw_offset_y as f32) * 0.5;
+        let y = (raw_y - raw_x + self.raw_offset_y as f32 + self.raw_offset_x as f32) * 0.5;
+        let x = x.round() as i32;
+        let y = y.round() as i32;
+        (x >= 0 && y >= 0 && x <= i32::from(u16::MAX) && y <= i32::from(u16::MAX))
+            .then_some((x as u16, y as u16))
     }
 
     pub const fn generated_size(self) -> (i32, i32) {

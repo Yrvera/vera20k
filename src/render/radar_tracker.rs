@@ -15,6 +15,7 @@ use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 
 use super::minimap_helpers::owner_dot_color;
+use super::native_radar_surface::NativeRadarSurfaceGeometry;
 use super::radar_visibility::{
     RadarRegistrationVisibilityFacts, radar_owner_is_human_player,
 };
@@ -30,6 +31,7 @@ pub(super) struct RadarTrackerEntry {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RadarProjectionFacts {
+    pub native_surface: Option<NativeRadarSurfaceGeometry>,
     pub world_origin_x: f32,
     pub world_origin_y: f32,
     pub world_width: f32,
@@ -42,8 +44,10 @@ pub(super) struct RadarProjectionFacts {
 
 impl RadarProjectionFacts {
     pub fn cell_axis_scale(self) -> f32 {
-        // This preserves the installed Rust radar projection. Exact equivalence
-        // to native's 140x108 surface fit/rounding remains separately open.
+        if let Some(surface) = self.native_surface {
+            return surface.zoom();
+        }
+        // Mapless/headless adapter retained for tests without MapClass data.
         let x_scale = self.map_pixel_w / self.world_width.max(1.0)
             * (crate::map::terrain::TILE_WIDTH * 0.5);
         let y_scale = self.map_pixel_h / self.world_height.max(1.0)
@@ -52,6 +56,9 @@ impl RadarProjectionFacts {
     }
 
     fn pixel_to_cell(self, x: i32, y: i32) -> Option<(u16, u16)> {
+        if let Some(surface) = self.native_surface {
+            return surface.surface_pixel_to_cell((x, y));
+        }
         let normalized_x = (x as f32 - self.map_offset_x) / self.map_pixel_w.max(1.0);
         let normalized_y = (y as f32 - self.map_offset_y) / self.map_pixel_h.max(1.0);
         let screen_x = self.world_origin_x + normalized_x * self.world_width;

@@ -6,7 +6,7 @@
 use super::*;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::playfield::PlayfieldBounds;
-use crate::map::terrain::{TerrainCell, TerrainGrid};
+use crate::map::terrain::{PlayfieldPresentationGeometry, TerrainCell, TerrainGrid};
 use crate::render::minimap_helpers::*;
 use crate::rules::color_scheme::ColorSchemeEntry;
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
@@ -176,12 +176,12 @@ fn test_world_to_minimap_pixel_clamps_negative() {
 
 #[test]
 fn test_world_to_minimap_pixel_clamps_overflow() {
-    // Positions beyond world extent are clamped to max pixel (199).
+    // Positions beyond world extent are clamped to the native aperture edge.
     let (px, py): (u32, u32) = world_to_minimap_pixel(
         2000.0, 2000.0, 0.0, 0.0, 1000.0, 1000.0, 0.0, 0.0, 200.0, 200.0,
     );
-    assert_eq!(px, 199);
-    assert_eq!(py, 199);
+    assert_eq!(px, MINIMAP_WIDTH - 1);
+    assert_eq!(py, MINIMAP_HEIGHT - 1);
 }
 
 #[test]
@@ -349,7 +349,8 @@ fn test_set_pixel_out_of_bounds_does_nothing() {
 fn test_viewport_rect_returns_four_lines() {
     // We can't construct a full MinimapRenderer without GPU, but we can
     // test the coordinate math independently.
-    let mm_size: f32 = MINIMAP_SIZE as f32;
+    let mm_w: f32 = MINIMAP_WIDTH as f32;
+    let mm_h: f32 = MINIMAP_HEIGHT as f32;
     let world_w: f32 = 3000.0;
     let world_h: f32 = 2000.0;
 
@@ -365,16 +366,16 @@ fn test_viewport_rect_returns_four_lines() {
     let nx_right: f32 = (cam_x + screen_w - 0.0) / world_w;
     let ny_bottom: f32 = (cam_y + screen_h - 0.0) / world_h;
 
-    let left: f32 = (nx_left * mm_size).clamp(0.0, mm_size);
-    let top: f32 = (ny_top * mm_size).clamp(0.0, mm_size);
-    let right: f32 = (nx_right * mm_size).clamp(0.0, mm_size);
-    let bottom: f32 = (ny_bottom * mm_size).clamp(0.0, mm_size);
+    let left: f32 = (nx_left * mm_w).clamp(0.0, mm_w);
+    let top: f32 = (ny_top * mm_h).clamp(0.0, mm_h);
+    let right: f32 = (nx_right * mm_w).clamp(0.0, mm_w);
+    let bottom: f32 = (ny_bottom * mm_h).clamp(0.0, mm_h);
 
     // Verify the expected rect is within the minimap.
     assert!(left >= 0.0);
     assert!(top >= 0.0);
-    assert!(right <= mm_size);
-    assert!(bottom <= mm_size);
+    assert!(right <= mm_w);
+    assert!(bottom <= mm_h);
     assert!(right > left, "viewport should have nonzero width");
     assert!(bottom > top, "viewport should have nonzero height");
 }
@@ -396,8 +397,8 @@ fn test_degenerate_world_size_no_panic() {
     let (px, py): (u32, u32) =
         world_to_minimap_pixel(100.0, 100.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 200.0, 200.0);
     // Should clamp to max pixel.
-    assert_eq!(px, 199);
-    assert_eq!(py, 199);
+    assert_eq!(px, MINIMAP_WIDTH - 1);
+    assert_eq!(py, MINIMAP_HEIGHT - 1);
 }
 
 #[test]
@@ -530,27 +531,6 @@ fn playfield_revision_rebuild_gate_observes_two_successive_writers() {
 fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_replay() {
     let grid = playfield_projection_grid(64);
     let terrain = flat_resolved_terrain(64);
-    let initial = MinimapPlayfieldProjection::derive(
-        &grid,
-        Some(&terrain),
-        &[],
-        "TEMPERATE",
-        Some(expanded_playfield()),
-    );
-    let rebuilt = MinimapPlayfieldProjection::derive(
-        &grid,
-        Some(&terrain),
-        &[],
-        "TEMPERATE",
-        Some(shrunken_playfield()),
-    );
-    let initial_surface = initial.native_radar_surface.expect("initial primary surface");
-    let rebuilt_surface = rebuilt.native_radar_surface.expect("rebuilt primary surface");
-    assert_eq!(initial_surface.raw_size(), (72, 62));
-    assert_eq!(initial_surface.generated_size(), (125, 108));
-    assert_eq!(rebuilt_surface.raw_size(), (20, 18));
-    assert_eq!(rebuilt_surface.generated_size(), (120, 108));
-
     let cell = grid
         .cells
         .iter()
@@ -560,11 +540,68 @@ fn native_radar_event_surface_rebuild_uses_current_playfield_without_baseline_re
         })
         .map(|cell| (cell.rx, cell.ry))
         .expect("cell retained by action-40 contraction");
+    let overlays = [(
+        cell.0,
+        cell.1,
+        OverlayClassification::Ore,
+        3,
+        Some([77, 88, 99, 255]),
+    )];
+    let initial = MinimapPlayfieldProjection::derive(
+        &grid,
+        Some(&terrain),
+        &overlays,
+        "TEMPERATE",
+        Some(expanded_playfield()),
+    );
+    let rebuilt = MinimapPlayfieldProjection::derive(
+        &grid,
+        Some(&terrain),
+        &overlays,
+        "TEMPERATE",
+        Some(shrunken_playfield()),
+    );
+    let initial_surface = initial.native_radar_surface.expect("initial primary surface");
+    let rebuilt_surface = rebuilt.native_radar_surface.expect("rebuilt primary surface");
+    assert_eq!(initial_surface.raw_size(), (72, 62));
+    assert_eq!(initial_surface.generated_size(), (125, 108));
+    assert_eq!(rebuilt_surface.raw_size(), (20, 18));
+    assert_eq!(rebuilt_surface.generated_size(), (120, 108));
+    let initial_copy = generated_primary_copy_frame(initial_surface, 280.0, 216.0);
+    let rebuilt_copy = generated_primary_copy_frame(rebuilt_surface, 280.0, 216.0);
+    assert_eq!(initial_copy.offset, [14.0, 0.0]);
+    assert_eq!(initial_copy.size, [250.0, 216.0]);
+    assert_eq!(rebuilt_copy.offset, [20.0, 0.0]);
+    assert_eq!(rebuilt_copy.size, [240.0, 216.0]);
+
     assert_ne!(
         initial_surface.cell_to_surface_pixel(cell),
         rebuilt_surface.cell_to_surface_pixel(cell),
         "new events must use the rebuilt generated projection"
     );
+    let rebuilt_terrain = rebuilt
+        .terrain_pixels
+        .iter()
+        .find(|pixel| (pixel.rx, pixel.ry) == cell)
+        .expect("rebuilt terrain pixel");
+    let rebuilt_overlay = rebuilt
+        .overlay_pixels
+        .iter()
+        .find(|pixel| (pixel.rx, pixel.ry) == cell)
+        .expect("rebuilt overlay pixel");
+    let rebuilt_local = rebuilt_surface.cell_to_surface_pixel(cell);
+    assert_eq!(
+        (rebuilt_terrain.px, rebuilt_terrain.py),
+        (rebuilt_local.0 as u32, rebuilt_local.1 as u32)
+    );
+    assert_eq!(
+        (rebuilt_overlay.px, rebuilt_overlay.py),
+        (rebuilt_local.0 as u32, rebuilt_local.1 as u32),
+        "terrain and overlay rebuild in the same generated-primary frame"
+    );
+    let destination = rebuilt_surface.surface_to_aperture_pixel(rebuilt_local);
+    let offset = ((destination.1 as u32 * MINIMAP_WIDTH + destination.0 as u32) * 4) as usize;
+    assert_eq!(&rebuilt.base_rgba[offset..offset + 4], &[77, 88, 99, 255]);
 
     let mut events = ClientRadarEvents::default();
     let config = crate::rules::radar_event_config::RadarEventConfig::default();
@@ -642,8 +679,8 @@ fn playfield_projection_updates_camera_bounds_and_click_inverse_mapping() {
     let rect = (10.0, 20.0, 300.0, 240.0);
     let tex_x = projection.map_offset_x + projection.map_pixel_w * 0.5;
     let tex_y = projection.map_offset_y + projection.map_pixel_h * 0.5;
-    let click_x = rect.0 + tex_x / MINIMAP_SIZE as f32 * rect.2;
-    let click_y = rect.1 + tex_y / MINIMAP_SIZE as f32 * rect.3;
+    let click_x = rect.0 + tex_x / MINIMAP_WIDTH as f32 * rect.2;
+    let click_y = rect.1 + tex_y / MINIMAP_HEIGHT as f32 * rect.3;
     let camera = minimap_screen_point_to_camera_top_left(
         click_x,
         click_y,
@@ -674,6 +711,7 @@ fn playfield_projection_updates_camera_bounds_and_click_inverse_mapping() {
 
 fn radar_gate_projection() -> RadarProjectionFacts {
     RadarProjectionFacts {
+        native_surface: None,
         world_origin_x: 0.0,
         world_origin_y: 0.0,
         world_width: 1.0,

@@ -33,6 +33,7 @@ pub mod main_menu_shell_chrome;
 pub mod minimap;
 mod minimap_helpers;
 mod minimap_legacy_events;
+mod minimap_projection;
 mod native_radar_surface;
 mod radar_events;
 mod radar_tracker;

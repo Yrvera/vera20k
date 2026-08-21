@@ -325,6 +325,7 @@ impl ClientRadarEvents {
         stride_width: u32,
         canvas_height: u32,
         surface_size: (i32, i32),
+        destination_offset: (i32, i32),
     ) {
         // `TickAndDrawRadarEvents @ 0x00660000` walks ascending insertion order.
         let clip_width = surface_size.0.max(0) as u32;
@@ -337,10 +338,22 @@ impl ClientRadarEvents {
                     rgba,
                     stride_width,
                     canvas_height,
+                    destination_offset.0,
+                    destination_offset.1,
                     clip_width,
                     clip_height,
-                    corners[edge],
-                    corners[(edge + 1) % 4],
+                    (
+                        corners[edge].0.wrapping_add(destination_offset.0),
+                        corners[edge].1.wrapping_add(destination_offset.1),
+                    ),
+                    (
+                        corners[(edge + 1) % 4]
+                            .0
+                            .wrapping_add(destination_offset.0),
+                        corners[(edge + 1) % 4]
+                            .1
+                            .wrapping_add(destination_offset.1),
+                    ),
                     color,
                 );
             }
@@ -388,6 +401,8 @@ fn draw_line(
     rgba: &mut [u8],
     stride_width: u32,
     canvas_height: u32,
+    clip_left: i32,
+    clip_top: i32,
     clip_width: u32,
     clip_height: u32,
     start: (i32, i32),
@@ -406,10 +421,10 @@ fn draw_line(
         if x0 == x1 && y0 == y1 {
             break;
         }
-        if x0 >= 0
-            && y0 >= 0
-            && x0 < clip_width as i32
-            && y0 < clip_height as i32
+        if x0 >= clip_left
+            && y0 >= clip_top
+            && x0 < clip_left.wrapping_add(clip_width as i32)
+            && y0 < clip_top.wrapping_add(clip_height as i32)
             && x0 < stride_width as i32
             && y0 < canvas_height as i32
         {

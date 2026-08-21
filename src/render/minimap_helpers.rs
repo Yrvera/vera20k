@@ -11,8 +11,10 @@ use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 
-/// Side length of the square minimap in pixels.
-pub(super) const MINIMAP_SIZE: u32 = 200;
+use super::native_radar_surface::{RADAR_APERTURE_HEIGHT, RADAR_APERTURE_WIDTH};
+
+pub(super) const MINIMAP_WIDTH: u32 = RADAR_APERTURE_WIDTH;
+pub(super) const MINIMAP_HEIGHT: u32 = RADAR_APERTURE_HEIGHT;
 
 /// Margin from the screen edges in pixels.
 pub(super) const MINIMAP_MARGIN: f32 = 10.0;
@@ -154,25 +156,26 @@ pub(super) fn radar_color_for_cell(
     }
 }
 
-/// Compute aspect-fit parameters for mapping the world into MINIMAP_SIZE pixels.
+/// Headless fallback mapping when no authoritative generated surface exists.
 ///
 /// Returns `(offset_x, offset_y, mapped_w, mapped_h)` — the sub-region of the
-/// 200×200 texture that the world maps to, centered with black margins on the
+/// 140×108 aperture that the world maps to, centered with black margins on the
 /// shorter axis.
 pub(super) fn compute_aspect_fit(world_w: f32, world_h: f32) -> (f32, f32, f32, f32) {
-    let size = MINIMAP_SIZE as f32;
-    let scale = (size / world_w).min(size / world_h);
-    let mapped_w = (world_w * scale).min(size);
-    let mapped_h = (world_h * scale).min(size);
-    let offset_x = (size - mapped_w) * 0.5;
-    let offset_y = (size - mapped_h) * 0.5;
+    let width = MINIMAP_WIDTH as f32;
+    let height = MINIMAP_HEIGHT as f32;
+    let scale = (width / world_w).min(height / world_h);
+    let mapped_w = (world_w * scale).min(width);
+    let mapped_h = (world_h * scale).min(height);
+    let offset_x = (width - mapped_w) * 0.5;
+    let offset_y = (height - mapped_h) * 0.5;
     (offset_x, offset_y, mapped_w, mapped_h)
 }
 
 /// Map a world-space position to a minimap pixel coordinate.
 ///
 /// Uses the aspect-fit sub-region `(map_off_x, map_off_y, map_w, map_h)` so
-/// the map is centered within the 200×200 texture with correct proportions.
+/// the fallback map is centered within the native aperture.
 pub(super) fn world_to_minimap_pixel(
     world_x: f32,
     world_y: f32,
@@ -187,15 +190,17 @@ pub(super) fn world_to_minimap_pixel(
 ) -> (u32, u32) {
     let nx: f32 = (world_x - origin_x) / world_w;
     let ny: f32 = (world_y - origin_y) / world_h;
-    let max_pixel: u32 = MINIMAP_SIZE.saturating_sub(1);
-    let px: u32 = (nx * map_w + map_off_x).clamp(0.0, max_pixel as f32) as u32;
-    let py: u32 = (ny * map_h + map_off_y).clamp(0.0, max_pixel as f32) as u32;
+    let max_x: u32 = MINIMAP_WIDTH.saturating_sub(1);
+    let max_y: u32 = MINIMAP_HEIGHT.saturating_sub(1);
+    let px: u32 = (nx * map_w + map_off_x).clamp(0.0, max_x as f32) as u32;
+    let py: u32 = (ny * map_h + map_off_y).clamp(0.0, max_y as f32) as u32;
     (px, py)
 }
 
 /// Set a pixel in an RGBA buffer. Bounds-checked; out-of-range writes are ignored.
 pub(super) fn set_pixel(rgba: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4]) {
-    if x >= width || y >= MINIMAP_SIZE {
+    let height = (rgba.len() / 4) as u32 / width.max(1);
+    if x >= width || y >= height {
         return;
     }
     let offset: usize = ((y * width + x) * 4) as usize;
@@ -318,8 +323,9 @@ pub(super) fn minimap_entity_visible(
 
 /// Default minimap screen rectangle (bottom-left corner with margin).
 pub fn default_minimap_rect(screen_h: f32) -> (f32, f32, f32, f32) {
-    let mm_size = MINIMAP_SIZE as f32;
+    let mm_w = MINIMAP_WIDTH as f32;
+    let mm_h = MINIMAP_HEIGHT as f32;
     let mm_x = MINIMAP_MARGIN;
-    let mm_y = screen_h - mm_size - MINIMAP_MARGIN;
-    (mm_x, mm_y, mm_size, mm_size)
+    let mm_y = screen_h - mm_h - MINIMAP_MARGIN;
+    (mm_x, mm_y, mm_w, mm_h)
 }

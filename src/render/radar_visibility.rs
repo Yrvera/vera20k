@@ -317,19 +317,27 @@ pub(super) fn build_radar_object_update(
 ) -> RadarObjectUpdate {
     let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
     let object = rules.and_then(|rules| rules.object(type_str));
-    let (screen_x, screen_y) = super::locomotor_visual::screen_position(entity);
-    let screen_y = screen_y - crate::map::terrain::TILE_HEIGHT / 2.0;
-    let origin = world_to_minimap_pixel(
-        screen_x,
-        screen_y,
-        projection.world_origin_x,
-        projection.world_origin_y,
-        projection.world_width,
-        projection.world_height,
-        projection.map_offset_x,
-        projection.map_offset_y,
-        projection.map_pixel_w,
-        projection.map_pixel_h,
+    let (raw_x, raw_y) = radar_raw_coord_leptons(entity);
+    let origin = projection.native_surface.map_or_else(
+        || {
+            let (screen_x, screen_y) = super::locomotor_visual::screen_position(entity);
+            let screen_y = screen_y - crate::map::terrain::TILE_HEIGHT / 2.0;
+            let (x, y) = world_to_minimap_pixel(
+                screen_x,
+                screen_y,
+                projection.world_origin_x,
+                projection.world_origin_y,
+                projection.world_width,
+                projection.world_height,
+                projection.map_offset_x,
+                projection.map_offset_y,
+                projection.map_pixel_w,
+                projection.map_pixel_h,
+            );
+            (x as i32, y as i32)
+        },
+        // TechnoClass+0x4A0 passes clamp=0 to FUN_006557F0.
+        |surface| surface.world_to_surface_pixel(raw_x, raw_y, false),
     );
     let foundation = (entity.category == EntityCategory::Structure)
         .then(|| parse_foundation_size(&entity.foundation));
@@ -340,7 +348,6 @@ pub(super) fn build_radar_object_update(
     let current_cell = radar_fog_cell_from_leptons(coord_x, coord_y);
     // The type-5 call at `0x0070DA95..0x0070DAD7` converts raw Object+0x9C,
     // not BuildingClass's centre-adjusted +0x324 coordinate.
-    let (raw_x, raw_y) = radar_raw_coord_leptons(entity);
     let event_source_cell = radar_fog_cell_from_leptons(raw_x, raw_y);
     // `TechnoClass::IdleAnimDispatch @ 0x0070DA79..0x0070DAD7` rejects a
     // FootClass object while its signed `+0x684` byte is nonnegative. For
@@ -431,7 +438,7 @@ pub(super) fn build_radar_object_update(
     RadarObjectUpdate {
         stable_id: entity.stable_id,
         owner: entity.owner,
-        origin: (origin.0 as i32, origin.1 as i32),
+        origin,
         event_source_cell,
         enemy_sensed_prefilter,
         foundation,
@@ -541,6 +548,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn radar_object_update_uses_native_world_projection_shared_with_cell_events() {
+        let surface = crate::render::native_radar_surface::NativeRadarSurfaceGeometry::from_raw_rect(
+            0, 0, 300, 180,
+        )
+        .expect("wide generated surface");
+        let mut entity = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "MTNK",
+            "Enemy",
+            120,
+            30,
+        );
+        entity.position.sub_x = crate::util::fixed_math::SimFixed::from_num(0);
+        entity.position.sub_y = crate::util::fixed_math::SimFixed::from_num(0);
+        let mut projection = visibility_projection();
+        projection.native_surface = Some(surface);
+        let update = build_radar_object_update(
+            &entity,
+            &BTreeMap::new(),
+            None,
+            &FogState::default(),
+            true,
+            false,
+            None,
+            None,
+            projection,
+            None,
+            None,
+        );
+        let local = surface.cell_to_surface_pixel((120, 30));
+        assert_eq!(update.origin, local, "Techno+0x4A0 uses FUN_006557F0");
+        assert_eq!(update.event_source_cell, Some((120, 30)));
+        assert_eq!(
+            surface.surface_to_aperture_pixel(update.origin),
+            surface.surface_to_aperture_pixel(local),
+            "object and type-5 source receive one identical final copy transform"
+        );
+    }
+
     fn flat_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {
             rx,
@@ -608,6 +655,7 @@ mod tests {
 
     pub(super) fn visibility_projection() -> RadarProjectionFacts {
         RadarProjectionFacts {
+            native_surface: None,
             world_origin_x: 0.0,
             world_origin_y: 0.0,
             world_width: 1.0,
