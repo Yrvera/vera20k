@@ -70,17 +70,6 @@ impl NativeRadarScreenGeometry {
         ))
     }
 
-    pub fn surface_rect_to_screen(self, rect: NativeRadarRect) -> [f32; 4] {
-        let content = self.content_rect();
-        let scale = self.surface_scale();
-        [
-            content[0] + rect.x as f32 * scale.0,
-            content[1] + rect.y as f32 * scale.1,
-            rect.w as f32 * scale.0,
-            rect.h as f32 * scale.1,
-        ]
-    }
-
     pub fn surface_scale(self) -> (f32, f32) {
         (
             self.aperture[2] / RADAR_APERTURE_WIDTH as f32,
@@ -253,26 +242,59 @@ fn native_radar_outline_instances(
     let bottom = top.wrapping_add(rect.h).wrapping_sub(1);
 
     // Rectangle worker 0x007BADC0 emits top, right, bottom, left in that
-    // order. XSurface line slot 0x007BA610 then clips every inclusive segment
-    // to g_SidebarSurface, whose live extent is 168 x screen_height; it does
-    // not clip to the 140x108 radar aperture. Express each inclusive native
-    // pixel run as a half-open screen quad only after that expansion so thin,
-    // zero-sized, and reversed pathological rectangles preserve the same
-    // endpoint coverage through VERA's outer UI-scale adapter.
+    // order. XSurface line slot 0x007BA610 clips each inclusive segment to
+    // g_SidebarSurface before SidebarClass copies/scales that retained raster.
+    // Reproduce that architecture by selecting the integer destination pixels
+    // whose centres nearest-sample the source line. Directly submitting a
+    // `ui_scale`-wide float quad is not equivalent: batch_shader rounds its two
+    // vertices independently and a 0.5-source-pixel quad can collapse.
     let edges = [
         native_axis_line_rect(left, top, right, top),
         native_axis_line_rect(right, top, right, bottom),
         native_axis_line_rect(right, bottom, left, bottom),
         native_axis_line_rect(left, bottom, left, top),
     ];
+    let scale = screen.surface_scale();
+    if scale.0 <= 0.0 || scale.1 <= 0.0 {
+        return Vec::new();
+    }
+    let source_aperture = (
+        ((screen.aperture[0] - sidebar_surface[0]) / scale.0).round() as i32,
+        ((screen.aperture[1] - sidebar_surface[1]) / scale.1).round() as i32,
+    );
+    let aperture_offset = screen.surface.aperture_offset();
+    let source_content = (
+        source_aperture.0.wrapping_add(aperture_offset.0),
+        source_aperture.1.wrapping_add(aperture_offset.1),
+    );
+    let clip_left = shader_pixel_round(sidebar_surface[0]);
+    let clip_top = shader_pixel_round(sidebar_surface[1]);
+    let clip_right = shader_pixel_round(sidebar_surface[0] + sidebar_surface[2]);
+    let clip_bottom = shader_pixel_round(sidebar_surface[1] + sidebar_surface[3]);
     edges
         .into_iter()
         .filter_map(|edge| {
-            let screen_rect = screen.surface_rect_to_screen(edge);
-            let [x, y, w, h] = clip_screen_rect(screen_rect, sidebar_surface)?;
+            let source_x = source_content.0.wrapping_add(edge.x);
+            let source_y = source_content.1.wrapping_add(edge.y);
+            let (x, w) = nearest_scaled_interval(
+                source_x,
+                edge.w,
+                sidebar_surface[0],
+                scale.0,
+                clip_left,
+                clip_right,
+            )?;
+            let (y, h) = nearest_scaled_interval(
+                source_y,
+                edge.h,
+                sidebar_surface[1],
+                scale.1,
+                clip_top,
+                clip_bottom,
+            )?;
             Some(SpriteInstance {
-                position: [camera.0 + x, camera.1 + y],
-                size: [w, h],
+                position: [camera.0 + x as f32, camera.1 + y as f32],
+                size: [w as f32, h as f32],
                 uv_origin: [0.0, 0.0],
                 uv_size: [1.0, 1.0],
                 depth: MINIMAP_DEPTH,
@@ -295,12 +317,37 @@ fn native_axis_line_rect(x1: i32, y1: i32, x2: i32, y2: i32) -> NativeRadarRect 
     }
 }
 
-fn clip_screen_rect(rect: [f32; 4], clip: [f32; 4]) -> Option<[f32; 4]> {
-    let left = rect[0].max(clip[0]);
-    let top = rect[1].max(clip[1]);
-    let right = (rect[0] + rect[2]).min(clip[0] + clip[2]);
-    let bottom = (rect[1] + rect[3]).min(clip[1] + clip[3]);
-    (left < right && top < bottom).then_some([left, top, right - left, bottom - top])
+/// `batch_shader.wgsl` native-zoom vertex snap: `floor(value + 0.5)`.
+fn shader_pixel_round(value: f32) -> i32 {
+    (value + 0.5).floor() as i32
+}
+
+/// Integer destination span whose pixel centres nearest-sample one half-open
+/// source interval. Scanning the already-clipped destination surface makes the
+/// 0.5x parity phase explicit and prevents adjacent source pixels from both
+/// claiming the same output pixel.
+fn nearest_scaled_interval(
+    source_start: i32,
+    source_len: i32,
+    destination_origin: f32,
+    scale: f32,
+    clip_start: i32,
+    clip_end: i32,
+) -> Option<(i32, i32)> {
+    if source_len <= 0 || clip_start >= clip_end {
+        return None;
+    }
+    let source_end = source_start.wrapping_add(source_len);
+    let mut first = None;
+    let mut end = clip_start;
+    for destination in clip_start..clip_end {
+        let source = (((destination as f32 + 0.5) - destination_origin) / scale).floor() as i32;
+        if source >= source_start && source < source_end {
+            first.get_or_insert(destination);
+            end = destination.wrapping_add(1);
+        }
+    }
+    first.map(|start| (start, end.wrapping_sub(start)))
 }
 
 fn load_i32(value: i32) -> X87Value {

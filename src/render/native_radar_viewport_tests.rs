@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 
 #[test]
@@ -389,16 +391,28 @@ fn native_viewport_outline_scales_then_clips_without_sidebar_bleed() {
     let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 140, 108).unwrap();
     let screen = NativeRadarScreenGeometry::new(surface, [208.0, 24.5, 70.0, 54.0]);
     let sidebar = [200.0, 0.0, 84.0, 150.0];
-    let lines = native_viewport_outline_instances(
+    let unsampled_phase = native_viewport_outline_instances(
         (13.0, 17.0),
         screen,
         NativeRadarRect { x: -20, y: -50, w: 200, h: 200 },
         sidebar,
         [1.0; 3],
     );
+    assert!(
+        unsampled_phase.is_empty(),
+        "0.5x nearest sampling selects odd source rows; even row 198 vanishes",
+    );
+
+    let lines = native_viewport_outline_instances(
+        (13.0, 17.0),
+        screen,
+        NativeRadarRect { x: -20, y: -50, w: 200, h: 201 },
+        sidebar,
+        [1.0; 3],
+    );
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].position, [213.0, 116.0]);
-    assert_eq!(lines[0].size, [84.0, 0.5]);
+    assert_eq!(lines[0].size, [84.0, 1.0]);
 
     for line in lines {
         let left = line.position[0] - 13.0;
@@ -489,4 +503,175 @@ fn native_content_boundary_rebuild_uses_current_surface_without_stale_state() {
     let after_action40 = build(tall);
     assert_ne!(before_action40, after_action40);
     assert_eq!(build(tall), after_action40, "equal rebuilds derive the same current frame");
+}
+
+fn outline_source_pixels(
+    rect: NativeRadarRect,
+    source_content: (i32, i32),
+) -> BTreeSet<(i32, i32)> {
+    let left = source_content.0.wrapping_add(rect.x);
+    let top = source_content.1.wrapping_add(rect.y);
+    let right = left.wrapping_add(rect.w).wrapping_sub(1);
+    let bottom = top.wrapping_add(rect.h).wrapping_sub(1);
+    let mut pixels = BTreeSet::new();
+    for x in left.min(right)..=left.max(right) {
+        pixels.insert((x, top));
+        pixels.insert((x, bottom));
+    }
+    for y in top.min(bottom)..=top.max(bottom) {
+        pixels.insert((left, y));
+        pixels.insert((right, y));
+    }
+    pixels
+}
+
+fn nearest_scaled_reference(
+    source_pixels: &BTreeSet<(i32, i32)>,
+    sidebar_surface: [f32; 4],
+    scale: (f32, f32),
+) -> BTreeSet<(i32, i32)> {
+    let left = shader_pixel_round(sidebar_surface[0]);
+    let top = shader_pixel_round(sidebar_surface[1]);
+    let right = shader_pixel_round(sidebar_surface[0] + sidebar_surface[2]);
+    let bottom = shader_pixel_round(sidebar_surface[1] + sidebar_surface[3]);
+    let mut pixels = BTreeSet::new();
+    for y in top..bottom {
+        let source_y = (((y as f32 + 0.5) - sidebar_surface[1]) / scale.1).floor() as i32;
+        for x in left..right {
+            let source_x = (((x as f32 + 0.5) - sidebar_surface[0]) / scale.0).floor() as i32;
+            if source_pixels.contains(&(source_x, source_y)) {
+                pixels.insert((x, y));
+            }
+        }
+    }
+    pixels
+}
+
+fn shader_raster_pixels(
+    instances: &[SpriteInstance],
+    camera: (f32, f32),
+) -> BTreeSet<(i32, i32)> {
+    let mut pixels = BTreeSet::new();
+    for instance in instances {
+        let raw_left = instance.position[0] - camera.0;
+        let raw_top = instance.position[1] - camera.1;
+        let raw_right = raw_left + instance.size[0];
+        let raw_bottom = raw_top + instance.size[1];
+        let left = shader_pixel_round(raw_left);
+        let top = shader_pixel_round(raw_top);
+        let right = shader_pixel_round(raw_right);
+        let bottom = shader_pixel_round(raw_bottom);
+        assert_eq!(raw_left, left as f32, "adapter must submit an integer left edge");
+        assert_eq!(raw_top, top as f32, "adapter must submit an integer top edge");
+        assert_eq!(raw_right, right as f32, "adapter must submit an integer right edge");
+        assert_eq!(raw_bottom, bottom as f32, "adapter must submit an integer bottom edge");
+        for y in top..bottom {
+            for x in left..right {
+                pixels.insert((x, y));
+            }
+        }
+    }
+    pixels
+}
+
+#[test]
+fn native_outlines_match_retained_surface_nearest_raster_at_half_one_and_one_half() {
+    let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 300, 180).unwrap();
+    assert_eq!(surface.generated_size(), (140, 83));
+    let camera = (7.25, -2.5);
+    let viewport = NativeRadarRect { x: 10, y: 12, w: 8, h: 6 };
+    let boundary = NativeRadarRect { x: -1, y: -1, w: 142, h: 85 };
+    // Native aperture starts at source (16,49); the height-constrained raw
+    // surface is centred another 12 source rows down.
+    let source_content = (16, 61);
+
+    for scale in [0.5_f32, 1.0, 1.5] {
+        let sidebar = [101.0, 3.0, 168.0 * scale, 220.0 * scale];
+        let aperture = [
+            sidebar[0] + 16.0 * scale,
+            sidebar[1] + 49.0 * scale,
+            140.0 * scale,
+            108.0 * scale,
+        ];
+        let screen = NativeRadarScreenGeometry::new(surface, aperture);
+
+        let viewport_instances =
+            native_viewport_outline_instances(camera, screen, viewport, sidebar, [1.0; 3]);
+        let viewport_actual = shader_raster_pixels(&viewport_instances, camera);
+        let viewport_expected = nearest_scaled_reference(
+            &outline_source_pixels(viewport, source_content),
+            sidebar,
+            (scale, scale),
+        );
+        assert_eq!(viewport_actual, viewport_expected, "camera outline scale={scale}");
+
+        let boundary_instances = native_content_boundary_outline_instances(
+            camera,
+            screen,
+            surface,
+            sidebar,
+            [1.0; 3],
+        );
+        let boundary_actual = shader_raster_pixels(&boundary_instances, camera);
+        let boundary_expected = nearest_scaled_reference(
+            &outline_source_pixels(boundary, source_content),
+            sidebar,
+            (scale, scale),
+        );
+        assert_eq!(boundary_actual, boundary_expected, "content boundary scale={scale}");
+        assert!(!viewport_actual.is_empty(), "fixture must cover camera pixels at scale={scale}");
+        assert!(!boundary_actual.is_empty(), "fixture must cover boundary pixels at scale={scale}");
+    }
+}
+
+#[test]
+fn native_outlines_match_nearest_raster_when_oversize_edges_clip_the_sidebar() {
+    let surface = NativeRadarSurfaceGeometry::from_raw_rect(0, 0, 140, 108).unwrap();
+    let camera = (-3.75, 8.5);
+    let oversize = NativeRadarRect { x: -10, y: -40, w: 170, h: 130 };
+    let boundary = NativeRadarRect { x: -1, y: -1, w: 142, h: 110 };
+    let source_content = (16, 49);
+
+    for scale in [0.5_f32, 1.5] {
+        // Eighty retained source rows deliberately clip the lower camera and
+        // generated-boundary edges while preserving top/side corner phases.
+        let sidebar = [101.0, 3.0, 168.0 * scale, 80.0 * scale];
+        let aperture = [
+            sidebar[0] + 16.0 * scale,
+            sidebar[1] + 49.0 * scale,
+            140.0 * scale,
+            108.0 * scale,
+        ];
+        let screen = NativeRadarScreenGeometry::new(surface, aperture);
+
+        let camera_actual = shader_raster_pixels(
+            &native_viewport_outline_instances(camera, screen, oversize, sidebar, [1.0; 3]),
+            camera,
+        );
+        let camera_expected = nearest_scaled_reference(
+            &outline_source_pixels(oversize, source_content),
+            sidebar,
+            (scale, scale),
+        );
+        assert_eq!(camera_actual, camera_expected, "clipped camera scale={scale}");
+
+        let boundary_actual = shader_raster_pixels(
+            &native_content_boundary_outline_instances(
+                camera,
+                screen,
+                surface,
+                sidebar,
+                [1.0; 3],
+            ),
+            camera,
+        );
+        let boundary_expected = nearest_scaled_reference(
+            &outline_source_pixels(boundary, source_content),
+            sidebar,
+            (scale, scale),
+        );
+        assert_eq!(boundary_actual, boundary_expected, "clipped boundary scale={scale}");
+        assert!(!camera_actual.is_empty());
+        assert!(!boundary_actual.is_empty());
+    }
 }
