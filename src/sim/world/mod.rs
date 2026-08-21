@@ -811,8 +811,9 @@ pub struct Simulation {
     #[serde(skip)]
     pub radar_events: RadarEventQueue,
     /// Runtime terrain cells whose radar/minimap terrain pixel needs refresh.
-    /// Render reads this generation without mutating sim; the list is small and
-    /// de-duplicated at emission.
+    /// Presentation reads this generation and acknowledges the exact batch
+    /// only after its radar update completes. The list is de-duplicated within
+    /// that pending update window, then cleared so the same cell can re-arm.
     #[serde(skip)]
     pub radar_terrain_dirty_cells: Vec<(u16, u16)>,
     #[serde(skip)]
@@ -1412,6 +1413,12 @@ impl Simulation {
         self.merge_receiver_anger_state(&houses);
         let mut combat_result = combat_result;
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
+        self.mark_radar_terrain_dirty_cells(
+            combat_result
+                .wall_mutations
+                .iter()
+                .map(|mutation| (mutation.rx, mutation.ry)),
+        );
         combat_result
     }
 
@@ -2796,7 +2803,7 @@ impl Simulation {
 
         // Native calls RefreshRadar after the cell/zone rebuild. The distinct
         // playfield revision is the global geometry invalidation seam; the
-        // persistent de-duplicated bridge-cell list remains cell-local.
+        // presentation-acknowledged dirty-cell batch remains cell-local.
         true
     }
 
@@ -2822,6 +2829,23 @@ impl Simulation {
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.in_playfield = member;
         }
+    }
+
+    /// Acknowledge one completed radar-terrain presentation update.
+    ///
+    /// Active `RadarClass` dirty processing at `0x00655250` drains and clears
+    /// its retained cell list after the update. The generation guard prevents
+    /// a stale client acknowledgement from clearing a newer producer batch.
+    /// Both fields are presentation handoff state (`serde(skip)` and omitted
+    /// from `state_hash`), so this consumption cannot mutate lockstep state.
+    pub(crate) fn acknowledge_radar_terrain_dirty(&mut self, generation: u64) -> bool {
+        if generation != self.radar_terrain_dirty_generation
+            || self.radar_terrain_dirty_cells.is_empty()
+        {
+            return false;
+        }
+        self.radar_terrain_dirty_cells.clear();
+        true
     }
 
     /// Ordinary per-cell movement writer (`0x006F511A..0x006F5139`): only
@@ -4017,6 +4041,7 @@ impl Simulation {
         let Some(grid) = self.overlay_grid.as_mut() else {
             return;
         };
+        let mut radar_dirty = Vec::new();
 
         for event in events {
             let result = damage_wall_overlay(
@@ -4046,7 +4071,14 @@ impl Simulation {
                     );
                 }
             }
+            radar_dirty.extend(
+                result
+                    .mutations
+                    .iter()
+                    .map(|mutation| (mutation.rx, mutation.ry)),
+            );
         }
+        self.mark_radar_terrain_dirty_cells(radar_dirty);
     }
 
     /// Movement-side wall crush: a `Crusher=yes` drive vehicle that finishes the
@@ -6612,3 +6644,7 @@ mod global_parity_harness_tests;
 #[cfg(test)]
 #[path = "production_shadow_tests.rs"]
 mod production_shadow_tests;
+
+#[cfg(test)]
+#[path = "radar_dirty_ack_tests.rs"]
+mod radar_dirty_ack_tests;

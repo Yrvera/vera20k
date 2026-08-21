@@ -149,7 +149,8 @@ impl<'a> SimView<'a> {
         self.simulation.tactical_registration_order()
     }
 
-    /// Radar terrain invalidation plumbing for the minimap dirty-gate.
+    /// Pending radar-terrain batch for the minimap dirty gate. Presentation
+    /// acknowledges this exact generation only after a completed update.
     pub(crate) fn radar_terrain_dirty(&self) -> (&'a [(u16, u16)], u64) {
         (
             &self.simulation.radar_terrain_dirty_cells,
@@ -170,6 +171,12 @@ impl<'a> SimView<'a> {
 }
 
 impl SimRuntime {
+    /// Clear the exact radar-terrain batch a completed presentation update read.
+    pub(crate) fn acknowledge_radar_terrain_dirty(&mut self, generation: u64) -> bool {
+        self.simulation
+            .acknowledge_radar_terrain_dirty(generation)
+    }
+
     /// One command-free Ordinary-lane frame for side binaries (parity-digest):
     /// the same bound-resource transaction as `advance_frame`, with the
     /// crate-private frame output discarded so no internal type goes public.

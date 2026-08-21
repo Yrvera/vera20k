@@ -595,14 +595,16 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
         }
     }
 
-    if let (Some(minimap), Some(rt)) = (&mut state.match_state.match_presentation.minimap, state.match_state.sim_runtime.as_ref()) {
+    let consumed_radar_terrain_generation = if let (Some(minimap), Some(rt)) = (
+        &mut state.match_state.match_presentation.minimap,
+        state.match_state.sim_runtime.as_ref(),
+    ) {
         // F10 cone: render-feed reads go through SimView getters (the split
         // borrow against `&mut state.minimap` keeps the field chain to `rt`).
         let view = rt.view();
         let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
         minimap.update_unit_dots(
             &state.renderer.gpu,
-            &state.renderer.batch_renderer,
             view.entities(),
             view.tactical_registration_order(),
             view.houses(),
@@ -624,7 +626,17 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             view.resolved_terrain(),
             radar_dirty_cells,
             radar_dirty_generation,
-        );
+        )
+    } else {
+        None
+    };
+    if let Some(generation) = consumed_radar_terrain_generation
+        && let Some(runtime) = state.match_state.sim_runtime.as_mut()
+    {
+        // `RadarClass` dirty-list processing @ 0x00655250 clears only after
+        // the radar update. A missing minimap/renderer or a frame that skips
+        // this call never acknowledges, retaining the cells for a later draw.
+        let _ = runtime.acknowledge_radar_terrain_dirty(generation);
     }
 }
 

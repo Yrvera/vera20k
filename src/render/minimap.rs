@@ -342,15 +342,12 @@ impl MinimapRenderer {
     }
 
     /// Update the minimap texture with unit dot overlays from the ECS world.
-    ///
-    /// Copies the base terrain image, stamps overlay pixels (ore, gems, walls,
-    /// bridges, trees), then stamps a colored dot for each entity with
-    /// Position + Owner, and re-uploads to the GPU. If sim tick, owner, and
-    /// fog generation are unchanged, the existing texture is reused.
+    /// Copies terrain, overlays, and entity dots, then re-uploads to the GPU.
+    /// Returns a dirty generation only after completion so the app can ack it;
+    /// unchanged simulation/view inputs reuse the existing texture.
     pub fn update_unit_dots(
         &mut self,
         gpu: &GpuContext,
-        _batch: &BatchRenderer,
         entities: &crate::sim::entity_store::EntityStore,
         logic_order: &[u64],
         houses: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
@@ -370,7 +367,7 @@ impl MinimapRenderer {
         resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
-    ) {
+    ) -> Option<u64> {
         let fog_generation = if full_visibility { 0 } else { fog.view_generation() };
         let visibility_owner = local_owner;
         if sim_tick == self.last_sim_tick
@@ -378,8 +375,12 @@ impl MinimapRenderer {
             && visibility_owner == self.last_visibility_owner
             && radar_terrain_dirty_generation == self.last_radar_terrain_dirty_generation
         {
-            return;
+            return None;
         }
+        let consumed_radar_terrain_generation = (radar_terrain_dirty_generation
+            != self.last_radar_terrain_dirty_generation
+            && !radar_terrain_dirty_cells.is_empty())
+        .then_some(radar_terrain_dirty_generation);
         if radar_terrain_dirty_generation != self.last_radar_terrain_dirty_generation {
             self.apply_radar_terrain_dirty_cells(
                 bridge_state,
@@ -629,6 +630,7 @@ impl MinimapRenderer {
                 depth_or_array_layers: 1,
             },
         );
+        consumed_radar_terrain_generation
     }
 
     fn radar_projection_facts(&self) -> RadarProjectionFacts {
