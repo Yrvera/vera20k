@@ -40,6 +40,7 @@ mod native_radar_surface;
 mod native_radar_terrain;
 mod native_radar_viewport;
 mod radar_events;
+mod radar_terrain_updates;
 mod radar_tracker;
 mod radar_visibility;
 pub mod native_surface_format;

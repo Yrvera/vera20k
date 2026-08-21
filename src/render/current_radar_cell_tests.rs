@@ -9,6 +9,9 @@ use crate::map::terrain::{TerrainGrid, build_terrain_grid_from_resolved};
 use crate::render::minimap::{MinimapCellRadarSource, MinimapOverlayDatum};
 use crate::render::minimap_helpers::OverlayClassification;
 use crate::render::minimap_projection::MinimapPlayfieldProjection;
+use crate::render::radar_terrain_updates::{
+    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_cells,
+};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::{
     BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
@@ -19,6 +22,7 @@ use crate::sim::world::Simulation;
 
 const SIDE: u16 = 64;
 const BRIDGE_COLOR: [u8; 3] = [5, 6, 7];
+const LOW_BRIDGE_COLOR: [u8; 3] = [31, 32, 33];
 const OVERLAY_COLOR: [u8; 3] = [11, 12, 13];
 const BASE_COLOR: [u8; 3] = [10, 20, 30];
 
@@ -128,7 +132,11 @@ fn presentation_overlay(cell: (u16, u16), overlay_id: u8, frame: u8) -> MinimapO
 }
 
 fn colors() -> HashMap<(u8, u8), [u8; 3]> {
-    HashMap::from([((24, 0), BRIDGE_COLOR), ((10, 4), OVERLAY_COLOR)])
+    HashMap::from([
+        ((24, 0), BRIDGE_COLOR),
+        ((0x4A, 1), LOW_BRIDGE_COLOR),
+        ((10, 4), OVERLAY_COLOR),
+    ])
 }
 
 fn projection<'a>(
@@ -164,6 +172,143 @@ fn raw_pair(
     assert!(y >= 0 && y < geometry.raw_size().1);
     let index = (y * geometry.raw_size().0 + x) as usize;
     [raw[index], raw[index + 1]]
+}
+
+fn apply_incremental(
+    projection: &mut MinimapPlayfieldProjection,
+    runtime: &SimRuntime,
+    cell: (u16, u16),
+    colors: &HashMap<(u8, u8), [u8; 3]>,
+) {
+    apply_radar_terrain_dirty_cells(
+        RadarTerrainUpdateLayers {
+            base_rgba: &mut projection.base_rgba,
+            terrain_pixels: &projection.terrain_pixels,
+            surface_pixels: &mut projection.surface_pixels,
+            overlay_pixels: &mut projection.overlay_pixels,
+            native_surface: projection.native_radar_surface,
+            native_terrain: &mut projection.native_radar_terrain,
+        },
+        CurrentRadarCellAuthority::from_runtime(runtime),
+        BRIDGE_COLOR,
+        colors,
+        &[cell],
+    );
+}
+
+fn runtime_with_overlay(
+    resolved: ResolvedTerrainGrid,
+    cell: (u16, u16),
+    bridge: Option<bool>,
+    overlay: Option<(u8, u8)>,
+) -> SimRuntime {
+    let mut overlay_grid = OverlayGrid::new(SIDE, SIDE);
+    if let Some((overlay_id, overlay_data)) = overlay {
+        overlay_grid.place_overlay(cell.0, cell.1, overlay_id, overlay_data);
+    }
+    live_runtime(
+        resolved,
+        bridge.map_or_else(BridgeRuntimeState::default, |intact| {
+            bridge_state_at(cell, intact)
+        }),
+        overlay_grid,
+    )
+}
+
+#[test]
+fn gsi_04_01_structural_high_bridge_wins_in_full_and_incremental_paths() {
+    let (grid, mut resolved) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags =
+        BRIDGE_FLAG_STRUCTURAL;
+    let colors = colors();
+    let stale_low = runtime_with_overlay(
+        resolved.clone(),
+        cell,
+        Some(false),
+        Some((0x4A, 9)),
+    );
+    let current_high = runtime_with_overlay(
+        resolved,
+        cell,
+        Some(true),
+        Some((0x4A, 9)),
+    );
+
+    let full = projection(&grid, &current_high, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&full, cell), [BRIDGE_COLOR; 2]);
+
+    let mut incremental = projection(&grid, &stale_low, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&incremental, cell), [LOW_BRIDGE_COLOR; 2]);
+    apply_incremental(&mut incremental, &current_high, cell, &colors);
+    assert_eq!(raw_pair(&incremental, cell), [BRIDGE_COLOR; 2]);
+}
+
+#[test]
+fn gsi_04_01_intact_low_overlay_stays_overlay_in_full_and_incremental_paths() {
+    let (grid, resolved) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    let colors = colors();
+    let absent = runtime_with_overlay(resolved.clone(), cell, None, None);
+    let intact_low = runtime_with_overlay(
+        resolved,
+        cell,
+        Some(true),
+        Some((0x4A, 9)),
+    );
+
+    let full = projection(&grid, &intact_low, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&full, cell), [LOW_BRIDGE_COLOR; 2]);
+    assert_ne!(raw_pair(&full, cell), [BRIDGE_COLOR; 2]);
+
+    let mut incremental = projection(&grid, &absent, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
+    apply_incremental(&mut incremental, &intact_low, cell, &colors);
+    assert_eq!(raw_pair(&incremental, cell), [LOW_BRIDGE_COLOR; 2]);
+}
+
+#[test]
+fn gsi_04_01_destroyed_low_overlay_falls_through_in_full_and_incremental_paths() {
+    let (grid, resolved) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    let colors = colors();
+    let intact_low = runtime_with_overlay(
+        resolved.clone(),
+        cell,
+        Some(true),
+        Some((0x4A, 0)),
+    );
+    let destroyed_low = runtime_with_overlay(resolved, cell, Some(false), Some((100, 1)));
+
+    let full = projection(&grid, &destroyed_low, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&full, cell), [BASE_COLOR; 2]);
+
+    let mut incremental = projection(&grid, &intact_low, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&incremental, cell), [LOW_BRIDGE_COLOR; 2]);
+    apply_incremental(&mut incremental, &destroyed_low, cell, &colors);
+    assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
+}
+
+#[test]
+fn gsi_04_01_absent_live_cell_clears_full_and_incremental_bridge_sources() {
+    let (grid, resolved) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    let colors = colors();
+    let intact_low = runtime_with_overlay(
+        resolved.clone(),
+        cell,
+        Some(true),
+        Some((0x4A, 0)),
+    );
+    let absent = runtime_with_overlay(resolved, cell, None, None);
+
+    let full = projection(&grid, &absent, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&full, cell), [BASE_COLOR; 2]);
+
+    let mut incremental = projection(&grid, &intact_low, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&incremental, cell), [LOW_BRIDGE_COLOR; 2]);
+    apply_incremental(&mut incremental, &absent, cell, &colors);
+    assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
 }
 
 #[test]

@@ -78,13 +78,23 @@ impl<'a> CurrentRadarCellAuthority<'a> {
             .resolved_terrain
             .and_then(|terrain| terrain.cell(rx, ry))
             .is_some_and(|cell| cell.terrain_object_occupation.is_some());
-        let structural_bridge_present = self
-            .bridge_state
-            .and_then(|state| state.cell(rx, ry))
-            .is_some_and(|cell| {
-                cell.deck_present
-                    && BridgeRuntimeState::effective_render_state(cell).is_some()
-            });
+        // `CellClass+0x140 & 0x100` is the structural-high branch. The
+        // restored resolved fact supplies only that bridge-family identity;
+        // restored BridgeRuntimeState supplies its current live state. This
+        // deliberately excludes generic/low decks, while a destroyed saved
+        // high bridge cannot be revived by immutable source-map facts alone.
+        let structural_high_identity = self
+            .resolved_terrain
+            .and_then(|terrain| terrain.cell(rx, ry))
+            .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+        let structural_bridge_present = structural_high_identity
+            && self
+                .bridge_state
+                .and_then(|state| state.cell(rx, ry))
+                .is_some_and(|cell| {
+                    cell.deck_present
+                        && BridgeRuntimeState::effective_render_state(cell).is_some()
+                });
         let overlay = self.overlay_grid.and_then(|grid| {
             let cell = grid.cell(rx, ry);
             cell.overlay_id.map(|overlay_id| {

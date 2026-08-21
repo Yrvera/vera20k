@@ -51,7 +51,6 @@ use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 use super::minimap_legacy_events::draw_legacy_sim_radar_events;
 use super::minimap_projection::{
     MinimapPlayfieldProjection, aperture_pixel, generated_primary_copy_frame,
-    rasterize_native_terrain,
 };
 #[cfg(test)]
 use super::minimap_projection::minimap_screen_point_to_camera_top_left;
@@ -59,6 +58,9 @@ use super::native_radar_surface::NativeRadarSurfaceGeometry;
 use super::native_radar_terrain::NativeRadarTerrainSurface;
 use super::native_radar_viewport::NativeRadarViewportState;
 use super::radar_events::{ClientRadarEvents, EnemySensedSource};
+use super::radar_terrain_updates::{
+    RadarTerrainUpdateLayers, apply_radar_terrain_dirty_cells,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MinimapCellRadarSource {
@@ -395,13 +397,24 @@ impl MinimapRenderer {
             && !radar_terrain_dirty_cells.is_empty())
         .then_some(radar_terrain_dirty_generation);
         if radar_terrain_dirty_generation != self.last_radar_terrain_dirty_generation {
-            self.apply_radar_terrain_dirty_cells(
-                bridge_state,
-                overlay_grid,
-                overlay_registry,
-                rules,
+            apply_radar_terrain_dirty_cells(
+                RadarTerrainUpdateLayers {
+                    base_rgba: &mut self.base_terrain_rgba,
+                    terrain_pixels: &self.terrain_pixels,
+                    surface_pixels: &mut self.surface_pixels,
+                    overlay_pixels: &mut self.overlay_pixels,
+                    native_surface: self.native_radar_surface,
+                    native_terrain: &mut self.native_radar_terrain,
+                },
+                CurrentRadarCellAuthority::new(
+                    resolved_terrain,
+                    bridge_state,
+                    overlay_grid,
+                    overlay_registry,
+                    rules,
+                ),
+                self.structural_bridge_radar_color,
                 overlay_radar_colors,
-                resolved_terrain,
                 radar_terrain_dirty_cells,
             );
         }
@@ -692,99 +705,6 @@ impl MinimapRenderer {
         now: std::time::Instant,
     ) -> Option<(u16, u16)> {
         self.radar_events.cycle_cell(now)
-    }
-
-    fn apply_radar_terrain_dirty_cells(
-        &mut self,
-        bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
-        overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
-        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-        rules: Option<&RuleSet>,
-        overlay_radar_colors: &HashMap<(u8, u8), [u8; 3]>,
-        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
-        cells: &[(u16, u16)],
-    ) {
-        let bridge_color = [
-            self.structural_bridge_radar_color[0],
-            self.structural_bridge_radar_color[1],
-            self.structural_bridge_radar_color[2],
-        ];
-        let mut native_changes = Vec::new();
-        for &(rx, ry) in cells {
-            let Some(terrain_pixel) = self
-                .terrain_pixels
-                .iter()
-                .find(|pixel| pixel.rx == rx && pixel.ry == ry)
-                .copied()
-            else {
-                continue;
-            };
-            if let Some((x, y)) = aperture_pixel(
-                self.native_radar_surface,
-                (terrain_pixel.px, terrain_pixel.py),
-            ) {
-                set_pixel(
-                    &mut self.base_terrain_rgba,
-                    MINIMAP_WIDTH,
-                    x,
-                    y,
-                    terrain_pixel.color,
-                );
-            }
-
-            // `CellClass::GetRadarColor @ 0x0047C060` is re-run for each
-            // invalidated cell. Preserve its exact priority rather than the
-            // former bridge-only patch: TerrainClass, structural bridge, then
-            // the current mutable overlay byte/frame, else selected TMP.
-            let source = CurrentRadarCellAuthority::new(
-                resolved_terrain,
-                bridge_state,
-                overlay_grid,
-                overlay_registry,
-                rules,
-            )
-            .source(
-                rx,
-                ry,
-                bridge_color,
-                overlay_radar_colors,
-            );
-
-            if let Some((native_color, classification)) = source {
-                let color = [native_color[0], native_color[1], native_color[2], 255];
-                native_changes.push(((rx, ry), Some(native_color)));
-                if let Some(existing) = self
-                    .overlay_pixels
-                    .iter_mut()
-                    .find(|pixel| pixel.rx == rx && pixel.ry == ry)
-                {
-                    existing.px = terrain_pixel.px;
-                    existing.py = terrain_pixel.py;
-                    existing.color = color;
-                    existing.classification = classification;
-                } else {
-                    self.overlay_pixels.push(OverlayPixel {
-                        rx,
-                        ry,
-                        px: terrain_pixel.px,
-                        py: terrain_pixel.py,
-                        color,
-                        classification,
-                    });
-                }
-            } else {
-                native_changes.push(((rx, ry), None));
-                self.overlay_pixels
-                    .retain(|pixel| !(pixel.rx == rx && pixel.ry == ry));
-            }
-        }
-        if let Some(surface) = &mut self.native_radar_terrain
-            && surface.set_cell_overrides(native_changes)
-        {
-            let (rgba, pixels) = rasterize_native_terrain(surface);
-            self.base_terrain_rgba = rgba;
-            self.surface_pixels = pixels;
-        }
     }
 
     /// Build a SpriteInstance that fills the given screen rect with the minimap.
