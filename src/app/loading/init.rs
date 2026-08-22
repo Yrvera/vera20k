@@ -775,9 +775,8 @@ pub struct PresentationLoadAssets {
     pub(crate) software_cursor: Option<crate::app::presentation::render::SoftwareCursor>,
     /// Overlay ID → type name mapping (from rules.ini [OverlayTypes]).
     pub overlay_names: BTreeMap<u8, String>,
-    /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
-    /// extracted from SHP frames for minimap radar display.
-    pub tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]>,
+    /// Exact SHP frame-header radar RGB for each native-selected overlay frame.
+    pub overlay_radar_colors: HashMap<(u8, u8), [u8; 3]>,
     /// Owner name → house color index mapping (from map [Houses] sections).
     pub house_color_map: HouseColorMap,
     /// Per-cell RGB tint from map [Lighting] section.
@@ -1843,7 +1842,7 @@ pub(crate) fn load_map_from_initial(
         bridge_railing_atlas,
         overlay_names,
         mut overlays_connected,
-        tiberium_radar_colors,
+        overlay_radar_colors,
     ) = build_overlay_atlas_from_map(
         &map_data,
         &asset_manager,
@@ -2036,7 +2035,7 @@ pub(crate) fn load_map_from_initial(
             sidebar_chrome,
             software_cursor,
             overlay_names,
-            tiberium_radar_colors,
+            overlay_radar_colors,
             house_color_map,
             lighting_grid,
             csf,

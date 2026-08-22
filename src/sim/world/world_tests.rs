@@ -1535,6 +1535,25 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
         fatal.overlay_grid.as_ref().unwrap().cell(8, 5).overlay_id,
         None
     );
+    assert_eq!(
+        fatal.radar_terrain_dirty_cells,
+        vec![
+            (8, 5),
+            (8, 3),
+            (9, 4),
+            (7, 4),
+            (8, 4),
+            (10, 5),
+            (9, 6),
+            (9, 5),
+            (8, 7),
+            (7, 6),
+            (8, 6),
+            (6, 5),
+            (7, 5),
+        ],
+        "combat-result commit projects the complete DestroyOverlay visit stencil",
+    );
     let mut one_draw = SimRng::new(1);
     let _ = one_draw.next_range_u32_inclusive(0, 400);
     let _ = one_draw.next_range_u32_inclusive(4, 8);
@@ -1580,6 +1599,7 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
             .overlay_id,
         Some(0)
     );
+    assert!(boundary.radar_terrain_dirty_cells.is_empty());
     assert_eq!(boundary_rng, SimRng::new(1).state());
 }
 
@@ -5255,6 +5275,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             None,
             false,
             None,
+            None,
             Some(cell_occupation),
         )
     };
@@ -5480,6 +5501,7 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
             None,
             None,
             false,
+            None,
             None,
             Some(cell_occupation),
         )
@@ -7089,6 +7111,16 @@ fn stacking_world(size: u16) -> (Simulation, RuleSet, PathGrid) {
 
     let rules = stacking_repro_rules();
     let mut sim = Simulation::new();
+    // Live maps have normalized playfield authority before Techno unlimbo.
+    // This deliberately broad diamond keeps the stacking fixture focused on
+    // movement admission while still exercising production membership state.
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -256,
+        off_100: -256,
+        off_104: 512,
+        off_108: 512,
+    });
     let terrain = gsi_04_10_clear_terrain(size, size);
     sim.terrain_costs = build_canonical_terrain_cost_grids(&terrain);
     let grid = PathGrid::from_resolved_terrain(&terrain);

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use crate::assets::csf_file::CsfFile;
 use crate::map::map_file::MapFile;
+use crate::map::playfield::PlayfieldBounds;
 use crate::map::preview::DecodedPreview;
 use crate::map::waypoints::Waypoint;
 use crate::skirmish_launch::{LaunchCountry, SkirmishLaunchMode, SkirmishLaunchSession};
@@ -460,9 +461,19 @@ fn project_cell(rx: u16, ry: u16) -> ProjectedPoint {
     }
 }
 
-/// Derive the projected min/extents from the parsed in-playfield cell set.
+/// Derive projected min/extents from mode-zero playfield cells.
+///
+/// gamemd-derived: loading compositor `FUN_00640A40` gates every decoded
+/// cell through `MapClass::IsCellInPlayfield @ 0x00578460` with mode `0`
+/// before updating its projected bounds. Size-diamond filler therefore cannot
+/// move ordinary or retained-RMG loading markers.
 pub(crate) fn projected_playfield_bounds(map: &MapFile) -> Option<ProjectedPlayfieldBounds> {
-    let mut points = map.cells.iter().map(|cell| project_cell(cell.rx, cell.ry));
+    let playfield = PlayfieldBounds::from_map_header(&map.header);
+    let mut points = map
+        .cells
+        .iter()
+        .filter(|cell| playfield.contains_geometry_packed(i32::from(cell.rx), i32::from(cell.ry)))
+        .map(|cell| project_cell(cell.rx, cell.ry));
     let first = points.next()?;
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (first.x, first.y, first.x, first.y);
     for point in points {
@@ -1015,6 +1026,56 @@ mod tests {
     }
 
     #[test]
+    fn loading_composition_ignores_size_filler_outside_normalized_local_size() {
+        use crate::map::map_file::MapCell;
+
+        let mut map = crate::map::rmg::emit::empty_map_file(
+            &crate::map::rmg::RmgOptions::default(),
+            100,
+            100,
+        );
+        let cell = |rx, ry| MapCell {
+            rx,
+            ry,
+            tile_index: 0,
+            sub_tile: 0,
+            z: 0,
+        };
+        map.cells = vec![cell(60, 60), cell(60, 140), cell(140, 60)];
+        map.waypoints = HashMap::from([(0, waypoint(0, 70, 70))]);
+        map.preview.decoded = Some(DecodedPreview {
+            width: 300,
+            height: 100,
+            rgba: vec![255; 300 * 100 * 4],
+        });
+        let assignments = [LoadingStartAssignment {
+            start_index: 0,
+            participant: LoadingParticipantId::Local,
+            color_priority: 3,
+        }];
+        let session = test_launch_session();
+
+        let baseline_bounds =
+            projected_playfield_bounds(&map).expect("inside cells establish bounds");
+        let baseline = build_loading_composition(&map, &session, None, [800, 600], &assignments);
+
+        // (55,55) is inside the RMG Size diamond (104 < x+y) but below the
+        // normalized LocalSize near edge (114 < x+y), so native mode zero skips it.
+        map.cells.push(cell(55, 55));
+        assert_eq!(projected_playfield_bounds(&map), Some(baseline_bounds));
+        let with_filler = build_loading_composition(&map, &session, None, [800, 600], &assignments);
+        assert_eq!(with_filler.markers, baseline.markers);
+
+        // A genuinely in-playfield cell still extends both projected bounds and
+        // moves the same loading marker after native normalization.
+        map.cells.push(cell(150, 60));
+        let extended_bounds = projected_playfield_bounds(&map).expect("inside extender");
+        assert_ne!(extended_bounds, baseline_bounds);
+        let with_inside = build_loading_composition(&map, &session, None, [800, 600], &assignments);
+        assert_ne!(with_inside.markers[0].anchor, baseline.markers[0].anchor);
+    }
+
+    #[test]
     fn gsi_03_09_retained_random_first_frame_has_black_starts_markers_text_and_name() {
         use crate::map::map_file::MapCell;
 
@@ -1025,31 +1086,31 @@ mod tests {
         );
         map.cells = vec![
             MapCell {
-                rx: 0,
-                ry: 0,
+                rx: 60,
+                ry: 60,
                 tile_index: 0,
                 sub_tile: 0,
                 z: 0,
             },
             MapCell {
-                rx: 0,
-                ry: 100,
+                rx: 60,
+                ry: 140,
                 tile_index: 0,
                 sub_tile: 0,
                 z: 0,
             },
             MapCell {
-                rx: 100,
-                ry: 0,
+                rx: 140,
+                ry: 60,
                 tile_index: 0,
                 sub_tile: 0,
                 z: 0,
             },
         ];
         map.waypoints = HashMap::from([
-            (0, waypoint(0, 20, 20)),
-            (1, waypoint(1, 40, 20)),
-            (2, waypoint(2, 20, 40)),
+            (0, waypoint(0, 70, 70)),
+            (1, waypoint(1, 100, 70)),
+            (2, waypoint(2, 70, 100)),
         ]);
         let assignments = [
             LoadingStartAssignment {
@@ -1101,7 +1162,7 @@ mod tests {
             MmpbMarkerRecord {
                 anchor: composition.markers[0].anchor,
                 start_index: 0,
-                waypoint: waypoint(0, 20, 20),
+                waypoint: waypoint(0, 70, 70),
                 participant: LoadingParticipantId::Local,
                 color_priority: 3,
             }

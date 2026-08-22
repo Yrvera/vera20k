@@ -209,7 +209,7 @@ fn try_spawn_refinery_free_unit(
 
     // gamemd refunds before uninitializing the constructed UnitClass.
     refund_failed_free_unit(sim, owner, refund);
-    sim.uninit(free_unit_id);
+    sim.uninit_with_rules(free_unit_id, rules);
     log::warn!(
         "Completed refinery {} could not place free unit {}; refunded {} to {}",
         building_type_id,
@@ -355,7 +355,6 @@ fn find_free_unit_nearby_cell(
         occupancy: Some(&sim.substrate.occupancy),
         entities: Some(&sim.substrate.entities),
         zone_grid: sim.zone_grid.as_ref(),
-        map_size: None,
         playfield_bounds: sim.playfield_bounds,
     };
     find_nearby_passable_cell_with_options(

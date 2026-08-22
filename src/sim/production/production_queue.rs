@@ -590,6 +590,7 @@ pub fn tick_production_with_overlay_registry(
                         None,
                         false, // mover_is_crusher
                         Some(&blocker_neighbor_counts),
+                        sim.playfield_bounds,
                         Some(&mut sim.substrate.cell_occupation),
                     );
                 }

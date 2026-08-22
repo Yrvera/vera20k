@@ -258,7 +258,19 @@ use crate::sim::world::Simulation;
 // and prevents score-bonus Scenario RNG draws from repeating after load.
 // Bumped 80 -> 81: pending CommandEnvelope payloads can now carry an offline
 // SetGameSpeed transition. Appending the enum variant changes the bincode schema.
-const SNAPSHOT_VERSION: u32 = 84;
+// Bumped 84 -> 85: Simulation now retains the signed `[Map] Size=` height used
+// to normalize later trigger-action-40 LocalSize writers. Without the serialized
+// input, a second writer after load could diverge even though mutable bounds load.
+// Bumped 85 -> 86: every trigger-action-40 execution now serializes and hashes a
+// distinct playfield revision so repeated writers rebuild presentation after save/load.
+// Bumped 86 -> 87: GameEntity now persists and hashes the canonical
+// TechnoClass+0x3D5 playfield-membership byte. Its hysteretic ordinary-movement
+// writer means it cannot be reconstructed from position after load.
+// Bumped 87 -> 88: GameEntity now persists the exact deposited sensor owner,
+// cell, add/remove radii and building/unit discriminator. Limbo, movement, and
+// owner transfer must remove the historical deposit rather than recomputing it
+// from current position/rules, so this future-affecting cache is hash authority.
+const SNAPSHOT_VERSION: u32 = 88;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1503,6 +1515,17 @@ impl Simulation {
             });
         }
 
+        // The app-supplied terrain template is the immutable load-time map.
+        // Action 40's mutable LocalSize is serialized on Simulation, so replay
+        // its CellClass-derived cache before overlay and zone reconstruction.
+        if let Some(bounds) = self.playfield_bounds {
+            let _ = self
+                .resolved_terrain
+                .as_mut()
+                .expect("validated terrain cache")
+                .recalc_playfield_attributes(bounds);
+        }
+
         {
             let overlay_grid = self.overlay_grid.as_mut().expect("validated overlay cache");
             let resolved_terrain = self
@@ -2548,10 +2571,13 @@ mod tests {
     /// `ParticleSystemClass+0xF8` actually is — one byte set by the lifetime
     /// countdown, the spawn cutoff and the spark countdown alike, and read by
     /// both the spawn gate and the removal predicate. A serialized field is
-    /// gone, so old bytes no longer decode.
+    /// gone, so old bytes no longer decode; 84 -> 85 retained signed map Size
+    /// height for action-40 normalization; 85 -> 86 added the mutable
+    /// playfield revision; 86 -> 87 added Techno+0x3D5 membership; 87 -> 88
+    /// added the exact historical sensor deposit needed for later removal.
     #[test]
-    fn gsi_13_06_snapshot_version_is_84() {
-        assert_eq!(super::SNAPSHOT_VERSION, 84);
+    fn gsi_04_01_snapshot_version_is_88() {
+        assert_eq!(super::SNAPSHOT_VERSION, 88);
     }
 
     #[test]
@@ -2598,14 +2624,15 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v82 building-overlay header");
-        assert_eq!(header.version, 84);
+        let header =
+            GameSnapshot::read_header(&bytes).expect("current building-overlay header");
+        assert_eq!(header.version, SNAPSHOT_VERSION);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v82 building-overlay snapshot")
+            .expect("current building-overlay snapshot")
             .sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v82 building-overlay snapshot restores structurally");
+            .expect("current building-overlay snapshot restores structurally");
         let overlays = restored
             .substrate
             .entities
@@ -2805,7 +2832,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_game_speed_transition_roundtrips_in_v82_and_executes_once() {
+    fn pending_game_speed_transition_roundtrips_in_current_version_and_executes_once() {
         use crate::sim::command::{Command, CommandEnvelope};
         use crate::sim::house_state::HouseState;
 
@@ -2823,10 +2850,10 @@ mod tests {
         assert_eq!(sim.state_hash(), hash_without_pending_input);
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "speed.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v82 GameSpeed header");
-        assert_eq!(header.version, 84);
+        let header = GameSnapshot::read_header(&bytes).expect("current GameSpeed header");
+        assert_eq!(header.version, SNAPSHOT_VERSION);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v82 GameSpeed snapshot")
+            .expect("current GameSpeed snapshot")
             .sim;
         assert_eq!(
             restored.pending_commands_for_tests(),
@@ -3468,9 +3495,16 @@ mod tests {
 
     #[test]
     fn cell_fog_sensor_and_cloak_state_roundtrips_with_hash() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::cloak_disguise::CloakRuntime;
+        use crate::sim::components::Health;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::sensor_lifecycle::SensorDeposit;
+
         let mut sim = Simulation::new();
         let viewer = sim.interner.intern("AMERICANS");
         let source_owner = sim.interner.intern("RUSSIANS");
+        let type_ref = sim.interner.intern("SUB");
         sim.fog.width = 8;
         sim.fog.height = 8;
         sim.fog
@@ -3481,18 +3515,67 @@ mod tests {
             sim.fog
                 .draw_objects_cloaked(Some(source_owner), source_owner, 7, 3, 3)
         );
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            entity_id,
+            3,
+            3,
+            0,
+            0,
+            source_owner,
+            Health {
+                current: 600,
+                max: 600,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            false,
+        );
+        let mut cloak = CloakRuntime::new(0, 9);
+        cloak.establish_unlimbo_fully_cloaked();
+        entity.cloak = Some(cloak);
+        entity.sensor_deposit = Some(SensorDeposit {
+            owner: viewer,
+            center: (3, 3),
+            add_radius: 2,
+            remove_radius: 2,
+            building_array: false,
+        });
+        sim.substrate.entities.insert(entity);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // fog/sensor/cloak persistence on that same post-load cursor.
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "cell_fog_sensor_cloak", 0);
-        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.state_hash(), expected_hash);
         assert_eq!(restored.fog.fogged_objects.len(), 1);
         assert!(restored.fog.has_sensor_for_house(viewer, 3, 3));
         assert!(restored.fog.is_cloaked_by_house(7, 3, 3));
+        let restored_entity = restored.substrate.entities.get(entity_id).unwrap();
+        assert_eq!(
+            restored_entity.cloak,
+            sim.substrate.entities.get(entity_id).unwrap().cloak
+        );
+        assert_eq!(
+            restored_entity.sensor_deposit,
+            sim.substrate.entities.get(entity_id).unwrap().sensor_deposit
+        );
+        let same_hash = restored.state_hash();
+        restored
+            .substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .sensor_deposit
+            .as_mut()
+            .unwrap()
+            .center = (4, 3);
+        assert_ne!(restored.state_hash(), same_hash);
     }
 
     #[test]
@@ -4740,6 +4823,28 @@ mod tests {
         assert!(restored_entity.dirty_rect_eligible);
         assert!(restored_entity.owned_count_released);
         assert_eq!(restored.state_hash(), changed_hash);
+    }
+
+    #[test]
+    fn techno_playfield_membership_roundtrips_and_changes_state_hash_v87() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let default_hash = sim.state_hash();
+        sim.substrate.entities.get_mut(1).unwrap().in_playfield = true;
+        let member_hash = sim.state_hash();
+        assert_ne!(default_hash, member_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v87 membership loads")
+            .sim;
+        assert!(restored.substrate.entities.get(1).unwrap().in_playfield);
+        assert_eq!(restored.state_hash(), member_hash);
     }
 
     #[test]

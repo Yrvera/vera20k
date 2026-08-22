@@ -1737,7 +1737,7 @@ fn ramp_fire_collapses_high_bridgehead_on_ion_retry() {
 
     let pre_bridgehead = *sim.bridge_state.as_ref().unwrap().cell(2, 4).unwrap();
 
-    for _ in 0..10 {
+    for visit in 0..10 {
         let state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
             &mut sim,
             &rules,
@@ -1755,7 +1755,16 @@ fn ramp_fire_collapses_high_bridgehead_on_ion_retry() {
             state_changed,
             "high bridgehead direct damage must signal state_changed after slot +3 collapse",
         );
+        let generation = sim.radar_terrain_dirty_generation;
+        assert_eq!(
+            generation,
+            visit + 1,
+            "each bridge transition after a completed radar update re-arms the same cells",
+        );
+        assert!(!sim.radar_terrain_dirty_cells.is_empty());
+        assert!(sim.acknowledge_radar_terrain_dirty(generation));
     }
+    assert!(sim.radar_terrain_dirty_cells.is_empty());
 
     let bs = sim.bridge_state.as_ref().unwrap();
     // Bridgehead's own damage_state untouched.

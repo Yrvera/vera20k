@@ -1898,6 +1898,7 @@ pub(super) fn process_cell_crossings(
                 PATH_STUCK_INIT,
                 mover_is_crusher,
                 category == EntityCategory::Infantry,
+                snap.allow_zone_hierarchy,
                 true,
                 true,
                 marker_context,
@@ -2010,6 +2011,7 @@ pub(super) fn process_cell_crossings(
                 PATH_STUCK_INIT,
                 mover_is_crusher,
                 category == EntityCategory::Infantry,
+                snap.allow_zone_hierarchy,
                 true, // terrain block: skip code-2 grace period
                 true,
                 marker_context,
@@ -2060,6 +2062,7 @@ pub(super) fn process_cell_crossings(
                         PATH_STUCK_INIT,
                         mover_is_crusher,
                         category == EntityCategory::Infantry,
+                        snap.allow_zone_hierarchy,
                         true, // cliff block: skip code-2 grace period
                         true,
                         marker_context,

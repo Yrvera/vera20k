@@ -23,6 +23,7 @@ mod build_instances;
 mod draw_passes;
 pub(crate) mod draw_plan_lowering;
 mod merge_passes;
+pub(crate) mod minimap_transaction;
 
 use anyhow::Result;
 
@@ -73,6 +74,11 @@ pub(crate) fn render_game(
     encoder: &mut wgpu::CommandEncoder,
 ) -> Result<GameRenderOutput> {
     let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
+
+    // Trigger action 0x28 mutates scroll/radar authority inside the committed
+    // sim frame. Install and clamp it before constructing any world instances,
+    // so contraction/expansion is visible in this very presentation frame.
+    crate::app::input::camera::clamp_camera_to_playable_area(state, sw, sh);
 
     let local_owner = preferred_local_owner_name(state);
     // Effective viewport in world pixels — zoom shrinks what's visible.
@@ -309,6 +315,11 @@ fn upload_to_gpu(
     // Sidebar + minimap
     pool.upload(&state.renderer.gpu, "minimap", &sidebar.minimap);
     pool.upload(&state.renderer.gpu, "viewport_rect", &sidebar.viewport_rect);
+    pool.upload(
+        &state.renderer.gpu,
+        "radar_content_boundary",
+        &sidebar.content_boundary,
+    );
     pool.upload(&state.renderer.gpu, "sidebar", &sidebar.sidebar);
     pool.upload(&state.renderer.gpu, "sidebar_chrome", &sidebar.chrome);
     pool.upload(&state.renderer.gpu, "radar_anim", &sidebar.radar_anim);
@@ -337,6 +348,7 @@ mod tests {
             text: Vec::new(),
             minimap: vec![sprite],
             viewport_rect: vec![sprite; 4],
+            content_boundary: vec![sprite; 4],
             radar_anim: vec![sprite; 2],
             view: None,
         };
@@ -345,5 +357,6 @@ mod tests {
         assert_eq!(counts.minimap, 1);
         assert_eq!(counts.viewport_rect, 4);
         assert_eq!(counts.radar_animation, 2);
+        assert_eq!(instances.content_boundary.len(), 4);
     }
 }

@@ -39,33 +39,29 @@
 //!    `allowHS` from `PathfinderClass+0x38`, and re-runs `Zone_precheck`;
 //!    a failed precheck ends the loop.
 //!
-//! ## What VERA does, and the two recorded gaps
+//! ## What VERA does, and the remaining recorded gaps
 //!
 //! The live route is faithful in shape: `zone_precheck_flat` on the level-0
 //! hierarchy, then a hierarchy-marked cell A*; a precheck failure with matching
 //! zones falls back to the plain A*, and one with differing zones returns
 //! `None`. What is missing:
 //!
-//! - **The `allowHS` gate is not modelled.** VERA takes the zone route whenever
-//!   the zone data exists, which is what gamemd does for an ordinary unit
-//!   taking an ordinary order — so the common case already agrees. The gap is
-//!   the cases gamemd turns the hierarchy *off* for: `IsTrain=` (the INI key
+//! - **Two uncommon `allowHS` terms remain unmodelled.** VERA now threads the
+//!   canonical `TechnoClass+0x3D5` byte and applies exact bridge-resolved mode-1
+//!   endpoint membership before admitting hierarchy. It still does not model
+//!   `IsTrain=` (the INI key
 //!   behind `TechnoTypeClass+0xC94`, string `0x008444BC`, stored at
 //!   `0x00712284` — absent from stock `rulesmd.ini`, so this term never fires);
-//!   an object whose on-map byte `+0x3D5` is clear (among its nine writers:
-//!   `TechnoClass::Unlimbo` `0x006F6CFE`, `BuildingClass::ExitObject_Main`
-//!   `0x00443C81` and `FootClass::AI` `0x004DA670` set it; the teleport
-//!   locomotor clears it at `0x00719A99`); the `0x004DA1D0` predicate, which —
-//!   given the two terms above already hold at the call site — reduces to
+//!   the `0x004DA1D0` predicate, which — given the other terms already hold at
+//!   the call site — reduces to
 //!   `mover+0x3D4 != 0` **or** current mission == Retreat(4) **or**
-//!   (`mover+0x5D4` non-null and `FUN_006EC300`); and an endpoint outside the
-//!   playfield. Player effect: for such a mover gamemd runs an unrestricted A*
+//!   (`mover+0x5D4` non-null and `FUN_006EC300`). Player effect: for such a
+//!   mover gamemd runs an unrestricted A*
 //!   and can return a route where VERA answers "unreachable" from the zone map,
-//!   so the unit refuses an order retail accepts. Frequency: a chrono unit in
-//!   the frame its teleport clears `+0x3D5`, a unit on Retreat, and orders with
-//!   an endpoint in the map border — all uncommon in ordinary skirmish, none
-//!   zero. Downstream risk: the gate is a pure predicate at this function's
-//!   head, so adding it later moves no state.
+//!   so the unit refuses an order retail accepts. Frequency: a unit on Retreat
+//!   or linked to the remaining team predicate — uncommon in ordinary
+//!   skirmish, but not zero. Downstream risk: these terms are pure predicates
+//!   at this function's head, so adding them later moves no state.
 //! - **The corridor-Dijkstra fallback defines its corridor differently.**
 //!   gamemd's corridor is the set of zones `Zone_precheck` stamped, widened by
 //!   the per-cell `+0x122` escape (point 5). When VERA has no level-0 hierarchy
@@ -102,6 +98,7 @@ use super::{
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tube_facts::TubeSource;
 use crate::rules::locomotor_type::MovementZone;
+use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
 use crate::sim::movement::locomotor::MovementLayer;
 
 /// Maximum corridor Dijkstra attempts with zone-edge exclusions.
@@ -211,6 +208,51 @@ fn has_explicit_tube_scenario(resolved_terrain: Option<&ResolvedTerrainGrid>) ->
         .any(|tube| tube.source == TubeSource::ExplicitMap && tube.path_len() > 0)
 }
 
+/// Resolve the two hierarchy-only coordinates and apply the active
+/// `AStar_pathfind_search @ 0x0042CAD6` mode-one endpoint gate. Native passes
+/// the resolved coordinates to `IsCellInPlayfield @ 0x00578460`, while cell A*
+/// keeps the raw source and destination. A configured playfield without its
+/// CellClass terrain state cannot establish mode-one membership, so hierarchy
+/// is disabled and the ordinary cell search remains available.
+fn resolve_hierarchy_endpoint_contract(
+    zone_grid: Option<&ZoneGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    playfield_bounds: Option<PlayfieldBounds>,
+    start: (u16, u16),
+    start_bridge_enabled: bool,
+    goal: (u16, u16),
+    goal_bridge_enabled: bool,
+) -> ((u16, u16), (u16, u16), bool) {
+    let Some(terrain) = resolved_terrain else {
+        return (start, goal, playfield_bounds.is_none());
+    };
+    let bridge_records = zone_grid.map_or(&[][..], ZoneGrid::bridge_records);
+    let resolved_start = super::zone_build::resolve_hierarchy_path_coord(
+        terrain,
+        bridge_records,
+        start,
+        start_bridge_enabled,
+    );
+    let resolved_goal = super::zone_build::resolve_hierarchy_path_coord(
+        terrain,
+        bridge_records,
+        goal,
+        goal_bridge_enabled,
+    );
+    let endpoints_in_playfield = playfield_bounds.is_none_or(|bounds| {
+        cell_is_in_playfield_height_aware(
+            (i32::from(resolved_start.0), i32::from(resolved_start.1)),
+            Some(bounds),
+            Some(terrain),
+        ) && cell_is_in_playfield_height_aware(
+            (i32::from(resolved_goal.0), i32::from(resolved_goal.1)),
+            Some(bounds),
+            Some(terrain),
+        )
+    });
+    (resolved_start, resolved_goal, endpoints_in_playfield)
+}
+
 /// Zone-aware path search for flat (ground-only) paths.
 ///
 /// Uses zone reachability plus a corridor-Dijkstra approximation, then runs A*
@@ -252,6 +294,8 @@ pub fn find_path_zoned(
         urgency,
         mover_is_crusher,
         is_infantry,
+        true,
+        None,
     )
 }
 
@@ -272,14 +316,35 @@ pub(crate) fn find_path_zoned_marker(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
+    playfield_bounds: Option<PlayfieldBounds>,
 ) -> Option<Vec<(u16, u16)>> {
+    let goal_bridge_enabled = resolved_terrain
+        .and_then(|terrain| terrain.cell(goal.0, goal.1))
+        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    let (hierarchy_start, hierarchy_goal, endpoints_in_playfield) =
+        resolve_hierarchy_endpoint_contract(
+            zone_grid,
+            resolved_terrain,
+            playfield_bounds,
+            start,
+            false,
+            goal,
+            goal_bridge_enabled,
+        );
     find_path_zoned_marker_inner(
         grid,
         start,
         goal,
+        hierarchy_start,
+        hierarchy_goal,
         costs,
         entity_blocks,
-        zone_grid,
+        if allow_zone_hierarchy && endpoints_in_playfield {
+            zone_grid
+        } else {
+            None
+        },
         mz,
         movement_zone,
         resolved_terrain,
@@ -297,6 +362,8 @@ fn find_path_zoned_marker_inner(
     grid: &PathGrid,
     start: (u16, u16),
     goal: (u16, u16),
+    hierarchy_start: (u16, u16),
+    hierarchy_goal: (u16, u16),
     costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     zone_grid: Option<&ZoneGrid>,
@@ -371,8 +438,8 @@ fn find_path_zoned_marker_inner(
         && let Some(hierarchy) = zg.hierarchy_for(mz)
         && let Some(level0_zones) = hierarchy.level(0)
     {
-        let hierarchy_start_zone = level0_zones.zone_at(start.0, start.1);
-        let hierarchy_goal_zone = level0_zones.zone_at(goal.0, goal.1);
+        let hierarchy_start_zone = level0_zones.zone_at(hierarchy_start.0, hierarchy_start.1);
+        let hierarchy_goal_zone = level0_zones.zone_at(hierarchy_goal.0, hierarchy_goal.1);
         match zone_precheck_flat(
             hierarchy,
             hierarchy_start_zone,
@@ -602,6 +669,8 @@ pub fn find_layered_path_zoned(
         urgency,
         mover_is_crusher,
         is_infantry,
+        true,
+        None,
     )
 }
 
@@ -624,7 +693,40 @@ pub(crate) fn find_layered_path_zoned_marker(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
+    playfield_bounds: Option<PlayfieldBounds>,
 ) -> Option<Vec<LayeredPathStep>> {
+    // `AStar @ 0x0042CAD6` admits hierarchy only while the mover's stored
+    // TechnoClass+0x3D5 byte is true. False is not a hard failure: it bypasses
+    // zone/hierarchy admission and runs the ordinary flat/layered cell A*.
+    let source_layer = if start_layer == MovementLayer::Bridge {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    };
+    let goal_layer = if resolved_terrain
+        .and_then(|terrain| terrain.cell(goal.0, goal.1))
+        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
+    {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    };
+    let (hierarchy_start, hierarchy_goal, endpoints_in_playfield) =
+        resolve_hierarchy_endpoint_contract(
+            zone_grid,
+            resolved_terrain,
+            playfield_bounds,
+            start,
+            source_layer == MovementLayer::Bridge,
+            goal,
+            goal_layer == MovementLayer::Bridge,
+        );
+    let zone_grid = if allow_zone_hierarchy && endpoints_in_playfield {
+        zone_grid
+    } else {
+        None
+    };
     if !can_use_reduced_zone_precheck(movement_zone) {
         return find_layered_path_marker(
             grid,
@@ -644,19 +746,10 @@ pub(crate) fn find_layered_path_zoned_marker(
     }
 
     if let Some(zg) = zone_grid {
-        let source_layer = if start_layer == MovementLayer::Bridge {
-            MovementLayer::Bridge
-        } else {
-            MovementLayer::Ground
-        };
-        let goal_layer = if resolved_terrain
-            .and_then(|terrain| terrain.cell(goal.0, goal.1))
-            .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
-        {
-            MovementLayer::Bridge
-        } else {
-            MovementLayer::Ground
-        };
+        // Native first obtains source/destination zone IDs through bridge-aware
+        // `GetZoneID`; these are distinct from the later 0x00583180 projection.
+        // `ZoneMap::zone_at` performs that redirect from the raw coordinate and
+        // selected movement layer, so equality must remain on this pair.
         let zones_match = zg.map_for(mz).is_some_and(|zone_map| {
             zone_map.zone_at(start.0, start.1, source_layer)
                 == zone_map.zone_at(goal.0, goal.1, goal_layer)
@@ -664,22 +757,10 @@ pub(crate) fn find_layered_path_zoned_marker(
 
         if blocker_neighbor_counts.is_some()
             && !has_explicit_tube_scenario(resolved_terrain)
-            && let Some(terrain) = resolved_terrain
+            && resolved_terrain.is_some()
             && let Some(hierarchy) = zg.hierarchy_for(mz)
             && let Some(level0_zones) = hierarchy.level(0)
         {
-            let hierarchy_start = super::zone_build::resolve_hierarchy_path_coord(
-                terrain,
-                zg.bridge_records(),
-                start,
-                source_layer == MovementLayer::Bridge,
-            );
-            let hierarchy_goal = super::zone_build::resolve_hierarchy_path_coord(
-                terrain,
-                zg.bridge_records(),
-                goal,
-                goal_layer == MovementLayer::Bridge,
-            );
             match zone_precheck_flat(
                 hierarchy,
                 level0_zones.zone_at(hierarchy_start.0, hierarchy_start.1),

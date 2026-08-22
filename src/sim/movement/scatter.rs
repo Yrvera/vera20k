@@ -203,6 +203,7 @@ pub fn tick_idle_scatter(
             None,  // entity_block_map
             false, // mover_is_crusher — scatter doesn't need crusher logic
             None,  // no resolved world substrate for exact blocker counts
+            None, // no MapClass authority reaches this isolated helper
             None,  // caller does not own the world occupation grid
         );
     }
@@ -311,6 +312,7 @@ pub fn scatter_units_from_cell(
             None,  // entity_block_map
             false, // mover_is_crusher
             None,  // no resolved world substrate for exact blocker counts
+            None, // no MapClass authority reaches this isolated helper
             None,  // caller does not own the world occupation grid
         );
 

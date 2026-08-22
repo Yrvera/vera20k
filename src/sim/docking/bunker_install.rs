@@ -165,7 +165,12 @@ fn step_install(
                     true,
                     rules,
                 );
-                crate::sim::docking::bunker_link::install_bunker_link(sim, building_id, unit_id);
+                crate::sim::docking::bunker_link::install_bunker_link(
+                    sim,
+                    building_id,
+                    unit_id,
+                    rules,
+                );
             }
         }
         BunkerState::Idle | BunkerState::Occupied => {}

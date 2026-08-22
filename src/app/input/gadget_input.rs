@@ -311,7 +311,9 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
         .as_ref()
         .is_none_or(|ra| ra.is_minimap_visible())
         && state.match_state.match_presentation.minimap.is_some();
-    let mini_rect = rect_px(crate::app::presentation::sidebar_render::active_minimap_screen_rect(state));
+    let mini_rect = rect_px(
+        crate::app::presentation::sidebar_render::active_minimap_content_screen_rect(state),
+    );
     if let Some(mh) = state.match_state.match_presentation.in_game_gadgets.minimap
         && let Some(g) = state.match_state.match_presentation.in_game_gadgets.list.get_mut(mh)
     {

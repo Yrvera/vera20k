@@ -1055,6 +1055,7 @@ fn infantry_deployed_attack_reacquire(
         id,
         Some(&sim.fog),
         sim.resolved_terrain.as_ref(),
+        sim.playfield_bounds.is_some(),
     );
     if had_target || pick.is_some() {
         let current = sim

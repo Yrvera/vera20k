@@ -47,6 +47,10 @@ mod combat_pursuit_tests;
 mod combat_turret_facing_tests;
 
 #[cfg(test)]
+#[path = "combat_cloak_fire_tests.rs"]
+mod combat_cloak_fire_tests;
+
+#[cfg(test)]
 #[path = "delayed_building_fire_tests.rs"]
 mod delayed_building_fire_tests;
 
@@ -4537,6 +4541,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng(
         terrain,
         None,
         false,
+        false,
         current_tick,
         tick_ms,
         binary_frame,
@@ -4790,6 +4795,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
     bridge_state: Option<&BridgeRuntimeState>,
     scenario_no_damage: bool,
+    require_playfield_membership: bool,
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
@@ -5383,9 +5389,11 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             terrain_objects,
             terrain_area_state.as_deref(),
             scenario_no_damage,
+            require_playfield_membership,
             binary_frame,
             tick_ms,
             scenario_rng,
+            sound_sink.as_deref_mut(),
             &mut inline_hooks,
             &mut emit,
         );
@@ -6004,9 +6012,11 @@ pub(crate) fn resolve_attacker_fire(
     terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
+    require_playfield_membership: bool,
     binary_frame: u32,
     _tick_ms: u32,
     scenario_rng: &mut SimRng,
+    mut sound_sink: Option<&mut Vec<SimSoundEvent>>,
     inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
     out: &mut CombatEmit,
 ) {
@@ -6118,6 +6128,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
+                require_playfield_membership,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6223,6 +6234,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
+                require_playfield_membership,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6243,6 +6255,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
+                require_playfield_membership,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6380,6 +6393,43 @@ pub(crate) fn resolve_attacker_fire(
             ));
         }
         return;
+    }
+
+    // TechnoClass::GetFireError @ 0x006FC0B0 returns 9 after the ordinary
+    // busy/rearm/ammo gates when DecloakToFire= is set and the current cloak
+    // state requires surfacing. UnitClass::Fire_At_Target @ 0x00736DF0 then
+    // rechecks CanFireAt, calls StartUncloaking(0), and emits no shot, damage,
+    // rearm, report, or fire event on this visit. The retained attack target is
+    // the Rust retry latch; native's separate firing-sequence byte has no Rust
+    // producer or reader to clear.
+    if snap.category == EntityCategory::Unit {
+        let cloak_state = entities
+            .get(snap.stable_id)
+            .and_then(|entity| entity.cloak.as_ref())
+            .map_or(0, |cloak| cloak.state);
+        if crate::sim::cloak_disguise::fire_requires_uncloaking(
+            weapon.decloak_to_fire,
+            cloak_state,
+            1, // UnitClass::WhatAmI, not locomotor kind.
+        ) {
+            let start = entities
+                .get_mut(snap.stable_id)
+                .and_then(|entity| entity.cloak.as_mut())
+                .map(|cloak| {
+                    cloak.start_uncloaking_to_fire(binary_frame as i32, obj.cloaking_speed)
+                });
+            if start.is_some_and(|result| result.play_sound)
+                && let Some(sound_name) = rules.general.cloak_sound.as_deref()
+                && let Some(sink) = sound_sink.as_deref_mut()
+                && let Some(entity) = entities.get(snap.stable_id)
+            {
+                sink.push(SimSoundEvent::cloak_sound(
+                    sound_name.to_owned(),
+                    &entity.position,
+                ));
+            }
+            return;
+        }
     }
 
     // Turret alignment check (FacingClass: destination match + not rotating).

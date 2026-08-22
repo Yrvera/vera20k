@@ -509,7 +509,7 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
         .unwrap_or_default();
 
     // Despawn the SMIN vehicle.
-    sim.uninit(stable_id);
+    sim.uninit_with_rules(stable_id, rules);
 
     // Spawn the YAREFN building at the same cell.
     let new_sid: u64 = sim.spawn_object_at_height(&target_type, &owner, rx, ry, 0, z, rules)?;
@@ -591,7 +591,7 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
         .unwrap_or_default();
 
     // Despawn the YAREFN building.
-    sim.uninit(stable_id);
+    sim.uninit_with_rules(stable_id, rules);
 
     // Spawn the SMIN vehicle.
     let new_sid: u64 = sim.spawn_object_at_height(&target_type, &owner, rx, ry, 0, z, rules)?;

@@ -102,6 +102,7 @@ pub fn issue_move_command(
         mover_is_crusher,
         None,
         None,
+        None,
     )
 }
 
@@ -129,6 +130,7 @@ pub fn set_destination_for_teleporter_entity(
     is_harvester: bool,
     is_teleporter: bool,
     destination_has_building: bool,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 ) -> bool {
     let Some(entity) = entities.get(entity_id) else {
         return false;
@@ -158,6 +160,7 @@ pub fn set_destination_for_teleporter_entity(
             entity_block_map,
             mover_is_crusher,
             None,
+            playfield_bounds,
             None,
         );
     }
@@ -185,6 +188,7 @@ pub fn set_destination_for_teleporter_entity(
             entity_block_map,
             mover_is_crusher,
             None,
+            playfield_bounds,
             None,
         );
     }
@@ -308,6 +312,7 @@ pub(crate) fn issue_move_command_with_layered(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
     blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
     mut cell_occupation: Option<&mut crate::sim::occupancy::CellOccupationGrid>,
 ) -> bool {
     // Read the entity's current position and locomotor state.
@@ -322,6 +327,11 @@ pub(crate) fn issue_move_command_with_layered(
     // so terrain-object occupation is read at sub-cell granularity for infantry
     // and whole-cell for everything else. The search has to know which.
     let is_infantry: bool = entity.category == EntityCategory::Infantry;
+    // `AStar @ 0x0042CAD6` uses hierarchy only for a mover whose stored
+    // TechnoClass+0x3D5 byte is true. Authority is explicit: resolved terrain
+    // and MapClass bounds have independent lifetimes in headless fixtures and
+    // during staged startup, so neither can stand in for the other.
+    let allow_zone_hierarchy = playfield_bounds.is_none() || entity.in_playfield;
     let locomotor_kind = entity.locomotor.as_ref().map(|locomotor| locomotor.kind);
     let uses_drive_locomotor = locomotor_kind == Some(LocomotorKind::Drive);
     let uses_ship_locomotor = locomotor_kind == Some(LocomotorKind::Ship);
@@ -442,6 +452,7 @@ pub(crate) fn issue_move_command_with_layered(
                         path_grid: Some(grid),
                         zone_grid,
                         resolved_terrain,
+                        playfield_bounds,
                         blocker_neighbor_counts,
                     },
                     layered_pathing,
@@ -462,6 +473,7 @@ pub(crate) fn issue_move_command_with_layered(
                     0, // urgency=0: initial move command
                     mover_is_crusher,
                     is_infantry,
+                    allow_zone_hierarchy,
                 ) else {
                     return false;
                 };
@@ -488,6 +500,7 @@ pub(crate) fn issue_move_command_with_layered(
         path_grid: Some(grid),
         zone_grid,
         resolved_terrain,
+        playfield_bounds,
         blocker_neighbor_counts,
     };
     let search = |goal: (u16, u16)| {
@@ -511,6 +524,7 @@ pub(crate) fn issue_move_command_with_layered(
             0, // urgency=0: initial move command
             mover_is_crusher,
             is_infantry,
+            allow_zone_hierarchy,
         )
     };
     // Order-time reachability recovery. Gamemd runs `Can_Reach_Zone` before it

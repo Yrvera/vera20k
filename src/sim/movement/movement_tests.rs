@@ -294,6 +294,7 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
             None,
             false,
             None,
+            None,
             Some(cell_occupation),
         )
     };
@@ -731,6 +732,7 @@ fn gsi_06_02_cross_zone_move_order_is_accepted_and_moves_the_unit() {
             false,
             None,
             None,
+            None,
         ),
         "gamemd accepts a ground move order across a disconnected boundary"
     );
@@ -746,6 +748,71 @@ fn gsi_06_02_cross_zone_move_order_is_accepted_and_moves_the_unit() {
         goal.0 <= 1,
         "the unit must be sent to its own side of the split, got {goal:?}"
     );
+}
+
+#[test]
+fn techno_playfield_false_mover_uses_flat_astar_instead_of_hierarchy_abort() {
+    let grid = PathGrid::new(5, 1);
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        5,
+        1,
+        (0..5)
+            .map(|rx| drive_speed_test_cell(rx, 0, Default::default()))
+            .collect(),
+    );
+    let bounds = crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -100,
+        off_100: -100,
+        off_104: 200,
+        off_108: 200,
+    };
+    assert!(bounds.contains_height_aware_packed(0, 0, 0, 0));
+    assert!(bounds.contains_height_aware_packed(4, 0, 0, 0));
+    let mut reduced = PathGrid::new(5, 1);
+    reduced.set_blocked(2, 0, true);
+    let zone_grid = crate::sim::pathfinding::zone_map::ZoneGrid::build(
+        &reduced,
+        &std::collections::BTreeMap::new(),
+        5,
+        1,
+    );
+    assert!(!zone_grid.can_reach(
+        MovementZone::Normal,
+        (0, 0),
+        MovementLayer::Ground,
+        (4, 0),
+        MovementLayer::Ground,
+    ));
+
+    let mut entities = EntityStore::new();
+    let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 0, 0);
+    mover.category = EntityCategory::Unit;
+    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    mover.drive_locomotion = Some(Default::default());
+    mover.in_playfield = false;
+    entities.insert(mover);
+
+    assert!(issue_move_command_with_layered(
+        &mut entities,
+        &grid,
+        1,
+        (4, 0),
+        SimFixed::from_num(1024),
+        false,
+        None,
+        None,
+        Some(&terrain),
+        Some(&zone_grid),
+        None,
+        false,
+        None,
+        Some(bounds),
+        None,
+    ));
+    let target = entities.get(1).unwrap().movement_target.as_ref().unwrap();
+    assert_eq!(target.final_goal, Some((4, 0)));
+    assert!(target.path.contains(&(2, 0)));
 }
 
 #[test]
@@ -782,6 +849,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         false,
         None,
+        None,
         Some(&mut occupation),
     ));
     assert_eq!(
@@ -810,6 +878,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         None,
         false,
+        None,
         None,
         Some(&mut occupation),
     );

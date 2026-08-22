@@ -427,6 +427,12 @@ pub struct ObjectType {
     /// accept an unforced direct Scatter call even when PlayerScatter is off.
     pub veteran_scatter: bool,
     pub elite_scatter: bool,
+    /// `CLOAK` in the rank-selected ability list. Active
+    /// `TechnoClass::CloakingTick @ 0x006FB740`, `CanAutoCloak @
+    /// 0x006FBDC0`, and `ShouldUncloak @ 0x006FBC90` read the veteran and
+    /// elite bytes independently; elite inherits the veteran byte.
+    pub veteran_cloak: bool,
+    pub elite_cloak: bool,
     /// Specific weapon fired on death (overrides default explosion behavior).
     /// References a [WeaponName] section in rules.ini.
     pub death_weapon: Option<String>,
@@ -451,9 +457,21 @@ pub struct ObjectType {
     /// When true, this unit does NOT appear on enemy radar even when in line of sight.
     /// RadarInvisible= in rules.ini. Used by subs, Night Hawk, dolphins, giant squid.
     pub radar_invisible: bool,
-    /// When true, this unit ALWAYS appears on radar even when under shroud.
-    /// RadarVisible= in rules.ini. Used by certain special objects.
+    /// `RADAR_INVISIBLE` in `VeteranAbilities=`. Active
+    /// `TechnoClass+0x324 @ 0x0070D1D0` reads this rank-selected byte before
+    /// deciding whether a sensor is required for radar registration.
+    pub veteran_radar_invisible: bool,
+    /// Elite counterpart at TechnoTypeClass+0x2B9. Elite objects inherit the
+    /// veteran ability and additionally consult this list.
+    pub elite_radar_invisible: bool,
+    /// `RadarVisible=`. In active `RenderCellPixel` this restores an otherwise
+    /// skipped Insignificant/passive-owner entry. It does not override shroud
+    /// or an earlier hostile `RadarInvisible` rejection.
     pub radar_visible: bool,
+    /// `Insignificant=` (`ObjectTypeClass+0x232`). In the active live-radar
+    /// pixel gate this is distinct from `RadarVisible`: insignificant objects
+    /// owned by a passive/missing house are skipped unless RadarVisible is set.
+    pub insignificant: bool,
     /// Whether this unit is a resource harvester (Harvester=yes in rules.ini).
     /// Data-driven replacement for hardcoded type ID string checks.
     pub harvester: bool,
@@ -1027,6 +1045,16 @@ pub struct ObjectType {
     pub sensors: bool,
     /// `SensorsSight=` — fallback sensor/cloak-generator ring radius.
     pub sensors_sight: u8,
+    /// `Cloakable=` — copied into Unit/Infantry runtime cloak ability.
+    pub cloakable: bool,
+    /// `CloakingSpeed=` — signed frame duration between cloak progress steps.
+    pub cloaking_speed: i32,
+    /// `CloakStop=` — FootClass requires an idle locomotor before reporting
+    /// its runtime cloak ability as currently usable.
+    pub cloak_stop: bool,
+    /// `CloakRadiusInCells=`. Building sensor-array removal uses this signed
+    /// byte (constructor default 20), deliberately not `SensorsSight=`.
+    pub cloak_radius_in_cells: i8,
     /// `CloakGenerator=` — cloak field provider flag used by GetSensorRange.
     pub cloak_generator: bool,
 }
@@ -1254,6 +1282,8 @@ impl ObjectType {
             elite_stronger: ability_list_has(section.get_list("EliteAbilities"), "STRONGER"),
             veteran_scatter: ability_list_has(section.get_list("VeteranAbilities"), "SCATTER"),
             elite_scatter: ability_list_has(section.get_list("EliteAbilities"), "SCATTER"),
+            veteran_cloak: ability_list_has(section.get_list("VeteranAbilities"), "CLOAK"),
+            elite_cloak: ability_list_has(section.get_list("EliteAbilities"), "CLOAK"),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             death_weapon_damage_modifier: section
                 .get_f32("DeathWeaponDamageModifier")
@@ -1264,7 +1294,16 @@ impl ObjectType {
             gap_generator: section.get_bool("GapGenerator").unwrap_or(false),
             radar: section.get_bool("Radar").unwrap_or(false),
             radar_invisible: section.get_bool("RadarInvisible").unwrap_or(false),
+            veteran_radar_invisible: ability_list_has(
+                section.get_list("VeteranAbilities"),
+                "RADAR_INVISIBLE",
+            ),
+            elite_radar_invisible: ability_list_has(
+                section.get_list("EliteAbilities"),
+                "RADAR_INVISIBLE",
+            ),
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
+            insignificant: section.get_bool("Insignificant").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
             bib: section.get_bool("Bib").unwrap_or(false),
@@ -1584,6 +1623,12 @@ impl ObjectType {
                 .get_i32("SensorsSight")
                 .map(|n| n.clamp(0, u8::MAX as i32) as u8)
                 .unwrap_or(0),
+            cloakable: section.get_bool("Cloakable").unwrap_or(false),
+            cloaking_speed: section.get_i32("CloakingSpeed").unwrap_or(1),
+            cloak_stop: section.get_bool("CloakStop").unwrap_or(false),
+            cloak_radius_in_cells: section
+                .get_i32("CloakRadiusInCells")
+                .unwrap_or(20) as i8,
             cloak_generator: section.get_bool("CloakGenerator").unwrap_or(false),
         }
     }
@@ -2507,6 +2552,44 @@ mod tests {
     }
 
     #[test]
+    fn radar_insignificant_parses_independently_from_radar_visible() {
+        let ini = IniFile::from_str(
+            "[A]\nInsignificant=yes\nRadarVisible=no\n\
+             [B]\nInsignificant=no\nRadarVisible=yes\n",
+        );
+        let a = ObjectType::from_ini_section(
+            "A",
+            ini.section("A").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        let b = ObjectType::from_ini_section(
+            "B",
+            ini.section("B").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(a.insignificant);
+        assert!(!a.radar_visible);
+        assert!(!b.insignificant);
+        assert!(b.radar_visible);
+    }
+
+    #[test]
+    fn radar_invisible_veterancy_abilities_parse_by_rank() {
+        let ini = IniFile::from_str(
+            "[DOT]\nVeteranAbilities=FASTER,RADAR_INVISIBLE\n\
+             EliteAbilities=STRONGER,RADAR_INVISIBLE\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "DOT",
+            ini.section("DOT").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(obj.veteran_radar_invisible);
+        assert!(obj.elite_radar_invisible);
+        assert!(!obj.radar_invisible);
+    }
+
+    #[test]
     fn techno_type_particle_fields_default_to_empty() {
         let ini: IniFile = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let section = ini.section("E1").unwrap();
@@ -2756,6 +2839,56 @@ mod tests {
         assert!(obj.sensors);
         assert_eq!(obj.sensors_sight, 14);
         assert!(obj.cloak_generator);
+    }
+
+    #[test]
+    fn stock_cloak_and_sensor_type_inputs_parse_without_inference() {
+        let ini = IniFile::from_str(
+            "[DLPH]\nCloakable=yes\nCloakingSpeed=1\nSensorsSight=8\n\
+             [SUB]\nCloakable=yes\nCloakingSpeed=1\nSensorsSight=7\n\
+             [SQD]\nCloakable=yes\nCloakingSpeed=5\nSensorsSight=8\n\
+             [BSUB]\nCloakable=yes\nCloakingSpeed=1\nSensorsSight=8\n\
+             [NAPSIS]\nSensorArray=yes\nSensorsSight=15\n\
+             [RANKED]\nVeteranAbilities=CLOAK\nEliteAbilities=STRONGER,CLOAK\n\
+             [DEFAULTS]\nFixtureOnly=yes\n",
+        );
+        for (id, speed, sight) in [
+            ("DLPH", 1, 8),
+            ("SUB", 1, 7),
+            ("SQD", 5, 8),
+            ("BSUB", 1, 8),
+        ] {
+            let object = ObjectType::from_ini_section(
+                id,
+                ini.section(id).expect("stock-shaped cloak section"),
+                ObjectCategory::Vehicle,
+            );
+            assert!(object.cloakable, "{id}");
+            assert_eq!(object.cloaking_speed, speed, "{id}");
+            assert_eq!(object.sensors_sight, sight, "{id}");
+        }
+        let napsis = ObjectType::from_ini_section(
+            "NAPSIS",
+            ini.section("NAPSIS").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(napsis.sensor_array);
+        assert_eq!(napsis.sensors_sight, 15);
+        assert_eq!(napsis.cloak_radius_in_cells, 20);
+        let ranked = ObjectType::from_ini_section(
+            "RANKED",
+            ini.section("RANKED").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(ranked.veteran_cloak && ranked.elite_cloak);
+        let defaults = ObjectType::from_ini_section(
+            "DEFAULTS",
+            ini.section("DEFAULTS").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(!defaults.cloakable && !defaults.cloak_stop);
+        assert_eq!(defaults.cloaking_speed, 1);
+        assert_eq!(defaults.cloak_radius_in_cells, 20);
     }
 
     #[test]

@@ -126,6 +126,12 @@ impl<'a> SimView<'a> {
         self.simulation.path_grid()
     }
 
+    pub(crate) fn resolved_terrain(
+        &self,
+    ) -> Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid> {
+        self.simulation.resolved_terrain.as_ref()
+    }
+
     pub fn radar_events(&self) -> &'a crate::sim::radar::RadarEventQueue {
         &self.simulation.radar_events
     }
@@ -134,21 +140,53 @@ impl<'a> SimView<'a> {
         self.simulation.bridge_state.as_ref()
     }
 
+    pub(crate) fn overlay_grid(&self) -> Option<&'a crate::sim::overlay_grid::OverlayGrid> {
+        self.simulation.overlay_grid.as_ref()
+    }
+
     /// LogicClass active-object order — presentation draws in this order.
     pub(crate) fn tactical_registration_order(&self) -> &'a [u64] {
         self.simulation.tactical_registration_order()
     }
 
-    /// Radar terrain invalidation plumbing for the minimap dirty-gate.
+    /// Pending radar-terrain batch for the minimap dirty gate. Presentation
+    /// acknowledges this exact generation only after a completed update.
     pub(crate) fn radar_terrain_dirty(&self) -> (&'a [(u16, u16)], u64) {
         (
             &self.simulation.radar_terrain_dirty_cells,
             self.simulation.radar_terrain_dirty_generation,
         )
     }
+
+    /// Current normalized MapClass LocalSize authority plus the generation of
+    /// successful trigger-action-40 writers that rebuilt radar/scroll state.
+    pub(crate) fn playfield_authority(
+        &self,
+    ) -> (Option<crate::map::playfield::PlayfieldBounds>, u64) {
+        (
+            self.simulation.playfield_bounds,
+            self.simulation.playfield_revision,
+        )
+    }
+
+    /// Full MapClass Size dimensions retained beside normalized LocalSize.
+    /// Radar input `0x00653D92..0x00653DE3` reads both values before resolving
+    /// its signed click cell through `MapClass::Get_CellClass`.
+    pub(crate) fn playfield_map_size(&self) -> Option<(i32, i32)> {
+        Some((
+            self.simulation.playfield_bounds?.base,
+            self.simulation.playfield_size_height?,
+        ))
+    }
 }
 
 impl SimRuntime {
+    /// Clear the exact radar-terrain batch a completed presentation update read.
+    pub(crate) fn acknowledge_radar_terrain_dirty(&mut self, generation: u64) -> bool {
+        self.simulation
+            .acknowledge_radar_terrain_dirty(generation)
+    }
+
     /// One command-free Ordinary-lane frame for side binaries (parity-digest):
     /// the same bound-resource transaction as `advance_frame`, with the
     /// crate-private frame output discarded so no internal type goes public.
@@ -178,6 +216,7 @@ impl SimRuntime {
                 triggers: &self.resources.triggers,
                 events: &self.resources.events,
                 actions: &self.resources.actions,
+                rules: Some(&self.resources.rules),
             }),
         )
     }
@@ -365,9 +404,7 @@ where
     // Normal loading first clips/normalizes LocalSize through
     // `MapClass::Set_Clipped_LocalSize @ 0x00567230`; every playfield consumer
     // then shares those stored fields and the same isometric-diamond test.
-    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds::from_map_header(
-        &map_data.header,
-    ));
+    sim.install_playfield_from_map_header(&map_data.header);
     let bridge_destroyable = map_data
         .special_flags
         .effective_destroyable_bridges(bridge_destroyability_mode);

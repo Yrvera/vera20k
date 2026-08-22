@@ -394,7 +394,7 @@ impl ViewBookmarks {
 /// captures. gamemd reads the *view's* coordinate, not the cursor's, so a
 /// bookmark records where the player is looking rather than where the mouse
 /// happens to sit.
-fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
+pub(crate) fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
     let (tactical_w, tactical_h) =
         tactical_viewport_size_px(state.render_width(), state.render_height());
     let world_x = state.match_state.input.camera_x + tactical_w as f32 / (2.0 * state.match_state.input.zoom_level);
@@ -1122,10 +1122,49 @@ pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
 }
 
 pub(crate) fn clamp_camera_to_playable_area(state: &mut AppState, sw: f32, sh: f32) {
-    let (camera_x, camera_y) =
-        clamp_camera_point_for_state(state, (state.match_state.input.camera_x, state.match_state.input.camera_y), sw, sh);
+    sync_playfield_presentation_bounds(state);
+    let (camera_x, camera_y) = clamp_camera_point_for_state(
+        state,
+        (
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
+        ),
+        sw,
+        sh,
+    );
     state.match_state.input.camera_y = camera_y;
     state.match_state.input.camera_x = camera_x;
+}
+
+/// Reconcile the camera's exact mode-zero scroll authority with the current
+/// normalized MapClass LocalSize. This is called from every clamp entry and
+/// the minimap frame feed, so trigger action 0x28 is visible before any next
+/// presentation operation; the `(bounds, revision)` comparison also forces a
+/// restored timeline and repeated writer through the same path.
+pub(crate) fn sync_playfield_presentation_bounds(
+    state: &mut AppState,
+) -> (Option<crate::map::playfield::PlayfieldBounds>, u64) {
+    let Some(runtime) = state.match_state.sim_runtime.as_ref() else {
+        // Non-match renderer fixtures have no MapClass authority to install.
+        // Keep their explicit test bounds; live parity paths always have a sim.
+        return (None, 0);
+    };
+    let authority = runtime.view().playfield_authority();
+    if state
+        .match_state
+        .match_presentation
+        .installed_playfield_authority
+        != Some(authority)
+    {
+        if let Some(grid) = state.match_state.match_presentation.terrain_grid.as_mut() {
+            grid.install_playfield_local_bounds(authority.0);
+        }
+        state
+            .match_state
+            .match_presentation
+            .installed_playfield_authority = Some(authority);
+    }
+    authority
 }
 
 fn clamp_camera_point_for_state(
@@ -1139,6 +1178,11 @@ fn clamp_camera_point_for_state(
     };
     let (area_x, area_y, area_w, area_h) = match grid.local_bounds {
         Some(b) => (b.pixel_x, b.pixel_y, b.pixel_w, b.pixel_h),
+        None if state.match_state.sim_runtime.is_some() => {
+            // A live match without normalized MapClass bounds must not silently
+            // substitute the allocated terrain rectangle.
+            return point;
+        }
         None => (
             grid.origin_x,
             grid.origin_y,

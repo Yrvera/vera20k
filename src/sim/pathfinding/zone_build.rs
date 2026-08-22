@@ -1734,15 +1734,13 @@ pub(crate) fn inject_bridge_adjacency(
 /// activity is deliberately ignored, matching `MapClass::FindBridgeRecord`
 /// @ `0x0056DA10`.
 ///
-/// **VERA-internal, gamemd has no equivalent: the `min`/`max` normalisation of
-/// the axis span.** Native tests `A.y <= q.y <= B.y` (and `A.x <= q.x <= B.x`)
-/// with the endpoints in stored order, so a record whose B endpoint precedes A
-/// along the axis never matches there and `GetZoneID` answers `0xFFFFFFFF`.
-/// Trigger: a bridge endpoint record stored with its endpoints reversed —
-/// whether the record builder can produce one is UNCHECKED. Player effect: VERA
-/// redirects through such a bridge and accepts the move; gamemd refuses it.
-/// Frequency: unknown, and zero if records are always stored in ascending
-/// order. Downstream risk: low; pinning the construction order would settle it.
+/// Native compares the query against the endpoints in their stored order; it
+/// does not normalise a reversed span. Active `ComputeBridgeZones @ 0x0056D6E0`
+/// stores endpoint A at the scan cell and endpoint B after walking direction 2
+/// (east) or 4 (south). Rust's retail-derived high-record builder uses exactly
+/// those two `HIGH_BRIDGE_WALK_DIRECTION` values, so its active records are
+/// monotone. Keeping the native comparisons here also makes injected/corrupt
+/// reversed records fail exactly as `FindBridgeRecord @ 0x0056DA10` does.
 pub(crate) fn find_high_bridge_record(
     bridge_records: &[BridgeEndpointRecord],
     start_index: usize,
@@ -1756,9 +1754,9 @@ pub(crate) fn find_high_bridge_record(
         let (ax, ay) = record.endpoint_a;
         let (bx, by) = record.endpoint_b;
         if ax == bx {
-            query.1 >= ay.min(by) && query.1 <= ay.max(by) && query.0.abs_diff(ax) <= tolerance
+            query.1 >= ay && query.1 <= by && query.0.abs_diff(ax) <= tolerance
         } else {
-            query.0 >= ax.min(bx) && query.0 <= ax.max(bx) && query.1.abs_diff(ay) <= tolerance
+            query.0 >= ax && query.0 <= bx && query.1.abs_diff(ay) <= tolerance
         }
     })
 }
@@ -1944,9 +1942,9 @@ pub(crate) fn build_bridge_redirect(
 /// is not Rock, otherwise A.
 ///
 /// This is NOT `MapClass::ResolvePathCoord_BridgeAware` 0x00583180, which is
-/// a different resolver on a different consumer - see
-/// `resolve_path_coord_active_branch_is_unported`. The two share only their
-/// inactive branch. Do not merge them.
+/// the separate hierarchy-only resolver implemented by
+/// `resolve_hierarchy_path_coord` above. The two share only their inactive
+/// branch. Do not merge them.
 fn bridge_redirect_for_structural_cell(
     terrain: &ResolvedTerrainGrid,
     bridge_records: &[BridgeEndpointRecord],
@@ -2148,6 +2146,35 @@ mod tests {
         );
         assert!(find_high_bridge_record(&records, 2, (1, 2), 1).is_none());
         assert!(find_high_bridge_record(&records, 0, (1, 5), 1).is_none());
+    }
+
+    #[test]
+    fn playfield_bridge_record_lookup_preserves_native_stored_endpoint_order() {
+        let records = [
+            BridgeEndpointRecord {
+                endpoint_a: (2, 4),
+                endpoint_b: (2, 0),
+                group_id: 1,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+            BridgeEndpointRecord {
+                endpoint_a: (4, 2),
+                endpoint_b: (0, 2),
+                group_id: 2,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+        ];
+
+        assert!(
+            find_high_bridge_record(&records, 0, (2, 2), 0).is_none(),
+            "0x0056DA10 does not normalize a reversed vertical A-to-B span"
+        );
+        assert!(
+            find_high_bridge_record(&records, 1, (2, 2), 0).is_none(),
+            "0x0056DA10 does not normalize a reversed horizontal A-to-B span"
+        );
     }
 
     #[test]
@@ -3015,53 +3042,6 @@ mod tests {
     #[ignore = "gamemd 0x00582D70 registers tube hierarchy pairs; VERA registers high-bridge pairs only"]
     fn tube_hierarchy_pairs_are_unregistered() {
         panic!("unimplemented: tube branch of RegisterBridgeOrTubeHierarchyPairs 0x00582D70");
-    }
-
-    /// RESIDUAL - gamemd address 0x00583180,
-    /// `MapClass::ResolvePathCoord_BridgeAware`.
-    ///
-    /// **Correction 2026-08-19.** An earlier version of this note compared
-    /// 0x00583180 against `bridge_redirect_for_structural_cell` and called
-    /// that function divergent. It is not: it is a faithful port of
-    /// `MapClass::GetZoneID` 0x0056D230, and the two natives are separate
-    /// resolvers with separate consumers that happen to share an inactive
-    /// branch. Nothing in this crate is wrong; a whole mechanism is absent.
-    ///
-    /// What is absent: 0x00583180 is called only from
-    /// `AStar_pathfind_search` 0x0042C900 and
-    /// `PathfinderClass::EstimateZoneCost` 0x0042D170, the latter resolving
-    /// BOTH endpoints through it under two independent caller flags before
-    /// running `Zone_precheck` and a `FindBridgeAdjacentZoneCell` walk. Its
-    /// active branch calls `FindBridgeRecord` at tolerance 2, keeps the
-    /// queried cell's perpendicular lane offset - X offset when `+0x140` bit
-    /// 0x800 is clear, Y offset when it is set - adds that offset to both
-    /// endpoints, compares two `Sqrt_Approx` distances and returns the closer
-    /// endpoint, an exact tie selecting endpoint B.
-    ///
-    /// Trigger: A* entry and zone-cost estimation for any coordinate on an
-    /// intact high bridge.
-    ///
-    /// Effect: VERA's A* takes its start and goal coordinates unresolved, so
-    /// a path onto or along an intact high bridge is planned from the raw
-    /// cell rather than from the span endpoint gamemd would project to, and
-    /// the zone-cost estimate that biases long searches is absent entirely.
-    ///
-    /// Frequency: every path query touching an intact high bridge.
-    ///
-    /// Why this is not a small fix: porting the resolver alone gives dead
-    /// code. It has to land together with the `EstimateZoneCost` consumer,
-    /// because that is what decides which endpoint flag each side gets. This
-    /// crate has a dormant `zone_cost_estimate`
-    /// (`sim::pathfinding::zone_search`), but it is `#[allow(dead_code)]`
-    /// with only test callers, so there is no live consumer to resolve
-    /// endpoints for. Wiring the resolver
-    /// into `astar_search` at a guessed point would be inventing behaviour.
-    #[test]
-    #[ignore = "gamemd 0x00583180 resolves A* endpoints through a bridge record; VERA has no port and no EstimateZoneCost consumer"]
-    fn resolve_path_coord_active_branch_is_unported() {
-        panic!(
-            "unimplemented: ResolvePathCoord_BridgeAware 0x00583180 + its EstimateZoneCost consumer"
-        );
     }
 
     /// `MapClass::RegisterBridgeOrTubeHierarchyPairs` 0x00582D70 enters its

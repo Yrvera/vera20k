@@ -2438,22 +2438,22 @@ mod tests {
         );
         map.cells = vec![
             MapCell {
-                rx: 0,
-                ry: 0,
+                rx: 60,
+                ry: 60,
                 tile_index: 0,
                 sub_tile: 0,
                 z: 0,
             },
             MapCell {
-                rx: 0,
-                ry: 100,
+                rx: 60,
+                ry: 140,
                 tile_index: 0,
                 sub_tile: 0,
                 z: 0,
             },
             MapCell {
-                rx: 100,
-                ry: 0,
+                rx: 140,
+                ry: 60,
                 tile_index: 0,
                 sub_tile: 0,
                 z: 0,
@@ -2463,31 +2463,31 @@ mod tests {
             0,
             Waypoint {
                 index: 0,
-                rx: 20,
-                ry: 20,
+                rx: 70,
+                ry: 70,
             },
         );
         map.waypoints.insert(
             1,
             Waypoint {
                 index: 1,
-                rx: 40,
-                ry: 20,
+                rx: 90,
+                ry: 70,
             },
         );
         map.waypoints.insert(
             2,
             Waypoint {
                 index: 2,
-                rx: 20,
-                ry: 40,
+                rx: 70,
+                ry: 90,
             },
         );
         let generated = crate::map::rmg::GeneratedMap {
             map_file: map,
             mapgen_continuation:
                 crate::map::rmg::RmgRng::new(0x4567).into_continuation(),
-            start_waypoints: vec![(0, 20, 20), (1, 40, 20), (2, 20, 40)],
+            start_waypoints: vec![(0, 70, 70), (1, 90, 70), (2, 70, 90)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
         };
@@ -2564,8 +2564,8 @@ mod tests {
         );
         assert_eq!(progress.emitted, vec![8]);
         assert_eq!(initial.map_data().waypoints.len(), 3);
-        assert_eq!(initial.map_data().waypoints[&2].rx, 20);
-        assert_eq!(initial.map_data().waypoints[&2].ry, 40);
+        assert_eq!(initial.map_data().waypoints[&2].rx, 70);
+        assert_eq!(initial.map_data().waypoints[&2].ry, 90);
         assert!(
             initial.has_mapgen_rng_continuation(),
             "the accepted map's post-generation RNG cursor reaches MapLoadInitial"

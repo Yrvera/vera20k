@@ -277,7 +277,11 @@ fn distance_to_goal_leptons(pos: &Position, goal: (u16, u16)) -> SimFixed {
 /// Build a read-only snapshot of the mover's properties before entering the
 /// inner movement loop. This avoids repeated `entities.get()` calls and keeps
 /// the data available across the mutable/immutable borrow boundary.
-fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapshot> {
+fn snapshot_mover(
+    entities: &EntityStore,
+    entity_id: u64,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+) -> Option<MoverSnapshot> {
     let e = entities.get(entity_id)?;
     Some(MoverSnapshot {
         category: e.category,
@@ -307,6 +311,7 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
             .nav_com
             .as_ref()
             .and_then(|nav| nav_target_object_cell(entities, nav)),
+        allow_zone_hierarchy: playfield_bounds.is_none() || e.in_playfield,
     })
 }
 
@@ -475,6 +480,7 @@ fn handle_path_exhaustion(
                         )
                     ),
                 snap.category == EntityCategory::Infantry,
+                snap.allow_zone_hierarchy,
             ) {
                 if new_path.len() >= 2 {
                     // DIAGNOSTIC: detect layer mismatch after repath
@@ -719,6 +725,7 @@ fn process_pending_drive_arrivals(
                         | MovementZone::CrusherAll
                 ),
             entity.category == EntityCategory::Infantry,
+            ctx.playfield_bounds.is_none() || entity.in_playfield,
         ) else {
             // VERA-internal retry policy: pathfinding failed, so re-arm the
             // deferred flag (cleared by `set_destination_internal_cell`
@@ -955,6 +962,7 @@ fn handle_deferred_drive_selection_block(
         PATH_STUCK_INIT,
         bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher).can_crush_units(),
         snap.category == EntityCategory::Infantry,
+        snap.allow_zone_hierarchy,
         // Code 2 keeps its grace span; the escalation timer is what selects the
         // repath urgency (0x004B36BC-0x004B36EF).
         false,
@@ -1533,6 +1541,7 @@ fn tick_movement_with_grids_scoped(
         path_grid,
         zone_grid,
         resolved_terrain,
+        playfield_bounds,
         blocker_neighbor_counts: blocker_neighbor_counts.as_ref(),
     };
     let mcfg = MovementConfig {
@@ -1717,7 +1726,7 @@ fn tick_movement_with_grids_scoped(
 
         // Snapshot mover data before entering the inner loop so we can release the
         // mutable borrow on `entities` when needed for crush/bump immutable lookups.
-        let Some(snap) = snapshot_mover(entities, entity_id) else {
+        let Some(snap) = snapshot_mover(entities, entity_id, playfield_bounds) else {
             continue;
         };
         let prone_crawls = entities.get(entity_id).and_then(|entity| {
@@ -3228,6 +3237,7 @@ mod drive_track_chain_tests {
             bypass_grid: false,
             sub_cell_priority_mission: false,
             nav_com_cell: None,
+            allow_zone_hierarchy: true,
         }
     }
 

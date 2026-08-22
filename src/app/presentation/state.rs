@@ -41,6 +41,11 @@ pub(crate) struct MatchPresentationState {
     pub(crate) sidebar_chrome: Option<SidebarChromeSet>,
     pub(crate) software_cursor: Option<crate::app::presentation::render::SoftwareCursor>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
+    /// Last mutable MapClass playfield authority installed into presentation.
+    /// `None` is an explicit stale gate (new map / quickload); the inner
+    /// optional bounds preserves fail-closed absence without inventing a rect.
+    pub(crate) installed_playfield_authority:
+        Option<(Option<crate::map::playfield::PlayfieldBounds>, u64)>,
     /// Overlay entries from map for per-frame instance generation.
     pub(crate) overlays: crate::app::presentation::overlay_index::OverlayRenderIndex,
     /// Terrain objects from map for per-frame instance generation.
@@ -50,9 +55,8 @@ pub(crate) struct MatchPresentationState {
     pub(crate) tags: TagMap,
     /// Overlay ID → type name mapping for atlas lookups at render time.
     pub(crate) overlay_names: BTreeMap<u8, String>,
-    /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
-    /// extracted from SHP frames for minimap radar display.
-    pub(crate) tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]>,
+    /// Exact SHP frame-header radar RGB for each native-selected overlay frame.
+    pub(crate) overlay_radar_colors: HashMap<(u8, u8), [u8; 3]>,
     /// Owner name → house color index mapping for atlas key lookups.
     pub(crate) house_color_map: HouseColorMap,
     pub(crate) house_roster: HouseRoster,

@@ -37,26 +37,11 @@
 //!   `sim::movement::movement_bridge`; this one cannot be bound without a
 //!   reference.
 pub mod walker;
+mod damaged_variant;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-
-/// 8-neighbor direction offsets used by `apply_damaged_variant_flood_fill`.
-/// Order: N, NE, E, SE, S, SW, W, NW (standard RA2 8-facing convention).
-///
-/// The order does not affect the final bit state — the flood-fill is bool-idempotent
-/// via its early-return guard — but it is fixed for deterministic recursion order
-/// across lockstep clients.
-const EIGHT_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
-    (0, -1),  // N
-    (1, -1),  // NE
-    (1, 0),   // E
-    (1, 1),   // SE
-    (0, 1),   // S
-    (-1, 1),  // SW
-    (-1, 0),  // W
-    (-1, -1), // NW
-];
+use damaged_variant::extend_unique_cells;
 
 /// Sentinel `overlay_byte` value meaning "no bridge overlay" (the original
 /// engine's -1 / 0xFF). A cell carrying this byte renders empty and is treated
@@ -391,7 +376,12 @@ impl DispatchPath {
 pub enum StateOutcome {
     /// Damage absorbed — anchor advanced from `Healthy` to `Damaged`. Bridge
     /// still passable. Renderer should redraw.
-    Absorbed,
+    Absorbed {
+        /// Cells whose `ToggleBridgePavement @ 0x0056E990` equivalent changed
+        /// the current TMP damage selector. Native marks each cell before its
+        /// direction-0..7 recursion, so order is presentation-significant.
+        damaged_variant_cells: Vec<(u16, u16)>,
+    },
     /// Anchor collapsed — `damage_state` became `Destroyed`. Cascade actions
     /// for orchestrator follow.
     Collapsed {
@@ -424,6 +414,10 @@ pub enum StateOutcome {
         /// orchestrator feeds these into `mark_radar_terrain_dirty_cells`,
         /// the same channel the engineer-repair path uses.
         radar_cells: Vec<(u16, u16)>,
+        /// Ordered cells changed by the ramp helpers' nested
+        /// `ToggleBridgePavement @ 0x0056E990` calls. Kept separate so the
+        /// existing collapse dirty-set ordering remains unchanged.
+        damaged_variant_cells: Vec<(u16, u16)>,
     },
     /// Cell is not a body-bridge cell, anchor span lookup failed, or anchor
     /// is already `Destroyed`. No-op.
@@ -449,6 +443,19 @@ impl StateOutcome {
             }
         )
     }
+
+    pub fn damaged_variant_cells(&self) -> &[(u16, u16)] {
+        match self {
+            StateOutcome::Absorbed {
+                damaged_variant_cells,
+            }
+            | StateOutcome::Collapsed {
+                damaged_variant_cells,
+                ..
+            } => damaged_variant_cells,
+            StateOutcome::NoChange => &[],
+        }
+    }
 }
 
 /// Outcome of a single `body_cell_repair_state` call. Carries the
@@ -458,8 +465,8 @@ impl StateOutcome {
 ///   - `zones_dirty`: rebuild PathGrid + zone grid. Set only when a
 ///     **main-deck damaged or destroyed** cell was repaired —
 ///     bridgehead-only repairs do NOT trigger zones rebuild.
-///   - `radar_cells`: mark these cells dirty in the minimap. Set only
-///     for cells that transitioned **from `Destroyed`** to `Healthy`.
+///   - `radar_cells`: mark these cells dirty in the minimap. Includes exact
+///     damage-variant clears plus cells restored **from `Destroyed`**.
 ///   - `repaired_cells`: total mutated cell count for caller's
 ///     `bridge_state_changed` decision and metrics.
 #[derive(Debug, Clone, Default)]
@@ -1183,7 +1190,8 @@ impl BridgeRuntimeState {
                     c.damage_state = DamageState::Damaged;
                 }
                 // Fire UpdateRamp_*A and _*B on perpendicular targets.
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let mut damaged_variant_cells = Vec::new();
+                let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
                     anchor_pos,
                     axis,
@@ -1191,7 +1199,11 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                extend_unique_cells(
+                    &mut damaged_variant_cells,
+                    ramp_a.damaged_variant_cells,
+                );
+                let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
                     anchor_pos,
                     axis,
@@ -1199,12 +1211,18 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                StateOutcome::Absorbed
+                extend_unique_cells(
+                    &mut damaged_variant_cells,
+                    ramp_b.damaged_variant_cells,
+                );
+                StateOutcome::Absorbed {
+                    damaged_variant_cells,
+                }
             }
             DamageState::Damaged => {
                 // Full collapse — fire CollapseA + CollapseB perpendicular,
                 // anchor → Destroyed, set_bridge_direction cascade.
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
                     anchor_pos,
                     axis,
@@ -1212,13 +1230,18 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
                     anchor_pos,
                     axis,
                     Phase::CollapseB,
                     is_high_bridge,
                     terrain,
+                );
+                let mut damaged_variant_cells = ramp_a.damaged_variant_cells;
+                extend_unique_cells(
+                    &mut damaged_variant_cells,
+                    ramp_b.damaged_variant_cells,
                 );
                 let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
                 if !destroyed.contains(&anchor_pos) {
@@ -1253,11 +1276,12 @@ impl BridgeRuntimeState {
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
+                    damaged_variant_cells,
                 }
             }
             DamageState::PartialCollapseA => {
                 // Single CollapseA call, then collapse-finalize.
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
                     anchor_pos,
                     axis,
@@ -1278,10 +1302,11 @@ impl BridgeRuntimeState {
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
                     radar_cells: destroyed,
+                    damaged_variant_cells: ramp.damaged_variant_cells,
                 }
             }
             DamageState::PartialCollapseB => {
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
                     anchor_pos,
                     axis,
@@ -1302,86 +1327,11 @@ impl BridgeRuntimeState {
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
                     radar_cells: destroyed,
+                    damaged_variant_cells: ramp.damaged_variant_cells,
                 }
             }
             DamageState::Destroyed => StateOutcome::NoChange,
         }
-    }
-
-    /// Propagate the damaged-variant bit across an 8-neighbor region bounded
-    /// by underlying-terrain `final_tile_index` equality. The kickoff call
-    /// gates on the seed cell's `has_damaged_data` flag; recursive calls skip
-    /// the gate (cells sharing a tile_index share the gate flag, since they're
-    /// rendered from the same TMP).
-    ///
-    /// `state == true` flips the bit on (damage / collapse caller path).
-    /// `state == false` flips it off (repair walker path).
-    ///
-    /// Idempotent: cells already in the target state return early without
-    /// recursing.
-    ///
-    /// Returns the count of cells mutated.
-    pub fn apply_damaged_variant_flood_fill(
-        &mut self,
-        rx: u16,
-        ry: u16,
-        state: bool,
-        terrain: &ResolvedTerrainGrid,
-    ) -> u32 {
-        self.apply_damaged_variant_flood_fill_internal(rx, ry, state, terrain, true)
-    }
-
-    fn apply_damaged_variant_flood_fill_internal(
-        &mut self,
-        rx: u16,
-        ry: u16,
-        state: bool,
-        terrain: &ResolvedTerrainGrid,
-        kickoff: bool,
-    ) -> u32 {
-        let cell_state = match self.cell(rx, ry) {
-            Some(c) => c.damaged_variant,
-            None => return 0,
-        };
-        if cell_state == state {
-            return 0;
-        }
-
-        let resolved = match terrain.cell(rx, ry) {
-            Some(c) => c,
-            None => return 0,
-        };
-        let seed_tile_id = resolved.final_tile_index;
-        if seed_tile_id == 0xFFFF || seed_tile_id < 0 {
-            return 0;
-        }
-
-        if kickoff && !resolved.has_damaged_data {
-            return 0;
-        }
-
-        if let Some(c) = self.cell_mut(rx, ry) {
-            c.damaged_variant = state;
-        }
-        let mut count: u32 = 1;
-
-        for (dx, dy) in EIGHT_NEIGHBOR_OFFSETS {
-            let nx_i = rx as i32 + dx;
-            let ny_i = ry as i32 + dy;
-            if nx_i < 0 || ny_i < 0 {
-                continue;
-            }
-            let nx = nx_i as u16;
-            let ny = ny_i as u16;
-            if let Some(n_resolved) = terrain.cell(nx, ny) {
-                if n_resolved.final_tile_index == seed_tile_id {
-                    count += self
-                        .apply_damaged_variant_flood_fill_internal(nx, ny, state, terrain, false);
-                }
-            }
-        }
-
-        count
     }
 
     /// Reverse counterpart to `body_cell_advance_state`. Repairs cells found
@@ -1399,9 +1349,10 @@ impl BridgeRuntimeState {
     ///   - `outcome.zones_dirty = true` iff at least one **main-deck**
     ///     (Anchor/Body/Tail role) damaged or destroyed cell was repaired.
     ///     Bridgehead-only repairs do NOT set this flag.
-    ///   - `outcome.radar_cells` contains cells whose prior state was
-    ///     `Destroyed`. Cells transitioning from `Damaged` or
-    ///     `PartialCollapse{A,B}` are NOT added.
+    ///   - `outcome.radar_cells` contains the exact cells changed by a
+    ///     damage-variant clear, followed by destroyed-anchor restoration
+    ///     cells not already present. Native's radar queue rejects duplicates
+    ///     while retaining first insertion order.
     ///
     /// **RNG draws** (locked for lockstep across Rust clients):
     ///   - Main-deck damaged/destroyed/partial-collapse → 1 draw per cell
@@ -1480,8 +1431,13 @@ impl BridgeRuntimeState {
                 if let Some(cell) = self.cell_mut(cell_pos.0, cell_pos.1) {
                     cell.damage_state = new_state;
                 }
-                let _ =
-                    self.apply_damaged_variant_flood_fill(cell_pos.0, cell_pos.1, false, terrain);
+                let damaged_variant_cells = self.apply_damaged_variant_flood_fill(
+                    cell_pos.0,
+                    cell_pos.1,
+                    false,
+                    terrain,
+                );
+                extend_unique_cells(&mut outcome.radar_cells, damaged_variant_cells);
                 outcome.repaired_cells += 1;
 
                 let is_main_deck = matches!(
@@ -1492,7 +1448,7 @@ impl BridgeRuntimeState {
                     outcome.zones_dirty = true;
                 }
                 if matches!(prior_state, DamageState::Destroyed) {
-                    outcome.radar_cells.push(cell_pos);
+                    extend_unique_cells(&mut outcome.radar_cells, [cell_pos]);
                 }
             }
 
@@ -1635,7 +1591,7 @@ impl BridgeRuntimeState {
                 }
             }
 
-            let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+            let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
                 self,
                 anchor_pos,
                 axis,
@@ -1643,13 +1599,18 @@ impl BridgeRuntimeState {
                 is_high_bridge,
                 terrain,
             );
-            let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+            let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
                 self,
                 anchor_pos,
                 axis,
                 Phase::CollapseB,
                 is_high_bridge,
                 terrain,
+            );
+            let mut damaged_variant_cells = ramp_a.damaged_variant_cells;
+            extend_unique_cells(
+                &mut damaged_variant_cells,
+                ramp_b.damaged_variant_cells,
             );
             for &perp_dir in &[Direction::E, Direction::W, Direction::N, Direction::S] {
                 let (dx, dy) = perp_dir.offset();
@@ -1678,6 +1639,7 @@ impl BridgeRuntimeState {
                 set_bridge_direction: SetBridgeDirectionResult { actions },
                 adjacent_bridges_dirty: adj,
                 zones_dirty: true,
+                damaged_variant_cells,
             };
         }
 
@@ -1694,7 +1656,7 @@ impl BridgeRuntimeState {
         // 5. Fire the perpendicular DamageA + DamageB writes. These do the
         //    state-byte bump on Anchor targets and the asymmetric A/B
         //    tile-class progression on both Anchor and Bridgehead targets.
-        let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+        let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
             self,
             anchor_pos,
             axis,
@@ -1702,7 +1664,7 @@ impl BridgeRuntimeState {
             is_high_bridge,
             terrain,
         );
-        let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+        let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
             self,
             anchor_pos,
             axis,
@@ -1710,8 +1672,15 @@ impl BridgeRuntimeState {
             is_high_bridge,
             terrain,
         );
+        let mut damaged_variant_cells = ramp_a.damaged_variant_cells;
+        extend_unique_cells(
+            &mut damaged_variant_cells,
+            ramp_b.damaged_variant_cells,
+        );
 
-        StateOutcome::Absorbed
+        StateOutcome::Absorbed {
+            damaged_variant_cells,
+        }
     }
 
     /// Bridge endpoint records for zone connectivity.

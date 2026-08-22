@@ -20,6 +20,7 @@ use crate::sim::occupancy::{
 };
 use crate::sim::passenger::PassengerRole;
 use crate::sim::projectile::ProjectileTarget;
+use crate::rules::ruleset::RuleSet;
 use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 
@@ -32,19 +33,43 @@ use super::substrate::ObjectKind;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct UninitContext<'a> {
     terrain: Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    rules: Option<&'a RuleSet>,
 }
 
 impl<'a> UninitContext<'a> {
     pub(crate) const fn with_terrain(
         terrain: Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid>,
     ) -> Self {
-        Self { terrain }
+        Self {
+            terrain,
+            rules: None,
+        }
+    }
+
+    pub(crate) fn with_terrain_and_rules(
+        terrain: Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        rules: &'a RuleSet,
+    ) -> Self {
+        let mut context = Self::with_terrain(terrain);
+        context.rules = Some(rules);
+        context
+    }
+
+    pub(crate) const fn with_rules(rules: &'a RuleSet) -> Self {
+        Self {
+            terrain: None,
+            rules: Some(rules),
+        }
     }
 
     pub(crate) const fn terrain(
         self,
     ) -> Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid> {
         self.terrain
+    }
+
+    pub(crate) const fn rules(self) -> Option<&'a RuleSet> {
+        self.rules
     }
 }
 
@@ -614,6 +639,11 @@ impl Simulation {
             entity.position.sub_x = request.position.sub_x;
             entity.position.sub_y = request.position.sub_y;
         }
+        // `TechnoClass::Unlimbo @ 0x006F6CFE` establishes the canonical
+        // TechnoClass+0x3D5 byte from mode-one MapClass membership. Headless
+        // fixtures have no MapClass authority, so they retain the constructor
+        // default and their consumers explicitly leave the byte unenforced.
+        self.establish_entity_playfield_membership_on_unlimbo(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealCoordinatesCommitted);
 
@@ -1562,6 +1592,14 @@ impl Simulation {
         self.techno_limbo_with_context(stable_id, UninitContext::default())
     }
 
+    pub(crate) fn techno_limbo_with_rules(
+        &mut self,
+        stable_id: u64,
+        rules: &RuleSet,
+    ) -> ConcealOutcome {
+        self.techno_limbo_with_context(stable_id, UninitContext::with_rules(rules))
+    }
+
     fn techno_limbo_with_context(
         &mut self,
         stable_id: u64,
@@ -1569,6 +1607,13 @@ impl Simulation {
     ) -> ConcealOutcome {
         if !self.substrate.entities.contains(stable_id) {
             return ConcealOutcome::MissingOrDead;
+        }
+        // FootClass::Limbo @ 0x004DB260 and BuildingClass::Limbo @
+        // 0x00445880 remove the exact deposited footprint before conceal.
+        if let Some(rules) = context.rules() {
+            self.remove_sensor_before_limbo_with_rules(stable_id, rules);
+        } else {
+            self.remove_sensor_before_limbo(stable_id);
         }
         // Dead and InLimbo are independent native state. TechnoClass::Limbo
         // still reaches ObjectClass::Conceal for a stored dead object; the
@@ -1742,6 +1787,19 @@ impl Simulation {
                 stable_id,
                 reason: _,
             } => self.uninit(stable_id),
+        }
+    }
+
+    pub(crate) fn apply_lifecycle_request_with_rules(
+        &mut self,
+        request: LifecycleRequest,
+        rules: &RuleSet,
+    ) {
+        match request {
+            LifecycleRequest::Uninit {
+                stable_id,
+                reason: _,
+            } => self.uninit_with_rules(stable_id, rules),
         }
     }
 
@@ -2306,6 +2364,10 @@ impl Simulation {
     /// ObjectClass::UnInit represented ordering.  Physical removal is deferred.
     pub(crate) fn uninit(&mut self, stable_id: u64) {
         self.uninit_with_context(stable_id, UninitContext::default());
+    }
+
+    pub(crate) fn uninit_with_rules(&mut self, stable_id: u64, rules: &RuleSet) {
+        self.uninit_with_context(stable_id, UninitContext::with_rules(rules));
     }
 
     pub(crate) fn uninit_with_context(&mut self, stable_id: u64, context: UninitContext<'_>) {

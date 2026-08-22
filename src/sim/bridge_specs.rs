@@ -526,14 +526,17 @@ pub fn set_bridge_direction(span: &AnchorSpan, set: bool) -> SetBridgeDirectionR
 /// 2. Unconditionally, map `cell+0x38 - g_BridgeSet_TileSetBase + 1` against
 ///    three runtime tile-class constants and either call
 ///    `MapClass::ToggleBridgePavement` 0x0056E990 or
-///    `MapClass::FloodFillIsoTileType`. **Not modelled** — see
-///    `ramp_pavement_and_isotile_branch_is_unported` in
-///    `sim::bridge_state::tests`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///    `MapClass::FloodFillIsoTileType`. The damaged-TMP
+///    `ToggleBridgePavement` case is modelled below; the alternate iso-tile
+///    repaint remains the narrower residual pinned in bridge-state tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RampOutcome {
     /// True if the target cell's `damage_state` was mutated (target was an
     /// anchor and the `apply_ramp_transition` returned `Some`).
     pub state_changed: bool,
+    /// Exact pre-order cells whose TMP damaged selector changed through
+    /// `MapClass::ToggleBridgePavement @ 0x0056E990`.
+    pub damaged_variant_cells: Vec<(u16, u16)>,
 }
 
 /// Compute the perpendicular-walk direction for a body-driver UpdateRamp call.
@@ -580,6 +583,7 @@ pub fn update_ramp_perpendicular(
     if target_x < 0 || target_y < 0 {
         return RampOutcome {
             state_changed: false,
+            damaged_variant_cells: Vec::new(),
         };
     }
     let target_pos = (target_x as u16, target_y as u16);
@@ -588,6 +592,7 @@ pub fn update_ramp_perpendicular(
     let Some(target_cell) = state.cell(target_pos.0, target_pos.1).copied() else {
         return RampOutcome {
             state_changed: false,
+            damaged_variant_cells: Vec::new(),
         };
     };
 
@@ -600,6 +605,7 @@ pub fn update_ramp_perpendicular(
             let Some(target_axis) = target_cell.axis else {
                 return RampOutcome {
                     state_changed: false,
+                    damaged_variant_cells: Vec::new(),
                 };
             };
             let current_byte = target_cell.damage_state.to_state_byte(target_axis);
@@ -616,6 +622,7 @@ pub fn update_ramp_perpendicular(
                         None => {
                             return RampOutcome {
                                 state_changed: false,
+                                damaged_variant_cells: Vec::new(),
                             };
                         }
                     }
@@ -653,6 +660,7 @@ pub fn update_ramp_perpendicular(
         _ => {
             return RampOutcome {
                 state_changed: false,
+                damaged_variant_cells: Vec::new(),
             };
         }
     }
@@ -660,12 +668,15 @@ pub fn update_ramp_perpendicular(
     // Damaged-variant flood-fill: fires on any successful state-byte write
     // on an Anchor target. Composes with the new tile-class write — both
     // can fire on the same call.
-    if state_byte_changed {
-        let _ = state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain);
-    }
+    let damaged_variant_cells = if state_byte_changed {
+        state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain)
+    } else {
+        Vec::new()
+    };
 
     RampOutcome {
         state_changed: state_byte_changed || tile_class_changed,
+        damaged_variant_cells,
     }
 }
 

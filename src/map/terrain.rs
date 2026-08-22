@@ -82,12 +82,87 @@ pub enum TacticalInverseResult {
 ///   our_x = ts_x * (60/48) - (Size.X - 1) * 30
 ///   our_y = ts_y * (30/24) + (Size.X + 1) * 15
 ///   (both scale factors are 1.25)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LocalBounds {
     pub pixel_x: f32,
     pub pixel_y: f32,
     pub pixel_w: f32,
     pub pixel_h: f32,
+}
+
+/// Exact presentation projection of the current normalized MapClass
+/// playfield. Native `ComputeRadarMapBounds` enumerates mode-zero-valid cells;
+/// this mirrors that ownership instead of reconstructing a raw-header TS pixel
+/// rectangle. The extent is expressed in the flat (z=0) tile frame so terrain,
+/// overlays, radar events, viewport mapping, and click inverse share one space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayfieldPresentationGeometry {
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub world_width: f32,
+    pub world_height: f32,
+    pub valid_cell_count: usize,
+}
+
+impl PlayfieldPresentationGeometry {
+    /// Enumerate cells accepted by `MapClass::IsCellInPlayfield(0)` at
+    /// `0x00578460` and derive their isometric radar/scroll rectangle.
+    pub fn from_grid(
+        grid: &TerrainGrid,
+        bounds: crate::map::playfield::PlayfieldBounds,
+    ) -> Option<Self> {
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        let mut valid_cell_count = 0usize;
+
+        for cell in &grid.cells {
+            if !bounds.contains_geometry_packed(i32::from(cell.rx), i32::from(cell.ry)) {
+                continue;
+            }
+            let (sx, sy) = iso_to_screen(cell.rx, cell.ry, 0);
+            min_x = min_x.min(sx);
+            min_y = min_y.min(sy);
+            max_x = max_x.max(sx + TILE_WIDTH);
+            max_y = max_y.max(sy + TILE_HEIGHT);
+            valid_cell_count += 1;
+        }
+
+        (valid_cell_count != 0).then_some(Self {
+            origin_x: min_x,
+            origin_y: min_y,
+            world_width: max_x - min_x,
+            world_height: max_y - min_y,
+            valid_cell_count,
+        })
+    }
+
+    /// Adapt the exact tile-frame rectangle to the existing tactical clamp
+    /// convention. That clamp subtracts half a tile from its X anchor, so the
+    /// stored anchor is the leftmost tile centre while width/height remain the
+    /// exact enumerated extent.
+    pub fn camera_local_bounds(self) -> LocalBounds {
+        LocalBounds {
+            pixel_x: self.origin_x + TILE_WIDTH / 2.0,
+            pixel_y: self.origin_y,
+            pixel_w: self.world_width,
+            pixel_h: self.world_height,
+        }
+    }
+}
+
+impl TerrainGrid {
+    /// Install camera authority derived from the current normalized playfield.
+    /// `None` intentionally removes the raw-header approximation.
+    pub fn install_playfield_local_bounds(
+        &mut self,
+        bounds: Option<crate::map::playfield::PlayfieldBounds>,
+    ) {
+        self.local_bounds = bounds
+            .and_then(|bounds| PlayfieldPresentationGeometry::from_grid(self, bounds))
+            .map(PlayfieldPresentationGeometry::camera_local_bounds);
+    }
 }
 
 /// InitialHeight constant — Y padding at top for elevation headroom.

@@ -26,7 +26,7 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::ruleset::{CrateRules, RuleSet};
 use crate::rules::terrain_rules::LandType;
-use crate::sim::cell_rect::cell_is_in_playfield;
+use crate::sim::cell_rect::cell_is_in_playfield_height_aware;
 use crate::sim::find_nearby_cell::{NearbyQuery, PassabilityArgs, find_nearby_passable_cell};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
@@ -208,11 +208,10 @@ fn draw_one_crate_cell(sim: &mut Simulation, path_grid: Option<&PathGrid>) -> Op
             continue;
         };
         if cell == (0, 0)
-            || !cell_is_in_playfield(
+            || !cell_is_in_playfield_height_aware(
                 (i32::from(cell.0), i32::from(cell.1)),
                 sim.playfield_bounds,
                 sim.resolved_terrain.as_ref(),
-                Some((sim.session.map_width, sim.session.map_height)),
             )
         {
             continue;
@@ -274,7 +273,6 @@ fn snap_to_passable(
         occupancy: Some(&sim.substrate.occupancy),
         entities: Some(&sim.substrate.entities),
         zone_grid: sim.zone_grid.as_ref(),
-        map_size: Some((sim.session.map_width, sim.session.map_height)),
         playfield_bounds: sim.playfield_bounds,
     };
     find_nearby_passable_cell(
@@ -322,6 +320,16 @@ mod tests {
         sim.scenario_rng = crate::sim::rng::SimRng::new(seed);
         sim.session.map_width = MAP;
         sim.session.map_height = MAP;
+        // Production installs MapClass authority before Post_Map_Init reaches
+        // crate placement. Keep this focused fixture intentionally broad while
+        // exercising the same required mode-one gate.
+        sim.playfield_bounds = Some(PlayfieldBounds {
+            base: 0,
+            off_fc: -128,
+            off_100: -128,
+            off_104: 256,
+            off_108: 256,
+        });
         sim.session.game_options.crates = true;
         sim.overlay_grid = Some(OverlayGrid::new(MAP, MAP));
         sim.resolved_terrain = Some(uniform_terrain(false));

@@ -19,8 +19,10 @@ use crate::app::input::commands::{
 };
 use crate::app::input::context_order::try_queue_context_order_at_screen_point;
 use crate::app::input::entity_pick::{
-    SelectionMutation, compute_box_selection_snapshot, compute_click_selection_snapshot,
-    compute_type_select_box_mutation, compute_type_select_click_mutation, compute_type_select_tap,
+    SelectionMutation, compute_box_selection_snapshot_with_playfield,
+    compute_click_selection_snapshot_with_playfield,
+    compute_type_select_box_mutation_with_playfield,
+    compute_type_select_click_mutation_with_playfield, compute_type_select_tap_with_playfield,
     map_entity_creation_order, pick_entity_at_point,
 };
 use crate::app::input::hotkeys::{HotkeyCommand, HotkeyFallback, HotkeyResolution};
@@ -292,7 +294,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     Some(&sim.interner),
                                 );
                                 queued_selection = if let Some(clicked_id) = picked {
-                                    Some(compute_type_select_click_mutation(
+                                    Some(compute_type_select_click_mutation_with_playfield(
                                         sim.entities(),
                                         scope_order,
                                         &current_selection,
@@ -301,9 +303,10 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                         preferred_local_owner_name(state).as_deref(),
                                         state.rules(),
                                         Some(&sim.interner),
+                                        sim.playfield_bounds.is_some(),
                                     ))
                                 } else {
-                                    compute_click_selection_snapshot(
+                                    compute_click_selection_snapshot_with_playfield(
                                         sim.entities(),
                                         &screen_order,
                                         &current_selection,
@@ -318,11 +321,12 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                         &state.height_map(),
                                         Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
                                         Some(&sim.interner),
+                                        sim.playfield_bounds.is_some(),
                                     )
                                 };
                                 held_type_select_batch = true;
                             } else {
-                                queued_selection = compute_click_selection_snapshot(
+                                queued_selection = compute_click_selection_snapshot_with_playfield(
                                     sim.entities(),
                                     &screen_order,
                                     &current_selection,
@@ -337,6 +341,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     &state.height_map(),
                                     Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
                                     Some(&sim.interner),
+                                    sim.playfield_bounds.is_some(),
                                 );
                             }
                         }
@@ -354,7 +359,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                 max_y / z + state.match_state.input.camera_y,
                             );
                             if held_type_select {
-                                queued_selection = Some(compute_type_select_box_mutation(
+                                queued_selection = Some(compute_type_select_box_mutation_with_playfield(
                                     sim.entities(),
                                     &screen_order,
                                     scope_order,
@@ -368,13 +373,14 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     shift,
                                     state.rules(),
                                     Some(&sim.interner),
+                                    sim.playfield_bounds.is_some(),
                                 ));
                                 held_type_select_batch = true;
                             } else {
                                 let preflight_order = band_preflight_order
                                     .as_deref()
                                     .unwrap_or(screen_order.as_slice());
-                                queued_selection = compute_box_selection_snapshot(
+                                queued_selection = compute_box_selection_snapshot_with_playfield(
                                     sim.entities(),
                                     preflight_order,
                                     &screen_order,
@@ -389,6 +395,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     state.rules(),
                                     Some(&sim.houses),
                                     Some(&sim.interner),
+                                    sim.playfield_bounds.is_some(),
                                 );
                             }
                         }
@@ -1092,7 +1099,7 @@ fn execute_type_select_tap(state: &mut AppState) {
         let map_order = map_entity_creation_order(sim.entities());
         let current = selected_stable_ids_in_order(state);
         let fog = (!state.match_state.sandbox_full_visibility).then_some(&sim.fog);
-        compute_type_select_tap(
+        compute_type_select_tap_with_playfield(
             sim.entities(),
             &screen_order,
             &map_order,
@@ -1102,6 +1109,7 @@ fn execute_type_select_tap(state: &mut AppState) {
             state.rules(),
             Some(&sim.interner),
             state.match_state.input.type_select.across_map,
+            sim.playfield_bounds.is_some(),
         )
     };
     let outcome = result.outcome;
@@ -1167,11 +1175,23 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         HotkeyCommand::ToggleSell => apply_sidebar_action(state, SidebarAction::ToggleSellMode),
         HotkeyCommand::CenterBase => jump_camera_to_base(state),
         HotkeyCommand::CenterOnRadarEvent => {
+            // Native's eight-cell review ring lives in RadarClass. Prefer the
+            // client-local EnemyObjectSensed history, then retain the older
+            // sim queue for event types whose producers have not migrated.
             let event = state
-                .match_state.sim_runtime
+                .match_state
+                .match_presentation
+                .minimap
                 .as_mut()
-                .map(|rt| &mut rt.simulation)
-                .and_then(|sim| sim.cycle_radar_event());
+                .and_then(|minimap| minimap.cycle_enemy_sensed_event(std::time::Instant::now()))
+                .or_else(|| {
+                    state
+                        .match_state
+                        .sim_runtime
+                        .as_mut()
+                        .map(|rt| &mut rt.simulation)
+                        .and_then(|sim| sim.cycle_radar_event())
+                });
             if let Some((rx, ry)) = event {
                 crate::app::input::camera::center_camera_on_cell(state, rx, ry);
             }
@@ -1766,6 +1786,10 @@ fn commit_prepared_load(
     if let Some(minimap) = state.match_state.match_presentation.minimap.as_mut() {
         minimap.mark_stale();
     }
+    state
+        .match_state
+        .match_presentation
+        .installed_playfield_authority = None;
 
     // Rebuild sprite/unit atlases so all entity types in the loaded save have
     // atlas entries before the first render frame.

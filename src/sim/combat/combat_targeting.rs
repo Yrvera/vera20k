@@ -115,6 +115,7 @@ pub fn acquire_best_target_for_entity(
     attacker_id: u64,
     fog: Option<&FogState>,
     terrain: Option<&ResolvedTerrainGrid>,
+    require_playfield_membership: bool,
 ) -> Option<u64> {
     let entity = entities.get(attacker_id)?;
     // Aircraft with 0 ammo should not acquire new targets — need to reload.
@@ -163,6 +164,7 @@ pub fn acquire_best_target_for_entity(
     };
     acquire_best_target(
         entities, rules, interner, &snapshot, obj, fog, None, terrain,
+        require_playfield_membership,
     )
 }
 
@@ -264,6 +266,7 @@ pub(crate) fn acquire_best_target(
     fog: Option<&FogState>,
     scan_range_override: Option<SimFixed>,
     terrain: Option<&ResolvedTerrainGrid>,
+    require_playfield_membership: bool,
 ) -> Option<u64> {
     let mut best: Option<(i64, u8, u64)> = None;
 
@@ -284,6 +287,12 @@ pub(crate) fn acquire_best_target(
             continue;
         }
         if candidate.health.current == 0 || candidate.dying {
+            continue;
+        }
+        // `TechnoClass::Evaluate_Candidate @ 0x006F7DB0` rejects a candidate
+        // whose stored TechnoClass+0x3D5 byte is false. A live MapClass caller
+        // enables this explicitly; headless fixtures retain their old behavior.
+        if require_playfield_membership && !candidate.in_playfield {
             continue;
         }
         // Skip entities inside a transport — they are hidden from the battlefield.

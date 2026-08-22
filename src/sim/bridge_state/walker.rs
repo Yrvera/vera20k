@@ -378,10 +378,12 @@ impl BridgeRuntimeState {
         }
 
         for &(rx, ry) in &touched {
-            let _ = self.apply_damaged_variant_flood_fill(rx, ry, false, terrain);
+            let damaged_variant_cells =
+                self.apply_damaged_variant_flood_fill(rx, ry, false, terrain);
+            super::extend_unique_cells(&mut outcome.radar_cells, damaged_variant_cells);
         }
         if matches!(prior_overlay, 0x64 | 0x65 | 0xE7 | 0xE8) {
-            outcome.radar_cells.extend(touched.iter().copied());
+            super::extend_unique_cells(&mut outcome.radar_cells, touched.iter().copied());
         }
         for span_id in spans {
             self.sync_anchor_span_damage_state(span_id);
@@ -972,7 +974,9 @@ impl BridgeRuntimeState {
         if !is_final && destroyed.is_empty() {
             // Intermediate transition only — overlay/damage_state changed
             // but no cell hit final. Caller treats this as "absorbed".
-            return StateOutcome::Absorbed;
+            return StateOutcome::Absorbed {
+                damaged_variant_cells: Vec::new(),
+            };
         }
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::NS);
@@ -983,6 +987,7 @@ impl BridgeRuntimeState {
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,
+            damaged_variant_cells: Vec::new(),
         }
     }
 
@@ -1068,7 +1073,9 @@ impl BridgeRuntimeState {
         }
 
         if !is_final && destroyed.is_empty() {
-            return StateOutcome::Absorbed;
+            return StateOutcome::Absorbed {
+                damaged_variant_cells: Vec::new(),
+            };
         }
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::EW);
@@ -1079,6 +1086,7 @@ impl BridgeRuntimeState {
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,
+            damaged_variant_cells: Vec::new(),
         }
     }
 
@@ -1372,7 +1380,9 @@ impl BridgeRuntimeState {
         }
 
         if !is_final && destroyed.is_empty() {
-            return StateOutcome::Absorbed;
+            return StateOutcome::Absorbed {
+                damaged_variant_cells: Vec::new(),
+            };
         }
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::NS);
@@ -1383,6 +1393,7 @@ impl BridgeRuntimeState {
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,
+            damaged_variant_cells: Vec::new(),
         }
     }
 
@@ -1475,7 +1486,9 @@ impl BridgeRuntimeState {
         }
 
         if !is_final && destroyed.is_empty() {
-            return StateOutcome::Absorbed;
+            return StateOutcome::Absorbed {
+                damaged_variant_cells: Vec::new(),
+            };
         }
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::EW);
@@ -1486,6 +1499,7 @@ impl BridgeRuntimeState {
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,
+            damaged_variant_cells: Vec::new(),
         }
     }
 }
@@ -1916,7 +1930,7 @@ mod tests {
         let terrain = empty_terrain();
         let outcome = state.destroy_bridge_walker_ns_high(2, 1, &terrain);
         assert!(
-            matches!(outcome, StateOutcome::Absorbed),
+            matches!(outcome, StateOutcome::Absorbed { .. }),
             "no perpendicular pattern → no sibling collapse → Absorbed; got {:?}",
             outcome
         );
@@ -2152,7 +2166,7 @@ mod tests {
         }
         let terrain = empty_terrain();
         let outcome = state.destroy_bridge_walker_ns_low(2, 1, &terrain);
-        assert!(matches!(outcome, StateOutcome::Absorbed));
+        assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
         for y in 0..3 {
             let c = state.cell(2, y).unwrap();
             assert_eq!(c.overlay_byte, 0x50);
@@ -2182,7 +2196,7 @@ mod tests {
         );
 
         let outcome = state.destroy_bridge_walker_ns_low(2, 1, &empty_terrain());
-        assert!(matches!(outcome, StateOutcome::Absorbed));
+        assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
         assert_eq!(
             state.take_overlay_projection_ops(),
             projection_ops(
@@ -2197,7 +2211,7 @@ mod tests {
             seed_low_body_cell(&mut ew, x, 2, Axis::EW, 0x53);
         }
         let outcome = ew.destroy_bridge_walker_ew_low(1, 2, &empty_terrain());
-        assert!(matches!(outcome, StateOutcome::Absorbed));
+        assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
         assert_eq!(
             ew.take_overlay_projection_ops(),
             projection_ops(
@@ -2338,7 +2352,7 @@ mod tests {
 
         let first = state.destroy_bridge_low(2, 1, &terrain);
         assert!(
-            matches!(first, StateOutcome::Absorbed),
+            matches!(first, StateOutcome::Absorbed { .. }),
             "healthy low bridge hit must be an intermediate damage transition"
         );
         for y in 0..3 {
@@ -2559,7 +2573,7 @@ mod tests {
         }
         let terrain = empty_terrain();
         let outcome = state.destroy_bridge_low(2, 1, &terrain);
-        assert!(matches!(outcome, StateOutcome::Absorbed));
+        assert!(matches!(outcome, StateOutcome::Absorbed { .. }));
         for y in 0..3 {
             assert_eq!(state.cell(2, y).unwrap().overlay_byte, 0x50);
         }
@@ -2576,7 +2590,7 @@ mod tests {
         let terrain = empty_terrain();
         let outcome = state.destroy_bridge_high(2, 1, &terrain);
         assert!(
-            matches!(outcome, StateOutcome::Absorbed),
+            matches!(outcome, StateOutcome::Absorbed { .. }),
             "Task 7 wires real NS walker; expected Absorbed got {:?}",
             outcome,
         );

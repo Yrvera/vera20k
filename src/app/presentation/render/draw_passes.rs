@@ -622,20 +622,6 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
-        state.match_state.match_presentation.minimap.as_ref().map(|m| m.map_texture()),
-        "minimap",
-    );
-    draw_pooled_ui(
-        &mut pass,
-        &state.renderer.batch_renderer,
-        pool,
-        state.match_state.match_presentation.minimap.as_ref().map(|m| m.white_texture()),
-        "viewport_rect",
-    );
-    draw_pooled_ui(
-        &mut pass,
-        &state.renderer.batch_renderer,
-        pool,
         state.match_state.match_presentation.minimap.as_ref().map(|m| m.white_texture()),
         "sidebar",
     );
@@ -645,13 +631,6 @@ pub(super) fn dispatch_draw_passes(
         pool,
         current_sidebar_chrome_texture(state),
         "sidebar_chrome",
-    );
-    draw_pooled_ui(
-        &mut pass,
-        &state.renderer.batch_renderer,
-        pool,
-        state.match_state.match_presentation.radar_anim.as_ref().map(|ra| ra.texture()),
-        "radar_anim",
     );
     draw_pooled_ui(
         &mut pass,
@@ -687,6 +666,40 @@ pub(super) fn dispatch_draw_passes(
         pool,
         Some(state.renderer.bit_font.atlas()),
         "sidebar_text",
+    );
+
+    // SidebarClass::Draw @ 0x006A6C30 paints background, gadgets, strip, and
+    // power before PowerClass::Draw reaches RadarClass::Draw @ 0x00653100.
+    // Radar state/chrome preparation then precedes Update @ 0x00656EC0, whose
+    // content blit, viewport rectangle, and generated-content boundary are the
+    // final retained radar writes in that order.
+    draw_pooled_ui(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        state.match_state.match_presentation.radar_anim.as_ref().map(|ra| ra.texture()),
+        "radar_anim",
+    );
+    draw_pooled_ui(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        state.match_state.match_presentation.minimap.as_ref().map(|m| m.map_texture()),
+        "minimap",
+    );
+    draw_pooled_ui(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        state.match_state.match_presentation.minimap.as_ref().map(|m| m.white_texture()),
+        "viewport_rect",
+    );
+    draw_pooled_ui(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        state.match_state.match_presentation.minimap.as_ref().map(|m| m.white_texture()),
+        "radar_content_boundary",
     );
     draw_pooled_ui(
         &mut pass,
@@ -924,5 +937,71 @@ mod tests {
         assert!(tactical_scissor < sparkle);
         assert!(sparkle < full_window_scissor);
         assert!(SOURCE[sparkle..full_window_scissor].contains("draw_with_buffer_passthrough"));
+    }
+
+    #[test]
+    fn gsi_04_01_retained_sidebar_radar_subpass_ends_with_content_boundary() {
+        let sidebar = source_offset("\"sidebar\"");
+        let chrome = source_offset("\"sidebar_chrome\"");
+        let cameo = source_offset("\"sidebar_cameo\"");
+        let gclock = source_offset("\"sidebar_gclock\"");
+        let cameo_overlay = source_offset("\"sidebar_cameo_overlay\"");
+        let sidebar_text = source_offset("\"sidebar_text\"");
+        let radar_anim = source_offset("\"radar_anim\"");
+        let minimap = source_offset("\"minimap\"");
+        let viewport = source_offset("\"viewport_rect\"");
+        let boundary = source_offset("\"radar_content_boundary\"");
+        let message = source_offset("\"message_text\"");
+
+        assert!(sidebar < chrome);
+        assert!(chrome < cameo);
+        assert!(cameo < gclock);
+        assert!(gclock < cameo_overlay);
+        assert!(cameo_overlay < sidebar_text);
+        assert!(sidebar_text < radar_anim);
+        assert!(radar_anim < minimap);
+        assert!(minimap < viewport);
+        assert!(viewport < boundary);
+        assert!(boundary < message);
+
+        // An oversize native viewport edge may leave the 140x108 aperture but
+        // still remain inside g_SidebarSurface. No later retained-sidebar or
+        // radar batch may repaint that accepted line before the screen-overlay
+        // strata begin.
+        let retained_tail = &SOURCE[boundary..message];
+        for later_retained_batch in [
+            "\"sidebar\"",
+            "\"sidebar_chrome\"",
+            "\"sidebar_cameo\"",
+            "\"sidebar_gclock\"",
+            "\"sidebar_cameo_overlay\"",
+            "\"sidebar_text\"",
+            "\"radar_anim\"",
+            "\"minimap\"",
+            "\"viewport_rect\"",
+        ] {
+            assert!(
+                !retained_tail.contains(later_retained_batch),
+                "{later_retained_batch} must not overwrite the final radar outline"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_01_tooltip_and_cursor_remain_after_the_retained_sidebar_surface() {
+        let viewport = source_offset("\"viewport_rect\"");
+        let boundary = source_offset("\"radar_content_boundary\"");
+        let message = source_offset("\"message_text\"");
+        let tooltip_fill = source_offset("\"tooltip_fill\"");
+        let tooltip_text = source_offset("\"tooltip_text\"");
+        let screenshot_boundary = source_offset("stage_pre_cursor_composition");
+        let cursor = source_offset("\"software_cursor\"");
+
+        assert!(viewport < boundary);
+        assert!(boundary < message);
+        assert!(message < tooltip_fill);
+        assert!(tooltip_fill < tooltip_text);
+        assert!(tooltip_text < screenshot_boundary);
+        assert!(screenshot_boundary < cursor);
     }
 }

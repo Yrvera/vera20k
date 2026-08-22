@@ -56,6 +56,7 @@ pub(super) fn handle_blocked_tick(
     path_stuck_init: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
     skip_grace_period: bool,
     close_enough_abort: bool,
     marker_context: Option<BridgeMarkerContext<'_>>,
@@ -186,6 +187,7 @@ pub(super) fn handle_blocked_tick(
         urgency,
         mover_is_crusher,
         is_infantry,
+        allow_zone_hierarchy,
         marker_search.as_ref(),
     );
     if repath_ok {

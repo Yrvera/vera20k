@@ -398,6 +398,17 @@ pub struct GameEntity {
     /// Independent, serialized ObjectClass lifecycle facts.
     #[serde(default)]
     pub lifecycle: ObjectLifecycle,
+    /// Canonical TechnoClass playfield-membership byte (`TechnoClass+0x3D5`).
+    ///
+    /// gamemd-derived: the constructor clears it at `0x006F2F5B`, Unlimbo
+    /// establishes an exact mode-one result at `0x006F6CFE`, ordinary cell
+    /// movement promotes false to true without normally demoting it at
+    /// `0x006F511A..0x006F5139`, teleport arrival can clear it at `0x00719A99`,
+    /// and `MapClass::Set_Clipped_LocalSize @ 0x00567230` recomputes every
+    /// Techno exactly after a LocalSize writer. Consumers must read this stored
+    /// fact; a fresh bounds query would erase the native movement hysteresis.
+    #[serde(default)]
+    pub in_playfield: bool,
     /// Explicit represented type fact for the native type `+0xAC` tactical-dirty
     /// branch. False unless a caller has positive evidence; never inferred from
     /// category or render representation.
@@ -527,6 +538,11 @@ pub struct GameEntity {
     /// Evidence-bounded native cloak transition state and visual producer values.
     #[serde(default)]
     pub cloak: Option<CloakRuntime>,
+    /// Last sensor coverage actually deposited into CellClass counters.
+    /// Removal must use these cached owner/location/radius values after the
+    /// entity's current facts have changed.
+    #[serde(default)]
+    pub sensor_deposit: Option<crate::sim::sensor_lifecycle::SensorDeposit>,
     /// Core disguise identity, timestamp, and reveal tuple.
     #[serde(default)]
     pub disguise: Option<DisguiseRuntime>,
@@ -1001,6 +1017,7 @@ impl GameEntity {
             repairing: false,
             in_logic_vector: false,
             lifecycle: ObjectLifecycle::default(),
+            in_playfield: false,
             dirty_rect_eligible: false,
             occupier: false,
             owned_count_released: false,
@@ -1038,6 +1055,7 @@ impl GameEntity {
             slave_harvester: None,
             order_intent: None,
             cloak: None,
+            sensor_deposit: None,
             disguise: None,
             teleport_state: None,
             tunnel_state: None,
@@ -1329,6 +1347,10 @@ mod tests {
         assert!(e.order_intent.is_none());
         assert!(!e.building_damage_state_active);
         assert!(!e.on_bridge);
+        assert!(
+            !e.in_playfield,
+            "TechnoClass ctor @ 0x006F2F5B initializes +0x3D5 false"
+        );
     }
 
     #[test]

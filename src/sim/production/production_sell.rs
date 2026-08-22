@@ -441,7 +441,7 @@ fn place_garrison_passenger_at_cell(
     // remaining field writes. change_owner is a no-op if the id is absent —
     // the get_mut below still guards absence.
     if let Some(owner) = owner_override {
-        sim.change_owner(passenger_id, owner);
+        sim.change_owner_with_rules(passenger_id, owner, rules);
     }
     let Some(pax_sub_cell) = sim
         .substrate
@@ -759,7 +759,7 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     {
         crate::sim::docking::bunker_link::release_sell_destroy(sim, stable_id);
     }
-    sim.uninit(stable_id);
+    sim.uninit_with_context(stable_id, UninitContext::with_rules(rules));
     let owner_id = sim.interner.intern(&owner_name);
     // Refresh superweapon grants — sold building may have been providing a SW.
     if sim.session.game_options.super_weapons {

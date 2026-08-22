@@ -339,12 +339,9 @@ fn find_spawn_cell_near_structure(
 /// 1x1 passability + occupancy (reservations always SKIPPED), bridges allowed (the spawn
 /// path does not forbid bridge cells), required-height `-1`, frame-counter selection
 /// (no target). `require_water` routes the movement zone so naval units search water.
-/// `map_size` is left `None`; when the map's `playfield_bounds` diamond is available
-/// (live games — set at map init) the occupancy playfield-corner check uses the exact
-/// isometric diamond, otherwise it falls back to the resolved-terrain extent as the
-/// retired box-ring's per-candidate predicate did. The diamond REJECTS off-diamond
-/// border-filler corner cells the rectangle fallback accepted — that is the
-/// engine-faithful behavior this wiring exists to restore.
+/// Live games thread the final normalized `playfield_bounds` fields into the exact
+/// isometric corner query. Missing fields reject candidates; there is no terrain-
+/// rectangle replacement for active `MapClass::IsRectInPlayfield @ 0x00578390`.
 #[allow(clippy::too_many_arguments)]
 fn nearby_query_for_spawn<'a>(
     movement_profile: SpawnMovementProfile,
@@ -383,7 +380,6 @@ fn nearby_query_for_spawn<'a>(
         occupancy: Some(occupancy),
         entities: Some(entities),
         zone_grid,
-        map_size: None,
         playfield_bounds,
     }
 }
@@ -458,6 +454,7 @@ fn nearest_walkable_around(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
+    playfield_bounds: crate::sim::cell_rect::PlayfieldBounds,
     require_water: bool,
 ) -> Option<(u16, u16)> {
     let cx = center.0 as i32;
@@ -480,6 +477,7 @@ fn nearest_walkable_around(
                 resolved_terrain,
                 overlay_grid,
                 zone_grid,
+                playfield_bounds,
                 require_water,
             ) && cell_available_for_spawn(
                 top,
@@ -500,6 +498,7 @@ fn nearest_walkable_around(
                 resolved_terrain,
                 overlay_grid,
                 zone_grid,
+                playfield_bounds,
                 require_water,
             ) && cell_available_for_spawn(
                 bot,
@@ -522,6 +521,7 @@ fn nearest_walkable_around(
                 resolved_terrain,
                 overlay_grid,
                 zone_grid,
+                playfield_bounds,
                 require_water,
             ) && cell_available_for_spawn(
                 left,
@@ -542,6 +542,7 @@ fn nearest_walkable_around(
                 resolved_terrain,
                 overlay_grid,
                 zone_grid,
+                playfield_bounds,
                 require_water,
             ) && cell_available_for_spawn(
                 right,
@@ -611,6 +612,7 @@ fn spawn_fallback_candidate_passable(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
+    playfield_bounds: crate::sim::cell_rect::PlayfieldBounds,
     require_water: bool,
 ) -> bool {
     if !spawn_cell_passable(grid, cell, resolved_terrain, require_water) {
@@ -642,8 +644,7 @@ fn spawn_fallback_candidate_passable(
         terrain_object_cells: None,
         resolved_terrain,
         overlay_grid,
-        map_size: None,
-        playfield_bounds: None,
+        playfield_bounds: Some(playfield_bounds),
     })
 }
 
@@ -912,6 +913,16 @@ mod tests {
         ResolvedTerrainGrid::from_cells(width, height, cells)
     }
 
+    fn test_playfield_bounds() -> crate::sim::cell_rect::PlayfieldBounds {
+        crate::sim::cell_rect::PlayfieldBounds {
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
+        }
+    }
+
     #[test]
     fn nearby_fallback_uses_cellrect_occupancy_blockers() {
         let mut terrain = flat_terrain(3, 3);
@@ -935,6 +946,7 @@ mod tests {
             Some(&terrain),
             None,
             None,
+            test_playfield_bounds(),
             false,
         );
 
@@ -980,8 +992,7 @@ mod tests {
             occupancy: Some(&occupancy),
             entities: Some(&entities),
             zone_grid: None,
-            map_size: Some((terrain.width(), terrain.height())),
-            playfield_bounds: None,
+            playfield_bounds: Some(test_playfield_bounds()),
         };
 
         let fnpc = find_nearby_passable_cell((3, 3), &q, 0).expect("FNPC finds a cell");
@@ -996,6 +1007,7 @@ mod tests {
                 Some(&terrain),
                 None,
                 None,
+                test_playfield_bounds(),
                 false,
             ) && cell_available_for_spawn(
                 fnpc,
@@ -1036,6 +1048,7 @@ mod tests {
             Some(&terrain),
             None,
             None,
+            test_playfield_bounds(),
             false,
         ));
 
@@ -1049,8 +1062,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(test_playfield_bounds()),
         });
         assert!(facade_ok);
     }
@@ -1080,6 +1092,7 @@ mod tests {
             Some(&terrain),
             None,
             None,
+            test_playfield_bounds(),
             false,
         );
         // Same authoritative first-match the legacy ring produced (no behavior flip).

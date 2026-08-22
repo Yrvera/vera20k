@@ -17,6 +17,7 @@ mod lifecycle;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
+pub(crate) mod techno_ai_cloak;
 pub(crate) mod unit_post;
 mod world_commands;
 mod world_hash;
@@ -62,7 +63,7 @@ use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
 use crate::sim::combat;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::components::WorldEffect;
+use crate::sim::components::{Position, WorldEffect};
 use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
@@ -314,6 +315,9 @@ pub(crate) struct TriggerInputs<'a> {
     pub triggers: &'a TriggerMap,
     pub events: &'a EventMap,
     pub actions: &'a ActionMap,
+    /// Bound match rules used by action callbacks that share ordinary Techno
+    /// runtime calculations (not reparsed or substituted by trigger data).
+    pub rules: Option<&'a RuleSet>,
 }
 
 #[cfg(test)]
@@ -418,6 +422,17 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
+    /// `TechnoClass::StartUncloaking @ 0x007036C0` accepted an arg-zero
+    /// state-1/2 transition and called positional `VocClass::PlayAt @
+    /// 0x007509E0` with `[AudioVisual] CloakSound` at the Techno world coord.
+    CloakSound {
+        sound_id: String,
+        rx: u16,
+        ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
+        world_z_leptons: i32,
+    },
     /// A base structure / harvester took enemy damage — the radar ping is
     /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
     /// result (the BridgeRepaired pattern). App gates the EVA voice to the
@@ -487,6 +502,22 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         z: u8,
     },
+}
+
+impl SimSoundEvent {
+    pub(crate) fn cloak_sound(sound_id: String, position: &Position) -> Self {
+        Self::CloakSound {
+            sound_id,
+            rx: position.rx,
+            ry: position.ry,
+            sub_x: position.sub_x,
+            sub_y: position.sub_y,
+            world_z_leptons: position.exact_z_leptons.unwrap_or_else(|| {
+                i32::from(position.z)
+                    .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
+            }),
+        }
+    }
 }
 
 /// A fire event produced during combat — carries firing-tick facts for
@@ -753,6 +784,17 @@ pub struct Simulation {
     /// rectangle). `None` only in headless tests with no map loaded.
     #[serde(default)]
     pub playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+    /// Immutable signed `[Map] Size=` height retained for later LocalSize
+    /// normalization. The live predicate needs only Size width, but action 40
+    /// can rewrite the four LocalSize dwords repeatedly during a scenario.
+    #[serde(default)]
+    pub(crate) playfield_size_height: Option<i32>,
+    /// Monotonic visible-area writer generation. Every successful trigger
+    /// action 0x28 advances it, even when two writers normalize to the same
+    /// bounds. Presentation consumes this as the global radar/scroll rebuild
+    /// edge; cell-local bridge dirtiness is deliberately a separate channel.
+    #[serde(default)]
+    pub(crate) playfield_revision: u64,
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
@@ -769,8 +811,9 @@ pub struct Simulation {
     #[serde(skip)]
     pub radar_events: RadarEventQueue,
     /// Runtime terrain cells whose radar/minimap terrain pixel needs refresh.
-    /// Render reads this generation without mutating sim; the list is small and
-    /// de-duplicated at emission.
+    /// Presentation reads this generation and acknowledges the exact batch
+    /// only after its radar update completes. The list is de-duplicated within
+    /// that pending update window, then cleared so the same cell can re-arm.
     #[serde(skip)]
     pub radar_terrain_dirty_cells: Vec<(u16, u16)>,
     #[serde(skip)]
@@ -1192,7 +1235,7 @@ impl Simulation {
         category: EntityCategory,
         terrain: Option<&ResolvedTerrainGrid>,
     ) {
-        let uninit_context = UninitContext::with_terrain(terrain);
+        let uninit_context = UninitContext::with_terrain_and_rules(terrain, rules);
         match stage {
             crate::sim::combat::FatalLifecycleStage::MaintainDamageSmoke { state } => {
                 self.maintain_damage_smoke_after_receive(stable_id, state, rules);
@@ -1304,6 +1347,10 @@ impl Simulation {
         let current_tick = u64::from(self.session.binary_frame);
         let binary_frame = self.session.binary_frame;
         let scenario_no_damage = self.session.no_damage;
+        // Active YR TechnoClass::Evaluate_Candidate @ 0x006F7DB0 reads the
+        // candidate's stored Techno+0x3D5 flag at 0x006F7DF1. Only a live
+        // MapClass authority makes that native admission rule applicable.
+        let require_playfield_membership = self.playfield_bounds.is_some();
 
         let combat_result = {
             let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
@@ -1325,6 +1372,7 @@ impl Simulation {
                 resolved_terrain.as_mut(),
                 bridge_state.as_ref(),
                 scenario_no_damage,
+                require_playfield_membership,
                 current_tick,
                 tick_ms,
                 binary_frame,
@@ -1365,6 +1413,7 @@ impl Simulation {
         self.merge_receiver_anger_state(&houses);
         let mut combat_result = combat_result;
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
+        self.mark_wall_mutations_radar_dirty(&combat_result.wall_mutations);
         combat_result
     }
 
@@ -1660,6 +1709,15 @@ impl Simulation {
         under_attack_events: Vec<crate::sim::combat::UnderAttackEvent>,
         terrain_navigation_changed_cells: Vec<(u16, u16)>,
     ) {
+        // gamemd-derived: `BulletClass::AI @ 0x004666E0` reaches
+        // `CellClass::DestroyOverlay @ 0x00480CB0` inside the Bullet's Logic
+        // slot, where terminal removal calls `MarkTerrainDirty @ 0x004807C2`
+        // synchronously. Combat owns the detached overlay mutation; this is the
+        // first restored-world consumer of `DeathEffects`. The caller's earlier
+        // shrapnel admission preserves Detonate's shrapnel-before-DamageArea
+        // ordering; publish the trace before consuming later death effects.
+        self.mark_wall_mutations_radar_dirty(&effects.wall_mutations);
+
         let dead_infos: Vec<(InternedId, EntityCategory)> = effects
             .despawned_ids
             .iter()
@@ -1685,7 +1743,7 @@ impl Simulation {
                 crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
             }
             self.release_move_sound(dead_id);
-            self.uninit(dead_id);
+            self.uninit_with_rules(dead_id, rules);
         }
 
         let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events_with_overlay_registry(
@@ -2004,6 +2062,8 @@ impl Simulation {
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,
+            playfield_size_height: None,
+            playfield_revision: 0,
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),
@@ -2599,13 +2659,14 @@ impl Simulation {
     }
 
     /// Advance map triggers by one tick. Uses `std::mem::take` to avoid
-    /// self-borrow conflict (advance reads entity/interner state via `&Simulation`).
+    /// self-borrow conflict while actions read and mutate Simulation authority.
     fn advance_triggers(
         &mut self,
         graph: &TriggerGraph,
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
+        rules: Option<&RuleSet>,
     ) -> Vec<TriggerEffect> {
         let mut rt = std::mem::take(&mut self.trigger_runtime);
         let effects = rt.advance_at_frame(
@@ -2615,15 +2676,235 @@ impl Simulation {
             events,
             actions,
             Some(self),
+            rules,
         );
         self.trigger_runtime = rt;
         effects
     }
 
+    /// Install the initial normalized MapClass playfield authority.
+    ///
+    /// `MapClass::Set_Clipped_LocalSize @ 0x00567230` establishes the five
+    /// predicate fields. Size height is retained separately because later
+    /// action-40 writers normalize another raw LocalSize against the same Size.
+    pub(crate) fn install_playfield_from_map_header(
+        &mut self,
+        header: &crate::map::map_file::MapHeader,
+    ) {
+        self.playfield_size_height = Some(header.height as i32);
+        self.playfield_bounds = Some(
+            crate::sim::cell_rect::PlayfieldBounds::from_map_header(header),
+        );
+        self.playfield_revision = 0;
+    }
+
+    /// Apply YR trigger action 0x28's mutable visible-map-area authority.
+    ///
+    /// `FUN_006E21E0` writes LocalSize, normalizes it, recalculates all cells,
+    /// rebuilds zone connectivity/all levels, and refreshes radar before it
+    /// returns to `TriggerAction__Execute @ 0x006DD8B0`. Rust performs every
+    /// corresponding owned update synchronously here, so later actions and
+    /// the same master frame observe one coherent authority.
+    pub(crate) fn change_visible_map_area(
+        &mut self,
+        raw_local_size: [i32; 4],
+        rules: Option<&RuleSet>,
+    ) -> bool {
+        let (Some(current), Some(size_height)) =
+            (self.playfield_bounds, self.playfield_size_height)
+        else {
+            // A live scenario always has MapClass Size authority. Headless
+            // fixtures without a map must not invent a rectangular fallback.
+            return false;
+        };
+        let bounds = crate::sim::cell_rect::PlayfieldBounds::from_raw_local_size(
+            current.base,
+            size_height,
+            raw_local_size,
+        );
+        self.playfield_bounds = Some(bounds);
+        // FUN_006E21E0 runs the complete radar-surface rebuild on every
+        // execution. Do not deduplicate equal normalized writers.
+        self.playfield_revision = self.playfield_revision.wrapping_add(1);
+
+        // `MapClass::Set_Clipped_LocalSize @ 0x00567230` exact-recomputes the
+        // canonical TechnoClass+0x3D5 byte for every represented Techno. This
+        // must precede later action consumers and may both demote and promote;
+        // ordinary per-cell movement's writer is deliberately only 0 -> 1.
+        let membership_updates = self
+            .substrate
+            .entities
+            .keys_sorted()
+            .into_iter()
+            .filter_map(|stable_id| {
+                let entity = self.substrate.entities.get(stable_id)?;
+                let member = crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                    (i32::from(entity.position.rx), i32::from(entity.position.ry)),
+                    Some(bounds),
+                    self.resolved_terrain.as_ref(),
+                );
+                let reveal = !entity.in_playfield
+                    && member
+                    && entity.lifecycle.object_alive
+                    && !entity.lifecycle.in_limbo
+                    && !entity.dying
+                    && entity.health.current > 0
+                    && entity.category != EntityCategory::Structure
+                    && self
+                        .houses
+                        .get(&entity.owner)
+                        .is_some_and(|house| house.is_human);
+                Some((stable_id, member, reveal))
+            })
+            .collect::<Vec<_>>();
+        for &(stable_id, member, _) in &membership_updates {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.in_playfield = member;
+            }
+        }
+        // FUN_006E21E0's false->true callback is the Techno reveal/update
+        // virtual (`0x0070ADC0`), only for human-owned live nonlimbo mobiles;
+        // Buildings are explicitly excluded. Rust's owned equivalent commits
+        // the sight reveal immediately, before this action returns.
+        let reveal_config = crate::sim::vision::VisionConfig {
+            require_playfield_membership: true,
+            veteran_sight_bonus: rules.map_or(0, |rules| rules.general.veteran_sight),
+            leptons_per_sight_increase: rules
+                .map_or(0, |rules| rules.general.leptons_per_sight_increase),
+            reveal_by_height: rules.is_none_or(|rules| rules.general.reveal_by_height),
+            fog_of_war: self.session.game_options.fog_of_war,
+        };
+        let height_grid = reveal_config
+            .reveal_by_height
+            .then(|| {
+                self.path_grid
+                    .as_ref()
+                    .map(|grid| grid.ground_height_grid())
+            })
+            .flatten();
+        for (stable_id, _, reveal) in membership_updates {
+            if reveal && let Some(entity) = self.substrate.entities.get(stable_id) {
+                crate::sim::vision::reveal_entity_vision(
+                    &mut self.fog,
+                    entity,
+                    &reveal_config,
+                    height_grid.as_deref(),
+                );
+            }
+        }
+
+        if let Some(terrain) = self.resolved_terrain.as_mut() {
+            terrain.recalc_playfield_attributes(bounds);
+        }
+
+        // Rebuild from the retained structure-blocked PathGrid. PathGrid does
+        // not cache the outside flag; ZoneGrid does, so a full rebuild covers
+        // native connectivity plus every retained hierarchy level without
+        // discarding dynamic building blockers.
+        if let Some(path_grid) = self.path_grid.clone() {
+            self.rebuild_zone_grid_full(path_grid.as_ref());
+        }
+
+        // Native calls RefreshRadar after the cell/zone rebuild. The distinct
+        // playfield revision is the global geometry invalidation seam; the
+        // presentation-acknowledged dirty-cell batch remains cell-local.
+        true
+    }
+
+    /// Exact mode-one query for the stored TechnoClass+0x3D5 writer family.
+    /// Absence means there is no live MapClass authority, not rectangular or
+    /// permissive fallback authority.
+    fn entity_playfield_membership_mode_one(&self, stable_id: u64) -> Option<bool> {
+        let bounds = self.playfield_bounds?;
+        let entity = self.substrate.entities.get(stable_id)?;
+        Some(crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+            (i32::from(entity.position.rx), i32::from(entity.position.ry)),
+            Some(bounds),
+            self.resolved_terrain.as_ref(),
+        ))
+    }
+
+    /// Unlimbo's exact establishment writer (`TechnoClass::Unlimbo @
+    /// 0x006F6CFE`).
+    pub(crate) fn establish_entity_playfield_membership_on_unlimbo(&mut self, stable_id: u64) {
+        let Some(member) = self.entity_playfield_membership_mode_one(stable_id) else {
+            return;
+        };
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.in_playfield = member;
+        }
+    }
+
+    /// Acknowledge one completed radar-terrain presentation update.
+    ///
+    /// Active `RadarClass` dirty processing at `0x00655250` drains and clears
+    /// its retained cell list after the update. The generation guard prevents
+    /// a stale client acknowledgement from clearing a newer producer batch.
+    /// Both fields are presentation handoff state (`serde(skip)` and omitted
+    /// from `state_hash`), so this consumption cannot mutate lockstep state.
+    pub(crate) fn acknowledge_radar_terrain_dirty(&mut self, generation: u64) -> bool {
+        if generation != self.radar_terrain_dirty_generation
+            || self.radar_terrain_dirty_cells.is_empty()
+        {
+            return false;
+        }
+        self.radar_terrain_dirty_cells.clear();
+        true
+    }
+
+    fn mark_wall_mutations_radar_dirty(
+        &mut self,
+        mutations: &[crate::sim::overlay_grid::WallMutation],
+    ) {
+        let Some(grid) = self.overlay_grid.as_ref() else {
+            return;
+        };
+        let dirty = crate::sim::overlay_grid::wall_radar_dirty_cells(
+            grid.width(),
+            grid.height(),
+            mutations,
+        );
+        self.mark_radar_terrain_dirty_cells(dirty);
+    }
+
+    /// Ordinary per-cell movement writer (`0x006F511A..0x006F5139`): only
+    /// promote 0 -> 1. A unit that walks back outside retains membership until
+    /// an exact writer (teleport or Set_Clipped_LocalSize) clears it.
+    fn promote_entity_playfield_membership_after_move(&mut self, stable_id: u64) {
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_none_or(|entity| entity.in_playfield)
+        {
+            return;
+        }
+        if self.entity_playfield_membership_mode_one(stable_id) == Some(true)
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+        {
+            entity.in_playfield = true;
+        }
+    }
+
+    /// Teleport arrival's exceptional exact outside clear (`0x00719A99`). An
+    /// inside arrival does not promote a previously-false byte.
+    fn clear_entity_playfield_membership_after_teleport(&mut self, stable_id: u64) {
+        if self.entity_playfield_membership_mode_one(stable_id) == Some(false)
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+        {
+            entity.in_playfield = false;
+        }
+    }
+
     fn poll_triggers_for_master_frame(&mut self, inputs: TriggerInputs<'_>) {
         // YR LogicClass::Update polls scenario triggers before the live-object walk.
-        let effects =
-            self.advance_triggers(inputs.graph, inputs.triggers, inputs.events, inputs.actions);
+        let effects = self.advance_triggers(
+            inputs.graph,
+            inputs.triggers,
+            inputs.events,
+            inputs.actions,
+            inputs.rules,
+        );
         self.trigger_effects.extend(effects);
     }
 
@@ -3180,6 +3461,24 @@ impl Simulation {
     /// for every live transfer, regardless of whether capture or garrison code
     /// requested it.
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
+        self.change_owner_impl(stable_id, new_owner, None);
+    }
+
+    pub(crate) fn change_owner_with_rules(
+        &mut self,
+        stable_id: u64,
+        new_owner: InternedId,
+        rules: &RuleSet,
+    ) {
+        self.change_owner_impl(stable_id, new_owner, Some(rules));
+    }
+
+    fn change_owner_impl(
+        &mut self,
+        stable_id: u64,
+        new_owner: InternedId,
+        rules: Option<&RuleSet>,
+    ) {
         let Some((old_owner, category, has_spawn_manager)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
@@ -3193,6 +3492,13 @@ impl Simulation {
         };
         if old_owner == new_owner {
             return;
+        }
+        // FootClass::ChangeOwner @ 0x004DBED0 removes from the deposited old
+        // owner and adds to the new owner before later readers observe it.
+        if let Some(rules) = rules {
+            self.transfer_sensor_before_owner_change_with_rules(stable_id, new_owner, rules);
+        } else {
+            self.transfer_sensor_before_owner_change(stable_id, new_owner);
         }
 
         // Active YR chain: BuildingClass::ChangeOwner (0x00448260) delegates
@@ -3754,6 +4060,7 @@ impl Simulation {
         let Some(grid) = self.overlay_grid.as_mut() else {
             return;
         };
+        let mut wall_mutations = Vec::new();
 
         for event in events {
             let result = damage_wall_overlay(
@@ -3783,7 +4090,9 @@ impl Simulation {
                     );
                 }
             }
+            wall_mutations.extend(result.mutations);
         }
+        self.mark_wall_mutations_radar_dirty(&wall_mutations);
     }
 
     /// Movement-side wall crush: a `Crusher=yes` drive vehicle that finishes the
@@ -4130,10 +4439,15 @@ impl Simulation {
             let Some((unit_type_id, owner_id, rx, ry, z, was_selected)) = spawn_data else {
                 continue;
             };
-            self.uninit(sid);
             let rules = match rules {
-                Some(r) => r,
-                None => continue,
+                Some(rules) => {
+                    self.uninit_with_rules(sid, rules);
+                    rules
+                }
+                None => {
+                    self.uninit(sid);
+                    continue;
+                }
             };
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
@@ -4269,11 +4583,10 @@ impl Simulation {
         candidate: (i16, i16),
     ) -> group_destination::CandidateFacts {
         let signed_candidate = (i32::from(candidate.0), i32::from(candidate.1));
-        if !crate::sim::cell_rect::cell_is_in_playfield(
+        if !crate::sim::cell_rect::cell_is_in_playfield_height_aware(
             signed_candidate,
             self.playfield_bounds,
             self.resolved_terrain.as_ref(),
-            Some((grid.width(), grid.height())),
         ) {
             return group_destination::CandidateFacts::outside_playfield();
         }
@@ -4784,6 +5097,9 @@ impl Simulation {
         // DEPENDS ON: production (newly placed buildings start build-up).
         let completed_buildings = self.tick_building_up();
         if let Some(rules) = rules {
+            for &stable_id in &completed_buildings {
+                self.add_building_sensor_array_if_powered(stable_id, rules);
+            }
             *spawned_entities |= production::spawn_completed_refinery_free_units(
                 self,
                 &completed_buildings,
@@ -5100,6 +5416,11 @@ impl Simulation {
             }
 
             let before_movement = sim.movement_sound_probe(stable_id);
+            let cell_before_movement = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| (entity.position.rx, entity.position.ry));
             let one = [stable_id];
             movement_stats.merge(movement::tick_movement_object_with_grids(
                 &mut sim.substrate.entities,
@@ -5174,6 +5495,14 @@ impl Simulation {
             }
 
             sim.tick_air_movement_with_cell_lists_one(stable_id);
+            let teleport_relocating = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .and_then(|entity| entity.teleport_state.as_ref())
+                .is_some_and(|state| {
+                    state.phase == crate::sim::movement::teleport_movement::TeleportPhase::Relocate
+                });
             if let Some(rules) = rules {
                 let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
                 let warp_out_total_frames = rules
@@ -5224,11 +5553,37 @@ impl Simulation {
             }
             movement::tick_locomotor_piggyback_restore_one(&mut sim.substrate.entities, stable_id);
 
+            let cell_after_movement = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| (entity.position.rx, entity.position.ry));
+            if let Some(rules) = rules {
+                sim.move_unit_sensor_after_cell_change(
+                    stable_id,
+                    cell_before_movement,
+                    cell_after_movement,
+                    rules,
+                );
+            }
+            if teleport_relocating {
+                // `TeleportLocomotionClass` arrival owns the exceptional exact
+                // outside clear at 0x00719A99; it must not flow through the
+                // ordinary promote-only per-cell writer.
+                sim.clear_entity_playfield_membership_after_teleport(stable_id);
+            } else if cell_before_movement != cell_after_movement {
+                sim.promote_entity_playfield_membership_after_move(stable_id);
+            }
+
             let mut lifecycle_requests = std::mem::take(&mut sim.pending_lifecycle_requests);
             for request in lifecycle_requests.drain(..) {
                 let LifecycleRequest::Uninit { stable_id, .. } = request;
                 sim.release_move_sound(stable_id);
-                sim.apply_lifecycle_request(request);
+                if let Some(rules) = rules {
+                    sim.apply_lifecycle_request_with_rules(request, rules);
+                } else {
+                    sim.apply_lifecycle_request(request);
+                }
             }
             debug_assert!(lifecycle_requests.is_empty());
             sim.pending_lifecycle_requests = lifecycle_requests;
@@ -5353,6 +5708,7 @@ impl Simulation {
         // DEPENDS ON: movement (positions updated), spawn (new entities need LOS).
         // PRODUCES: fog state used by combat targeting (phase 5).
         let vision_config = vision::VisionConfig {
+            require_playfield_membership: self.playfield_bounds.is_some(),
             veteran_sight_bonus: rules.map_or(0, |r| r.general.veteran_sight),
             leptons_per_sight_increase: rules.map_or(0, |r| r.general.leptons_per_sight_increase),
             // Height-based LOS: terrain 4+ levels above the viewer at the
@@ -5559,7 +5915,7 @@ impl Simulation {
                     crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
                 }
                 self.release_move_sound(dead_id);
-                self.uninit(dead_id);
+                self.uninit_with_rules(dead_id, rules);
             }
             // Bridge damage: 4-path dispatcher + cascade
             // (kill ground occupants → DropIn deck → debris → rim refresh
@@ -6302,3 +6658,7 @@ mod global_parity_harness_tests;
 #[cfg(test)]
 #[path = "production_shadow_tests.rs"]
 mod production_shadow_tests;
+
+#[cfg(test)]
+#[path = "radar_dirty_ack_tests.rs"]
+mod radar_dirty_ack_tests;

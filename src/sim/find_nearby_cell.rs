@@ -117,10 +117,9 @@ pub struct NearbyQuery<'a> {
     pub occupancy: Option<&'a OccupancyGrid>,
     pub entities: Option<&'a EntityStore>,
     pub zone_grid: Option<&'a ZoneGrid>,
-    pub map_size: Option<(u16, u16)>,
     /// The map's isometric playfield diamond ([Map] Size width + LocalSize),
-    /// threaded into the occupancy check's final playfield-corner test. When
-    /// `None` the test falls back to the `map_size`/terrain rectangle.
+    /// threaded into the occupancy check's final playfield-corner test. Active
+    /// native queries have no rectangular substitute when these fields are absent.
     pub playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 }
 
@@ -383,7 +382,6 @@ fn candidate_passes(
             terrain_object_cells: None,
             resolved_terrain: q.resolved_terrain,
             overlay_grid: q.overlay_grid,
-            map_size: q.map_size,
             playfield_bounds: q.playfield_bounds,
         })
     {
@@ -608,7 +606,6 @@ mod tests {
             occupancy: None,
             entities: None,
             zone_grid: None,
-            map_size: Some((terrain.width(), terrain.height())),
             playfield_bounds: None,
         }
     }
@@ -840,6 +837,13 @@ mod tests {
         q.check_occupancy = true;
         q.occupancy = Some(&occupancy);
         q.entities = Some(&entities);
+        q.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
+        });
 
         let found = find_nearby_passable_cell((2, 2), &q, 0);
         // The seed (2,2) is occupied; FNPC must pick a different, free cell.
@@ -1039,10 +1043,9 @@ mod tests {
         );
     }
 
-    /// Slice 3b wiring: with the map's playfield diamond threaded into the query,
-    /// the occupancy check rejects rectangle-inside but diamond-outside cells, so
-    /// FNPC can never pick an off-diamond border-filler cell. Without the bounds,
-    /// the rectangle fallback accepts the same seed — the parity gap this closes.
+    /// With the map's playfield diamond threaded into the query, occupancy rejects
+    /// rectangle-inside but diamond-outside cells. Missing fields reject the exact
+    /// MapClass query rather than substituting the retired rectangle fallback.
     #[test]
     fn find_nearby_occupancy_rejects_off_diamond_cells_when_bounds_threaded() {
         use crate::sim::cell_rect::PlayfieldBounds;
@@ -1059,14 +1062,12 @@ mod tests {
         let path_grid = PathGrid::from_resolved_terrain(&terrain);
         let mut q = base_query(&terrain, &path_grid);
         q.check_occupancy = true;
-        q.map_size = None;
 
-        // Without the diamond: the off-diamond seed (14,13) (sum 27) passes the
-        // rectangle fallback and is returned directly.
+        // Without configured MapClass fields no exact query can be made.
         assert_eq!(
             find_nearby_passable_cell((14, 13), &q, 0),
-            Some((14, 13)),
-            "rectangle fallback accepts the off-diamond seed (the old behavior)"
+            None,
+            "missing bounds must not approximate MapClass with a rectangle"
         );
 
         // With the diamond: the seed and every other sum>26 ring cell are rejected;

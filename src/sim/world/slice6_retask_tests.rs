@@ -282,7 +282,14 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
 // float bits and the rank cache are now hashed per object, a composition-only
 // shift. No RNG draw is added — `VeterancyClass::Add @ 0x0074FF50` consumes
 // none — and record/replay stayed equal at every tick.
-const SLICE6_BASELINE_HASH: u64 = 0x5C9D_1978_A5FB_CAC0;
+// Re-baselined 2026-08-20 for the v87 TechnoClass+0x3D5 membership byte.
+// The pre-v28 and pre-v29 probes above remained byte-identical, isolating this
+// to the intentional current-schema hash composition change.
+// Re-baselined 2026-08-20 for v88's deposited-sensor presence discriminator.
+// None of this fixture's types has SensorsSight; both historical probes stayed
+// byte-identical and the same-run hash is stable, proving a composition-only
+// current-schema move.
+const SLICE6_BASELINE_HASH: u64 = 0x06F9_C141_04F9_AC27;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

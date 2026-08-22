@@ -410,6 +410,27 @@ fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f3
     crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z)
 }
 
+fn cloak_sound_for_app(
+    sound_id: String,
+    rx: u16,
+    ry: u16,
+    sub_x: crate::util::fixed_math::SimFixed,
+    sub_y: crate::util::fixed_math::SimFixed,
+    world_z_leptons: i32,
+) -> GameSoundEvent {
+    let (sx, sy) = crate::util::lepton::lepton_to_screen_exact_z(
+        rx,
+        ry,
+        sub_x,
+        sub_y,
+        world_z_leptons,
+    );
+    GameSoundEvent::CloakSound {
+        sound_id,
+        screen_pos: Some((sx, sy)),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeAdvanceMode {
     WallClock { now_ms: u64 },
@@ -1014,6 +1035,21 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::CloakSound {
+                        sound_id,
+                        rx,
+                        ry,
+                        sub_x,
+                        sub_y,
+                        world_z_leptons,
+                    } => cloak_sound_for_app(
+                        sound_id,
+                        rx,
+                        ry,
+                        sub_x,
+                        sub_y,
+                        world_z_leptons,
+                    ),
                     SimSoundEvent::BuildingComplete { owner } => {
                         // Only play EVA for the local player's production.
                         let owner_str = sim.interner.resolve(owner);
@@ -1912,7 +1948,7 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
+        cloak_sound_for_app, finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
         validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
@@ -1988,6 +2024,25 @@ mod tests {
         assert!(
             wall_sell_sound_for_local(receiver_name, Some("Receiver"), Some(&no_sound)).is_none()
         );
+    }
+
+    #[test]
+    fn cloak_sound_app_event_preserves_rule_identity_and_native_world_position() {
+        let event = cloak_sound_for_app(
+            "NavalUnitEmerge".to_string(),
+            10,
+            11,
+            SimFixed::from_num(64),
+            SimFixed::from_num(192),
+            208,
+        );
+        assert!(matches!(
+            event,
+            crate::audio::events::GameSoundEvent::CloakSound {
+                sound_id,
+                screen_pos: Some((-45.0, 315.0)),
+            } if sound_id == "NavalUnitEmerge"
+        ));
     }
 
     #[test]

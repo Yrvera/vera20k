@@ -1,0 +1,666 @@
+//! Minimap click inverse and camera-window presentation adapters.
+
+use crate::render::batch::SpriteInstance;
+
+use super::minimap::MinimapRenderer;
+use super::minimap_projection::minimap_screen_point_to_camera_top_left;
+use super::native_radar_viewport::{
+    NativeRadarScreenGeometry, native_content_boundary_outline_instances,
+    native_viewport_outline_instances, native_viewport_rect,
+};
+
+/// Exact result of the native radar click's
+/// `MapClass::Get_CellClass -> CellClass::Get_Center_Coords` tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeRadarCameraTarget {
+    pub(crate) cell: (u16, u16),
+    pub(crate) world_leptons: (i32, i32, i32),
+}
+
+/// The signed-word clamp in the live RadarClass input owner
+/// `0x00653D7A..0x00653E66`.
+///
+/// The four corrections deliberately are not collapsed to `clamp`: native
+/// adjusts both packed cell words by the complete delta, in this exact order,
+/// and each write wraps as i16 before the next signed comparison.
+fn clamp_native_radar_click_cell(
+    cell: (i16, i16),
+    map_size: (i32, i32),
+    tactical_size: (i32, i32),
+) -> (i16, i16) {
+    let horizontal_cells = tactical_size.0 / 60;
+    let horizontal_half = horizontal_cells.wrapping_add(2) / 2;
+    let difference_limit = map_size
+        .0
+        .wrapping_sub(horizontal_half)
+        .wrapping_sub(1);
+    let vertical_cells = tactical_size.1 / 60;
+    let minimum_sum = vertical_cells
+        .wrapping_add(map_size.0)
+        .wrapping_add(1);
+    let maximum_sum = map_size
+        .1
+        .wrapping_mul(2)
+        .wrapping_sub(vertical_cells)
+        .wrapping_add(map_size.0)
+        .wrapping_sub(1);
+    let (mut x, mut y) = cell;
+
+    let y_minus_x = i32::from(y).wrapping_sub(i32::from(x));
+    if y_minus_x > difference_limit {
+        let delta = y_minus_x.wrapping_sub(difference_limit) as i16;
+        y = y.wrapping_sub(delta);
+        x = x.wrapping_add(delta);
+    }
+
+    let x_minus_y = i32::from(x).wrapping_sub(i32::from(y));
+    if x_minus_y > difference_limit.wrapping_sub(1) {
+        let delta = x_minus_y
+            .wrapping_sub(difference_limit)
+            .wrapping_add(1) as i16;
+        y = y.wrapping_add(delta);
+        x = x.wrapping_sub(delta);
+    }
+
+    let sum = i32::from(x).wrapping_add(i32::from(y));
+    if sum < minimum_sum {
+        let delta = minimum_sum
+            .wrapping_sub(i32::from(y))
+            .wrapping_sub(i32::from(x)) as i16;
+        x = x.wrapping_add(delta);
+        y = y.wrapping_add(delta);
+    }
+
+    let sum = i32::from(x).wrapping_add(i32::from(y));
+    if sum > maximum_sum {
+        let delta = sum.wrapping_sub(maximum_sum) as i16;
+        x = x.wrapping_sub(delta);
+        y = y.wrapping_sub(delta);
+    }
+    (x, y)
+}
+
+fn signed_tracker_or_inverse_cell(
+    surface: super::native_radar_surface::NativeRadarSurfaceGeometry,
+    pixel: (i32, i32),
+    tracker_cell: Option<(i16, i16)>,
+) -> (i16, i16) {
+    tracker_cell.unwrap_or_else(|| surface.surface_pixel_to_signed_cell(pixel))
+}
+
+fn tracker_object_signed_cell(
+    tracker: &super::radar_tracker::RetainedRadarTracker,
+    entities: &crate::sim::entity_store::EntityStore,
+    pixel: (i32, i32),
+) -> Option<(i16, i16)> {
+    let stable_id = tracker.object_at_pixel(pixel.0, pixel.1)?;
+    let entity = entities.get(stable_id)?;
+    // `RadarClass::GetObjectAtRadarPixel @ 0x00656750` returns the tracker
+    // object, then its caller dispatches ObjectClass vtable +0x48. Buildings
+    // therefore center through `BuildingClass::GetCoords @ 0x00447AC0`.
+    let (x, y) = super::radar_visibility::radar_object_get_coords_leptons(entity);
+    Some((
+        crate::util::direction_tables::lepton_to_cell(x) as i16,
+        crate::util::direction_tables::lepton_to_cell(y) as i16,
+    ))
+}
+
+fn native_camera_cell_from_signed(
+    signed: (i16, i16),
+    map_size: (i32, i32),
+    tactical_size: (i32, i32),
+) -> (u16, u16) {
+    let clamped = clamp_native_radar_click_cell(signed, map_size, tactical_size);
+    (clamped.0 as u16, clamped.1 as u16)
+}
+
+fn native_camera_target_from_signed(
+    signed: (i16, i16),
+    map_size: (i32, i32),
+    tactical_size: (i32, i32),
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+) -> Option<NativeRadarCameraTarget> {
+    let (rx, ry) = native_camera_cell_from_signed(signed, map_size, tactical_size);
+    let cell = terrain.cell(rx, ry)?;
+    // `CellClass::Get_Center_Coords @ 0x00480A30` reads the cell object's
+    // signed packed coordinate, forms X/Y at subcell (128,128), and asks
+    // `0x0047B3A0` for ground Z. It does not add bridge-deck height.
+    let x = i32::from(cell.rx as i16).wrapping_mul(256).wrapping_add(128);
+    let y = i32::from(cell.ry as i16).wrapping_mul(256).wrapping_add(128);
+    let z = crate::util::lepton::cellclass_ground_height_leptons(
+        cell.level,
+        cell.slope_type,
+        x,
+        y,
+    )
+    .ok()?;
+    Some(NativeRadarCameraTarget {
+        cell: (cell.rx, cell.ry),
+        world_leptons: (x, y, z),
+    })
+}
+
+impl MinimapRenderer {
+    /// Return true only inside the generated primary when native authority is
+    /// installed. Native `0x006539D0` rejects the centered letterbox margins.
+    pub fn contains_screen_point_in_rect(
+        &self,
+        screen_x: f32,
+        screen_y: f32,
+        rect_x: f32,
+        rect_y: f32,
+        rect_w: f32,
+        rect_h: f32,
+    ) -> bool {
+        if let Some(surface) = self.native_radar_surface {
+            return NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h])
+                .screen_to_surface_pixel((screen_x, screen_y))
+                .is_some();
+        }
+        if self.playfield_bounds.is_some() {
+            return false;
+        }
+        screen_x >= rect_x
+            && screen_x < rect_x + rect_w
+            && screen_y >= rect_y
+            && screen_y < rect_y + rect_h
+    }
+
+    /// Screen-space generated-primary rectangle. `None` under configured
+    /// MapClass authority means fail closed; only mapless fixtures retain the
+    /// full-aperture adapter.
+    pub(crate) fn content_screen_rect_in_rect(
+        &self,
+        rect_x: f32,
+        rect_y: f32,
+        rect_w: f32,
+        rect_h: f32,
+    ) -> Option<[f32; 4]> {
+        self.native_radar_surface
+            .map(|surface| {
+                NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h])
+                    .content_rect()
+            })
+            .or_else(|| self.playfield_bounds.is_none().then_some([rect_x, rect_y, rect_w, rect_h]))
+    }
+
+    /// `RadarClass::GetObjectAtRadarPixel @ 0x00656750`: screen to generated
+    /// pixel, reverse tracker lookup, then exact x87 cell inverse fallback.
+    pub(crate) fn native_click_target_in_rect(
+        &self,
+        screen_x: f32,
+        screen_y: f32,
+        rect_x: f32,
+        rect_y: f32,
+        rect_w: f32,
+        rect_h: f32,
+        entities: &crate::sim::entity_store::EntityStore,
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        map_size: (i32, i32),
+        tactical_size: (i32, i32),
+    ) -> Option<NativeRadarCameraTarget> {
+        let surface = self.native_radar_surface?;
+        let pixel = NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h])
+            .screen_to_surface_pixel((screen_x, screen_y))?;
+        let tracker_cell = tracker_object_signed_cell(&self.radar_tracker, entities, pixel);
+        let signed = signed_tracker_or_inverse_cell(surface, pixel, tracker_cell);
+        native_camera_target_from_signed(signed, map_size, tactical_size, terrain)
+    }
+
+    pub(crate) const fn has_playfield_authority(&self) -> bool {
+        self.playfield_bounds.is_some()
+    }
+
+    /// Mapless/headless adapter retained only when no MapClass authority exists.
+    pub fn camera_top_left_for_screen_point_in_rect(
+        &self,
+        screen_x: f32,
+        screen_y: f32,
+        screen_w: f32,
+        screen_h: f32,
+        rect_x: f32,
+        rect_y: f32,
+        rect_w: f32,
+        rect_h: f32,
+    ) -> (f32, f32) {
+        minimap_screen_point_to_camera_top_left(
+            screen_x,
+            screen_y,
+            screen_w,
+            screen_h,
+            rect_x,
+            rect_y,
+            rect_w,
+            rect_h,
+            self.world_origin_x,
+            self.world_origin_y,
+            self.world_width,
+            self.world_height,
+            self.map_offset_x,
+            self.map_offset_y,
+            self.map_pixel_w,
+            self.map_pixel_h,
+        )
+    }
+
+    /// Build the native camera-window rectangle after the generated content
+    /// copy. The active side's exact sidebar text color is supplied by app
+    /// composition; each edge is one generated-surface pixel thick and clips
+    /// against the complete retained sidebar surface, not the radar aperture.
+    pub fn build_viewport_rect_in_rect(
+        &mut self,
+        camera_x: f32,
+        camera_y: f32,
+        center_cell: (u16, u16),
+        tactical_width: i32,
+        tactical_height: i32,
+        rect_x: f32,
+        rect_y: f32,
+        rect_w: f32,
+        rect_h: f32,
+        sidebar_surface: [f32; 4],
+        sidebar_color: [f32; 3],
+    ) -> Vec<SpriteInstance> {
+        let Some(surface) = self.native_radar_surface else {
+            // No rectangular fallback is permitted once MapClass authority is
+            // configured. Mapless renderer fixtures have no native geometry.
+            return Vec::new();
+        };
+        let rect = native_viewport_rect(surface, center_cell, tactical_width, tactical_height);
+        let transition = self.viewport_state.update(rect);
+        let _native_old_border_visits = transition.dirty_previous_border;
+        native_viewport_outline_instances(
+            (camera_x, camera_y),
+            NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h]),
+            transition.current,
+            sidebar_surface,
+            sidebar_color,
+        )
+    }
+
+    /// Build the generated-content boundary that native submits after the
+    /// camera window at `RadarClass::Update @ 0x00657669..0x006576A2`.
+    /// Absence of the generated MapClass-owned surface fails closed; there is
+    /// no legacy rectangular substitute on the parity path.
+    pub fn build_content_boundary_in_rect(
+        &self,
+        camera_x: f32,
+        camera_y: f32,
+        rect_x: f32,
+        rect_y: f32,
+        rect_w: f32,
+        rect_h: f32,
+        sidebar_surface: [f32; 4],
+        sidebar_color: [f32; 3],
+    ) -> Vec<SpriteInstance> {
+        let Some(surface) = self.native_radar_surface else {
+            return Vec::new();
+        };
+        native_content_boundary_outline_instances(
+            (camera_x, camera_y),
+            NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h]),
+            surface,
+            sidebar_surface,
+            sidebar_color,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::native_radar_surface::NativeRadarSurfaceGeometry;
+    use crate::render::radar_tracker::{RadarObjectUpdate, RetainedRadarTracker};
+    use crate::render::radar_visibility::{
+        RadarMobileVisibilityFacts, RadarRegistrationVisibilityFacts,
+    };
+    use crate::sim::intern::test_intern;
+
+    fn tracker_update(stable_id: u64, foundation: Option<(u32, u32)>) -> RadarObjectUpdate {
+        RadarObjectUpdate {
+            stable_id,
+            owner: test_intern("Enemy"),
+            origin: (40, 60),
+            event_source_cell: None,
+            enemy_sensed_prefilter: true,
+            foundation,
+            radar_scale: 1.0,
+            discovery_observed: true,
+            visibility: RadarRegistrationVisibilityFacts::Mobile(
+                RadarMobileVisibilityFacts {
+                    type_invisible: false,
+                    sinking: false,
+                    object_alive: true,
+                    in_limbo: false,
+                    owner_is_human_player: false,
+                    fresh_in_playfield: true,
+                    shrouded: false,
+                    cloak_state: 0,
+                    has_sensor: false,
+                    allied_with_current_player: false,
+                    height_leptons: 0,
+                    veteran_radar_invisible: false,
+                },
+            ),
+            local_front: false,
+        }
+    }
+
+    fn terrain_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+        crate::map::resolved_terrain::ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            height_in_pixels: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: Default::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn click_terrain(width: u16, height: u16) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for ry in 0..height {
+            for rx in 0..width {
+                cells.push(terrain_cell(rx, ry));
+            }
+        }
+        crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    #[test]
+    fn native_click_clamp_preserves_signed_words_and_strict_branch_equality() {
+        let map = (100, 100);
+        let tactical = (632, 570);
+        assert_eq!(clamp_native_radar_click_cell((50, 143), map, tactical), (50, 143));
+        assert_eq!(clamp_native_radar_click_cell((50, 144), map, tactical), (51, 143));
+        assert_eq!(clamp_native_radar_click_cell((142, 50), map, tactical), (142, 50));
+        assert_eq!(clamp_native_radar_click_cell((143, 50), map, tactical), (142, 51));
+        assert_eq!(clamp_native_radar_click_cell((55, 55), map, tactical), (55, 55));
+        assert_eq!(clamp_native_radar_click_cell((54, 55), map, tactical), (55, 56));
+        assert_eq!(clamp_native_radar_click_cell((145, 145), map, tactical), (145, 145));
+        assert_eq!(clamp_native_radar_click_cell((145, 146), map, tactical), (144, 145));
+    }
+
+    #[test]
+    fn native_click_tracker_miss_clamps_negative_inverse_before_unsigned_pack() {
+        let surface = NativeRadarSurfaceGeometry::from_raw_rect(30, 20, 300, 180).unwrap();
+        let signed = signed_tracker_or_inverse_cell(surface, (0, 0), None);
+        assert_eq!(signed, (-4, 25));
+        assert_eq!(clamp_native_radar_click_cell(signed, (100, 100), (632, 570)), (85, 114));
+    }
+
+    #[test]
+    fn native_click_target_samples_all_active_slopes_at_cell_center() {
+        let mut terrain = click_terrain(64, 64);
+        let expected_contributions = [
+            0, 45, 45, 45, 45, 0, 0, 0, 0, 90, 90, 90, 90, 90, 90, 90, 90, 45, 45,
+            45, 45,
+        ];
+        for (slope, contribution) in expected_contributions.into_iter().enumerate() {
+            let cell = terrain.cell_mut(55, 55).unwrap();
+            cell.level = 2;
+            cell.slope_type = slope as u8;
+            let target = native_camera_target_from_signed(
+                (55, 55),
+                (100, 100),
+                (632, 570),
+                &terrain,
+            )
+            .unwrap();
+            assert_eq!(target.cell, (55, 55));
+            assert_eq!(target.world_leptons, (14_208, 14_208, 180 + contribution));
+        }
+    }
+
+    #[test]
+    fn native_click_target_uses_ground_slope_for_bridge_and_fails_closed_without_cell() {
+        let mut terrain = click_terrain(64, 64);
+        let cell = terrain.cell_mut(63, 63).unwrap();
+        cell.level = 3;
+        cell.slope_type = 1;
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = true;
+        cell.bridge_deck_level = 7;
+        let target = native_camera_target_from_signed(
+            (63, 63),
+            (100, 100),
+            (632, 570),
+            &terrain,
+        )
+        .unwrap();
+        assert_eq!(target.cell, (63, 63), "last real grid cell remains available");
+        assert_eq!(target.world_leptons, (16_256, 16_256, 315));
+
+        assert_eq!(
+            native_camera_target_from_signed(
+                (64, 64),
+                (100, 100),
+                (632, 570),
+                &terrain,
+            ),
+            None,
+            "Rust has no exact shared-dummy substrate, so invalid lookup cannot flatten to Z=0",
+        );
+        terrain.test_set_native_allocated_cells(&[]);
+        assert_eq!(
+            native_camera_target_from_signed(
+                (63, 63),
+                (100, 100),
+                (632, 570),
+                &terrain,
+            ),
+            None,
+            "a Size-diamond hole is not a rectangular/level-zero fallback",
+        );
+    }
+
+    #[test]
+    fn native_click_tracker_and_empty_hit_share_the_same_cellclass_center() {
+        let terrain = click_terrain(64, 64);
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(tracker_update(1, None), false);
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        entities.insert(crate::sim::game_entity::GameEntity::test_default(
+            1, "MTNK", "Enemy", 55, 55,
+        ));
+        let tracker_signed = tracker_object_signed_cell(&tracker, &entities, (40, 60)).unwrap();
+        assert_eq!(tracker_signed, (55, 55));
+        let tracker_target = native_camera_target_from_signed(
+            tracker_signed,
+            (100, 100),
+            (632, 570),
+            &terrain,
+        );
+        let empty_target = native_camera_target_from_signed(
+            (55, 55),
+            (100, 100),
+            (632, 570),
+            &terrain,
+        );
+        assert_eq!(tracker_target, empty_target);
+    }
+
+    #[test]
+    fn native_click_cellclass_xyz_uses_the_full_6d6070_camera_projection() {
+        // Cell (55,55), Level=2, slope 1 at center: 180 base + 45 slope.
+        // Get_Center_Coords 0x00480A30 passes this complete XYZ to 0x006D6070;
+        // the latter projects/AdjustForZ before writing current and desired to
+        // one identical immediate top-left (represented by Rust's one point).
+        let world = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 225);
+        assert_eq!(world, (0.0, 1_648.0));
+        let camera = crate::app::input::camera::tactical_camera_top_left(
+            world,
+            856.0,
+            736.0,
+            1.0,
+        );
+        assert_eq!(camera, (-428.0, 1_280.0));
+        assert_eq!(
+            ((world.0 - camera.0), (world.1 - camera.1)),
+            (428.0, 368.0),
+        );
+
+        let level_only = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 180);
+        assert_eq!(level_only, (0.0, 1_654.0));
+        assert_ne!(world, level_only, "the slope contribution cannot be reconstructed from Level");
+    }
+
+    #[test]
+    fn native_scaled_screen_adapter_keeps_signed_inverse_until_map_clamp() {
+        let surface = NativeRadarSurfaceGeometry::from_raw_rect(30, 20, 300, 180).unwrap();
+        let screen = NativeRadarScreenGeometry::new(surface, [100.0, 50.0, 280.0, 216.0]);
+        let pixel = screen.screen_to_surface_pixel((100.0, 74.0)).unwrap();
+        assert_eq!(pixel, (0, 0));
+        let signed = signed_tracker_or_inverse_cell(surface, pixel, None);
+        assert_eq!(signed, (-4, 25));
+        assert_eq!(clamp_native_radar_click_cell(signed, (100, 100), (632, 570)), (85, 114));
+    }
+
+    #[test]
+    fn native_click_wide_and_tall_corners_and_edges_clamp_before_packing() {
+        let fixtures = [
+            (
+                NativeRadarSurfaceGeometry::from_raw_rect(30, 20, 300, 180).unwrap(),
+                [
+                    (0, 0),
+                    (139, 0),
+                    (0, 82),
+                    (139, 82),
+                    (70, 0),
+                    (70, 82),
+                    (0, 41),
+                    (139, 41),
+                ],
+                [
+                    ((-4, 25), (85, 114)),
+                    ((144, -123), (58, 141)),
+                    ((83, 113), (83, 113)),
+                    ((232, -35), (57, 140)),
+                    ((70, -49), (132, 67)),
+                    ((158, 38), (130, 66)),
+                    ((39, 69), (41, 71)),
+                    ((188, -79), (14, 97)),
+                ],
+            ),
+            (
+                NativeRadarSurfaceGeometry::from_raw_rect(30, 20, 180, 300).unwrap(),
+                [
+                    (0, 0),
+                    (63, 0),
+                    (0, 107),
+                    (63, 107),
+                    (32, 0),
+                    (32, 107),
+                    (0, 54),
+                    (63, 54),
+                ],
+                [
+                    ((-4, 25), (85, 114)),
+                    ((83, -62), (119, 80)),
+                    ((144, 174), (116, 146)),
+                    ((231, 86), (151, 112)),
+                    ((39, -18), (128, 71)),
+                    ((188, 129), (161, 102)),
+                    ((70, 100), (70, 100)),
+                    ((158, 12), (104, 66)),
+                ],
+            ),
+        ];
+        for (surface, pixels, expected) in fixtures {
+            let cells = pixels.map(|pixel| {
+                let signed = signed_tracker_or_inverse_cell(surface, pixel, None);
+                (
+                    signed,
+                    clamp_native_radar_click_cell(signed, (100, 100), (632, 570)),
+                )
+            });
+            assert_eq!(cells, expected);
+        }
+    }
+
+    #[test]
+    fn native_tracker_reverse_hit_uses_building_getcoords_for_camera_cell() {
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(tracker_update(1, None), false);
+        tracker.update_object(tracker_update(2, Some((4, 3))), false);
+        assert_eq!(tracker.object_at_pixel(40, 60), Some(2), "native reverse bucket scan");
+
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mobile = crate::sim::game_entity::GameEntity::test_default(
+            1, "MTNK", "Enemy", 60, 60,
+        );
+        entities.insert(mobile);
+        let mut building = crate::sim::game_entity::GameEntity::test_default(
+            2, "BLDG", "Enemy", 60, 60,
+        );
+        building.category = crate::map::entities::EntityCategory::Structure;
+        building.foundation = "4x3".to_string();
+        building.position.sub_x = crate::util::fixed_math::SimFixed::from_num(200);
+        building.position.sub_y = crate::util::fixed_math::SimFixed::from_num(33);
+        entities.insert(building);
+
+        let signed = tracker_object_signed_cell(&tracker, &entities, (40, 60));
+        assert_eq!(signed, Some((62, 61)), "4x3 foundation centre truncates after subcell");
+        assert_eq!(
+            native_camera_cell_from_signed(signed.unwrap(), (100, 100), (632, 570)),
+            (62, 61),
+            "the exact tracker GetCoords cell is the immediate camera centre"
+        );
+
+        let edge = entities.get_mut(2).unwrap();
+        edge.position.rx = u16::MAX;
+        edge.position.ry = u16::MAX;
+        assert_eq!(
+            tracker_object_signed_cell(&tracker, &entities, (40, 60)),
+            Some((1, 0)),
+            "GetCoords converts to wrapping native signed cell words"
+        );
+    }
+}

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
-use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield};
+use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
 use crate::sim::components::DrivePathQueue;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
@@ -522,11 +522,10 @@ pub(super) fn build_bridge_passability_search(
             if peer.type_ref == mover.type_ref || mover.speed <= peer.speed {
                 continue;
             }
-            if !cell_is_in_playfield(
+            if !cell_is_in_playfield_height_aware(
                 (i32::from(peer.path_start.0), i32::from(peer.path_start.1)),
                 playfield_bounds,
                 terrain,
-                Some((grid.width(), grid.height())),
             ) {
                 continue;
             }
@@ -616,6 +615,16 @@ mod tests {
         }
     }
 
+    fn test_playfield() -> PlayfieldBounds {
+        PlayfieldBounds {
+            base: 0,
+            off_fc: -32,
+            off_100: -32,
+            off_104: 64,
+            off_108: 64,
+        }
+    }
+
     #[test]
     fn gsi_04_12_marker_urgency_zero_is_inert_and_urgency_one_without_peer_downgrades() {
         let interner = StringInterner::new();
@@ -633,7 +642,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             0,
             0,
@@ -648,7 +657,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -686,7 +695,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -739,7 +748,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -801,7 +810,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             bridge_mover,
             2,
             0,
@@ -884,7 +893,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -964,7 +973,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             2,
             0,
@@ -1021,7 +1030,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -1037,7 +1046,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -1055,7 +1064,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             bridge_mover,
             1,
             0,
@@ -1105,7 +1114,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,

@@ -113,6 +113,7 @@ pub(super) struct SidebarInstances {
     pub text: Vec<SpriteInstance>,
     pub minimap: Vec<SpriteInstance>,
     pub viewport_rect: Vec<SpriteInstance>,
+    pub content_boundary: Vec<SpriteInstance>,
     pub radar_anim: Vec<SpriteInstance>,
     pub view: Option<SidebarView>,
 }
@@ -556,31 +557,82 @@ pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> Debug
 
 /// Update minimap unit dots for the current frame.
 pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>) {
-    if let (Some(minimap), Some(rt)) = (&mut state.match_state.match_presentation.minimap, state.match_state.sim_runtime.as_ref()) {
-        // F10 cone: render-feed reads go through SimView getters (the split
-        // borrow against `&mut state.minimap` keeps the field chain to `rt`).
-        let view = rt.view();
-        let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
-        minimap.update_unit_dots(
-            &state.renderer.gpu,
-            &state.renderer.batch_renderer,
-            view.entities(),
-            &state.match_state.match_presentation.house_color_map,
-            view.session().tick,
-            if state.match_state.sandbox_full_visibility {
-                None
-            } else {
+    let (playfield_bounds, playfield_revision) =
+        crate::app::input::camera::sync_playfield_presentation_bounds(state);
+    let needs_playfield_reconcile = state
+        .match_state
+        .match_presentation
+        .minimap
+        .as_ref()
+        .is_some_and(|minimap| {
+            minimap.needs_playfield_reconcile(playfield_bounds, playfield_revision)
+        });
+    if needs_playfield_reconcile {
+        let overlay_data = crate::app::loading::transitions::build_minimap_overlay_data(
+            state.match_state.match_presentation.overlays.as_slice(),
+            &state.match_state.match_presentation.terrain_objects,
+            state.overlay_registry(),
+            state.rules(),
+        );
+        let runtime = state.match_state.sim_runtime.as_ref();
+        let presentation = &mut state.match_state.match_presentation;
+        if let (Some(minimap), Some(grid)) =
+            (presentation.minimap.as_mut(), presentation.terrain_grid.as_ref())
+        {
+            minimap.reconcile_playfield(
+                &state.renderer.gpu,
+                grid,
+                runtime,
+                &overlay_data,
+                &presentation.overlay_radar_colors,
+                &presentation.theater_name,
+                playfield_bounds,
+                playfield_revision,
+            );
+        }
+    }
+
+    let full_visibility = state.match_state.sandbox_full_visibility;
+    let presentation = &mut state.match_state.match_presentation;
+    if let (Some(minimap), Some(runtime)) = (
+        presentation.minimap.as_mut(),
+        state.match_state.sim_runtime.as_mut(),
+    ) {
+        let transaction = super::minimap_transaction::present_minimap_frame(runtime, |runtime| {
+            // F10 cone: render-feed reads go through SimView getters. The
+            // production transaction includes composition, queue upload, and
+            // only then the simulation acknowledgement.
+            let view = runtime.view();
+            let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
+            Ok::<_, std::convert::Infallible>(minimap.update_unit_dots(
+                &state.renderer.gpu,
+                view.entities(),
+                view.tactical_registration_order(),
+                view.houses(),
+                &presentation.house_color_map,
+                view.session().tick,
                 local_owner
                     .as_deref()
-                    .and_then(|owner| view.interner().get(owner).map(|id| (id, view.fog())))
-            },
-            Some(&rt.resources.rules),
-            Some(view.radar_events()),
-            Some(view.interner()),
-            view.bridge_state(),
-            radar_dirty_cells,
-            radar_dirty_generation,
-        );
+                    .and_then(|owner| view.interner().get(owner)),
+                view.fog(),
+                full_visibility,
+                view.session().game_mode_nonzero,
+                Some(&runtime.resources.rules),
+                Some(view.radar_events()),
+                Some(view.interner()),
+                view.bridge_state(),
+                view.overlay_grid(),
+                Some(&runtime.resources.overlay_registry),
+                &presentation.overlay_radar_colors,
+                view.resolved_terrain(),
+                radar_dirty_cells,
+                radar_dirty_generation,
+            ))
+        });
+        match transaction {
+            Ok(_) => {}
+            Err(never) => match never {},
+        }
     }
 }
 
@@ -722,6 +774,22 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     let minimap_rect = active_minimap_screen_rect(state);
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let tactical_center_cell = crate::app::input::camera::tactical_centre_cell(state);
+    let sidebar_color = crate::render::sidebar_text::native_radar_outline_color(
+        crate::app::presentation::sidebar_render::current_sidebar_theme(state),
+    );
+    // Native g_SidebarSurface is 168 x screen_height in surface-local space;
+    // SidebarClass::BlitToScreen @ 0x006A70E0 translates that retained surface
+    // to the right-sidebar destination without changing the copied extent.
+    // The live view panel is the corresponding outer UI-scaled screen frame.
+    let sidebar_surface = view.as_ref().map(|view| {
+        [
+            view.panel_rect.x,
+            view.panel_rect.y,
+            view.panel_rect.w,
+            view.panel_rect.h,
+        ]
+    });
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state
@@ -729,39 +797,51 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
 
-    let minimap = if minimap_visible {
-        match &state.match_state.match_presentation.minimap {
-            Some(mm) => vec![mm.build_minimap_instance_in_rect(
-                state.match_state.input.camera_x,
-                state.match_state.input.camera_y,
-                minimap_rect.x,
-                minimap_rect.y,
-                minimap_rect.w,
-                minimap_rect.h,
-            )],
-            None => Vec::new(),
+    let (minimap, viewport_rect, content_boundary) = if minimap_visible {
+        match &mut state.match_state.match_presentation.minimap {
+            Some(mm) => {
+                let minimap = vec![mm.build_minimap_instance_in_rect(
+                    state.match_state.input.camera_x,
+                    state.match_state.input.camera_y,
+                    minimap_rect.x,
+                    minimap_rect.y,
+                    minimap_rect.w,
+                    minimap_rect.h,
+                )];
+                let viewport_rect = sidebar_surface.map_or_else(Vec::new, |sidebar_surface| {
+                    mm.build_viewport_rect_in_rect(
+                        state.match_state.input.camera_x,
+                        state.match_state.input.camera_y,
+                        tactical_center_cell,
+                        tactical_w as i32,
+                        tactical_h as i32,
+                        minimap_rect.x,
+                        minimap_rect.y,
+                        minimap_rect.w,
+                        minimap_rect.h,
+                        sidebar_surface,
+                        sidebar_color,
+                    )
+                });
+                let content_boundary =
+                    sidebar_surface.map_or_else(Vec::new, |sidebar_surface| {
+                        mm.build_content_boundary_in_rect(
+                            state.match_state.input.camera_x,
+                            state.match_state.input.camera_y,
+                            minimap_rect.x,
+                            minimap_rect.y,
+                            minimap_rect.w,
+                            minimap_rect.h,
+                            sidebar_surface,
+                            sidebar_color,
+                        )
+                    });
+                (minimap, viewport_rect, content_boundary)
+            }
+            None => (Vec::new(), Vec::new(), Vec::new()),
         }
     } else {
-        Vec::new()
-    };
-    let viewport_rect = if minimap_visible {
-        // Viewport rect shows the visible world area — shrinks when zoomed in.
-        let z = state.match_state.input.zoom_level;
-        match &state.match_state.match_presentation.minimap {
-            Some(mm) => mm.build_viewport_rect_in_rect(
-                state.match_state.input.camera_x,
-                state.match_state.input.camera_y,
-                tactical_w as f32 / z,
-                tactical_h as f32 / z,
-                minimap_rect.x,
-                minimap_rect.y,
-                minimap_rect.w,
-                minimap_rect.h,
-            ),
-            None => Vec::new(),
-        }
-    } else {
-        Vec::new()
+        (Vec::new(), Vec::new(), Vec::new())
     };
 
     let sidebar = view
@@ -830,6 +910,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         text,
         minimap,
         viewport_rect,
+        content_boundary,
         radar_anim,
         view,
     }

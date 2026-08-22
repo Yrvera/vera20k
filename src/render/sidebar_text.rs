@@ -7,9 +7,10 @@
 //! text needs `build_text_with_fade`.
 
 use crate::render::batch::{BatchTexture, SpriteInstance};
-use crate::sidebar::Rect;
 use crate::render::bit_font::BitFont;
+use crate::render::shell_text_reveal::encoded_srgb_to_linear;
 use crate::render::sidebar_chrome::SidebarTheme;
+use crate::sidebar::Rect;
 
 /// Side highlight colors used as fade endpoint for selected-unit text effect.
 const HIGHLIGHT_ALLIED: [f32; 3] = [164.0 / 255.0, 210.0 / 255.0, 1.0];
@@ -22,6 +23,29 @@ pub fn side_highlight_color(theme: SidebarTheme) -> [f32; 3] {
         SidebarTheme::Soviet => HIGHLIGHT_SOVIET,
         SidebarTheme::Yuri => HIGHLIGHT_YURI,
     }
+}
+
+/// Packed `RadarClass+0x1208` color expanded back to the presentation frame.
+///
+/// `SetSidebarTextColor @ 0x0072F440` selects the exact RGB table above;
+/// `RadarClass::Init_For_House @ 0x00652E90` then packs it through the active
+/// retail 16-bit DirectDraw descriptor before `Update @ 0x00656EC0` submits
+/// both retained radar rectangles. This is deliberately not a color inferred
+/// from radar/chrome art or a UI-theme palette.
+pub fn native_radar_outline_color(theme: SidebarTheme) -> [f32; 3] {
+    let source = side_highlight_color(theme);
+    let to_byte = |channel: f32| (channel * 255.0).round() as u8;
+    let packed = super::native_radar_terrain::pack_rgb565(
+        to_byte(source[0]),
+        to_byte(source[1]),
+        to_byte(source[2]),
+    );
+    let expanded = super::native_radar_terrain::unpack_rgb565(packed);
+    // The active wgpu target selected in gpu.rs is sRGB. The native retained
+    // surface stores these expanded RGB565 values as encoded presentation
+    // bytes, whereas a shader tint is linear and is encoded by the target on
+    // output. Decode once here so the presented bytes stay identical.
+    encoded_srgb_to_linear([expanded[0], expanded[1], expanded[2]])
 }
 
 // --- Plain pass-throughs preserved for existing single-color callers ---
@@ -153,6 +177,66 @@ mod tests {
         assert_eq!(side_highlight_color(SidebarTheme::Allied), HIGHLIGHT_ALLIED);
         assert_eq!(side_highlight_color(SidebarTheme::Soviet), HIGHLIGHT_SOVIET);
         assert_eq!(side_highlight_color(SidebarTheme::Yuri), HIGHLIGHT_YURI);
+    }
+
+    #[test]
+    fn native_radar_outline_color_survives_rgb565_and_srgb_presentation() {
+        // Independent inverse of the production encoded-sRGB-to-linear helper:
+        // this is the hardware target encode applied after batch_shader emits
+        // its linear tint. Hardcoded expected bytes are the active RGB565
+        // expansion, not values produced by either conversion helper.
+        let present_byte = |linear: f32| {
+            let encoded = if linear <= 0.003_130_8 {
+                linear * 12.92
+            } else {
+                1.055 * linear.powf(1.0 / 2.4) - 0.055
+            };
+            (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
+        };
+        assert_eq!(present_byte(0.0), 0);
+        assert_eq!(present_byte(1.0), 255);
+
+        let fixtures = [
+            (
+                SidebarTheme::Allied,
+                [160, 208, 248],
+                [0.351_532_6, 0.630_757_15, 0.938_685_7],
+            ),
+            (
+                SidebarTheme::Soviet,
+                [248, 252, 0],
+                [0.938_685_7, 0.973_445_3, 0.0],
+            ),
+            (
+                SidebarTheme::Yuri,
+                [248, 252, 0],
+                [0.938_685_7, 0.973_445_3, 0.0],
+            ),
+        ];
+        for (theme, expected_bytes, expected_linear) in fixtures {
+            let tint = native_radar_outline_color(theme);
+            for channel in 0..3 {
+                assert!(
+                    (tint[channel] - expected_linear[channel]).abs() < 2.0e-6,
+                    "theme={theme:?} channel={channel} tint={}",
+                    tint[channel],
+                );
+            }
+            assert_eq!(tint.map(present_byte), expected_bytes, "theme={theme:?}");
+
+            let old_direct_divide = expected_bytes.map(|byte| f32::from(byte) / 255.0);
+            let old_presented = old_direct_divide.map(present_byte);
+            for channel in 0..3 {
+                if expected_bytes[channel] == 0 {
+                    assert_eq!(old_presented[channel], 0);
+                } else {
+                    assert!(
+                        old_presented[channel] > expected_bytes[channel],
+                        "old direct divide must present too bright: theme={theme:?} channel={channel}",
+                    );
+                }
+            }
+        }
     }
 
     #[test]

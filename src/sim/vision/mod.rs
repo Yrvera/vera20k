@@ -624,21 +624,9 @@ impl FogState {
         removed
     }
 
-    /// Recreate CellClass sensor storage for current map bounds. Sensor
-    /// producers can then use add/remove calls without owning visibility maps.
-    ///
-    /// **The sensor plane has readers but no writer, and that is a live gap.**
-    /// This runs every tick, and `sensors_add_at` / `sensors_remove_at` have no
-    /// production caller — tests only — so `detects_cloak` is permanently
-    /// `false`. Three render sites consume it (`instances::units`,
-    /// `instances::shp`, `instances::helpers`) and feed it into
-    /// `tactical_entity_render_admission`. Trigger: a detector standing where a
-    /// cloaked or submerged enemy is. Player effect: retail reveals it; VERA
-    /// does not, so submarines and Mirage Tanks stay hidden from the units that
-    /// exist to find them. Frequency: not every match, but ordinary in any match
-    /// that fields either — naval maps and Allied mirrors. Downstream risk: the
-    /// producer is the row's remaining work; the footprint walk it would call is
-    /// already ported and verified against `TechnoClass::AddSensorsAt`.
+    /// Recreate CellClass sensor storage for current map bounds. Production
+    /// deposits are owned by `sim::sensor_lifecycle`; this remains the explicit
+    /// map-storage recreation edge.
     pub fn reset_sensor_counts(&mut self) {
         self.sensors_by_house.clear();
     }
@@ -726,26 +714,29 @@ impl FogState {
     ///   0x004DB376`, `PerCellProcess` removing the old cell at `0x004D8611` and
     ///   adding the new one at `0x004D8621`, and `ChangeOwner @ 0x004DBEFB` /
     ///   `0x004DBF81`. Buildings deposit through their own
-    ///   `BuildingClass::AddSensorArrayAt @ 0x00455820`. VERA calls none of them.
+    ///   `BuildingClass::AddSensorArrayAt @ 0x00455820`. VERA's production
+    ///   lifecycle now routes these writers through `sim::sensor_lifecycle`.
     /// - The detection rule is: a cloaked object is visible to house H when H
     ///   has a sensor count at the object's OWN cell, or when H and the owner
     ///   are mutually allied. `DetectDisguise=` is a separate predicate and is
     ///   not parsed.
     /// - Trigger: any `SensorsSight=` unit near a submerged submarine.
-    /// - Player effect: no detector reveals anything.
-    /// - Frequency: continuous once cloaking exists; unobservable today because
-    ///   nothing cloaks (GSI-12.05).
-    /// - Downstream risk: this and the cloak producer must land together, and
-    ///   the pairing should DELETE VERA's `cloaked_by_houses` plane rather than
-    ///   fill it — native keeps cloak state on the object and only the count on
-    ///   the cell.
+    /// - Player effect: live radar registration consumes this plane; tactical
+    ///   cloak rendering still has separately owned presentation work.
+    /// - Frequency: continuous around stock submarines and detector units.
+    /// - Downstream risk: sensor-driven resident-object `+0x420` reevaluation
+    ///   and cloak-generator ownership remain separate mechanisms.
     pub fn sensors_add_at(
         &mut self,
         house: InternedId,
         center: (u16, u16),
         radius: u16,
     ) -> Vec<(u16, u16)> {
-        self.update_sensor_circle(house, center, radius, true)
+        let touched = self.sensor_circle_cells(center, radius);
+        for &(rx, ry) in &touched {
+            self.increment_sensor_at(house, rx, ry);
+        }
+        touched
     }
 
     /// Paired `TechnoClass::RemoveSensorsAt` @ `0x004DE940` decrement walk.
@@ -755,28 +746,24 @@ impl FogState {
         center: (u16, u16),
         radius: u16,
     ) -> Vec<(u16, u16)> {
-        self.update_sensor_circle(house, center, radius, false)
+        let touched = self.sensor_circle_cells(center, radius);
+        for &(rx, ry) in &touched {
+            let _ = self.decrement_sensor_at_if_positive(house, rx, ry);
+        }
+        touched
     }
 
-    fn update_sensor_circle(
-        &mut self,
-        house: InternedId,
+    /// Exact outer-Y / inner-X strict-circle cell order shared by the four
+    /// active sensor writers. Mutation stays separate so Simulation can issue
+    /// each native resident callback immediately after that cell's counter.
+    pub(crate) fn sensor_circle_cells(
+        &self,
         center: (u16, u16),
         radius: u16,
-        add: bool,
     ) -> Vec<(u16, u16)> {
         let radius = i32::from(radius);
         if radius <= 0 || self.width == 0 || self.height == 0 {
             return Vec::new();
-        }
-        let cell_count = usize::from(self.width) * usize::from(self.height);
-        let counters = self
-            .sensors_by_house
-            .entry(house)
-            .or_insert_with(|| vec![0; cell_count]);
-        if counters.len() != cell_count {
-            counters.clear();
-            counters.resize(cell_count, 0);
         }
         let mut touched = Vec::new();
         for dy in -radius..radius {
@@ -795,18 +782,58 @@ impl FogState {
                 }
                 let rx = cell_x as u16;
                 let ry = cell_y as u16;
-                let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
-                if add {
-                    counters[index] = counters[index].wrapping_add(1);
-                } else if counters[index] > 0 {
-                    counters[index] = counters[index].wrapping_sub(1);
-                } else {
-                    continue;
-                }
                 touched.push((rx, ry));
             }
         }
         touched
+    }
+
+    fn sensor_counter_mut(&mut self, house: InternedId, rx: u16, ry: u16) -> &mut i16 {
+        let cell_count = usize::from(self.width) * usize::from(self.height);
+        let counters = self
+            .sensors_by_house
+            .entry(house)
+            .or_insert_with(|| vec![0; cell_count]);
+        if counters.len() != cell_count {
+            counters.clear();
+            counters.resize(cell_count, 0);
+        }
+        let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+        &mut counters[index]
+    }
+
+    pub(crate) fn increment_sensor_at(&mut self, house: InternedId, rx: u16, ry: u16) {
+        let counter = self.sensor_counter_mut(house, rx, ry);
+        *counter = counter.wrapping_add(1);
+    }
+
+    /// Unit `RemoveSensorsAt @ 0x004DE940` queries `count > 0` before both the
+    /// decrement and resident callbacks. Returns whether native entered them.
+    pub(crate) fn decrement_sensor_at_if_positive(
+        &mut self,
+        house: InternedId,
+        rx: u16,
+        ry: u16,
+    ) -> bool {
+        let counter = self.sensor_counter_mut(house, rx, ry);
+        if *counter <= 0 {
+            return false;
+        }
+        *counter = counter.wrapping_sub(1);
+        true
+    }
+
+    /// BuildingClass::RemoveSensorArrayAt @ 0x004556D0 decrements the signed
+    /// word unconditionally. Its asymmetric remove radius therefore creates
+    /// active negative fringe counts.
+    pub(crate) fn decrement_sensor_at_unconditional(
+        &mut self,
+        house: InternedId,
+        rx: u16,
+        ry: u16,
+    ) {
+        let counter = self.sensor_counter_mut(house, rx, ry);
+        *counter = counter.wrapping_sub(1);
     }
 
     pub fn has_sensor_for_house(&self, house: InternedId, rx: u16, ry: u16) -> bool {
@@ -1114,6 +1141,10 @@ impl FogState {
 
 /// Configuration for visibility computation, passed to `recompute_owner_visibility`.
 pub struct VisionConfig {
+    /// When true, Techno reveal/update readers require the canonical stored
+    /// TechnoClass+0x3D5 membership byte. Headless fixtures without live
+    /// MapClass authority leave this false.
+    pub require_playfield_membership: bool,
     /// Additive sight bonus for veteran+ units (from [General] VeteranSight=).
     /// Default 0 (vanilla RA2 gives no sight bonus from veterancy).
     pub veteran_sight_bonus: i32,
@@ -1132,6 +1163,7 @@ pub struct VisionConfig {
 impl Default for VisionConfig {
     fn default() -> Self {
         Self {
+            require_playfield_membership: false,
             veteran_sight_bonus: 0,
             leptons_per_sight_increase: 0,
             reveal_by_height: true,
@@ -1215,59 +1247,78 @@ pub fn recompute_owner_visibility_in_place(
         if entity.dying {
             continue;
         }
+        // `TechnoClass` reveal/update readers at 0x0070ADC0/0x0070AF50
+        // suppress a source whose canonical +0x3D5 byte is false. Do not
+        // replace this with a fresh position/bounds query: ordinary movement
+        // intentionally gives the byte promote-only hysteresis.
+        if config.require_playfield_membership && !entity.in_playfield {
+            continue;
+        }
         // Skip entities inside a transport — they don't provide vision.
         if entity.passenger_role.is_inside_transport() {
             continue;
         }
 
-        let vis = fog
-            .by_owner
-            .entry(entity.owner)
-            .or_insert_with(|| OwnerVisibility::new(width, height));
-
-        let height_leptons: i32 = entity_height_leptons(entity);
-
-        // Elevation raises sight MULTIPLICATIVELY, off the object's world Z in
-        // leptons, not additively off its terrain level:
-        //   sight = trunc(Sight * (1 + 0.10 * trunc(Z_leptons / LeptonsPerSightIncrease)))
-        // At the stock LeptonsPerSightIncrease=2000 no reachable height — not a
-        // level-15 plateau, not stock FlightLevel — produces a single step, so
-        // this is inert in an ordinary match. It is written as the engine's
-        // mechanism rather than folded to a constant because a map or mode INI
-        // can lower the key. Guarded against a zero divisor, which the engine
-        // does not do (VERA-internal; gamemd equivalent UNCHECKED).
-        let base_range: i32 = entity.vision_range as i32;
-        let elev_steps: i32 = if config.leptons_per_sight_increase > 0 {
-            height_leptons / config.leptons_per_sight_increase
-        } else {
-            0
-        };
-        let with_elevation: i32 =
-            (base_range * (100 + ELEVATION_SIGHT_PERCENT_PER_STEP * elev_steps)) / 100;
-        // Veterancy is multiplicative in the engine and gated on the type owning
-        // the sight promotion ability; VERA carries an additive stand-in because
-        // the parsed rules value is an integer. Both are inert at the stock
-        // `VeteranSight=0.0`, so this only diverges under a mod/map override.
-        let vet_bonus: i32 = if entity.veterancy >= 100 {
-            config.veteran_sight_bonus
-        } else {
-            0
-        };
-        let effective: u16 = ((with_elevation + vet_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
-
-        reveal_radius_into(
-            vis,
-            entity.position.rx,
-            entity.position.ry,
-            effective,
-            height_leptons,
-            config.reveal_by_height,
-            config.fog_of_war,
-            height_grid,
-            width,
-            height,
-        );
+        reveal_entity_vision(fog, entity, config, height_grid);
     }
+}
+
+/// Run the same effective-sight writer used by the ordinary Techno
+/// reveal/update pass for one already-admitted entity.
+///
+/// This is also the exact Rust-owned callback boundary for the false->true
+/// TechnoClass+0x3D5 transition in `MapClass::Set_Clipped_LocalSize`: action 40
+/// must not fall back to the raw `Sight=` radius and thereby lose elevation,
+/// veterancy, shifted-center, or height-LOS semantics.
+pub(crate) fn reveal_entity_vision(
+    fog: &mut FogState,
+    entity: &crate::sim::game_entity::GameEntity,
+    config: &VisionConfig,
+    height_grid: Option<&[u8]>,
+) {
+    let width = fog.width;
+    let height = fog.height;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let vis = fog
+        .by_owner
+        .entry(entity.owner)
+        .or_insert_with(|| OwnerVisibility::new(width, height));
+    let height_leptons: i32 = entity_height_leptons(entity);
+
+    // Elevation raises sight MULTIPLICATIVELY, off the object's world Z in
+    // leptons, not additively off its terrain level:
+    //   sight = trunc(Sight * (1 + 0.10 * trunc(Z_leptons / LeptonsPerSightIncrease)))
+    let base_range: i32 = entity.vision_range as i32;
+    let elev_steps: i32 = if config.leptons_per_sight_increase > 0 {
+        height_leptons / config.leptons_per_sight_increase
+    } else {
+        0
+    };
+    let with_elevation: i32 =
+        (base_range * (100 + ELEVATION_SIGHT_PERCENT_PER_STEP * elev_steps)) / 100;
+    // Veterancy is multiplicative in the engine and gated on the type owning
+    // the sight promotion ability; VERA carries the existing additive stand-in
+    // because the parsed rules value is an integer.
+    let vet_bonus: i32 = if entity.veterancy >= 100 {
+        config.veteran_sight_bonus
+    } else {
+        0
+    };
+    let effective: u16 = ((with_elevation + vet_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
+    reveal_radius_into(
+        vis,
+        entity.position.rx,
+        entity.position.ry,
+        effective,
+        height_leptons,
+        config.reveal_by_height,
+        config.fog_of_war,
+        height_grid,
+        width,
+        height,
+    );
 }
 
 fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16, u16) {

@@ -284,6 +284,40 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     }
                 }
             }
+            GameSoundEvent::CloakSound {
+                sound_id,
+                screen_pos,
+            } => {
+                // RulesClass::ReadAudioVisual @ 0x006691E0 stores only the
+                // VocClass::FindByName @ 0x007514D0 result. An invalid name is
+                // silent; it must not enter the generic raw audio-bag fallback.
+                let Some(entry) = state.audio.sound_registry.get(sound_id) else {
+                    continue;
+                };
+                let spatial_vol = if let Some((sx, sy)) = screen_pos {
+                    calc_spatial_volume(
+                        *sx,
+                        *sy,
+                        vp_w,
+                        vp_h,
+                        cam_x,
+                        cam_y,
+                        entry.range,
+                        entry.min_volume,
+                    )
+                } else {
+                    1.0
+                };
+                if spatial_vol > 0.0 {
+                    sfx.play_registered_sound_with_volume(
+                        sound_id,
+                        spatial_vol,
+                        &state.audio.sound_registry,
+                        assets,
+                        &state.audio.audio_indices,
+                    );
+                }
+            }
             GameSoundEvent::BridgeRepaired {
                 sound_id,
                 screen_pos,

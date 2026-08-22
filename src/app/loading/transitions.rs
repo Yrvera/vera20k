@@ -94,7 +94,7 @@ pub(crate) fn fallback_map_load_result() -> init::MapLoadResult {
             sidebar_chrome: None,
             software_cursor: None,
             overlay_names: BTreeMap::new(),
-            tiberium_radar_colors: HashMap::new(),
+            overlay_radar_colors: HashMap::new(),
             house_color_map: HashMap::new(),
             lighting_grid: crate::map::lighting::CellLightGrid::new(),
             csf: None,
@@ -117,6 +117,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.match_state.loaded_map_source = Some(result.scenario.map_source);
     state.match_state.loaded_map_hash = result.scenario.map_hash;
     state.match_state.match_presentation.terrain_grid = result.scenario.terrain_grid;
+    state.match_state.match_presentation.installed_playfield_authority = None;
     state.frontend.shell_preview_overlay_registry = Some(result.scenario.overlay_registry.clone());
     // F10 lifecycle: a new match install closes the outgoing diagnostic
     // segment before the runtime slot is overwritten — the old install
@@ -199,7 +200,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         sim.install_trigger_runtime(result.scenario.trigger_runtime);
     }
     state.match_state.match_presentation.overlay_names = result.presentation.overlay_names;
-    state.match_state.match_presentation.tiberium_radar_colors = result.presentation.tiberium_radar_colors;
+    state.match_state.match_presentation.overlay_radar_colors = result.presentation.overlay_radar_colors;
     state.match_state.match_presentation.house_color_map = result.presentation.house_color_map;
     state.match_state.match_presentation.house_roster = result.scenario.house_roster;
     state.match_state.match_presentation.tactical_bridge_inverse_map = result.scenario.tactical_bridge_inverse_map;
@@ -293,27 +294,45 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         .window
         .set_cursor_visible(state.match_state.match_presentation.software_cursor.is_none());
 
+    // Install current sim authority before the first camera/minimap frame. A
+    // campaign trigger may already have changed LocalSize before presentation
+    // objects exist; raw MapHeader LocalSize is not an acceptable substitute.
+    let (playfield_bounds, playfield_revision) =
+        crate::app::input::camera::sync_playfield_presentation_bounds(state);
+
     // Create minimap from terrain grid with overlay data.
     if let Some(grid) = &state.match_state.match_presentation.terrain_grid {
-        let overlay_data: Vec<(
-            u16,
-            u16,
-            crate::render::minimap::OverlayClassification,
-            u8,
-            Option<[u8; 4]>,
-        )> = build_minimap_overlay_data(
+        let resolved_terrain = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.view().resolved_terrain());
+        let overlay_registry = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|runtime| &runtime.resources.overlay_registry);
+        let rules = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|runtime| &runtime.resources.rules);
+        let overlay_data = build_minimap_overlay_data(
             state.match_state.match_presentation.overlays.as_slice(),
             &state.match_state.match_presentation.terrain_objects,
-            &state.match_state.match_presentation.overlay_names,
-            state.rules(),
-            &state.match_state.match_presentation.tiberium_radar_colors,
+            overlay_registry,
+            rules,
         );
         state.match_state.match_presentation.minimap = Some(MinimapRenderer::new(
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             grid,
+            resolved_terrain,
             &overlay_data,
+            &state.match_state.match_presentation.overlay_radar_colors,
             &state.match_state.match_presentation.theater_name,
+            playfield_bounds,
+            playfield_revision,
         ));
     }
     state.match_state.input.minimap_dragging = false;
@@ -596,61 +615,40 @@ pub(crate) fn load_eva_registry(
 
 /// Build overlay classification data for the minimap from map overlay entries.
 ///
-/// Classifies each overlay by name pattern (TIB* = ore, GEM* = gem, WALL/FENCE = wall,
-/// BRIDGE/BRDG = bridge) and each terrain object as TerrainObject.
-fn build_minimap_overlay_data(
+/// Carries parsed native overlay flags/IDs and the current OverlayData frame;
+/// only the Ore-v-Gem display label uses the stock three-character name family.
+/// `CellClass::GetRadarColor` source selection does not consume that label.
+pub(crate) fn build_minimap_overlay_data(
     overlays: &[crate::map::overlay::OverlayEntry],
     terrain_objects: &[crate::map::overlay::TerrainObject],
-    overlay_names: &BTreeMap<u8, String>,
-    _rules: Option<&crate::rules::ruleset::RuleSet>,
-    tiberium_colors: &HashMap<(u8, u8), [u8; 3]>,
-) -> Vec<(
-    u16,
-    u16,
-    crate::render::minimap::OverlayClassification,
-    u8,
-    Option<[u8; 4]>,
-)> {
-    use crate::render::minimap::OverlayClassification;
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> Vec<crate::render::minimap::MinimapOverlayDatum> {
+    use crate::render::minimap::{
+        MinimapCellRadarSource, MinimapOverlayDatum, OverlayClassification,
+        minimap_overlay_datum,
+    };
 
-    let mut data: Vec<(u16, u16, OverlayClassification, u8, Option<[u8; 4]>)> =
-        Vec::with_capacity(overlays.len() + terrain_objects.len());
+    let mut data = Vec::with_capacity(overlays.len() + terrain_objects.len());
 
     for entry in overlays {
-        let name: &str = match overlay_names.get(&entry.overlay_id) {
-            Some(n) => n.as_str(),
-            None => continue,
-        };
-        let upper: String = name.to_ascii_uppercase();
-        let classification: OverlayClassification = if upper.starts_with("GEM") {
-            OverlayClassification::Gem
-        } else if upper.starts_with("TIB") {
-            OverlayClassification::Ore
-        } else if upper.contains("WALL") || upper.contains("FENCE") {
-            OverlayClassification::Wall
-        } else if upper.contains("BRIDGE") || upper.contains("BRDG") {
-            OverlayClassification::Bridge
-        } else {
-            OverlayClassification::Other
-        };
-        // For tiberium overlays (Ore/Gem), look up the precomputed SHP-derived color.
-        let precomputed: Option<[u8; 4]> = match classification {
-            OverlayClassification::Ore | OverlayClassification::Gem => tiberium_colors
-                .get(&(entry.overlay_id, entry.frame))
-                .map(|&[r, g, b]| [r, g, b, 255]),
-            _ => None,
-        };
-        data.push((entry.rx, entry.ry, classification, entry.frame, precomputed));
+        data.push(minimap_overlay_datum(
+            entry.rx,
+            entry.ry,
+            entry.overlay_id,
+            entry.frame,
+            overlay_registry,
+            rules,
+        ));
     }
 
     for obj in terrain_objects {
-        data.push((
-            obj.rx,
-            obj.ry,
-            OverlayClassification::TerrainObject,
-            0,
-            None,
-        ));
+        data.push(MinimapOverlayDatum {
+            rx: obj.rx,
+            ry: obj.ry,
+            classification: OverlayClassification::TerrainObject,
+            source: MinimapCellRadarSource::TerrainObject,
+        });
     }
 
     data

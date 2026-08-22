@@ -562,6 +562,8 @@ mod tests {
             elite_stronger: false,
             veteran_scatter: false,
             elite_scatter: false,
+            veteran_cloak: false,
+            elite_cloak: false,
             death_weapon: None,
             death_weapon_damage_modifier: 1.0,
             super_weapon: None,
@@ -572,10 +574,17 @@ mod tests {
             sensor_array: false,
             sensors: false,
             sensors_sight: 0,
+            cloakable: false,
+            cloaking_speed: 1,
+            cloak_stop: false,
+            cloak_radius_in_cells: 20,
             cloak_generator: false,
             radar: false,
             radar_invisible: false,
+            veteran_radar_invisible: false,
+            elite_radar_invisible: false,
             radar_visible: false,
+            insignificant: false,
             harvester: false,
             refinery: false,
             bib: false,
@@ -1020,6 +1029,7 @@ mod tests {
             true,
             true,
             false,
+            None,
         ));
 
         let entity = entities.get(1).expect("entity");
@@ -1059,6 +1069,7 @@ mod tests {
             true,
             true,
             true,
+            None,
         ));
 
         let entity = entities.get(1).expect("entity");

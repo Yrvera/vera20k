@@ -303,6 +303,51 @@ fn install_common_raw_terrain(
     sim.resolved_terrain = Some(terrain);
 }
 
+#[test]
+fn techno_playfield_ctor_unlimbo_movement_hysteresis_and_teleport_clear() {
+    use crate::map::playfield::PlayfieldBounds;
+
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 32, 32, 0, None);
+    let bounds = PlayfieldBounds::from_normalized_local_size(32, 2, 2, 24, 20);
+    sim.playfield_bounds = Some(bounds);
+    let inside = (0u16..32)
+        .flat_map(|ry| (0u16..32).map(move |rx| (rx, ry)))
+        .find(|&(rx, ry)| bounds.contains_height_aware_packed(rx.into(), ry.into(), 0, 0))
+        .expect("mode-one inside cell");
+    let outside = (0u16..32)
+        .flat_map(|ry| (0u16..32).map(move |rx| (rx, ry)))
+        .find(|&(rx, ry)| !bounds.contains_height_aware_packed(rx.into(), ry.into(), 0, 0))
+        .expect("mode-one outside cell");
+
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    assert!(!sim.substrate.entities.get(1).unwrap().in_playfield);
+    assert!(matches!(
+        sim.try_reveal_entity(1, common_raw_request(inside.0, inside.1, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert!(
+        sim.substrate.entities.get(1).unwrap().in_playfield,
+        "TechnoClass::Unlimbo @ 0x006F6CFE establishes exact mode-one membership"
+    );
+
+    sim.substrate.entities.get_mut(1).unwrap().in_playfield = false;
+    sim.promote_entity_playfield_membership_after_move(1);
+    assert!(sim.substrate.entities.get(1).unwrap().in_playfield);
+    sim.substrate.entities.get_mut(1).unwrap().position.rx = outside.0;
+    sim.substrate.entities.get_mut(1).unwrap().position.ry = outside.1;
+    sim.promote_entity_playfield_membership_after_move(1);
+    assert!(
+        sim.substrate.entities.get(1).unwrap().in_playfield,
+        "ordinary Foot movement @ 0x006F511A promotes but never demotes"
+    );
+    sim.clear_entity_playfield_membership_after_teleport(1);
+    assert!(
+        !sim.substrate.entities.get(1).unwrap().in_playfield,
+        "Teleport arrival @ 0x00719A99 clears an outside member"
+    );
+}
+
 fn install_fly_aircraft(sim: &mut Simulation, stable_id: u64, altitude: SimFixed) {
     insert_entity(sim, stable_id, EntityCategory::Aircraft);
     let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Fly);
@@ -391,7 +436,7 @@ fn gsi_04_12_common_raw_occupation_structural_deck_unit_tracks_production_collap
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
-            StateOutcome::Absorbed
+            StateOutcome::Absorbed { .. }
         ));
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
@@ -800,7 +845,7 @@ fn gsi_04_12_object_raw_occupation_deck_clear_rechecks_live_structural_state() {
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
-            StateOutcome::Absorbed
+            StateOutcome::Absorbed { .. }
         ));
         assert!(matches!(
             bridge_state.body_cell_advance_state(3, 4, true, terrain),
@@ -3284,6 +3329,87 @@ fn gsi_05_02_projectile(source_id: u64, fuse_frames: Option<u16>) -> ProjectileS
     }
 }
 
+#[test]
+fn persistent_bullet_logic_slot_publishes_only_terminal_wall_dirty_visits() {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [Warheads]\n0=WALLWH\n\
+         [OverlayTypes]\n0=GASAND\n1=CYCL\n2=GAWALL\n\
+         [WALLWH]\nWall=yes\nCellSpread=0\nPercentAtMax=1\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [GAWALL]\nWall=yes\nStrength=1\n",
+    );
+    let art = crate::rules::ini_parser::IniFile::from_str("[GAWALL]\nDamageLevels=4\n");
+    let rules = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("Bullet wall rules");
+    let overlays = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
+
+    let run = |initial_wall_data: u8| {
+        let mut sim = Simulation::new();
+        let mut grid = crate::sim::overlay_grid::OverlayGrid::new(12, 12);
+        grid.place_overlay(5, 5, 2, initial_wall_data);
+        let _ = grid.take_dirty_cells();
+        sim.overlay_grid = Some(grid);
+
+        let projectile_id = sim.allocate_stable_id();
+        let impact = ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0);
+        let mut spawn = gsi_05_02_projectile(crate::sim::combat::RAD_NO_ATTACKER, Some(0));
+        spawn.origin = impact;
+        spawn.target = ProjectileTarget::Cell { rx: 5, ry: 5 };
+        spawn.initial_target_position = impact;
+        spawn.payload = ProjectilePayload {
+            base_damage: 1,
+            warhead: sim.interner.intern("WALLWH"),
+            weapon: sim.interner.intern("MISSINGWEAPON"),
+            owner: sim.interner.intern("Americans"),
+        };
+        sim.admit_projectile(projectile_id, spawn);
+
+        assert!(sim.object_ai_visit_one(
+            projectile_id,
+            Some(&rules),
+            ObjectAiCtx {
+                overlay_registry: Some(&overlays),
+                ..ObjectAiCtx::default()
+            },
+        ));
+        assert!(!sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+        sim
+    };
+
+    let partial = run(0);
+    assert_eq!(
+        partial.overlay_grid.as_ref().unwrap().cell(5, 5).overlay_data,
+        0x10,
+    );
+    assert!(partial.radar_terrain_dirty_cells.is_empty());
+    assert_eq!(partial.radar_terrain_dirty_generation, 0);
+
+    let terminal = run(0x30);
+    assert_eq!(terminal.overlay_grid.as_ref().unwrap().cell(5, 5).overlay_id, None);
+    assert_eq!(
+        terminal.radar_terrain_dirty_cells,
+        vec![
+            (5, 5),
+            (5, 3),
+            (6, 4),
+            (4, 4),
+            (5, 4),
+            (7, 5),
+            (6, 6),
+            (6, 5),
+            (5, 7),
+            (4, 6),
+            (5, 6),
+            (3, 5),
+            (4, 5),
+        ],
+    );
+    assert_eq!(terminal.radar_terrain_dirty_generation, 1);
+}
+
 fn gsi_05_04_guided_projectile(
     source_id: u64,
     target: ProjectileTarget,
@@ -3938,7 +4064,7 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
         let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
         assert!(matches!(
             bridge_state.body_cell_advance_state(6, 7, true, terrain),
-            StateOutcome::Absorbed
+            StateOutcome::Absorbed { .. }
         ));
         assert!(matches!(
             bridge_state.body_cell_advance_state(6, 7, true, terrain),
