@@ -34,7 +34,7 @@ Offer known old and new rts feautures never seen before to enhance the cnc ra2 e
 
 ## Development process
 
-Every behavior starts in the decompiled `gamemd.exe`: we read the original function and its callers in Ghidra, and the Rust that matches it cites that function and address next to the code, backed by 1,100+ reverse-engineering notes in `docs/research/`. The engine is mapped as 336 systems in player-visible loops (move, attack, harvest, build, reveal…), ordered into dependency phases. AI agents close those phases one mechanism at a time: one agent builds and tests it, a fresh agent that didn't build it reviews the diff against the native evidence and names the largest gap, and that loop repeats until nothing is left. Playtesting in retail and in VERA decides what comes next.
+The reference is the decompiled `gamemd.exe`. New behavior is read from the original function in Ghidra first, and the Rust that matches it cites that function and address; 1,100+ reverse-engineering notes in `docs/research/` back this. Playtesting in retail and in VERA decides what gets worked on next.
 
 ## Current Status
 
