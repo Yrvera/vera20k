@@ -1471,6 +1471,13 @@ mod tests {
         let mut sim = Simulation::new();
         sim.session.map_width = 64;
         sim.session.map_height = 64;
+        sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+            base: 0,
+            off_fc: -128,
+            off_100: -128,
+            off_104: 256,
+            off_108: 256,
+        });
         let owner = sim.interner.intern("Americans");
         let other = sim.interner.intern("Russians");
         sim.session.house_order.extend([owner, other]);

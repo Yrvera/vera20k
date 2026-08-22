@@ -1264,6 +1264,13 @@ mod tests {
         );
         let grid = PathGrid::new(12, 12);
         let raw_occupation = RawCellOccupationGrid::new();
+        let playfield = crate::sim::cell_rect::PlayfieldBounds {
+            base: 0,
+            off_fc: -32,
+            off_100: -32,
+            off_104: 64,
+            off_108: 64,
+        };
         let stale_peers = crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
             &entities,
             Some(&rules),
@@ -1275,7 +1282,7 @@ mod tests {
             raw_occupation: &raw_occupation,
             grid: &grid,
             terrain: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(playfield),
             native_frame: 0,
         };
 

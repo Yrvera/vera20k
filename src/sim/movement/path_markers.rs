@@ -615,6 +615,16 @@ mod tests {
         }
     }
 
+    fn test_playfield() -> PlayfieldBounds {
+        PlayfieldBounds {
+            base: 0,
+            off_fc: -32,
+            off_100: -32,
+            off_104: 64,
+            off_108: 64,
+        }
+    }
+
     #[test]
     fn gsi_04_12_marker_urgency_zero_is_inert_and_urgency_one_without_peer_downgrades() {
         let interner = StringInterner::new();
@@ -632,7 +642,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             0,
             0,
@@ -647,7 +657,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -685,7 +695,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -738,7 +748,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -800,7 +810,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             bridge_mover,
             2,
             0,
@@ -883,7 +893,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -963,7 +973,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             2,
             0,
@@ -1020,7 +1030,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -1036,7 +1046,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,
@@ -1054,7 +1064,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             bridge_mover,
             1,
             0,
@@ -1104,7 +1114,7 @@ mod tests {
             &raw,
             &grid,
             None,
-            None,
+            Some(test_playfield()),
             mover(mover_type),
             1,
             0,

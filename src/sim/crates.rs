@@ -320,6 +320,16 @@ mod tests {
         sim.scenario_rng = crate::sim::rng::SimRng::new(seed);
         sim.session.map_width = MAP;
         sim.session.map_height = MAP;
+        // Production installs MapClass authority before Post_Map_Init reaches
+        // crate placement. Keep this focused fixture intentionally broad while
+        // exercising the same required mode-one gate.
+        sim.playfield_bounds = Some(PlayfieldBounds {
+            base: 0,
+            off_fc: -128,
+            off_100: -128,
+            off_104: 256,
+            off_108: 256,
+        });
         sim.session.game_options.crates = true;
         sim.overlay_grid = Some(OverlayGrid::new(MAP, MAP));
         sim.resolved_terrain = Some(uniform_terrain(false));

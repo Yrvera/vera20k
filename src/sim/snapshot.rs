@@ -2624,14 +2624,15 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v82 building-overlay header");
-        assert_eq!(header.version, 84);
+        let header =
+            GameSnapshot::read_header(&bytes).expect("current building-overlay header");
+        assert_eq!(header.version, SNAPSHOT_VERSION);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v82 building-overlay snapshot")
+            .expect("current building-overlay snapshot")
             .sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v82 building-overlay snapshot restores structurally");
+            .expect("current building-overlay snapshot restores structurally");
         let overlays = restored
             .substrate
             .entities
@@ -2831,7 +2832,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_game_speed_transition_roundtrips_in_v82_and_executes_once() {
+    fn pending_game_speed_transition_roundtrips_in_current_version_and_executes_once() {
         use crate::sim::command::{Command, CommandEnvelope};
         use crate::sim::house_state::HouseState;
 
@@ -2849,10 +2850,10 @@ mod tests {
         assert_eq!(sim.state_hash(), hash_without_pending_input);
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "speed.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v82 GameSpeed header");
-        assert_eq!(header.version, 84);
+        let header = GameSnapshot::read_header(&bytes).expect("current GameSpeed header");
+        assert_eq!(header.version, SNAPSHOT_VERSION);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v82 GameSpeed snapshot")
+            .expect("current GameSpeed snapshot")
             .sim;
         assert_eq!(
             restored.pending_commands_for_tests(),

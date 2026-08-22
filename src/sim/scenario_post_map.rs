@@ -297,6 +297,16 @@ mod tests {
         let mut sim = Simulation::with_seed(0x51C0_0401);
         sim.session.map_width = MAP_SIZE;
         sim.session.map_height = MAP_SIZE;
+        // The app installs normalized MapClass bounds before this production
+        // post-map command. Model that prerequisite instead of relying on the
+        // now-removed permissive headless fallback.
+        sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+            base: 0,
+            off_fc: -32,
+            off_100: -32,
+            off_104: 64,
+            off_108: 64,
+        });
         sim.session.game_options.crates = true;
         sim.resolved_terrain = Some(flat_terrain());
         sim.overlay_grid = Some(OverlayGrid::new(MAP_SIZE, MAP_SIZE));

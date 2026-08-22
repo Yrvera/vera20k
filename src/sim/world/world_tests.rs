@@ -7111,6 +7111,16 @@ fn stacking_world(size: u16) -> (Simulation, RuleSet, PathGrid) {
 
     let rules = stacking_repro_rules();
     let mut sim = Simulation::new();
+    // Live maps have normalized playfield authority before Techno unlimbo.
+    // This deliberately broad diamond keeps the stacking fixture focused on
+    // movement admission while still exercising production membership state.
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -256,
+        off_100: -256,
+        off_104: 512,
+        off_108: 512,
+    });
     let terrain = gsi_04_10_clear_terrain(size, size);
     sim.terrain_costs = build_canonical_terrain_cost_grids(&terrain);
     let grid = PathGrid::from_resolved_terrain(&terrain);
