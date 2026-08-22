@@ -36,21 +36,21 @@ Offer known old and new rts feautures never seen before to enhance the cnc ra2 e
 
 **Early development** — Work is focused on the core engine. Approximately 35% complete.
 
-**What works today**
+**In a skirmish today** — all of this runs, but most of it is still being brought up to the original engine's exact behavior:
 
-- [x] Skirmish on retail Yuri's Revenge maps with the original menus, loading screen and sidebar
-- [x] Base building, power, tech tree, placement, selling and repair
-- [x] Harvesting with War, Chrono and Slave miners
-- [x] Ground, naval, air and spawned-unit combat; garrisons, transports, engineer capture, mind control, cloak
-- [x] Lightning Storm, Iron Curtain, Force Shield, Genetic Mutator, Psychic Reveal, Paradrop
-- [x] Save/load mid-match, match recording and replay
+- Retail Yuri's Revenge maps with the original menus, loading screen and sidebar
+- Base building, power, tech tree, placement, selling and repair
+- Harvesting with War, Chrono and Slave miners
+- Ground, naval, air and spawned-unit combat; garrisons, transports, engineer capture, mind control, cloak
+- Lightning Storm, Iron Curtain, Force Shield, Genetic Mutator, Psychic Reveal, Paradrop
+- Save/load mid-match, match recording and replay
 
 **Not yet**
 
-- [ ] Network play (lockstep and checksums exist, no transport)
-- [ ] A real AI opponent (the current one builds a base and sends waves)
-- [ ] Nuke, Chronosphere, Psychic Dominator, Spy Plane
-- [ ] Campaign missions and most map triggers
+- Network play (lockstep and checksums exist, no transport)
+- A real AI opponent (the current one builds a base and sends waves)
+- Nuke, Chronosphere, Psychic Dominator, Spy Plane
+- Campaign missions and most map triggers
 
 
 ## Requirements
