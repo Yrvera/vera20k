@@ -26,6 +26,8 @@ Thumbs.db
 /docs/*
 !/docs/_config.yml
 !/docs/index.md
+!/docs/images/
+!/docs/images/**
 !/docs/system-map/
 !/docs/system-map/**
 # research corpus and plans are tracked so forks and worktrees get them

@@ -7,6 +7,8 @@
 
 Red Alert 2: Yuri's Revenge — rebuilt from scratch in Rust for large multiplayer battles.
 
+<img src="docs/images/vera20k-screenshots.png" alt="VERA20k skirmish setup screen and in-game view" width="700">
+
 
 This project stands on the shoulders of giants. Thanks to OpenRA, XCC mixer, ModEnc website, PPM website, EA for open source RA1, World Altering Editor, Final Alert,YRpp, Ares, Phobos and much more.
 
