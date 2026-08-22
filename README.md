@@ -32,6 +32,10 @@ Constructed from the ground up for large multiplayer — targeting support for u
 **3.**
 Offer known old and new rts feautures never seen before to enhance the cnc ra2 experience.
 
+## How we build it
+
+Every behavior starts in the decompiled `gamemd.exe`: we read the original function and its callers in Ghidra, record it as a research note, then write Rust that matches it. The engine is mapped as 336 systems in player-visible loops (move, attack, harvest, build, reveal…), ordered into dependency phases. AI agents close those phases one mechanism at a time: one agent builds and tests it, a fresh agent that didn't build it reviews the diff against the native evidence and names the largest gap, and that loop repeats until nothing is left. Playtesting in retail and in VERA decides what comes next.
+
 ## Current Status
 
 **Early development** — Work is focused on the core engine. Approximately 40% complete.
