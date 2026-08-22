@@ -3,11 +3,11 @@
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/kmjRUn5m5F)![PRs Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue)](https://yrvera.github.io/vera20k/)
 
-<img src="docs/images/new-conscirpt-hero-image.png" alt="VERA20k hero image" width="600">
+<img src="docs/images/new-conscirpt-hero-image.png" alt="VERA20k hero image" width="100%">
 
 Red Alert 2: Yuri's Revenge — rebuilt from scratch in Rust for large multiplayer battles.
 
-<img src="docs/images/vera20k-screenshots.png" alt="VERA20k skirmish setup screen and in-game view" width="700">
+<img src="docs/images/vera20k-screenshots.png" alt="VERA20k skirmish setup screen and in-game view" width="100%">
 
 
 This project stands on the shoulders of giants. Thanks to OpenRA, XCC mixer, ModEnc website, PPM website, EA for open source RA1, World Altering Editor, Final Alert,YRpp, Ares, Phobos and much more.
