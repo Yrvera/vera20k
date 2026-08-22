@@ -34,9 +34,9 @@ Offer known old and new rts feautures never seen before to enhance the cnc ra2 e
 
 ## Current Status
 
-**Early development** — Work is focused on the core engine. Approximately 35% complete.
+**Early development** — Work is focused on the core engine. Approximately 40% complete.
 
-**In a skirmish today** — all of this runs, but most of it is still being brought up to the original engine's exact behavior:
+**Runs today** (still being matched to the original engine):
 
 - Retail Yuri's Revenge maps with the original menus, loading screen and sidebar
 - Base building, power, tech tree, placement, selling and repair
