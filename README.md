@@ -9,6 +9,12 @@ Red Alert 2: Yuri's Revenge — rebuilt from scratch in Rust for large multiplay
 
 <img src="docs/images/vera20k-screenshots.png" alt="VERA20k skirmish setup screen and in-game view" width="100%">
 
+## Join the Discord
+
+Development, playtesting and contributor talk happen on Discord — questions, bug reports and pull requests are welcome.
+
+[![Join the VERA20k Discord](https://img.shields.io/badge/Join%20the%20VERA20k%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/kmjRUn5m5F)
+
 
 This project stands on the shoulders of giants. Thanks to OpenRA, XCC mixer, ModEnc website, PPM website, EA for open source RA1, World Altering Editor, Final Alert,YRpp, Ares, Phobos and much more.
 
