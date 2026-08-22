@@ -22,9 +22,7 @@ VERA20K operates after contributor-owned cooperative principles. Contributors ea
 
 **1.**
 A drop-in replacement for `gamemd.exe` focused first on retail-convincing stock
-skirmish: experienced Yuri's Revenge players should be able to complete ordinary
-matches without repeatedly noticing differences in gameplay, visuals, sound, or
-response.
+skirmish.
 
 **2.**
 Constructed from the ground up for large multiplayer — targeting support for up to **30 players** and **20,000 units** on significantly bigger maps.
