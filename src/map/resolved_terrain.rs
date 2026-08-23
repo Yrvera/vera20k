@@ -440,6 +440,17 @@ impl SharedCellDummy {
         }
     }
 
+    /// Reconstruct the modeled fields in place at the native Resize boundary.
+    ///
+    /// `MapClass::Resize @ 0x00565C10` unconditionally calls
+    /// `CellClass::Constructor @ 0x0047BBF0` on the fixed dummy object at
+    /// `0x00ABDC50` (`0x005670E7..0x005670F2`). The address survives, while
+    /// coordinate `+0x24`, level `+0x11B`, and slope `+0x11C` return to zero.
+    /// Other constructor-owned fields are not represented by this handle yet.
+    pub(crate) fn reconstruct_for_map_resize(&self) {
+        self.state.store(0, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> SharedCellDummySnapshot {
         let packed = self.state.load(Ordering::Relaxed);
         SharedCellDummySnapshot {
@@ -2883,9 +2894,9 @@ mod tests {
 
     /// `MapClass::Clear @ 0x00565B00` destroys and nulls every prior slot before
     /// an ordinary `MapClass::Resize @ 0x00565C10`, so a later smaller load must
-    /// expose only its own cells and membership. The fallback CellClass at
-    /// `0x00ABDC50` is a separate process-global object and survives the reload;
-    /// only detached synthetic grid constructors begin with a fresh handle.
+    /// expose only its own cells and membership. Resize then reconstructs the
+    /// fallback CellClass at its fixed `0x00ABDC50` address: the identity
+    /// survives, but its constructor-owned contents do not.
     #[test]
     fn gsi_04_01_smaller_production_load_replaces_larger_grid_without_stale_state() {
         let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
@@ -2910,6 +2921,7 @@ mod tests {
         let mut main_draw = || main_rng.next_u32();
         let process_dummy = SharedCellDummy::fresh();
 
+        process_dummy.reconstruct_for_map_resize();
         let (mut current, larger_stats) = build_production_grid(
             &larger,
             Some(&theater),
@@ -2935,6 +2947,7 @@ mod tests {
         let mut smaller = make_map(Vec::new(), Vec::new(), Vec::new());
         smaller.header.width = 2;
         smaller.header.height = 1;
+        process_dummy.reconstruct_for_map_resize();
         let (mut smaller_grid, smaller_stats) =
             build_production_grid_without_theater(&smaller, &mut cache);
         smaller_grid.bind_shared_cell_dummy(process_dummy);
@@ -2958,8 +2971,8 @@ mod tests {
         );
         assert!(current.cell(1, 1).is_none());
         assert!(current.cell(4, 8).is_none());
-        assert_eq!(current.dummy_cell_requested_coord(), (-7, 11));
-        assert_eq!(current.dummy_cell_level_slope(), (-7, 11));
+        assert_eq!(current.dummy_cell_requested_coord(), (0, 0));
+        assert_eq!(current.dummy_cell_level_slope(), (0, 0));
 
         assert_eq!(smaller_stats.fill_calls, 3);
         assert_eq!(smaller_stats.water_advances, 0);

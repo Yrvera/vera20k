@@ -1392,6 +1392,11 @@ pub(crate) fn load_map_from_initial(
         |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
     let mut variant_draw = || variant_main_rng.next_u32();
     let mut variant_selector = tile_variant_selector_cache.begin_load(&mut variant_draw);
+    // Native `MapClass::Resize @ 0x00565C10` reconstructs the fixed fallback
+    // CellClass through `CellClass::Constructor @ 0x0047BBF0` before Fill and
+    // IsoMapPack materialize the new map. Reset its modeled bytes in place;
+    // replacing this handle would break process-global pointer identity.
+    shared_cell_dummy.reconstruct_for_map_resize();
     let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
         &map_data,
         theater_result.as_ref(),

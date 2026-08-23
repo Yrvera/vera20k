@@ -4395,6 +4395,7 @@ mod tests {
 
         let mut live = Simulation::new();
         let process_dummy = live.shared_cell_dummy.clone();
+        process_dummy.set_level_slope(-7, 11);
         process_dummy.stamp_coord(7, 9);
         let projectile_id = live.allocate_stable_id();
         live.admit_projectile(
@@ -4427,7 +4428,15 @@ mod tests {
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         restored.retain_in_scenario_process_state_from(&live);
         assert!(restored.shared_cell_dummy.same_identity(&process_dummy));
-        assert_eq!(restored.shared_cell_dummy.snapshot().coord, (7, 9));
+        assert_eq!(
+            restored.shared_cell_dummy.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (7, 9),
+                level: -7,
+                slope_type: 11,
+            },
+            "fallible candidate preparation retains identity without mutating the live process"
+        );
         restored
             .restore_after_snapshot_load()
             .expect("dummy CellClass target needs no Object identity fixup");
@@ -4447,6 +4456,23 @@ mod tests {
             .shared_cell_dummy();
         assert!(rebuilt_dummy.same_identity(&process_dummy));
         assert_eq!(rebuilt_dummy.snapshot().coord, (7, 9));
+
+        restored.reconstruct_shared_cell_dummy_for_map_resize();
+        assert_eq!(
+            rebuilt_dummy.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (0, 0),
+                level: 0,
+                slope_type: 0,
+            }
+        );
+
+        process_dummy.stamp_coord(-2, 7);
+        assert_eq!(
+            rebuilt_dummy.snapshot().coord,
+            (-2, 7),
+            "the restored DummyCell target retains the same live identity after reconstruction"
+        );
     }
 
     #[test]

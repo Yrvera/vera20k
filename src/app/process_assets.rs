@@ -184,6 +184,8 @@ mod tests {
             .same_identity(&first_clone.shared_cell_dummy()));
         assert_eq!(first_clone.dummy_cell_requested_coord(), (7, 9));
 
+        process_dummy.set_level_slope(-7, 11);
+        process_dummy.reconstruct_for_map_resize();
         let mut reloaded = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
             0,
             0,
@@ -193,7 +195,8 @@ mod tests {
         assert!(reloaded
             .shared_cell_dummy()
             .same_identity(&first.shared_cell_dummy()));
-        assert_eq!(reloaded.dummy_cell_requested_coord(), (7, 9));
+        assert_eq!(reloaded.dummy_cell_requested_coord(), (0, 0));
+        assert_eq!(reloaded.dummy_cell_level_slope(), (0, 0));
 
         let headless_process = crate::map::resolved_terrain::SharedCellDummy::fresh();
         assert!(!headless_process.same_identity(&assets.shared_cell_dummy));

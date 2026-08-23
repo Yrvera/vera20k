@@ -265,6 +265,13 @@ impl PreparedLoad {
         Vec<crate::map::overlay::OverlayEntry>,
         MatchStartupStateSnapshot,
     ) {
+        // This is the first infallible successful-load seam. Native
+        // `MouseClass::Load @ 0x005BE150` reaches
+        // `MapClass::Resize @ 0x00565C10` and reconstructs the fixed fallback
+        // CellClass here; doing it during candidate preparation would leak
+        // mutation from a rejected transactional load into the running match.
+        self.simulation
+            .reconstruct_shared_cell_dummy_for_map_resize();
         (
             self.simulation,
             self.map_restore.occupied_overlays,
@@ -567,6 +574,9 @@ mod tests {
     impl RunningMatchTestState {
         fn running(rules: &RuleSet) -> Self {
             let simulation = load_fixture_simulation(true);
+            let shared_cell_dummy = simulation.effective_shared_cell_dummy();
+            shared_cell_dummy.set_level_slope(-7, 11);
+            shared_cell_dummy.stamp_coord(7, 9);
             let mut replay = ReplayLog::new(ReplayHeader {
                 version: 1,
                 tick_hz: 15,
@@ -610,6 +620,7 @@ mod tests {
         fn baseline(&self) -> RunningMatchBaseline {
             RunningMatchBaseline {
                 simulation_hash: self.simulation.state_hash(),
+                shared_cell_dummy: self.effective_shared_cell_dummy_snapshot(),
                 rng: self.simulation.rng_state(),
                 replay: self.replay_log.as_ref().map(|replay| {
                     (
@@ -635,11 +646,18 @@ mod tests {
                 save_list_dirty: self.persistence.save_list_cache.dirty,
             }
         }
+
+        fn effective_shared_cell_dummy_snapshot(
+            &self,
+        ) -> crate::map::resolved_terrain::SharedCellDummySnapshot {
+            self.simulation.effective_shared_cell_dummy().snapshot()
+        }
     }
 
     #[derive(Debug, PartialEq)]
     struct RunningMatchBaseline {
         simulation_hash: u64,
+        shared_cell_dummy: crate::map::resolved_terrain::SharedCellDummySnapshot,
         rng: SimulationRngState,
         replay: Option<(u64, usize, Option<u64>)>,
         active_loading_correlation: Option<MatchCorrelationId>,
@@ -911,7 +929,20 @@ mod tests {
         .unwrap_or_else(|error| panic!("same-content transaction must prepare: {error}"));
         assert_eq!(state.baseline(), baseline);
 
-        let (_simulation, _occupied_overlays, preserved_startup) = prepared.into_parts();
+        let live_dummy = state.simulation.effective_shared_cell_dummy();
+        assert_eq!(live_dummy.snapshot().coord, (7, 9));
+        let (simulation, _occupied_overlays, preserved_startup) = prepared.into_parts();
+        let restored_dummy = simulation.effective_shared_cell_dummy();
+        assert!(restored_dummy.same_identity(&live_dummy));
+        assert_eq!(
+            restored_dummy.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (0, 0),
+                level: 0,
+                slope_type: 0,
+            },
+            "successful in-scenario load reconstructs the fixed dummy at the commit seam"
+        );
         // Production calls this exact restore after its enumerated commit. Clear
         // the owner slots first so the assertion proves the snapshot carries the
         // real option values rather than observing untouched u64 surrogates.

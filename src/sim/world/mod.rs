@@ -1916,6 +1916,18 @@ impl Simulation {
         self.bind_shared_cell_dummy(live.effective_shared_cell_dummy());
     }
 
+    /// Apply the successful load's native MapClass Resize reconstruction.
+    ///
+    /// `MouseClass::Load @ 0x005BE150` routes restored dimensions through
+    /// `MapClass::Resize @ 0x00565C10`, whose unconditional call to
+    /// `CellClass::Constructor @ 0x0047BBF0` reconstructs the fixed dummy in
+    /// place. The app invokes this only after fallible candidate preparation,
+    /// so a rejected transactional load cannot mutate the running world.
+    pub(crate) fn reconstruct_shared_cell_dummy_for_map_resize(&self) {
+        self.effective_shared_cell_dummy()
+            .reconstruct_for_map_resize();
+    }
+
     /// Adopt the process-global CellClass identity already bound to a load's
     /// resolved grid, before that grid is cloned into Simulation.
     pub(crate) fn bind_shared_cell_dummy(&mut self, shared_cell_dummy: SharedCellDummy) {
