@@ -746,24 +746,43 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
     }
 
     if let Some(required_zone) = ctx.required_zone_id {
-        let Some((rx, ry)) = projection_coord else {
-            // UNCHECKED residual: this adapter does not yet model the nested
-            // GetZoneID walk on the shared dummy. Retain conservative rejection
-            // for this bounded required-zone case after performing the lookup.
-            return false;
-        };
         let Some(zone_grid) = ctx.zone_grid else {
             return false;
         };
-        let Some(zone_map) = zone_grid.map_for(ctx.movement_zone) else {
-            return false;
-        };
-        let layer = if ctx.bridge_aware_zone {
-            MovementLayer::Bridge
+
+        let actual_zone = if !ctx.bridge_aware_zone && ctx.resolved_terrain.is_some() {
+            // `CellClass::CheckCellPassability @ 0x004834A0` passes the
+            // already-resolved CellClass's stored +0x24 coordinate into
+            // non-bridge `MapClass::GetZoneID @ 0x0056D230`. A fixed-stride
+            // alias therefore uses the real slot's canonical coordinate, while
+            // the shared dummy uses the live coordinate stamped by the outer
+            // GetCellClass call. GetZoneID itself performs no CellClass lookup
+            // and leaves the shared dummy untouched.
+            let coord = match &cell {
+                CellRef::Real(cell) => (i32::from(cell.rx), i32::from(cell.ry)),
+                CellRef::Dummy { cell } => cell.snapshot().coord,
+            };
+            zone_grid.get_zone_id_nonbridge_native(coord, ctx.movement_zone)
         } else {
-            MovementLayer::Ground
+            // UNCHECKED residual: the bridge-aware GetZoneID redirect has not
+            // yet been parity-closed. Keep its existing flattened bridge-layer
+            // projection separate from the exact non-bridge adapter. The same
+            // compatibility projection remains for terrain-less PathGrid-only
+            // callers, which have no retained native base topology.
+            let Some((rx, ry)) = projection_coord else {
+                return false;
+            };
+            let Some(zone_map) = zone_grid.map_for(ctx.movement_zone) else {
+                return false;
+            };
+            let layer = if ctx.bridge_aware_zone {
+                MovementLayer::Bridge
+            } else {
+                MovementLayer::Ground
+            };
+            Some(zone_map.zone_at(rx, ry, layer))
         };
-        if zone_map.zone_at(rx, ry, layer) != required_zone {
+        if actual_zone != Some(required_zone) {
             return false;
         }
     }
@@ -1346,6 +1365,20 @@ mod tests {
         }
     }
 
+    fn square_zone_grid(terrain: &ResolvedTerrainGrid) -> (PathGrid, ZoneGrid) {
+        assert_eq!(terrain.width(), terrain.height());
+        let path_grid = PathGrid::from_resolved_terrain(terrain);
+        let zone_grid = ZoneGrid::build_with_terrain(
+            &path_grid,
+            &BTreeMap::new(),
+            Some(terrain),
+            &[],
+            terrain.width(),
+            terrain.height(),
+        );
+        (path_grid, zone_grid)
+    }
+
     #[test]
     fn gsi_04_01_passability_missing_cell_stamps_then_uses_clear_dummy_defaults() {
         let terrain = flat_terrain(1, 1);
@@ -1617,7 +1650,7 @@ mod tests {
 
     #[test]
     fn cellrect_passability_uses_movement_zone_zone_id_and_speed_type_separately() {
-        let mut terrain = flat_terrain(2, 1);
+        let mut terrain = flat_terrain(2, 2);
         terrain.cells[0].speed_costs = SpeedCostProfile {
             track: Some(100),
             foot: Some(0),
@@ -1632,11 +1665,9 @@ mod tests {
             terrain.width(),
             terrain.height(),
         );
-        let zone_id =
-            zone_grid
-                .map_for(MovementZone::Normal)
-                .unwrap()
-                .zone_at(0, 0, MovementLayer::Ground);
+        let zone_id = zone_grid
+            .get_zone_id_nonbridge_native((0, 0), MovementZone::Normal)
+            .unwrap();
 
         let wrong_zone = CellRectPassabilityContext {
             rect: CellRect::single(0, 0),
@@ -1685,6 +1716,147 @@ mod tests {
             zone_grid: Some(&zone_grid),
         };
         assert!(check_passability_rect(track_passes));
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_nonbridge_zone_uses_resolved_cell_canonical_coord() {
+        let terrain = flat_terrain(2, 2);
+        let (path_grid, mut zone_grid) = square_zone_grid(&terrain);
+        {
+            let base = zone_grid.base_topology_mut().unwrap();
+            base.movement_classes = vec![0; 4];
+            base.zone_ids = vec![2, 3, 4, 5];
+            base.zone_count = 5;
+            let row = MovementZone::Normal.matrix_row().unwrap();
+            base.raw_zone_ids_by_row[row].resize(6, 0);
+            base.raw_zone_ids_by_row[row][0] = 10;
+            base.raw_zone_ids_by_row[row][4] = 44;
+        }
+        let _ = get_cellclass_fallback(Some(&terrain), -1, 0);
+
+        let mut ctx = clear_passability_context(CellRect::single(512, 0), Some(&terrain));
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&zone_grid);
+        ctx.required_zone_id = Some(44);
+        assert!(
+            check_passability_rect(ctx),
+            "packed (512,0) resolves backing slot 512, whose stored coordinate is (0,1)"
+        );
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 0),
+            "the real fixed-stride alias and nested non-bridge GetZoneID do not stamp the dummy"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_dummy_routes_raw_nonbridge_zone_without_restamping() {
+        let mut terrain = flat_terrain(2, 2);
+        let (path_grid, mut zone_grid) = square_zone_grid(&terrain);
+        {
+            let base = zone_grid.base_topology_mut().unwrap();
+            base.movement_classes = vec![0; 4];
+            base.zone_ids = vec![2, 3, 4, 5];
+            base.zone_count = 5;
+            let row = MovementZone::Normal.matrix_row().unwrap();
+            base.raw_zone_ids_by_row[row].resize(6, 0);
+            base.raw_zone_ids_by_row[row][3] = 77;
+        }
+        terrain.test_set_native_allocated_cells(&[(0, 0)]);
+
+        let check = |required_zone_id, zone_grid: &ZoneGrid| {
+            let mut ctx = clear_passability_context(CellRect::single(1, 0), Some(&terrain));
+            ctx.path_grid = Some(&path_grid);
+            ctx.zone_grid = Some(zone_grid);
+            ctx.required_zone_id = Some(required_zone_id);
+            check_passability_rect(ctx)
+        };
+
+        assert!(check(77, &zone_grid));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+        assert!(!check(78, &zone_grid));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+
+        let row = MovementZone::Normal.matrix_row().unwrap();
+        zone_grid.base_topology_mut().unwrap().raw_zone_ids_by_row[row][3] = 1;
+        assert!(
+            !check(77, &zone_grid),
+            "raw reserved label 1 stays distinct"
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+        zone_grid.base_topology_mut().unwrap().raw_zone_ids_by_row[row][3] = u16::MAX;
+        assert!(!check(77, &zone_grid), "raw 0xffff stays distinct");
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (1, 0),
+            "non-bridge GetZoneID performs no second CellClass lookup or dummy write"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_required_zone_fails_without_native_topology() {
+        let terrain = flat_terrain(2, 2);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let compatibility_zones = ZoneGrid::build(
+            &path_grid,
+            &BTreeMap::new(),
+            terrain.width(),
+            terrain.height(),
+        );
+        let compatibility_zone = compatibility_zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(0, 0, MovementLayer::Ground);
+        let mut ctx = clear_passability_context(CellRect::single(0, 0), Some(&terrain));
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&compatibility_zones);
+        ctx.required_zone_id = Some(compatibility_zone);
+        assert!(
+            !check_passability_rect(ctx),
+            "terrain-backed required-zone checks must not fall back to a flattened ZoneMap"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_pathgrid_only_required_zone_keeps_compatibility_projection() {
+        let path_grid = PathGrid::new(2, 1);
+        let compatibility_zones = ZoneGrid::build(&path_grid, &BTreeMap::new(), 2, 1);
+        let zone = compatibility_zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(1, 0, MovementLayer::Ground);
+        let mut ctx = clear_passability_context(CellRect::single(1, 0), None);
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&compatibility_zones);
+        ctx.required_zone_id = Some(zone);
+        assert!(check_passability_rect(ctx));
+    }
+
+    #[test]
+    fn gsi_04_01_bridge_required_zone_stays_off_nonbridge_raw_adapter() {
+        let terrain = flat_terrain(2, 2);
+        let (path_grid, mut zone_grid) = square_zone_grid(&terrain);
+        {
+            let base = zone_grid.base_topology_mut().unwrap();
+            let cluster = base.zone_ids[0] as usize;
+            let row = MovementZone::Normal.matrix_row().unwrap();
+            base.raw_zone_ids_by_row[row].resize(cluster + 1, 0);
+            base.raw_zone_ids_by_row[row][cluster] = 91;
+        }
+        assert_eq!(
+            zone_grid.get_zone_id_nonbridge_native((0, 0), MovementZone::Normal),
+            Some(91)
+        );
+
+        let mut ctx = clear_passability_context(CellRect::single(0, 0), Some(&terrain));
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&zone_grid);
+        ctx.required_zone_id = Some(91);
+        ctx.bridge_aware_zone = true;
+        assert!(
+            !check_passability_rect(ctx),
+            "this locks branch separation only: exact bridge-aware GetZoneID remains UNCHECKED"
+        );
     }
 
     #[test]

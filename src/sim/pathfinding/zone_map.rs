@@ -301,6 +301,54 @@ impl ZoneGrid {
         self.maps.get(&mz)
     }
 
+    /// Exact non-bridge `MapClass::GetZoneID` raw-row lookup.
+    ///
+    /// Native `MapClass::GetZoneID @ 0x0056D230` packs both coordinate
+    /// components to signed 16-bit, indexes an `(W + 1) * (W + 1)` square,
+    /// clamps only the resulting signed linear index, and projects the base
+    /// cluster through the requested raw movement-zone row. The extra final
+    /// row and column are zero-initialized base cluster 0; raw labels `1` and
+    /// `0xffff` are returned unchanged.
+    ///
+    /// This seam deliberately refuses compatibility-only or malformed Rust
+    /// topology. Native permits an unchecked movement-row access, but Rust has
+    /// no sound equivalent for that undefined read, so a non-concrete row or a
+    /// missing cluster entry fails explicitly.
+    pub(crate) fn get_zone_id_nonbridge_native(
+        &self,
+        coord: (i32, i32),
+        movement_zone: MovementZone,
+    ) -> Option<ZoneId> {
+        let base = self.base_topology.as_ref()?;
+        if self.width != self.height {
+            return None;
+        }
+
+        let width = usize::from(self.width);
+        let cell_count = width.checked_mul(width)?;
+        if base.movement_classes.len() != cell_count || base.zone_ids.len() != cell_count {
+            return None;
+        }
+
+        let row = movement_zone.matrix_row()?;
+        let raw_row = base.raw_zone_ids_by_row.get(row)?;
+        let side = i32::from(self.width).checked_add(1)?;
+        let padded_count = side.checked_mul(side)?;
+        let x = i32::from(coord.0 as i16);
+        let y = i32::from(coord.1 as i16);
+        let linear = side.wrapping_mul(y).wrapping_add(x);
+        let clamped = linear.clamp(0, padded_count - 1);
+        let padded_x = clamped % side;
+        let padded_y = clamped / side;
+        let cluster = if padded_x < i32::from(self.width) && padded_y < i32::from(self.height) {
+            let index = padded_y as usize * width + padded_x as usize;
+            *base.zone_ids.get(index)?
+        } else {
+            ZONE_INVALID
+        };
+        raw_row.get(cluster as usize).copied()
+    }
+
     /// Get the adjacency graph for a movement zone.
     pub fn adjacency_for(&self, mz: MovementZone) -> Option<&ZoneAdjacency> {
         self.adjacency.get(&mz)
