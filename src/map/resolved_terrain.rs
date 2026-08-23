@@ -2618,6 +2618,235 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ProductionBuildStats {
+        fill_calls: usize,
+        water_advances: usize,
+        generated_selector_table: bool,
+        main_draws: usize,
+    }
+
+    fn build_production_grid(
+        map: &MapFile,
+        theater_data: Option<&TheaterData>,
+        cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
+        main_draw: &mut dyn FnMut() -> u32,
+    ) -> (ResolvedTerrainGrid, ProductionBuildStats) {
+        let mut fill_calls = 0usize;
+        let mut scenario_fill_ranged = |_low, _high| {
+            fill_calls += 1;
+            0
+        };
+        let mut selector = cache.begin_load(main_draw);
+        let grid = ResolvedTerrainGrid::build_with_variant_selector(
+            map,
+            theater_data,
+            None,
+            None,
+            None,
+            None,
+            false,
+            0,
+            &mut scenario_fill_ranged,
+            &mut selector,
+        );
+        let stats = ProductionBuildStats {
+            fill_calls,
+            water_advances: selector.map_fill_scenario_advance_count(),
+            generated_selector_table: selector.generated_table(),
+            main_draws: selector.raw_draw_count(),
+        };
+        (grid, stats)
+    }
+
+    fn build_production_grid_without_theater(
+        map: &MapFile,
+        cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
+    ) -> (ResolvedTerrainGrid, ProductionBuildStats) {
+        let mut unused_main_draw = || 0;
+        build_production_grid(map, None, cache, &mut unused_main_draw)
+    }
+
+    /// `MapClass::Resize @ 0x00565C10` owns a fixed 512x512 table and allocates
+    /// exactly `M * (2N - 1)` Size-diamond cells. Rust deliberately rejects the
+    /// first malformed dimension sum that would cross that native capacity.
+    #[test]
+    fn gsi_04_01_production_size_diamond_closes_exact_capacity_edge() {
+        const N: u32 = 511;
+        const M: u32 = 1;
+        const HIGHEST_ALLOCATED: (i32, i32) = (2, 511);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut edge = make_map(Vec::new(), Vec::new(), Vec::new());
+        edge.header.width = N;
+        edge.header.height = M;
+        let (grid, stats) = build_production_grid_without_theater(&edge, &mut cache);
+
+        let expected_count = M as usize * (2 * N as usize - 1);
+        assert_eq!(expected_count, 1_021);
+        let highest_index =
+            crate::map::cell_index::cell_linear_index(HIGHEST_ALLOCATED.0, HIGHEST_ALLOCATED.1)
+                .expect("capacity-edge coordinate has a fixed-stride slot");
+        let highest_index_usize =
+            usize::try_from(highest_index).expect("fixed-stride table index fits usize");
+        let allocated = grid
+            .native_allocated
+            .as_ref()
+            .expect("production build records native allocation membership");
+        assert_eq!((grid.width(), grid.height()), (512, 512));
+        assert_eq!(grid.iter().count(), expected_count);
+        assert_eq!(stats.fill_calls, expected_count);
+        assert_eq!(
+            allocated.iter().filter(|&&slot| slot).count(),
+            expected_count
+        );
+        let fixed_stride = usize::try_from(crate::map::cell_index::CELL_ROW_STRIDE)
+            .expect("native cell stride fits usize");
+        let fixed_slot = |x: u32, y: u32| {
+            usize::try_from(y).expect("native y fits usize") * fixed_stride
+                + usize::try_from(x).expect("native x fits usize")
+        };
+        let mut expected_slots = vec![false; fixed_stride * 512];
+        for x in 1u32..=511 {
+            let y = 512 - x;
+            let slot = fixed_slot(x, y);
+            assert!(!expected_slots[slot], "duplicate sum-512 slot ({x}, {y})");
+            expected_slots[slot] = true;
+        }
+        for x in 2u32..=511 {
+            let y = 513 - x;
+            let slot = fixed_slot(x, y);
+            assert!(!expected_slots[slot], "duplicate sum-513 slot ({x}, {y})");
+            expected_slots[slot] = true;
+        }
+        assert_eq!(
+            expected_slots.iter().filter(|&&slot| slot).count(),
+            1_021
+        );
+        for y in 0u32..512 {
+            for x in 0u32..512 {
+                let slot = fixed_slot(x, y);
+                let expected = expected_slots[slot];
+                assert_eq!(
+                    allocated[slot], expected,
+                    "native allocation membership at ({x}, {y}), fixed slot {slot}"
+                );
+                let cell_x = u16::try_from(x).expect("native x fits CellClass coordinate");
+                let cell_y = u16::try_from(y).expect("native y fits CellClass coordinate");
+                assert_eq!(
+                    grid.cell(cell_x, cell_y).is_some(),
+                    expected,
+                    "grid lookup membership at ({x}, {y}), fixed slot {slot}"
+                );
+            }
+        }
+        assert_eq!(
+            allocated.iter().rposition(|&slot| slot),
+            Some(highest_index_usize)
+        );
+        assert_eq!(
+            highest_index,
+            511 * crate::map::cell_index::CELL_ROW_STRIDE + 2
+        );
+        assert!(grid.cell(2, 511).is_some());
+        assert!(grid.cell(3, 511).is_none());
+
+        let mut oversized = make_map(Vec::new(), Vec::new(), Vec::new());
+        oversized.header.width = N + 1;
+        oversized.header.height = M;
+        let (rejected, rejected_stats) =
+            build_production_grid_without_theater(&oversized, &mut cache);
+        assert_eq!((rejected.width(), rejected.height()), (0, 0));
+        assert!(rejected.cells.is_empty());
+        assert_eq!(rejected.iter().count(), 0);
+        assert!(
+            rejected
+                .native_allocated
+                .as_ref()
+                .is_some_and(Vec::is_empty)
+        );
+        assert_eq!(rejected_stats.fill_calls, 0);
+        assert!(rejected.cell(0, 0).is_none());
+    }
+
+    /// `MapClass::Clear @ 0x00565B00` destroys and nulls every prior slot before
+    /// an ordinary `MapClass::Resize @ 0x00565C10`; a later smaller load must
+    /// therefore expose only its own cells, membership, and fresh dummy state.
+    #[test]
+    fn gsi_04_01_smaller_production_load_replaces_larger_grid_without_stale_state() {
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut larger = make_map(
+            vec![MapCell {
+                rx: 4,
+                ry: 8,
+                tile_index: theater::NO_TILE,
+                sub_tile: 0,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        larger.header.width = 5;
+        larger.header.height = 4;
+        larger.header.fill = "Water".to_string();
+        let theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=1\nFileName=clear\nSetName=Clear\n",
+        );
+        let mut main_rng = SimRng::new(0x0401_5EED);
+        let mut main_draw = || main_rng.next_u32();
+
+        let (mut current, larger_stats) = build_production_grid(
+            &larger,
+            Some(&theater),
+            &mut cache,
+            &mut main_draw,
+        );
+        assert_eq!(current.iter().count(), 4 * (2 * 5 - 1));
+        assert_eq!(larger_stats.fill_calls, 36);
+        assert_eq!(larger_stats.water_advances, 36);
+        assert!(larger_stats.generated_selector_table);
+        assert!(larger_stats.main_draws > 0);
+        assert!(cache.is_initialized());
+        assert!(current.cell(4, 8).is_some());
+        current
+            .cell_mut(4, 8)
+            .expect("larger-only allocated cell")
+            .level = 77;
+        current.test_set_dummy_cell_level_slope(-7, 11);
+
+        let mut smaller = make_map(Vec::new(), Vec::new(), Vec::new());
+        smaller.header.width = 2;
+        smaller.header.height = 1;
+        let (smaller_grid, smaller_stats) =
+            build_production_grid_without_theater(&smaller, &mut cache);
+        current = smaller_grid;
+
+        let allocated_coords: Vec<_> = current.iter().map(|cell| (cell.rx, cell.ry)).collect();
+        assert_eq!(allocated_coords, vec![(2, 1), (1, 2), (2, 2)]);
+        assert_eq!((current.width(), current.height()), (3, 3));
+        assert_eq!(current.cells.len(), 9);
+        assert_eq!(current.iter().count(), 3);
+        assert_eq!(
+            current
+                .native_allocated
+                .as_ref()
+                .expect("second production membership")
+                .iter()
+                .filter(|&&slot| slot)
+                .count(),
+            3
+        );
+        assert!(current.cell(1, 1).is_none());
+        assert!(current.cell(4, 8).is_none());
+        assert_eq!(current.dummy_cell_level_slope(), (0, 0));
+
+        assert_eq!(smaller_stats.fill_calls, 3);
+        assert_eq!(smaller_stats.water_advances, 0);
+        assert!(!smaller_stats.generated_selector_table);
+        assert_eq!(smaller_stats.main_draws, 0);
+        assert!(cache.is_initialized());
+    }
+
     fn synthetic_theater_with_wood_bridge_set() -> TheaterData {
         let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n\n\
                     [TileSet0001]\nTilesInSet=20\nFileName=wood\nSetName=Wood Bridge\n";
