@@ -616,24 +616,7 @@ pub struct CellRectOccupancyContext<'a> {
 }
 
 pub fn check_passability_rect(ctx: CellRectPassabilityContext<'_>) -> bool {
-    if ctx.rect.width <= 0 || ctx.rect.height <= 0 {
-        return true;
-    }
-
-    let mut x = 0;
-    while x < ctx.rect.width {
-        let mut y = 0;
-        while y < ctx.rect.height {
-            let cx = ctx.rect.x.saturating_add(x);
-            let cy = ctx.rect.y.saturating_add(y);
-            if !check_cell_passability(&ctx, cx, cy) {
-                return false;
-            }
-            y += 1;
-        }
-        x += 1;
-    }
-    true
+    scan_cell_rect(ctx.rect, |x, y| check_cell_passability(&ctx, x, y))
 }
 
 pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
@@ -664,7 +647,14 @@ fn occupancy_blocker_at(
     y: i32,
     reservation_mask: u32,
 ) -> Option<OccupancyBlocker> {
-    let canonical = canonical_cell_coord(x, y);
+    // Native `CellRect::CheckOccupancy @ 0x00586780` resolves the never-null
+    // CellClass first. All following columns therefore observe the lookup's
+    // shared-dummy coordinate write before their own first-blocker return.
+    let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
+    let canonical = match &cell {
+        CellRef::Real(cell) => Some((cell.rx, cell.ry)),
+        CellRef::Dummy { .. } => None,
+    };
 
     if canonical.is_some_and(|cell| {
         ctx.terrain_object_cells
@@ -672,22 +662,30 @@ fn occupancy_blocker_at(
     }) {
         return Some(OccupancyBlocker::TerrainObject);
     }
-    if reservation_mask != 0
+    let reserved = reservation_mask != 0
         && ctx.reservations.is_some_and(|reservations| {
-            reservations.raw_mask(ctx.resolved_terrain, x, y) & reservation_mask != 0
-        })
-    {
+            let raw_mask = match &cell {
+                CellRef::Real(_) => reservations.raw_mask(ctx.resolved_terrain, x, y),
+                CellRef::Dummy { .. } if ctx.resolved_terrain.is_some() => {
+                    reservations.raw_mask(ctx.resolved_terrain, x, y)
+                }
+                // A detached lookup has no backing CellClass array. Its only
+                // native-shaped +0xDC authority is the shared dummy slot.
+                CellRef::Dummy { .. } => reservations.dummy_mask(),
+            };
+            raw_mask & reservation_mask != 0
+        });
+    if reserved {
         return Some(OccupancyBlocker::Reservation);
     }
     if canonical.is_some_and(|(rx, ry)| overlay_present(ctx.overlay_grid, rx, ry)) {
         return Some(OccupancyBlocker::Overlay);
     }
 
-    let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
     if matches!(&cell, CellRef::Real(cell) if cell.zone_type != zone_class::GROUND) {
         return Some(OccupancyBlocker::ZoneType);
     }
-    if match cell {
+    if match &cell {
         CellRef::Real(cell) => cell.slope_type != 0,
         CellRef::Dummy { cell } => cell.snapshot().slope_type != 0,
     } {
@@ -702,11 +700,34 @@ fn occupancy_blocker_at(
 }
 
 fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) -> bool {
-    let Some((rx, ry)) = to_cell_coord(x, y) else {
-        return false;
+    // Native `CellRect::CheckPassability @ 0x0056E7C0` calls packed
+    // `MapClass::GetCellClass @ 0x005657A0` before the optional overlay column
+    // and before `CellClass::CheckCellPassability @ 0x004834A0`. In particular,
+    // Winged still performs the lookup and fixed-stride aliases use the real
+    // backing CellClass coordinates for every projected Rust grid.
+    let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
+    let canonical = match &cell {
+        CellRef::Real(cell) => Some((cell.rx, cell.ry)),
+        CellRef::Dummy { .. } => None,
     };
+    // VERA-internal compatibility seam: some focused/headless callers still
+    // carry PathGrid without a resolved CellClass array. Keep their former
+    // checked-u16 cache projection, but never let it replace a terrain-backed
+    // native dummy or the canonical coordinates of a packed real alias.
+    let path_only_projection = canonical.is_none()
+        && ctx.resolved_terrain.is_none()
+        && ctx.path_grid.is_some();
+    let projection_coord = canonical.or_else(|| {
+        if path_only_projection {
+            checked_u16_cell_coord(x, y)
+        } else {
+            None
+        }
+    });
 
-    if ctx.reject_any_overlay && overlay_present(ctx.overlay_grid, rx, ry) {
+    if ctx.reject_any_overlay
+        && projection_coord.is_some_and(|(rx, ry)| overlay_present(ctx.overlay_grid, rx, ry))
+    {
         return false;
     }
 
@@ -714,15 +735,23 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
         return true;
     }
 
-    let terrain_cell = ctx
-        .resolved_terrain
-        .and_then(|terrain| terrain.cell(rx, ry));
-    let path_cell = ctx.path_grid.and_then(|grid| grid.cell(rx, ry));
-    if terrain_cell.is_none() && path_cell.is_none() {
+    let terrain_cell = match &cell {
+        CellRef::Real(cell) => Some(*cell),
+        CellRef::Dummy { .. } => None,
+    };
+    let path_cell =
+        projection_coord.and_then(|(rx, ry)| ctx.path_grid.and_then(|grid| grid.cell(rx, ry)));
+    if path_only_projection && path_cell.is_none() {
         return false;
     }
 
     if let Some(required_zone) = ctx.required_zone_id {
+        let Some((rx, ry)) = projection_coord else {
+            // UNCHECKED residual: this adapter does not yet model the nested
+            // GetZoneID walk on the shared dummy. Retain conservative rejection
+            // for this bounded required-zone case after performing the lookup.
+            return false;
+        };
         let Some(zone_grid) = ctx.zone_grid else {
             return false;
         };
@@ -739,10 +768,17 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
         }
     }
 
-    let base_level = path_cell
-        .map(|cell| cell.signed_level())
-        .or_else(|| terrain_cell.map(|cell| cell.level as i8 as i16))
-        .unwrap_or(0);
+    let base_level = if path_only_projection {
+        path_cell.map(|cell| cell.signed_level()).unwrap_or(0)
+    } else {
+        match &cell {
+            CellRef::Real(_) => path_cell
+                .map(|cell| cell.signed_level())
+                .or_else(|| terrain_cell.map(|cell| cell.level as i8 as i16))
+                .unwrap_or(0),
+            CellRef::Dummy { cell } => i16::from(cell.snapshot().level),
+        }
+    };
     let structural_bridge = path_cell.is_some_and(|cell| cell.has_structural_bridge())
         || terrain_cell.is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
 
@@ -750,17 +786,22 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
     // do not yet carry the raw occupation grid, so their existing object-list
     // blocker projection is kept explicit here. World/movement callers with raw
     // bytes must construct `IsClearToMoveRequest` directly rather than infer bits.
-    let projected_ground_bits = u8::from(
+    let projected_ground_bits = u8::from(projection_coord.is_some_and(|(rx, ry)| {
         ctx.occupancy
-            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Ground) > 0),
-    ) * 0x40;
-    let projected_deck_bits = u8::from(
+            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Ground) > 0)
+    })) * 0x40;
+    let projected_deck_bits = u8::from(projection_coord.is_some_and(|(rx, ry)| {
         ctx.occupancy
-            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Bridge) > 0),
-    ) * 0x40;
+            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Bridge) > 0)
+    })) * 0x40;
     let is_wall_overlay = terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::WALL);
     let land_passable = terrain_cell.map_or_else(
-        || ctx.path_grid.map_or(true, |grid| grid.is_walkable(rx, ry)),
+        || {
+            !path_only_projection
+                || projection_coord.is_some_and(|(rx, ry)| {
+                    ctx.path_grid.is_some_and(|grid| grid.is_walkable(rx, ry))
+                })
+        },
         |cell| speed_type_allows_cell(cell, ctx.speed_type, ctx.movement_zone),
     );
     matches!(
@@ -900,7 +941,7 @@ fn reservation_mask(reservation_arg: i32) -> u32 {
     }
 }
 
-fn to_cell_coord(x: i32, y: i32) -> Option<(u16, u16)> {
+fn checked_u16_cell_coord(x: i32, y: i32) -> Option<(u16, u16)> {
     if x < 0 || y < 0 || x > i32::from(u16::MAX) || y > i32::from(u16::MAX) {
         return None;
     }
@@ -1266,6 +1307,232 @@ mod tests {
             off_104: 2_000,
             off_108: 2_000,
         }
+    }
+
+    fn clear_passability_context<'a>(
+        rect: CellRect,
+        terrain: Option<&'a ResolvedTerrainGrid>,
+    ) -> CellRectPassabilityContext<'a> {
+        CellRectPassabilityContext {
+            rect,
+            speed_type: SpeedType::Track,
+            required_zone_id: None,
+            movement_zone: MovementZone::Normal,
+            required_height_or_level: None,
+            bridge_aware_zone: false,
+            reject_any_overlay: false,
+            path_grid: None,
+            resolved_terrain: terrain,
+            overlay_grid: None,
+            occupancy: None,
+            zone_grid: None,
+        }
+    }
+
+    fn clear_occupancy_context<'a>(
+        rect: CellRect,
+        terrain: Option<&'a ResolvedTerrainGrid>,
+    ) -> CellRectOccupancyContext<'a> {
+        CellRectOccupancyContext {
+            rect,
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: None,
+            entities: None,
+            terrain_object_cells: None,
+            resolved_terrain: terrain,
+            overlay_grid: None,
+            playfield_bounds: Some(wide_test_playfield()),
+        }
+    }
+
+    #[test]
+    fn gsi_04_01_passability_missing_cell_stamps_then_uses_clear_dummy_defaults() {
+        let terrain = flat_terrain(1, 1);
+
+        assert!(check_passability_rect(clear_passability_context(
+            CellRect::new(5, 7, 1, 1),
+            Some(&terrain),
+        )));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (5, 7));
+    }
+
+    #[test]
+    fn gsi_04_01_passability_path_grid_only_keeps_checked_projection() {
+        let mut path_grid = PathGrid::new(2, 1);
+        path_grid.set_blocked(0, 0, true);
+
+        for (cell, expected) in [
+            ((0, 0), false),
+            ((1, 0), true),
+            ((2, 0), false),
+            ((-1, 0), false),
+        ] {
+            let mut ctx =
+                clear_passability_context(CellRect::new(cell.0, cell.1, 1, 1), None);
+            ctx.path_grid = Some(&path_grid);
+            assert_eq!(
+                check_passability_rect(ctx),
+                expected,
+                "path-only projection at {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_01_missing_cell_ignores_real_grid_overlay_and_object_projections() {
+        let mut terrain = flat_terrain(1, 1);
+        terrain.test_set_native_allocated_cells(&[]);
+        let mut overlays = OverlayGrid::new(1, 1);
+        overlays.place_overlay(0, 0, 7, 0);
+
+        let mut passability = clear_passability_context(CellRect::single(0, 0), Some(&terrain));
+        passability.reject_any_overlay = true;
+        passability.overlay_grid = Some(&overlays);
+        assert!(
+            check_passability_rect(passability),
+            "dummy +0x44 has constructor-default no-overlay state"
+        );
+
+        let terrain_objects = BTreeMap::from([((0, 0), 88)]);
+        let mut occupancy = clear_occupancy_context(CellRect::single(0, 0), Some(&terrain));
+        occupancy.terrain_object_cells = Some(&terrain_objects);
+        occupancy.overlay_grid = Some(&overlays);
+        assert!(
+            check_occupancy_rect(occupancy),
+            "the dummy owns neither the real slot's ground list nor its +0x44 overlay"
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (0, 0));
+    }
+
+    #[test]
+    fn gsi_04_01_passability_fixed_stride_alias_uses_real_cell_without_stamping() {
+        let terrain = flat_terrain(512, 1);
+        let _ = get_cellclass_fallback(Some(&terrain), -2, 0);
+
+        assert!(check_passability_rect(clear_passability_context(
+            CellRect::new(-1, 1, 1, 1),
+            Some(&terrain),
+        )));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-2, 0),
+            "packed (-1,1) aliases the real (511,0) slot"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_passability_scan_is_x_outer_y_inner_and_first_failure_stops() {
+        let terrain = flat_terrain(1, 2);
+        let mut overlays = OverlayGrid::new(1, 2);
+        overlays.place_overlay(0, 1, 7, 0);
+        let mut ctx = clear_passability_context(CellRect::new(-1, 0, 2, 3), Some(&terrain));
+        ctx.reject_any_overlay = true;
+        ctx.overlay_grid = Some(&overlays);
+
+        assert!(!check_passability_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 2),
+            "the real (0,1) overlay stops before the later (0,2) miss"
+        );
+
+        assert!(check_passability_rect(clear_passability_context(
+            CellRect::new(2, 3, 2, 2),
+            Some(&terrain),
+        )));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (3, 4),
+            "a clear scan visits (2,3),(2,4),(3,3),(3,4)"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_passability_winged_missing_cell_still_stamps_before_success() {
+        let terrain = flat_terrain(1, 1);
+        let mut ctx = clear_passability_context(CellRect::new(9, -3, 1, 1), Some(&terrain));
+        ctx.speed_type = SpeedType::Winged;
+
+        assert!(check_passability_rect(ctx));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (9, -3));
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_lookup_precedes_terrain_object_blocker() {
+        let terrain = flat_terrain(1, 1);
+        let terrain_objects = BTreeMap::from([((0, 0), 88)]);
+        let mut ctx = clear_occupancy_context(CellRect::new(-1, 0, 3, 1), Some(&terrain));
+        ctx.terrain_object_cells = Some(&terrain_objects);
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 0),
+            "lookup of the first miss precedes the real terrain-object blocker, which stops before (1,0)"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_lookup_stamps_before_dummy_reservation_blocker() {
+        let terrain = flat_terrain(1, 1);
+        let mut reservations = CellReservationGrid::new();
+        reservations.reserve(Some(&terrain), -5, 0, 3);
+        let mut ctx = clear_occupancy_context(CellRect::new(5, 7, 1, 1), Some(&terrain));
+        ctx.reservation_arg = 3;
+        ctx.reservations = Some(&reservations);
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (5, 7),
+            "the current probe remains the last dummy writer on reservation failure"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_lookup_precedes_overlay_blocker() {
+        let terrain = flat_terrain(1, 1);
+        let mut overlays = OverlayGrid::new(1, 1);
+        overlays.place_overlay(0, 0, 7, 0);
+        let mut ctx = clear_occupancy_context(CellRect::new(-1, 0, 3, 1), Some(&terrain));
+        ctx.overlay_grid = Some(&overlays);
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 0),
+            "the real overlay blocker stops before the later (1,0) miss"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_clear_scan_leaves_se_playfield_corner_as_last_writer() {
+        let terrain = flat_terrain(1, 1);
+
+        assert!(check_occupancy_rect(clear_occupancy_context(
+            CellRect::new(100, 100, 0, 0),
+            Some(&terrain),
+        )));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (99, 99),
+            "zero-size corners are NW (100,100), NE (99,100), SW (100,99), SE (99,99)"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_failed_nw_playfield_corner_short_circuits() {
+        let terrain = flat_terrain(1, 1);
+        let mut ctx = clear_occupancy_context(CellRect::new(6, 6, 0, 0), Some(&terrain));
+        ctx.playfield_bounds = Some(diamond_bounds());
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (6, 6),
+            "failed NW must stop before the distinct decremented corners"
+        );
     }
 
     #[test]
