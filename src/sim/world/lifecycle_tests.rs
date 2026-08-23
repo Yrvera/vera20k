@@ -296,7 +296,8 @@ fn install_common_raw_terrain(
             })
         })
         .collect();
-    let terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+    let mut terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+    terrain.bind_shared_cell_dummy(sim.shared_cell_dummy.clone());
     sim.bridge_state = Some(
         crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500),
     );
@@ -3972,12 +3973,21 @@ fn gsi_05_04_ground_source_and_target_retarget_before_removal_without_expiry() {
             }
     }));
 
+    let _ = crate::sim::cell_rect::get_cellclass_fallback(
+        sim.resolved_terrain.as_ref(),
+        20,
+        -1,
+    );
     assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
     assert!(sim.pending_projectile_detonations.is_empty());
     assert!(sim.projectiles.get(projectile_id).is_some());
     assert_eq!(
         sim.projectiles.get(projectile_id).unwrap().target,
         cell_target
+    );
+    assert!(
+        sim.projectiles.get(projectile_id).unwrap().velocity.y > 0,
+        "allocated Cell target remains at (9,11) despite the unrelated dummy stamp"
     );
 }
 
@@ -4359,7 +4369,7 @@ fn gsi_05_04_combat_fatal_garrison_recursion_keeps_cell_target() {
 }
 
 #[test]
-fn gsi_05_04_unallocated_cell_still_retains_the_never_null_dummy_cell_target() {
+fn gsi_04_01_unallocated_expiry_retains_live_dummy_identity_for_bullet_ai() {
     let mut sim = Simulation::new();
     sim.session.map_width = 16;
     sim.session.map_height = 16;
@@ -4395,11 +4405,31 @@ fn gsi_05_04_unallocated_cell_still_retains_the_never_null_dummy_cell_target() {
 
     assert_eq!(
         sim.projectiles.get(projectile_id).unwrap().target,
-        ProjectileTarget::Cell { rx: 8, ry: 8 },
+        ProjectileTarget::DummyCell,
         "MapClass::Get_CellClass @ 0x005657A0 answers an unallocated slot with \
          the shared dummy CellClass carrying the requested coord, never NULL"
     );
     assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+    let dummy = sim.effective_shared_cell_dummy();
+    assert_eq!(dummy.snapshot().coord, (8, 8));
+
+    // Any later packed miss writes the same object. BulletClass::AI @
+    // 0x004666E0 dispatches the retained pointer, so steering observes this
+    // later coordinate rather than a cleanup-time snapshot.
+    assert!(matches!(
+        crate::sim::cell_rect::get_cellclass_fallback(
+            sim.resolved_terrain.as_ref(),
+            20,
+            -1,
+        ),
+        crate::sim::cell_rect::CellRef::Dummy { .. }
+    ));
+    assert_eq!(dummy.snapshot().coord, (20, -1));
+    assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
+    assert!(
+        sim.projectiles.get(projectile_id).unwrap().velocity.y < 0,
+        "guided Bullet must steer toward the later south-negative dummy stamp"
+    );
 }
 
 /// The sentinel arm of `BulletClass::PointerExpired`: `0x0046856E`/`0x0046857C`

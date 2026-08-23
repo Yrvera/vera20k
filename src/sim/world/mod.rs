@@ -50,7 +50,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay::OverlayEntry;
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{ResolvedTerrainGrid, SharedCellDummy};
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::LocomotorKind;
@@ -205,7 +205,8 @@ fn projectile_collides_at(
     let target_owner = match projectile.target {
         crate::sim::projectile::ProjectileTarget::Entity(id) => entities.get(id).map(|e| e.owner),
         crate::sim::projectile::ProjectileTarget::Cell { .. }
-        | crate::sim::projectile::ProjectileTarget::None => None,
+        | crate::sim::projectile::ProjectileTarget::None
+        | crate::sim::projectile::ProjectileTarget::DummyCell => None,
     };
     let building_owner = building_id.and_then(|id| entities.get(id)).map(|e| e.owner);
     let allied = target_owner
@@ -246,7 +247,8 @@ fn projectile_collides_at(
             Some(ProjectileCollisionResponse::TargetZClamp(impact))
         }
         crate::sim::projectile::ProjectileTarget::Cell { .. }
-        | crate::sim::projectile::ProjectileTarget::None => {
+        | crate::sim::projectile::ProjectileTarget::None
+        | crate::sim::projectile::ProjectileTarget::DummyCell => {
             let velocity =
                 projectile_slope_reflect(projectile.velocity, candidate_cell.slope_type)?;
             Some(ProjectileCollisionResponse::SlopeMatrixReflect { impact, velocity })
@@ -766,6 +768,11 @@ pub struct Simulation {
     path_grid: Option<Arc<PathGrid>>,
     #[serde(skip)]
     pub resolved_terrain: Option<ResolvedTerrainGrid>,
+    /// Process-global MapClass fallback CellClass identity. Native owns this at
+    /// `0x00ABDC50`, outside Scenario serialization; live in-scenario loads
+    /// retain the current handle and rebuilt terrain is rebound to it.
+    #[serde(skip, default)]
+    pub(crate) shared_cell_dummy: SharedCellDummy,
     pub bridge_state: Option<BridgeRuntimeState>,
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
@@ -1906,6 +1913,26 @@ impl Simulation {
         self.session.seed = live.session.seed;
         self.main_rng = live.main_rng.clone();
         self.mapgen_rng = live.mapgen_rng.clone();
+        self.bind_shared_cell_dummy(live.effective_shared_cell_dummy());
+    }
+
+    /// Adopt the process-global CellClass identity already bound to a load's
+    /// resolved grid, before that grid is cloned into Simulation.
+    pub(crate) fn bind_shared_cell_dummy(&mut self, shared_cell_dummy: SharedCellDummy) {
+        self.shared_cell_dummy = shared_cell_dummy.clone();
+        if let Some(terrain) = self.resolved_terrain.as_mut() {
+            terrain.bind_shared_cell_dummy(shared_cell_dummy);
+        }
+    }
+
+    /// Synthetic fixtures may assign a detached grid directly. Production
+    /// construction binds both owners, but gameplay must still read the live
+    /// handle attached to the actual CellClass table it queried.
+    pub(crate) fn effective_shared_cell_dummy(&self) -> SharedCellDummy {
+        self.resolved_terrain
+            .as_ref()
+            .map(ResolvedTerrainGrid::shared_cell_dummy)
+            .unwrap_or_else(|| self.shared_cell_dummy.clone())
     }
 
     /// Install the Scenario cursor advanced by the pre-IsoMapPack Fill pass.
@@ -2057,6 +2084,7 @@ impl Simulation {
             zone_grid: None,
             path_grid: None,
             resolved_terrain: None,
+            shared_cell_dummy: SharedCellDummy::fresh(),
             bridge_state: None,
             overlay_grid: None,
             smudge_grid: None,
@@ -3705,6 +3733,7 @@ impl Simulation {
         metallic_debris: Vec<InternedId>,
         bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
     ) {
+        resolved_terrain.bind_shared_cell_dummy(self.shared_cell_dummy.clone());
         // Restore externally-derived data only. Substrate caches are rebuilt
         // transactionally by `restore_after_snapshot_load` before this call.
         // The supplied map grid predates runtime Terrain lifecycle changes, so

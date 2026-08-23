@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
 use crate::map::playfield::{lepton_to_packed_cell_component, rect_playfield_corners};
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+use crate::map::resolved_terrain::{
+    ResolvedTerrainCell, ResolvedTerrainGrid, SharedCellDummy, SharedCellDummySnapshot, zone_class,
+};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -25,49 +27,49 @@ pub(crate) use crate::map::cell_index::{canonical_cell_coord, packed_cell_coord}
 pub use crate::map::playfield::PlayfieldBounds;
 
 /// A non-null cell reference — `Real` for an in-range, present cell, or `Dummy`
-/// carrying the requested coord and shared fallback height bytes for an
-/// out-of-range / missing lookup.
+/// viewing the one live fallback CellClass identity after an out-of-range /
+/// missing lookup.
 ///
 /// Never the absence of a value: the engine's coord→cell lookup returns a
 /// non-null dummy that stores the requested coord and lets the caller keep
 /// dispatching on it. Coordinate writes do not reconstruct or clear its
 /// independently persistent level/slope state.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum CellRef<'a> {
     Real(&'a ResolvedTerrainCell),
-    Dummy {
-        coord: (i32, i32),
-        level: i8,
-        slope_type: u8,
-    },
+    Dummy { cell: SharedCellDummy },
 }
 
 // `ResolvedTerrainCell` is not `PartialEq`; compare `Real` by pointer identity
-// (same backing cell) and `Dummy` by the value snapshot returned by the lookup.
+// (same backing cell) and `Dummy` by the process-global CellClass identity.
 impl PartialEq for CellRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (CellRef::Real(a), CellRef::Real(b)) => std::ptr::eq(*a, *b),
-            (
-                CellRef::Dummy {
-                    coord: a,
-                    level: al,
-                    slope_type: aslope,
-                },
-                CellRef::Dummy {
-                    coord: b,
-                    level: bl,
-                    slope_type: bslope,
-                },
-            ) => a == b && al == bl && aslope == bslope,
+            (CellRef::Dummy { cell: a }, CellRef::Dummy { cell: b }) => a.same_identity(b),
             _ => false,
         }
     }
 }
 impl Eq for CellRef<'_> {}
 
+impl CellRef<'_> {
+    pub fn dummy_snapshot(&self) -> Option<SharedCellDummySnapshot> {
+        match self {
+            CellRef::Real(_) => None,
+            CellRef::Dummy { cell } => Some(cell.snapshot()),
+        }
+    }
+}
+
+fn detached_dummy(x: i32, y: i32) -> SharedCellDummy {
+    let dummy = SharedCellDummy::fresh();
+    dummy.stamp_coord(x, y);
+    dummy
+}
+
 /// Engine `Get_CellClass`: coord → cell via the fixed stride; an out-of-range or
-/// missing cell returns `CellRef::Dummy` carrying the packed requested coord and
+/// missing cell returns `CellRef::Dummy` viewing the packed requested coord and
 /// preserved shared fallback bytes (NOT `(0,0)`, NOT `None`). The width-based
 /// `PathGrid`/`ResolvedTerrainGrid` index stays as the cache; this is the
 /// never-null parity lookup. Components are not checked separately: any valid
@@ -85,17 +87,14 @@ pub fn get_cellclass_fallback<'a>(
             return CellRef::Real(cell);
         }
     }
-    if let Some(terrain) = terrain {
-        terrain.stamp_dummy_cell_requested_coord(x, y);
-    }
-    let (level, slope_type) = terrain
-        .map(ResolvedTerrainGrid::dummy_cell_level_slope)
-        .unwrap_or((0, 0));
-    CellRef::Dummy {
-        coord: (x, y),
-        level,
-        slope_type,
-    }
+    let cell = terrain.map_or_else(
+        || detached_dummy(x, y),
+        |terrain| {
+            terrain.stamp_dummy_cell_requested_coord(x, y);
+            terrain.shared_cell_dummy()
+        },
+    );
+    CellRef::Dummy { cell }
 }
 
 /// Engine world/lepton coordinate lookup, preserving full signed-i32 `/256`
@@ -124,17 +123,14 @@ pub fn get_cellclass_fallback_leptons<'a>(
     }
 
     let (x, y) = packed_cell_coord(x, y);
-    if let Some(terrain) = terrain {
-        terrain.stamp_dummy_cell_requested_coord(x, y);
-    }
-    let (level, slope_type) = terrain
-        .map(ResolvedTerrainGrid::dummy_cell_level_slope)
-        .unwrap_or((0, 0));
-    CellRef::Dummy {
-        coord: (x, y),
-        level,
-        slope_type,
-    }
+    let cell = terrain.map_or_else(
+        || detached_dummy(x, y),
+        |terrain| {
+            terrain.stamp_dummy_cell_requested_coord(x, y);
+            terrain.shared_cell_dummy()
+        },
+    );
+    CellRef::Dummy { cell }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -688,12 +684,12 @@ fn occupancy_blocker_at(
     }
 
     let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
-    if matches!(cell, CellRef::Real(cell) if cell.zone_type != zone_class::GROUND) {
+    if matches!(&cell, CellRef::Real(cell) if cell.zone_type != zone_class::GROUND) {
         return Some(OccupancyBlocker::ZoneType);
     }
     if match cell {
         CellRef::Real(cell) => cell.slope_type != 0,
-        CellRef::Dummy { slope_type, .. } => slope_type != 0,
+        CellRef::Dummy { cell } => cell.snapshot().slope_type != 0,
     } {
         return Some(OccupancyBlocker::Slope);
     }
@@ -873,9 +869,10 @@ pub(crate) fn cell_is_in_playfield_height_aware(
     let (x, y) = packed_cell_coord(cell.0, cell.1);
     let (level, slope) = match get_cellclass_fallback(terrain, x, y) {
         CellRef::Real(cell) => (cell.level as i8, cell.slope_type),
-        CellRef::Dummy {
-            level, slope_type, ..
-        } => (level, slope_type),
+        CellRef::Dummy { cell } => {
+            let snapshot = cell.snapshot();
+            (snapshot.level, snapshot.slope_type)
+        }
     };
     bounds.contains_height_aware_packed(x, y, level, slope)
 }
@@ -1245,6 +1242,22 @@ mod tests {
         ResolvedTerrainGrid::from_cells(width, height, cells)
     }
 
+    fn assert_dummy(
+        cell: CellRef<'_>,
+        coord: (i32, i32),
+        level: i8,
+        slope_type: u8,
+    ) {
+        assert_eq!(
+            cell.dummy_snapshot(),
+            Some(SharedCellDummySnapshot {
+                coord,
+                level,
+                slope_type,
+            })
+        );
+    }
+
     fn wide_test_playfield() -> PlayfieldBounds {
         PlayfieldBounds {
             base: 0,
@@ -1474,14 +1487,7 @@ mod tests {
         ));
         // Out of bounds: a non-null dummy carrying the *requested* coord
         // (never None, never (0,0)).
-        assert_eq!(
-            get_cellclass_fallback(Some(&g), -3, 7),
-            CellRef::Dummy {
-                coord: (-3, 7),
-                level: 0,
-                slope_type: 0,
-            }
-        );
+        assert_dummy(get_cellclass_fallback(Some(&g), -3, 7), (-3, 7), 0, 0);
     }
 
     #[test]
@@ -1497,22 +1503,18 @@ mod tests {
             CellRef::Real(terrain.cell(0, 1).expect("canonical index 512"))
         );
 
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), -1, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (-1, 0),
+            0,
+            0,
         );
         let missing_canonical_cell = flat_terrain(2, 1);
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&missing_canonical_cell), 512, 0),
-            CellRef::Dummy {
-                coord: (512, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (512, 0),
+            0,
+            0,
         );
     }
 
@@ -1529,26 +1531,22 @@ mod tests {
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (0, 0));
 
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), -1, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: -5,
-                slope_type: 7,
-            }
+            (-1, 0),
+            -5,
+            7,
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
 
         // Packed (512,0) has a valid fixed-array index, but its canonical
         // (0,1) slot is null in this allocation mask. Native still stamps the
         // requested words; high Rust-only bits do not survive the seam.
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), 0x1_0200, 0x1_0000),
-            CellRef::Dummy {
-                coord: (512, 0),
-                level: -5,
-                slope_type: 7,
-            }
+            (512, 0),
+            -5,
+            7,
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (512, 0));
         assert_eq!(terrain.dummy_cell_level_slope(), (-5, 7));
@@ -1557,13 +1555,11 @@ mod tests {
     #[test]
     fn gsi_04_01_lookup_world_leptons_truncate_before_fallback() {
         let terrain = flat_terrain(1, 1);
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), -2, 0),
-            CellRef::Dummy {
-                coord: (-2, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (-2, 0),
+            0,
+            0,
         );
 
         assert_eq!(
@@ -1584,23 +1580,19 @@ mod tests {
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
 
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback_leptons(Some(&terrain), -256, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (-1, 0),
+            0,
+            0,
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
 
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback_leptons(Some(&terrain), 256, 0),
-            CellRef::Dummy {
-                coord: (1, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (1, 0),
+            0,
+            0,
         );
         assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
     }
@@ -1623,21 +1615,31 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_01_lookup_clone_copies_then_owns_dummy_state() {
-        let mut terrain = flat_terrain(1, 1);
+    fn gsi_04_01_shared_dummy_ref_and_grid_clone_retain_live_identity() {
+        let terrain = flat_terrain(1, 1);
         terrain.test_set_dummy_cell_level_slope(-6, 11);
-        let _ = get_cellclass_fallback(Some(&terrain), -1, 0);
+        let miss_a = get_cellclass_fallback(Some(&terrain), -1, 0);
+        let real = get_cellclass_fallback(Some(&terrain), 0, 0);
 
         let cloned = terrain.clone();
         assert_eq!(cloned.dummy_cell_requested_coord(), (-1, 0));
         assert_eq!(cloned.dummy_cell_level_slope(), (-6, 11));
-        let _ = get_cellclass_fallback(Some(&cloned), -2, 0);
+        let miss_b = get_cellclass_fallback(Some(&cloned), -2, 0);
+        assert_eq!(miss_a, miss_b, "both misses return one CellClass identity");
+        assert_dummy(miss_a, (-2, 0), -6, 11);
         assert_eq!(cloned.dummy_cell_requested_coord(), (-2, 0));
-        assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
         assert_eq!(cloned.dummy_cell_level_slope(), (-6, 11));
         assert_eq!(terrain.dummy_cell_level_slope(), (-6, 11));
+        assert_eq!(
+            real,
+            CellRef::Real(terrain.cell(0, 0).expect("allocated cell stays stable"))
+        );
 
         let reconstructed = flat_terrain(1, 1);
+        assert!(!terrain
+            .shared_cell_dummy()
+            .same_identity(&reconstructed.shared_cell_dummy()));
         assert_eq!(reconstructed.dummy_cell_requested_coord(), (0, 0));
         assert_eq!(reconstructed.dummy_cell_level_slope(), (0, 0));
     }
@@ -1654,13 +1656,11 @@ mod tests {
             get_cellclass_fallback(Some(&terrain), 0xFFFF, 1),
             CellRef::Real(terrain.cell(511, 0).expect("canonical index 511"))
         );
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&flat_terrain(2, 1)), 0xFFFF, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (-1, 0),
+            0,
+            0,
         );
 
         // Far corners use x+width-1/y+height-1, then truncate each component
@@ -1770,27 +1770,23 @@ mod tests {
 
     #[test]
     fn gsi_04_01_dummy_state_persists_across_fallback_lookups() {
-        let mut terrain = flat_terrain(1, 1);
+        let terrain = flat_terrain(1, 1);
         assert_eq!(terrain.dummy_cell_level_slope(), (0, 0));
         terrain.test_set_dummy_cell_level_slope(-4, 7);
         terrain.set_dummy_cell_level(-5);
         assert_eq!(terrain.clone().dummy_cell_level_slope(), (-5, 7));
 
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), 0xFFFF, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: -5,
-                slope_type: 7,
-            }
+            (-1, 0),
+            -5,
+            7,
         );
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), 0xFFFE, 0),
-            CellRef::Dummy {
-                coord: (-2, 0),
-                level: -5,
-                slope_type: 7,
-            }
+            (-2, 0),
+            -5,
+            7,
         );
 
         let bounds = PlayfieldBounds {

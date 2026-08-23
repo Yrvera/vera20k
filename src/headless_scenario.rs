@@ -175,6 +175,13 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         rules.general.cliff_back_impassability,
         seed,
     );
+    // One headless load is one process-shaped parity run: it owns a fresh
+    // MapClass dummy identity, while every grid/sim clone inside that run
+    // shares it. Separate calls intentionally remain isolated.
+    let shared_cell_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
+    terrain_bootstrap
+        .resolved
+        .bind_shared_cell_dummy(shared_cell_dummy);
     let scheduler_roots = crate::app::loading::init_helpers::scheduler_anim_roots(
         &rules,
         terrain_bootstrap.resolved.tile_animations(),

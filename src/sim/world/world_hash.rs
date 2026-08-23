@@ -27,6 +27,9 @@ fn hash_projectile_target(
         crate::sim::projectile::ProjectileTarget::None => {
             2u8.hash(hasher);
         }
+        crate::sim::projectile::ProjectileTarget::DummyCell => {
+            3u8.hash(hasher);
+        }
     }
 }
 
@@ -276,6 +279,22 @@ impl Simulation {
         self.hash_radiation(&mut hasher);
         if include_master_frame_v43 {
             self.hash_projectiles(&mut hasher);
+            if self
+                .projectiles
+                .iter()
+                .any(|(_, projectile)| {
+                    projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
+                })
+            {
+                // A retained Bullet pointer makes the process-global dummy's
+                // live bytes deterministic future behavior. Hash them only
+                // while such a pointer exists; otherwise the next lookup will
+                // overwrite coord before any consumer can observe it.
+                b"shared-cell-dummy-v1".hash(&mut hasher);
+                self.effective_shared_cell_dummy()
+                    .snapshot()
+                    .hash(&mut hasher);
+            }
             self.hash_waves(&mut hasher);
         }
         self.hash_super_weapons(&mut hasher);

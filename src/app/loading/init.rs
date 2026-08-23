@@ -1236,6 +1236,7 @@ pub(crate) fn load_map_from_initial(
     theater_cache_mismatch: bool,
     runtime_color_scheme_count: usize,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+    shared_cell_dummy: crate::map::resolved_terrain::SharedCellDummy,
     tile_variant_selector_cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
     progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
@@ -1403,6 +1404,10 @@ pub(crate) fn load_map_from_initial(
         &mut scenario_fill_ranged,
         &mut variant_selector,
     );
+    // `MapClass::Get_CellClass @ 0x005657A0/0x00565730` returns one
+    // process-global dummy at `0x00ABDC50`. Bind before scenario construction
+    // so the terrain template and Simulation clone retain that same identity.
+    resolved_terrain.bind_shared_cell_dummy(shared_cell_dummy);
     // Bind the complete scheduler closure only after theater Tile##Anim rows
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.

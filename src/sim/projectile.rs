@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{ResolvedTerrainGrid, SharedCellDummy};
 use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::intern::InternedId;
 use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
@@ -257,6 +257,35 @@ pub(crate) fn cell_target_coord(
     ProjectileCoord::new(x, y, z)
 }
 
+/// Resolve the current virtual `CellClass::GetTargetCoords` value for the one
+/// shared fallback CellClass. Unlike a stable allocated cell, every later miss
+/// can change the coordinate observed through this retained identity.
+pub(crate) fn dummy_cell_target_coord(dummy: &SharedCellDummy) -> ProjectileCoord {
+    let snapshot = dummy.snapshot();
+    let x = snapshot
+        .coord
+        .0
+        .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+        .wrapping_add(crate::sim::cell_kernel::CELL_CENTER_LEPTONS);
+    let y = snapshot
+        .coord
+        .1
+        .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+        .wrapping_add(crate::sim::cell_kernel::CELL_CENTER_LEPTONS);
+    // `CellClass` target virtual +0x58 at `0x00486890` delegates +0x48 at
+    // `0x00486840`, which calls `CellClass::GetGroundHeight @ 0x0047B3A0`.
+    // This is the 90-lepton CellClass surface domain, not the 104-lepton
+    // object/world floor kernel used by stable allocated-cell targeting.
+    let z = crate::util::lepton::cellclass_ground_height_leptons(
+        snapshot.level as u8,
+        snapshot.slope_type,
+        x,
+        y,
+    )
+    .expect("shared CellClass target must have a supported slope");
+    ProjectileCoord::new(x, y, z)
+}
+
 /// The original target retained by a projectile after weapon fire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProjectileTarget {
@@ -268,6 +297,10 @@ pub enum ProjectileTarget {
     /// entity lookup: BulletClass pointer cleanup has already handled the
     /// reference synchronously, so `TargetExpiryPolicy` must not run.
     None,
+    /// MapClass's one process-global fallback CellClass at `0x00ABDC50`.
+    /// The enum stores the pointer kind, not a coordinate snapshot; Simulation
+    /// owns the live identity and BulletClass AI resolves it every visit.
+    DummyCell,
 }
 
 /// What to do when an entity target no longer exists.
@@ -742,6 +775,7 @@ impl ProjectileStore {
         target_positions: &BTreeMap<u64, ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         bridge_state: Option<&BridgeRuntimeState>,
+        shared_cell_dummy: &SharedCellDummy,
         collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
     ) -> ProjectileAdvanceResult {
         let ids: Vec<u64> = self.projectiles.keys().copied().collect();
@@ -750,6 +784,7 @@ impl ProjectileStore {
             |id| target_positions.get(&id).copied(),
             terrain,
             bridge_state,
+            shared_cell_dummy,
             collides_at,
             true,
         )
@@ -761,6 +796,7 @@ impl ProjectileStore {
         target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         bridge_state: Option<&BridgeRuntimeState>,
+        shared_cell_dummy: &SharedCellDummy,
         collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
     ) -> Option<ProjectileAdvanceResult> {
         if !self.projectiles.contains_key(&id) {
@@ -771,6 +807,7 @@ impl ProjectileStore {
             target_position,
             terrain,
             bridge_state,
+            shared_cell_dummy,
             collides_at,
             false,
         ))
@@ -782,6 +819,7 @@ impl ProjectileStore {
         mut target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
         bridge_state: Option<&BridgeRuntimeState>,
+        shared_cell_dummy: &SharedCellDummy,
         mut collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
         remove_terminal: bool,
     ) -> ProjectileAdvanceResult {
@@ -800,6 +838,7 @@ impl ProjectileStore {
                 // the process-global zero CoordStruct before steering, fuse,
                 // collision, and reached-target decisions.
                 ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
+                ProjectileTarget::DummyCell => dummy_cell_target_coord(shared_cell_dummy),
                 ProjectileTarget::Entity(target_id) => match target_position(target_id) {
                     Some(position) => {
                         if projectile.tracks_target {
@@ -1134,6 +1173,7 @@ mod tests {
                 ProjectileTarget::Entity(_) => ProjectileCoord::new(128, 0, 0),
                 ProjectileTarget::Cell { rx, ry } => cell_target_coord(None, None, rx, ry),
                 ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
+                ProjectileTarget::DummyCell => ProjectileCoord::new(0, 0, 0),
             },
             payload: ProjectilePayload {
                 base_damage: 40,
@@ -1228,13 +1268,61 @@ mod tests {
         });
         let id = store.spawn(1, guided);
 
-        store.advance(&BTreeMap::new(), None, None, |_, _| None);
+        store.advance(
+            &BTreeMap::new(),
+            None,
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
         let guided = store
             .get(id)
             .expect("guided projectile survives first turn");
         assert!(guided.velocity.y > 0, "ROT turns toward the +Y target");
         assert_eq!(guided.guidance.unwrap().frames_elapsed, 1);
+    }
+
+    #[test]
+    fn gsi_04_01_dummy_target_reads_live_coord_level_and_slope() {
+        let dummy = SharedCellDummy::fresh();
+        dummy.set_level_slope(-1, 0);
+        dummy.stamp_coord(0, 0);
+        let flat = dummy_cell_target_coord(&dummy);
+        assert_eq!(
+            flat,
+            ProjectileCoord::new(128, 128, -89),
+            "CellClass::GetGroundHeight uses the verified 90-lepton domain"
+        );
+
+        dummy.set_level_slope(-1, 1);
+        dummy.stamp_coord(4, 5);
+        let target = dummy_cell_target_coord(&dummy);
+        assert_eq!((target.x, target.y), (4 * 256 + 128, 5 * 256 + 128));
+        assert_eq!(
+            target.z,
+            crate::util::lepton::cellclass_ground_height_leptons(
+                0xff, 1, target.x, target.y
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            target.z,
+            flat.z,
+            "the live slope byte participates in dummy floor resolution"
+        );
+
+        dummy.stamp_coord(-2, 7);
+        let moved = dummy_cell_target_coord(&dummy);
+        assert_eq!((moved.x, moved.y), (-2 * 256 + 128, 7 * 256 + 128));
+        assert_eq!(
+            moved.z,
+            crate::util::lepton::cellclass_ground_height_leptons(
+                0xff, 1, moved.x, moved.y
+            )
+            .unwrap(),
+            "coord stamps preserve and reuse the level/slope bytes"
+        );
     }
 
     #[test]
@@ -1245,7 +1333,13 @@ mod tests {
         let first = store.spawn(1, first_spawn);
         let second = store.spawn(2, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
-        let result = store.advance(&BTreeMap::new(), None, None, |_, _| None);
+        let result = store.advance(
+            &BTreeMap::new(),
+            None,
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
         assert_eq!(
             result
@@ -1268,7 +1362,13 @@ mod tests {
         let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 128, 0))]);
 
-        store.advance(&targets, None, None, |_, _| None);
+        store.advance(
+            &targets,
+            None,
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
         assert_eq!(
             store.get(id).unwrap().position,
@@ -1281,9 +1381,21 @@ mod tests {
         let mut store = ProjectileStore::new();
         let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 0, 0))]);
-        store.advance(&targets, None, None, |_, _| None);
+        store.advance(
+            &targets,
+            None,
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
-        let result = store.advance(&BTreeMap::new(), None, None, |_, _| None);
+        let result = store.advance(
+            &BTreeMap::new(),
+            None,
+            None,
+            &SharedCellDummy::fresh(),
+            |_, _| None,
+        );
 
         assert_eq!(result.detonations.len(), 1);
         assert_eq!(result.detonations[0].projectile_id, id);
@@ -1305,10 +1417,16 @@ mod tests {
         let fuse_id = store.spawn(1, fused);
         let collision_id = store.spawn(2, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
-        let result = store.advance(&BTreeMap::new(), None, None, |projectile, coord| {
-            (projectile.id == collision_id)
-                .then_some(ProjectileCollisionResponse::TargetZClamp(coord))
-        });
+        let result = store.advance(
+            &BTreeMap::new(),
+            None,
+            None,
+            &SharedCellDummy::fresh(),
+            |projectile, coord| {
+                (projectile.id == collision_id)
+                    .then_some(ProjectileCollisionResponse::TargetZClamp(coord))
+            },
+        );
 
         assert_eq!(result.detonations.len(), 2);
         assert_eq!(result.detonations[0].projectile_id, fuse_id);

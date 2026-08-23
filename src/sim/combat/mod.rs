@@ -3888,6 +3888,13 @@ fn emit_projectile_shrapnel(
             ry,
         )),
         ProjectileTarget::None => Some(ProjectileCoord::new(0, 0, 0)),
+        ProjectileTarget::DummyCell => Some(
+            terrain
+                .map(crate::map::resolved_terrain::ResolvedTerrainGrid::shared_cell_dummy)
+                .as_ref()
+                .map(crate::sim::projectile::dummy_cell_target_coord)
+                .unwrap_or(ProjectileCoord::new(0, 0, 0)),
+        ),
     };
     let distance_cells = target_position.map_or(0, |target| {
         let dx = i64::from(target.x - detonation.impact.x);
@@ -3984,6 +3991,11 @@ fn emit_projectile_shrapnel(
                 crate::sim::projectile::cell_target_coord(terrain, bridge_state, rx, ry)
             }
             ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
+            ProjectileTarget::DummyCell => terrain
+                .map(crate::map::resolved_terrain::ResolvedTerrainGrid::shared_cell_dummy)
+                .as_ref()
+                .map(crate::sim::projectile::dummy_cell_target_coord)
+                .unwrap_or(ProjectileCoord::new(0, 0, 0)),
         };
         out.projectile_spawns.push(ProjectileSpawn {
             source_id: detonation.source_id,

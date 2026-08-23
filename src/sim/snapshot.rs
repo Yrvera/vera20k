@@ -270,7 +270,7 @@ use crate::sim::world::Simulation;
 // cell, add/remove radii and building/unit discriminator. Limbo, movement, and
 // owner transfer must remove the historical deposit rather than recomputing it
 // from current position/rules, so this future-affecting cache is hash authority.
-const SNAPSHOT_VERSION: u32 = 88;
+const SNAPSHOT_VERSION: u32 = 89;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2574,10 +2574,12 @@ mod tests {
     /// gone, so old bytes no longer decode; 84 -> 85 retained signed map Size
     /// height for action-40 normalization; 85 -> 86 added the mutable
     /// playfield revision; 86 -> 87 added Techno+0x3D5 membership; 87 -> 88
-    /// added the exact historical sensor deposit needed for later removal.
+    /// added the exact historical sensor deposit needed for later removal;
+    /// 88 -> 89 adds the `ProjectileTarget::DummyCell` pointer kind while the
+    /// process-global dummy contents remain deliberately outside the payload.
     #[test]
-    fn gsi_04_01_snapshot_version_is_88() {
-        assert_eq!(super::SNAPSHOT_VERSION, 88);
+    fn gsi_04_01_snapshot_version_is_89() {
+        assert_eq!(super::SNAPSHOT_VERSION, 89);
     }
 
     #[test]
@@ -4384,6 +4386,67 @@ mod tests {
         );
 
         assert_eq!(sim.restore_after_snapshot_load(), Ok(()));
+    }
+
+    #[test]
+    fn gsi_04_01_snapshot_handoff_retains_live_process_dummy_without_serializing_it() {
+        use crate::sim::combat::RAD_NO_ATTACKER;
+        use crate::sim::projectile::ProjectileTarget;
+
+        let mut live = Simulation::new();
+        let process_dummy = live.shared_cell_dummy.clone();
+        process_dummy.stamp_coord(7, 9);
+        let projectile_id = live.allocate_stable_id();
+        live.admit_projectile(
+            projectile_id,
+            gsi_17_03_projectile(RAD_NO_ATTACKER, ProjectileTarget::DummyCell),
+        );
+
+        let hash_at_a = live.state_hash();
+        process_dummy.stamp_coord(8, 10);
+        assert_ne!(
+            hash_at_a,
+            live.state_hash(),
+            "a retained Bullet pointer makes the live dummy snapshot future behavior"
+        );
+        process_dummy.stamp_coord(7, 9);
+
+        let bytes = GameSnapshot::save(&live, 0, 0, "shared-dummy.map", 0);
+        let cold = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert_eq!(
+            cold.projectiles.get(projectile_id).unwrap().target,
+            ProjectileTarget::DummyCell
+        );
+        assert_eq!(
+            cold.shared_cell_dummy.snapshot().coord,
+            (0, 0),
+            "the process-global CellClass bytes are not Scenario payload"
+        );
+        assert!(!cold.shared_cell_dummy.same_identity(&process_dummy));
+
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored.retain_in_scenario_process_state_from(&live);
+        assert!(restored.shared_cell_dummy.same_identity(&process_dummy));
+        assert_eq!(restored.shared_cell_dummy.snapshot().coord, (7, 9));
+        restored
+            .restore_after_snapshot_load()
+            .expect("dummy CellClass target needs no Object identity fixup");
+
+        let terrain_template = flat_terrain(2, 2);
+        restored.rebuild_caches_after_load(
+            terrain_template,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        let rebuilt_dummy = restored
+            .resolved_terrain
+            .as_ref()
+            .expect("rebuilt terrain")
+            .shared_cell_dummy();
+        assert!(rebuilt_dummy.same_identity(&process_dummy));
+        assert_eq!(rebuilt_dummy.snapshot().coord, (7, 9));
     }
 
     #[test]

@@ -37,8 +37,11 @@ use crate::map::tile_variant_selector::TileVariantSelectionContext;
 use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass, TerrainRules};
-use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
@@ -403,6 +406,84 @@ const CELL_CENTRE_LEPTONS: i32 = LEPTONS_PER_CELL / 2;
 const PIXEL_TO_LEPTON_NUMERATOR: i64 = 4_473_959;
 const PIXEL_TO_LEPTON_DENOMINATOR: i64 = 1_048_576;
 
+/// Live contents of MapClass's one process-global fallback `CellClass`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SharedCellDummySnapshot {
+    pub coord: (i32, i32),
+    pub level: i8,
+    pub slope_type: u8,
+}
+
+/// Send-safe identity handle for MapClass's process-global fallback `CellClass`.
+///
+/// Active YR owns one object at `0x00ABDC50`. `MapClass::Get_CellClass` at
+/// `0x005657A0` and `0x00565730` overwrite only its packed coordinate words at
+/// `+0x24`; the independently writable level/slope bytes at `+0x11B/+0x11C`
+/// survive those misses. Packing the modeled bytes into one atomic word keeps
+/// a live identity view safe to carry through app loading workers and sim
+/// snapshots without copying native's global mutable object architecture.
+#[derive(Debug, Clone)]
+pub struct SharedCellDummy {
+    state: Arc<AtomicU64>,
+}
+
+impl Default for SharedCellDummy {
+    fn default() -> Self {
+        Self::fresh()
+    }
+}
+
+impl SharedCellDummy {
+    pub fn fresh() -> Self {
+        Self {
+            state: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn snapshot(&self) -> SharedCellDummySnapshot {
+        let packed = self.state.load(Ordering::Relaxed);
+        SharedCellDummySnapshot {
+            coord: (
+                i32::from((packed as u16) as i16),
+                i32::from(((packed >> 16) as u16) as i16),
+            ),
+            level: ((packed >> 32) as u8) as i8,
+            slope_type: (packed >> 40) as u8,
+        }
+    }
+
+    /// Stamp only CellClass+0x24, preserving the live level and slope bytes.
+    pub fn stamp_coord(&self, x: i32, y: i32) {
+        let coord = u64::from(x as i16 as u16) | (u64::from(y as i16 as u16) << 16);
+        let _ = self.state.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some((current & !0xffff_ffff) | coord),
+        );
+    }
+
+    pub fn same_identity(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_level_slope(&self, level: i8, slope_type: u8) {
+        const LEVEL_SLOPE_MASK: u64 = 0xffff << 32;
+        let value = (u64::from(level as u8) << 32) | (u64::from(slope_type) << 40);
+        let _ = self.state.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some((current & !LEVEL_SLOPE_MASK) | value),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_level(&self, level: i8) {
+        let slope = self.snapshot().slope_type;
+        self.set_level_slope(level, slope);
+    }
+}
+
 /// Convert a `Tile%02dXOffset` / `YOffset` screen-pixel pair into the world
 /// lepton offset the animation spawn adds to the cell centre.
 ///
@@ -423,18 +504,10 @@ pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
-    /// Last packed coordinate written into MapClass's shared fallback cell.
-    ///
-    /// A derived clone copies the current words into an independent per-grid
-    /// cell. Every constructor resets a newly built grid to `(0, 0)`; retaining
-    /// one process-global fallback across maps belongs to the later identity
-    /// slice rather than this lookup-side-effect seam.
-    dummy_cell_requested_coord: Cell<(i16, i16)>,
-    /// Mutable bytes carried by the shared fallback cell. Lookups replace only
-    /// the requested coordinate; these values persist until a verified writer
-    /// changes them or the grid is reconstructed.
-    dummy_cell_level: i8,
-    dummy_cell_slope_type: u8,
+    /// One live identity handle, normally bound to the process owner before
+    /// scenario construction. Synthetic constructors own a fresh detached
+    /// handle; derived clones share it.
+    shared_cell_dummy: SharedCellDummy,
     /// Production-only membership for native Size-diamond CellClass slots.
     /// `None` keeps synthetic/from_cells grids rectangular for focused tests.
     native_allocated: Option<Vec<bool>>,
@@ -484,9 +557,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
-            dummy_cell_requested_coord: Cell::new((0, 0)),
-            dummy_cell_level: 0,
-            dummy_cell_slope_type: 0,
+            shared_cell_dummy: SharedCellDummy::fresh(),
             native_allocated: None,
             radar_color_valid,
             damaged_radar_metadata,
@@ -543,13 +614,21 @@ impl ResolvedTerrainGrid {
         self.height
     }
 
+    pub(crate) fn shared_cell_dummy(&self) -> SharedCellDummy {
+        self.shared_cell_dummy.clone()
+    }
+
+    pub(crate) fn bind_shared_cell_dummy(&mut self, shared_cell_dummy: SharedCellDummy) {
+        self.shared_cell_dummy = shared_cell_dummy;
+    }
+
     pub(crate) fn dummy_cell_level_slope(&self) -> (i8, u8) {
-        (self.dummy_cell_level, self.dummy_cell_slope_type)
+        let snapshot = self.shared_cell_dummy.snapshot();
+        (snapshot.level, snapshot.slope_type)
     }
 
     pub(crate) fn dummy_cell_requested_coord(&self) -> (i32, i32) {
-        let (x, y) = self.dummy_cell_requested_coord.get();
-        (i32::from(x), i32::from(y))
+        self.shared_cell_dummy.snapshot().coord
     }
 
     /// Stamp only the coordinate words of the shared fallback cell.
@@ -558,7 +637,7 @@ impl ResolvedTerrainGrid {
     /// world/lepton overload at `0x00565730`: both miss paths overwrite
     /// CellClass+0x24 but preserve the independently mutable level/slope bytes.
     pub(crate) fn stamp_dummy_cell_requested_coord(&self, x: i32, y: i32) {
-        self.dummy_cell_requested_coord.set((x as i16, y as i16));
+        self.shared_cell_dummy.stamp_coord(x, y);
     }
 
     /// Native `MapClass` allocation probe without dummy fallback side effects.
@@ -577,14 +656,13 @@ impl ResolvedTerrainGrid {
     /// Update the shared fallback level without exposing an unsupported runtime
     /// slope writer.
     #[cfg(test)]
-    pub(crate) fn set_dummy_cell_level(&mut self, level: i8) {
-        self.dummy_cell_level = level;
+    pub(crate) fn set_dummy_cell_level(&self, level: i8) {
+        self.shared_cell_dummy.set_level(level);
     }
 
     #[cfg(test)]
-    pub(crate) fn test_set_dummy_cell_level_slope(&mut self, level: i8, slope_type: u8) {
-        self.dummy_cell_level = level;
-        self.dummy_cell_slope_type = slope_type;
+    pub(crate) fn test_set_dummy_cell_level_slope(&self, level: i8, slope_type: u8) {
+        self.shared_cell_dummy.set_level_slope(level, slope_type);
     }
 
     #[cfg(test)]
@@ -874,9 +952,7 @@ impl ResolvedTerrainGrid {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
-                dummy_cell_requested_coord: Cell::new((0, 0)),
-                dummy_cell_level: 0,
-                dummy_cell_slope_type: 0,
+                shared_cell_dummy: SharedCellDummy::fresh(),
                 native_allocated: materialized_size_diamond.then(Vec::new),
                 radar_color_valid: Vec::new(),
                 damaged_radar_metadata: Vec::new(),
@@ -1627,9 +1703,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
-            dummy_cell_requested_coord: Cell::new((0, 0)),
-            dummy_cell_level: 0,
-            dummy_cell_slope_type: 0,
+            shared_cell_dummy: SharedCellDummy::fresh(),
             native_allocated,
             radar_color_valid,
             damaged_radar_metadata,
@@ -2808,8 +2882,10 @@ mod tests {
     }
 
     /// `MapClass::Clear @ 0x00565B00` destroys and nulls every prior slot before
-    /// an ordinary `MapClass::Resize @ 0x00565C10`; a later smaller load must
-    /// therefore expose only its own cells, membership, and fresh dummy state.
+    /// an ordinary `MapClass::Resize @ 0x00565C10`, so a later smaller load must
+    /// expose only its own cells and membership. The fallback CellClass at
+    /// `0x00ABDC50` is a separate process-global object and survives the reload;
+    /// only detached synthetic grid constructors begin with a fresh handle.
     #[test]
     fn gsi_04_01_smaller_production_load_replaces_larger_grid_without_stale_state() {
         let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
@@ -2832,6 +2908,7 @@ mod tests {
         );
         let mut main_rng = SimRng::new(0x0401_5EED);
         let mut main_draw = || main_rng.next_u32();
+        let process_dummy = SharedCellDummy::fresh();
 
         let (mut current, larger_stats) = build_production_grid(
             &larger,
@@ -2839,6 +2916,7 @@ mod tests {
             &mut cache,
             &mut main_draw,
         );
+        current.bind_shared_cell_dummy(process_dummy.clone());
         assert_eq!(current.iter().count(), 4 * (2 * 5 - 1));
         assert_eq!(larger_stats.fill_calls, 36);
         assert_eq!(larger_stats.water_advances, 36);
@@ -2851,12 +2929,16 @@ mod tests {
             .expect("larger-only allocated cell")
             .level = 77;
         current.test_set_dummy_cell_level_slope(-7, 11);
+        current.stamp_dummy_cell_requested_coord(-7, 11);
+        let larger_dummy = current.shared_cell_dummy();
 
         let mut smaller = make_map(Vec::new(), Vec::new(), Vec::new());
         smaller.header.width = 2;
         smaller.header.height = 1;
-        let (smaller_grid, smaller_stats) =
+        let (mut smaller_grid, smaller_stats) =
             build_production_grid_without_theater(&smaller, &mut cache);
+        smaller_grid.bind_shared_cell_dummy(process_dummy);
+        assert!(larger_dummy.same_identity(&smaller_grid.shared_cell_dummy()));
         current = smaller_grid;
 
         let allocated_coords: Vec<_> = current.iter().map(|cell| (cell.rx, cell.ry)).collect();
@@ -2876,7 +2958,8 @@ mod tests {
         );
         assert!(current.cell(1, 1).is_none());
         assert!(current.cell(4, 8).is_none());
-        assert_eq!(current.dummy_cell_level_slope(), (0, 0));
+        assert_eq!(current.dummy_cell_requested_coord(), (-7, 11));
+        assert_eq!(current.dummy_cell_level_slope(), (-7, 11));
 
         assert_eq!(smaller_stats.fill_calls, 3);
         assert_eq!(smaller_stats.water_advances, 0);
@@ -3214,12 +3297,13 @@ mod tests {
             assert_eq!(grid.iter().count(), 10);
             assert!(grid.cell(0, 0).is_none());
             assert_eq!(
-                crate::sim::cell_rect::get_cellclass_fallback(Some(&grid), 0, 0),
-                crate::sim::cell_rect::CellRef::Dummy {
+                crate::sim::cell_rect::get_cellclass_fallback(Some(&grid), 0, 0)
+                    .dummy_snapshot(),
+                Some(SharedCellDummySnapshot {
                     coord: (0, 0),
                     level: 0,
                     slope_type: 0,
-                }
+                })
             );
             let path_grid = crate::sim::pathfinding::PathGrid::from_resolved_terrain(&grid);
             assert!(!path_grid.is_walkable(0, 0));

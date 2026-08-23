@@ -2175,9 +2175,8 @@ impl Simulation {
     /// gamemd-derived: active YR `DispatchPointerExpiredCleanup @ 0x007258D0`
     /// is called directly by `ObjectClass__UnInit @ 0x005F65F0` and again by
     /// `ObjectClass::Destroy @ 0x005F5280` inside the virtual Conceal path.
-    /// The caller's terrain context stays unread: the projectile replacement
-    /// below is decided from the expiring object's own coordinate alone, and the
-    /// `Get_CellClass` note there says why no grid lookup gates it. The other
+    /// The caller's legacy terrain context stays unread: production queries the
+    /// Simulation-resident resolved grid below as its MapClass table. The other
     /// listener arms still read the object's liveness, health and mission from
     /// the same destructure.
     fn notify_pointer_expired(&mut self, expired_id: u64, _context: UninitContext<'_>) {
@@ -2206,67 +2205,12 @@ impl Simulation {
             return;
         };
 
-        // gamemd-derived: `BulletClass::PointerExpired @ 0x004684E0` replaces
-        // a matching ordinary target with MapClass's Cell target from the
-        // pre-Conceal location. Nothing about being off the map produces null:
-        // only the high-flying predicate, map-editor mode, and the exact (0, 0)
-        // coordinate below do.
-        //
-        // The lookup itself cannot fail into null. `MapClass::Get_CellClass @
-        // 0x005657A0` returns the shared dummy CellClass at `0x00ABDC50` — after
-        // stamping the requested coord into `dummy + 0x24` — for both an
-        // out-of-range index and an in-range slot whose pointer is NULL, i.e.
-        // for the sparse cells outside the map diamond. So an unallocated cell
-        // is still a Cell target here, not a null one.
-        //
-        // Null comes only from the callback's own gates, all writing the `EBX`
-        // that `0x004684FD` zeroes. Two are modelled: the high-flying predicate
-        // and the coordinate sentinel at `0x0046856E`/`0x0046857C`, which
-        // compares the truncated cell against `DAT_0089DDF0`/`DAT_0089DDF2`.
-        // Both sentinel words are zero in the image and the only writer in the
-        // program (`0x00466270`) zeroes them again, so the sentinel is the cell
-        // (0, 0). The third gate, `g_MapEditorMode`, is deliberately omitted:
-        // it is zero for the whole of ordinary gameplay.
-        //
-        // DRIFT (GSI-05.11) — recorded, not pending. Re-verified against the
-        // binary on the Phase 6 second pass: every cited address checks out
-        // instruction for instruction, and four neighbouring claims came back
-        // NO-DIFF — the high-flying predicate (`ObjectClass::IsHighFlying @
-        // 0x005F6B90`), the null-firer mapping, the sign-biased truncation, and
-        // the `+0xAC`/`+0x130` arms, which are BulletTypeClass/WeaponTypeClass
-        // comparisons this port cannot reach and must not implement.
-        // `MapClass::Get_CellClass @
-        // 0x005657A0` stamps the requested packed coord into the shared dummy
-        // CellClass (`0x00ABDC50`, coord at `+0x24`) on both miss paths — an
-        // index outside `[0, 0x40000)` and an in-range NULL sparse slot — and
-        // returns that one process-global object. A native Bullet holding it
-        // therefore reads whichever coordinate was requested most recently
-        // anywhere in the program, not the one stamped when it took the target.
-        // `Cell { rx, ry }` pins a stable coordinate instead.
-        // - Trigger: any cell-lookup miss anywhere in the frame while a Bullet
-        //   holds a dummy target. The stamp is not confined to
-        //   `Get_CellClass`: the same fallback is inlined into
-        //   `Is_Cell_In_Playfield @ 0x00578498`, `Find_Nearby_Passable_Cell`,
-        //   `GetZoneID` and the bridge walkers among others.
-        // - Player effect: a homing shot that lost an unallocated-cell target
-        //   drifts toward an unrelated cell in native and flies straight here.
-        // - Frequency: needs a target to die on an unallocated cell — outside
-        //   the map diamond — first, which ordinary skirmish play does not
-        //   produce.
-        // - Downstream risk: none today. Reproducing it is not blocked by the
-        //   id model — a single hashed scalar on `Simulation` would carry the
-        //   coord — but it is not *correct* without also reproducing every
-        //   cell-lookup miss engine-wide in native call order, since that walk
-        //   is what decides which coord is current. That is the unbounded part,
-        //   and it is why this stays recorded rather than approximated: a
-        //   scalar fed by VERA's own miss order would be a different wrong
-        //   answer wearing native's shape.
-        let projectile_replacement_target = (!expired_is_high_flying)
-            .then_some(())
-            .and(expired_target_cell)
-            .filter(|&cell| cell != NULL_TARGET_CELL_SENTINEL)
-            .map(|(rx, ry)| ProjectileTarget::Cell { rx, ry })
-            .unwrap_or(ProjectileTarget::None);
+        // `BulletClass::PointerExpired @ 0x004684E0` performs the packed
+        // `MapClass::Get_CellClass @ 0x005657A0` lookup only for a matching
+        // target. Its result pointer is stored at Bullet+0x10C: an allocated
+        // slot therefore remains a stable Cell target, while a miss stores the
+        // one shared dummy at `0x00ABDC50`. Later `BulletClass::AI @ 0x004666E0`
+        // dispatches that live pointer and observes its most recent coord stamp.
 
         for listener_id in self.removal_listener_order() {
             let is_entity = self.substrate.entities.contains(listener_id);
@@ -2334,6 +2278,38 @@ impl Simulation {
                     system.done_spawning = true;
                 }
             } else if is_projectile {
+                let target_matches = self
+                    .projectiles
+                    .get(listener_id)
+                    .is_some_and(|projectile| {
+                        projectile.target == ProjectileTarget::Entity(expired_id)
+                    });
+                let projectile_replacement_target = if !target_matches
+                    || expired_is_high_flying
+                    || expired_target_cell.is_none()
+                    || expired_target_cell == Some(NULL_TARGET_CELL_SENTINEL)
+                {
+                    ProjectileTarget::None
+                } else {
+                    let (rx, ry) = expired_target_cell.expect("checked target cell");
+                    match self.resolved_terrain.as_ref() {
+                        Some(terrain) => match crate::sim::cell_rect::get_cellclass_fallback(
+                            Some(terrain),
+                            i32::from(rx),
+                            i32::from(ry),
+                        ) {
+                            crate::sim::cell_rect::CellRef::Real(_) => {
+                                ProjectileTarget::Cell { rx, ry }
+                            }
+                            crate::sim::cell_rect::CellRef::Dummy { .. } => {
+                                ProjectileTarget::DummyCell
+                            }
+                        },
+                        // Terrainless synthetic fixtures keep their historical
+                        // stable-cell fallback. Production is terrain-backed.
+                        None => ProjectileTarget::Cell { rx, ry },
+                    }
+                };
                 let present = self.projectiles.pointer_expired(
                     listener_id,
                     expired_id,

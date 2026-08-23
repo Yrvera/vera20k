@@ -5379,9 +5379,16 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     sim.admit_projectile(projectile_id, fire.projectile_spawns[0]);
     let target_positions =
         BTreeMap::from([(2, ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0))]);
+    let shared_cell_dummy = sim.effective_shared_cell_dummy();
     assert!(
         sim.projectiles
-            .advance(&target_positions, None, None, |_, _| None)
+            .advance(
+                &target_positions,
+                None,
+                None,
+                &shared_cell_dummy,
+                |_, _| None,
+            )
             .detonations
             .is_empty()
     );
@@ -5390,11 +5397,18 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     let mut restored = crate::sim::snapshot::GameSnapshot::load(&snapshot)
         .expect("pending projectile snapshot should load")
         .sim;
+    let restored_shared_cell_dummy = restored.effective_shared_cell_dummy();
     let mut detonations = Vec::new();
     for _ in 0..8 {
         detonations = restored
             .projectiles
-            .advance(&target_positions, None, None, |_, _| None)
+            .advance(
+                &target_positions,
+                None,
+                None,
+                &restored_shared_cell_dummy,
+                |_, _| None,
+            )
             .detonations;
         if !detonations.is_empty() {
             break;

@@ -364,6 +364,7 @@ where
     F: FnOnce(&mut Simulation),
 {
     let mut sim: Simulation = bootstrap_rng.into_simulation(descriptor);
+    sim.bind_shared_cell_dummy(resolved_terrain.shared_cell_dummy());
     // Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
     // `ScenarioClass__Create_Houses @ 0x00687F10` before
     // `TerrainClass__Read_Map_Section @ 0x0071CA70` and every Techno section.
