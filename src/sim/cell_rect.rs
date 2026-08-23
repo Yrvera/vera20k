@@ -85,6 +85,48 @@ pub fn get_cellclass_fallback<'a>(
             return CellRef::Real(cell);
         }
     }
+    if let Some(terrain) = terrain {
+        terrain.stamp_dummy_cell_requested_coord(x, y);
+    }
+    let (level, slope_type) = terrain
+        .map(ResolvedTerrainGrid::dummy_cell_level_slope)
+        .unwrap_or((0, 0));
+    CellRef::Dummy {
+        coord: (x, y),
+        level,
+        slope_type,
+    }
+}
+
+/// Engine world/lepton coordinate lookup, preserving full signed-i32 `/256`
+/// quotients and wrapping fixed-stride index arithmetic. Coordinate words are
+/// narrowed only after a miss, when native stamps the shared dummy.
+///
+/// Verified against `MapClass::Get_CellClass @ 0x00565730`: a real slot leaves
+/// the shared dummy untouched, while either an invalid slot or a null entry
+/// stamps the converted packed coordinate before returning the dummy.
+pub fn get_cellclass_fallback_leptons<'a>(
+    terrain: Option<&'a ResolvedTerrainGrid>,
+    x_leptons: i32,
+    y_leptons: i32,
+) -> CellRef<'a> {
+    let x = x_leptons / 256;
+    let y = y_leptons / 256;
+    let index = y
+        .wrapping_mul(CELL_ROW_STRIDE as i32)
+        .wrapping_add(x);
+    if (0..=MAX_CELL_INDEX as i32).contains(&index) {
+        let rx = (index % CELL_ROW_STRIDE as i32) as u16;
+        let ry = (index / CELL_ROW_STRIDE as i32) as u16;
+        if let Some(cell) = terrain.and_then(|terrain| terrain.cell(rx, ry)) {
+            return CellRef::Real(cell);
+        }
+    }
+
+    let (x, y) = packed_cell_coord(x, y);
+    if let Some(terrain) = terrain {
+        terrain.stamp_dummy_cell_requested_coord(x, y);
+    }
     let (level, slope_type) = terrain
         .map(ResolvedTerrainGrid::dummy_cell_level_slope)
         .unwrap_or((0, 0));
@@ -1472,6 +1514,132 @@ mod tests {
                 slope_type: 0,
             }
         );
+    }
+
+    #[test]
+    fn gsi_04_01_lookup_misses_stamp_only_packed_dummy_coord() {
+        let mut terrain = flat_terrain(512, 2);
+        terrain.test_set_native_allocated_cells(&[(0, 0), (511, 0)]);
+        terrain.test_set_dummy_cell_level_slope(-5, 7);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (0, 0));
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -1, 1),
+            CellRef::Real(terrain.cell(511, 0).expect("fixed-stride alias slot"))
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (0, 0));
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -1, 0),
+            CellRef::Dummy {
+                coord: (-1, 0),
+                level: -5,
+                slope_type: 7,
+            }
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
+
+        // Packed (512,0) has a valid fixed-array index, but its canonical
+        // (0,1) slot is null in this allocation mask. Native still stamps the
+        // requested words; high Rust-only bits do not survive the seam.
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), 0x1_0200, 0x1_0000),
+            CellRef::Dummy {
+                coord: (512, 0),
+                level: -5,
+                slope_type: 7,
+            }
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (512, 0));
+        assert_eq!(terrain.dummy_cell_level_slope(), (-5, 7));
+    }
+
+    #[test]
+    fn gsi_04_01_lookup_world_leptons_truncate_before_fallback() {
+        let terrain = flat_terrain(1, 1);
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -2, 0),
+            CellRef::Dummy {
+                coord: (-2, 0),
+                level: 0,
+                slope_type: 0,
+            }
+        );
+
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), -1, -255),
+            CellRef::Real(terrain.cell(0, 0).expect("negative fractions truncate to zero"))
+        );
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), -255, -1),
+            CellRef::Real(terrain.cell(0, 0).expect("negative fractions truncate to zero"))
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
+
+        // Full quotients (32768,-64) cancel to fixed index zero before either
+        // component is narrowed to its dummy-cell word.
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), 8_388_608, -16_384),
+            CellRef::Real(terrain.cell(0, 0).expect("full-i32 quotient index cancellation"))
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
+
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), -256, 0),
+            CellRef::Dummy {
+                coord: (-1, 0),
+                level: 0,
+                slope_type: 0,
+            }
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
+
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), 256, 0),
+            CellRef::Dummy {
+                coord: (1, 0),
+                level: 0,
+                slope_type: 0,
+            }
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+    }
+
+    #[test]
+    fn gsi_04_01_lookup_allocation_probe_has_no_dummy_side_effect() {
+        let mut terrain = flat_terrain(512, 2);
+        terrain.test_set_native_allocated_cells(&[(0, 0), (511, 0)]);
+        terrain.test_set_dummy_cell_level_slope(-4, 9);
+        let _ = get_cellclass_fallback(Some(&terrain), -3, 0);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-3, 0));
+
+        assert!(terrain.cellclass_allocation_probe(0, 0));
+        assert!(terrain.cellclass_allocation_probe(-1, 1));
+        assert!(!terrain.cellclass_allocation_probe(1, 0));
+        assert!(!terrain.cellclass_allocation_probe(512, 0));
+        assert!(!terrain.cellclass_allocation_probe(-1, 0));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-3, 0));
+        assert_eq!(terrain.dummy_cell_level_slope(), (-4, 9));
+    }
+
+    #[test]
+    fn gsi_04_01_lookup_clone_copies_then_owns_dummy_state() {
+        let mut terrain = flat_terrain(1, 1);
+        terrain.test_set_dummy_cell_level_slope(-6, 11);
+        let _ = get_cellclass_fallback(Some(&terrain), -1, 0);
+
+        let cloned = terrain.clone();
+        assert_eq!(cloned.dummy_cell_requested_coord(), (-1, 0));
+        assert_eq!(cloned.dummy_cell_level_slope(), (-6, 11));
+        let _ = get_cellclass_fallback(Some(&cloned), -2, 0);
+        assert_eq!(cloned.dummy_cell_requested_coord(), (-2, 0));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
+        assert_eq!(cloned.dummy_cell_level_slope(), (-6, 11));
+        assert_eq!(terrain.dummy_cell_level_slope(), (-6, 11));
+
+        let reconstructed = flat_terrain(1, 1);
+        assert_eq!(reconstructed.dummy_cell_requested_coord(), (0, 0));
+        assert_eq!(reconstructed.dummy_cell_level_slope(), (0, 0));
     }
 
     #[test]

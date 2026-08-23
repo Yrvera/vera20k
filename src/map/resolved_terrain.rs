@@ -37,6 +37,7 @@ use crate::map::tile_variant_selector::TileVariantSelectionContext;
 use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass, TerrainRules};
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
@@ -422,6 +423,13 @@ pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
+    /// Last packed coordinate written into MapClass's shared fallback cell.
+    ///
+    /// A derived clone copies the current words into an independent per-grid
+    /// cell. Every constructor resets a newly built grid to `(0, 0)`; retaining
+    /// one process-global fallback across maps belongs to the later identity
+    /// slice rather than this lookup-side-effect seam.
+    dummy_cell_requested_coord: Cell<(i16, i16)>,
     /// Mutable bytes carried by the shared fallback cell. Lookups replace only
     /// the requested coordinate; these values persist until a verified writer
     /// changes them or the grid is reconstructed.
@@ -476,6 +484,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            dummy_cell_requested_coord: Cell::new((0, 0)),
             dummy_cell_level: 0,
             dummy_cell_slope_type: 0,
             native_allocated: None,
@@ -536,6 +545,33 @@ impl ResolvedTerrainGrid {
 
     pub(crate) fn dummy_cell_level_slope(&self) -> (i8, u8) {
         (self.dummy_cell_level, self.dummy_cell_slope_type)
+    }
+
+    pub(crate) fn dummy_cell_requested_coord(&self) -> (i32, i32) {
+        let (x, y) = self.dummy_cell_requested_coord.get();
+        (i32::from(x), i32::from(y))
+    }
+
+    /// Stamp only the coordinate words of the shared fallback cell.
+    ///
+    /// Verified against `MapClass::Get_CellClass @ 0x005657A0` and the
+    /// world/lepton overload at `0x00565730`: both miss paths overwrite
+    /// CellClass+0x24 but preserve the independently mutable level/slope bytes.
+    pub(crate) fn stamp_dummy_cell_requested_coord(&self, x: i32, y: i32) {
+        self.dummy_cell_requested_coord.set((x as i16, y as i16));
+    }
+
+    /// Native `MapClass` allocation probe without dummy fallback side effects.
+    ///
+    /// `MapClass::Is_Cell_Allocated @ 0x005657E0` computes the signed packed
+    /// `y*512+x` slot and directly tests its pointer. Its active save-table and
+    /// EMP callers establish valid coordinates; Rust therefore returns `false`
+    /// outside the fixed array instead of reproducing native out-of-array UB.
+    pub(crate) fn cellclass_allocation_probe(&self, x: i32, y: i32) -> bool {
+        let Some((rx, ry)) = crate::map::cell_index::canonical_cell_coord(x, y) else {
+            return false;
+        };
+        self.cell(rx, ry).is_some()
     }
 
     /// Update the shared fallback level without exposing an unsupported runtime
@@ -838,6 +874,7 @@ impl ResolvedTerrainGrid {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
+                dummy_cell_requested_coord: Cell::new((0, 0)),
                 dummy_cell_level: 0,
                 dummy_cell_slope_type: 0,
                 native_allocated: materialized_size_diamond.then(Vec::new),
@@ -1590,6 +1627,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            dummy_cell_requested_coord: Cell::new((0, 0)),
             dummy_cell_level: 0,
             dummy_cell_slope_type: 0,
             native_allocated,
