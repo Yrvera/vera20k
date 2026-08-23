@@ -23,10 +23,97 @@ use crate::map::map_file::{self, MapFile};
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::theater;
+use crate::map::tile_variant_selector::TileVariantSelectorCache;
 use crate::map::waypoints;
 use crate::sim::overlay_grid::OverlayGrid;
+use crate::sim::scenario_bootstrap::ScenarioBootstrapRng;
 use crate::sim::scenario_session::ScenarioDescriptor;
 use crate::sim::world::Simulation;
+
+/// Terrain plus the exact setup RNG owner advanced while that terrain loaded.
+struct HeadlessTerrainBootstrap {
+    resolved: ResolvedTerrainGrid,
+    bootstrap_rng: ScenarioBootstrapRng,
+}
+
+impl HeadlessTerrainBootstrap {
+    #[allow(clippy::too_many_arguments)]
+    fn construct_scenario<F>(
+        self,
+        map: &MapFile,
+        theater_name: &str,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+        art: Option<&crate::rules::art_data::ArtRegistry>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        bridge_destroyability_mode: crate::map::basic::BridgeDestroyabilityMode,
+        descriptor: &ScenarioDescriptor,
+        initialize_houses_before_objects: F,
+    ) -> Simulation
+    where
+        F: FnOnce(&mut Simulation),
+    {
+        crate::sim::runtime::construct_scenario(
+            map,
+            &self.resolved,
+            theater_name,
+            rules,
+            art,
+            height_map,
+            bridge_destroyability_mode,
+            descriptor,
+            self.bootstrap_rng,
+            initialize_houses_before_objects,
+        )
+    }
+}
+
+/// Build the ordinary-load CellClass population and retain the RNG cursors it
+/// advanced for the subsequent sim handoff.
+///
+/// Active YR `MapClass::Clear @ 0x00565B00` clears the fixed cell table, then
+/// `MapClass::Resize @ 0x00565C10` allocates the complete Size diamond before
+/// IsoMapPack records overwrite it (allocation loop `0x0056639E..0x00566451`).
+#[allow(clippy::too_many_arguments)]
+fn build_headless_terrain_bootstrap(
+    map: &MapFile,
+    theater_data: Option<&crate::map::theater::TheaterData>,
+    asset_manager: Option<&AssetManager>,
+    terrain_rules: Option<&crate::rules::terrain_rules::TerrainRules>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    cliff_back_impassability: u8,
+    seed: u32,
+) -> HeadlessTerrainBootstrap {
+    let mut bootstrap_rng = ScenarioBootstrapRng::new(seed);
+    let (mut scenario_fill_rng, mut variant_main_rng) = bootstrap_rng.terrain_draws();
+    let mut scenario_fill_ranged =
+        |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
+    let mut variant_draw = || variant_main_rng.next_u32();
+    let mut variant_selector_cache = TileVariantSelectorCache::default();
+    let mut variant_selector = variant_selector_cache.begin_load(&mut variant_draw);
+    let resolved = ResolvedTerrainGrid::build_with_variant_selector(
+        map,
+        theater_data,
+        asset_manager,
+        terrain_rules,
+        overlay_registry,
+        // Headless terrain-object metadata and LAT remain explicit residuals.
+        None,
+        false,
+        cliff_back_impassability,
+        &mut scenario_fill_ranged,
+        &mut variant_selector,
+    );
+    drop(variant_selector);
+    drop(variant_draw);
+    drop(scenario_fill_ranged);
+    drop(variant_main_rng);
+    drop(scenario_fill_rng);
+
+    HeadlessTerrainBootstrap {
+        resolved,
+        bootstrap_rng,
+    }
+}
 
 /// A loaded scenario plus the per-tick inputs `advance_tick` needs.
 pub struct HeadlessScenario {
@@ -79,17 +166,19 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini);
     let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
 
-    let mut resolved = ResolvedTerrainGrid::build(
+    let mut terrain_bootstrap = build_headless_terrain_bootstrap(
         &map,
         Some(&theater),
         Some(&assets),
         Some(&rules.terrain_rules),
         Some(&overlay_registry),
-        false,
         rules.general.cliff_back_impassability,
+        seed,
     );
-    let scheduler_roots =
-        crate::app::loading::init_helpers::scheduler_anim_roots(&rules, resolved.tile_animations());
+    let scheduler_roots = crate::app::loading::init_helpers::scheduler_anim_roots(
+        &rules,
+        terrain_bootstrap.resolved.tile_animations(),
+    );
     art.bind_scheduler_anim_assets(
         &scheduler_roots,
         &assets,
@@ -110,12 +199,15 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     rules.bind_animation_sequences(&infantry_sequences);
     let house_roster =
         crate::map::houses::parse_house_roster(&map.ini, rules.color_schemes.as_slice());
-    let mut overlay_grid =
-        OverlayGrid::from_overlay_entries(&map.overlays, resolved.width(), resolved.height());
+    let mut overlay_grid = OverlayGrid::from_overlay_entries(
+        &map.overlays,
+        terrain_bootstrap.resolved.width(),
+        terrain_bootstrap.resolved.height(),
+    );
     let cleared_terrain_overlay_cells =
         crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
             &mut overlay_grid,
-            &mut resolved,
+            &mut terrain_bootstrap.resolved,
             &map.terrain_objects,
             &rules,
             &overlay_registry,
@@ -126,7 +218,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
             cleared_terrain_overlay_cells.len(),
         );
     }
-    let height_map = resolved.build_height_map();
+    let height_map = terrain_bootstrap.resolved.build_height_map();
     let lighting_profiles = crate::map::lighting::parse_lighting_profiles(&map.ini);
 
     let descriptor = ScenarioDescriptor {
@@ -137,8 +229,8 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         game_mode_nonzero: true,
         no_damage: false,
         // CANONICAL CELL-ARRAY FRAME, not [Map] Size= — see ScenarioDescriptor.
-        map_width: resolved.width(),
-        map_height: resolved.height(),
+        map_width: terrain_bootstrap.resolved.width(),
+        map_height: terrain_bootstrap.resolved.height(),
         local_left: map.header.local_left as u16,
         local_top: map.header.local_top as u16,
         local_width: map.header.local_width as u16,
@@ -173,9 +265,8 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     // shared post-funnel finalization (spawner seed, wall owners, overlay
     // grid, smudge grid, post-map). A parity run stands in for a stock
     // skirmish load with bridges destructible, the retail skirmish default.
-    let mut sim = crate::sim::runtime::construct_scenario(
+    let mut sim = terrain_bootstrap.construct_scenario(
         &map,
-        &resolved,
         &map.header.theater,
         Some(&rules),
         Some(&rules.art_registry),
@@ -184,7 +275,6 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
             bridge_destruction: true,
         },
         &descriptor,
-        crate::sim::scenario_bootstrap::ScenarioBootstrapRng::new(seed),
         |sim| {
             crate::sim::scenario_bootstrap::initialize_map_roster_houses(
                 sim,
@@ -256,6 +346,84 @@ impl HeadlessScenario {
 #[cfg(test)]
 mod retail_construction_tests {
     use super::*;
+    use crate::sim::rng::SimRng;
+
+    /// One valid LZO chunk whose decompressed bytes are the `(0, 0)`
+    /// IsoMapPack terminator, so the parsed map has no explicit cell records.
+    const EMPTY_ISO_MAP_PACK: &str = "CAAEABUAAAAAEQAA";
+
+    #[test]
+    fn gsi_04_01_headless_sparse_water_load_materializes_and_transfers_rng() {
+        let seed = 0x0401_5EED;
+        let map_bytes = format!(
+            "[Map]\n\
+             Theater=TEMPERATE\n\
+             Size=0,0,2,1\n\
+             LocalSize=0,0,2,1\n\
+             Fill=Water\n\
+             [IsoMapPack5]\n\
+             1={EMPTY_ISO_MAP_PACK}\n"
+        );
+        let map = MapFile::from_bytes(map_bytes.as_bytes()).expect("parse sparse INI map");
+        assert!(
+            map.cells.is_empty(),
+            "fixture has no explicit terrain cells"
+        );
+
+        let terrain_bootstrap =
+            build_headless_terrain_bootstrap(&map, None, None, None, None, 2, seed);
+        assert_eq!(
+            (
+                terrain_bootstrap.resolved.width(),
+                terrain_bootstrap.resolved.height(),
+            ),
+            (3, 3),
+            "the canonical cell array spans the Size diamond's highest coordinate"
+        );
+        let mut allocated: Vec<_> = terrain_bootstrap
+            .resolved
+            .iter()
+            .map(|cell| (cell.rx, cell.ry))
+            .collect();
+        allocated.sort_unstable();
+        assert_eq!(allocated, vec![(1, 2), (2, 1), (2, 2)]);
+
+        let height_map = terrain_bootstrap.resolved.build_height_map();
+        let descriptor = ScenarioDescriptor {
+            seed,
+            map_width: terrain_bootstrap.resolved.width(),
+            map_height: terrain_bootstrap.resolved.height(),
+            local_left: map.header.local_left as u16,
+            local_top: map.header.local_top as u16,
+            local_width: map.header.local_width as u16,
+            local_height: map.header.local_height as u16,
+            ..ScenarioDescriptor::default()
+        };
+        let sim = terrain_bootstrap.construct_scenario(
+            &map,
+            &map.header.theater,
+            None,
+            None,
+            &height_map,
+            crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+                bridge_destruction: true,
+            },
+            &descriptor,
+            |_| {},
+        );
+
+        let mut expected_scenario = SimRng::new(u64::from(seed));
+        for _ in 0..3 {
+            let _ = expected_scenario.next_range_u32_inclusive(0, 3);
+        }
+        let state = sim.rng_state();
+        assert_eq!(state.scenario, expected_scenario.logical_state());
+        assert_eq!(
+            state.main,
+            SimRng::new(u64::from(seed)).logical_state(),
+            "no theater TMP selection means the Main cursor stays at its seed"
+        );
+    }
 
     /// F09 certification: the shared GPU-free funnel produces a deterministic,
     /// fully populated headless scenario on a retail map. Two loads of the same
