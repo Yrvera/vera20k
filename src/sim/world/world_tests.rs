@@ -2614,6 +2614,20 @@ fn sonic_wave_test_rules() -> RuleSet {
     .expect("Sonic Wave fixture")
 }
 
+fn sonic_tail_order_test_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=DLPH\n1=LATER\n2=TARGET\n\n\
+         [DLPH]\nStrength=200\nArmor=light\nSpeed=8\nSight=8\nPrimary=SonicZap\n\n\
+         [LATER]\nStrength=200\nArmor=light\nSpeed=8\nSight=8\nPrimary=LaterGun\n\n\
+         [TARGET]\nStrength=100\nArmor=none\nSpeed=1\n\n\
+         [SonicZap]\nDamage=4\nAmbientDamage=10\nROF=20\nRange=6\nWarhead=SonicWH\nIsSonic=yes\n\n\
+         [LaterGun]\nDamage=7\nROF=20\nRange=6\nWarhead=LaterWH\n\n\
+         [SonicWH]\nWood=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n\n\
+         [LaterWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+    ))
+    .expect("Sonic Logic-tail ordering fixture")
+}
+
 fn sonic_fire_event(
     sim: &mut Simulation,
     attacker_id: u64,
@@ -2681,7 +2695,7 @@ fn sonic_constructor_dead_pointer_link_lives_until_deferred_delete_at_239() {
 }
 
 #[test]
-fn sonic_constructor_at_240_admits_and_runs_first_wave_ai_immediately() {
+fn sonic_constructor_at_240_registers_then_runs_at_same_pass_tail() {
     let rules = sonic_wave_test_rules();
     let mut sim = Simulation::new();
     let firer_id = sim.allocate_stable_id();
@@ -2710,9 +2724,147 @@ fn sonic_constructor_at_240_admits_and_runs_first_wave_ai_immediately() {
         .expect("live owner link");
     let wave = sim.waves.get(wave_id).expect("registered Wave");
     assert!(wave.in_logic_vector);
+    assert_eq!(wave.lifetime, 100, "FireAt only registers the Logic tail");
+
+    sim.visit_combat_appended_wave_tail(&BTreeSet::new(), &rules, None);
+
+    let wave = sim.waves.get(wave_id).expect("Wave survives first tail AI");
     assert_eq!(wave.lifetime, 99, "first AI belongs to the firing pass");
-    assert_eq!(wave.target.z, 50, "type-0 uses the live target-side Sonic Z adjustment");
+    assert_eq!(
+        wave.target.z, 50,
+        "type-0 uses the live target-side Sonic Z adjustment"
+    );
     assert!(sim.substrate.pending_delete.is_empty());
+}
+
+#[test]
+fn sonic_fire_registers_immediately_but_later_techno_fires_before_wave_tail_ai() {
+    let rules = sonic_tail_order_test_rules();
+    let mut sim = Simulation::with_seed(0x5EED_760F);
+    sim.input_delay_ticks = 0;
+    let terrain = ResolvedTerrainGrid::from_cells(
+        8,
+        3,
+        (0..3)
+            .flat_map(|ry| (0..8).map(move |rx| bridgehead_base_cell(rx, ry)))
+            .collect(),
+    );
+    sim.install_resolved_terrain_for_new_map(terrain);
+    let heights = empty_heights();
+    let dolphin_id = sim
+        .spawn_object("DLPH", "Americans", 0, 0, 64, &rules, &heights)
+        .expect("Dolphin placed first in Logic order");
+    let later_id = sim
+        .spawn_object("LATER", "Americans", 0, 2, 64, &rules, &heights)
+        .expect("later shooter placed after Dolphin");
+    let sonic_endpoint_id = sim
+        .spawn_object("TARGET", "Russians", 6, 0, 0, &rules, &heights)
+        .expect("Sonic endpoint");
+    let wave_receiver_id = sim
+        .spawn_object("TARGET", "Russians", 5, 0, 0, &rules, &heights)
+        .expect("cell-list Wave receiver");
+    let later_target_id = sim
+        .spawn_object("TARGET", "Russians", 2, 2, 0, &rules, &heights)
+        .expect("later shooter's target");
+    assert!(crate::sim::combat::issue_attack_command(
+        &mut sim.substrate.entities,
+        dolphin_id,
+        sonic_endpoint_id,
+        Some(&rules),
+        &sim.interner,
+    ));
+    assert!(crate::sim::combat::issue_attack_command(
+        &mut sim.substrate.entities,
+        later_id,
+        later_target_id,
+        Some(&rules),
+        &sim.interner,
+    ));
+    sim.clear_lifecycle_test_events_for_test();
+
+    let path = PathGrid::test_all_passable(8, 3);
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&path), None, 67);
+
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(later_target_id)
+            .expect("later target survives")
+            .health
+            .current,
+        93,
+        "the later pre-existing Techno completed its FireAt effects",
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(wave_receiver_id)
+            .expect("Wave receiver survives")
+            .health
+            .current,
+        90,
+        "the appended Wave still damages its first recorded cell this frame",
+    );
+    let wave_id = *sim
+        .active_wave_links
+        .get(&dolphin_id)
+        .expect("Dolphin retains the live Wave link");
+    assert_eq!(
+        sim.waves.get(wave_id).expect("Wave remains live").lifetime,
+        99,
+        "the new Logic tail owns its first AI in the firing pass",
+    );
+
+    let events = sim.lifecycle_test_events_for_test();
+    let dolphin_boundary = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            LifecycleTestEvent::CombatFireEffectsCommitted {
+                attacker_id,
+                scenario_rng_state,
+            } if *attacker_id == dolphin_id => Some((index, *scenario_rng_state)),
+            _ => None,
+        })
+        .expect("Dolphin FireAt boundary traced");
+    let later_boundary = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            LifecycleTestEvent::CombatFireEffectsCommitted {
+                attacker_id,
+                scenario_rng_state,
+            } if *attacker_id == later_id => Some((index, *scenario_rng_state)),
+            _ => None,
+        })
+        .expect("later FireAt boundary traced");
+    let wave_receiver = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            LifecycleTestEvent::WaveDamageReceiverSelected {
+                wave_id: selected_wave,
+                target_id,
+                scenario_rng_state,
+            } if *selected_wave == wave_id && *target_id == wave_receiver_id => {
+                Some((index, *scenario_rng_state))
+            }
+            _ => None,
+        })
+        .expect("Wave receiver boundary traced");
+    assert!(dolphin_boundary.0 < later_boundary.0);
+    assert!(
+        later_boundary.0 < wave_receiver.0,
+        "later FireAt/effects must finish before the appended Wave receiver walk",
+    );
+    assert_ne!(
+        dolphin_boundary.1, later_boundary.1,
+        "the later FireAt consumed its own ROF RNG before the Wave",
+    );
+    assert_eq!(
+        later_boundary.1, wave_receiver.1,
+        "the Wave receiver begins from the RNG state left by the later Techno",
+    );
 }
 
 fn short_game_defeat_test_rules() -> RuleSet {

@@ -1102,10 +1102,13 @@ struct SimulationCombatInlineHooks<'a> {
 
 impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
     #[cfg(test)]
-    fn trace_wave_receiver(&mut self, wave_id: u64, target_id: u64) {
-        self.sim.trace_lifecycle_for_test(
-            LifecycleTestEvent::WaveDamageReceiverSelected { wave_id, target_id },
-        );
+    fn trace_wave_receiver(&mut self, wave_id: u64, target_id: u64, scenario_rng_state: u64) {
+        self.sim
+            .trace_lifecycle_for_test(LifecycleTestEvent::WaveDamageReceiverSelected {
+                wave_id,
+                target_id,
+                scenario_rng_state,
+            });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1129,6 +1132,13 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         >,
         borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
     ) {
+        #[cfg(test)]
+        self.sim
+            .trace_lifecycle_for_test(LifecycleTestEvent::CombatFireEffectsCommitted {
+                attacker_id: event.attacker_id,
+                scenario_rng_state: borrowed_scenario_rng.state(),
+            });
+
         std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
         std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
         std::mem::swap(&mut self.sim.interner, borrowed_interner);
@@ -1764,7 +1774,7 @@ impl Simulation {
     fn create_wave_from_fire_event(
         &mut self,
         rules: &RuleSet,
-        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        _overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         event: &SimFireEvent,
     ) {
         let Some(weapon) = rules.weapon(self.interner.resolve(event.weapon_id)) else {
@@ -1865,19 +1875,33 @@ impl Simulation {
         let _terminal = wave.initialize(context, self.resolved_terrain.as_ref());
         self.admit_wave(stable_id, wave);
         self.active_wave_links.insert(event.attacker_id, stable_id);
+    }
 
-        // LogicClass reloads its live count after the firing Techno callback;
-        // the tail-appended Wave therefore owns its first AI before the next
-        // pre-existing live object callback. The per-FireAt hook invokes this
-        // method at that exact combat boundary.
-        let _ = self.object_ai_visit_one(
-            stable_id,
-            Some(rules),
-            techno_ai::ObjectAiCtx {
-                overlay_registry,
-                ..techno_ai::ObjectAiCtx::default()
-            },
-        );
+    /// Finish the live Logic pass after combat has modeled the pre-existing
+    /// Techno callbacks. FireAt registers each Wave immediately, preserving
+    /// its actual tail position; the live-length walk reaches those new slots
+    /// only after every object that was already ahead of them has fired.
+    fn visit_combat_appended_wave_tail(
+        &mut self,
+        preexisting_wave_ids: &BTreeSet<u64>,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        let mut index = 0;
+        while index < self.substrate.logic.len() {
+            let stable_id = self.substrate.logic.as_slice()[index];
+            if !preexisting_wave_ids.contains(&stable_id) && self.waves.get(stable_id).is_some() {
+                let _ = self.object_ai_visit_one(
+                    stable_id,
+                    Some(rules),
+                    techno_ai::ObjectAiCtx {
+                        overlay_registry,
+                        ..techno_ai::ObjectAiCtx::default()
+                    },
+                );
+            }
+            index += 1;
+        }
     }
 
     /// Walk one Wave damage request in recorded-cell and current Cell-list
@@ -2066,7 +2090,11 @@ impl Simulation {
                             inline_hooks
                                 .as_deref_mut()
                                 .expect("world Wave hook")
-                                .trace_wave_receiver(request.wave_id, target_id);
+                                .trace_wave_receiver(
+                                    request.wave_id,
+                                    target_id,
+                                    scenario_rng.state(),
+                                );
                             crate::sim::combat::combat_aoe::AreaDamageReceiver::Entity(event)
                         }
                         CellObject::Terrain(stable_id) => {
@@ -2074,7 +2102,11 @@ impl Simulation {
                             inline_hooks
                                 .as_deref_mut()
                                 .expect("world Wave hook")
-                                .trace_wave_receiver(request.wave_id, stable_id);
+                                .trace_wave_receiver(
+                                    request.wave_id,
+                                    stable_id,
+                                    scenario_rng.state(),
+                                );
                             crate::sim::combat::combat_aoe::AreaDamageReceiver::Terrain(
                                 crate::sim::combat::TerrainDamageEvent {
                                     stable_id,
@@ -6719,6 +6751,11 @@ impl Simulation {
             for request in sonic_damage_requests {
                 self.commit_logic_wave_damage_request(rules, overlay_registry, &request);
             }
+            let preexisting_wave_ids = self
+                .waves
+                .iter()
+                .map(|(&stable_id, _)| stable_id)
+                .collect::<BTreeSet<_>>();
             let fire_suppressed = tube_turn_owned_ids.clone();
             let combat_result = self.tick_combat_with_fatal_lifecycle(
                 rules,
@@ -6733,6 +6770,7 @@ impl Simulation {
                 let stable_id = self.allocate_stable_id();
                 self.admit_projectile(stable_id, projectile);
             }
+            self.visit_combat_appended_wave_tail(&preexisting_wave_ids, rules, overlay_registry);
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,

@@ -1718,7 +1718,7 @@ pub(crate) enum BaseDefenseResponseCallSite {
 /// entities, map grids, and the scenario RNG.
 pub(crate) trait CombatInlineHooks {
     #[cfg(test)]
-    fn trace_wave_receiver(&mut self, _wave_id: u64, _target_id: u64) {}
+    fn trace_wave_receiver(&mut self, _wave_id: u64, _target_id: u64, _scenario_rng_state: u64) {}
 
     #[allow(clippy::too_many_arguments)]
     fn commit_wave_fire_event(

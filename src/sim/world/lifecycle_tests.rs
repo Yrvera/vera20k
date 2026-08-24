@@ -5142,6 +5142,7 @@ fn wave_elite_ambient_damage_carries_within_cell_and_resets_on_next_cell() {
             LifecycleTestEvent::WaveDamageReceiverSelected {
                 wave_id: selected_wave,
                 target_id,
+                ..
             } if *selected_wave == wave_id => Some(*target_id),
             _ => None,
         })
@@ -5248,6 +5249,7 @@ fn wave_walks_nonbuilding_terrain_building_order_and_terrain_owns_wood_gate() {
                 LifecycleTestEvent::WaveDamageReceiverSelected {
                     wave_id: selected_wave,
                     target_id,
+                    ..
                 } if *selected_wave == wave_id => Some(*target_id),
                 _ => None,
             })
@@ -5648,6 +5650,7 @@ fn gsi_01_05_wave_reselects_live_cell_list_after_fatal_receiver_unmark() {
             LifecycleTestEvent::WaveDamageReceiverSelected {
                 wave_id: selected_wave,
                 target_id,
+                ..
             } if *selected_wave == wave_id => Some(*target_id),
             _ => None,
         })
