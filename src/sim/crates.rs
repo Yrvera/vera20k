@@ -265,7 +265,10 @@ fn snap_to_passable(
             bridge_aware_zone: false,
         },
         footprint: NearbyFootprint::SINGLE,
-        anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
+        // gamemd-derived: every FNPC candidate path, including crate placement,
+        // calls Is_Cell_In_Playfield_CellClass(cell, 1) @ 0x00578540 before
+        // CellRect passability (caller PlaceCrateAtRandomCell @ 0x0056BD40).
+        anchor_gate: NearbyAnchorGate::NativeHeightAware,
         allow_bridge_cells: true,
         check_height: false,
         check_occupancy: false,
@@ -585,7 +588,8 @@ mod tests {
         let registry = crate_registry();
         let grid = PathGrid::test_all_passable(MAP, MAP);
         let mut sim = sim_with_grid(0xF411_ED);
-        // Empty diamond: every nearby result fails the separate playfield gate.
+        // Empty diamond: every FNPC candidate fails the mandatory anchor gate
+        // (and the independent final playfield gate would reject it too).
         sim.playfield_bounds = Some(PlayfieldBounds {
             base: 0,
             off_fc: 0,
@@ -850,6 +854,52 @@ mod tests {
             snap_to_passable(&sim, Some(&grid), (20, 20), CrateSurface::Land),
             Some((11, 20)),
             "the live frame advances modulo the preferred pool"
+        );
+    }
+
+    #[test]
+    fn gsi_01_04_crate_snap_requires_native_candidate_anchor_diamond() {
+        let mut sim = sim_with_grid(1);
+        let mut terrain = uniform_terrain(false);
+        for cell in &mut terrain.cells {
+            cell.speed_costs.track = Some(0);
+        }
+        // Both candidates are valid cells inside the 40x40 terrain rectangle.
+        // Ring order visits (8,3) first, but the native diamond below admits
+        // (8,5) only: on flat terrain it requires 12 < x+y <= 26,
+        // x-y < 14, and y-x < 6.
+        terrain
+            .cell_mut(8, 3)
+            .expect("rectangular-only candidate")
+            .speed_costs
+            .track = Some(100);
+        terrain
+            .cell_mut(8, 5)
+            .expect("in-diamond candidate")
+            .speed_costs
+            .track = Some(100);
+        sim.resolved_terrain = Some(terrain);
+        sim.playfield_bounds = Some(PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        });
+        sim.session.binary_frame = 0;
+        let grid = PathGrid::test_all_passable(MAP, MAP);
+
+        assert_eq!(
+            snap_to_passable(&sim, Some(&grid), (9, 4), CrateSurface::Land),
+            Some((8, 5)),
+            "the earlier rectangularly valid but off-diamond anchor must be rejected"
+        );
+
+        sim.playfield_bounds = None;
+        assert_eq!(
+            snap_to_passable(&sim, Some(&grid), (9, 4), CrateSurface::Land),
+            None,
+            "missing MapClass playfield authority must reject, not bypass"
         );
     }
 
