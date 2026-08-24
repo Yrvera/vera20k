@@ -577,6 +577,8 @@ mod tests {
             let shared_cell_dummy = simulation.effective_shared_cell_dummy();
             shared_cell_dummy.set_level_slope(-7, 11);
             shared_cell_dummy.stamp_coord(7, 9);
+            shared_cell_dummy
+                .apply_bridge_flag_slot(crate::map::bridge_facts::BridgeStampSlot::Anchor, true);
             let mut replay = ReplayLog::new(ReplayHeader {
                 version: 1,
                 tick_hz: 15,
@@ -940,6 +942,7 @@ mod tests {
                 coord: (0, 0),
                 level: 0,
                 slope_type: 0,
+                bridge_flags_0x1180: 0,
             },
             "successful in-scenario load reconstructs the fixed dummy at the commit seam"
         );

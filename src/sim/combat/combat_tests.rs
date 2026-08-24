@@ -5385,7 +5385,6 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
             .advance(
                 &target_positions,
                 None,
-                None,
                 &shared_cell_dummy,
                 |_, _| None,
             )
@@ -5404,7 +5403,6 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
             .projectiles
             .advance(
                 &target_positions,
-                None,
                 None,
                 &restored_shared_cell_dummy,
                 |_, _| None,
@@ -6655,6 +6653,154 @@ fn projectile_shrapnel_targets_hostile_head_before_random_cell_child() {
         crate::sim::projectile::ProjectileTarget::Cell { .. }
     ));
     assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
+}
+
+#[test]
+fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeStampSlot};
+    use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
+    use crate::sim::projectile::{
+        ProjectileCoord, ProjectileTarget, dummy_cell_target_coord,
+        projectile_random_shrapnel_cell,
+    };
+    use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, cellclass_ground_height_leptons};
+
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\n\n[PARENT]\nDamage=20\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\n[PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=3\n\n[CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\n[CHILDPROJ]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("shrapnel rules");
+    let mut entities = EntityStore::new();
+    let mut source = make_entity_owned(1, "MTNK", 5, 5, 100, "Soviet");
+    source.lifecycle.cell_marked = true;
+    entities.insert(source);
+    let occupancy = OccupancyGrid::rebuild(&entities);
+    let mut interner = test_interner();
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 7,
+        source_id: 1,
+        target: ProjectileTarget::Cell { rx: 5, ry: 5 },
+        impact: ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
+        payload: crate::sim::projectile::ProjectilePayload {
+            base_damage: 20,
+            warhead: interner.intern("WH"),
+            weapon: interner.intern("PARENT"),
+            owner: interner.intern("SOVIET"),
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+
+    let mut scenario_rng = SimRng::new(0x46_a310);
+    let mut expected_rng = scenario_rng.clone();
+    let expected_cells = [
+        projectile_random_shrapnel_cell(5, 5, &mut expected_rng),
+        projectile_random_shrapnel_cell(5, 5, &mut expected_rng),
+        projectile_random_shrapnel_cell(5, 5, &mut expected_rng),
+    ];
+    assert_ne!(expected_cells[0], expected_cells[1]);
+    assert_ne!(expected_cells[1], expected_cells[2]);
+
+    // The declared map has storage for every request, but only the first
+    // random coordinate has a native CellClass pointer. The next two lookups
+    // both return and restamp one shared dummy identity.
+    let mut terrain = super::impact_height_tests::terrain_at_level(2);
+    terrain.test_set_native_allocated_cells(&[(
+        expected_cells[0].0 as u16,
+        expected_cells[0].1 as u16,
+    )]);
+    terrain.test_set_dummy_cell_level_slope(2, 0);
+    let dummy = terrain.shared_cell_dummy();
+    dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
+
+    let expected_target = |(rx, ry): (i32, i32), structural: bool| {
+        let x = rx * 256 + 128;
+        let y = ry * 256 + 128;
+        let z = cellclass_ground_height_leptons(2, 0, x, y)
+            .expect("flat CellClass surface is supported")
+            + if structural {
+                BRIDGE_HEIGHT_DELTA_LEPTONS as i32
+            } else {
+                0
+            };
+        ProjectileCoord::new(x, y, z)
+    };
+    let expected_positions = [
+        expected_target(expected_cells[0], false),
+        expected_target(expected_cells[1], true),
+        expected_target(expected_cells[2], true),
+    ];
+    let mut out = CombatEmit::default();
+    emit_projectile_shrapnel(
+        &detonation,
+        &entities,
+        &occupancy,
+        &rules,
+        &mut interner,
+        Some(&terrain),
+        &HouseAllianceMap::default(),
+        &mut scenario_rng,
+        &mut out,
+    );
+
+    assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
+    assert_eq!(out.projectile_spawns.len(), 3);
+    assert_eq!(
+        out.projectile_spawns[0].target,
+        ProjectileTarget::Cell {
+            rx: expected_cells[0].0 as u16,
+            ry: expected_cells[0].1 as u16,
+        }
+    );
+    assert_eq!(
+        out.projectile_spawns[1].target,
+        ProjectileTarget::DummyCell
+    );
+    assert_eq!(
+        out.projectile_spawns[2].target,
+        ProjectileTarget::DummyCell
+    );
+    for (index, spawn) in out.projectile_spawns.iter().enumerate() {
+        assert_eq!(spawn.initial_target_position, expected_positions[index]);
+        assert_eq!(
+            spawn.velocity,
+            shrapnel_launch_velocity(detonation.impact, expected_positions[index], 40)
+        );
+    }
+    assert_ne!(
+        out.projectile_spawns[1].initial_target_position,
+        out.projectile_spawns[2].initial_target_position
+    );
+
+    let final_snapshot = dummy.snapshot();
+    assert_eq!(final_snapshot.coord, expected_cells[2]);
+    assert_ne!(
+        final_snapshot.bridge_flags_0x1180 & BRIDGE_FLAG_STRUCTURAL,
+        0
+    );
+    assert!(dummy.same_identity(&terrain.shared_cell_dummy()));
+
+    // A later miss restamps the retained pointer for BulletClass::AI without
+    // rewriting either child's constructor-time launch coordinate.
+    let later = get_cellclass_fallback(Some(&terrain), 9, 10);
+    let CellRef::Dummy { cell: later_dummy } = later else {
+        panic!("native-unallocated later lookup must retain the shared dummy");
+    };
+    assert!(dummy.same_identity(&later_dummy));
+    assert_eq!(dummy.snapshot().coord, (9, 10));
+    let later_target = dummy_cell_target_coord(&later_dummy);
+    assert_eq!(later_target.x, 9 * 256 + 128);
+    assert_eq!(later_target.y, 10 * 256 + 128);
+    assert_eq!(
+        later_target.z,
+        2 * 90 + BRIDGE_HEIGHT_DELTA_LEPTONS as i32
+    );
+    assert_ne!(later_target, out.projectile_spawns[2].initial_target_position);
+    assert_eq!(
+        out.projectile_spawns
+            .iter()
+            .map(|spawn| spawn.initial_target_position)
+            .collect::<Vec<_>>(),
+        expected_positions
+    );
 }
 
 #[test]

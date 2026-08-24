@@ -4030,11 +4030,21 @@ fn gsi_05_04_building_get_coords_uses_foundation_center_cell() {
 }
 
 #[test]
-fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
+fn gsi_04_01_cell_target_uses_live_structural_bit_when_runtime_unwalkable() {
     let mut sim = Simulation::new();
     sim.session.map_width = 16;
     sim.session.map_height = 16;
     install_common_raw_terrain(&mut sim, 16, 16, 0, Some((6, 7)));
+    {
+        let cell = sim
+            .resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(6, 7)
+            .unwrap();
+        cell.level = 2;
+        cell.slope_type = 1;
+    }
 
     let target_id = sim.allocate_stable_id();
     insert_entity(&mut sim, target_id, EntityCategory::Unit);
@@ -4043,8 +4053,12 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
         RevealOutcome::Revealed { .. }
     ));
     let projectile_id = sim.allocate_stable_id();
-    let bridge_z = crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
-    let center = ProjectileCoord::new(6 * 256 + 128, 7 * 256 + 128, bridge_z);
+    let center_x = 6 * 256 + 128;
+    let center_y = 7 * 256 + 128;
+    let bridge_z = crate::util::lepton::cellclass_ground_height_leptons(2, 1, center_x, center_y)
+        .unwrap()
+        .wrapping_add(crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
+    let center = ProjectileCoord::new(center_x, center_y, bridge_z);
     let mut spawn = gsi_05_04_guided_projectile(
         crate::sim::combat::RAD_NO_ATTACKER,
         ProjectileTarget::Entity(target_id),
@@ -4063,7 +4077,6 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
     assert_eq!(
         cell_target_coord(
             sim.resolved_terrain.as_ref(),
-            sim.bridge_state.as_ref(),
             6,
             7
         ),
@@ -4085,19 +4098,21 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
     assert_eq!(
         cell_target_coord(
             sim.resolved_terrain.as_ref(),
-            sim.bridge_state.as_ref(),
             6,
             7
         ),
-        ProjectileCoord::new(6 * 256 + 128, 7 * 256 + 128, 0)
+        center,
+        "CellClass target height follows live +0x100, not bridge runtime walkability"
     );
 
     assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
 
-    assert!(sim.pending_projectile_detonations.is_empty());
-    let projectile = sim.projectiles.get(projectile_id).expect("Bullet survives");
-    assert_eq!(projectile.velocity.z, -64);
-    assert_eq!(projectile.position.z, bridge_z - 64);
+    assert_eq!(sim.pending_projectile_detonations.len(), 1);
+    assert_eq!(sim.pending_projectile_detonations[0].impact, center);
+    assert_eq!(
+        sim.pending_projectile_detonations[0].reason,
+        crate::sim::projectile::ProjectileDetonationReason::ReachedTarget
+    );
 }
 
 #[test]

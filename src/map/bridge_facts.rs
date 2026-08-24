@@ -7,6 +7,11 @@ pub const BRIDGE_FLAG_DESTROYED_OR_RAMP: u32 = 0x400;
 pub const BRIDGE_FLAG_DIRECTION_ZERO: u32 = 0x800;
 pub const BRIDGE_FLAG_FORWARD_SIDE: u32 = 0x1000;
 pub const BRIDGE_FLAG_EXTRA_SIDE: u32 = 0x10000;
+/// The three bridge bits represented on live real and fallback CellClass flag
+/// words for this mechanism. Other `+0x140` writers remain owned by their
+/// established cell models until their native preservation contracts are mapped.
+pub const MODELED_CELLCLASS_BRIDGE_FLAG_MASK: u32 =
+    BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_FORWARD_SIDE;
 
 /// Typed view of the CellClass flag word, single-sourced from the consts above.
 ///
@@ -57,6 +62,108 @@ pub enum BridgeStampSlot {
     Forward3,
     Opposite,
     ExtraDir6,
+}
+
+/// One native `CellClass::SetBridgeDirection_*` flag-word transaction.
+///
+/// The anchor crosses the CellStruct seam as two signed 16-bit words. Each
+/// walked coordinate wraps at that same width before MapClass applies its
+/// fixed `y * 512 + x` lookup, so off-axis requests can alias a real slot or
+/// visit the one shared fallback CellClass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct BridgeFlagStamp {
+    pub anchor: (i16, i16),
+    pub direction: u8,
+    pub set: bool,
+}
+
+impl BridgeFlagStamp {
+    pub const fn new(anchor: (u16, u16), direction: u8, set: bool) -> Self {
+        Self {
+            anchor: (anchor.0 as i16, anchor.1 as i16),
+            direction,
+            set,
+        }
+    }
+
+    /// Exact setter visitation order: anchor, three forward cells, opposite,
+    /// then the direction-6 extra cell.
+    pub(crate) fn slots(self) -> Option<[(BridgeStampSlot, Option<(i32, i32)>); 6]> {
+        let _ = crate::util::direction::direction_delta(self.direction)?;
+        let anchor = self.anchor;
+        let f1 = packed_step(anchor, self.direction)?;
+        let f2 = packed_step(f1, self.direction)?;
+        let f3 = packed_step(f2, self.direction)?;
+        let opposite_direction = crate::util::direction::opposite_direction(self.direction)?;
+        let opposite = packed_step(anchor, opposite_direction)?;
+        let extra = (self.direction == 6)
+            .then(|| packed_step(opposite, 2))
+            .flatten()
+            .map(packed_i32);
+        Some([
+            (BridgeStampSlot::Anchor, Some(packed_i32(anchor))),
+            (BridgeStampSlot::Forward1, Some(packed_i32(f1))),
+            (BridgeStampSlot::Forward2, Some(packed_i32(f2))),
+            (BridgeStampSlot::Forward3, Some(packed_i32(f3))),
+            (BridgeStampSlot::Opposite, Some(packed_i32(opposite))),
+            (BridgeStampSlot::ExtraDir6, extra),
+        ])
+    }
+}
+
+/// Apply the verified `0x80/0x100/0x1000` subset of one setter slot.
+///
+/// gamemd-derived: `CellClass::SetBridgeDirection_NESW @ 0x0047E040` and
+/// `_NWSE @ 0x0047E470`. Intact anchor/F1/F2 set both bits, F3 sets only
+/// `0x1000`, opposite sets `0x100` and clears `0x1000`, and Extra preserves
+/// all three. Only Anchor sets/clears `0x80`; non-anchor slots preserve it.
+pub(crate) fn apply_modeled_cellclass_bridge_slot(
+    flags: &mut u32,
+    slot: BridgeStampSlot,
+    set: bool,
+) {
+    if set {
+        match slot {
+            BridgeStampSlot::Anchor | BridgeStampSlot::Forward1 | BridgeStampSlot::Forward2 => {
+                *flags |= BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_FORWARD_SIDE;
+                if slot == BridgeStampSlot::Anchor {
+                    *flags |= BRIDGE_FLAG_ANCHOR_SELF;
+                }
+            }
+            BridgeStampSlot::Forward3 => *flags |= BRIDGE_FLAG_FORWARD_SIDE,
+            BridgeStampSlot::Opposite => {
+                *flags &= !BRIDGE_FLAG_FORWARD_SIDE;
+                *flags |= BRIDGE_FLAG_STRUCTURAL;
+            }
+            BridgeStampSlot::ExtraDir6 => {}
+        }
+    } else {
+        match slot {
+            BridgeStampSlot::Anchor
+            | BridgeStampSlot::Forward1
+            | BridgeStampSlot::Forward2
+            | BridgeStampSlot::Opposite => {
+                *flags &= !(BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_FORWARD_SIDE);
+                if slot == BridgeStampSlot::Anchor {
+                    *flags &= !BRIDGE_FLAG_ANCHOR_SELF;
+                }
+            }
+            BridgeStampSlot::Forward3 => *flags &= !BRIDGE_FLAG_FORWARD_SIDE,
+            BridgeStampSlot::ExtraDir6 => {}
+        }
+    }
+}
+
+fn packed_step(cell: (i16, i16), direction: u8) -> Option<(i16, i16)> {
+    let (dx, dy) = crate::util::direction::direction_delta(direction)?;
+    Some((
+        cell.0.wrapping_add(dx as i16),
+        cell.1.wrapping_add(dy as i16),
+    ))
+}
+
+const fn packed_i32(cell: (i16, i16)) -> (i32, i32) {
+    (cell.0 as i32, cell.1 as i32)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,53 +257,55 @@ pub fn stamp_set_bridge_direction(
             family,
             direction,
         };
-        if set {
-            stamp_intact(&mut cells[idx], slot, relation);
-        } else {
-            stamp_destroy(&mut cells[idx], slot);
-        }
+        apply_bridge_fact_slot(&mut cells[idx], slot, relation, set);
+    }
+}
+
+pub(crate) fn apply_bridge_fact_slot(
+    cell: &mut BridgeCellFacts,
+    slot: BridgeStampSlot,
+    relation: BridgeAnchorRelation,
+    set: bool,
+) {
+    if set {
+        stamp_intact(cell, slot, relation);
+    } else {
+        stamp_destroy(cell, slot);
     }
 }
 
 fn stamp_intact(cell: &mut BridgeCellFacts, slot: BridgeStampSlot, relation: BridgeAnchorRelation) {
     let direction_zero = relation.direction == 0;
+    apply_modeled_cellclass_bridge_slot(&mut cell.raw_flags, slot, true);
     match slot {
         BridgeStampSlot::Anchor => {
             cell.raw_flags &= !BRIDGE_FLAG_DESTROYED_OR_RAMP;
-            cell.raw_flags |= BRIDGE_FLAG_ANCHOR_SELF
-                | BRIDGE_FLAG_STRUCTURAL
-                | BRIDGE_FLAG_TRANSITION
-                | BRIDGE_FLAG_FORWARD_SIDE
-                | BRIDGE_FLAG_EXTRA_SIDE;
+            cell.raw_flags |=
+                BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_EXTRA_SIDE;
             set_direction_zero_flag(cell, direction_zero);
             write_default_state(cell, relation.direction);
             attach(cell, relation);
         }
         BridgeStampSlot::Forward1 => {
             cell.raw_flags &= !BRIDGE_FLAG_DESTROYED_OR_RAMP;
-            cell.raw_flags |= BRIDGE_FLAG_STRUCTURAL
-                | BRIDGE_FLAG_TRANSITION
-                | BRIDGE_FLAG_FORWARD_SIDE
-                | BRIDGE_FLAG_EXTRA_SIDE;
+            cell.raw_flags |= BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_EXTRA_SIDE;
             set_direction_zero_flag(cell, direction_zero);
             write_default_state(cell, relation.direction);
             attach(cell, relation);
         }
         BridgeStampSlot::Forward2 => {
             cell.raw_flags &= !(BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_DESTROYED_OR_RAMP);
-            cell.raw_flags |=
-                BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_FORWARD_SIDE | BRIDGE_FLAG_EXTRA_SIDE;
+            cell.raw_flags |= BRIDGE_FLAG_EXTRA_SIDE;
             set_direction_zero_flag(cell, direction_zero);
             write_default_state(cell, relation.direction);
             attach(cell, relation);
         }
         BridgeStampSlot::Forward3 => {
-            cell.raw_flags |= BRIDGE_FLAG_FORWARD_SIDE;
+            // The modeled flag subset was applied above.
         }
         BridgeStampSlot::Opposite => {
-            cell.raw_flags &= !(BRIDGE_FLAG_DESTROYED_OR_RAMP | BRIDGE_FLAG_FORWARD_SIDE);
-            cell.raw_flags |=
-                BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_EXTRA_SIDE;
+            cell.raw_flags &= !BRIDGE_FLAG_DESTROYED_OR_RAMP;
+            cell.raw_flags |= BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_EXTRA_SIDE;
             set_direction_zero_flag(cell, direction_zero);
             write_default_state(cell, relation.direction);
             attach(cell, relation);
@@ -210,30 +319,26 @@ fn stamp_intact(cell: &mut BridgeCellFacts, slot: BridgeStampSlot, relation: Bri
 }
 
 fn stamp_destroy(cell: &mut BridgeCellFacts, slot: BridgeStampSlot) {
+    apply_modeled_cellclass_bridge_slot(&mut cell.raw_flags, slot, false);
     match slot {
         BridgeStampSlot::Anchor => {
             cell.raw_flags &= !(BRIDGE_FLAG_ANCHOR_SELF
-                | BRIDGE_FLAG_STRUCTURAL
                 | BRIDGE_FLAG_TRANSITION
                 | BRIDGE_FLAG_DIRECTION_ZERO
-                | BRIDGE_FLAG_FORWARD_SIDE
                 | BRIDGE_FLAG_EXTRA_SIDE);
             cell.raw_flags |= BRIDGE_FLAG_DESTROYED_OR_RAMP;
             cell.state_byte = 0;
             detach(cell);
         }
         BridgeStampSlot::Forward1 | BridgeStampSlot::Forward2 | BridgeStampSlot::Opposite => {
-            cell.raw_flags &= !(BRIDGE_FLAG_STRUCTURAL
-                | BRIDGE_FLAG_TRANSITION
-                | BRIDGE_FLAG_DIRECTION_ZERO
-                | BRIDGE_FLAG_FORWARD_SIDE
-                | BRIDGE_FLAG_EXTRA_SIDE);
+            cell.raw_flags &=
+                !(BRIDGE_FLAG_TRANSITION | BRIDGE_FLAG_DIRECTION_ZERO | BRIDGE_FLAG_EXTRA_SIDE);
             cell.raw_flags |= BRIDGE_FLAG_DESTROYED_OR_RAMP;
             cell.state_byte = 0;
             detach(cell);
         }
         BridgeStampSlot::Forward3 => {
-            cell.raw_flags &= !BRIDGE_FLAG_FORWARD_SIDE;
+            // The modeled flag subset was applied above.
         }
         BridgeStampSlot::ExtraDir6 => {
             cell.raw_flags &= !BRIDGE_FLAG_EXTRA_SIDE;
@@ -496,8 +601,24 @@ mod tests {
             assert_eq!(high_bridge_stamp_for_overlay(id), None);
         }
     }
-}
 
+    #[test]
+    fn gsi_04_01_shared_dummy_subset_preserves_unrelated_cell_attributes() {
+        let unrelated = BRIDGE_FLAG_TRANSITION
+            | BRIDGE_FLAG_DESTROYED_OR_RAMP
+            | BRIDGE_FLAG_DIRECTION_ZERO
+            | BRIDGE_FLAG_EXTRA_SIDE;
+        let mut flags = unrelated;
+
+        apply_modeled_cellclass_bridge_slot(&mut flags, BridgeStampSlot::Anchor, true);
+        assert_eq!(flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK, 0x1180);
+        assert_eq!(flags & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK, unrelated);
+
+        apply_modeled_cellclass_bridge_slot(&mut flags, BridgeStampSlot::Anchor, false);
+        assert_eq!(flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK, 0);
+        assert_eq!(flags & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK, unrelated);
+    }
+}
 
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.

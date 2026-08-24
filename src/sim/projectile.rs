@@ -9,9 +9,7 @@
 use std::collections::BTreeMap;
 
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, SharedCellDummy};
-use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::intern::InternedId;
-use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
 use crate::sim::movement::homing_movement::{
     atan2_bam, cos_bam, sidewinder_cos, sin_bam, step_toward_bam_inclusive,
 };
@@ -219,11 +217,10 @@ impl ProjectileCoord {
 
 /// Resolve the current virtual `CellClass::GetTargetCoords` value for a stable
 /// CellClass target. The cell identity is retained by the projectile; terrain
-/// floor plus structural topology and runtime deck walkability are read again
-/// on every visit.
+/// level/slope and the live CellClass structural bit are read again on every
+/// visit.
 pub(crate) fn cell_target_coord(
     terrain: Option<&ResolvedTerrainGrid>,
-    bridge_state: Option<&BridgeRuntimeState>,
     rx: u16,
     ry: u16,
 ) -> ProjectileCoord {
@@ -236,15 +233,23 @@ pub(crate) fn cell_target_coord(
     let z = terrain
         .and_then(|grid| grid.cell(rx, ry))
         .map(|cell| {
-            crate::sim::cell_kernel::cell_floor_height(cell.level, cell.slope_type, x, y)
+            // gamemd-derived: `CellClass::GetTargetCoords +0x58 @ 0x00486890`
+            // delegates `+0x48 @ 0x00486840` to
+            // `CellClass::GetGroundHeight @ 0x0047B3A0`, then adds 416 iff
+            // this CellClass's own `+0x140 & 0x100` is set. Bridge runtime
+            // walkability is not consulted.
+            crate::util::lepton::cellclass_ground_height_leptons(cell.level, cell.slope_type, x, y)
                 .expect("resolved CellClass target must have a supported slope")
-                .wrapping_add(if cell.bridge_facts.has_structural_bridge()
-                    && bridge_state.is_some_and(|state| state.is_bridge_walkable(rx, ry))
-                {
-                    BRIDGE_DECK_HEIGHT_LEPTONS
-                } else {
-                    0
-                })
+                .wrapping_add(
+                    if cell.bridge_facts.raw_flags
+                        & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                        != 0
+                    {
+                        crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32
+                    } else {
+                        0
+                    },
+                )
         })
         // A Cell target may legitimately name a cell with no allocated
         // CellClass: `MapClass::Get_CellClass @ 0x005657A0` answers those with
@@ -282,7 +287,17 @@ pub(crate) fn dummy_cell_target_coord(dummy: &SharedCellDummy) -> ProjectileCoor
         x,
         y,
     )
-    .expect("shared CellClass target must have a supported slope");
+    .expect("shared CellClass target must have a supported slope")
+    // `CellClass::GetTargetCoords @ 0x00486890` adds the process-global
+    // high-bridge delta when `CellClass+0x140 & 0x100` is live. The floor
+    // beneath it remains the verified 90-lepton CellClass kernel above.
+    .wrapping_add(
+        if snapshot.bridge_flags_0x1180 & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0 {
+            crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32
+        } else {
+            0
+        },
+    );
     ProjectileCoord::new(x, y, z)
 }
 
@@ -765,16 +780,15 @@ impl ProjectileStore {
     /// Advance every currently admitted projectile in ascending stable id.
     ///
     /// `target_positions` must contain live entity targets in lepton space.
-    /// `terrain` supplies the current CellClass floor and `bridge_state` gates
-    /// the structural deck term for stable cell targets; headless callers may
-    /// omit them and receive the flat fallback.
+    /// `terrain` supplies the current CellClass ground surface and live
+    /// structural bit for stable cell targets; headless callers may omit it
+    /// and receive the flat fallback.
     /// `collides_at` is a world-owned terrain/wall admission predicate for the
     /// candidate next coordinate; object collision remains a later port.
     pub fn advance(
         &mut self,
         target_positions: &BTreeMap<u64, ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
-        bridge_state: Option<&BridgeRuntimeState>,
         shared_cell_dummy: &SharedCellDummy,
         collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
     ) -> ProjectileAdvanceResult {
@@ -783,7 +797,6 @@ impl ProjectileStore {
             &ids,
             |id| target_positions.get(&id).copied(),
             terrain,
-            bridge_state,
             shared_cell_dummy,
             collides_at,
             true,
@@ -795,7 +808,6 @@ impl ProjectileStore {
         id: u64,
         target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
-        bridge_state: Option<&BridgeRuntimeState>,
         shared_cell_dummy: &SharedCellDummy,
         collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
     ) -> Option<ProjectileAdvanceResult> {
@@ -806,7 +818,6 @@ impl ProjectileStore {
             &[id],
             target_position,
             terrain,
-            bridge_state,
             shared_cell_dummy,
             collides_at,
             false,
@@ -818,7 +829,6 @@ impl ProjectileStore {
         ids: &[u64],
         mut target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
         terrain: Option<&ResolvedTerrainGrid>,
-        bridge_state: Option<&BridgeRuntimeState>,
         shared_cell_dummy: &SharedCellDummy,
         mut collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
         remove_terminal: bool,
@@ -831,9 +841,7 @@ impl ProjectileStore {
             };
 
             let target_position = match projectile.target {
-                ProjectileTarget::Cell { rx, ry } => {
-                    cell_target_coord(terrain, bridge_state, rx, ry)
-                }
+                ProjectileTarget::Cell { rx, ry } => cell_target_coord(terrain, rx, ry),
                 // BulletClass::AI resolves a null AbstractClass target through
                 // the process-global zero CoordStruct before steering, fuse,
                 // collision, and reached-target decisions.
@@ -1171,7 +1179,7 @@ mod tests {
             target,
             initial_target_position: match target {
                 ProjectileTarget::Entity(_) => ProjectileCoord::new(128, 0, 0),
-                ProjectileTarget::Cell { rx, ry } => cell_target_coord(None, None, rx, ry),
+                ProjectileTarget::Cell { rx, ry } => cell_target_coord(None, rx, ry),
                 ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
                 ProjectileTarget::DummyCell => ProjectileCoord::new(0, 0, 0),
             },
@@ -1271,7 +1279,6 @@ mod tests {
         store.advance(
             &BTreeMap::new(),
             None,
-            None,
             &SharedCellDummy::fresh(),
             |_, _| None,
         );
@@ -1326,6 +1333,24 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_01_dummy_target_adds_native_high_bridge_height() {
+        let dummy = SharedCellDummy::fresh();
+        dummy.set_level_slope(2, 0);
+        dummy.stamp_coord(4, 5);
+        let ground = dummy_cell_target_coord(&dummy);
+
+        dummy.apply_bridge_flag_slot(crate::map::bridge_facts::BridgeStampSlot::Anchor, true);
+        let bridge = dummy_cell_target_coord(&dummy);
+
+        assert_eq!(bridge.x, ground.x);
+        assert_eq!(bridge.y, ground.y);
+        assert_eq!(
+            bridge.z - ground.z,
+            crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32
+        );
+    }
+
+    #[test]
     fn advance_preserves_stable_creation_order_and_delays_new_projectiles() {
         let mut store = ProjectileStore::new();
         let mut first_spawn = spawn(ProjectileTarget::Cell { rx: 0, ry: 0 });
@@ -1335,7 +1360,6 @@ mod tests {
 
         let result = store.advance(
             &BTreeMap::new(),
-            None,
             None,
             &SharedCellDummy::fresh(),
             |_, _| None,
@@ -1365,7 +1389,6 @@ mod tests {
         store.advance(
             &targets,
             None,
-            None,
             &SharedCellDummy::fresh(),
             |_, _| None,
         );
@@ -1384,14 +1407,12 @@ mod tests {
         store.advance(
             &targets,
             None,
-            None,
             &SharedCellDummy::fresh(),
             |_, _| None,
         );
 
         let result = store.advance(
             &BTreeMap::new(),
-            None,
             None,
             &SharedCellDummy::fresh(),
             |_, _| None,
@@ -1419,7 +1440,6 @@ mod tests {
 
         let result = store.advance(
             &BTreeMap::new(),
-            None,
             None,
             &SharedCellDummy::fresh(),
             |projectile, coord| {

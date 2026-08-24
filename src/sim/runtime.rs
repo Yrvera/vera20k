@@ -364,7 +364,6 @@ where
     F: FnOnce(&mut Simulation),
 {
     let mut sim: Simulation = bootstrap_rng.into_simulation(descriptor);
-    sim.bind_shared_cell_dummy(resolved_terrain.shared_cell_dummy());
     // Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
     // `ScenarioClass__Create_Houses @ 0x00687F10` before
     // `TerrainClass__Read_Map_Section @ 0x0071CA70` and every Techno section.
@@ -388,7 +387,7 @@ where
             );
         }
     }
-    sim.resolved_terrain = Some(resolved_terrain.clone());
+    sim.install_resolved_terrain_for_new_map(resolved_terrain.clone());
     // Wire the cliff/slope coefficients from [General] into the live World config;
     // it otherwise holds compiled vanilla defaults and never sees a modded INI.
     if let Some(rules) = rules {

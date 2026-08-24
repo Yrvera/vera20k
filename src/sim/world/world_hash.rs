@@ -76,6 +76,64 @@ mod playfield_authority_hash_tests {
     }
 }
 
+#[cfg(test)]
+mod shared_dummy_bridge_hash_tests {
+    use super::Simulation;
+    use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+
+    #[test]
+    fn gsi_04_01_hashes_dummy_bridge_bits_without_retained_projectile() {
+        let sim = Simulation::new();
+        let dummy = sim.effective_shared_cell_dummy();
+        let clear_hash = sim.state_hash();
+
+        dummy.set_bridge_flags_0x1180(BRIDGE_FLAG_ANCHOR_SELF);
+        let bridge_hash = sim.state_hash();
+        assert_ne!(
+            clear_hash, bridge_hash,
+            "live anchor bit 0x80 alone is future-affecting hash authority"
+        );
+
+        dummy.stamp_coord(17, -3);
+        assert_eq!(
+            bridge_hash,
+            sim.state_hash(),
+            "without a retained Bullet only persistent 0x1180 joins the hash"
+        );
+    }
+}
+
+#[cfg(test)]
+mod real_cell_bridge_hash_schema_tests {
+    use super::Simulation;
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+
+    #[test]
+    fn gsi_04_01_real_cell_bridge_authority_is_current_schema_only() {
+        let baseline = Simulation::new();
+        let mut different_authority = Simulation::new();
+        different_authority.install_resolved_terrain_for_new_map(
+            ResolvedTerrainGrid::from_cells(0, 1, Vec::new()),
+        );
+
+        assert_ne!(
+            baseline.state_hash(),
+            different_authority.state_hash(),
+            "current schema hashes the exact real-cell bridge authority, including its aligned shape"
+        );
+        assert_eq!(
+            baseline.state_hash_before_lifecycle_v28_and_mission_v29(),
+            different_authority.state_hash_before_lifecycle_v28_and_mission_v29(),
+            "the pre-v28 provenance schema excludes both the v90 tag and authority"
+        );
+        assert_eq!(
+            baseline.state_hash_without_mission_v29(),
+            different_authority.state_hash_without_mission_v29(),
+            "the pre-v29 provenance schema excludes both the v90 tag and authority"
+        );
+    }
+}
+
 fn hash_drive_track_state(
     state: &crate::sim::movement::drive_track::DriveTrackState,
     hasher: &mut impl Hasher,
@@ -192,7 +250,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true, true, true, true, true, true)
+        self.state_hash_with_schema(true, true, true, true, true, true, true, true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -201,7 +259,9 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false, false, false, false, false, false, false)
+        self.state_hash_with_schema(
+            true, false, false, false, false, false, false, false, false, false,
+        )
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -210,7 +270,9 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false, false, false, false, false, false, false)
+        self.state_hash_with_schema(
+            false, false, false, false, false, false, false, false, false, false,
+        )
     }
 
     fn state_hash_with_schema(
@@ -224,6 +286,7 @@ impl Simulation {
         include_playfield_authority_v47: bool,
         include_techno_playfield_v87: bool,
         include_sensor_deposit_v88: bool,
+        include_real_cell_bridge_flags_v90: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -274,26 +337,35 @@ impl Simulation {
         self.hash_power_states(&mut hasher);
         self.hash_fog_and_alliances(&mut hasher);
         self.hash_bridge_state(&mut hasher);
+        if include_real_cell_bridge_flags_v90 {
+            // `resolved_terrain` is derived/skipped. Fold the exact saved real
+            // CellClass `0x1180` values once through their serialized authority.
+            // Historical pre-v28/pre-v29 provenance probes must omit both this
+            // schema tag and the value authority introduced at snapshot v90.
+            b"real-cell-bridge-flags-v2".hash(&mut hasher);
+            self.real_cell_bridge_flags_0x1180.hash(&mut hasher);
+        }
         self.hash_overlay_grid(&mut hasher);
         self.hash_smudge_grid(&mut hasher);
         self.hash_radiation(&mut hasher);
         if include_master_frame_v43 {
             self.hash_projectiles(&mut hasher);
-            if self
-                .projectiles
-                .iter()
-                .any(|(_, projectile)| {
-                    projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
-                })
-            {
-                // A retained Bullet pointer makes the process-global dummy's
-                // live bytes deterministic future behavior. Hash them only
-                // while such a pointer exists; otherwise the next lookup will
-                // overwrite coord before any consumer can observe it.
-                b"shared-cell-dummy-v1".hash(&mut hasher);
-                self.effective_shared_cell_dummy()
-                    .snapshot()
-                    .hash(&mut hasher);
+            let shared_dummy = self.effective_shared_cell_dummy().snapshot();
+            // Unlike the requested coordinate, native `+0x140 & 0x1180`
+            // survives ordinary lookups and changes later bridge/FNPC/target
+            // behavior even when no Bullet currently retains the dummy.
+            b"shared-cell-dummy-bridge-v3".hash(&mut hasher);
+            shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+            if self.projectiles.iter().any(|(_, projectile)| {
+                projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
+            }) {
+                // A retained Bullet pointer additionally makes coordinate,
+                // level, and slope deterministic future behavior. The bridge
+                // subset was folded unconditionally above.
+                b"shared-cell-dummy-target-v2".hash(&mut hasher);
+                shared_dummy.coord.hash(&mut hasher);
+                shared_dummy.level.hash(&mut hasher);
+                shared_dummy.slope_type.hash(&mut hasher);
             }
             self.hash_waves(&mut hasher);
         }

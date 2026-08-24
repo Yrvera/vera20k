@@ -1397,7 +1397,7 @@ pub(crate) fn load_map_from_initial(
     // IsoMapPack materialize the new map. Reset its modeled bytes in place;
     // replacing this handle would break process-global pointer identity.
     shared_cell_dummy.reconstruct_for_map_resize();
-    let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
+    let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
         &map_data,
         theater_result.as_ref(),
         Some(&asset_manager),
@@ -1408,11 +1408,8 @@ pub(crate) fn load_map_from_initial(
         cliff_back,
         &mut scenario_fill_ranged,
         &mut variant_selector,
+        shared_cell_dummy,
     );
-    // `MapClass::Get_CellClass @ 0x005657A0/0x00565730` returns one
-    // process-global dummy at `0x00ABDC50`. Bind before scenario construction
-    // so the terrain template and Simulation clone retain that same identity.
-    resolved_terrain.bind_shared_cell_dummy(shared_cell_dummy);
     // Bind the complete scheduler closure only after theater Tile##Anim rows
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.

@@ -3837,7 +3837,6 @@ fn emit_projectile_shrapnel(
     rules: &RuleSet,
     interner: &mut StringInterner,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
-    bridge_state: Option<&BridgeRuntimeState>,
     house_alliances: &HouseAllianceMap,
     scenario_rng: &mut SimRng,
     out: &mut CombatEmit,
@@ -3883,7 +3882,6 @@ fn emit_projectile_shrapnel(
         }),
         ProjectileTarget::Cell { rx, ry } => Some(crate::sim::projectile::cell_target_coord(
             terrain,
-            bridge_state,
             rx,
             ry,
         )),
@@ -3920,7 +3918,13 @@ fn emit_projectile_shrapnel(
     let source_owner = entities
         .get(detonation.source_id)
         .map(|source| source.owner);
-    let mut targets = Vec::with_capacity(count as usize);
+    // Random CellClass selections must capture their target coordinate at the
+    // lookup call point: every miss returns the same mutable process dummy, so
+    // resolving a collected list afterward would give all missed children the
+    // final lookup's coordinate. Entity entries deliberately remain live reads
+    // until child construction, preserving their existing behavior.
+    let mut targets: Vec<(ProjectileTarget, Option<ProjectileCoord>)> =
+        Vec::with_capacity(count as usize);
     let scan_radius = child_weapon.range.to_num::<i32>().max(0);
     for &(dx, dy) in self::cell_spread::splash_cells(SimFixed::from_num(scan_radius))
         .iter()
@@ -3960,14 +3964,43 @@ fn emit_projectile_shrapnel(
         if allied {
             continue;
         }
-        targets.push(ProjectileTarget::Entity(target_id));
+        targets.push((ProjectileTarget::Entity(target_id), None));
     }
     while targets.len() < count as usize {
         let (rx, ry) = projectile_random_shrapnel_cell(center_rx, center_ry, scenario_rng);
-        targets.push(ProjectileTarget::Cell {
-            rx: rx as u16,
-            ry: ry as u16,
-        });
+        let selected = crate::sim::cell_rect::get_cellclass_fallback(terrain, rx, ry);
+        let (target, initial_target_position) = if terrain.is_none() {
+            // Rules-less/terrain-less fixtures historically retain a stable
+            // Cell target and flat fallback surface. Native always has a map;
+            // do not invent a persistent process-dummy pointer for this Rust
+            // compatibility path without separate evidence.
+            let target = ProjectileTarget::Cell {
+                rx: rx as u16,
+                ry: ry as u16,
+            };
+            (
+                target,
+                crate::sim::projectile::cell_target_coord(terrain, rx as u16, ry as u16),
+            )
+        } else {
+            match selected {
+                crate::sim::cell_rect::CellRef::Real(cell) => {
+                    let target = ProjectileTarget::Cell {
+                        rx: cell.rx,
+                        ry: cell.ry,
+                    };
+                    (
+                        target,
+                        crate::sim::projectile::cell_target_coord(terrain, cell.rx, cell.ry),
+                    )
+                }
+                crate::sim::cell_rect::CellRef::Dummy { cell } => (
+                    ProjectileTarget::DummyCell,
+                    crate::sim::projectile::dummy_cell_target_coord(&cell),
+                ),
+            }
+        };
+        targets.push((target, Some(initial_target_position)));
     }
 
     let gravity = if child_projectile.floater {
@@ -3975,27 +4008,31 @@ fn emit_projectile_shrapnel(
     } else {
         rules.general.gravity
     };
-    for target in targets {
-        let target_coord = match target {
-            ProjectileTarget::Entity(id) => {
-                let Some(entity) = entities.get(id) else {
-                    continue;
-                };
-                ProjectileCoord::new(
-                    i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
-                    i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
-                    i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
-                )
+    for (target, captured_target_coord) in targets {
+        let target_coord = if let Some(captured) = captured_target_coord {
+            captured
+        } else {
+            match target {
+                ProjectileTarget::Entity(id) => {
+                    let Some(entity) = entities.get(id) else {
+                        continue;
+                    };
+                    ProjectileCoord::new(
+                        i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                        i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+                        i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                    )
+                }
+                ProjectileTarget::Cell { rx, ry } => {
+                    crate::sim::projectile::cell_target_coord(terrain, rx, ry)
+                }
+                ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
+                ProjectileTarget::DummyCell => terrain
+                    .map(crate::map::resolved_terrain::ResolvedTerrainGrid::shared_cell_dummy)
+                    .as_ref()
+                    .map(crate::sim::projectile::dummy_cell_target_coord)
+                    .unwrap_or(ProjectileCoord::new(0, 0, 0)),
             }
-            ProjectileTarget::Cell { rx, ry } => {
-                crate::sim::projectile::cell_target_coord(terrain, bridge_state, rx, ry)
-            }
-            ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
-            ProjectileTarget::DummyCell => terrain
-                .map(crate::map::resolved_terrain::ResolvedTerrainGrid::shared_cell_dummy)
-                .as_ref()
-                .map(crate::sim::projectile::dummy_cell_target_coord)
-                .unwrap_or(ProjectileCoord::new(0, 0, 0)),
         };
         out.projectile_spawns.push(ProjectileSpawn {
             source_id: detonation.source_id,
@@ -4048,7 +4085,7 @@ fn emit_one_projectile_detonation(
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
-    bridge_state: Option<&BridgeRuntimeState>,
+    _bridge_state: Option<&BridgeRuntimeState>,
     terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
@@ -4120,7 +4157,6 @@ fn emit_one_projectile_detonation(
         rules,
         interner,
         terrain.as_deref(),
-        bridge_state,
         house_alliances,
         scenario_rng,
         out,
@@ -7271,7 +7307,7 @@ mod impact_height_tests {
         }
     }
 
-    fn terrain_at_level(level: u8) -> ResolvedTerrainGrid {
+    pub(super) fn terrain_at_level(level: u8) -> ResolvedTerrainGrid {
         let cells: Vec<ResolvedTerrainCell> = (0..TEST_GRID)
             .flat_map(|ry| (0..TEST_GRID).map(move |rx| terrain_cell(rx, ry, level)))
             .collect();

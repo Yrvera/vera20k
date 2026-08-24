@@ -60,6 +60,18 @@ impl CellRef<'_> {
             CellRef::Dummy { cell } => Some(cell.snapshot()),
         }
     }
+
+    /// Live `CellClass+0x140 & 0x1180` view for consumers that must inspect
+    /// the same real-or-dummy result selected by the stamping lookup.
+    pub(crate) fn bridge_flags_0x1180(&self) -> u32 {
+        match self {
+            CellRef::Real(cell) => {
+                cell.bridge_facts.raw_flags
+                    & crate::map::bridge_facts::MODELED_CELLCLASS_BRIDGE_FLAG_MASK
+            }
+            CellRef::Dummy { cell } => cell.bridge_flags_0x1180(),
+        }
+    }
 }
 
 fn detached_dummy(x: i32, y: i32) -> SharedCellDummy {
@@ -1314,6 +1326,7 @@ mod tests {
                 coord,
                 level,
                 slope_type,
+                bridge_flags_0x1180: 0,
             })
         );
     }

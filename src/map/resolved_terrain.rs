@@ -21,7 +21,8 @@ pub mod zone_class {
 use crate::assets::tmp_file::{TmpFile, TmpTile};
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL,
-    BRIDGE_FLAG_TRANSITION, BridgeCellFacts,
+    BRIDGE_FLAG_TRANSITION, BridgeAnchorRelation, BridgeCellFacts, BridgeFlagStamp,
+    BridgeStampFamily, BridgeStampSlot, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
 };
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
@@ -412,6 +413,147 @@ pub struct SharedCellDummySnapshot {
     pub coord: (i32, i32),
     pub level: i8,
     pub slope_type: u8,
+    /// Exact modeled subset of `CellClass+0x140`; always masked to `0x1180`.
+    pub bridge_flags_0x1180: u32,
+}
+
+const UNALLOCATED_REAL_CELL_BRIDGE_FLAGS: u16 = u16::MAX;
+
+/// Serialized value authority for the exact `CellClass+0x140 & 0x1180`
+/// subset of every allocated real cell.
+///
+/// Native `CellClass::Load` restores real object flag words directly, while
+/// `MapClass::Resize` reconstructs only the process-global dummy. Rust keeps
+/// the derived terrain grid out of Scenario serialization, so this compact
+/// aligned projection carries the three future-affecting bits without retaining
+/// setter history. `u16::MAX` marks native-unallocated slots; every other
+/// value is exactly one masked `0x1180` subset, including zero after collapse.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RealCellBridgeFlags0x1180 {
+    width: u16,
+    height: u16,
+    flags_or_unallocated: Vec<u16>,
+}
+
+impl RealCellBridgeFlags0x1180 {
+    fn from_grid(grid: &ResolvedTerrainGrid) -> Self {
+        let flags_or_unallocated = grid
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                if grid
+                    .native_allocated
+                    .as_deref()
+                    .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
+                {
+                    (cell.bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16
+                } else {
+                    UNALLOCATED_REAL_CELL_BRIDGE_FLAGS
+                }
+            })
+            .collect();
+        Self {
+            width: grid.width,
+            height: grid.height,
+            flags_or_unallocated,
+        }
+    }
+
+    fn matches_grid_shape(&self, grid: &ResolvedTerrainGrid) -> bool {
+        self.width == grid.width
+            && self.height == grid.height
+            && self.flags_or_unallocated.len() == grid.cells.len()
+    }
+
+    pub(crate) fn set_allocated_cell(&mut self, index: usize, flags: u32) {
+        let Some(slot) = self.flags_or_unallocated.get_mut(index) else {
+            debug_assert!(false, "real-cell bridge flag update index must be in range");
+            return;
+        };
+        debug_assert_ne!(*slot, UNALLOCATED_REAL_CELL_BRIDGE_FLAGS);
+        *slot = (flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16;
+    }
+}
+
+/// Ephemeral mutable view of the represented live `CellClass+0x140` bridge
+/// bits during one native state-machine transaction.
+///
+/// Ramp helpers recurse before their caller can project a returned outcome.
+/// This value seam mirrors allocated real cells and retains the actual shared
+/// dummy identity while the transaction is being constructed. Each native
+/// setter call updates the real-cell mirror and synchronously stamps/mutates
+/// that live dummy, so later recursive GetCell frames observe exact flag and
+/// coordinate interleaving. The ordered setter transcript subsequently
+/// commits only allocated real-cell values and serialized authority; replaying
+/// it through the dummy would duplicate and reorder already-live effects.
+#[derive(Debug, Clone)]
+pub(crate) struct CellClassBridgeFlagState {
+    width: u16,
+    height: u16,
+    native_allocated: Option<Vec<bool>>,
+    flags: Vec<u16>,
+    shared_cell_dummy: SharedCellDummy,
+}
+
+impl CellClassBridgeFlagState {
+    fn from_grid(grid: &ResolvedTerrainGrid) -> Self {
+        Self {
+            width: grid.width,
+            height: grid.height,
+            native_allocated: grid.native_allocated.clone(),
+            flags: grid
+                .cells
+                .iter()
+                .map(|cell| {
+                    (cell.bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16
+                })
+                .collect(),
+            shared_cell_dummy: grid.shared_cell_dummy.clone(),
+        }
+    }
+
+    pub(crate) fn flags_at(&self, coord: (u16, u16)) -> u32 {
+        native_resolved_cell_index(
+            self.width,
+            self.height,
+            self.native_allocated.as_deref(),
+            self.flags.len(),
+            i32::from(coord.0),
+            i32::from(coord.1),
+        )
+        .and_then(|index| self.flags.get(index).copied())
+        .map(u32::from)
+        .unwrap_or_else(|| self.shared_cell_dummy.bridge_flags_0x1180())
+    }
+
+    pub(crate) fn apply_stamp(&mut self, stamp: BridgeFlagStamp) {
+        let Some(slots) = stamp.slots() else {
+            return;
+        };
+        for (slot, requested) in slots {
+            let Some((x, y)) = requested else {
+                continue;
+            };
+            if let Some(index) = native_resolved_cell_index(
+                self.width,
+                self.height,
+                self.native_allocated.as_deref(),
+                self.flags.len(),
+                x,
+                y,
+            ) {
+                let mut flags = u32::from(self.flags[index]);
+                crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
+                    &mut flags, slot, stamp.set,
+                );
+                self.flags[index] = flags as u16;
+            } else {
+                self.shared_cell_dummy.stamp_coord(x, y);
+                self.shared_cell_dummy.apply_bridge_flag_slot(slot, stamp.set);
+            }
+        }
+    }
 }
 
 /// Send-safe identity handle for MapClass's process-global fallback `CellClass`.
@@ -421,7 +563,8 @@ pub struct SharedCellDummySnapshot {
 /// `+0x24`; the independently writable level/slope bytes at `+0x11B/+0x11C`
 /// survive those misses. Packing the modeled bytes into one atomic word keeps
 /// a live identity view safe to carry through app loading workers and sim
-/// snapshots without copying native's global mutable object architecture.
+/// snapshots without copying native's global mutable object architecture. The
+/// remaining high 16 bits carry the exact `+0x140 & 0x1180` bridge subset.
 #[derive(Debug, Clone)]
 pub struct SharedCellDummy {
     state: Arc<AtomicU64>,
@@ -445,8 +588,9 @@ impl SharedCellDummy {
     /// `MapClass::Resize @ 0x00565C10` unconditionally calls
     /// `CellClass::Constructor @ 0x0047BBF0` on the fixed dummy object at
     /// `0x00ABDC50` (`0x005670E7..0x005670F2`). The address survives, while
-    /// coordinate `+0x24`, level `+0x11B`, and slope `+0x11C` return to zero.
-    /// Other constructor-owned fields are not represented by this handle yet.
+    /// coordinate `+0x24`, level `+0x11B`, slope `+0x11C`, and modeled
+    /// `+0x140 & 0x1180` bridge bits return to zero. Other constructor-owned
+    /// fields are not represented by this handle yet.
     pub(crate) fn reconstruct_for_map_resize(&self) {
         self.state.store(0, Ordering::Relaxed);
     }
@@ -460,6 +604,7 @@ impl SharedCellDummy {
             ),
             level: ((packed >> 32) as u8) as i8,
             slope_type: (packed >> 40) as u8,
+            bridge_flags_0x1180: ((packed >> 48) as u32) & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
         }
     }
 
@@ -475,6 +620,36 @@ impl SharedCellDummy {
 
     pub fn same_identity(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
+    }
+
+    /// Apply one exact `SetBridgeDirection_*` slot to the modeled flag subset
+    /// without disturbing coordinate, level, or slope writers.
+    pub(crate) fn apply_bridge_flag_slot(&self, slot: BridgeStampSlot, set: bool) {
+        const FLAGS_MASK: u64 = 0xffff << 48;
+        let _ = self
+            .state
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                let mut flags = ((current >> 48) as u32) & MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+                crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
+                    &mut flags, slot, set,
+                );
+                Some((current & !FLAGS_MASK) | (u64::from(flags as u16) << 48))
+            });
+    }
+
+    pub(crate) fn bridge_flags_0x1180(&self) -> u32 {
+        self.snapshot().bridge_flags_0x1180
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_bridge_flags_0x1180(&self, flags: u32) {
+        const FLAGS_MASK: u64 = 0xffff << 48;
+        let flags = u64::from((flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16) << 48;
+        let _ = self
+            .state
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some((current & !FLAGS_MASK) | flags)
+            });
     }
 
     #[cfg(test)]
@@ -493,6 +668,112 @@ impl SharedCellDummy {
         let slope = self.snapshot().slope_type;
         self.set_level_slope(level, slope);
     }
+}
+
+fn native_resolved_cell_index(
+    width: u16,
+    height: u16,
+    native_allocated: Option<&[bool]>,
+    cell_count: usize,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    let linear = crate::map::cell_index::cell_linear_index(x, y)?;
+    let rx = (linear % crate::map::cell_index::CELL_ROW_STRIDE) as usize;
+    let ry = (linear / crate::map::cell_index::CELL_ROW_STRIDE) as usize;
+    if rx >= usize::from(width) || ry >= usize::from(height) {
+        return None;
+    }
+    let index = ry * usize::from(width) + rx;
+    (index < cell_count
+        && native_allocated.is_none_or(|mask| mask.get(index).copied().unwrap_or(false)))
+    .then_some(index)
+}
+
+/// Route one exact `SetBridgeDirection_*` transaction through native fixed
+/// indexing. A real slot mutates its retained facts; every miss stamps and
+/// mutates the same process-global dummy identity.
+fn apply_native_bridge_flag_stamp_to_parts(
+    cells: &mut [ResolvedTerrainCell],
+    width: u16,
+    height: u16,
+    native_allocated: Option<&[bool]>,
+    shared_cell_dummy: &SharedCellDummy,
+    stamp: BridgeFlagStamp,
+    map_family: Option<BridgeStampFamily>,
+) -> Vec<(usize, u32)> {
+    let Some(slots) = stamp.slots() else {
+        return Vec::new();
+    };
+    let mut real_cell_updates = Vec::with_capacity(slots.len());
+    for (slot, requested) in slots {
+        let Some((x, y)) = requested else {
+            continue;
+        };
+        if let Some(index) =
+            native_resolved_cell_index(width, height, native_allocated, cells.len(), x, y)
+        {
+            let facts = &mut cells[index].bridge_facts;
+            if let Some(family) = map_family {
+                crate::map::bridge_facts::apply_bridge_fact_slot(
+                    facts,
+                    slot,
+                    BridgeAnchorRelation {
+                        anchor: (stamp.anchor.0 as u16, stamp.anchor.1 as u16),
+                        slot,
+                        family,
+                        direction: stamp.direction,
+                    },
+                    stamp.set,
+                );
+            } else {
+                crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
+                    &mut facts.raw_flags,
+                    slot,
+                    stamp.set,
+                );
+            }
+            real_cell_updates.push((index, facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK));
+        } else {
+            shared_cell_dummy.stamp_coord(x, y);
+            shared_cell_dummy.apply_bridge_flag_slot(slot, stamp.set);
+        }
+    }
+    real_cell_updates
+}
+
+/// Project a setter transcript that already executed against the live dummy
+/// through [`CellClassBridgeFlagState`]. Only allocated real CellClass values
+/// are deferred; missing slots must have no second lookup or dummy mutation.
+fn apply_planned_bridge_flag_stamp_to_real_parts(
+    cells: &mut [ResolvedTerrainCell],
+    width: u16,
+    height: u16,
+    native_allocated: Option<&[bool]>,
+    stamp: BridgeFlagStamp,
+) -> Vec<(usize, u32)> {
+    let Some(slots) = stamp.slots() else {
+        return Vec::new();
+    };
+    let mut real_cell_updates = Vec::with_capacity(slots.len());
+    for (slot, requested) in slots {
+        let Some((x, y)) = requested else {
+            continue;
+        };
+        let Some(index) =
+            native_resolved_cell_index(width, height, native_allocated, cells.len(), x, y)
+        else {
+            continue;
+        };
+        let facts = &mut cells[index].bridge_facts;
+        crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
+            &mut facts.raw_flags,
+            slot,
+            stamp.set,
+        );
+        real_cell_updates.push((index, facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK));
+    }
+    real_cell_updates
 }
 
 /// Convert a `Tile%02dXOffset` / `YOffset` screen-pixel pair into the world
@@ -629,8 +910,113 @@ impl ResolvedTerrainGrid {
         self.shared_cell_dummy.clone()
     }
 
+    pub(crate) fn bridge_flag_execution_state(&self) -> CellClassBridgeFlagState {
+        CellClassBridgeFlagState::from_grid(self)
+    }
+
     pub(crate) fn bind_shared_cell_dummy(&mut self, shared_cell_dummy: SharedCellDummy) {
         self.shared_cell_dummy = shared_cell_dummy;
+    }
+
+    /// Apply one represented runtime `SetBridgeDirection_*` flag transaction
+    /// through the same real-or-dummy seam used by map load.
+    pub(crate) fn apply_runtime_bridge_flag_stamp(
+        &mut self,
+        stamp: BridgeFlagStamp,
+    ) -> Vec<(usize, u32)> {
+        apply_native_bridge_flag_stamp_to_parts(
+            &mut self.cells,
+            self.width,
+            self.height,
+            self.native_allocated.as_deref(),
+            &self.shared_cell_dummy,
+            stamp,
+            None,
+        )
+    }
+
+    /// Project only allocated real-cell values for a setter that already ran
+    /// synchronously through [`CellClassBridgeFlagState`]. This performs no
+    /// GetCell fallback and cannot stamp or mutate the shared dummy.
+    pub(crate) fn apply_planned_bridge_flag_stamp_to_real_cells(
+        &mut self,
+        stamp: BridgeFlagStamp,
+    ) -> Vec<(usize, u32)> {
+        apply_planned_bridge_flag_stamp_to_real_parts(
+            &mut self.cells,
+            self.width,
+            self.height,
+            self.native_allocated.as_deref(),
+            stamp,
+        )
+    }
+
+    pub(crate) fn capture_real_cell_bridge_flags_0x1180(&self) -> RealCellBridgeFlags0x1180 {
+        RealCellBridgeFlags0x1180::from_grid(self)
+    }
+
+    pub(crate) fn bridge_flag_authority_matches_shape(
+        &self,
+        authority: &RealCellBridgeFlags0x1180,
+    ) -> bool {
+        authority.matches_grid_shape(self)
+    }
+
+    /// Restore serialized real CellClass values by aligned direct writes.
+    /// This deliberately never performs a MapClass lookup or setter call, so
+    /// native-unallocated slots cannot stamp or mutate the shared dummy.
+    pub(crate) fn restore_real_cell_bridge_flags_0x1180(
+        &mut self,
+        authority: &RealCellBridgeFlags0x1180,
+    ) -> bool {
+        if !authority.matches_grid_shape(self)
+            || self
+                .native_allocated
+                .as_ref()
+                .is_some_and(|mask| mask.len() != self.cells.len())
+        {
+            return false;
+        }
+
+        for (index, &saved) in authority.flags_or_unallocated.iter().enumerate() {
+            let allocated = self
+                .native_allocated
+                .as_deref()
+                .is_none_or(|mask| mask[index]);
+            if allocated == (saved == UNALLOCATED_REAL_CELL_BRIDGE_FLAGS)
+                || (saved != UNALLOCATED_REAL_CELL_BRIDGE_FLAGS
+                    && u32::from(saved) & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK != 0)
+            {
+                return false;
+            }
+        }
+
+        for (cell, &saved) in self.cells.iter_mut().zip(&authority.flags_or_unallocated) {
+            if saved != UNALLOCATED_REAL_CELL_BRIDGE_FLAGS {
+                cell.bridge_facts.raw_flags = (cell.bridge_facts.raw_flags
+                    & !MODELED_CELLCLASS_BRIDGE_FLAG_MASK)
+                    | u32::from(saved);
+            }
+        }
+        true
+    }
+
+    /// Stamping lookup view for later CellClass flag consumers such as FNPC.
+    /// A miss updates the dummy coordinate before exposing its live `0x1180`.
+    pub(crate) fn cellclass_bridge_flags_0x1180(&self, x: i32, y: i32) -> u32 {
+        let (x, y) = crate::map::cell_index::packed_cell_coord(x, y);
+        if let Some(index) = native_resolved_cell_index(
+            self.width,
+            self.height,
+            self.native_allocated.as_deref(),
+            self.cells.len(),
+            x,
+            y,
+        ) {
+            return self.cells[index].bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        }
+        self.shared_cell_dummy.stamp_coord(x, y);
+        self.shared_cell_dummy.bridge_flags_0x1180()
     }
 
     pub(crate) fn dummy_cell_level_slope(&self) -> (i8, u8) {
@@ -900,6 +1286,7 @@ impl ResolvedTerrainGrid {
             cliff_back_impassability,
             None,
             None,
+            None,
         )
     }
 
@@ -927,6 +1314,40 @@ impl ResolvedTerrainGrid {
             cliff_back_impassability,
             Some(scenario_fill_ranged),
             Some(variant_selector),
+            None,
+        )
+    }
+
+    /// Production map-load path whose CellClass grid is born with the process
+    /// dummy already attached. This is required before the post-Resize
+    /// OverlayPack `SetBridgeDirection_*` pass; binding afterward loses every
+    /// missing-neighbor write to the shared fallback object.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_with_variant_selector_and_shared_dummy(
+        map: &MapFile,
+        theater_data: Option<&TheaterData>,
+        asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+        terrain_rules: Option<&TerrainRules>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain_object_types: Option<&HashMap<String, TerrainObjectType>>,
+        lat_enabled: bool,
+        cliff_back_impassability: u8,
+        scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
+        variant_selector: &mut TileVariantSelectionContext<'_, '_>,
+        shared_cell_dummy: SharedCellDummy,
+    ) -> Self {
+        Self::build_inner(
+            map,
+            theater_data,
+            asset_manager,
+            terrain_rules,
+            overlay_registry,
+            terrain_object_types,
+            lat_enabled,
+            cliff_back_impassability,
+            Some(scenario_fill_ranged),
+            Some(variant_selector),
+            Some(shared_cell_dummy),
         )
     }
 
@@ -941,7 +1362,9 @@ impl ResolvedTerrainGrid {
         cliff_back_impassability: u8,
         mut scenario_fill_ranged: Option<&mut dyn FnMut(u32, u32) -> u32>,
         mut variant_selector: Option<&mut TileVariantSelectionContext<'_, '_>>,
+        shared_cell_dummy: Option<SharedCellDummy>,
     ) -> Self {
+        let shared_cell_dummy = shared_cell_dummy.unwrap_or_default();
         let clear_tile_id = theater_data
             .and_then(|td| td.rmg_tiles.clear_tile)
             .unwrap_or(0);
@@ -963,7 +1386,7 @@ impl ResolvedTerrainGrid {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
-                shared_cell_dummy: SharedCellDummy::fresh(),
+                shared_cell_dummy,
                 native_allocated: materialized_size_diamond.then(Vec::new),
                 radar_color_valid: Vec::new(),
                 damaged_radar_metadata: Vec::new(),
@@ -1430,36 +1853,52 @@ impl ResolvedTerrainGrid {
             );
         }
 
-        let mut bridge_facts = vec![BridgeCellFacts::default(); cells.len()];
+        // OverlayPack is decoded in fixed-grid row-major order. Each live
+        // OverlayClass anchor is an allocated CellClass; its setter then walks
+        // through MapClass lookups, so missing neighbors stamp/mutate the one
+        // shared dummy rather than disappearing at the rectangular edge.
         for overlay in &map.overlays {
-            if overlay.rx < width && overlay.ry < height {
-                let idx = overlay.ry as usize * width as usize + overlay.rx as usize;
-                bridge_facts[idx].overlay_id = Some(overlay.overlay_id);
+            let anchor_index = native_resolved_cell_index(
+                width,
+                height,
+                native_allocated.as_deref(),
+                cells.len(),
+                i32::from(overlay.rx),
+                i32::from(overlay.ry),
+            );
+            if let Some(index) = anchor_index {
+                cells[index].bridge_facts.overlay_id = Some(overlay.overlay_id);
             }
             if let Some((family, direction)) =
                 crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay.overlay_id)
+                && anchor_index.is_some()
             {
-                crate::map::bridge_facts::stamp_set_bridge_direction(
-                    &mut bridge_facts,
+                let stamp = BridgeFlagStamp::new((overlay.rx, overlay.ry), direction, true);
+                let _ = apply_native_bridge_flag_stamp_to_parts(
+                    &mut cells,
                     width,
                     height,
-                    (overlay.rx, overlay.ry),
-                    family,
-                    direction,
-                    true,
+                    native_allocated.as_deref(),
+                    &shared_cell_dummy,
+                    stamp,
+                    Some(family),
                 );
             }
         }
 
         if map.has_overlay_data_pack() {
-            for (idx, cell) in cells.iter().enumerate() {
-                bridge_facts[idx].state_byte = map.overlay_data_at(cell.rx, cell.ry);
+            for (index, cell) in cells.iter_mut().enumerate() {
+                if native_allocated
+                    .as_deref()
+                    .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
+                {
+                    cell.bridge_facts.state_byte = map.overlay_data_at(cell.rx, cell.ry);
+                }
             }
         }
 
-        for (cell, facts) in cells.iter_mut().zip(bridge_facts) {
-            cell.bridge_facts = facts;
-
+        for cell in &mut cells {
+            let facts = cell.bridge_facts;
             if facts.has_structural_bridge() {
                 cell.has_bridge_deck = true;
                 cell.bridge_walkable = !cell.terrain_object_blocks && !cell.overlay_blocks;
@@ -1714,7 +2153,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
-            shared_cell_dummy: SharedCellDummy::fresh(),
+            shared_cell_dummy,
             native_allocated,
             radar_color_valid,
             damaged_radar_metadata,
@@ -3102,6 +3541,144 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_01_resize_clears_bridge_bits_without_replacing_dummy_identity() {
+        let dummy = SharedCellDummy::fresh();
+        let retained = dummy.clone();
+        dummy.stamp_coord(-7, 11);
+        dummy.set_level_slope(-3, 9);
+        dummy.set_bridge_flags_0x1180(BRIDGE_FLAG_ANCHOR_SELF);
+        assert_eq!(
+            dummy.bridge_flags_0x1180(),
+            BRIDGE_FLAG_ANCHOR_SELF,
+            "the promoted live anchor bit is represented independently"
+        );
+
+        dummy.reconstruct_for_map_resize();
+
+        assert!(dummy.same_identity(&retained));
+        assert_eq!(
+            dummy.snapshot(),
+            SharedCellDummySnapshot {
+                coord: (0, 0),
+                level: 0,
+                slope_type: 0,
+                bridge_flags_0x1180: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_runtime_setter_uses_native_real_or_dummy_order() {
+        let cells = (0..3)
+            .flat_map(|ry| (0..3).map(move |rx| make_test_cell(rx, ry)))
+            .collect();
+        let mut grid = ResolvedTerrainGrid::from_cells(3, 3, cells);
+        grid.test_set_native_allocated_cells(&[(1, 1)]);
+        let dummy = grid.shared_cell_dummy();
+        let stamp = BridgeFlagStamp::new((1, 1), 0, true);
+
+        let _ = grid.apply_runtime_bridge_flag_stamp(stamp);
+
+        assert_eq!(
+            grid.cell(1, 1).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            "the allocated anchor mutates the real CellClass"
+        );
+        assert_eq!(
+            dummy.snapshot(),
+            SharedCellDummySnapshot {
+                coord: (1, 2),
+                level: 0,
+                slope_type: 0,
+                bridge_flags_0x1180: BRIDGE_FLAG_STRUCTURAL,
+            },
+            "the missing opposite is the last native lookup/writer"
+        );
+        assert_eq!(
+            grid.cellclass_bridge_flags_0x1180(9, 7),
+            BRIDGE_FLAG_STRUCTURAL,
+            "later candidate-filter lookups observe the live dummy flags"
+        );
+        assert_eq!(dummy.snapshot().coord, (9, 7));
+
+        let _ = grid.apply_runtime_bridge_flag_stamp(BridgeFlagStamp {
+            set: false,
+            ..stamp
+        });
+        assert_eq!(dummy.bridge_flags_0x1180(), 0);
+        assert_eq!(
+            grid.cell(1, 1).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0
+        );
+
+        let _ = grid.apply_runtime_bridge_flag_stamp(stamp);
+        assert_eq!(dummy.bridge_flags_0x1180(), BRIDGE_FLAG_STRUCTURAL);
+    }
+
+    #[test]
+    fn gsi_04_01_production_overlaypack_stamps_two_anchors_in_row_major_order() {
+        let mut map = make_map(
+            Vec::new(),
+            vec![
+                OverlayEntry {
+                    rx: 2,
+                    ry: 1,
+                    overlay_id: 0x18,
+                    frame: 0,
+                },
+                OverlayEntry {
+                    rx: 1,
+                    ry: 2,
+                    overlay_id: 0x18,
+                    frame: 0,
+                },
+            ],
+            Vec::new(),
+        );
+        map.header.width = 2;
+        map.header.height = 1;
+        map.header.local_width = 2;
+        map.header.local_height = 1;
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut scenario_rng = SimRng::new(0x401);
+        let mut fill = |low, high| scenario_rng.next_range_u32_inclusive(low, high);
+        let mut main_rng = SimRng::new(0x401);
+        let mut main_draw = || main_rng.next_u32();
+        let dummy = SharedCellDummy::fresh();
+        let grid = {
+            let mut selector = cache.begin_load(&mut main_draw);
+            ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
+                &map,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut fill,
+                &mut selector,
+                dummy.clone(),
+            )
+        };
+
+        assert!(dummy.same_identity(&grid.shared_cell_dummy()));
+        assert_eq!(
+            dummy.snapshot(),
+            SharedCellDummySnapshot {
+                coord: (1, 3),
+                level: 0,
+                slope_type: 0,
+                bridge_flags_0x1180: BRIDGE_FLAG_STRUCTURAL,
+            },
+            "the later row-major anchor owns the final dummy coord and bits"
+        );
+        assert_eq!(grid.cell(2, 1).unwrap().bridge_facts.overlay_id, Some(0x18));
+        assert_eq!(grid.cell(1, 2).unwrap().bridge_facts.overlay_id, Some(0x18));
+    }
+
+    #[test]
     fn gsi_04_03a_level_prefill_wraps_before_absolute_last_isomap_overwrite() {
         let mut map = make_map(
             vec![
@@ -3316,6 +3893,7 @@ mod tests {
                     coord: (0, 0),
                     level: 0,
                     slope_type: 0,
+                    bridge_flags_0x1180: 0,
                 })
             );
             let path_grid = crate::sim::pathfinding::PathGrid::from_resolved_terrain(&grid);
@@ -4455,6 +5033,7 @@ SnowOccupationBits=0
             0,
             None,
             None,
+            None,
         );
         let temperate_tree = temperate.cell(0, 0).unwrap();
         assert_eq!(temperate_tree.terrain_object_occupation, Some(4));
@@ -4476,6 +5055,7 @@ SnowOccupationBits=0
             Some(&rules.terrain_object_types),
             false,
             0,
+            None,
             None,
             None,
         );

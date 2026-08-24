@@ -1115,6 +1115,7 @@ mod tests {
                 coord: (0, 0),
                 level: 0,
                 slope_type: 0,
+                bridge_flags_0x1180: 0,
             }
         );
 
@@ -1171,6 +1172,7 @@ mod tests {
                     coord: (0, 0),
                     level: 0,
                     slope_type: 0,
+                    bridge_flags_0x1180: 0,
                 }
             );
         }
@@ -1214,6 +1216,7 @@ mod tests {
                     coord: (0, 0),
                     level: 0,
                     slope_type: 0,
+                    bridge_flags_0x1180: 0,
                 },
                 "the first Generate after {close_path} must run MapClass::Resize"
             );

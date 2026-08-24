@@ -504,6 +504,10 @@ fn apply_hut_bridge_execution(
         return false;
     }
 
+    for outcome in outcomes {
+        apply_runtime_bridge_flag_transcript_from_outcome(sim, outcome);
+    }
+
     let damaged_variant_dirty: Vec<(u16, u16)> =
         outcomes
             .iter()
@@ -866,10 +870,21 @@ fn run_hut_fallback_plan(
         };
     };
 
+    // Native ApplyDamageToCell and every SetBridgeDirection call are
+    // synchronous. Keep one exact live flag view for the whole fallback plan:
+    // all retries on the ramp cell and the optional dependent endpoint target.
+    // Allocated real terrain values and serialized authority remain deferred
+    // until apply_hut_bridge_execution. Missing-slot setters and every helper
+    // GetCell already mutate the actual shared dummy at their native call
+    // points, so retries and dependent targets observe its live interleaving.
+    let mut live_flags = terrain.bridge_flag_execution_state();
     let mut execution = HutFallbackExecution::default();
-    execution
-        .outcomes
-        .extend(apply_hut_damage_retries(bridge_state, terrain, ramp_cell));
+    execution.outcomes.extend(apply_hut_damage_retries(
+        bridge_state,
+        terrain,
+        ramp_cell,
+        &mut live_flags,
+    ));
 
     let reverse_dir = (forward_dir + 4) & 7;
     let Some(endpoint) = find_hut_fallback_endpoint_cell(terrain, ramp_cell, reverse_dir) else {
@@ -880,9 +895,12 @@ fn run_hut_fallback_plan(
 
     if hut_endpoint_needs_beyond_damage(terrain, endpoint) {
         if let Some(target) = step_hut_dir(endpoint, forward_dir) {
-            execution
-                .outcomes
-                .extend(apply_hut_damage_retries(bridge_state, terrain, target));
+            execution.outcomes.extend(apply_hut_damage_retries(
+                bridge_state,
+                terrain,
+                target,
+                &mut live_flags,
+            ));
         }
     }
     execution.zones_dirty = true;
@@ -933,6 +951,7 @@ fn apply_hut_damage_retries(
     bridge_state: &mut BridgeRuntimeState,
     terrain: &ResolvedTerrainGrid,
     target: (u16, u16),
+    live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
 ) -> Vec<StateOutcome> {
     if bridge_state.cell(target.0, target.1).is_none() {
         return Vec::new();
@@ -940,7 +959,8 @@ fn apply_hut_damage_retries(
 
     let mut outcomes = Vec::new();
     for _ in 0..MAX_HUT_ATTEMPTS_PER_STEP {
-        let outcome = apply_hut_damage_to_cell(bridge_state, terrain, target.0, target.1);
+        let outcome =
+            apply_hut_damage_to_cell(bridge_state, terrain, target.0, target.1, live_flags);
         let success = outcome.apply_damage_success();
         if outcome.has_effect() {
             outcomes.push(outcome);
@@ -1209,6 +1229,7 @@ fn apply_hut_damage_to_cell(
     terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
     rx: u16,
     ry: u16,
+    live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
 ) -> StateOutcome {
     let Some(cell) = bridge_state.cell(rx, ry).copied() else {
         return StateOutcome::NoChange;
@@ -1224,10 +1245,10 @@ fn apply_hut_damage_to_cell(
     let is_high = !hut_cell_is_low_bridge(bridge_state, terrain, rx, ry);
     match cell.role {
         BridgeCellRole::Bridgehead => {
-            bridge_state.bridgehead_advance_state(rx, ry, is_high, terrain)
+            bridge_state.bridgehead_advance_state_with_flags(rx, ry, is_high, terrain, live_flags)
         }
         BridgeCellRole::Anchor | BridgeCellRole::Body | BridgeCellRole::Tail => {
-            bridge_state.body_cell_advance_state(rx, ry, is_high, terrain)
+            bridge_state.body_cell_advance_state_with_flags(rx, ry, is_high, terrain, live_flags)
         }
     }
 }
@@ -1806,23 +1827,12 @@ fn run_dispatch_loop(
 ) -> Vec<StateOutcome> {
     let mut outcomes = Vec::with_capacity(events.len());
 
-    // Split-borrow projections so the dispatcher can hold &mut
-    // bridge_state + & terrain + &mut rng simultaneously.
-    let Some(terrain) = sim.resolved_terrain.as_ref() else {
+    if sim.resolved_terrain.is_none() {
         return outcomes;
-    };
-    // SAFETY of split: we only project `&` to `resolved_terrain` (no
-    // mutation downstream), `&mut` to `bridge_state`, `&mut` to `rng` —
-    // disjoint fields of `Simulation`. The compiler accepts this when
-    // each projection is a direct field access through `sim`.
-    let terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid = terrain;
-    let bridge_state = match sim.bridge_state.as_mut() {
-        Some(bs) => bs,
-        None => return outcomes,
-    };
-    // bridge collapse — scenario stream. Direct field (NOT bridge_rng()): held with a
-    // live sim.bridge_state borrow; the disjoint-field split above is required.
-    let rng = &mut sim.scenario_rng;
+    }
+    if sim.bridge_state.is_none() {
+        return outcomes;
+    }
 
     for event in events {
         let ctx = BridgeDamageContext {
@@ -1840,13 +1850,28 @@ fn run_dispatch_loop(
             DispatchPath::LowDirect,
             DispatchPath::HighDirect,
         ] {
-            if !bridge_state.path_matches_cell(path, event.rx, event.ry, &ctx, terrain) {
+            let path_matches = {
+                let terrain = sim
+                    .resolved_terrain
+                    .as_ref()
+                    .expect("terrain presence checked before dispatch");
+                let bridge_state = sim
+                    .bridge_state
+                    .as_ref()
+                    .expect("bridge-state presence checked before dispatch");
+                bridge_state.path_matches_cell(path, event.rx, event.ry, &ctx, terrain)
+            };
+            if !path_matches {
                 continue;
             }
 
             // Per-path BridgeStrength RNG gate. IonCannon bypasses.
             if !ctx.is_ion_cannon {
-                let roll = rng.next_range_u32_inclusive(1, ctx.bridge_strength as u32);
+                // bridge collapse — scenario stream. Direct field, preserving
+                // the native four-block draw order.
+                let roll = sim
+                    .scenario_rng
+                    .next_range_u32_inclusive(1, ctx.bridge_strength as u32);
                 if !((roll as u16) < ctx.damage) {
                     // Gate failed — try next path.
                     continue;
@@ -1862,25 +1887,44 @@ fn run_dispatch_loop(
                 1
             };
             for _attempt in 0..max_attempts {
-                let outcome = match path {
-                    // Blocks A/B call the overlay-first inner dispatcher
-                    // (`ApplyDamageToCell`): in-band overlays route to the
-                    // direct walker, overlay-miss cells to the state machine.
-                    DispatchPath::HighStateMachine => {
-                        bridge_state.apply_damage_to_cell(event.rx, event.ry, true, terrain)
-                    }
-                    DispatchPath::LowStateMachine => {
-                        bridge_state.apply_damage_to_cell(event.rx, event.ry, false, terrain)
-                    }
-                    DispatchPath::HighDirect => {
-                        bridge_state.destroy_bridge_high(event.rx, event.ry, terrain)
-                    }
-                    DispatchPath::LowDirect => {
-                        bridge_state.destroy_bridge_low(event.rx, event.ry, terrain)
+                let outcome = {
+                    let terrain = sim
+                        .resolved_terrain
+                        .as_ref()
+                        .expect("terrain presence checked before dispatch");
+                    let bridge_state = sim
+                        .bridge_state
+                        .as_mut()
+                        .expect("bridge-state presence checked before dispatch");
+                    match path {
+                        // Blocks A/B call the overlay-first inner dispatcher
+                        // (`ApplyDamageToCell`): in-band overlays route to the
+                        // direct walker, overlay-miss cells to the state machine.
+                        DispatchPath::HighStateMachine => {
+                            bridge_state.apply_damage_to_cell(event.rx, event.ry, true, terrain)
+                        }
+                        DispatchPath::LowStateMachine => {
+                            bridge_state.apply_damage_to_cell(event.rx, event.ry, false, terrain)
+                        }
+                        DispatchPath::HighDirect => {
+                            bridge_state.destroy_bridge_high(event.rx, event.ry, terrain)
+                        }
+                        DispatchPath::LowDirect => {
+                            bridge_state.destroy_bridge_low(event.rx, event.ry, terrain)
+                        }
                     }
                 };
                 let success = outcome.apply_damage_success();
                 if outcome.has_effect() {
+                    // Ramp helpers already applied every native setter call
+                    // immediately to their transaction-local live 0x1180
+                    // seam, so recursive state gates observed current 0x80.
+                    // Dummy effects already executed synchronously at each
+                    // native setter call. Commit the identical ordered
+                    // transcript only to allocated real terrain values and
+                    // serialized authority before the next path/event; never
+                    // sort or deduplicate it.
+                    apply_runtime_bridge_flag_transcript_from_outcome(sim, &outcome);
                     outcomes.push(outcome);
                 }
                 if success {
@@ -1896,6 +1940,12 @@ fn run_dispatch_loop(
     }
 
     outcomes
+}
+
+fn apply_runtime_bridge_flag_transcript_from_outcome(sim: &mut Simulation, outcome: &StateOutcome) {
+    for &stamp in outcome.setter_transcript() {
+        sim.apply_planned_bridge_flag_stamp_to_real_cells(stamp);
+    }
 }
 
 #[cfg(test)]
@@ -2757,6 +2807,555 @@ mod tests {
             sim.scenario_rng.state(),
             predicted.state(),
             "in-band high cell must consume exactly 2 BridgeStrength draws (block A + block D)"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_dispatcher_applies_direct_setter_descriptor() {
+        use crate::map::bridge_facts::{BridgeStampSlot, MODELED_CELLCLASS_BRIDGE_FLAG_MASK};
+        use crate::sim::bridge_state::{AnchorSpan, Direction};
+
+        let mut sim = Simulation::new();
+        let mut terrain = water_below_bridge_terrain(4);
+        terrain.test_set_native_allocated_cells(&[(1, 1)]);
+        terrain.cell_mut(1, 1).unwrap().bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        let dummy = terrain.shared_cell_dummy();
+        dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
+        sim.resolved_terrain = Some(terrain);
+
+        let mut bridge_state = BridgeRuntimeState::default();
+        let mut anchor = seed_bridge_cell(0);
+        anchor.deck_level = 4;
+        anchor.damage_state = DamageState::Damaged;
+        anchor.axis = Some(Axis::NS);
+        anchor.role = BridgeCellRole::Anchor;
+        anchor.anchor_span_id = Some(1);
+        bridge_state.test_seed_cell(1, 1, anchor);
+        bridge_state.test_seed_anchor_span(AnchorSpan {
+            id: 1,
+            anchor: (1, 1),
+            cells: [
+                Some((1, 1)),
+                Some((2, 1)),
+                Some((3, 1)),
+                Some((4, 1)),
+                Some((0, 1)),
+                None,
+            ],
+            axis: Axis::NS,
+            direction: Direction::E,
+            damage_state: DamageState::Damaged,
+            bridge_group_id: 1,
+        });
+        sim.bridge_state = Some(bridge_state);
+
+        let event = BridgeDamageEvent {
+            rx: 1,
+            ry: 1,
+            damage: 1,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 0,
+        };
+        let outcomes = run_dispatch_loop(&mut sim, &[event], 1500);
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], StateOutcome::Collapsed { .. }));
+        assert_eq!(
+            dummy.bridge_flags_0x1180(),
+            crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF,
+            "missing non-anchor slots clear 0x1100 but preserve the dummy's pre-existing 0x80"
+        );
+        assert_eq!(dummy.snapshot().coord, (0, 1));
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_ns_perpendicular_dir0_precedes_parent_setter_on_real_and_dummy() {
+        use crate::map::bridge_facts::{
+            BridgeFlagStamp, BridgeStampSlot, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        };
+        use crate::sim::bridge_state::{AnchorSpan, Direction};
+
+        let mut sim = Simulation::new();
+        let mut terrain = water_below_bridge_terrain(4);
+        terrain.test_set_native_allocated_cells(&[(2, 2), (3, 2)]);
+        for (rx, ry) in [(2, 2), (3, 2)] {
+            terrain.cell_mut(rx, ry).unwrap().bridge_facts.raw_flags =
+                MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        }
+        let dummy = terrain.shared_cell_dummy();
+        dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
+        sim.install_resolved_terrain_for_new_map(terrain);
+
+        let mut bridge_state = BridgeRuntimeState::default();
+        let mut parent = seed_bridge_cell(0);
+        parent.damage_state = DamageState::Damaged;
+        parent.axis = Some(Axis::NS);
+        parent.role = BridgeCellRole::Anchor;
+        parent.anchor_span_id = Some(1);
+        bridge_state.test_seed_cell(2, 2, parent);
+
+        let mut perpendicular = seed_bridge_cell(0);
+        perpendicular.damage_state = DamageState::PartialCollapseB;
+        perpendicular.axis = Some(Axis::NS);
+        perpendicular.role = BridgeCellRole::Anchor;
+        perpendicular.anchor_span_id = None;
+        bridge_state.test_seed_cell(3, 2, perpendicular);
+        bridge_state.test_seed_anchor_span(AnchorSpan {
+            id: 1,
+            anchor: (2, 2),
+            cells: [
+                Some((2, 2)),
+                Some((3, 2)),
+                Some((4, 2)),
+                Some((5, 2)),
+                Some((1, 2)),
+                None,
+            ],
+            axis: Axis::NS,
+            direction: Direction::E,
+            damage_state: DamageState::Damaged,
+            bridge_group_id: 1,
+        });
+        sim.bridge_state = Some(bridge_state);
+
+        let outcome = {
+            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            sim.bridge_state
+                .as_mut()
+                .unwrap()
+                .body_cell_advance_state(2, 2, true, terrain)
+        };
+        assert_eq!(
+            outcome.setter_transcript(),
+            &[
+                BridgeFlagStamp::new((3, 2), Direction::N as u8, false),
+                BridgeFlagStamp::new((2, 2), Direction::E as u8, false),
+            ],
+            "native CollapseA perpendicular dir0 setter precedes parent span setter"
+        );
+        let dummy_after_planning = dummy.snapshot();
+        assert_eq!(
+            dummy_after_planning.coord,
+            (1, 2),
+            "with no later helper lookup, the parent direction-2 opposite slot remains the final dummy writer"
+        );
+        apply_runtime_bridge_flag_transcript_from_outcome(&mut sim, &outcome);
+
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        assert_eq!(
+            terrain.cell(3, 2).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "perpendicular allocated CellClass is cleared through the live seam"
+        );
+        assert_eq!(
+            terrain.cell(2, 2).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "later parent setter clears its allocated anchor"
+        );
+        assert_eq!(
+            sim.real_cell_bridge_flags_0x1180,
+            terrain.capture_real_cell_bridge_flags_0x1180(),
+            "ordered live projection keeps serialized real-cell value authority exact"
+        );
+        assert_eq!(
+            dummy.bridge_flags_0x1180(),
+            crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF,
+            "missing non-anchor slots preserve the dummy's independent live anchor bit"
+        );
+        assert_eq!(
+            dummy.snapshot(),
+            dummy_after_planning,
+            "real-only transcript projection cannot replay the parent setter into the dummy"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_recursive_dir0_chain_projects_deepest_first_to_real_and_dummy() {
+        use crate::map::bridge_facts::{
+            BridgeFlagStamp, BridgeStampSlot, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        };
+        use crate::sim::bridge_state::{Direction, Phase};
+
+        let mut sim = Simulation::new();
+        let mut terrain = water_below_bridge_terrain(4);
+        terrain.test_set_native_allocated_cells(&[(3, 2), (4, 2), (5, 2)]);
+        for x in 3..=5 {
+            terrain.cell_mut(x, 2).unwrap().bridge_facts.raw_flags =
+                MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        }
+        let dummy = terrain.shared_cell_dummy();
+        dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
+        sim.install_resolved_terrain_for_new_map(terrain);
+
+        let mut bridge_state = BridgeRuntimeState::default();
+        let mut anchor = seed_bridge_cell(0);
+        anchor.axis = Some(Axis::NS);
+        anchor.role = BridgeCellRole::Anchor;
+        bridge_state.test_seed_cell(2, 2, anchor);
+        let mut chained = anchor;
+        chained.damage_state = DamageState::PartialCollapseB;
+        for x in 3..=5 {
+            bridge_state.test_seed_cell(x, 2, chained);
+        }
+        sim.bridge_state = Some(bridge_state);
+
+        let outcome = {
+            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            crate::sim::bridge_specs::update_ramp_perpendicular(
+                sim.bridge_state.as_mut().unwrap(),
+                (2, 2),
+                Axis::NS,
+                Phase::CollapseA,
+                true,
+                terrain,
+            )
+        };
+        assert_eq!(
+            outcome.setter_transcript,
+            vec![
+                BridgeFlagStamp::new((5, 2), Direction::N as u8, false),
+                BridgeFlagStamp::new((4, 2), Direction::N as u8, false),
+                BridgeFlagStamp::new((3, 2), Direction::N as u8, false),
+            ]
+        );
+        for &stamp in &outcome.setter_transcript {
+            sim.apply_planned_bridge_flag_stamp_to_real_cells(stamp);
+        }
+
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        for x in 3..=5 {
+            assert_eq!(
+                terrain.cell(x, 2).unwrap().bridge_facts.raw_flags
+                    & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+                0,
+                "every allocated recursive anchor is cleared"
+            );
+        }
+        assert_eq!(
+            sim.real_cell_bridge_flags_0x1180,
+            terrain.capture_real_cell_bridge_flags_0x1180(),
+            "each recursive setter updates serialized real-cell value authority"
+        );
+        assert_eq!(
+            dummy.bridge_flags_0x1180(),
+            crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF,
+            "none of the recursive setter anchors resolve to the dummy"
+        );
+        assert_eq!(
+            dummy.snapshot().coord,
+            (3, 3),
+            "outermost dir0 opposite lookup is last after deepest-first projection"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_later_about_to_fall_lookup_wins_after_synchronous_setter() {
+        use crate::map::bridge_facts::{
+            BRIDGE_FLAG_ANCHOR_SELF, BridgeFlagStamp, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        };
+        use crate::sim::bridge_state::{BridgeheadAnchorClass, Direction, Phase};
+
+        let mut sim = Simulation::new();
+        let mut terrain = water_below_bridge_terrain(4);
+        terrain.test_set_native_allocated_cells(&[(3, 2)]);
+        terrain.cell_mut(3, 2).unwrap().bridge_facts.raw_flags =
+            MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        terrain.test_set_dummy_cell_level_slope(2, 0);
+        let dummy = terrain.shared_cell_dummy();
+        dummy.set_bridge_flags_0x1180(MODELED_CELLCLASS_BRIDGE_FLAG_MASK);
+        sim.install_resolved_terrain_for_new_map(terrain);
+
+        let mut bridge_state = BridgeRuntimeState::default();
+        let mut perpendicular = seed_bridge_cell(0);
+        perpendicular.damage_state = DamageState::PartialCollapseB;
+        perpendicular.axis = Some(Axis::NS);
+        perpendicular.role = BridgeCellRole::Anchor;
+        perpendicular.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
+        bridge_state.test_seed_cell(3, 2, perpendicular);
+        sim.bridge_state = Some(bridge_state);
+
+        let outcome = {
+            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            crate::sim::bridge_specs::update_ramp_perpendicular(
+                sim.bridge_state.as_mut().unwrap(),
+                (2, 2),
+                Axis::NS,
+                Phase::CollapseA,
+                true,
+                terrain,
+            )
+        };
+        assert_eq!(
+            outcome.setter_transcript,
+            vec![BridgeFlagStamp::new(
+                (3, 2),
+                Direction::N as u8,
+                false
+            )]
+        );
+        let dummy_after_planning = dummy.snapshot();
+        assert_eq!(
+            dummy_after_planning.coord,
+            (4, 2),
+            "the independent AboutToFall recursion's later GetCell miss wins after the setter's final slot"
+        );
+        assert_eq!(
+            dummy_after_planning.bridge_flags_0x1180,
+            BRIDGE_FLAG_ANCHOR_SELF,
+            "the synchronous setter clears missing-slot 0x1100 while preserving non-anchor 0x80"
+        );
+        let retained_target = crate::sim::projectile::ProjectileTarget::DummyCell;
+        let observed_target = match retained_target {
+            crate::sim::projectile::ProjectileTarget::DummyCell => {
+                crate::sim::projectile::dummy_cell_target_coord(&dummy)
+            }
+            _ => unreachable!("fixture retains the shared dummy pointer kind"),
+        };
+        assert_eq!(
+            observed_target,
+            crate::sim::projectile::ProjectileCoord::new(4 * 256 + 128, 2 * 256 + 128, 2 * 90)
+        );
+
+        for &stamp in &outcome.setter_transcript {
+            sim.apply_planned_bridge_flag_stamp_to_real_cells(stamp);
+        }
+        assert_eq!(
+            dummy.snapshot(),
+            dummy_after_planning,
+            "deferred real-only commit must not overwrite the later live GetCell coordinate"
+        );
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        assert_eq!(
+            terrain.cell(3, 2).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0
+        );
+        assert_eq!(
+            sim.real_cell_bridge_flags_0x1180,
+            terrain.capture_real_cell_bridge_flags_0x1180()
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_bridgehead_perpendicular_dir6_projects_without_outer_setter() {
+        use crate::map::bridge_facts::{
+            BridgeFlagStamp, BridgeStampSlot, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        };
+        use crate::sim::bridge_state::{BridgeheadAnchorClass, Direction};
+
+        let mut sim = Simulation::new();
+        let mut terrain = water_below_bridge_terrain(4);
+        terrain.cell_mut(2, 2).unwrap().template_height = 2;
+        terrain.test_set_native_allocated_cells(&[(2, 2), (2, 3)]);
+        terrain.cell_mut(2, 3).unwrap().bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        let dummy = terrain.shared_cell_dummy();
+        dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
+        sim.install_resolved_terrain_for_new_map(terrain);
+
+        let mut bridge_state = BridgeRuntimeState::default();
+        let mut bridgehead = seed_bridge_cell(0);
+        bridgehead.axis = Some(Axis::EW);
+        bridgehead.role = BridgeCellRole::Bridgehead;
+        bridgehead.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
+        bridge_state.test_seed_cell(2, 2, bridgehead);
+
+        let mut perpendicular = seed_bridge_cell(0);
+        perpendicular.damage_state = DamageState::PartialCollapseB;
+        perpendicular.axis = Some(Axis::EW);
+        perpendicular.role = BridgeCellRole::Anchor;
+        bridge_state.test_seed_cell(2, 3, perpendicular);
+        sim.bridge_state = Some(bridge_state);
+
+        let outcome = {
+            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            sim.bridge_state
+                .as_mut()
+                .unwrap()
+                .bridgehead_advance_state(2, 2, false, terrain)
+        };
+        let StateOutcome::Collapsed {
+            set_bridge_direction,
+            ..
+        } = &outcome
+        else {
+            panic!("final bridgehead must collapse");
+        };
+        assert!(
+            set_bridge_direction.flag_stamp.is_none(),
+            "bridgehead row has no parent SetBridgeDirection header"
+        );
+        assert_eq!(
+            outcome.setter_transcript(),
+            &[BridgeFlagStamp::new((2, 3), Direction::W as u8, false)],
+            "EW complementary partial emits the native direction-6 helper setter"
+        );
+        let dummy_after_planning = dummy.snapshot();
+        assert_eq!(
+            dummy_after_planning.coord,
+            (2, 1),
+            "the later CollapseB perpendicular GetCell miss follows the direction-6 setter"
+        );
+        apply_runtime_bridge_flag_transcript_from_outcome(&mut sim, &outcome);
+
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(2, 3)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0
+        );
+        assert_eq!(
+            dummy.bridge_flags_0x1180(),
+            crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF,
+            "direction-6 non-anchor dummy visits preserve pre-existing 0x80"
+        );
+        assert_eq!(
+            dummy.snapshot(),
+            dummy_after_planning,
+            "real-only projection preserves the later CollapseB lookup over the earlier direction-6 extra"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_hut_low_bridgehead_retries_share_live_anchor_flags() {
+        use crate::map::bridge_facts::{
+            BRIDGE_FLAG_ANCHOR_SELF, BridgeFlagStamp, MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        };
+        use crate::sim::bridge_state::{BridgeheadAnchorClass, Direction};
+
+        let mut sim = Simulation::new();
+        let mut terrain = water_below_bridge_terrain(4);
+        terrain.test_set_native_allocated_cells(&[(2, 2), (2, 3), (2, 4), (3, 2)]);
+        for (ry, height) in [(4, 8), (3, 6), (2, 4)] {
+            terrain.cell_mut(2, ry).unwrap().template_height = height;
+        }
+        terrain.cell_mut(2, 4).unwrap().is_wood_bridge_repair_tile = true;
+        terrain.cell_mut(3, 2).unwrap().bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        let dummy = terrain.shared_cell_dummy();
+        dummy.set_bridge_flags_0x1180(MODELED_CELLCLASS_BRIDGE_FLAG_MASK);
+        sim.install_resolved_terrain_for_new_map(terrain);
+
+        let mut bridge_state = BridgeRuntimeState::default();
+        let mut bridgehead = seed_bridge_cell(0x18);
+        bridgehead.axis = Some(Axis::NS);
+        bridgehead.role = BridgeCellRole::Bridgehead;
+        bridgehead.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
+        bridge_state.test_seed_cell(2, 4, bridgehead);
+
+        let mut anchor = seed_bridge_cell(0x20);
+        anchor.axis = Some(Axis::NS);
+        anchor.role = BridgeCellRole::Anchor;
+        anchor.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
+        bridge_state.test_seed_cell(2, 2, anchor);
+
+        let mut perpendicular = seed_bridge_cell(0x21);
+        perpendicular.axis = Some(Axis::NS);
+        perpendicular.role = BridgeCellRole::Anchor;
+        perpendicular.damage_state = DamageState::PartialCollapseB;
+        bridge_state.test_seed_cell(3, 2, perpendicular);
+        sim.bridge_state = Some(bridge_state);
+
+        let outcomes = {
+            let terrain = sim.resolved_terrain.as_ref().unwrap();
+            let mut live_flags = terrain.bridge_flag_execution_state();
+            let outcomes = apply_hut_damage_retries(
+                sim.bridge_state.as_mut().unwrap(),
+                terrain,
+                (2, 4),
+                &mut live_flags,
+            );
+            assert_eq!(
+                live_flags.flags_at((3, 2)) & BRIDGE_FLAG_ANCHOR_SELF,
+                0,
+                "the first synchronous helper setter clears live 0x80 before retry two"
+            );
+            outcomes
+        };
+
+        assert_eq!(outcomes.len(), MAX_HUT_ATTEMPTS_PER_STEP);
+        assert!(outcomes.iter().all(|outcome| matches!(
+            outcome,
+            StateOutcome::Collapsed {
+                binary_success: false,
+                ..
+            }
+        )));
+        let transcript: Vec<_> = outcomes
+            .iter()
+            .flat_map(|outcome| outcome.setter_transcript().iter().copied())
+            .collect();
+        assert_eq!(
+            transcript,
+            vec![BridgeFlagStamp::new((3, 2), Direction::N as u8, false)],
+            "later low-return retries observe cleared 0x80 and cannot invent another setter"
+        );
+        assert_eq!(
+            sim.bridge_state
+                .as_ref()
+                .unwrap()
+                .cell(3, 2)
+                .unwrap()
+                .damage_state,
+            DamageState::Destroyed
+        );
+
+        // Planning/retries defer allocated real CellClass values, but missing
+        // slots have already mutated the actual shared dummy synchronously.
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(3, 2)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            MODELED_CELLCLASS_BRIDGE_FLAG_MASK
+        );
+        let dummy_after_planning = dummy.snapshot();
+        assert_eq!(
+            dummy_after_planning.bridge_flags_0x1180,
+            BRIDGE_FLAG_ANCHOR_SELF,
+            "the first setter's missing non-anchor slots are live during later CABHUT retries"
+        );
+
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str("[General]\n"))
+            .expect("minimal hut retry rules");
+        sim.resolve_type_handles(&rules);
+        assert!(apply_hut_bridge_execution(
+            &mut sim, &rules, &outcomes, false, None, None,
+        ));
+
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        assert_eq!(
+            terrain.cell(3, 2).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "the single retained transcript projects once to the allocated real cell"
+        );
+        assert_eq!(
+            dummy.snapshot(),
+            dummy_after_planning,
+            "real-only outcome projection must leave the synchronously mutated dummy byte-for-byte unchanged"
+        );
+        assert_eq!(
+            sim.real_cell_bridge_flags_0x1180,
+            terrain.capture_real_cell_bridge_flags_0x1180(),
+            "the one actual projection keeps serialized value authority exact"
         );
     }
 

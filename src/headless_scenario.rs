@@ -90,7 +90,12 @@ fn build_headless_terrain_bootstrap(
     let mut variant_draw = || variant_main_rng.next_u32();
     let mut variant_selector_cache = TileVariantSelectorCache::default();
     let mut variant_selector = variant_selector_cache.begin_load(&mut variant_draw);
-    let resolved = ResolvedTerrainGrid::build_with_variant_selector(
+    // Each headless parity run owns one process-shaped MapClass identity. The
+    // Resize constructor runs before OverlayPack bridge marking, so missing
+    // bridge neighbors must already target this handle during resolution.
+    let shared_cell_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
+    shared_cell_dummy.reconstruct_for_map_resize();
+    let resolved = ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
         map,
         theater_data,
         asset_manager,
@@ -102,6 +107,7 @@ fn build_headless_terrain_bootstrap(
         cliff_back_impassability,
         &mut scenario_fill_ranged,
         &mut variant_selector,
+        shared_cell_dummy,
     );
     drop(variant_selector);
     drop(variant_draw);
@@ -175,13 +181,9 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         rules.general.cliff_back_impassability,
         seed,
     );
-    // One headless load is one process-shaped parity run: it owns a fresh
-    // MapClass dummy identity, while every grid/sim clone inside that run
-    // shares it. Separate calls intentionally remain isolated.
-    let shared_cell_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
-    terrain_bootstrap
-        .resolved
-        .bind_shared_cell_dummy(shared_cell_dummy);
+    // The process-shaped dummy was bound before OverlayPack stamping inside
+    // the bootstrap. Every grid/sim clone inside this run now shares it;
+    // separate loads remain isolated.
     let scheduler_roots = crate::app::loading::init_helpers::scheduler_anim_roots(
         &rules,
         terrain_bootstrap.resolved.tile_animations(),

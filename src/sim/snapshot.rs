@@ -270,7 +270,12 @@ use crate::sim::world::Simulation;
 // cell, add/remove radii and building/unit discriminator. Limbo, movement, and
 // owner transfer must remove the historical deposit rather than recomputing it
 // from current position/rules, so this future-affecting cache is hash authority.
-const SNAPSHOT_VERSION: u32 = 89;
+// Bumped 88 -> 89: ProjectileTarget adds the native shared-dummy pointer kind.
+// Bumped 89 -> 90: exact real-cell 0x1180 values join Scenario persistence and
+// hashing, while the process-global dummy's live subset joins the canonical
+// hash even without a retained projectile. The dummy remains outside the
+// payload and accepted Resize/load reconstructs it to zero.
+const SNAPSHOT_VERSION: u32 = 90;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -456,6 +461,8 @@ pub enum SnapshotRestoreError {
         "snapshot overlay grid storage has {found} cells, but its dimensions require {expected}"
     )]
     MapAuthorityCellStorageMismatch { expected: usize, found: usize },
+    #[error("snapshot real-cell bridge flags do not match restored CellClass allocation")]
+    RealCellBridgeFlagAuthorityMismatch,
 }
 
 /// Derived facts produced by the transactional map-authority restore seam.
@@ -1515,6 +1522,19 @@ impl Simulation {
             });
         }
 
+        // Native CellClass::Load restores allocated real-cell flag words as
+        // values. Do this before derived overlay/bridge reconstruction and do
+        // not route through GetCell or SetBridgeDirection: those would stamp
+        // the process-global dummy that Resize reconstructs at commit.
+        if !self
+            .resolved_terrain
+            .as_mut()
+            .expect("validated terrain cache")
+            .restore_real_cell_bridge_flags_0x1180(&self.real_cell_bridge_flags_0x1180)
+        {
+            return Err(SnapshotRestoreError::RealCellBridgeFlagAuthorityMismatch);
+        }
+
         // The app-supplied terrain template is the immutable load-time map.
         // Action 40's mutable LocalSize is serialized on Simulation, so replay
         // its CellClass-derived cache before overlay and zone reconstruction.
@@ -1782,7 +1802,7 @@ mod tests {
                 overlays.place_overlay(rx, ry, ore_id, 5);
             }
             sim.overlay_grid = Some(overlays);
-            sim.resolved_terrain = Some(flat_terrain(4, 1));
+            sim.install_resolved_terrain_for_new_map(flat_terrain(4, 1));
             sim
         }
 
@@ -2164,7 +2184,7 @@ mod tests {
             3,
             1,
         ));
-        sim.resolved_terrain = Some(map_terrain.clone());
+        sim.install_resolved_terrain_for_new_map(map_terrain.clone());
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "overlay_restore.map", 0);
         let mut restored = GameSnapshot::load(&bytes)
@@ -2576,10 +2596,13 @@ mod tests {
     /// playfield revision; 86 -> 87 added Techno+0x3D5 membership; 87 -> 88
     /// added the exact historical sensor deposit needed for later removal;
     /// 88 -> 89 adds the `ProjectileTarget::DummyCell` pointer kind while the
-    /// process-global dummy contents remain deliberately outside the payload.
+    /// process-global dummy contents remain deliberately outside the payload;
+    /// 89 -> 90 adds exact allocated real-cell 0x1180 values to Scenario
+    /// persistence/hash plus the live dummy subset to the canonical hash,
+    /// while retaining the native dummy reconstruct-to-zero load behavior.
     #[test]
-    fn gsi_04_01_snapshot_version_is_89() {
-        assert_eq!(super::SNAPSHOT_VERSION, 89);
+    fn gsi_04_01_snapshot_version_is_90() {
+        assert_eq!(super::SNAPSHOT_VERSION, 90);
     }
 
     #[test]
@@ -4434,6 +4457,7 @@ mod tests {
                 coord: (7, 9),
                 level: -7,
                 slope_type: 11,
+                bridge_flags_0x1180: 0,
             },
             "fallible candidate preparation retains identity without mutating the live process"
         );
@@ -4464,6 +4488,7 @@ mod tests {
                 coord: (0, 0),
                 level: 0,
                 slope_type: 0,
+                bridge_flags_0x1180: 0,
             }
         );
 
@@ -4472,6 +4497,235 @@ mod tests {
             rebuilt_dummy.snapshot().coord,
             (-2, 7),
             "the restored DummyCell target retains the same live identity after reconstruction"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_successful_load_restores_real_flags_and_zeroes_only_dummy() {
+        use crate::map::bridge_facts::{
+            BRIDGE_FLAG_STRUCTURAL, BridgeFlagStamp, BridgeStampSlot,
+            MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        };
+        use crate::map::overlay_types::OverlayTypeRegistry;
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::overlay_grid::OverlayGrid;
+
+        let mut live = Simulation::new();
+        let mut map_load_terrain = flat_terrain(4, 3);
+        map_load_terrain.test_set_native_allocated_cells(&[(0, 0), (1, 1)]);
+        {
+            let pristine_bridge_cell = map_load_terrain.cell_mut(1, 1).unwrap();
+            pristine_bridge_cell.level = 2;
+            pristine_bridge_cell.slope_type = 1;
+            pristine_bridge_cell.bridge_facts.raw_flags =
+                MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        }
+        let pristine_load_template = map_load_terrain.clone();
+        let expected_ground_z = {
+            let target = crate::sim::projectile::cell_target_coord(
+                Some(&pristine_load_template),
+                1,
+                1,
+            );
+            let cell = pristine_load_template.cell(1, 1).unwrap();
+            crate::util::lepton::cellclass_ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                target.x,
+                target.y,
+            )
+            .expect("fixture uses a native-supported CellClass slope")
+        };
+        live.install_resolved_terrain_for_new_map(map_load_terrain);
+        live.overlay_grid = Some(OverlayGrid::new(4, 3));
+        assert_ne!(
+            live.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & BRIDGE_FLAG_STRUCTURAL,
+            0,
+            "the pristine allocated CellClass starts on the high bridge target surface"
+        );
+        let hash_with_pristine_bridge = live.state_hash();
+
+        // The real anchor is allocated. Every neighbor is unallocated or
+        // missing, so this live clear updates both serialized real authority
+        // and the process dummy through their distinct native targets before
+        // the snapshot is written.
+        live.apply_runtime_bridge_flag_stamp(BridgeFlagStamp::new((1, 1), 0, false));
+        let process_dummy = live.effective_shared_cell_dummy();
+        assert_eq!(
+            live.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "the live runtime setter clears the allocated CellClass before save"
+        );
+        assert_eq!(
+            live.real_cell_bridge_flags_0x1180,
+            live.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .capture_real_cell_bridge_flags_0x1180(),
+            "serialized real-cell authority records the runtime-cleared value"
+        );
+        process_dummy.reconstruct_for_map_resize();
+        let hash_after_runtime_clear = live.state_hash();
+        assert_ne!(
+            hash_after_runtime_clear,
+            hash_with_pristine_bridge,
+            "the future-affecting real-cell value authority is hashed even with a clear dummy"
+        );
+        process_dummy.stamp_coord(-23, 17);
+        process_dummy.set_level_slope(-7, 11);
+        process_dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
+        let dirty_dummy_before_load = process_dummy.snapshot();
+        assert_ne!(dirty_dummy_before_load.bridge_flags_0x1180, 0);
+
+        let bytes = GameSnapshot::save(&live, 0, 0, "bridge-dummy.map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored.retain_in_scenario_process_state_from(&live);
+        restored
+            .restore_after_snapshot_load()
+            .expect("snapshot references restore");
+        restored.rebuild_caches_after_load(
+            pristine_load_template,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        let rebuilt_terrain = restored.resolved_terrain.as_ref().unwrap();
+        assert_eq!(
+            rebuilt_terrain.cell(1, 1).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            "candidate cache rebuild starts from the nonzero pristine map template"
+        );
+        assert_eq!(
+            crate::sim::projectile::cell_target_coord(Some(rebuilt_terrain), 1, 1).z,
+            expected_ground_z + crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32,
+            "before direct value restore the pristine raw 0x100 selects the +416 target surface"
+        );
+        let pristine_candidate_authority =
+            rebuilt_terrain.capture_real_cell_bridge_flags_0x1180();
+        let serialized_cleared_authority = restored.real_cell_bridge_flags_0x1180.clone();
+        assert_ne!(serialized_cleared_authority, pristine_candidate_authority);
+        let hash_with_serialized_clear = restored.state_hash();
+        restored.real_cell_bridge_flags_0x1180 = pristine_candidate_authority.clone();
+        let hash_if_pristine_template_were_authority = restored.state_hash();
+        assert_ne!(
+            hash_with_serialized_clear,
+            hash_if_pristine_template_were_authority,
+            "the canonical hash distinguishes the saved clear from the pristine nonzero template"
+        );
+        restored.real_cell_bridge_flags_0x1180 = serialized_cleared_authority.clone();
+        assert_eq!(restored.state_hash(), hash_with_serialized_clear);
+        let candidate_dummy_before_authority_restore =
+            restored.effective_shared_cell_dummy().snapshot();
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n[OverlayTypes]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("empty map-authority rules");
+        restored
+            .restore_map_authority_after_snapshot_load(&rules, &OverlayTypeRegistry::empty())
+            .expect("serialized real CellClass values restore directly");
+
+        let candidate_dummy = restored.effective_shared_cell_dummy();
+        assert!(candidate_dummy.same_identity(&process_dummy));
+        assert_eq!(
+            candidate_dummy.snapshot(),
+            candidate_dummy_before_authority_restore,
+            "direct real-cell restoration must not lookup, stamp, or mutate the dummy"
+        );
+        assert_eq!(candidate_dummy.snapshot(), dirty_dummy_before_load);
+        let restored_terrain = restored.resolved_terrain.as_ref().unwrap();
+        assert_eq!(
+            restored_terrain.cell(1, 1).unwrap().bridge_facts.raw_flags & BRIDGE_FLAG_STRUCTURAL,
+            0,
+            "the saved clear removes the pristine real CellClass structural bit"
+        );
+        assert_eq!(
+            restored_terrain.cell(1, 1).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "direct CellClass value restore replaces the complete pristine modeled mask"
+        );
+        assert_eq!(
+            crate::sim::projectile::cell_target_coord(Some(restored_terrain), 1, 1).z,
+            expected_ground_z,
+            "restored raw 0x100 clear removes +416 while retaining the 90-lepton ground kernel"
+        );
+        assert_eq!(
+            restored.state_hash(),
+            hash_with_serialized_clear,
+            "direct CellClass cache restoration leaves the saved-cleared authority hash unchanged"
+        );
+        assert_ne!(
+            restored.state_hash(),
+            hash_if_pristine_template_were_authority,
+            "the restored state hash must not adopt the pristine nonzero template authority"
+        );
+        assert_eq!(
+            restored_terrain.cell(0, 0).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "untouched allocated cells retain their exact saved zero"
+        );
+        assert!(restored_terrain.cell(1, 0).is_none());
+        assert_eq!(
+            restored_terrain.cells[1].bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "unallocated storage is not promoted into real-cell authority"
+        );
+
+        // MouseClass::Load reaches Resize only at accepted commit. That ctor
+        // zeros the same dummy identity and does not rewrite loaded real cells.
+        restored.reconstruct_shared_cell_dummy_for_map_resize();
+
+        let reconstructed = restored.effective_shared_cell_dummy();
+        assert!(reconstructed.same_identity(&process_dummy));
+        assert_eq!(
+            reconstructed.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (0, 0),
+                level: 0,
+                slope_type: 0,
+                bridge_flags_0x1180: 0,
+            }
+        );
+        assert_eq!(
+            restored
+                .resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "dummy reconstruction must not resurrect pristine real CellClass flags"
+        );
+        assert_eq!(
+            crate::sim::projectile::cell_target_coord(restored.resolved_terrain.as_ref(), 1, 1,).z,
+            expected_ground_z,
+            "accepted Resize keeps the restored real CellClass on the 90-lepton ground surface"
+        );
+        assert_eq!(
+            restored.real_cell_bridge_flags_0x1180,
+            serialized_cleared_authority,
+            "accepted Resize clears only the dummy and retains saved real-cell hash authority"
         );
     }
 

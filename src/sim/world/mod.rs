@@ -50,7 +50,9 @@ use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay::OverlayEntry;
-use crate::map::resolved_terrain::{ResolvedTerrainGrid, SharedCellDummy};
+use crate::map::resolved_terrain::{
+    RealCellBridgeFlags0x1180, ResolvedTerrainGrid, SharedCellDummy,
+};
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::LocomotorKind;
@@ -773,6 +775,12 @@ pub struct Simulation {
     /// retain the current handle and rebuilt terrain is rebound to it.
     #[serde(skip, default)]
     pub(crate) shared_cell_dummy: SharedCellDummy,
+    /// Serialized value authority for allocated real CellClass bridge bits.
+    /// The derived terrain grid is skipped; load installs its pristine map
+    /// template and then writes these saved values directly back onto real
+    /// cells. This is value state, never a setter/replay log.
+    #[serde(default)]
+    pub(crate) real_cell_bridge_flags_0x1180: RealCellBridgeFlags0x1180,
     pub bridge_state: Option<BridgeRuntimeState>,
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
@@ -1937,6 +1945,67 @@ impl Simulation {
         }
     }
 
+    /// Install a newly constructed map grid and capture the real CellClass
+    /// `0x1180` value authority after row-major OverlayPack marking.
+    pub(crate) fn install_resolved_terrain_for_new_map(
+        &mut self,
+        resolved_terrain: ResolvedTerrainGrid,
+    ) {
+        self.bind_shared_cell_dummy(resolved_terrain.shared_cell_dummy());
+        self.real_cell_bridge_flags_0x1180 =
+            resolved_terrain.capture_real_cell_bridge_flags_0x1180();
+        self.resolved_terrain = Some(resolved_terrain);
+    }
+
+    /// Apply one live runtime setter and update only the allocated real-cell
+    /// serialized values it changed. Missing slots remain owned solely by the
+    /// process dummy and are intentionally absent from Scenario payload.
+    pub(crate) fn apply_runtime_bridge_flag_stamp(
+        &mut self,
+        stamp: crate::map::bridge_facts::BridgeFlagStamp,
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        if !terrain.bridge_flag_authority_matches_shape(&self.real_cell_bridge_flags_0x1180) {
+            self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
+        }
+        let updates = self
+            .resolved_terrain
+            .as_mut()
+            .expect("terrain presence checked before runtime bridge setter")
+            .apply_runtime_bridge_flag_stamp(stamp);
+        for (index, flags) in updates {
+            self.real_cell_bridge_flags_0x1180
+                .set_allocated_cell(index, flags);
+        }
+    }
+
+    /// Commit the allocated real-cell half of a runtime setter that already
+    /// executed synchronously through `CellClassBridgeFlagState`. Dummy
+    /// coordinate/flag effects are live at the native call point and must not
+    /// be replayed here.
+    pub(crate) fn apply_planned_bridge_flag_stamp_to_real_cells(
+        &mut self,
+        stamp: crate::map::bridge_facts::BridgeFlagStamp,
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        if !terrain.bridge_flag_authority_matches_shape(&self.real_cell_bridge_flags_0x1180) {
+            self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
+        }
+        let updates = self
+            .resolved_terrain
+            .as_mut()
+            .expect("terrain presence checked before planned bridge setter projection")
+            .apply_planned_bridge_flag_stamp_to_real_cells(stamp);
+        for (index, flags) in updates {
+            self.real_cell_bridge_flags_0x1180
+                .set_allocated_cell(index, flags);
+        }
+    }
+
     /// Synthetic fixtures may assign a detached grid directly. Production
     /// construction binds both owners, but gameplay must still read the live
     /// handle attached to the actual CellClass table it queried.
@@ -2097,6 +2166,7 @@ impl Simulation {
             path_grid: None,
             resolved_terrain: None,
             shared_cell_dummy: SharedCellDummy::fresh(),
+            real_cell_bridge_flags_0x1180: RealCellBridgeFlags0x1180::default(),
             bridge_state: None,
             overlay_grid: None,
             smudge_grid: None,
