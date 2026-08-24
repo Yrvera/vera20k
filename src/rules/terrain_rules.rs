@@ -127,7 +127,7 @@ pub fn tmp_terrain_to_land_type(tmp_terrain_type: u8) -> LandType {
         .unwrap_or(LandType::Clear)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TerrainClass {
     Clear,
     Rough,
@@ -186,7 +186,9 @@ impl LandType {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SpeedCostProfile {
     pub foot: Option<u8>,
     pub track: Option<u8>,

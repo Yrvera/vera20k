@@ -2602,6 +2602,119 @@ fn combat_test_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("combat test rules should parse")
 }
 
+fn sonic_wave_test_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=DLPH\n1=TARGET\n\n\
+         [DLPH]\nStrength=200\nArmor=light\nSpeed=8\nPrimary=SonicZap\nElitePrimary=SonicZapE\n\n\
+         [TARGET]\nStrength=100\nArmor=wood\n\n\
+         [SonicZap]\nDamage=4\nAmbientDamage=10\nROF=20\nRange=6\nWarhead=SonicWH\nIsSonic=yes\n\n\
+         [SonicZapE]\nDamage=8\nAmbientDamage=15\nROF=20\nRange=6\nWarhead=SonicWH\nIsSonic=yes\n\n\
+         [SonicWH]\nWood=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+    ))
+    .expect("Sonic Wave fixture")
+}
+
+fn sonic_fire_event(
+    sim: &mut Simulation,
+    attacker_id: u64,
+    target_id: u64,
+) -> SimFireEvent {
+    SimFireEvent {
+        attacker_id,
+        attacker_type_ref: sim.interner.intern("DLPH"),
+        weapon_slot: crate::sim::combat::combat_weapon::WeaponSlot::Primary,
+        weapon_id: sim.interner.intern("SonicZap"),
+        facing: 0,
+        veterancy: 0,
+        origin_snapshot: FireOriginSnapshot {
+            rx: 0,
+            ry: 0,
+            sub_x: SimFixed::from_num(0),
+            sub_y: SimFixed::from_num(0),
+            z: 0,
+            facing: 0,
+            category: EntityCategory::Unit,
+            burst_index: 0,
+        },
+        target: crate::sim::combat::TargetKind::Entity(target_id),
+        report_sound_id: None,
+        garrison_muzzle_index: None,
+        occupant_anim: None,
+    }
+}
+
+#[test]
+fn sonic_constructor_dead_pointer_link_lives_until_deferred_delete_at_239() {
+    let rules = sonic_wave_test_rules();
+    let mut sim = Simulation::new();
+    let firer_id = sim.allocate_stable_id();
+    let target_id = sim.allocate_stable_id();
+    let owner = sim.interner.intern("Americans");
+    let firer_type = sim.interner.intern("DLPH");
+    let target_type = sim.interner.intern("TARGET");
+    let mut firer = GameEntity::test_default(firer_id, "DLPH", "Americans", 0, 0);
+    firer.owner = owner;
+    firer.type_ref = firer_type;
+    firer.position.sub_x = SimFixed::from_num(0);
+    firer.position.sub_y = SimFixed::from_num(0);
+    let mut target = GameEntity::test_default(target_id, "TARGET", "Russians", 0, 0);
+    target.type_ref = target_type;
+    target.position.sub_x = SimFixed::from_num(239);
+    target.position.sub_y = SimFixed::from_num(0);
+    sim.substrate.entities.insert(firer);
+    sim.substrate.entities.insert(target);
+    let event = sonic_fire_event(&mut sim, firer_id, target_id);
+
+    sim.create_wave_from_fire_event(&rules, None, &event);
+
+    let wave_id = *sim
+        .active_wave_links
+        .get(&firer_id)
+        .expect("dead pointer stored");
+    assert!(sim.waves.get(wave_id).is_some());
+    assert!(!sim.waves.get(wave_id).unwrap().in_logic_vector);
+    assert_eq!(sim.substrate.pending_delete, vec![wave_id]);
+
+    sim.process_pending_delete();
+    assert!(!sim.active_wave_links.contains_key(&firer_id));
+    assert!(sim.waves.get(wave_id).is_none());
+}
+
+#[test]
+fn sonic_constructor_at_240_admits_and_runs_first_wave_ai_immediately() {
+    let rules = sonic_wave_test_rules();
+    let mut sim = Simulation::new();
+    let firer_id = sim.allocate_stable_id();
+    let target_id = sim.allocate_stable_id();
+    let owner = sim.interner.intern("Americans");
+    let firer_type = sim.interner.intern("DLPH");
+    let target_type = sim.interner.intern("TARGET");
+    let mut firer = GameEntity::test_default(firer_id, "DLPH", "Americans", 0, 0);
+    firer.owner = owner;
+    firer.type_ref = firer_type;
+    firer.position.sub_x = SimFixed::from_num(0);
+    firer.position.sub_y = SimFixed::from_num(0);
+    let mut target = GameEntity::test_default(target_id, "TARGET", "Russians", 0, 0);
+    target.type_ref = target_type;
+    target.position.sub_x = SimFixed::from_num(240);
+    target.position.sub_y = SimFixed::from_num(0);
+    sim.substrate.entities.insert(firer);
+    sim.substrate.entities.insert(target);
+    let event = sonic_fire_event(&mut sim, firer_id, target_id);
+
+    sim.create_wave_from_fire_event(&rules, None, &event);
+
+    let wave_id = *sim
+        .active_wave_links
+        .get(&firer_id)
+        .expect("live owner link");
+    let wave = sim.waves.get(wave_id).expect("registered Wave");
+    assert!(wave.in_logic_vector);
+    assert_eq!(wave.lifetime, 99, "first AI belongs to the firing pass");
+    assert_eq!(wave.target.z, 50, "type-0 uses the live target-side Sonic Z adjustment");
+    assert!(sim.substrate.pending_delete.is_empty());
+}
+
 fn short_game_defeat_test_rules() -> RuleSet {
     let ini = IniFile::from_str(
         "[General]\nBaseUnit=AMCV,SMCV,PCV\n\n\

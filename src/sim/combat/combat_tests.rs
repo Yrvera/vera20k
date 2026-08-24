@@ -43,6 +43,74 @@ fn test_rules() -> RuleSet {
 }
 
 #[test]
+fn sonic_active_wave_gate_precedes_target_resolution_and_all_shot_work() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=DLPH\n1=TARGET\n\n\
+         [DLPH]\nStrength=200\nArmor=light\nSpeed=8\nPrimary=SonicZap\n\n\
+         [TARGET]\nStrength=100\nArmor=wood\n\n\
+         [SonicZap]\nDamage=4\nAmbientDamage=10\nROF=20\nRange=6\nWarhead=SonicWH\nIsSonic=yes\n\n\
+         [SonicWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+    ))
+    .expect("Sonic whole-shot gate fixture");
+    let mut entities = EntityStore::new();
+    let mut firer = GameEntity::test_default(1, "DLPH", "Americans", 4, 5);
+    firer.attack_target = Some(AttackTarget::new(999));
+    firer.current_weapon_index = 1;
+    entities.insert(firer);
+    let mut interner = test_interner();
+    let snap = build_attacker_snapshot(
+        entities.get(1).expect("Dolphin"),
+        TargetKind::Entity(999),
+        0,
+        0,
+        0,
+        None,
+        None,
+        None,
+    );
+    let mut resources = BTreeMap::new();
+    let mut rng = SimRng::new(0x50_4e_49_43);
+    let rng_before = rng.logical_state();
+    let mut hooks: Option<&mut dyn CombatInlineHooks> = None;
+    let mut emit = CombatEmit::default();
+
+    resolve_attacker_fire(
+        &snap,
+        &mut entities,
+        &rules,
+        &mut interner,
+        None,
+        &mut resources,
+        None,
+        &OccupancyGrid::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+        17,
+        67,
+        true,
+        &mut rng,
+        None,
+        &mut hooks,
+        &mut emit,
+    );
+
+    assert!(emit.fire_events.is_empty());
+    assert!(emit.damage_events.is_empty());
+    assert!(emit.projectile_spawns.is_empty());
+    assert!(emit.current_weapon_updates.is_empty());
+    assert!(emit.burst_updates.is_empty());
+    assert!(emit.retarget_events.is_empty());
+    assert!(emit.remove_attack.is_empty());
+    assert_eq!(rng.logical_state(), rng_before);
+    assert_eq!(entities.get(1).unwrap().current_weapon_index, 1);
+}
+
+#[test]
 fn gsi_08_05_rof_is_a_native_frame_count_plus_a_zero_to_two_jitter() {
     // `TechnoClass::GetROF @ 0x006FCFA0` returns
     // `ftol(ROF * difficulty + RandomRanged(0, 2))`. The jitter is ADDED, so a
@@ -4822,6 +4890,7 @@ fn run_playfield_retarget_branch(
             100,
             0,
             &[],
+            &BTreeSet::new(),
             &BTreeSet::new(),
             &[],
             &[],

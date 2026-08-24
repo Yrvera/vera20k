@@ -2588,6 +2588,12 @@ impl Simulation {
         }
         let projectile = self.projectiles.remove(stable_id);
         let wave = self.waves.remove(stable_id);
+        if let Some(wave) = wave.as_ref()
+            && let Some(owner_id) = wave.owner_id
+            && self.active_wave_links.get(&owner_id) == Some(&stable_id)
+        {
+            self.active_wave_links.remove(&owner_id);
+        }
         if let Some(system) = particle_system.as_ref()
             && let Some(owner_id) = system.owner_entity
             && let Some(owner) = self.substrate.entities.get_mut(owner_id)

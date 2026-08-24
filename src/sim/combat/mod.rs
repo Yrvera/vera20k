@@ -1717,6 +1717,56 @@ pub(crate) enum BaseDefenseResponseCallSite {
 /// methods so `Simulation` is borrowed only once while combat temporarily owns
 /// entities, map grids, and the scenario RNG.
 pub(crate) trait CombatInlineHooks {
+    #[cfg(test)]
+    fn trace_wave_receiver(&mut self, _wave_id: u64, _target_id: u64) {}
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_wave_fire_event(
+        &mut self,
+        _rules: &RuleSet,
+        _overlay_registry: Option<&OverlayTypeRegistry>,
+        _event: &crate::sim::world::SimFireEvent,
+        _entities: &mut EntityStore,
+        _occupancy: &mut OccupancyGrid,
+        _interner: &mut StringInterner,
+        _main_rng: &mut SimRng,
+        _scenario_rng: &mut SimRng,
+        _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+        _houses: &mut BTreeMap<InternedId, HouseState>,
+        _overlay_grid: Option<&mut OverlayGrid>,
+        _terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        _bridge_state: Option<&BridgeRuntimeState>,
+        _terrain_area_state: Option<&mut TerrainAreaState>,
+        _sound_events: Option<&mut Vec<SimSoundEvent>>,
+    ) {
+    }
+
+    fn rebuild_cliff_navigation(
+        &mut self,
+        _rules: &RuleSet,
+        _terrain: &mut Option<crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        _entities: &mut EntityStore,
+        _interner: &mut StringInterner,
+    ) {
+    }
+
+    fn mark_cliff_radar_dirty(&mut self, _cell: (u16, u16)) {}
+
+    fn mark_cliff_tactical_dirty(&mut self, _cells: &[(u16, u16)]) {}
+
+    fn spawn_cliff_anims(
+        &mut self,
+        _rules: &RuleSet,
+        _interner: &mut StringInterner,
+        _scenario_rng: &mut SimRng,
+        _sound_events: &mut Vec<SimSoundEvent>,
+        _spawns: Vec<(
+            crate::sim::components::AnimClassSpawnDescriptor,
+            crate::sim::anim_class::AnimWorldCoord,
+        )>,
+    ) {
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn respond_to_base_attack(
         &mut self,
@@ -1912,7 +1962,7 @@ fn commit_smudge_batch_or_defer(
 }
 
 impl DeathEffects {
-    fn append(&mut self, mut other: Self) {
+    pub(crate) fn append(&mut self, mut other: Self) {
         self.despawned_ids.append(&mut other.despawned_ids);
         self.immediate_uninit_ids
             .append(&mut other.immediate_uninit_ids);
@@ -2795,6 +2845,37 @@ fn resolve_receive_damage(
         outcome,
         invulnerability_impact,
     })
+}
+
+/// Inspect the value left in WaveClass::DamageArea's shared per-cell damage
+/// local by one concrete Techno receiver. The receiver commit immediately
+/// following this call runs the same pure ABI resolver against the same live
+/// state; exposing the pointer result here avoids fabricating immutable damage
+/// inputs for later occupants.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn wave_post_object_damage(
+    event: &EntityDamageEvent,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    houses: &BTreeMap<InternedId, HouseState>,
+    alliances: &HouseAllianceMap,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> Option<i32> {
+    resolve_receive_damage(
+        event,
+        entities,
+        rules,
+        interner,
+        houses,
+        alliances,
+        scenario_no_damage,
+        current_tick,
+        terrain,
+    )
+    .and_then(|resolved| resolved.outcome.post_object_damage)
 }
 
 /// TechnoClass::ReceiveDamage builds the anger-node increment from the final
@@ -4736,6 +4817,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng(
         binary_frame,
         live_order,
         &BTreeSet::new(),
+        &BTreeSet::new(),
         projectile_detonations,
         wave_damage_events,
         radiation,
@@ -4990,6 +5072,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     binary_frame: u32,
     live_order: &[u64],
     fire_suppressed: &BTreeSet<u64>,
+    active_wave_owners: &BTreeSet<u64>,
     projectile_detonations: &[ProjectileDetonation],
     wave_damage_events: &[WaveDamageEvent],
     mut radiation: Option<&mut crate::sim::radiation::RadiationState>,
@@ -5556,6 +5639,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         let explosion_start = emit.explosion_effects.len();
         let smudge_start = emit.smudge_spawn_requests.len();
         let current_weapon_start = emit.current_weapon_updates.len();
+        let fire_event_start = emit.fire_events.len();
         let terrain_objects =
             terrain_area_state
                 .as_deref()
@@ -5581,6 +5665,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             require_playfield_membership,
             binary_frame,
             tick_ms,
+            active_wave_owners.contains(&live_snap.stable_id),
             scenario_rng,
             sound_sink.as_deref_mut(),
             &mut inline_hooks,
@@ -5636,6 +5721,28 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             terrain_area_state.as_deref(),
         );
         under_attack_events.append(&mut pings);
+        let wave_fire_events = emit.fire_events[fire_event_start..].to_vec();
+        for event in &wave_fire_events {
+            if let Some(hooks) = inline_hooks.as_deref_mut() {
+                hooks.commit_wave_fire_event(
+                    rules,
+                    overlay_registry,
+                    event,
+                    entities,
+                    occupancy,
+                    interner,
+                    main_rng,
+                    scenario_rng,
+                    resource_nodes,
+                    houses,
+                    overlay_grid.as_deref_mut(),
+                    terrain.as_deref_mut(),
+                    bridge_state,
+                    terrain_area_state.as_deref_mut(),
+                    sound_sink.as_deref_mut(),
+                );
+            }
+        }
         // S3: only this Unit's explicit retarget/remove may replace its seeded
         // destination. Synchronous target expiry from VERA's immediate-delivery
         // approximation is deliberately not visible to native Facing_Update.
@@ -6204,6 +6311,7 @@ pub(crate) fn resolve_attacker_fire(
     require_playfield_membership: bool,
     binary_frame: u32,
     _tick_ms: u32,
+    has_active_wave: bool,
     scenario_rng: &mut SimRng,
     mut sound_sink: Option<&mut Vec<SimSoundEvent>>,
     inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
@@ -6233,6 +6341,19 @@ pub(crate) fn resolve_attacker_fire(
             return;
         }
     };
+
+    // Stock Sonic weapons occupy index 0, and native FireAt tests that
+    // WeaponType before resolving the target. Preserve that whole-call gate
+    // so a stale/missing target cannot retarget or clear the order while the
+    // owner's exact Wave link remains live. The selected-weapon check below
+    // retains the same protection for non-stock overrides/secondary layouts.
+    if has_active_wave
+        && combat_weapon::primary_for_tier(obj, snap.veterancy)
+            .and_then(|weapon_id| rules.weapon(weapon_id))
+            .is_some_and(|weapon| weapon.is_sonic)
+    {
+        return;
+    }
 
     // Check if target is alive and get its data.
     // For structures, target_coords returns the foundation center instead
@@ -6391,6 +6512,13 @@ pub(crate) fn resolve_attacker_fire(
         }
     };
     let weapon = selected.weapon;
+    // gamemd-derived: `TechnoClass::FireAt @ 0x006FDE4A..0x006FDE5C`.
+    // Only an IsSonic selected weapon observes the firer's active-Wave link,
+    // and that return precedes every shot/cooldown/report/current-weapon side
+    // effect owned below. Type-3's local effect check is not this gate.
+    if weapon.is_sonic && has_active_wave {
+        return;
+    }
     if delayed_building_slot.is_none() {
         out.current_weapon_updates.push((
             snap.stable_id,

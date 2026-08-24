@@ -32,7 +32,8 @@ use crate::sim::projectile::{
 };
 use crate::sim::snapshot::{GameSnapshot, SnapshotRestoreError};
 use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
-use crate::sim::wave::{Wave, WaveDamagePayload, WaveRecordedCell};
+use crate::sim::wave::{Wave, WaveRecordedCell};
+use crate::util::native_x87::NativeF64Bits;
 use crate::util::fixed_math::SimFixed;
 use glam::IVec3;
 
@@ -4772,13 +4773,16 @@ fn gsi_05_04_projectile_listener_keeps_mixed_object_construction_order() {
 fn gsi_01_05_damage_rules() -> crate::rules::ruleset::RuleSet {
     crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
         "[InfantryTypes]\n\
-             [VehicleTypes]\n0=VICTIM\n1=SUCCESSOR\n\
+             [VehicleTypes]\n0=VICTIM\n1=SUCCESSOR\n2=FIRER\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n0=DUPBLDG\n\
              [Warheads]\n0=KILLWH\n\
              [VICTIM]\nStrength=30\nArmor=light\n\
              [SUCCESSOR]\nStrength=30\nArmor=light\n\
+             [FIRER]\nStrength=30\nArmor=light\nPrimary=SONIC\nElitePrimary=SONICE\n\
              [DUPBLDG]\nStrength=10\nArmor=concrete\nFoundation=2x1\n\
+             [SONIC]\nDamage=1\nAmbientDamage=10\nWarhead=KILLWH\nIsSonic=yes\n\
+             [SONICE]\nDamage=2\nAmbientDamage=15\nWarhead=KILLWH\nIsSonic=yes\n\
              [KILLWH]\nCellSpread=0\nPercentAtMax=1\n\
              Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
     ))
@@ -4909,18 +4913,28 @@ fn gsi_01_05_terminal_wave_damages_once_before_single_current_removal() {
     ));
 
     let wave_id = sim.allocate_stable_id();
-    let mut wave = Wave::new(
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(firer_id).unwrap().type_ref = sim.interner.intern("FIRER");
+    sim.substrate.entities.get_mut(firer_id).unwrap().attack_target = Some(AttackTarget {
+        target: TargetKind::Entity(victim_id),
+        cooldown_ticks: 0,
+        burst_remaining: 0,
+        burst_delay_ticks: 0,
+        pending_infantry_fire: None,
+    });
+    let mut wave = Wave::new_owned(
         0,
+        firer_id,
+        TargetKind::Entity(victim_id),
         ProjectileCoord::new(4 * 256, 5 * 256, 0),
         ProjectileCoord::new(5 * 256, 5 * 256, 0),
-    )
-    .with_damage_payload(WaveDamagePayload {
-        firer_id: crate::sim::combat::RAD_NO_ATTACKER,
-        base_damage: 10,
-        warhead: sim.interner.intern("KILLWH"),
-    });
-    wave.lifetime = 0;
-    wave.replace_recorded_cells(vec![WaveRecordedCell { rx: 4, ry: 5 }]);
+    );
+    wave.active_geometry = false;
+    wave.decaying = true;
+    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 5)]);
     sim.admit_wave(wave_id, wave);
     sim.set_logic_order_for_test(vec![wave_id, victim_id, successor_id]);
     sim.lifecycle_test_events.clear();
@@ -4981,6 +4995,597 @@ fn gsi_01_05_terminal_wave_damages_once_before_single_current_removal() {
 }
 
 #[test]
+fn terminal_type_zero_wave_with_empty_recorded_vector_has_no_damage_area_tail() {
+    let rules = gsi_01_05_damage_rules();
+    let mut sim = Simulation::new();
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    {
+        let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
+        firer.type_ref = sim.interner.intern("FIRER");
+        firer.attack_target = Some(AttackTarget {
+            target: TargetKind::Cell(4, 5),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+    }
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new_owned(
+        0,
+        firer_id,
+        TargetKind::Cell(4, 5),
+        ProjectileCoord::new(4 * 256, 5 * 256, 0),
+        ProjectileCoord::new(5 * 256, 5 * 256, 0),
+    );
+    wave.active_geometry = false;
+    wave.decaying = true;
+    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    sim.admit_wave(wave_id, wave);
+    sim.active_wave_links.insert(firer_id, wave_id);
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x45_4d_50_54_59);
+    let expected_rng = sim.scenario_rng.logical_state();
+
+    assert!(sim.object_ai_visit_one(
+        wave_id,
+        Some(&rules),
+        ObjectAiCtx::default()
+    ));
+
+    assert_eq!(sim.scenario_rng.logical_state(), expected_rng);
+    assert!(sim.active_wave_links.get(&firer_id).is_none());
+    assert!(sim.pending_wave_damage_requests.is_empty());
+    assert!(sim.dynamic_terrain_cells.is_empty());
+    assert!(sim.radar_terrain_dirty_cells.is_empty());
+    assert!(sim.tactical_dirty_cells.is_empty());
+    assert_eq!(sim.substrate.pending_delete, vec![wave_id]);
+}
+
+#[test]
+fn wave_elite_ambient_damage_carries_within_cell_and_resets_on_next_cell() {
+    let rules = crate::rules::ruleset::RuleSet::from_ini(
+        &crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n0=FIRST\n1=SECOND\n2=NEXT\n3=FIRER\n\
+             [AircraftTypes]\n[BuildingTypes]\n\
+             [FIRST]\nStrength=100\nArmor=flak\n\
+             [SECOND]\nStrength=100\nArmor=none\n\
+             [NEXT]\nStrength=100\nArmor=none\n\
+             [FIRER]\nStrength=100\nArmor=light\nPrimary=SONIC\nElitePrimary=SONICE\n\
+             [SONIC]\nDamage=4\nAmbientDamage=10\nWarhead=WH\nIsSonic=yes\n\
+             [SONICE]\nDamage=8\nAmbientDamage=15\nWarhead=WH\nIsSonic=yes\n\
+             [WH]\nCellSpread=0\nPercentAtMax=1\n\
+             Verses=100%,50%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ),
+    )
+    .expect("Wave shared-damage fixture");
+    let mut sim = Simulation::new();
+    let second_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, second_id, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(second_id).unwrap().type_ref = sim.interner.intern("SECOND");
+    assert!(matches!(
+        sim.try_reveal_entity(second_id, common_raw_request(4, 5, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let first_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, first_id, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(first_id).unwrap().type_ref = sim.interner.intern("FIRST");
+    assert!(matches!(
+        sim.try_reveal_entity(first_id, common_raw_request(4, 5, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let next_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, next_id, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(next_id).unwrap().type_ref = sim.interner.intern("NEXT");
+    assert!(matches!(
+        sim.try_reveal_entity(next_id, common_raw_request(5, 5, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    {
+        let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
+        firer.type_ref = sim.interner.intern("FIRER");
+        firer.veterancy = 200;
+        firer.attack_target = Some(AttackTarget {
+            target: TargetKind::Entity(next_id),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+    }
+
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new_owned(
+        0,
+        firer_id,
+        TargetKind::Entity(next_id),
+        ProjectileCoord::new(4 * 256, 5 * 256, 0),
+        ProjectileCoord::new(6 * 256, 5 * 256, 0),
+    );
+    wave.active_geometry = false;
+    wave.decaying = true;
+    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.replace_recorded_cells(vec![
+        WaveRecordedCell::real(4, 5),
+        WaveRecordedCell::real(5, 5),
+    ]);
+    sim.admit_wave(wave_id, wave);
+    sim.active_wave_links.insert(firer_id, wave_id);
+    sim.lifecycle_test_events.clear();
+
+    assert!(sim.object_ai_visit_one(wave_id, Some(&rules), ObjectAiCtx::default()));
+
+    assert_eq!(sim.substrate.entities.get(first_id).unwrap().health.current, 93);
+    assert_eq!(
+        sim.substrate.entities.get(second_id).unwrap().health.current,
+        93,
+        "second occupant receives the first callback's 7-point mutable value",
+    );
+    assert_eq!(
+        sim.substrate.entities.get(next_id).unwrap().health.current,
+        85,
+        "the next recorded cell reloads elite AmbientDamage=15, never Damage=8",
+    );
+    assert!(!sim.active_wave_links.contains_key(&firer_id));
+    let selected = sim
+        .lifecycle_test_events
+        .iter()
+        .filter_map(|event| match event {
+            LifecycleTestEvent::WaveDamageReceiverSelected {
+                wave_id: selected_wave,
+                target_id,
+            } if *selected_wave == wave_id => Some(*target_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(selected, vec![first_id, second_id, next_id]);
+}
+
+#[test]
+fn wave_walks_nonbuilding_terrain_building_order_and_terrain_owns_wood_gate() {
+    fn run(wood: bool) -> (Vec<u64>, i32, i32, i32) {
+        let rules = crate::rules::ruleset::RuleSet::from_ini(
+            &crate::rules::ini_parser::IniFile::from_str(&format!(
+                "[InfantryTypes]\n\
+                 [VehicleTypes]\n0=UNIT\n1=FIRER\n\
+                 [AircraftTypes]\n\
+                 [BuildingTypes]\n0=BLDG\n\
+                 [TerrainTypes]\n0=TREE01\n\
+                 [UNIT]\nStrength=100\nArmor=none\n\
+                 [BLDG]\nStrength=100\nArmor=wood\nFoundation=1x1\n\
+                 [FIRER]\nStrength=100\nArmor=light\nPrimary=SONIC\n\
+                 [TREE01]\nStrength=100\nArmor=wood\nImmune=no\n\
+                 [SONIC]\nDamage=4\nAmbientDamage=10\nWarhead=WH\nIsSonic=yes\n\
+                 [WH]\nWood={}\nCellSpread=0\nPercentAtMax=1\n\
+                 Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+                if wood { "yes" } else { "no" },
+            )),
+        )
+        .expect("Wave Terrain fixture");
+        let mut sim = Simulation::new();
+
+        let unit_id = sim.allocate_stable_id();
+        insert_entity(&mut sim, unit_id, EntityCategory::Unit);
+        sim.substrate.entities.get_mut(unit_id).unwrap().type_ref = sim.interner.intern("UNIT");
+        assert!(matches!(
+            sim.try_reveal_entity(unit_id, common_raw_request(4, 5, 0, 128, 128)),
+            RevealOutcome::Revealed { .. }
+        ));
+
+        let building_id = sim.allocate_stable_id();
+        insert_entity(&mut sim, building_id, EntityCategory::Structure);
+        {
+            let building = sim.substrate.entities.get_mut(building_id).unwrap();
+            building.type_ref = sim.interner.intern("BLDG");
+            building.foundation = "1x1".to_string();
+        }
+        assert!(matches!(
+            sim.try_reveal_entity(building_id, common_raw_request(4, 5, 0, 128, 128)),
+            RevealOutcome::Revealed { .. }
+        ));
+
+        let terrain_id = sim.allocate_stable_id();
+        sim.production.terrain_objects.insert(
+            terrain_id,
+            TerrainObjectState {
+                stable_id: terrain_id,
+                in_logic_vector: false,
+                type_ref: sim.interner.intern("TREE01"),
+                rx: 4,
+                ry: 5,
+                health: 100,
+                max_health: 100,
+                occupation_bits: 0,
+                lifecycle: TerrainObjectLifecycle::Live,
+            },
+        );
+        sim.production
+            .terrain_object_cells
+            .insert((4, 5), terrain_id);
+
+        let firer_id = sim.allocate_stable_id();
+        insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+        {
+            let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
+            firer.type_ref = sim.interner.intern("FIRER");
+            firer.attack_target = Some(AttackTarget {
+                target: TargetKind::Entity(building_id),
+                cooldown_ticks: 0,
+                burst_remaining: 0,
+                burst_delay_ticks: 0,
+                pending_infantry_fire: None,
+            });
+        }
+        let wave_id = sim.allocate_stable_id();
+        let mut wave = Wave::new_owned(
+            0,
+            firer_id,
+            TargetKind::Entity(building_id),
+            ProjectileCoord::new(4 * 256, 5 * 256, 0),
+            ProjectileCoord::new(6 * 256, 5 * 256, 0),
+        );
+        wave.active_geometry = false;
+        wave.decaying = true;
+        wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+        wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+        wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 5)]);
+        sim.admit_wave(wave_id, wave);
+        sim.lifecycle_test_events.clear();
+
+        assert!(sim.object_ai_visit_one(wave_id, Some(&rules), ObjectAiCtx::default()));
+        let selected = sim
+            .lifecycle_test_events
+            .iter()
+            .filter_map(|event| match event {
+                LifecycleTestEvent::WaveDamageReceiverSelected {
+                    wave_id: selected_wave,
+                    target_id,
+                } if *selected_wave == wave_id => Some(*target_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (
+            selected,
+            i32::from(sim.substrate.entities.get(unit_id).unwrap().health.current),
+            sim.production.terrain_objects[&terrain_id].health,
+            i32::from(sim.substrate
+                .entities
+                .get(building_id)
+                .unwrap()
+                .health
+                .current),
+        )
+    }
+
+    let (selected, unit_health, tree_health, building_health) = run(true);
+    assert_eq!(
+        selected,
+        vec![1, 3, 2],
+        "one-cell order is nonbuilding, Terrain, then Building",
+    );
+    assert_eq!(unit_health, 90);
+    assert_eq!(tree_health, 90);
+    assert_eq!(building_health, 90);
+
+    let (_, unit_health, tree_health, building_health) = run(false);
+    assert_eq!(unit_health, 90);
+    assert_eq!(tree_health, 100, "TerrainClass owns the Warhead Wood gate");
+    assert_eq!(building_health, 90);
+}
+
+#[test]
+fn wave_tail_consumes_wall_roll_before_mandatory_cliff_chance_roll() {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[CombatDamage]\nCollapseChance=0\n\
+         [InfantryTypes]\n\
+         [VehicleTypes]\n0=FIRER\n\
+         [AircraftTypes]\n[BuildingTypes]\n\
+         [OverlayTypes]\n0=WALLX\n\
+         [FIRER]\nStrength=100\nArmor=light\nPrimary=SONIC\n\
+         [SONIC]\nDamage=4\nAmbientDamage=10\nWarhead=WH\nIsSonic=yes\n\
+         [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [WALLX]\nWall=yes\nChainReaction=yes\nStrength=100\nDamageLevels=4\n",
+    );
+    let rules = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("wall+cliff rules");
+    let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    let mut sim = Simulation::new();
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    {
+        let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
+        firer.type_ref = sim.interner.intern("FIRER");
+        firer.attack_target = Some(AttackTarget {
+            target: TargetKind::Cell(4, 1),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+    }
+
+    let mut cells = Vec::new();
+    for ry in 0..4 {
+        for rx in 0..6 {
+            let mut cell = common_raw_terrain_cell(rx, ry, 1, false);
+            let sub_tile = (ry * 6 + rx) as u8;
+            if ![0, 5, 18, 23].contains(&usize::from(sub_tile)) {
+                cell.final_tile_index = 100;
+                cell.final_sub_tile = sub_tile;
+            }
+            cells.push(cell);
+        }
+    }
+    let mut terrain = ResolvedTerrainGrid::from_cells(6, 4, cells);
+    terrain.test_install_destroyable_cliff_catalog(100);
+    sim.resolved_terrain = Some(terrain);
+    let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(6, 4);
+    overlay.place_overlay(
+        4,
+        1,
+        registry.id_for_name("WALLX").expect("wall overlay"),
+        0,
+    );
+    sim.overlay_grid = Some(overlay);
+
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new_owned(
+        0,
+        firer_id,
+        TargetKind::Cell(4, 1),
+        ProjectileCoord::new(0, 0, 0),
+        ProjectileCoord::new(4 * 256, 256, 50),
+    );
+    wave.active_geometry = false;
+    wave.decaying = true;
+    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 1)]);
+    sim.admit_wave(wave_id, wave);
+
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x57_41_4c_4c);
+    let mut expected = sim.scenario_rng.clone();
+    let _wall_roll = expected.next_range_u32_inclusive(0, 100);
+    let _cliff_chance_roll = expected.next_range_u32_inclusive(0, 99);
+
+    assert!(sim.object_ai_visit_one(
+        wave_id,
+        Some(&rules),
+        ObjectAiCtx {
+            overlay_registry: Some(&registry),
+            ..ObjectAiCtx::default()
+        },
+    ));
+
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    assert!(sim
+        .resolved_terrain
+        .as_ref()
+        .unwrap()
+        .is_destroyable_cliff(4, 1));
+    assert!(sim.dynamic_terrain_cells.is_empty());
+}
+
+#[test]
+fn wave_cliff_collapse_consumes_exact_body_rng_and_spawns_row_major_anims() {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[CombatDamage]\nCollapseChance=100\n\
+         [InfantryTypes]\n\
+         [VehicleTypes]\n0=FIRER\n\
+         [AircraftTypes]\n[BuildingTypes]\n[OverlayTypes]\n0=DECAL\n\
+         [FIRER]\nStrength=100\nArmor=light\nPrimary=SONIC\n\
+         [SONIC]\nDamage=4\nAmbientDamage=10\nWarhead=WH\nIsSonic=yes\n\
+         [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [DECAL]\n",
+    );
+    let mut rules = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("cliff body rules");
+    let overlay_registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    let mut art = crate::rules::art_data::ArtRegistry::from_ini(
+        &crate::rules::ini_parser::IniFile::from_str(
+            "[XGRYMED1]\nEnd=1\nRate=1\nRandomRate=900,300\n\
+             [XGRYMED2]\nEnd=1\nRate=1\nRandomRate=900,300\n\
+             [XGRYSML1]\nEnd=1\nRate=1\nRandomRate=900,300\n",
+        ),
+    );
+    for name in ["XGRYMED1", "XGRYMED2", "XGRYSML1"] {
+        art.bind_anim_frame_count_for_test(name, 1);
+    }
+    rules.merge_art_data(&art);
+    let mut sim = Simulation::new();
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    {
+        let firer = sim.substrate.entities.get_mut(firer_id).unwrap();
+        firer.type_ref = sim.interner.intern("FIRER");
+        firer.attack_target = Some(AttackTarget {
+            target: TargetKind::Cell(4, 1),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+    }
+    let mut cells = Vec::new();
+    for ry in 0..4 {
+        for rx in 0..6 {
+            let mut cell = common_raw_terrain_cell(rx, ry, 1, false);
+            let sub_tile = (ry * 6 + rx) as u8;
+            if ![0, 5, 18, 23].contains(&usize::from(sub_tile)) {
+                cell.final_tile_index = 100;
+                cell.final_sub_tile = sub_tile;
+            }
+            cells.push(cell);
+        }
+    }
+    let mut terrain = ResolvedTerrainGrid::from_cells(6, 4, cells);
+    terrain.test_install_destroyable_cliff_catalog(100);
+    let pristine_terrain = terrain.clone();
+    sim.resolved_terrain = Some(terrain);
+    let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(6, 4);
+    let decal = overlay_registry.id_for_name("DECAL").expect("test decal");
+    overlay.place_overlay(0, 0, decal, 11);
+    overlay.place_overlay(1, 0, decal, 12);
+    sim.overlay_grid = Some(overlay);
+    let mut smudge = crate::sim::smudge_grid::SmudgeGrid::new(6, 4);
+    for (rx, frame_offset) in [(0, 0), (1, 1)] {
+        smudge.test_force_set(
+            rx,
+            0,
+            crate::sim::smudge_grid::SmudgeCell {
+                type_id: Some(9),
+                footprint_origin: Some((0, 0)),
+                frame_offset,
+            },
+        );
+    }
+    sim.smudge_grid = Some(smudge);
+
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new_owned(
+        0,
+        firer_id,
+        TargetKind::Cell(4, 1),
+        ProjectileCoord::new(0, 0, 0),
+        ProjectileCoord::new(4 * 256, 256, 50),
+    );
+    wave.active_geometry = false;
+    wave.decaying = true;
+    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 1)]);
+    sim.admit_wave(wave_id, wave);
+
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x43_4c_49_46_46);
+    let mut expected_rng = sim.scenario_rng.clone();
+    let chance = expected_rng.next_range_u32_inclusive(0, 99);
+    assert!(chance < 100);
+    let mut expected_spawns = Vec::new();
+    for ry in 0..3i32 {
+        for rx in 0..5i32 {
+            for _ in 0..2 {
+                let type_index = expected_rng.next_range_u32_inclusive(0, 2) as usize;
+                let jitter_x = expected_rng.next_range_u32_inclusive(0, 16) as i32 - 8;
+                let jitter_y = expected_rng.next_range_u32_inclusive(0, 24) as i32 - 12;
+                let delay = expected_rng.next_range_u32_inclusive(0, 2) as u16;
+                let rate = expected_rng.next_range_u32_inclusive(1, 3) as u16;
+                expected_spawns.push((
+                    type_index,
+                    AnimWorldCoord {
+                        x: rx * 256 + 128 + jitter_x,
+                        y: ry * 256 + 128 + jitter_y,
+                        z: 104,
+                    },
+                    delay,
+                    rate,
+                ));
+            }
+        }
+    }
+
+    assert!(sim.object_ai_visit_one(
+        wave_id,
+        Some(&rules),
+        ObjectAiCtx {
+            overlay_registry: Some(&overlay_registry),
+            ..ObjectAiCtx::default()
+        },
+    ));
+
+    assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+    assert_eq!(sim.dynamic_terrain_cells.len(), 20);
+    assert_eq!(sim.radar_terrain_dirty_cells.len(), 20);
+    assert_eq!(sim.tactical_dirty_cells.len(), 20);
+    let overlay = sim.overlay_grid.as_ref().unwrap();
+    assert_eq!(overlay.cell(1, 0).overlay_id, None);
+    assert_eq!(overlay.cell(0, 0).overlay_id, Some(decal), "sparse hole untouched");
+    let smudge = sim.smudge_grid.as_ref().unwrap();
+    assert_eq!(smudge.cell(1, 0), &crate::sim::smudge_grid::SmudgeCell::default());
+    assert_eq!(smudge.cell(0, 0).type_id, Some(9), "raw clear must not expand footprint");
+    assert_eq!(sim.substrate.anims.len(), 30);
+    let names = ["XGRYMED1", "XGRYMED2", "XGRYSML1"];
+    let actual_spawns = sim
+        .substrate
+        .anims
+        .iter()
+        .map(|(_, anim)| {
+            (
+                names
+                    .iter()
+                    .position(|name| *name == sim.interner.resolve(anim.type_id))
+                    .expect("one of the three cliff anim types"),
+                anim.world_coord,
+                anim.runtime.delay_remaining,
+                anim.runtime.rate_reload,
+                anim.draw_flags,
+                anim.runtime.loop_remaining,
+                anim.runtime.constructor_reverse,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual_spawns,
+        expected_spawns
+            .into_iter()
+            .map(|(kind, coord, delay, rate)| {
+                (kind, coord, delay, rate, 0x600, 1, false)
+            })
+            .collect::<Vec<_>>(),
+    );
+    assert!(sim
+        .substrate
+        .entities
+        .get(firer_id)
+        .unwrap()
+        .attack_target
+        .is_none());
+
+    // GameSnapshot's established full-deserialize seam canonicalizes Scenario
+    // RNG to seed zero; the collapse draw-order assertion above already pins
+    // the live cursor before normalizing this independent snapshot fixture.
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+    let expected_dynamic_terrain = sim.dynamic_terrain_cells.clone();
+    let expected_hash = sim.state_hash();
+    let bytes = GameSnapshot::save(&sim, 0, 0, "collapsed-dcliff", 0);
+    let mut restored = GameSnapshot::load(&bytes).expect("collapsed cliff snapshot").sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("collapsed cliff stable identities");
+    assert_eq!(
+        restored.state_hash(),
+        expected_hash,
+        "serialized collapse state must hash equally before derived map caches rebuild",
+    );
+    restored.rebuild_caches_after_load(
+        pristine_terrain,
+        Default::default(),
+        Vec::new(),
+        Vec::new(),
+        BTreeMap::new(),
+    );
+    restored
+        .restore_map_authority_after_snapshot_load(&rules, &overlay_registry)
+        .expect("dynamic cliff terrain reprojects over the pristine map");
+    assert_eq!(restored.dynamic_terrain_cells, expected_dynamic_terrain);
+    assert_eq!(restored.state_hash(), expected_hash);
+    let restored_terrain = restored.resolved_terrain.as_ref().unwrap();
+    for (&(rx, ry), expected) in &expected_dynamic_terrain {
+        assert_eq!(
+            crate::map::resolved_terrain::DynamicTerrainCellState::capture(
+                restored_terrain.cell(rx, ry).unwrap(),
+            ),
+            *expected,
+        );
+    }
+}
+
+#[test]
 fn gsi_01_05_wave_reselects_live_cell_list_after_fatal_receiver_unmark() {
     let rules = gsi_01_05_damage_rules();
     let mut sim = Simulation::new();
@@ -5005,20 +5610,30 @@ fn gsi_01_05_wave_reselects_live_cell_list_after_fatal_receiver_unmark() {
     assert!(sim.substrate.occupancy.contains_entity(5, 5, building_id));
 
     let wave_id = sim.allocate_stable_id();
-    let mut wave = Wave::new(
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(firer_id).unwrap().type_ref = sim.interner.intern("FIRER");
+    sim.substrate.entities.get_mut(firer_id).unwrap().attack_target = Some(AttackTarget {
+        target: TargetKind::Entity(building_id),
+        cooldown_ticks: 0,
+        burst_remaining: 0,
+        burst_delay_ticks: 0,
+        pending_infantry_fire: None,
+    });
+    let mut wave = Wave::new_owned(
         0,
+        firer_id,
+        TargetKind::Entity(building_id),
         ProjectileCoord::new(4 * 256, 5 * 256, 0),
         ProjectileCoord::new(6 * 256, 5 * 256, 0),
-    )
-    .with_damage_payload(WaveDamagePayload {
-        firer_id: crate::sim::combat::RAD_NO_ATTACKER,
-        base_damage: 10,
-        warhead: sim.interner.intern("KILLWH"),
-    });
-    wave.lifetime = 0;
+    );
+    wave.active_geometry = false;
+    wave.decaying = true;
+    wave.fade_in = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
+    wave.fade_out = NativeF64Bits::from_bits(0x3fa9_9999_a000_0000);
     wave.replace_recorded_cells(vec![
-        WaveRecordedCell { rx: 4, ry: 5 },
-        WaveRecordedCell { rx: 5, ry: 5 },
+        WaveRecordedCell::real(4, 5),
+        WaveRecordedCell::real(5, 5),
     ]);
     sim.admit_wave(wave_id, wave);
     sim.set_logic_order_for_test(vec![wave_id, building_id]);
