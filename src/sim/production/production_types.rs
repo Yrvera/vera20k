@@ -132,6 +132,10 @@ pub enum ProductionCategory {
     Infantry,
     Vehicle,
     Aircraft,
+    /// HouseClass Primary_ForShips (+0x53B8), independent of the land-vehicle
+    /// Primary_ForVehicles (+0x53B4) slot. Appended to preserve existing serde
+    /// variant indices for saved production categories.
+    Ship,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -163,6 +167,7 @@ impl ProductionCategory {
             Self::Infantry => "Infantry",
             Self::Vehicle => "Vehicle",
             Self::Aircraft => "Aircraft",
+            Self::Ship => "Ship",
         }
     }
 }

@@ -15,8 +15,8 @@ use crate::sim::world::Simulation;
 
 use super::production_economy::tick_resource_economy;
 use super::production_spawn::{
-    find_helipad_for_aircraft, find_spawn_selection_for_owner_with_type,
-    mark_war_factory_spawn_contact,
+    ProductionDeliveryKind, find_helipad_for_aircraft, find_spawn_selection_for_owner_with_type,
+    mark_war_factory_spawn_contact, unlimbo_held_naval_unit,
 };
 use super::production_tech::{
     build_option_for_owner, build_time_base_frames, effective_time_to_build_frames_for_type,
@@ -411,6 +411,22 @@ pub fn tick_production_with_overlay_registry(
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
+    tick_production_impl(
+        sim,
+        rules,
+        height_map,
+        path_grid,
+        overlay_registry,
+    )
+}
+
+fn tick_production_impl(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> bool {
     let miner_config = crate::sim::miner::MinerConfig::from_rules(rules);
     tick_resource_economy(sim, rules, &miner_config, path_grid, overlay_registry);
     // P5d: the registry is the queue-of-record + completion authority. Collect the
@@ -437,12 +453,18 @@ pub fn tick_production_with_overlay_registry(
         };
         let done_type_str = sim.interner.resolve(done_type).to_string();
         let produced_category = rules.object(&done_type_str).map(|o| o.category);
-        // Score-screen "Built" column. gamemd increments a per-category built
-        // counter once per finished factory item, at the same point: the item is
-        // complete and about to be delivered. Counted here (not at spawn) so a
-        // building that the player never places still counts, as it does natively.
-        if let Some(house) = sim.houses.get_mut(&owner_id) {
-            house.stats.built = house.stats.built.saturating_add(1);
+        // Score-screen "Built" column. gamemd increments once when this factory
+        // item completes, before delivery. A refused Unlimbo retains the same
+        // completed object, so the serialized object-owned latch prevents each
+        // delivery retry from replaying the completion edge.
+        if sim
+            .production
+            .factory_shadow
+            .account_completed_object_once(owner_id, queue_category)
+        {
+            if let Some(house) = sim.houses.get_mut(&owner_id) {
+                house.stats.built = house.stats.built.saturating_add(1);
+            }
         }
         if produced_category == Some(crate::rules::object_type::ObjectCategory::Building) {
             sim.production
@@ -462,12 +484,14 @@ pub fn tick_production_with_overlay_registry(
             produced_category == Some(crate::rules::object_type::ObjectCategory::Aircraft);
         let spawn_cell: Option<(u16, u16)>;
         let spawn_producer_id: Option<u64>;
+        let spawn_delivery: ProductionDeliveryKind;
         let helipad_airfield: Option<u64>;
 
         if is_aircraft {
             if let Some((af_id, rx, ry)) = find_helipad_for_aircraft(sim, rules, &owner_str) {
                 spawn_cell = Some((rx, ry));
                 spawn_producer_id = Some(af_id);
+                spawn_delivery = ProductionDeliveryKind::Standard;
                 helipad_airfield = Some(af_id);
             } else {
                 // No free helipad — refund.
@@ -492,6 +516,9 @@ pub fn tick_production_with_overlay_registry(
             });
             spawn_cell = spawn_selection.map(|selection| selection.cell);
             spawn_producer_id = spawn_selection.map(|selection| selection.producer_id);
+            spawn_delivery = spawn_selection
+                .map(|selection| selection.delivery)
+                .unwrap_or(ProductionDeliveryKind::Standard);
             helipad_airfield = None;
             if spawn_cell.is_none() {
                 if is_vehicle {
@@ -506,7 +533,36 @@ pub fn tick_production_with_overlay_registry(
         }
         let (rx, ry) = spawn_cell.unwrap();
 
-        let spawned = sim.spawn_object(&done_type_str, &owner_str, rx, ry, 64, rules, height_map);
+        let spawned = match spawn_delivery {
+            ProductionDeliveryKind::NavalUnit { .. } => {
+                let Some(stable_id) = ensure_completed_production_entity(
+                    sim,
+                    rules,
+                    owner_id,
+                    queue_category,
+                    &owner_str,
+                    &done_type_str,
+                    (rx, ry),
+                    height_map,
+                ) else {
+                    continue;
+                };
+                unlimbo_held_naval_unit(
+                    sim,
+                    rules,
+                    &owner_str,
+                    &done_type_str,
+                    stable_id,
+                    spawn_producer_id.expect("naval delivery has one selected producer"),
+                    (rx, ry),
+                    overlay_registry,
+                    height_map,
+                )
+            }
+            ProductionDeliveryKind::Standard => {
+                sim.spawn_object(&done_type_str, &owner_str, rx, ry, 64, rules, height_map)
+            }
+        };
         if let Some(stable_id) = spawned {
             if let Some(producer_id) = spawn_producer_id {
                 mark_war_factory_spawn_contact(sim, rules, producer_id, stable_id);
@@ -542,9 +598,35 @@ pub fn tick_production_with_overlay_registry(
             // Auto-move newly produced unit to rally point (if set).
             // Skip for aircraft docked on helipad — they wait for orders.
             if helipad_airfield.is_none() {
-                if let (Some(grid), Some((tx, ty))) =
-                    (path_grid, rally_point_for_owner(sim, &owner_str))
-                {
+                let rally = match spawn_delivery {
+                    ProductionDeliveryKind::NavalUnit { producer_rally, .. } => producer_rally,
+                    ProductionDeliveryKind::Standard => rally_point_for_owner(sim, &owner_str),
+                };
+                let naval_rally = matches!(spawn_delivery, ProductionDeliveryKind::NavalUnit { .. })
+                    .then_some(rally)
+                    .flatten();
+                if let Some((tx, ty)) = naval_rally {
+                    if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
+                        // BuildingClass::ExitObject_Main @ 0x0044442B calls
+                        // virtual Assign_Destination(target, 1) before its
+                        // deferred Queue_Mission(Move, 0). NavCom is the owner
+                        // destination; immediate A* is only a Rust executor.
+                        crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                            entity,
+                            Some(crate::sim::components::NavTargetRef::cell(tx, ty)),
+                        );
+                    }
+                    let _ = sim.mission_queue_exact(
+                        stable_id,
+                        crate::sim::mission::MissionId::from_known(
+                            crate::sim::mission::MissionType::Move,
+                        ),
+                        0,
+                        sim.session.binary_frame,
+                        &crate::sim::mission::authority::EntityReadyInputProvider,
+                    );
+                }
+                if let (Some(grid), Some((tx, ty))) = (path_grid, rally) {
                     let obj = rules.object(&done_type_str);
                     let loco_mult = sim
                         .substrate
@@ -593,6 +675,25 @@ pub fn tick_production_with_overlay_registry(
                         sim.playfield_bounds,
                         Some(&mut sim.substrate.cell_occupation),
                     );
+                    if naval_rally.is_some()
+                        && let Some(entity) = sim.substrate.entities.get_mut(stable_id)
+                    {
+                        // The generic immediate-path adapter may redirect its
+                        // execution endpoint. Restore the producer rally as the
+                        // represented owner destination so A* never owns NavCom.
+                        crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                            entity,
+                            Some(crate::sim::components::NavTargetRef::cell(tx, ty)),
+                        );
+                    }
+                }
+                if matches!(spawn_delivery, ProductionDeliveryKind::NavalUnit { .. })
+                    && let Some(entity) = sim.substrate.entities.get_mut(stable_id)
+                {
+                    // Native +0x124/+0x1B4/+0x124 success tail writes the
+                    // selected CellClass centre after rally/mission assignment.
+                    entity.position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
+                    entity.position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
                 }
             }
             spawned_any = true;
@@ -612,6 +713,46 @@ pub fn tick_production_with_overlay_registry(
     // `queues_by_owner.retain` prune.
     sim.production.factory_shadow.prune_all_idle();
     spawned_any
+}
+
+/// Construct and link the completed queue object's EntityStore identity once.
+/// A refused Unlimbo leaves this same identity linked and in limbo, so retries
+/// neither allocate another stable ID nor increment the house owned count.
+#[allow(clippy::too_many_arguments)]
+fn ensure_completed_production_entity(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner_id: InternedId,
+    category: ProductionCategory,
+    owner: &str,
+    type_id: &str,
+    cell: (u16, u16),
+    height_map: &BTreeMap<(u16, u16), u8>,
+) -> Option<u64> {
+    if let Some(stable_id) = sim
+        .production
+        .factory_shadow
+        .view(owner_id, category)
+        .and_then(|view| view.object.and_then(|object| object.entity_id))
+    {
+        return sim
+            .substrate
+            .entities
+            .contains(stable_id)
+            .then_some(stable_id);
+    }
+
+    let z = height_map.get(&cell).copied().unwrap_or(0);
+    let stable_id = sim.create_production_object_limbo_at_height(
+        type_id, owner, cell.0, cell.1, 0x40, z, rules,
+    )?;
+    let linked = sim.production.factory_shadow.link_completed_entity(
+        owner_id,
+        category,
+        stable_id,
+    );
+    debug_assert_eq!(linked, Some(stable_id));
+    linked
 }
 
 /// C7 StartNextQueued after a successful delivery (or a completed-but-undeliverable refund):
@@ -934,6 +1075,7 @@ fn pick_default_buildable_unit(
                     opt.queue_category,
                     ProductionCategory::Infantry
                         | ProductionCategory::Vehicle
+                        | ProductionCategory::Ship
                         | ProductionCategory::Aircraft
                 )
         })

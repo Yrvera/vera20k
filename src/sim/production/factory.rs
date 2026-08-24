@@ -63,14 +63,20 @@ fn remaining_balance_after(cost: i32, progress: u16) -> i32 {
     balance
 }
 
-/// The object a factory holds from start through delivery. In P2/P3 shadow
-/// `entity_id` is always `None` (the produced entity is created by the legacy path);
-/// the field is held distinct so the complete-but-not-delivered state is
-/// representable now.
+/// The object a factory holds from start through delivery. `entity_id` stays
+/// `None` while construction is represented only by type/progress state. A
+/// completed produced Unit links its one limbo EntityStore identity here before
+/// its first result-bearing delivery attempt, and retains that identity across
+/// refused attempts until delivery succeeds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PendingObject {
     pub type_id: InternedId,
     pub entity_id: Option<u64>,
+    /// Native completion accounting belongs to the one held factory object, not to
+    /// each delivery attempt. A refused Unlimbo keeps this serialized latch with the
+    /// same identity; the next promoted object starts with it clear.
+    #[serde(default)]
+    pub completion_accounted: bool,
 }
 
 /// One queued (not-yet-active) build waiting behind the active object — the
@@ -276,9 +282,9 @@ impl Factory {
         economy.add_credits(refund); // ORACLE economy in P4 (saturating add)
 
         // Reset to the empty-but-registered idle state; the partial object is
-        // destroyed. In the P4 shadow `object.entity_id` is always None (the legacy
-        // path owns the produced entity), so "destroy the partial object" is exactly
-        // `object = None`; the real partial-object despawn hooks in at P5.
+        // destroyed. Only completed produced Units acquire `object.entity_id`,
+        // while this path rejects complete-held objects above, so an abandoned
+        // partial object still has no EntityStore identity to release here.
         self.object = None;
         self.progress = 0;
         self.balance = 0;
@@ -321,6 +327,7 @@ impl Factory {
         self.object = Some(PendingObject {
             type_id: next.type_id,
             entity_id: None,
+            completion_accounted: false,
         });
         self.progress = 0;
         // Seed the cost-based balance inline (P5d: no reconcile re-seeds it now). The
@@ -436,14 +443,10 @@ pub fn build_step_time(inp: &BuildStepTimeInputs) -> i32 {
 /// analog of the engine's begin-production factory-slot resolution. A thin tested
 /// delegate over `production_category_for_object`: ONE routing source, not a fork. Its
 /// value is being the single call site the authority-flip registry sweep will use, and
-/// the place the routing DRIFTs are pinned by tests.
-///
-/// SURFACED DRIFT (NOT resolved here): the engine keeps a 6th factory slot for Ships,
-/// but Rust has no `Ship` `ProductionCategory` — naval object types collapse into
-/// `Vehicle`. When a house owns both a War Factory and a Naval Yard, the single
-/// `Vehicle` factory key collapses two engine factories, diverging the MultipleFactory
-/// count and same-frame completion ordering. That is a later structural decision (add
-/// `Ship` vs accept the collapse) requiring sign-off — NEVER silently folded.
+/// the place the native Vehicle/Ship slot split is pinned by tests. Naval Units route
+/// to HouseClass Primary_ForShips (+0x53B8); land Units retain Primary_ForVehicles
+/// (+0x53B4), so their active builds, temporal sweep entries, and producer bindings are
+/// independent.
 pub fn category_for_object(obj: &ObjectType) -> ProductionCategory {
     production_category_for_object(obj)
 }
@@ -649,6 +652,7 @@ impl FactoryRegistry {
             f.object = Some(PendingObject {
                 type_id,
                 entity_id: None,
+                completion_accounted: false,
             });
             f.on_hold = false;
             f.suspended = false;
@@ -673,6 +677,7 @@ impl FactoryRegistry {
                 object: Some(PendingObject {
                     type_id,
                     entity_id: None,
+                    completion_accounted: false,
                 }),
                 on_hold: false,
                 suspended: false,
@@ -732,6 +737,51 @@ impl FactoryRegistry {
         let f = self.factories.get_mut(&(owner, category))?;
         f.object = None;
         f.start_next_queued(next_cost, step_delay)
+    }
+
+    /// Link the one EntityStore identity constructed for a completed active
+    /// object. Repeated delivery attempts get the existing identity back rather
+    /// than allocating or incrementing ownership again.
+    pub(crate) fn link_completed_entity(
+        &mut self,
+        owner: InternedId,
+        category: ProductionCategory,
+        entity_id: u64,
+    ) -> Option<u64> {
+        let factory = self.factories.get_mut(&(owner, category))?;
+        if factory.progress < PRODUCTION_STEPS {
+            return None;
+        }
+        let object = factory.object.as_mut()?;
+        if object.entity_id.is_none() {
+            object.entity_id = Some(entity_id);
+        }
+        object.entity_id
+    }
+
+    /// Claim the score-screen completion accounting edge for the one active,
+    /// completed object. Delivery refusal does not clear the object, so later
+    /// retries observe `false`; `start_next_queued` constructs the next head with
+    /// a fresh `false` latch.
+    pub(crate) fn account_completed_object_once(
+        &mut self,
+        owner: InternedId,
+        category: ProductionCategory,
+    ) -> bool {
+        let Some(factory) = self.factories.get_mut(&(owner, category)) else {
+            return false;
+        };
+        if factory.progress < PRODUCTION_STEPS {
+            return false;
+        }
+        let Some(object) = factory.object.as_mut() else {
+            return false;
+        };
+        if object.completion_accounted {
+            return false;
+        }
+        object.completion_accounted = true;
+        true
     }
 
     /// Drop a `(owner, category)` factory if it holds no active object and an empty queue
@@ -936,8 +986,8 @@ impl FactoryRegistry {
             // factory_count = the per-category BUILDING count (the MultipleFactory
             // `(n-1)` loop input). The registry collapses to ONE key per (owner,
             // category), so its key count is NOT this — keep the building rescan (its
-            // retirement is a later slice). `obj.category` is the rules `ObjectCategory`,
-            // the arg the rescan takes (NOT `ProductionCategory`).
+            // retirement is a later slice). The factory's exact production category
+            // preserves the independent native Vehicle and Ship physical counts.
             let inputs = BuildStepTimeInputs {
                 cost: obj.cost.max(0),
                 build_time_bonus_ppm: PRODUCTION_RATE_SCALE, // stock YR 1.0 (per-side bonus unwired)
@@ -951,7 +1001,7 @@ impl FactoryRegistry {
                     &sim.substrate.entities,
                     rules,
                     &owner_name,
-                    obj.category,
+                    f.category,
                     &sim.interner,
                 ),
                 is_wall: obj.category == crate::rules::object_type::ObjectCategory::Building
@@ -1617,6 +1667,7 @@ mod tests {
             object: Some(PendingObject {
                 type_id: a,
                 entity_id: None,
+                completion_accounted: false,
             }),
             balance: 300,
             original_balance: 700,
@@ -1654,6 +1705,7 @@ mod tests {
             object: Some(PendingObject {
                 type_id: a,
                 entity_id: None,
+                completion_accounted: false,
             }),
             balance: 300,
             original_balance: 700,
@@ -1698,6 +1750,7 @@ mod tests {
             object: Some(PendingObject {
                 type_id: a,
                 entity_id: None,
+                completion_accounted: false,
             }),
             progress: PRODUCTION_STEPS,
             suspended: true,
@@ -1740,6 +1793,7 @@ mod tests {
             object: Some(PendingObject {
                 type_id: a,
                 entity_id: None,
+                completion_accounted: false,
             }),
             balance: 300,
             original_balance: 700,
@@ -1852,6 +1906,7 @@ mod tests {
                 object: Some(PendingObject {
                     type_id: e1,
                     entity_id: None,
+                    completion_accounted: false,
                 }),
                 balance: 100,
                 original_balance: 200,
@@ -1868,6 +1923,7 @@ mod tests {
                 object: Some(PendingObject {
                     type_id: mtnk,
                     entity_id: None,
+                    completion_accounted: false,
                 }),
                 balance: 300,
                 original_balance: 700,
@@ -2117,19 +2173,25 @@ mod tests {
     }
 
     #[test]
-    fn category_for_object_naval_collapses_to_vehicle_documented() {
+    fn category_for_object_routes_naval_unit_to_ship_slot() {
         use crate::rules::ini_parser::IniFile;
         use crate::rules::ruleset::RuleSet;
-        // A naval unit is an ObjectCategory::Vehicle in the Rust rules model (no Ship
-        // category), so it routes to Vehicle. This PINS the documented collapse: if a
-        // future change adds a Ship category, this test breaks and forces a decision.
-        let ini = IniFile::from_str("[VehicleTypes]\n0=DEST\n[DEST]\nCost=1000\n");
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=DEST\n1=GRIZZLY\n[DEST]\nCost=1000\nNaval=yes\n\
+             [GRIZZLY]\nCost=700\n",
+        );
         let rules = RuleSet::from_ini(&ini).expect("rules parse");
         let naval = rules.object("DEST").unwrap();
+        let land = rules.object("GRIZZLY").unwrap();
         assert_eq!(
             category_for_object(naval),
+            ProductionCategory::Ship,
+            "naval Unit binds HouseClass Primary_ForShips"
+        );
+        assert_eq!(
+            category_for_object(land),
             ProductionCategory::Vehicle,
-            "naval collapses to Vehicle (the surfaced DRIFT; no Ship category in this slice)"
+            "land Unit independently binds HouseClass Primary_ForVehicles"
         );
     }
 }

@@ -30,6 +30,7 @@ use glam::IVec3;
 use crate::rules::ini_parser::IniSection;
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+use crate::rules::terrain_rules::LandType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
 
 /// Which type registry an object belongs to.
@@ -433,6 +434,10 @@ pub struct ObjectType {
     /// elite bytes independently; elite inherits the veteran byte.
     pub veteran_cloak: bool,
     pub elite_cloak: bool,
+    /// `CRUSHER` in the rank-selected ability lists. The static `Crusher=`
+    /// byte remains independent; elite objects inherit the veteran list.
+    pub veteran_crusher: bool,
+    pub elite_crusher: bool,
     /// Specific weapon fired on death (overrides default explosion behavior).
     /// References a [WeaponName] section in rules.ini.
     pub death_weapon: Option<String>,
@@ -477,6 +482,9 @@ pub struct ObjectType {
     pub harvester: bool,
     /// Whether this structure accepts ore/gem delivery (Refinery=yes in rules.ini).
     pub refinery: bool,
+    /// Native BuildingType `Weeder=` classification. ExitObject dispatch tests
+    /// this independently from `Refinery=`, `WeaponsFactory=`, and `Naval=`.
+    pub weeder: bool,
     /// Whether this building has a bib (`Bib=yes` in rules.ini). When true, the
     /// east-edge column of the foundation footprint is unit-passable — units
     /// can drive across that strip even though the cells remain part of the
@@ -597,6 +605,9 @@ pub struct ObjectType {
     pub speed_type: SpeedType,
     /// Pathfinder routing assumptions (MovementZone= in rules.ini).
     pub movement_zone: MovementZone,
+    /// UnitType `MovementRestrictedTo=`. Native constructor default `-1` is
+    /// represented as `None`; a parsed value is a canonical CellClass LandType.
+    pub movement_restricted_to: Option<LandType>,
     /// Whether this unit is treated as aircraft for game logic (ConsideredAircraft=).
     pub considered_aircraft: bool,
     /// Per-type render depth bias used when a unit is near or under a bridge.
@@ -936,10 +947,10 @@ pub struct ObjectType {
     /// Unit or building is classified as naval (Naval=yes in INI).
     /// Controls AI targeting priority, factory classification, and UI filtering.
     pub naval: bool,
-    /// Number of foundation rows (from the top, Y-axis) that are impassable.
-    /// Default -1 = all rows impassable. Parsed from NumberImpassableRows= in rules.ini.
-    /// Controls which foundation cells units can path through (e.g., war factory
-    /// exit lanes, naval yard docks).
+    /// Number of foundation columns from the west edge (X-axis) that remain
+    /// impassable in the UnitClass live building-occupant helper. Default -1
+    /// keeps the whole checked building as a blocker. Parsed from
+    /// `NumberImpassableRows=` despite the native name.
     pub number_impassable_rows: i32,
 
     // -- Point light source fields (from rules.ini, primarily buildings) --
@@ -1284,6 +1295,8 @@ impl ObjectType {
             elite_scatter: ability_list_has(section.get_list("EliteAbilities"), "SCATTER"),
             veteran_cloak: ability_list_has(section.get_list("VeteranAbilities"), "CLOAK"),
             elite_cloak: ability_list_has(section.get_list("EliteAbilities"), "CLOAK"),
+            veteran_crusher: ability_list_has(section.get_list("VeteranAbilities"), "CRUSHER"),
+            elite_crusher: ability_list_has(section.get_list("EliteAbilities"), "CRUSHER"),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             death_weapon_damage_modifier: section
                 .get_f32("DeathWeaponDamageModifier")
@@ -1306,6 +1319,7 @@ impl ObjectType {
             insignificant: section.get_bool("Insignificant").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
+            weeder: section.get_bool("Weeder").unwrap_or(false),
             bib: section.get_bool("Bib").unwrap_or(false),
             gate: section.get_bool("Gate").unwrap_or(false),
             deploy_time_ticks: native_minutes_to_ticks(
@@ -1377,6 +1391,11 @@ impl ObjectType {
                 .get("MovementZone")
                 .map(MovementZone::from_ini)
                 .unwrap_or_default(),
+            movement_restricted_to: section.get("MovementRestrictedTo").and_then(|value| {
+                LandType::ALL
+                    .into_iter()
+                    .find(|land| value.eq_ignore_ascii_case(land.section_name()))
+            }),
             considered_aircraft: section.get_bool("ConsideredAircraft").unwrap_or(false),
             zfudge_bridge: section.get_i32("ZFudgeBridge").unwrap_or(7),
             too_big_to_fit_under_bridge: section

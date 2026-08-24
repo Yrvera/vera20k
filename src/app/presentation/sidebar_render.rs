@@ -75,6 +75,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
             production::ProductionCategory::Infantry,
             production::ProductionCategory::Vehicle,
             production::ProductionCategory::Aircraft,
+            production::ProductionCategory::Ship,
         ]
         .into_iter()
         .filter_map(|category| {

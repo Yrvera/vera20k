@@ -330,24 +330,52 @@ fn queue_units(
     let current_queue = production::queue_view_for_owner(sim, rules, owner);
     let options = production::build_options_for_owner(sim, rules, owner);
 
-    // Queue infantry if no infantry in production.
-    let infantry_queued = current_queue
-        .iter()
-        .any(|item| item.queue_category == production::ProductionCategory::Infantry);
-    if !infantry_queued {
-        if let Some(type_id) = pick_combat_unit(&options, ObjectCategory::Infantry) {
-            commands.push(make_queue_cmd(owner_id, type_id, execute_tick));
-        }
-    }
+    queue_combat_lane_if_empty(
+        &current_queue,
+        &options,
+        ObjectCategory::Infantry,
+        production::ProductionCategory::Infantry,
+        owner_id,
+        execute_tick,
+        commands,
+    );
 
-    // Queue vehicle if no vehicle in production.
-    let vehicle_queued = current_queue
+    // HouseClass owns independent Primary_ForVehicles (+0x53B4) and
+    // Primary_ForShips (+0x53B8) factory lanes. A live object/tail in one must
+    // neither suppress the other nor be duplicated by its sibling's vacancy.
+    for category in [
+        production::ProductionCategory::Vehicle,
+        production::ProductionCategory::Ship,
+    ] {
+        queue_combat_lane_if_empty(
+            &current_queue,
+            &options,
+            ObjectCategory::Vehicle,
+            category,
+            owner_id,
+            execute_tick,
+            commands,
+        );
+    }
+}
+
+fn queue_combat_lane_if_empty(
+    current_queue: &[production::QueueItemView],
+    options: &[production::BuildOption],
+    object_category: ObjectCategory,
+    queue_category: production::ProductionCategory,
+    owner_id: InternedId,
+    execute_tick: u64,
+    commands: &mut Vec<CommandEnvelope>,
+) {
+    if current_queue
         .iter()
-        .any(|item| item.queue_category == production::ProductionCategory::Vehicle);
-    if !vehicle_queued {
-        if let Some(type_id) = pick_combat_unit(&options, ObjectCategory::Vehicle) {
-            commands.push(make_queue_cmd(owner_id, type_id, execute_tick));
-        }
+        .any(|item| item.queue_category == queue_category)
+    {
+        return;
+    }
+    if let Some(type_id) = pick_combat_unit(options, object_category, queue_category) {
+        commands.push(make_queue_cmd(owner_id, type_id, execute_tick));
     }
 }
 
@@ -355,11 +383,17 @@ fn queue_units(
 /// Prefers units with weapons (Primary != None) and reasonable cost.
 fn pick_combat_unit(
     options: &[production::BuildOption],
-    category: ObjectCategory,
+    object_category: ObjectCategory,
+    queue_category: production::ProductionCategory,
 ) -> Option<InternedId> {
     let mut candidates: Vec<&production::BuildOption> = options
         .iter()
-        .filter(|o| o.enabled && o.object_category == category && o.cost > 0)
+        .filter(|o| {
+            o.enabled
+                && o.object_category == object_category
+                && o.queue_category == queue_category
+                && o.cost > 0
+        })
         .collect();
     // Sort by cost (cheapest first for fast army buildup).
     candidates.sort_by_key(|o| o.cost);
@@ -1156,6 +1190,142 @@ mod tests {
                 type_id: cmd_type,
                 ..
             } if cmd_owner == owner_id && cmd_type == type_id
+        ));
+    }
+
+    fn combat_option(
+        interner: &mut crate::sim::intern::StringInterner,
+        id: &str,
+        queue_category: production::ProductionCategory,
+        cost: i32,
+    ) -> production::BuildOption {
+        production::BuildOption {
+            type_id: interner.intern(id),
+            display_name: id.to_string(),
+            cost,
+            object_category: ObjectCategory::Vehicle,
+            queue_category,
+            enabled: true,
+            reason: None,
+        }
+    }
+
+    fn queued_combat_item(
+        interner: &mut crate::sim::intern::StringInterner,
+        id: &str,
+        queue_category: production::ProductionCategory,
+    ) -> production::QueueItemView {
+        production::QueueItemView {
+            type_id: interner.intern(id),
+            display_name: id.to_string(),
+            queue_category,
+            state: production::BuildQueueState::Building,
+            remaining_ms: 500,
+            total_ms: 1_000,
+        }
+    }
+
+    #[test]
+    fn ai_active_ship_lane_is_not_duplicated_and_empty_vehicle_lane_queues_land() {
+        let mut interner = crate::sim::intern::StringInterner::new();
+        let owner = interner.intern("Americans");
+        let dest = combat_option(
+            &mut interner,
+            "DEST",
+            production::ProductionCategory::Ship,
+            900,
+        );
+        let active_ship = vec![queued_combat_item(
+            &mut interner,
+            "DEST",
+            production::ProductionCategory::Ship,
+        )];
+
+        let mut commands = Vec::new();
+        queue_combat_lane_if_empty(
+            &active_ship,
+            std::slice::from_ref(&dest),
+            ObjectCategory::Vehicle,
+            production::ProductionCategory::Ship,
+            owner,
+            8,
+            &mut commands,
+        );
+        assert!(
+            commands.is_empty(),
+            "an active Ship lane must not receive another Ship tail"
+        );
+
+        let mtnk = combat_option(
+            &mut interner,
+            "MTNK",
+            production::ProductionCategory::Vehicle,
+            700,
+        );
+        let options = vec![dest, mtnk.clone()];
+        queue_combat_lane_if_empty(
+            &active_ship,
+            &options,
+            ObjectCategory::Vehicle,
+            production::ProductionCategory::Vehicle,
+            owner,
+            8,
+            &mut commands,
+        );
+        assert!(matches!(
+            commands.as_slice(),
+            [CommandEnvelope {
+                payload: Command::QueueProduction { type_id, .. },
+                ..
+            }] if *type_id == mtnk.type_id
+        ));
+    }
+
+    #[test]
+    fn ai_active_vehicle_lane_does_not_block_empty_ship_lane() {
+        let mut interner = crate::sim::intern::StringInterner::new();
+        let owner = interner.intern("Americans");
+        let active_vehicle = vec![queued_combat_item(
+            &mut interner,
+            "MTNK",
+            production::ProductionCategory::Vehicle,
+        )];
+        let dest = combat_option(
+            &mut interner,
+            "DEST",
+            production::ProductionCategory::Ship,
+            900,
+        );
+        let mut commands = Vec::new();
+
+        queue_combat_lane_if_empty(
+            &active_vehicle,
+            std::slice::from_ref(&dest),
+            ObjectCategory::Vehicle,
+            production::ProductionCategory::Vehicle,
+            owner,
+            8,
+            &mut commands,
+        );
+        assert!(
+            commands.is_empty(),
+            "Vehicle lane must not select a Ship option"
+        );
+        queue_combat_lane_if_empty(
+            &active_vehicle,
+            std::slice::from_ref(&dest),
+            ObjectCategory::Vehicle,
+            production::ProductionCategory::Ship,
+            owner,
+            8,
+            &mut commands,
+        );
+        assert!(matches!(
+            commands.as_slice(),
+            [CommandEnvelope {
+                payload: Command::QueueProduction { type_id, .. },
+                ..
+            }] if *type_id == dest.type_id
         ));
     }
 

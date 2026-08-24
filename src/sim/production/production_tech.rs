@@ -300,6 +300,7 @@ pub(super) fn production_category_for_object(
 ) -> ProductionCategory {
     match obj.category {
         ObjectCategory::Infantry => ProductionCategory::Infantry,
+        ObjectCategory::Vehicle if obj.naval => ProductionCategory::Ship,
         ObjectCategory::Vehicle => ProductionCategory::Vehicle,
         ObjectCategory::Aircraft => ProductionCategory::Aircraft,
         ObjectCategory::Building => match obj.build_cat {
@@ -317,6 +318,7 @@ pub(super) fn supports_live_production(obj: &crate::rules::object_type::ObjectTy
             | ProductionCategory::Infantry
             | ProductionCategory::Vehicle
             | ProductionCategory::Aircraft
+            | ProductionCategory::Ship
     )
 }
 
@@ -351,7 +353,14 @@ pub(super) fn is_production_factory(
     };
     match category {
         ProductionCategory::Infantry => factory_type == FactoryType::InfantryType,
-        ProductionCategory::Vehicle => factory_type == FactoryType::UnitType,
+        ProductionCategory::Vehicle => {
+            factory_type == FactoryType::UnitType
+                && rules.object(structure_id).is_some_and(|object| !object.naval)
+        }
+        ProductionCategory::Ship => {
+            factory_type == FactoryType::UnitType
+                && rules.object(structure_id).is_some_and(|object| object.naval)
+        }
         ProductionCategory::Aircraft => factory_type == FactoryType::AircraftType,
         ProductionCategory::Building | ProductionCategory::Defense => {
             factory_type == FactoryType::BuildingType
@@ -401,7 +410,12 @@ pub(in crate::sim) fn effective_progress_rate_ppm_for_type(
     let Some(obj) = rules.object(type_id) else {
         return PRODUCTION_RATE_SCALE;
     };
-    effective_progress_rate_ppm_for_category(sim, rules, owner, obj.category)
+    effective_progress_rate_ppm_for_category(
+        sim,
+        rules,
+        owner,
+        production_category_for_object(obj),
+    )
 }
 
 #[cfg(test)]
@@ -409,7 +423,7 @@ pub(super) fn effective_progress_rate_ppm_for_category(
     sim: &Simulation,
     rules: &RuleSet,
     owner: &str,
-    category: ObjectCategory,
+    category: ProductionCategory,
 ) -> u64 {
     // power_speed and queue_time are both scaled by PRODUCTION_RATE_SCALE (1M).
     // effective_rate = power_speed / queue_time, also at 1M scale.
@@ -472,7 +486,7 @@ fn effective_time_to_build_frames_for_object(
             &sim.substrate.entities,
             rules,
             owner,
-            obj.category,
+            production_category_for_object(obj),
             &sim.interner,
         ),
     );
@@ -566,7 +580,7 @@ fn matching_factory_time_multiplier_ppm(
     entities: &EntityStore,
     rules: &RuleSet,
     owner: &str,
-    category: ObjectCategory,
+    category: ProductionCategory,
     interner: &crate::sim::intern::StringInterner,
 ) -> u64 {
     let factory_count: u32 =
@@ -588,7 +602,7 @@ pub(in crate::sim::production) fn matching_factory_count_for_owner(
     entities: &EntityStore,
     rules: &RuleSet,
     owner: &str,
-    category: ObjectCategory,
+    category: ProductionCategory,
     interner: &crate::sim::intern::StringInterner,
 ) -> u32 {
     entities
@@ -598,7 +612,7 @@ pub(in crate::sim::production) fn matching_factory_count_for_owner(
                 && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
-                && is_matching_factory(rules, interner.resolve(e.type_ref), category)
+                && is_production_factory(rules, interner.resolve(e.type_ref), category)
         })
         .count() as u32
 }
@@ -655,6 +669,7 @@ pub fn is_matching_factory(
         }
         ObjectCategory::Vehicle => {
             is_production_factory(rules, structure_id, ProductionCategory::Vehicle)
+                || is_production_factory(rules, structure_id, ProductionCategory::Ship)
         }
         ObjectCategory::Aircraft => {
             is_production_factory(rules, structure_id, ProductionCategory::Aircraft)

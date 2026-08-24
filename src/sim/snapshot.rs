@@ -275,7 +275,10 @@ use crate::sim::world::Simulation;
 // hashing, while the process-global dummy's live subset joins the canonical
 // hash even without a retained projectile. The dummy remains outside the
 // payload and accepted Resize/load reconstructs it to zero.
-const SNAPSHOT_VERSION: u32 = 90;
+// Bumped 90 -> 91: the active factory PendingObject now persists the one-shot
+// completion-accounted latch so a refused delivery resumed after load cannot
+// increment the score-screen Built statistic again.
+const SNAPSHOT_VERSION: u32 = 91;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2599,10 +2602,12 @@ mod tests {
     /// process-global dummy contents remain deliberately outside the payload;
     /// 89 -> 90 adds exact allocated real-cell 0x1180 values to Scenario
     /// persistence/hash plus the live dummy subset to the canonical hash,
-    /// while retaining the native dummy reconstruct-to-zero load behavior.
+    /// while retaining the native dummy reconstruct-to-zero load behavior;
+    /// 90 -> 91 adds the held factory object's completion-accounted latch so
+    /// delivery retries cannot replay completion after load.
     #[test]
-    fn gsi_04_01_snapshot_version_is_90() {
-        assert_eq!(super::SNAPSHOT_VERSION, 90);
+    fn gsi_04_01_snapshot_version_is_91() {
+        assert_eq!(super::SNAPSHOT_VERSION, 91);
     }
 
     #[test]

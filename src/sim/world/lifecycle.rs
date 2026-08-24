@@ -78,6 +78,10 @@ pub(crate) enum PlacementEvidence {
     RejectedEarly,
     MarkFailed,
     MarkSucceeded,
+    /// Run the modeled Mark(PUT) transaction and consume its result. Production
+    /// Unit Unlimbo uses this after exact-zero CanEnter admission instead of
+    /// asserting or caller-hardcoding Mark success.
+    EvaluateMark,
 }
 
 fn building_base_reservation_rect(rx: u16, ry: u16, foundation: &str, spacing: i32) -> CellRect {
@@ -656,7 +660,12 @@ impl Simulation {
             return RevealOutcome::Failed(RevealFailure::MarkFailed);
         }
 
-        self.mark_entity_put(stable_id);
+        if !self.mark_entity_put(stable_id) {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.lifecycle.in_limbo = true;
+            }
+            return RevealOutcome::Failed(RevealFailure::MarkFailed);
+        }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id)
             && entity.spotlight_capable
             && entity.category == crate::map::entities::EntityCategory::Structure
@@ -715,12 +724,12 @@ impl Simulation {
         }
     }
 
-    fn mark_entity_put(&mut self, stable_id: u64) {
+    fn mark_entity_put(&mut self, stable_id: u64) -> bool {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
-            return;
+            return false;
         };
         if entity.lifecycle.cell_marked {
-            return;
+            return false;
         }
         let cells = entity_occupancy_cells(entity);
         let layer = cell_list_layer_for_entity(entity);
@@ -845,6 +854,10 @@ impl Simulation {
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::CellMarked);
+        self.substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.lifecycle.cell_marked)
     }
 
     pub(crate) fn base_reservation_house_index(&self, owner: InternedId) -> Option<i32> {
@@ -1117,7 +1130,7 @@ impl Simulation {
     /// Test/fixture helper retained at the transaction boundary.  It is
     /// idempotent and updates the authoritative `cell_marked` fact.
     pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
-        self.mark_entity_put(stable_id);
+        let _ = self.mark_entity_put(stable_id);
     }
 
     /// Existing movement and fixture boundary; common lifecycle code calls the

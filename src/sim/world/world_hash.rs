@@ -688,6 +688,7 @@ impl Simulation {
                         }
                         None => 0u8.hash(hasher),
                     }
+                    o.completion_accounted.hash(hasher);
                 }
                 None => 0u8.hash(hasher),
             }
