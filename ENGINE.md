@@ -72,6 +72,7 @@ Skill instructions write `<main-checkout>` for the primary repository root. `doc
 has them. Gitignored corpora — `ini/`, the rest of `docs/` (`scans/`, `gap-scans/`,
 `contracts/`), and the built index `tools/research_index/.cache/` — exist only in the main
 checkout; from a worktree, resolve it with `git worktree list`.
+Retail INIs are stored only in `<main-checkout>/ini`; worktrees must read them directly from there.
 
 Grep the INI files before implementing; never hardcode animation names, frame counts, timing, or
 constants. `rules(md).ini` = gameplay data, `art(md).ini` = all visual/animation data including
