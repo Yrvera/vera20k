@@ -100,25 +100,7 @@ impl Simulation {
                         ),
                     )
                 }),
-            Some(TargetKind::Cell(rx, ry)) => {
-                let x = i32::from(rx) * 256 + 128;
-                let y = i32::from(ry) * 256 + 128;
-                let z = self
-                    .resolved_terrain
-                    .as_ref()
-                    .and_then(|terrain| terrain.cell(rx, ry))
-                    .and_then(|cell| {
-                        crate::util::lepton::ground_height_leptons(
-                            cell.level,
-                            cell.slope_type,
-                            x,
-                            y,
-                        )
-                        .ok()
-                    })
-                    .unwrap_or(0);
-                Some(ProjectileCoord::new(x, y, z))
-            }
+            Some(TargetKind::Cell(rx, ry)) => Some(self.wave_cell_target_position(rx, ry)),
             None => None,
         };
         crate::sim::wave::WaveUpdateContext {

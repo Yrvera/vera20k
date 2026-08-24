@@ -1453,6 +1453,41 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
 }
 
 impl Simulation {
+    /// Resolve the CellClass identity returned by MapClass::Get_CellClass and
+    /// then dispatch its live GetTargetCoords virtual. Fixed-stride aliases
+    /// therefore use the returned real CellClass's canonical coordinate, while
+    /// misses retain and restamp the one process-global dummy identity.
+    fn wave_cell_target_position(&self, rx: u16, ry: u16) -> ProjectileCoord {
+        use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
+
+        match get_cellclass_fallback(
+            self.resolved_terrain.as_ref(),
+            i32::from(rx),
+            i32::from(ry),
+        ) {
+            CellRef::Real(cell) => crate::sim::projectile::cell_target_coord(
+                self.resolved_terrain.as_ref(),
+                cell.rx,
+                cell.ry,
+            ),
+            CellRef::Dummy { cell } => {
+                let live_dummy = if self.resolved_terrain.is_some() {
+                    cell
+                } else {
+                    // A mapless lookup still addresses Simulation's retained
+                    // process dummy. The fallback supplies native i16 packing;
+                    // restamp only its coordinate so live level/slope/bridge
+                    // bytes remain authoritative.
+                    let coord = cell.snapshot().coord;
+                    let live_dummy = self.effective_shared_cell_dummy();
+                    live_dummy.stamp_coord(coord.0, coord.1);
+                    live_dummy
+                };
+                crate::sim::projectile::dummy_cell_target_coord(&live_dummy)
+            }
+        }
+    }
+
     /// Combat borrows a staged house map while fatal lifecycle hooks temporarily
     /// re-enter `Simulation`. Merge only receiver-owned fields back so live
     /// lifecycle mutations to strategy mode, counts, economy, or defeat state
@@ -1804,23 +1839,7 @@ impl Simulation {
                 )
             }
             crate::sim::combat::TargetKind::Cell(rx, ry) => {
-                let x = i32::from(rx) * 256 + 128;
-                let y = i32::from(ry) * 256 + 128;
-                let z = self
-                    .resolved_terrain
-                    .as_ref()
-                    .and_then(|terrain| terrain.cell(rx, ry))
-                    .and_then(|cell| {
-                        crate::util::lepton::ground_height_leptons(
-                            cell.level,
-                            cell.slope_type,
-                            x,
-                            y,
-                        )
-                        .ok()
-                    })
-                    .unwrap_or(0);
-                ProjectileCoord::new(x, y, z)
+                self.wave_cell_target_position(rx, ry)
             }
         };
         let source = self
