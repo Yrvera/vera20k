@@ -382,7 +382,10 @@ fn nearby_query_for_spawn<'a>(
             bridge_aware_zone: false,
         },
         footprint: NearbyFootprint::SINGLE,
-        anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
+        // gamemd-derived: every FNPC candidate path calls
+        // Is_Cell_In_Playfield_CellClass(cell, 1) @ 0x00578540 immediately
+        // before CellRect passability, including production spawn/exit callers.
+        anchor_gate: NearbyAnchorGate::NativeHeightAware,
         allow_bridge_cells: true,
         check_height: false,
         check_occupancy: true,
@@ -1038,6 +1041,94 @@ mod tests {
             find(None),
             None,
             "missing installed MapClass Size authority must not invent a radius"
+        );
+    }
+
+    #[test]
+    fn spawn_fnpc_anchor_gate_excludes_earlier_rectangular_candidate() {
+        const GRID: u16 = 40;
+        const SEED: (u16, u16) = (9, 4);
+        const OFF_DIAMOND: (u16, u16) = (7, 2);
+        const IN_DIAMOND: (u16, u16) = (7, 6);
+
+        let mut terrain = flat_terrain(GRID, GRID);
+        for cell in &mut terrain.cells {
+            cell.ground_walk_blocked = true;
+            cell.base_ground_walk_blocked = true;
+            cell.speed_costs.track = Some(0);
+            cell.base_speed_costs.track = Some(0);
+        }
+        for candidate in [OFF_DIAMOND, IN_DIAMOND] {
+            let cell = terrain
+                .cell_mut(candidate.0, candidate.1)
+                .expect("ring-two candidate");
+            cell.ground_walk_blocked = false;
+            cell.base_ground_walk_blocked = false;
+            cell.speed_costs.track = Some(100);
+            cell.base_speed_costs.track = Some(100);
+        }
+
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+        // Flat-terrain diamond: 12 < x+y <= 26, x-y < 14, y-x < 6.
+        // Both candidates are valid cells inside the 40x40 terrain rectangle,
+        // but ring order visits off-diamond (7,2) before in-diamond (7,6).
+        let bounds = crate::sim::cell_rect::PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+        ))
+        .expect("minimal spawn rules");
+
+        let query = nearby_query_for_spawn(
+            movement_profile,
+            &path_grid,
+            &occupancy,
+            &entities,
+            Some(&terrain),
+            None,
+            None,
+            false,
+            Some(bounds),
+            Some((bounds.base, 10)),
+        )
+        .expect("installed MapClass authority");
+        assert!(matches!(
+            query.anchor_gate,
+            crate::sim::find_nearby_cell::NearbyAnchorGate::NativeHeightAware
+        ));
+
+        assert_eq!(
+            find_spawn_cell_near_structure(
+                SEED.0,
+                SEED.1,
+                "UNKNOWN",
+                ObjectCategory::Vehicle,
+                movement_profile,
+                &rules,
+                Some(&path_grid),
+                &occupancy,
+                &entities,
+                Some(&terrain),
+                None,
+                None,
+                false,
+                0,
+                Some(bounds),
+                Some((bounds.base, 10)),
+            ),
+            Some(IN_DIAMOND),
+            "the independent anchor gate excludes the earlier off-diamond survivor"
         );
     }
 
