@@ -126,6 +126,10 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
     let resolved_terrain = sim.resolved_terrain.as_ref();
     let overlay_grid = sim.overlay_grid.as_ref();
     let zone_grid = sim.zone_grid.as_ref();
+    let map_size = sim
+        .playfield_bounds
+        .zip(sim.playfield_size_height)
+        .map(|(bounds, height)| (bounds.base, height));
     let movement_profile =
         spawn_movement_profile(rules, produced_type_id, produced_category, require_water);
 
@@ -175,6 +179,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                 // current frame N, which is the value the fallback must alias.
                 sim.session.binary_frame,
                 sim.playfield_bounds,
+                map_size,
             ),
         };
         if let Some(cell) = cell {
@@ -260,6 +265,7 @@ fn find_spawn_cell_near_structure(
     require_water: bool,
     frame_counter: u32,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+    map_size: Option<(i32, i32)>,
 ) -> Option<(u16, u16)> {
     let offsets: Vec<(i16, i16)> = preferred_exit_offsets(rules, structure_id);
     for (ox, oy) in offsets {
@@ -314,7 +320,8 @@ fn find_spawn_cell_near_structure(
         zone_grid,
         require_water,
         playfield_bounds,
-    );
+        map_size,
+    )?;
     let found = crate::sim::find_nearby_cell::find_nearby_passable_cell(
         (base_rx as i32, base_ry as i32),
         &q,
@@ -342,6 +349,9 @@ fn find_spawn_cell_near_structure(
 /// Live games thread the final normalized `playfield_bounds` fields into the exact
 /// isometric corner query. Missing fields reject candidates; there is no terrain-
 /// rectangle replacement for active `MapClass::IsRectInPlayfield @ 0x00578390`.
+/// Search radius comes independently from the retained signed MapClass `Size`
+/// pair; missing size authority rejects the fallback instead of reviving a
+/// caller-owned radius.
 #[allow(clippy::too_many_arguments)]
 fn nearby_query_for_spawn<'a>(
     movement_profile: SpawnMovementProfile,
@@ -353,16 +363,18 @@ fn nearby_query_for_spawn<'a>(
     zone_grid: Option<&'a crate::sim::pathfinding::zone_map::ZoneGrid>,
     require_water: bool,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
-) -> crate::sim::find_nearby_cell::NearbyQuery<'a> {
+    map_size: Option<(i32, i32)>,
+) -> Option<crate::sim::find_nearby_cell::NearbyQuery<'a>> {
     use crate::sim::find_nearby_cell::{
-        NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs,
+        NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, map_owned_radius_cap,
     };
+    let (size_width, size_height) = map_size?;
     let movement_zone = if require_water {
         MovementZone::Water
     } else {
         movement_profile.movement_zone
     };
-    NearbyQuery {
+    Some(NearbyQuery {
         passability: PassabilityArgs {
             speed_type: movement_profile.speed_type,
             required_zone_id: None,
@@ -374,9 +386,9 @@ fn nearby_query_for_spawn<'a>(
         allow_bridge_cells: true,
         check_height: false,
         check_occupancy: true,
-        // Preserve the legacy fallback search reach (the old box-ring used radius 12);
-        // the FNPC clamps internally to RADIUS_HARD_CAP.
-        radius_cap: SPAWN_FALLBACK_RADIUS,
+        // gamemd-derived: FNPC @ 0x0056DC20 reads signed MapClass Size
+        // +0xF4/+0xF8, sums them, and clamps only values above 32.
+        radius_cap: map_owned_radius_cap(size_width, size_height),
         target_cell: None,
         path_grid: Some(grid),
         resolved_terrain,
@@ -385,12 +397,8 @@ fn nearby_query_for_spawn<'a>(
         entities: Some(entities),
         zone_grid,
         playfield_bounds,
-    }
+    })
 }
-
-/// Search reach for the spawn/exit FNPC fallback, preserved from the retired
-/// `nearest_walkable_around` box-ring (which scanned `r = 1..=12`).
-const SPAWN_FALLBACK_RADIUS: u16 = 12;
 
 fn find_exact_exitcoord_spawn_cell(
     base_rx: u16,
@@ -955,6 +963,82 @@ mod tests {
         );
 
         assert_eq!(cell, Some((0, 2)));
+    }
+
+    #[test]
+    fn spawn_fnpc_radius_uses_installed_map_size_and_reaches_ring_twelve() {
+        const GRID: u16 = 40;
+        const SEED: (u16, u16) = (20, 20);
+        const RING_TWELVE: (u16, u16) = (8, 8);
+
+        let mut terrain = flat_terrain(GRID, GRID);
+        for cell in &mut terrain.cells {
+            cell.ground_walk_blocked = true;
+            cell.base_ground_walk_blocked = true;
+            cell.speed_costs.track = Some(0);
+            cell.base_speed_costs.track = Some(0);
+        }
+        let survivor = terrain
+            .cell_mut(RING_TWELVE.0, RING_TWELVE.1)
+            .expect("ring-twelve survivor");
+        survivor.ground_walk_blocked = false;
+        survivor.base_ground_walk_blocked = false;
+        survivor.speed_costs.track = Some(100);
+        survivor.base_speed_costs.track = Some(100);
+
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+        let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+        ))
+        .expect("minimal spawn rules");
+
+        let find = |map_size| {
+            find_spawn_cell_near_structure(
+                SEED.0,
+                SEED.1,
+                "UNKNOWN",
+                ObjectCategory::Vehicle,
+                movement_profile,
+                &rules,
+                Some(&path_grid),
+                &occupancy,
+                &entities,
+                Some(&terrain),
+                None,
+                None,
+                false,
+                0,
+                Some(test_playfield_bounds()),
+                map_size,
+            )
+        };
+
+        assert_eq!(
+            find(Some((20, 20))),
+            Some(RING_TWELVE),
+            "MapClass Size sum 40 clamps to 32 and reaches ring 12"
+        );
+        assert_eq!(
+            find(Some((6, 6))),
+            None,
+            "a native cap of 12 scans only rings 0 through 11"
+        );
+        assert_eq!(
+            find(Some((-10, 10))),
+            None,
+            "a nonpositive signed Size sum performs no ring search"
+        );
+        assert_eq!(
+            find(None),
+            None,
+            "missing installed MapClass Size authority must not invent a radius"
+        );
     }
 
     // --- T5: shadow-assert the FNPC search against the legacy box-ring ---
