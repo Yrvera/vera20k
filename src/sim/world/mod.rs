@@ -1932,6 +1932,19 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         request: &crate::sim::wave::WaveDamageRequest,
     ) {
+        // DamageArea reads WaveClass+0x1D4 at the call boundary. Health and
+        // Rust death-animation state do not null that pointer; only the exact
+        // PointerExpired callback does. Revalidate the buffered fixture path
+        // against the live Wave so an intervening owner UnInit still aborts.
+        if self
+            .waves
+            .get(request.wave_id)
+            .and_then(|wave| wave.owner_id)
+            != Some(request.firer_id)
+        {
+            return;
+        }
+
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum CellObject {
             Entity(u64),
@@ -2001,10 +2014,7 @@ impl Simulation {
                 // GetWeapon(0) is re-entered exactly once per cell, with the
                 // owner's current rank. A null owner aborts DamageArea before
                 // any receiver, wall, cliff, or RNG work.
-                let Some(firer) = entities
-                    .get(request.firer_id)
-                    .filter(|firer| firer.is_alive() && !firer.dying)
-                else {
+                let Some(firer) = entities.get(request.firer_id) else {
                     break;
                 };
                 let Some(object_type) = rules.object(interner.resolve(firer.type_ref)) else {

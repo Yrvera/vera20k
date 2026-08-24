@@ -4790,6 +4790,175 @@ fn gsi_01_05_damage_rules() -> crate::rules::ruleset::RuleSet {
 }
 
 #[test]
+fn wave_pointer_expiry_target_survives_dying_then_uninit_starts_decay_tail() {
+    let mut sim = Simulation::new();
+    let owner_id = sim.allocate_stable_id();
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, owner_id, EntityCategory::Unit);
+    insert_entity(&mut sim, target_id, EntityCategory::Unit);
+    {
+        let owner = sim.substrate.entities.get_mut(owner_id).unwrap();
+        owner.position.rx = 0;
+        owner.position.ry = 0;
+        owner.attack_target = Some(AttackTarget::new(target_id));
+    }
+    {
+        let target = sim.substrate.entities.get_mut(target_id).unwrap();
+        target.position.rx = 4;
+        target.position.ry = 0;
+        target.health.current = 0;
+        target.dying = true;
+    }
+
+    let wave_id = sim.allocate_stable_id();
+    let wave = Wave::new_owned(
+        0,
+        owner_id,
+        TargetKind::Entity(target_id),
+        ProjectileCoord::new(128, 128, 0),
+        ProjectileCoord::new(4 * 256 + 128, 128, 50),
+    );
+    sim.admit_wave(wave_id, wave);
+    sim.active_wave_links.insert(owner_id, wave_id);
+
+    let represented = sim.wave_update_context(wave_id);
+    assert_eq!(
+        represented.target_position,
+        Some(ProjectileCoord::new(4 * 256 + 128, 128, 0)),
+        "health zero and the death animation do not expire a Wave pointer",
+    );
+    let _ = sim
+        .waves
+        .advance_one(wave_id, represented, sim.resolved_terrain.as_ref())
+        .expect("represented Wave AI");
+    assert!(sim.waves.get(wave_id).unwrap().active_geometry);
+    assert!(!sim.waves.get(wave_id).unwrap().decaying);
+
+    sim.uninit(target_id);
+
+    let wave = sim.waves.get(wave_id).expect("Wave remains represented");
+    assert_eq!(wave.owner_id, Some(owner_id));
+    assert_eq!(wave.target_ref, None, "UnInit synchronously expires +0xAC");
+    assert_eq!(sim.active_wave_links.get(&owner_id), Some(&wave_id));
+    let expired = sim.wave_update_context(wave_id);
+    assert_eq!(expired.target_position, None);
+    let _ = sim
+        .waves
+        .advance_one(wave_id, expired, sim.resolved_terrain.as_ref())
+        .expect("post-expiry Wave AI");
+    let wave = sim.waves.get(wave_id).unwrap();
+    assert!(!wave.active_geometry);
+    assert!(wave.decaying, "null target activates the decay/fade tail");
+}
+
+#[test]
+fn wave_pointer_expiry_owner_allows_dying_damage_then_uninit_nulls_later_calls() {
+    let rules = gsi_01_05_damage_rules();
+    let mut sim = Simulation::new();
+    let owner_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, owner_id, EntityCategory::Unit);
+    {
+        let owner = sim.substrate.entities.get_mut(owner_id).unwrap();
+        owner.type_ref = sim.interner.intern("FIRER");
+        owner.health.current = 0;
+        owner.dying = true;
+        owner.attack_target = Some(AttackTarget::for_cell(4, 5));
+    }
+    let receiver_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, receiver_id, EntityCategory::Unit);
+    {
+        let receiver = sim.substrate.entities.get_mut(receiver_id).unwrap();
+        receiver.type_ref = sim.interner.intern("VICTIM");
+        receiver.health = Health {
+            current: 30,
+            max: 30,
+        };
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(receiver_id, common_raw_request(4, 5, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new_owned(
+        0,
+        owner_id,
+        TargetKind::Cell(4, 5),
+        ProjectileCoord::new(0, 0, 0),
+        ProjectileCoord::new(4 * 256, 5 * 256, 50),
+    );
+    wave.replace_recorded_cells(vec![WaveRecordedCell::real(4, 5)]);
+    sim.admit_wave(wave_id, wave);
+    sim.active_wave_links.insert(owner_id, wave_id);
+    let request = crate::sim::wave::WaveDamageRequest {
+        wave_id,
+        firer_id: owner_id,
+        recorded_cells: vec![WaveRecordedCell::real(4, 5)],
+        wave_z: 0,
+    };
+    assert!(
+        sim.wave_update_context(wave_id).owner_position.is_some(),
+        "the dying-but-represented owner still supplies live Wave coordinates",
+    );
+    assert_eq!(sim.active_wave_links.get(&owner_id), Some(&wave_id));
+
+    sim.commit_logic_wave_damage_request(&rules, None, &request);
+    assert_eq!(
+        sim.substrate.entities.get(receiver_id).unwrap().health.current,
+        20,
+        "DamageArea consults the represented owner pointer, not health/dying state",
+    );
+
+    sim.uninit(owner_id);
+    assert_eq!(sim.waves.get(wave_id).unwrap().owner_id, None);
+    assert_eq!(
+        sim.waves.get(wave_id).unwrap().target_ref,
+        Some(TargetKind::Cell(4, 5)),
+        "owner expiry does not clear an unrelated CellClass target",
+    );
+    assert!(!sim.active_wave_links.contains_key(&owner_id));
+
+    sim.commit_logic_wave_damage_request(&rules, None, &request);
+    assert_eq!(
+        sim.substrate.entities.get(receiver_id).unwrap().health.current,
+        20,
+        "the now-null live owner makes every later DamageArea call a no-op",
+    );
+}
+
+#[test]
+fn wave_pointer_expiry_ignores_unrelated_object_and_preserves_owner_link() {
+    let mut sim = Simulation::new();
+    let owner_id = sim.allocate_stable_id();
+    let target_id = sim.allocate_stable_id();
+    let unrelated_id = sim.allocate_stable_id();
+    for id in [owner_id, target_id, unrelated_id] {
+        insert_entity(&mut sim, id, EntityCategory::Unit);
+    }
+    sim.substrate.entities.get_mut(owner_id).unwrap().attack_target =
+        Some(AttackTarget::new(target_id));
+    let wave_id = sim.allocate_stable_id();
+    sim.admit_wave(
+        wave_id,
+        Wave::new_owned(
+            0,
+            owner_id,
+            TargetKind::Entity(target_id),
+            ProjectileCoord::new(0, 0, 0),
+            ProjectileCoord::new(1_024, 0, 50),
+        ),
+    );
+    sim.active_wave_links.insert(owner_id, wave_id);
+
+    sim.uninit(unrelated_id);
+
+    let wave = sim.waves.get(wave_id).expect("unrelated expiry keeps Wave");
+    assert_eq!(wave.owner_id, Some(owner_id));
+    assert_eq!(wave.target_ref, Some(TargetKind::Entity(target_id)));
+    assert_eq!(sim.active_wave_links.get(&owner_id), Some(&wave_id));
+}
+
+#[test]
 fn gsi_01_05_lethal_bullet_commits_receiver_before_retirement_and_double_compaction() {
     let rules = gsi_01_05_damage_rules();
     let mut sim = Simulation::new();

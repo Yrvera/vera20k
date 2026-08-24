@@ -513,6 +513,25 @@ impl WaveStore {
         self.waves.remove(&id)
     }
 
+    /// gamemd-derived: `WaveClass::PointerExpired @ 0x0075F610` clears only
+    /// exact object-pointer matches. Cell targets are CellClass pointers and
+    /// therefore cannot match an expiring ObjectClass identity.
+    pub(crate) fn pointer_expired(&mut self, id: u64, expired_id: u64) -> Option<(bool, bool)> {
+        let wave = self.waves.get_mut(&id)?;
+        let owner_cleared = wave.owner_id == Some(expired_id);
+        let target_cleared = matches!(
+            wave.target_ref,
+            Some(TargetKind::Entity(target_id)) if target_id == expired_id
+        );
+        if owner_cleared {
+            wave.owner_id = None;
+        }
+        if target_cleared {
+            wave.target_ref = None;
+        }
+        Some((owner_cleared, target_cleared))
+    }
+
     pub fn spawn(&mut self, id: u64, mut wave: Wave) -> u64 {
         wave.id = id;
         wave.in_logic_vector = false;

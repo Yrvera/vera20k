@@ -2009,6 +2009,7 @@ impl Simulation {
                 .map(|(&stable_id, _)| stable_id),
         );
         listeners.extend(self.projectiles.iter().map(|(&stable_id, _)| stable_id));
+        listeners.extend(self.waves.iter().map(|(&stable_id, _)| stable_id));
         listeners.sort_unstable();
         debug_assert!(
             listeners.windows(2).all(|pair| pair[0] != pair[1]),
@@ -2346,7 +2347,8 @@ impl Simulation {
             let is_anim = self.substrate.anims.contains_key(listener_id);
             let is_particle = self.substrate.particle_systems.contains_key(listener_id);
             let is_projectile = self.projectiles.get(listener_id).is_some();
-            if !is_entity && !is_anim && !is_particle && !is_projectile {
+            let is_wave = self.waves.get(listener_id).is_some();
+            if !is_entity && !is_anim && !is_particle && !is_projectile && !is_wave {
                 continue;
             }
 
@@ -2461,6 +2463,20 @@ impl Simulation {
                             target,
                         },
                     );
+                }
+            } else if is_wave {
+                let (owner_cleared, _) = self
+                    .waves
+                    .pointer_expired(listener_id, expired_id)
+                    .expect("Wave listener disappeared during expiry callback");
+                if owner_cleared
+                    && self.active_wave_links.get(&expired_id) == Some(&listener_id)
+                {
+                    // TechnoClass keeps the Wave link through the dying/deferred
+                    // interval. Once the exact owner pointer expires, retaining
+                    // this Rust projection would serialize a link whose Wave
+                    // owner is now null.
+                    self.active_wave_links.remove(&expired_id);
                 }
             }
         }

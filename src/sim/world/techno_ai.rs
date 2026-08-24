@@ -63,12 +63,11 @@ impl Simulation {
                 target_position: None,
             };
         };
-        let owner = wave.owner_id.and_then(|owner_id| {
-            self.substrate
-                .entities
-                .get(owner_id)
-                .filter(|entity| entity.is_alive() && !entity.dying)
-        });
+        // WaveClass keeps raw owner/target pointers through the represented
+        // dying interval. Only PointerExpired makes either identity null.
+        let owner = wave
+            .owner_id
+            .and_then(|owner_id| self.substrate.entities.get(owner_id));
         let owner_position = owner.map(|entity| {
             ProjectileCoord::new(
                 i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
@@ -87,7 +86,6 @@ impl Simulation {
                 .substrate
                 .entities
                 .get(target_id)
-                .filter(|entity| entity.is_alive() && !entity.dying)
                 .map(|entity| {
                     ProjectileCoord::new(
                         i32::from(entity.position.rx) * 256
