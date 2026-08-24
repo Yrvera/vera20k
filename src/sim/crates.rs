@@ -270,7 +270,10 @@ fn snap_to_passable(
         check_height: false,
         check_occupancy: false,
         radius_cap: sim.session.map_width.min(CRATE_SNAP_RADIUS_CAP),
-        target_cell: Some((0, 0)),
+        // gamemd-derived: PlaceCrateAtRandomCell @ 0x0056BD40 initializes
+        // this reference to the engine zero cell. FNPC @ 0x0056DC20 treats
+        // that zero sentinel as "no target" and selects by live frame modulo.
+        target_cell: None,
         path_grid,
         resolved_terrain: sim.resolved_terrain.as_ref(),
         overlay_grid: sim.overlay_grid.as_ref(),
@@ -805,15 +808,16 @@ mod tests {
     }
 
     #[test]
-    fn gsi_01_04_crate_snap_uses_target_zero_bridge_allowance_no_occupancy_and_radius_over_eight() {
+    fn gsi_01_04_crate_snap_zero_reference_uses_live_frame_modulo() {
         let registry = crate_registry();
         let mut sim = sim_with_grid(1);
         let mut terrain = uniform_terrain(false);
         for cell in &mut terrain.cells {
             cell.speed_costs.track = Some(0);
         }
-        // Both candidates are on ring 9. Ring order encounters (29,11)
-        // first, but target (0,0) selects the nearer (11,20).
+        // Both preferred candidates are on ring 9. Engine ring order encounters
+        // (29,11) first and (11,20) second, while nearest-to-origin would choose
+        // (11,20). Native's zero reference is a sentinel, not a real target.
         terrain
             .cell_mut(29, 11)
             .expect("candidate A")
@@ -834,9 +838,18 @@ mod tests {
             .place_overlay(11, 20, ore, 0);
         let grid = PathGrid::test_all_passable(MAP, MAP);
 
+        sim.session.binary_frame = 0;
         assert_eq!(
             snap_to_passable(&sim, Some(&grid), (20, 20), CrateSurface::Land),
-            Some((11, 20))
+            Some((29, 11)),
+            "frame zero selects the first preferred survivor, not nearest to (0,0)"
+        );
+
+        sim.session.binary_frame = 1;
+        assert_eq!(
+            snap_to_passable(&sim, Some(&grid), (20, 20), CrateSurface::Land),
+            Some((11, 20)),
+            "the live frame advances modulo the preferred pool"
         );
     }
 
