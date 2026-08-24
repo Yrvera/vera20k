@@ -146,6 +146,13 @@ pub const SIM_TICK_MS: u32 = 1000 / crate::util::fixed_math::RA2_LOGIC_FRAMES_PE
 ///
 /// `map_file_name` is resolved relative to the retail root (e.g. `"Dustbowl.mmx"`).
 pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<HeadlessScenario, String> {
+    crate::map::retail_trig::install_from_dir(retail_dir);
+    if !crate::map::retail_trig::wave_tables_available() {
+        return Err(format!(
+            "{} does not provide the verified gamemd sine/Acos tables required by stock Sonic Wave simulation",
+            retail_dir.join("gamemd.exe").display()
+        ));
+    }
     let map_path = retail_dir.join(map_file_name);
     let map = map_file::load_from_path(&map_path)
         .map_err(|error| format!("parse {}: {error}", map_path.display()))?;

@@ -3008,6 +3008,21 @@ mod tests {
             },
             None,
         ));
+        let constructor_direction = active.direction_octant;
+        let moved_endpoint = ProjectileCoord::new(0, 512, 0);
+        let _ = active.advance(
+            WaveUpdateContext {
+                owner_position: Some(active_source),
+                owner_current_target: Some(active_target),
+                target_position: Some(moved_endpoint),
+            },
+            None,
+        );
+        assert_eq!(
+            active.direction_octant, constructor_direction,
+            "live geometry refresh retains constructor-only +0x1CC"
+        );
+        let moved_edges = active.edge_geometry;
         sim.admit_wave(active_id, active);
         sim.active_wave_links.insert(owner_ids[0], active_id);
 
@@ -3053,6 +3068,14 @@ mod tests {
         assert_eq!(restored.state_hash(), expected_hash);
         assert_eq!(restored.active_wave_links, sim.active_wave_links);
         assert_eq!(restored.waves.get(active_id), sim.waves.get(active_id));
+        assert_eq!(
+            restored.waves.get(active_id).unwrap().direction_octant,
+            constructor_direction
+        );
+        assert_eq!(
+            restored.waves.get(active_id).unwrap().edge_geometry,
+            moved_edges
+        );
         assert_eq!(restored.waves.get(inactive_id), sim.waves.get(inactive_id));
         assert_eq!(restored.waves.get(dummy_id), sim.waves.get(dummy_id));
         assert_eq!(

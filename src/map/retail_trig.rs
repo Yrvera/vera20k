@@ -3,8 +3,9 @@
 //! The river carver steers by a floating-point heading and resolves it through
 //! two table lookups every step. The table is **not reproducible from a
 //! formula**: computing `sin` in double precision and rounding disagrees with it
-//! on 4997 of its 10240 entries, and so does the correctly-rounded true sine, by
-//! up to one unit in the last place. It is an artifact of whatever generated it
+//! on 4997 of its first 10240 indexed entries, and so does the correctly-rounded
+//! true sine, by up to one unit in the last place. It is an artifact of whatever
+//! generated it
 //! in the original build. It is not even exactly periodic — one of the 2048
 //! wrap-around pairs disagrees, which is what an accumulating recurrence looks
 //! like and what a per-index evaluation does not.
@@ -24,8 +25,10 @@ use std::sync::OnceLock;
 /// Virtual address of the table in the retail image.
 const TABLE_VA: u32 = 0x0084_F084;
 /// Entries. The extra quarter period past a full turn is what lets the cosine
-/// offset run past the end of the sine range without wrapping.
-pub const TABLE_LEN: usize = 0x2800;
+/// offset run past the end of the sine range without wrapping; the final exact
+/// `1.0` is part of the retail data extent even though the lookup ceilings stop
+/// one entry before it.
+pub const TABLE_LEN: usize = 0x2801;
 /// Entries in one full turn.
 const PERIOD: i32 = 0x2000;
 /// Quarter period: the offset that turns the sine table into a cosine table.
@@ -42,9 +45,16 @@ const COS_CEILING: i32 = PERIOD + QUARTER - 1;
 pub const UNITS_PER_TURN: f64 = (2 * PERIOD) as f64;
 
 /// FNV-1a (64-bit) over the table's raw little-endian bytes in the retail
-/// image, machine-derived by reading all 40960 bytes out of the binary. This is
+/// image, machine-derived by reading all 40964 bytes out of the binary. This is
 /// the whole-table check: it is a genuine exhaustive comparison, not a sample.
-pub const RETAIL_FNV1A64: u64 = 0x4642_825e_c40e_ce86;
+pub const RETAIL_FNV1A64: u64 = 0x74ac_b749_b33d_5aa7;
+
+/// Virtual address and exact size of `Acos_lookup @ 0x004CADB0`'s signed
+/// arcsine table. `WaveClass` indexes the inclusive endpoints, hence 4097
+/// entries rather than 4096.
+const ACOS_TABLE_VA: u32 = 0x0085_9094;
+pub const ACOS_TABLE_LEN: usize = 0x1001;
+pub const ACOS_RETAIL_FNV1A64: u64 = 0x9251_751b_f328_3bc1;
 
 /// Something went wrong reading the table out of the executable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +83,12 @@ impl std::error::Error for TrigTableError {}
 /// The retail sine table.
 #[derive(Debug, Clone)]
 pub struct TrigTable {
+    entries: Vec<f32>,
+}
+
+/// Retail binary32 table consumed by `Acos_lookup @ 0x004CADB0`.
+#[derive(Debug, Clone)]
+pub struct AcosTable {
     entries: Vec<f32>,
 }
 
@@ -166,12 +182,22 @@ impl TrigTable {
 
     /// Sine of an angle given in caller units.
     pub fn sin(&self, angle_units: i32) -> f32 {
-        self.entries[sin_index(angle_units) as usize]
+        self.entries[self.sin_index(angle_units)]
     }
 
     /// Cosine of an angle given in caller units.
     pub fn cos(&self, angle_units: i32) -> f32 {
-        self.entries[cos_index(angle_units) as usize]
+        self.entries[self.cos_index(angle_units)]
+    }
+
+    /// Exact raw table index used by `Math::SinFromTable`.
+    pub fn sin_index(&self, angle_units: i32) -> usize {
+        sin_index(angle_units) as usize
+    }
+
+    /// Exact raw table index used by `Math::CosFromTable`.
+    pub fn cos_index(&self, angle_units: i32) -> usize {
+        cos_index(angle_units) as usize
     }
 
     /// Sine of an angle in radians. The scaling and the truncation to an integer
@@ -192,6 +218,53 @@ impl TrigTable {
         Self {
             entries: (0..TABLE_LEN)
                 .map(|i| (i as f64 * std::f64::consts::TAU / PERIOD as f64).sin() as f32)
+                .collect(),
+        }
+    }
+}
+
+impl AcosTable {
+    /// Read the signed arcsine table out of a retail `gamemd.exe` image.
+    pub fn from_executable(image: &[u8]) -> Result<Self, TrigTableError> {
+        let start = file_offset_of(image, ACOS_TABLE_VA)?;
+        let need = ACOS_TABLE_LEN * 4;
+        let bytes = image
+            .get(start..start + need)
+            .ok_or(TrigTableError::Truncated {
+                need,
+                have: image.len().saturating_sub(start),
+            })?;
+        let entries = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        Ok(Self { entries })
+    }
+
+    pub fn fnv1a64(&self) -> u64 {
+        let mut hash = crate::util::fnv::FNV1A64_OFFSET_BASIS;
+        for entry in &self.entries {
+            hash = crate::util::fnv::fnv1a64_fold_bytes(hash, &entry.to_le_bytes());
+        }
+        hash
+    }
+
+    pub fn matches_retail(&self) -> bool {
+        self.entries.len() == ACOS_TABLE_LEN && self.fnv1a64() == ACOS_RETAIL_FNV1A64
+    }
+
+    pub fn entry(&self, index: usize) -> f32 {
+        self.entries[index]
+    }
+
+    /// A shape-compatible table used only by unit tests that exercise Wave
+    /// lifetime/cell mechanics without a retail installation. Exact geometry
+    /// fixtures always load the executable-backed table.
+    #[cfg(test)]
+    pub fn synthetic() -> Self {
+        Self {
+            entries: (0..ACOS_TABLE_LEN)
+                .map(|i| ((i as f64 - 2048.0) / 2048.0).asin() as f32)
                 .collect(),
         }
     }
@@ -320,7 +393,7 @@ mod tests {
         assert_eq!(sin_index(-7997) - sin_index(-7997 + turn), 1);
     }
 
-    /// The exhaustive check. Not a sample: every one of the 40960 bytes feeds
+    /// The exhaustive check. Not a sample: every one of the 40964 bytes feeds
     /// the hash, and the expected value was derived by reading them out of the
     /// binary rather than computed by hand.
     #[test]
@@ -338,6 +411,10 @@ mod tests {
              written against"
         );
         assert!(table.matches_retail());
+        let acos = AcosTable::from_executable(&image).expect("read the Acos table");
+        assert_eq!(acos.entries.len(), ACOS_TABLE_LEN);
+        assert_eq!(acos.fnv1a64(), ACOS_RETAIL_FNV1A64);
+        assert!(acos.matches_retail());
     }
 
     /// Anchors that would catch a table read at the wrong offset even if a hash
@@ -375,32 +452,43 @@ mod tests {
     }
 }
 
-/// Process-wide table, installed once from the retail install.
+/// Process-wide table bundle, installed once from the retail install.
 ///
 /// A global because consumers sit at different engine layers and only startup
 /// knows where the retail install is. It is written once and read-only
 /// thereafter, so it cannot make a run non-deterministic.
-static TABLE: OnceLock<Option<TrigTable>> = OnceLock::new();
+#[derive(Debug)]
+struct RetailMathTables {
+    trig: TrigTable,
+    acos: AcosTable,
+}
+
+static TABLES: OnceLock<Option<RetailMathTables>> = OnceLock::new();
 
 /// Read the table out of `<ra2_dir>/gamemd.exe` and install it. Later calls are
 /// ignored; the first one wins.
 pub fn install_from_dir(ra2_dir: &Path) {
-    TABLE.get_or_init(|| {
+    TABLES.get_or_init(|| {
         let path = ra2_dir.join("gamemd.exe");
         match std::fs::read(&path) {
-            Ok(image) => match TrigTable::from_executable(&image) {
-                Ok(table) if table.matches_retail() => Some(table),
-                Ok(_) => {
+            Ok(image) => match (
+                TrigTable::from_executable(&image),
+                AcosTable::from_executable(&image),
+            ) {
+                (Ok(trig), Ok(acos)) if trig.matches_retail() && acos.matches_retail() => {
+                    Some(RetailMathTables { trig, acos })
+                }
+                (Ok(_), Ok(_)) => {
                     log::warn!(
-                        "{} holds a sine table this build does not recognise; \
+                        "{} holds retail math tables this build does not recognise; \
                          retail-table consumers will be disabled",
                         path.display()
                     );
                     None
                 }
-                Err(err) => {
+                (Err(err), _) | (_, Err(err)) => {
                     log::warn!(
-                        "retail sine table {}: {err}; retail-table consumers will be disabled",
+                        "retail math tables {}: {err}; retail-table consumers will be disabled",
                         path.display()
                     );
                     None
@@ -408,7 +496,7 @@ pub fn install_from_dir(ra2_dir: &Path) {
             },
             Err(err) => {
                 log::warn!(
-                    "cannot read retail sine table from {}: {err}; \
+                    "cannot read retail math tables from {}: {err}; \
                      retail-table consumers will be disabled",
                     path.display()
                 );
@@ -420,5 +508,22 @@ pub fn install_from_dir(ra2_dir: &Path) {
 
 /// The installed table, if there is one.
 pub fn global() -> Option<&'static TrigTable> {
-    TABLE.get().and_then(|slot| slot.as_ref())
+    TABLES
+        .get()
+        .and_then(|slot| slot.as_ref())
+        .map(|tables| &tables.trig)
+}
+
+/// The installed table consumed by `Acos_lookup`, if there is one.
+pub fn global_acos() -> Option<&'static AcosTable> {
+    TABLES
+        .get()
+        .and_then(|slot| slot.as_ref())
+        .map(|tables| &tables.acos)
+}
+
+/// Stock Sonic Wave geometry is active, so a match may start only when both
+/// exact executable-backed math tables are available.
+pub fn wave_tables_available() -> bool {
+    global().is_some() && global_acos().is_some()
 }

@@ -9,12 +9,13 @@ use std::hash::Hash;
 
 use crate::map::cell_index::CELL_ROW_STRIDE;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::retail_trig::{AcosTable, TrigTable};
 use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
 use crate::sim::combat::TargetKind;
 use crate::sim::projectile::ProjectileCoord;
-use crate::util::fixed_math::SimFixed;
 use crate::util::native_x87::{
-    NativeF32Bits, NativeF64Bits, X87Chop53, X87Ordering, distance_3d_leptons,
+    NativeF32Bits, NativeF64Bits, X87Chop53, X87Ordering, X87Value, adjust_for_z_standard,
+    distance_3d_leptons, sqrt_approx_f32,
 };
 
 const STEP_F32: NativeF32Bits = NativeF32Bits::from_bits(0x3d4c_cccd);
@@ -250,6 +251,14 @@ impl Wave {
         context: WaveUpdateContext,
         terrain: Option<&ResolvedTerrainGrid>,
     ) -> bool {
+        // `WaveClass::Constructor @ 0x0075E950` builds the initial quad and
+        // stores +0x1CC before Logic registration invokes the lifecycle once.
+        // Later lifecycle refreshes must never overwrite this selector.
+        if self.wave_type == 0 {
+            let geometry = type0_nonmagnetic_geometry(self.source, self.target);
+            self.apply_type0_geometry(geometry);
+            self.direction_octant = geometry.direction_octant;
+        }
         self.update_geometry_and_cells(context, terrain)
     }
 
@@ -331,20 +340,22 @@ impl Wave {
         }
 
         if self.active_geometry
-            && let (Some(owner), Some(mut target)) =
-                (context.owner_position, context.target_position)
+            && let (Some(owner), Some(target)) = (context.owner_position, context.target_position)
         {
             if self.wave_type == 0 {
-                target.z = target.z.wrapping_add(SONIC_TARGET_Z_ADJUST);
+                self.apply_type0_geometry(type0_nonmagnetic_geometry(owner, target));
+            } else {
+                // Type 3 is outside the exactified 0x00761640 slice and keeps
+                // its established projection until 0x00762070 is researched.
+                self.source = owner;
+                self.target = target;
+                self.edge_geometry = legacy_nonmagnetic_edges(owner, target);
+                let yaw = crate::sim::movement::homing_movement::atan2_bam(
+                    crate::util::fixed_math::SimFixed::from_num(target.y.wrapping_sub(owner.y)),
+                    crate::util::fixed_math::SimFixed::from_num(target.x.wrapping_sub(owner.x)),
+                );
+                self.direction_octant = i32::from((yaw >> 13) & 7);
             }
-            self.source = owner;
-            self.target = target;
-            self.edge_geometry = nonmagnetic_edges(owner, target);
-            let yaw = crate::sim::movement::homing_movement::atan2_bam(
-                SimFixed::from_num(target.y.wrapping_sub(owner.y)),
-                SimFixed::from_num(target.x.wrapping_sub(owner.x)),
-            );
-            self.direction_octant = i32::from((yaw >> 13) & 7);
         }
 
         self.fade_in = add_f32_step_to_f64(self.fade_in);
@@ -438,6 +449,12 @@ impl Wave {
         if self.recorded_cells.try_reserve(1).is_ok() {
             self.recorded_cells.push(WaveRecordedCell { identity });
         }
+    }
+
+    fn apply_type0_geometry(&mut self, geometry: Type0NonmagneticGeometry) {
+        self.source = geometry.source;
+        self.target = geometry.target;
+        self.edge_geometry = geometry.edges;
     }
 
     pub const fn visible_through_fog(
@@ -607,10 +624,320 @@ fn lepton_cell(coord: ProjectileCoord) -> (i32, i32) {
     (coord.x / 256, coord.y / 256)
 }
 
-fn nonmagnetic_edges(source: ProjectileCoord, target: ProjectileCoord) -> WaveEdgeGeometry {
-    // `WaveClass::Draw_NonMagnetic @ 0x00761640` writes the four cached
-    // vertices in field order. Type 0 uses local offsets (-30,+/-100) and
-    // (+30,+/-100); UpdateCells later pairs vertex 2 -> 0 or 3 -> 1.
+const NEGATIVE_2048_F32: NativeF32Bits = NativeF32Bits::from_bits(0xc500_0000);
+const TRIG_SCALE_F32: NativeF32Bits = NativeF32Bits::from_bits(0x4522_f983);
+const PI_OVER_TWO_F64: NativeF64Bits = NativeF64Bits::from_bits(0x3ff9_21fb_5444_2d18);
+const TAN_PI_OVER_EIGHT_F64: NativeF64Bits = NativeF64Bits::from_bits(0x3fda_8279_a061_eb64);
+const INV_TAN_PI_OVER_EIGHT_F64: NativeF64Bits = NativeF64Bits::from_bits(0x4003_504f_2e96_fc59);
+
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // machine-fixture diagnostics retained beside the behavior fields
+struct Type0NonmagneticGeometry {
+    source: ProjectileCoord,
+    target: ProjectileCoord,
+    edges: WaveEdgeGeometry,
+    direction_octant: i32,
+    horizontal: i32,
+    sqrt_bits: NativeF32Bits,
+    acos_index: usize,
+    angle_bits: NativeF32Bits,
+    trig_units: i32,
+    sin_index: usize,
+    cos_index: usize,
+    target_screen: (i32, i32),
+    firer_b_screen: (i32, i32),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TransformedVertex {
+    x: NativeF32Bits,
+    y: NativeF32Bits,
+    z: NativeF32Bits,
+}
+
+fn x87_store_f32(value: X87Value) -> NativeF32Bits {
+    X87Chop53::store_f32(value).expect("verified Wave geometry stays in finite binary32 range")
+}
+
+fn x87_ftol_i32(value: X87Value) -> i32 {
+    X87Chop53::ftol_i64(value).expect("verified Wave geometry stays in signed integer range") as i32
+}
+
+fn project_wave_point(coord: ProjectileCoord) -> (i32, i32) {
+    let (x, planar_y) = crate::util::lepton::project_absolute_lepton_xy(coord.x, coord.y);
+    (x, planar_y.wrapping_sub(adjust_for_z_standard(coord.z)))
+}
+
+fn direction_from_projected(from: (i32, i32), to: (i32, i32)) -> i32 {
+    // `0x0075F230`: dx=to.x-from.x and n=from.y-to.y. The four equality
+    // boundaries are intentionally asymmetric.
+    let dx = to.0.wrapping_sub(from.0);
+    let n = from.1.wrapping_sub(to.1);
+    if dx == 0 {
+        return if n > 0 { 0 } else { 4 };
+    }
+
+    let slope = X87Chop53::div(X87Chop53::load_i32(n), X87Chop53::load_i32(dx))
+        .expect("nonzero projected dx divides exactly in the verified finite domain");
+    let tan = load_f64(TAN_PI_OVER_EIGHT_F64);
+    let inv_tan = load_f64(INV_TAN_PI_OVER_EIGHT_F64);
+    let neg_tan = X87Chop53::neg(tan);
+    let neg_inv_tan = X87Chop53::neg(inv_tan);
+
+    let band = if X87Chop53::compare(slope, tan) != X87Ordering::Less
+        && X87Chop53::compare(slope, inv_tan) == X87Ordering::Less
+    {
+        Some(5)
+    } else if X87Chop53::compare(slope, neg_tan) != X87Ordering::Less
+        && X87Chop53::compare(slope, tan) == X87Ordering::Less
+    {
+        Some(6)
+    } else if X87Chop53::compare(slope, neg_inv_tan) != X87Ordering::Less
+        && X87Chop53::compare(slope, neg_tan) == X87Ordering::Less
+    {
+        Some(7)
+    } else {
+        None
+    };
+    match band {
+        Some(base) if dx > 0 => base - 4,
+        Some(base) => base,
+        None if n > 0 => 0,
+        None => 4,
+    }
+}
+
+fn transform_type0_vertex(
+    local_x: i32,
+    local_y: i32,
+    local_z: NativeF32Bits,
+    sin: NativeF32Bits,
+    cos: NativeF32Bits,
+) -> TransformedVertex {
+    // `Matrix3x4::TransformPoint @ 0x005AFB80`, including the native
+    // non-fused operation order and explicit binary32 stores.
+    let zero = X87Chop53::load_i32(0);
+    let one = load_f32(NativeF32Bits::ONE);
+    let x = X87Chop53::load_i32(local_x);
+    let y = X87Chop53::load_i32(local_y);
+    let z = load_f32(local_z);
+    let sin = load_f32(sin);
+    let cos = load_f32(cos);
+
+    let transformed_x = X87Chop53::add(
+        X87Chop53::add(
+            X87Chop53::mul(z, zero),
+            X87Chop53::mul(y, X87Chop53::neg(sin)),
+        ),
+        X87Chop53::mul(x, cos),
+    );
+    let transformed_y = X87Chop53::add(
+        X87Chop53::add(X87Chop53::mul(x, sin), X87Chop53::mul(z, zero)),
+        X87Chop53::mul(y, cos),
+    );
+    let transformed_z = X87Chop53::add(
+        X87Chop53::add(X87Chop53::mul(x, zero), X87Chop53::mul(z, one)),
+        X87Chop53::mul(y, zero),
+    );
+    TransformedVertex {
+        x: x87_store_f32(transformed_x),
+        y: x87_store_f32(transformed_y),
+        z: x87_store_f32(transformed_z),
+    }
+}
+
+fn type0_nonmagnetic_geometry_with_tables(
+    source: ProjectileCoord,
+    raw_target: ProjectileCoord,
+    trig: &TrigTable,
+    acos: &AcosTable,
+) -> Type0NonmagneticGeometry {
+    // Type 0's endpoint factor is exactly 1.0: +C0 is the owner, +B4 is the
+    // target with its post-ftol Sonic Z adjustment.
+    let target = ProjectileCoord::new(
+        raw_target.x,
+        raw_target.y,
+        raw_target.z.wrapping_add(SONIC_TARGET_Z_ADJUST),
+    );
+    let first_dx = X87Chop53::load_i32(target.x.wrapping_sub(source.x));
+    let first_dy = X87Chop53::load_i32(target.y.wrapping_sub(source.y));
+    let first_squared = X87Chop53::add(
+        X87Chop53::mul(first_dx, first_dx),
+        X87Chop53::mul(first_dy, first_dy),
+    );
+    let sqrt_bits =
+        sqrt_approx_f32(first_squared).expect("type-0 Wave horizontal squared length is finite");
+    let horizontal = x87_ftol_i32(load_f32(sqrt_bits));
+    let local_x = [
+        horizontal.wrapping_sub(30),
+        horizontal.wrapping_sub(30),
+        30,
+        30,
+    ];
+    let local_y = [-100, 100, -100, 100];
+
+    let local_z = if horizontal == 0 {
+        // The native masked divide/convert path produces NaN/Inf, then the low
+        // dword of integer-indefinite zeroes each cached Z. native_x87 rejects
+        // nonfinite values by design, so preserve the verified observable here.
+        [NativeF32Bits::POSITIVE_ZERO; 4]
+    } else {
+        let dz = X87Chop53::load_i32(source.z.wrapping_sub(target.z));
+        let divisor = X87Chop53::load_i32(horizontal);
+        local_x.map(|x| {
+            let slope = X87Chop53::div(X87Chop53::mul(X87Chop53::load_i32(x), dz), divisor)
+                .expect("nonzero Wave horizontal length divides in finite x87 domain");
+            x87_store_f32(X87Chop53::add(X87Chop53::load_i32(target.z), slope))
+        })
+    };
+
+    let angle_dx_i32 = source.x.wrapping_sub(target.x);
+    let angle_dy_i32 = source.y.wrapping_sub(target.y);
+    let angle_dx_f32 = x87_store_f32(X87Chop53::load_i32(angle_dx_i32));
+    let angle_squared = X87Chop53::add(
+        X87Chop53::mul(load_f32(angle_dx_f32), load_f32(angle_dx_f32)),
+        X87Chop53::mul(
+            X87Chop53::load_i32(angle_dy_i32),
+            X87Chop53::load_i32(angle_dy_i32),
+        ),
+    );
+    let angle_length_bits =
+        sqrt_approx_f32(angle_squared).expect("type-0 Wave angle squared length is finite");
+    let angle_length = load_f32(angle_length_bits);
+
+    let (acos_index, mut angle) = if horizontal == 0 {
+        let entry = NativeF32Bits::from_bits(acos.entry(0).to_bits());
+        (
+            0,
+            X87Chop53::sub(load_f64(PI_OVER_TWO_F64), load_f32(entry)),
+        )
+    } else {
+        let mut numerator = X87Chop53::load_i32(angle_dx_i32);
+        if X87Chop53::compare(numerator, angle_length) == X87Ordering::Greater {
+            numerator = angle_length;
+        }
+        let negative_length = X87Chop53::neg(angle_length);
+        if X87Chop53::compare(numerator, negative_length) == X87Ordering::Less {
+            numerator = negative_length;
+        }
+        let ratio = X87Chop53::div(numerator, angle_length)
+            .expect("nonzero Wave angle length divides in finite x87 domain");
+        let scaled = X87Chop53::mul(
+            X87Chop53::add(ratio, load_f32(NativeF32Bits::ONE)),
+            load_f32(NEGATIVE_2048_F32),
+        );
+        let raw_index = x87_ftol_i32(scaled).wrapping_neg() as usize;
+        let entry = NativeF32Bits::from_bits(acos.entry(raw_index).to_bits());
+        (
+            raw_index,
+            X87Chop53::sub(load_f64(PI_OVER_TWO_F64), load_f32(entry)),
+        )
+    };
+    if target.y > source.y {
+        angle = X87Chop53::neg(angle);
+    }
+    let angle_bits = x87_store_f32(angle);
+    let trig_units = x87_ftol_i32(X87Chop53::mul(
+        load_f32(angle_bits),
+        load_f32(TRIG_SCALE_F32),
+    ));
+    let sin_index = trig.sin_index(trig_units);
+    let cos_index = trig.cos_index(trig_units);
+    let sin = NativeF32Bits::from_bits(trig.entry(sin_index).to_bits());
+    let cos = NativeF32Bits::from_bits(trig.entry(cos_index).to_bits());
+
+    // Native transforms all four local points before translating/storing any
+    // world field. Keep that boundary visible.
+    let transformed = [
+        transform_type0_vertex(local_x[0], local_y[0], local_z[0], sin, cos),
+        transform_type0_vertex(local_x[1], local_y[1], local_z[1], sin, cos),
+        transform_type0_vertex(local_x[2], local_y[2], local_z[2], sin, cos),
+        transform_type0_vertex(local_x[3], local_y[3], local_z[3], sin, cos),
+    ];
+    let target_y_f32 = x87_store_f32(X87Chop53::load_i32(target.y));
+    let mut world = [ProjectileCoord::new(0, 0, 0); 4];
+    for (index, vertex) in transformed.into_iter().enumerate() {
+        let world_x = x87_ftol_i32(X87Chop53::add(
+            X87Chop53::load_i32(target.x),
+            load_f32(vertex.x),
+        ));
+        let target_y = if index == 0 {
+            X87Chop53::load_i32(target.y)
+        } else {
+            load_f32(target_y_f32)
+        };
+        let world_y = x87_ftol_i32(X87Chop53::add(target_y, load_f32(vertex.y)));
+        let world_z = x87_ftol_i32(load_f32(vertex.z));
+        world[index] = ProjectileCoord::new(world_x, world_y, world_z);
+    }
+
+    let edges = WaveEdgeGeometry {
+        firer_a: world[0],
+        firer_b: world[1],
+        target_a: world[2],
+        target_b: world[3],
+    };
+    let target_screen = project_wave_point(target);
+    let firer_b_screen = project_wave_point(edges.firer_b);
+    Type0NonmagneticGeometry {
+        source,
+        target,
+        edges,
+        direction_octant: direction_from_projected(target_screen, firer_b_screen),
+        horizontal,
+        sqrt_bits,
+        acos_index,
+        angle_bits,
+        trig_units,
+        sin_index,
+        cos_index,
+        target_screen,
+        firer_b_screen,
+    }
+}
+
+fn installed_wave_math_tables() -> (&'static TrigTable, &'static AcosTable) {
+    if let (Some(trig), Some(acos)) = (
+        crate::map::retail_trig::global(),
+        crate::map::retail_trig::global_acos(),
+    ) {
+        return (trig, acos);
+    }
+
+    #[cfg(test)]
+    {
+        use std::sync::OnceLock;
+        static TEST_TABLES: OnceLock<(TrigTable, AcosTable)> = OnceLock::new();
+        let tables = TEST_TABLES.get_or_init(|| {
+            let exact = std::env::var_os("RA2_DIR")
+                .and_then(|dir| {
+                    std::fs::read(std::path::PathBuf::from(dir).join("gamemd.exe")).ok()
+                })
+                .and_then(|image| {
+                    let trig = TrigTable::from_executable(&image).ok()?;
+                    let acos = AcosTable::from_executable(&image).ok()?;
+                    (trig.matches_retail() && acos.matches_retail()).then_some((trig, acos))
+                });
+            exact.unwrap_or_else(|| (TrigTable::synthetic(), AcosTable::synthetic()))
+        });
+        return (&tables.0, &tables.1);
+    }
+
+    #[cfg(not(test))]
+    panic!("verified gamemd sine/Acos tables were not installed before type-0 Wave geometry");
+}
+
+fn type0_nonmagnetic_geometry(
+    source: ProjectileCoord,
+    raw_target: ProjectileCoord,
+) -> Type0NonmagneticGeometry {
+    let (trig, acos) = installed_wave_math_tables();
+    type0_nonmagnetic_geometry_with_tables(source, raw_target, trig, acos)
+}
+
+fn legacy_nonmagnetic_edges(source: ProjectileCoord, target: ProjectileCoord) -> WaveEdgeGeometry {
+    // Preserve the pre-existing type-3 projection until its separate helper at
+    // 0x00762070 is exactified. Type 0 never reaches this host-float path.
     let dx = f64::from(target.x.wrapping_sub(source.x));
     let dy = f64::from(target.y.wrapping_sub(source.y));
     let dz = f64::from(target.z.wrapping_sub(source.z));
@@ -723,10 +1050,378 @@ mod tests {
         }
     }
 
+    fn exact_retail_wave_tables() -> Option<(TrigTable, AcosTable)> {
+        let dir = std::env::var_os("RA2_DIR")?;
+        let image = std::fs::read(std::path::PathBuf::from(dir).join("gamemd.exe")).ok()?;
+        let trig = TrigTable::from_executable(&image).ok()?;
+        let acos = AcosTable::from_executable(&image).ok()?;
+        (trig.matches_retail() && acos.matches_retail()).then_some((trig, acos))
+    }
+
     #[test]
     fn constructor_uses_strict_239_240_xy_edge() {
         assert!(!Wave::new(0, point(0, 0, 0), point(239, 0, 999)).constructor_distance_is_live());
         assert!(Wave::new(0, point(0, 0, 0), point(240, 0, -999)).constructor_distance_is_live());
+    }
+
+    #[test]
+    fn type0_nonmagnetic_geometry_matches_all_eight_machine_octants() {
+        let Some((trig, acos)) = exact_retail_wave_tables() else {
+            eprintln!("skipped: set RA2_DIR to the retail install to run exact Wave fixtures");
+            return;
+        };
+        struct Fixture {
+            target: (i32, i32),
+            horizontal: i32,
+            sqrt_bits: u32,
+            acos_index: usize,
+            angle_bits: u32,
+            edges: [(i32, i32, i32); 4],
+            screens: ((i32, i32), (i32, i32)),
+        }
+        let fixtures = [
+            Fixture {
+                target: (4352, 4224),
+                horizontal: 286,
+                sqrt_bits: 0x438f_1bbc,
+                acos_index: 216,
+                angle_bits: 0xc02b_6743,
+                edges: [
+                    (4078, 4198, 5),
+                    (4167, 4019, 5),
+                    (4280, 4299, 44),
+                    (4370, 4121, 44),
+                ],
+                screens: ((15, 495), (17, 478)),
+            },
+            Fixture {
+                target: (4352, 4352),
+                horizontal: 362,
+                sqrt_bits: 0x43b5_04f3,
+                acos_index: 599,
+                angle_bits: 0xc016_d574,
+                edges: [
+                    (4046, 4187, 4),
+                    (4188, 4046, 4),
+                    (4260, 4401, 45),
+                    (4401, 4260, 45),
+                ],
+                screens: ((0, 503), (16, 481)),
+            },
+            Fixture {
+                target: (4096, 4352),
+                horizontal: 256,
+                sqrt_bits: 0x4380_0000,
+                acos_index: 2048,
+                angle_bits: 0xbfc9_0fda,
+                edges: [
+                    (3996, 4125, 5),
+                    (4196, 4126, 5),
+                    (3996, 4321, 44),
+                    (4196, 4322, 44),
+                ],
+                screens: ((-30, 488), (8, 486)),
+            },
+            Fixture {
+                target: (3840, 4096),
+                horizontal: 256,
+                sqrt_bits: 0x4380_0000,
+                acos_index: 4096,
+                angle_bits: 0x33a2_2168,
+                edges: [
+                    (4066, 3996, 5),
+                    (4066, 4196, 5),
+                    (3870, 3996, 44),
+                    (3870, 4196, 44),
+                ],
+                screens: ((-30, 458), (-15, 483)),
+            },
+            Fixture {
+                target: (3840, 3968),
+                horizontal: 286,
+                sqrt_bits: 0x438f_1bbc,
+                acos_index: 3879,
+                angle_bits: 0x3eed_d3be,
+                edges: [
+                    (4113, 3993, 5),
+                    (4024, 4172, 5),
+                    (3911, 3892, 44),
+                    (3821, 4070, 44),
+                ],
+                screens: ((-15, 450), (-17, 479)),
+            },
+            Fixture {
+                target: (3968, 3840),
+                horizontal: 286,
+                sqrt_bits: 0x438f_1bbc,
+                acos_index: 2963,
+                angle_bits: 0x3f8d_c707,
+                edges: [
+                    (4171, 4024, 5),
+                    (3992, 4113, 5),
+                    (4070, 3822, 44),
+                    (3891, 3911, 44),
+                ],
+                screens: ((15, 450), (-14, 473)),
+            },
+            Fixture {
+                target: (4096, 3840),
+                horizontal: 256,
+                sqrt_bits: 0x4380_0000,
+                acos_index: 2048,
+                angle_bits: 0x3fc9_0fda,
+                edges: [
+                    (4196, 4065, 5),
+                    (3996, 4066, 5),
+                    (4196, 3869, 44),
+                    (3996, 3870, 44),
+                ],
+                screens: ((30, 458), (-8, 471)),
+            },
+            Fixture {
+                target: (4352, 4096),
+                horizontal: 256,
+                sqrt_bits: 0x4380_0000,
+                acos_index: 0,
+                angle_bits: 0x4049_0fda,
+                edges: [
+                    (4126, 4196, 5),
+                    (4126, 3996, 5),
+                    (4322, 4196, 44),
+                    (4322, 3996, 44),
+                ],
+                screens: ((30, 488), (15, 474)),
+            },
+        ];
+
+        for (direction, fixture) in fixtures.into_iter().enumerate() {
+            let geometry = type0_nonmagnetic_geometry_with_tables(
+                point(4096, 4096, 0),
+                point(fixture.target.0, fixture.target.1, 0),
+                &trig,
+                &acos,
+            );
+            assert_eq!(
+                geometry.horizontal, fixture.horizontal,
+                "direction {direction}"
+            );
+            assert_eq!(
+                geometry.sqrt_bits.bits(),
+                fixture.sqrt_bits,
+                "direction {direction}"
+            );
+            assert_eq!(
+                geometry.acos_index, fixture.acos_index,
+                "direction {direction}"
+            );
+            assert_eq!(
+                geometry.angle_bits.bits(),
+                fixture.angle_bits,
+                "direction {direction}"
+            );
+            assert_eq!(
+                [
+                    geometry.edges.firer_a,
+                    geometry.edges.firer_b,
+                    geometry.edges.target_a,
+                    geometry.edges.target_b
+                ]
+                .map(|coord| (coord.x, coord.y, coord.z)),
+                fixture.edges,
+                "direction {direction}"
+            );
+            assert_eq!(
+                (geometry.target_screen, geometry.firer_b_screen),
+                fixture.screens
+            );
+            assert_eq!(geometry.direction_octant, direction as i32);
+        }
+    }
+
+    #[test]
+    fn type0_nonmagnetic_geometry_matches_signed_edges_and_nonflat_z() {
+        let Some((trig, acos)) = exact_retail_wave_tables() else {
+            eprintln!("skipped: set RA2_DIR to the retail install to run exact Wave fixtures");
+            return;
+        };
+        let fixtures = [
+            (
+                point(1024, 1024, 0),
+                point(255, 255, 0),
+                1087,
+                0x4487_f0f0,
+                [
+                    (1073, 931, 1),
+                    (931, 1073, 1),
+                    (346, 205, 48),
+                    (205, 346, 48),
+                ],
+                [(4, 3), (3, 4), (1, 0), (0, 1)],
+                4,
+            ),
+            (
+                point(1024, 1024, 0),
+                point(256, 256, 0),
+                1086,
+                0x4487_c3b6,
+                [
+                    (1073, 931, 1),
+                    (931, 1073, 1),
+                    (347, 206, 48),
+                    (206, 347, 48),
+                ],
+                [(4, 3), (3, 4), (1, 0), (0, 1)],
+                4,
+            ),
+            (
+                point(512, 512, 0),
+                point(-255, -255, 0),
+                1084,
+                0x4487_966d,
+                [
+                    (561, 419, 1),
+                    (419, 561, 1),
+                    (-163, -304, 48),
+                    (-304, -163, 48),
+                ],
+                [(2, 1), (1, 2), (0, -1), (-1, 0)],
+                4,
+            ),
+            (
+                point(512, 512, 0),
+                point(-256, -256, 0),
+                1086,
+                0x4487_c3b6,
+                [
+                    (561, 419, 1),
+                    (419, 561, 1),
+                    (-164, -305, 48),
+                    (-305, -164, 48),
+                ],
+                [(2, 1), (1, 2), (0, -1), (-1, 0)],
+                4,
+            ),
+            (
+                point(513, -257, 180),
+                point(-260, 769, 646),
+                1284,
+                0x44a0_92ef,
+                [
+                    (414, -292, 192),
+                    (574, -172, 192),
+                    (-321, 684, 683),
+                    (-162, 805, 683),
+                ],
+                [(1, -1), (2, 0), (-1, 2), (0, 3)],
+                2,
+            ),
+        ];
+        for (source, target, horizontal, sqrt_bits, expected, cells, direction) in fixtures {
+            let geometry = type0_nonmagnetic_geometry_with_tables(source, target, &trig, &acos);
+            let edges = [
+                geometry.edges.firer_a,
+                geometry.edges.firer_b,
+                geometry.edges.target_a,
+                geometry.edges.target_b,
+            ];
+            assert_eq!(geometry.horizontal, horizontal);
+            assert_eq!(geometry.sqrt_bits.bits(), sqrt_bits);
+            assert_eq!(edges.map(|coord| (coord.x, coord.y, coord.z)), expected);
+            assert_eq!(edges.map(lepton_cell), cells);
+            assert_eq!(geometry.direction_octant, direction);
+        }
+    }
+
+    #[test]
+    fn converged_live_type0_geometry_keeps_native_exceptional_quad() {
+        let Some((trig, acos)) = exact_retail_wave_tables() else {
+            eprintln!("skipped: set RA2_DIR to the retail install to run exact Wave fixtures");
+            return;
+        };
+        let geometry = type0_nonmagnetic_geometry_with_tables(
+            point(4096, 4096, 0),
+            point(4096, 4096, 0),
+            &trig,
+            &acos,
+        );
+        let edges = [
+            geometry.edges.firer_a,
+            geometry.edges.firer_b,
+            geometry.edges.target_a,
+            geometry.edges.target_b,
+        ];
+        assert_eq!(geometry.horizontal, 0);
+        assert_eq!(geometry.acos_index, 0);
+        assert_eq!(geometry.angle_bits.bits(), 0x4049_0fda);
+        assert_eq!(geometry.trig_units, 8191);
+        assert_eq!((geometry.sin_index, geometry.cos_index), (4096, 6144));
+        assert_eq!(edges.map(|coord| coord.z), [0; 4]);
+        assert_eq!(
+            edges
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn type0_live_refresh_preserves_constructor_projected_direction() {
+        let target_ref = TargetKind::Cell(17, 16);
+        let source = point(4096, 4096, 0);
+        let initial_target = point(4352, 4096, 0);
+        let mut wave = Wave::new_owned(0, 7, target_ref, source, initial_target);
+        assert!(!wave.initialize(
+            WaveUpdateContext {
+                owner_position: Some(source),
+                owner_current_target: Some(target_ref),
+                target_position: Some(initial_target),
+            },
+            None,
+        ));
+        assert_eq!(wave.direction_octant, 7);
+
+        let moved_target = point(3840, 4096, 0);
+        let _ = wave.advance(
+            WaveUpdateContext {
+                owner_position: Some(source),
+                owner_current_target: Some(target_ref),
+                target_position: Some(moved_target),
+            },
+            None,
+        );
+        assert_eq!(wave.direction_octant, 7);
+        assert_eq!(
+            wave.edge_geometry,
+            type0_nonmagnetic_geometry(source, moved_target).edges
+        );
+    }
+
+    #[test]
+    fn inactive_update_cells_uses_exact_fc_108_114_120_identities() {
+        let terrain = flat_terrain(8, 8);
+        let geometry = type0_nonmagnetic_geometry(point(1024, 1024, 0), point(255, 255, 0));
+        let mut wave = Wave::new(0, geometry.source, geometry.target);
+        wave.apply_type0_geometry(geometry);
+        wave.active_geometry = false;
+        wave.fade_in = f32_to_f64(STEP_F32);
+        wave.fade_out = f32_to_f64(STEP_F32);
+
+        // direction<4 traces +0x114 -> +0xFC before the centerline.
+        wave.direction_octant = 3;
+        wave.update_cells(Some(&terrain));
+        assert_eq!(
+            wave.recorded_cells,
+            vec![WaveRecordedCell::real(1, 0), WaveRecordedCell::real(1, 1)]
+        );
+
+        // direction>=4 traces the centerline before +0x120 -> +0x108.
+        wave.direction_octant = 4;
+        wave.update_cells(Some(&terrain));
+        assert_eq!(
+            wave.recorded_cells,
+            vec![WaveRecordedCell::real(1, 1), WaveRecordedCell::real(0, 1)]
+        );
     }
 
     #[test]
