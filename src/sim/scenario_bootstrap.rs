@@ -14,9 +14,14 @@ use crate::map::map_file::MapFile;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::waypoints::Waypoint;
 use crate::rng_continuation::MapGenRngContinuation;
+use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
-use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
+use crate::sim::cell_rect::PlayfieldBounds;
+use crate::sim::find_nearby_cell::{
+    NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, find_nearby_passable_cell,
+    map_owned_radius_cap,
+};
 use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_edge};
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::rng::{SimRng, SimRngLogicalState};
@@ -95,6 +100,8 @@ pub(crate) fn native_gather_start_positions(
     occupancy: &crate::sim::occupancy::OccupancyGrid,
     bounds: NativeStartBounds,
     playfield_bounds: Option<PlayfieldBounds>,
+    map_size_height: Option<i32>,
+    binary_frame: u32,
     rng: &mut SimRng,
 ) -> Vec<Waypoint> {
     let authored_prefix = (0..8u32)
@@ -131,8 +138,9 @@ pub(crate) fn native_gather_start_positions(
         let Some((rx, ry)) = find_nearby_start_rect(
             terrain,
             occupancy,
-            bounds,
             playfield_bounds,
+            map_size_height,
+            binary_frame,
             seed_rx,
             seed_ry,
         ) else {
@@ -148,65 +156,59 @@ pub(crate) fn native_gather_start_positions(
     starts
 }
 
-/// Reduced active call-shape of FootClass::Find_Nearby_Passable_Cell used by
-/// start gathering: scan square rings from the seed, finish the first ring
-/// containing an 8x8 passable candidate, and select its first candidate at
-/// frame zero.
+/// Exact deficient-start adapter over the shared MapClass FNPC mechanism.
+///
+/// The caller's `8,8` are top-left CellRect dimensions, not a search radius.
+/// Radius comes from the separately retained MapClass Size pair, and a missing
+/// Size/playfield authority rejects the query instead of approximating it.
+// gamemd-derived: `ScenarioClass::Gather_Start_Positions @ 0x00688380`, call
+// `0x006885B5`, passes `(Track, -1, Normal, bridge-aware=0, 8x8,
+// reject-overlay=0, height=0, obstacle=0, allow-bridge=1, null-reference,
+// param15=0, final-occupancy=0)` to
+// `MapClass::Find_Nearby_Passable_Cell @ 0x0056DC20`.
 pub(crate) fn find_nearby_start_rect(
     terrain: &ResolvedTerrainGrid,
     occupancy: &crate::sim::occupancy::OccupancyGrid,
-    bounds: NativeStartBounds,
     playfield_bounds: Option<PlayfieldBounds>,
+    map_size_height: Option<i32>,
+    binary_frame: u32,
     seed_rx: u16,
     seed_ry: u16,
 ) -> Option<(u16, u16)> {
-    for radius in 0..32i32 {
-        let mut ring = Vec::new();
-        let r = radius;
-        for dx in -r..=r {
-            ring.push((i32::from(seed_rx) + dx, i32::from(seed_ry) - r));
-            if r != 0 {
-                ring.push((i32::from(seed_rx) + dx, i32::from(seed_ry) + r));
-            }
-        }
-        for dy in (1 - r)..r {
-            ring.push((i32::from(seed_rx) - r, i32::from(seed_ry) + dy));
-            if r != 0 {
-                ring.push((i32::from(seed_rx) + r, i32::from(seed_ry) + dy));
-            }
-        }
-
-        let mut accepted = Vec::new();
-        for (rx, ry) in ring {
-            if rx < i32::from(bounds.min_rx)
-                || ry < i32::from(bounds.min_ry)
-                || rx + i32::from(DEFICIENT_START_RECT_W) - 1 > i32::from(bounds.max_rx())
-                || ry + i32::from(DEFICIENT_START_RECT_H) - 1 > i32::from(bounds.max_ry())
-            {
-                continue;
-            }
-            // gamemd-derived: active YR `FootClass__Find_Nearby_Passable_Cell
-            // @ 0x0056DC20` applies `MapClass__Is_Cell_In_Playfield_CellClass
-            // @ 0x00578540` to the candidate anchor before
-            // `CellRect__CheckPassability @ 0x0056E7C0` scans its 8x8 rect.
-            // Only the anchor is diamond-gated; requiring all 64 cells to lie in
-            // the diamond would be stricter than retail.
-            if !cell_is_in_playfield_height_aware((rx, ry), playfield_bounds, Some(terrain)) {
-                continue;
-            }
-            let (rx, ry) = (rx as u16, ry as u16);
-            if deficient_start_rect_track_passable(terrain, occupancy, rx, ry) {
-                accepted.push((rx, ry));
-                if accepted.len() == 24 {
-                    break;
-                }
-            }
-        }
-        if let Some(first) = accepted.first().copied() {
-            return Some(first);
-        }
-    }
-    None
+    let bounds = playfield_bounds?;
+    let size_height = map_size_height?;
+    let query = NearbyQuery {
+        passability: PassabilityArgs {
+            speed_type: SpeedType::Track,
+            required_zone_id: None,
+            movement_zone: MovementZone::Normal,
+            bridge_aware_zone: false,
+        },
+        footprint: NearbyFootprint::new(
+            i32::from(DEFICIENT_START_RECT_W),
+            i32::from(DEFICIENT_START_RECT_H),
+        ),
+        anchor_gate: NearbyAnchorGate::NativeHeightAware,
+        allow_bridge_cells: true,
+        check_height: false,
+        check_occupancy: false,
+        radius_cap: map_owned_radius_cap(bounds.base, size_height),
+        target_cell: None,
+        path_grid: None,
+        resolved_terrain: Some(terrain),
+        overlay_grid: None,
+        // CellRect passability reads the native occupation plane even though the
+        // caller disables the later, distinct CheckOccupancy rectangle gate.
+        occupancy: Some(occupancy),
+        entities: None,
+        zone_grid: None,
+        playfield_bounds: Some(bounds),
+    };
+    find_nearby_passable_cell(
+        (i32::from(seed_rx), i32::from(seed_ry)),
+        &query,
+        binary_frame,
+    )
 }
 
 /// Assign the gathered vector through standard Battle mode's `+0x84` callback.
@@ -560,35 +562,6 @@ pub(crate) fn native_start_distance(left: Waypoint, right: Waypoint) -> i32 {
 
 const DEFICIENT_START_RECT_W: u16 = 8;
 const DEFICIENT_START_RECT_H: u16 = 8;
-
-pub(crate) fn deficient_start_rect_track_passable(
-    terrain: &ResolvedTerrainGrid,
-    occupancy: &crate::sim::occupancy::OccupancyGrid,
-    rx: u16,
-    ry: u16,
-) -> bool {
-    crate::sim::cell_rect::check_passability_rect(
-        crate::sim::cell_rect::CellRectPassabilityContext {
-            rect: crate::sim::cell_rect::CellRect::new(
-                i32::from(rx),
-                i32::from(ry),
-                i32::from(DEFICIENT_START_RECT_W),
-                i32::from(DEFICIENT_START_RECT_H),
-            ),
-            speed_type: crate::rules::locomotor_type::SpeedType::Track,
-            required_zone_id: None,
-            movement_zone: crate::rules::locomotor_type::MovementZone::Normal,
-            required_height_or_level: None,
-            bridge_aware_zone: false,
-            reject_any_overlay: false,
-            path_grid: None,
-            resolved_terrain: Some(terrain),
-            overlay_grid: None,
-            occupancy: Some(occupancy),
-            zone_grid: None,
-        },
-    )
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkirmishLaunchApplyResult {
@@ -1712,6 +1685,8 @@ impl Simulation {
         terrain: &ResolvedTerrainGrid,
         bounds: NativeStartBounds,
     ) -> Vec<Waypoint> {
+        let map_size_height = self.playfield_size_height;
+        let binary_frame = self.session.binary_frame;
         native_gather_start_positions(
             waypoints,
             participant_count,
@@ -1719,6 +1694,8 @@ impl Simulation {
             &self.substrate.occupancy,
             bounds,
             self.playfield_bounds,
+            map_size_height,
+            binary_frame,
             &mut self.scenario_rng,
         )
     }

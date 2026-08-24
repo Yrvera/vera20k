@@ -354,7 +354,9 @@ fn nearby_query_for_spawn<'a>(
     require_water: bool,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 ) -> crate::sim::find_nearby_cell::NearbyQuery<'a> {
-    use crate::sim::find_nearby_cell::{NearbyQuery, PassabilityArgs};
+    use crate::sim::find_nearby_cell::{
+        NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs,
+    };
     let movement_zone = if require_water {
         MovementZone::Water
     } else {
@@ -367,6 +369,8 @@ fn nearby_query_for_spawn<'a>(
             movement_zone,
             bridge_aware_zone: false,
         },
+        footprint: NearbyFootprint::SINGLE,
+        anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
         allow_bridge_cells: true,
         check_height: false,
         check_occupancy: true,
@@ -963,7 +967,8 @@ mod tests {
         // a cell the legacy predicate would accept — surfacing search-shape divergence
         // without flipping any authoritative output.
         use crate::sim::find_nearby_cell::{
-            NearbyQuery, PassabilityArgs, RADIUS_HARD_CAP, find_nearby_passable_cell,
+            NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, RADIUS_HARD_CAP,
+            find_nearby_passable_cell,
         };
         let terrain = flat_terrain(7, 7);
         let path_grid = PathGrid::from_resolved_terrain(&terrain);
@@ -981,6 +986,8 @@ mod tests {
                 movement_zone: movement_profile.movement_zone,
                 bridge_aware_zone: false,
             },
+            footprint: NearbyFootprint::SINGLE,
+            anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
             allow_bridge_cells: true,
             check_height: false,
             check_occupancy: true,

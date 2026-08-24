@@ -27,7 +27,9 @@ use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::ruleset::{CrateRules, RuleSet};
 use crate::rules::terrain_rules::LandType;
 use crate::sim::cell_rect::cell_is_in_playfield_height_aware;
-use crate::sim::find_nearby_cell::{NearbyQuery, PassabilityArgs, find_nearby_passable_cell};
+use crate::sim::find_nearby_cell::{
+    NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, find_nearby_passable_cell,
+};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
@@ -262,6 +264,8 @@ fn snap_to_passable(
             movement_zone: MovementZone::Normal,
             bridge_aware_zone: false,
         },
+        footprint: NearbyFootprint::SINGLE,
+        anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
         allow_bridge_cells: true,
         check_height: false,
         check_occupancy: false,
