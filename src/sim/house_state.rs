@@ -72,6 +72,54 @@ pub struct HouseOutcomeState {
     pub exit_ready: bool,
 }
 
+/// Persistent HouseClass strategy-emergency state.
+///
+/// Native provenance:
+/// - `House+0x250`: signed emergency mode, constructor zero;
+/// - `House+0x249`: persistent All-To-Hunt candidate-bias latch;
+/// - `House+0x54D8`: signed frame of the last Building damage admission.
+///
+/// The live Strategy scheduler and its independent timers do not belong in
+/// this value. This is only the state consumed by the post-superweapon
+/// emergency block at `HouseClass__AI_Building_Strategy @ 0x004FD7A0`.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct HouseStrategyEmergencyState {
+    pub(crate) mode: i32,
+    pub(crate) all_to_hunt_bias: bool,
+    pub(crate) last_building_attack_frame: i32,
+}
+
+impl HouseStrategyEmergencyState {
+    pub(crate) const fn mode(&self) -> i32 {
+        self.mode
+    }
+
+    pub(crate) const fn all_to_hunt_bias(&self) -> bool {
+        self.all_to_hunt_bias
+    }
+
+    pub(crate) const fn last_building_attack_frame(&self) -> i32 {
+        self.last_building_attack_frame
+    }
+
+    /// Trigger action 9 and Team script opcode 30 write state four directly.
+    pub(crate) fn set_state_four(&mut self) {
+        self.mode = 4;
+    }
+
+    /// Called only after the exact All-To-Hunt reverse scan completes.
+    pub(crate) fn set_all_to_hunt_bias(&mut self) {
+        self.all_to_hunt_bias = true;
+    }
+
+    /// Native Building damage admission writes the current signed frame.
+    pub(crate) fn note_building_attack(&mut self, current_frame: i32) {
+        self.last_building_attack_frame = current_frame;
+    }
+}
+
 /// Writer-owned `BaseClass` state embedded in native `HouseClass`.
 ///
 /// `BuildingClass::MarkBaseReservation @ 0x00455F10` updates the four bounds on
@@ -269,6 +317,9 @@ pub struct HouseState {
     /// (`spent_credits`/`harvested_credits`/`purifier_count`) ARE serialized + hashed
     /// as of the flip.
     pub economy: Economy,
+    /// Snapshot/hash authority for the Strategy emergency-state block.
+    #[serde(default)]
+    pub strategy_emergency: HouseStrategyEmergencyState,
 }
 
 impl HouseState {
@@ -363,6 +414,7 @@ impl HouseState {
             waypoint_edge: 0,
             stats: MatchStatistics::default(),
             economy: Economy::default(),
+            strategy_emergency: HouseStrategyEmergencyState::default(),
         }
     }
 }

@@ -281,7 +281,10 @@ use crate::sim::world::Simulation;
 // Bumped 91 -> 92: persist each House's BaseClass reservation bounds/vector;
 // the process-global reservation dummy mask remains outside the payload and
 // reconstructs cleared like native CellClass save/load.
-const SNAPSHOT_VERSION: u32 = 92;
+// Bumped 92 -> 93: HouseState gains the serialized/hash-authoritative strategy
+// emergency mode, persistent All-To-Hunt target-bias latch, and signed last-
+// Building-attack frame. Bincode cannot safely default an absent struct tail.
+const SNAPSHOT_VERSION: u32 = 93;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2609,10 +2612,39 @@ mod tests {
     /// 90 -> 91 adds the held factory object's completion-accounted latch so
     /// delivery retries cannot replay completion after load; 91 -> 92 adds the
     /// persisted per-house BaseClass reservation bounds/vector while retaining
-    /// the native reconstruct-cleared reservation dummy mask.
+    /// the native reconstruct-cleared reservation dummy mask; 92 -> 93 adds
+    /// House strategy emergency state.
     #[test]
-    fn phase3_base_reservation_snapshot_version_is_92() {
-        assert_eq!(super::SNAPSHOT_VERSION, 92);
+    fn phase3_house_strategy_snapshot_version_is_93() {
+        assert_eq!(super::SNAPSHOT_VERSION, 93);
+    }
+
+    #[test]
+    fn gsi_04_05_house_strategy_emergency_state_roundtrips_with_hash() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let mut house = crate::sim::house_state::HouseState::new(
+            owner, 0, None, false, 10_000, 10,
+        );
+        house.strategy_emergency.set_state_four();
+        house.strategy_emergency.set_all_to_hunt_bias();
+        house.strategy_emergency.note_building_attack(-17);
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_05_strategy", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("v93 snapshot").sim;
+        let emergency = &restored.houses[&owner].strategy_emergency;
+        assert_eq!(emergency.mode(), 4);
+        assert!(emergency.all_to_hunt_bias());
+        assert_eq!(emergency.last_building_attack_frame(), -17);
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]

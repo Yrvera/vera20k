@@ -549,6 +549,7 @@ impl Simulation {
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
             house.current_iq.hash(hasher);
+            house.strategy_emergency.hash(hasher);
             house.grudge_scores.len().hash(hasher);
             for (other, score) in &house.grudge_scores {
                 other.hash(hasher);
@@ -2272,6 +2273,51 @@ mod rally_hash_tests {
         sim_b.houses.insert(owner_b, changed);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_05_house_strategy_emergency_fields_each_change_world_hash() {
+        use crate::sim::house_state::HouseState;
+
+        fn fixture() -> (Simulation, crate::sim::intern::InternedId) {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Computer1");
+            sim.houses
+                .insert(owner, HouseState::new(owner, 0, None, false, 0, 10));
+            (sim, owner)
+        }
+
+        let (baseline, _) = fixture();
+        let baseline_hash = baseline.state_hash();
+
+        let (mut mode, owner) = fixture();
+        mode.houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .mode = 4;
+        assert_ne!(baseline_hash, mode.state_hash(), "mode is hashed");
+
+        let (mut bias, owner) = fixture();
+        bias.houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .all_to_hunt_bias = true;
+        assert_ne!(baseline_hash, bias.state_hash(), "bias latch is hashed");
+
+        let (mut attack_frame, owner) = fixture();
+        attack_frame
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .last_building_attack_frame = -17;
+        assert_ne!(
+            baseline_hash,
+            attack_frame.state_hash(),
+            "last Building attack frame is hashed"
+        );
     }
 
     #[test]
