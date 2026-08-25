@@ -165,6 +165,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
         special_flags: crate::map::basic::SpecialFlagsSection::default(),
         ini: IniFile::from_str(""),
         cells: Vec::new(),
+        iso_map_pack_lookups: Vec::new(),
         entities: Vec::new(),
         overlays: Vec::new(),
         overlay_data: crate::map::overlay::OverlayDataPack::default(),

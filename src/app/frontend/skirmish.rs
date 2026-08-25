@@ -408,6 +408,7 @@ mod tests {
             briefing: crate::map::briefing::BriefingSection::default(),
             preview: crate::map::preview::PreviewSection::default(),
             cells: Vec::new(),
+            iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
             overlays: Vec::new(),
             overlay_data: crate::map::overlay::OverlayDataPack::default(),

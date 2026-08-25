@@ -1374,7 +1374,7 @@ impl ResolvedTerrainGrid {
             variant_selector.as_deref_mut(),
             scenario_fill_ranged.as_deref_mut(),
         ) {
-            materialize_map_load_cells(map, selector, fill_ranged)
+            materialize_map_load_cells(map, selector, fill_ranged, &shared_cell_dummy)
         } else {
             // The selector-free constructor is retained for focused tests and
             // synthetic grids. Production always takes the native load path.
@@ -2976,6 +2976,7 @@ fn materialize_map_load_cells(
     map: &MapFile,
     selector: &mut TileVariantSelectionContext<'_, '_>,
     scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
+    shared_cell_dummy: &SharedCellDummy,
 ) -> Vec<MapCell> {
     let n = map.header.width;
     let m = map.header.height;
@@ -3024,6 +3025,31 @@ fn materialize_map_load_cells(
         }
     }
     debug_assert_eq!(cells.len(), expected_count);
+
+    // gamemd.exe IsoMapPack5 decoder @ 0x0056BAC0: every OOB or null-slot
+    // lookup stamps its exact raw header into the fixed dummy's CellStruct
+    // before consuming (but not applying) the payload. Valid lookups never
+    // touch the dummy, so replaying only misses here preserves stream order's
+    // last writer while keeping the parser pure and payload authority real-only.
+    if map.iso_map_pack_lookups.is_empty() {
+        // Synthetic/RMG constructors have no decoder trace. Retain their
+        // established manual-cell behavior while giving canonical misses the
+        // same dummy-coordinate side effect as a native lookup.
+        for explicit in &map.cells {
+            if !index_by_coord.contains_key(&(explicit.rx, explicit.ry)) {
+                shared_cell_dummy.stamp_coord(i32::from(explicit.rx), i32::from(explicit.ry));
+            }
+        }
+    } else {
+        for lookup in &map.iso_map_pack_lookups {
+            let misses_real_slot = lookup
+                .canonical
+                .is_none_or(|coord| !index_by_coord.contains_key(&coord));
+            if misses_real_slot {
+                shared_cell_dummy.stamp_coord(i32::from(lookup.raw_x), i32::from(lookup.raw_y));
+            }
+        }
+    }
 
     for explicit in &map.cells {
         let Some(&index) = index_by_coord.get(&(explicit.rx, explicit.ry)) else {
@@ -3161,6 +3187,7 @@ mod tests {
             briefing: crate::map::briefing::BriefingSection::default(),
             preview: crate::map::preview::PreviewSection::default(),
             cells,
+            iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
             overlays,
             overlay_data: crate::map::overlay::OverlayDataPack::default(),
@@ -3568,6 +3595,122 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_01_isomap_misses_stamp_raw_coord_without_payload_leak() {
+        let mut map = make_map(
+            vec![
+                MapCell {
+                    rx: 2,
+                    ry: 1,
+                    tile_index: 41,
+                    sub_tile: 4,
+                    z: 5,
+                },
+                MapCell {
+                    rx: 3,
+                    ry: 1,
+                    tile_index: 99,
+                    sub_tile: 9,
+                    z: 10,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 2;
+        map.header.height = 1;
+        map.iso_map_pack_lookups = vec![
+            crate::map::map_file::IsoMapPackLookup {
+                raw_x: -1,
+                raw_y: 0,
+                canonical: None,
+            },
+            crate::map::map_file::IsoMapPackLookup {
+                raw_x: -510,
+                raw_y: 2,
+                canonical: Some((2, 1)),
+            },
+            crate::map::map_file::IsoMapPackLookup {
+                raw_x: -509,
+                raw_y: 2,
+                canonical: Some((3, 1)),
+            },
+        ];
+
+        let dummy = SharedCellDummy::fresh();
+        dummy.stamp_coord(90, 91);
+        dummy.set_level_slope(-7, 11);
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut forbidden_main = || panic!("materialization must not draw Main");
+        let mut selector = cache.begin_load(&mut forbidden_main);
+        let mut fill = |_low, _high| 0;
+
+        let cells = materialize_map_load_cells(&map, &mut selector, &mut fill, &dummy);
+
+        let real = cells
+            .iter()
+            .find(|cell| (cell.rx, cell.ry) == (2, 1))
+            .expect("aliased lookup resolves to an allocated real cell");
+        assert_eq!((real.tile_index, real.sub_tile, real.z), (41, 4, 5));
+        assert!(
+            cells.iter().all(|cell| cell.tile_index != 99),
+            "null-slot payload must not leak into a real CellClass"
+        );
+        assert_eq!(
+            dummy.snapshot(),
+            SharedCellDummySnapshot {
+                coord: (-509, 2),
+                level: -7,
+                slope_type: 11,
+                bridge_flags_0x1180: 0,
+            },
+            "the last miss stamps its raw request and preserves non-coordinate bytes"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_valid_isomap_lookup_does_not_stamp_dummy() {
+        let mut map = make_map(
+            vec![MapCell {
+                rx: 2,
+                ry: 1,
+                tile_index: 41,
+                sub_tile: 4,
+                z: 5,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 2;
+        map.header.height = 1;
+        map.iso_map_pack_lookups = vec![crate::map::map_file::IsoMapPackLookup {
+            raw_x: -510,
+            raw_y: 2,
+            canonical: Some((2, 1)),
+        }];
+
+        let dummy = SharedCellDummy::fresh();
+        dummy.stamp_coord(-7, 11);
+        dummy.set_level_slope(-3, 9);
+        dummy.set_bridge_flags_0x1180(BRIDGE_FLAG_ANCHOR_SELF);
+        let expected_dummy = dummy.snapshot();
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut forbidden_main = || panic!("materialization must not draw Main");
+        let mut selector = cache.begin_load(&mut forbidden_main);
+        let mut fill = |_low, _high| 0;
+
+        let cells = materialize_map_load_cells(&map, &mut selector, &mut fill, &dummy);
+
+        assert_eq!(dummy.snapshot(), expected_dummy);
+        assert_eq!(
+            cells
+                .iter()
+                .find(|cell| (cell.rx, cell.ry) == (2, 1))
+                .map(|cell| (cell.tile_index, cell.sub_tile, cell.z)),
+            Some((41, 4, 5))
+        );
+    }
+
+    #[test]
     fn gsi_04_01_runtime_setter_uses_native_real_or_dummy_order() {
         let cells = (0..3)
             .flat_map(|ry| (0..3).map(move |rx| make_test_cell(rx, ry)))
@@ -3733,7 +3876,12 @@ mod tests {
         let mut main_draw = || main_rng.next_u32();
         {
             let mut selector = cache.begin_load(&mut main_draw);
-            let cells = materialize_map_load_cells(&map, &mut selector, &mut scenario_fill_ranged);
+            let cells = materialize_map_load_cells(
+                &map,
+                &mut selector,
+                &mut scenario_fill_ranged,
+                &SharedCellDummy::fresh(),
+            );
             let coords: Vec<_> = cells.iter().map(|cell| (cell.rx, cell.ry)).collect();
             assert_eq!(
                 coords,
@@ -3804,7 +3952,12 @@ mod tests {
                 assert_eq!((low, high), (0, 0));
                 scenario_rng.next_range_u32_inclusive(low, high)
             };
-            let cells = materialize_map_load_cells(&map, &mut selector, &mut scenario_fill_ranged);
+            let cells = materialize_map_load_cells(
+                &map,
+                &mut selector,
+                &mut scenario_fill_ranged,
+                &SharedCellDummy::fresh(),
+            );
             drop(scenario_fill_ranged);
 
             assert_eq!(cells.len(), 10);
