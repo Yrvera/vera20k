@@ -124,6 +124,7 @@ fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
     assert!(sim.take_master_frame_test_trace().starts_with(&[
         MasterFrameTestRung::SessionCommands,
         MasterFrameTestRung::Triggers,
+        MasterFrameTestRung::TeamScript,
         MasterFrameTestRung::LogicVector,
     ]));
 }

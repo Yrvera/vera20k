@@ -33,10 +33,16 @@ fn team_script_vm_advances_in_the_master_frame_and_survives_save_load() {
     let heights = BTreeMap::new();
 
     original.advance_tick(&[], None, &heights, None, None, 67);
-    assert!(
-        original
-            .take_master_frame_test_trace()
-            .contains(&MasterFrameTestRung::TeamScript)
+    let trace = original.take_master_frame_test_trace();
+    assert_eq!(
+        &trace[..4],
+        &[
+            MasterFrameTestRung::SessionCommands,
+            MasterFrameTestRung::Triggers,
+            MasterFrameTestRung::TeamScript,
+            MasterFrameTestRung::LogicVector,
+        ],
+        "native TeamClass AI must finish before any live LogicClass object visit"
     );
     let team = original.team_script_vm.team(team_id).expect("team");
     assert_eq!(team.cursor(), 0);

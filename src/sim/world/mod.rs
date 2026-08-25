@@ -5179,40 +5179,6 @@ impl Simulation {
             self.check_defeat(rules);
         }
 
-        // gamemd.exe TeamClass::AI advances scenario teams after house defeat
-        // admission and before the generic HouseClass AI tail.
-        #[cfg(test)]
-        self.trace_master_frame_rung(MasterFrameTestRung::TeamScript);
-        let mut team_script_vm = std::mem::take(&mut self.team_script_vm);
-        let team_tick = team_script_vm.tick_effects(self.session.binary_frame as i32, |owner| {
-            !crate::sim::house_state::house_state_for_owner_id(&self.houses, owner)
-                .is_some_and(|house| house.is_defeated)
-        });
-        self.team_script_vm = team_script_vm;
-        for effect in team_tick.effects {
-            match effect {
-                // Original: TeamClass::AI action 19 walks TeamClass+0x54 and
-                // invokes FootClass's panic-family virtual in member order.
-                TeamScriptEffect::PanicMember { entity_id } => {
-                    let Some(rules) = rules else { continue };
-                    let Some(type_ref) = self
-                        .substrate
-                        .entities
-                        .get(entity_id)
-                        .map(|entity| entity.type_ref)
-                    else {
-                        continue;
-                    };
-                    let Some(object_type) = rules.object(self.interner.resolve(type_ref)) else {
-                        continue;
-                    };
-                    if let Some(entity) = self.substrate.entities.get_mut(entity_id) {
-                        crate::sim::infantry::apply_panic_force(object_type, entity);
-                    }
-                }
-            }
-        }
-
         // --- Phase 8 (cont.): AI ---
         // DEPENDS ON: all prior phases + the defeat status set just above (defeated
         // houses are gated out inside tick_ai).
@@ -5353,6 +5319,47 @@ impl Simulation {
         // its existing post-debug-validation relation.
         self.session.tick = execute_tick;
         true
+    }
+
+    /// Run the copied TeamClass AI pass before the live LogicClass object walk.
+    ///
+    /// Native `LogicClass::PerTickUpdate @ 0x0055AFB0` snapshots the Team array
+    /// and calls TeamClass's `+0x5C` slot at `0x0055B502..0x0055B59F`; only
+    /// afterwards can Building/Foot `ReceiveDamage` reach the base-defense
+    /// suspension writer. A frame-N hit therefore arms suspension for the next
+    /// Team visit, not the Team visit already completed on frame N.
+    fn run_team_script_pass(&mut self, rules: Option<&RuleSet>) {
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::TeamScript);
+        let mut team_script_vm = std::mem::take(&mut self.team_script_vm);
+        let team_tick = team_script_vm.tick_effects(self.session.binary_frame as i32, |owner| {
+            !crate::sim::house_state::house_state_for_owner_id(&self.houses, owner)
+                .is_some_and(|house| house.is_defeated)
+        });
+        self.team_script_vm = team_script_vm;
+        for effect in team_tick.effects {
+            match effect {
+                // Original: TeamClass::AI action 19 walks TeamClass+0x54 and
+                // invokes FootClass's panic-family virtual in member order.
+                TeamScriptEffect::PanicMember { entity_id } => {
+                    let Some(rules) = rules else { continue };
+                    let Some(type_ref) = self
+                        .substrate
+                        .entities
+                        .get(entity_id)
+                        .map(|entity| entity.type_ref)
+                    else {
+                        continue;
+                    };
+                    let Some(object_type) = rules.object(self.interner.resolve(type_ref)) else {
+                        continue;
+                    };
+                    if let Some(entity) = self.substrate.entities.get_mut(entity_id) {
+                        crate::sim::infantry::apply_panic_force(object_type, entity);
+                    }
+                }
+            }
+        }
     }
 
     /// Fixture-only frame adapter (F09): unit tests drive one Main_Tick-shaped
@@ -5521,6 +5528,10 @@ impl Simulation {
                 self.resolved_terrain.as_ref(),
             );
         }
+        // Native TeamClass AI precedes the main LogicClass object vector. In
+        // particular, ordinary object ReceiveDamage paths that arm a Team's
+        // base-defense suspension occur only after this frame's Team visit.
+        self.run_team_script_pass(rules);
         if rules.is_some() {
             crate::sim::miner::sweep_dead_dock_reservations(self);
         }
