@@ -304,7 +304,8 @@ impl Simulation {
         // their camera/message outcomes stay app-owned and are not hashed.
         if include_master_frame_v43 {
             self.trigger_runtime.hash_state(&mut hasher);
-            self.team_script_vm.hash_state(&mut hasher);
+            self.team_script_vm
+                .hash_state(self.session.binary_frame as i32, &mut hasher);
         }
         if include_playfield_authority_v47 {
             self.hash_playfield_authority(&mut hasher);

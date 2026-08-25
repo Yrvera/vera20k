@@ -5184,7 +5184,7 @@ impl Simulation {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::TeamScript);
         let mut team_script_vm = std::mem::take(&mut self.team_script_vm);
-        let team_tick = team_script_vm.tick_effects(execute_tick, |owner| {
+        let team_tick = team_script_vm.tick_effects(self.session.binary_frame as i32, |owner| {
             !crate::sim::house_state::house_state_for_owner_id(&self.houses, owner)
                 .is_some_and(|house| house.is_defeated)
         });

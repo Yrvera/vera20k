@@ -365,11 +365,11 @@ impl TeamScriptVm {
     ///
     /// `TeamClass::AI` stores completion in `+0x80`; the next update performs
     /// the shared `ScriptClass::HasNextMission` cursor advance.
-    pub fn tick<F>(&mut self, execute_tick: u64, owner_is_active: F) -> Vec<CommandEnvelope>
+    pub fn tick<F>(&mut self, current_frame: i32, owner_is_active: F) -> Vec<CommandEnvelope>
     where
         F: FnMut(InternedId) -> bool,
     {
-        self.tick_effects(execute_tick, owner_is_active);
+        self.tick_effects(current_frame, owner_is_active);
         Vec::new()
     }
 
@@ -377,13 +377,29 @@ impl TeamScriptVm {
     ///
     /// The current command rung has no panic command; callers that own member
     /// mission application can consume these ordered effects directly.
-    pub fn tick_effects<F>(&mut self, _execute_tick: u64, mut owner_is_active: F) -> TeamScriptTick
+    pub fn tick_effects<F>(&mut self, current_frame: i32, mut owner_is_active: F) -> TeamScriptTick
     where
         F: FnMut(InternedId) -> bool,
     {
         let mut result = TeamScriptTick::default();
 
         for team in self.teams.values_mut() {
+            // gamemd-derived: TeamClass::AI @ 0x006E9140 checks the
+            // FUN_006EC250 base-defense timer before every other Team gate.
+            // Equality expires in this pass; only +0x83 clears here, so the
+            // represented script body may resume without a one-frame gap.
+            if team.response_latch_83 {
+                if response_suspend_remaining(
+                    team.response_suspend_start_frame,
+                    team.response_suspend_duration_frames,
+                    current_frame,
+                ) != 0
+                {
+                    continue;
+                }
+                team.response_latch_83 = false;
+            }
+
             if team.completed || team.refusal.is_some() || !owner_is_active(team.owner) {
                 continue;
             }
@@ -476,7 +492,7 @@ impl TeamScriptVm {
         result
     }
 
-    pub(crate) fn hash_state(&self, hasher: &mut impl Hasher) {
+    pub(crate) fn hash_state(&self, current_frame: i32, hasher: &mut impl Hasher) {
         // TeamClass::ComputeCRC observes live Team/Script state, not the VM's
         // source registry or allocator. Action-49's +0x84 success flag is not
         // included by the captured YR 1.001 CRC sequence.
@@ -493,8 +509,15 @@ impl TeamScriptVm {
             team.response_latch_7d.hash(hasher);
             team.response_latch_7e.hash(hasher);
             team.response_latch_83.hash(hasher);
-            team.response_suspend_start_frame.hash(hasher);
-            team.response_suspend_duration_frames.hash(hasher);
+            // gamemd-derived: TeamClass CRC callback at vtable +0x34,
+            // raw body 0x006EC5A0..0x006EC720, feeds one normalized remaining
+            // time for +0x64/+0x6C. It skips +0x68 and never feeds raw start.
+            response_suspend_remaining(
+                team.response_suspend_start_frame,
+                team.response_suspend_duration_frames,
+                current_frame,
+            )
+            .hash(hasher);
             team.members.hash(hasher);
             team.target.hash(hasher);
             team.member_type_counts.hash(hasher);
@@ -566,6 +589,22 @@ impl TeamScriptVm {
     }
 }
 
+/// Native signed/wrapping remaining time for the Team base-defense suspension.
+///
+/// gamemd-derived: `TeamClass::AI @ 0x006E9140` and the Team CRC callback at
+/// vtable `+0x34` (`0x006EC5A0`) share this exact `+0x64/+0x6C` calculation.
+fn response_suspend_remaining(start_frame: i32, duration_frames: i32, now: i32) -> i32 {
+    if start_frame == -1 {
+        return duration_frames;
+    }
+    let elapsed = now.wrapping_sub(start_frame);
+    if elapsed < duration_frames {
+        duration_frames.wrapping_sub(elapsed)
+    } else {
+        0
+    }
+}
+
 fn script_action_at(
     script: Option<&TeamScriptDefinition>,
     cursor: i32,
@@ -586,10 +625,14 @@ mod tests {
         }
     }
 
-    fn state_hash(vm: &TeamScriptVm) -> u64 {
+    fn state_hash_at(vm: &TeamScriptVm, current_frame: i32) -> u64 {
         let mut hasher = DefaultHasher::new();
-        vm.hash_state(&mut hasher);
+        vm.hash_state(current_frame, &mut hasher);
         hasher.finish()
+    }
+
+    fn state_hash(vm: &TeamScriptVm) -> u64 {
+        state_hash_at(vm, 0)
     }
 
     #[test]
@@ -841,5 +884,163 @@ mod tests {
             (true, true, true, -9, 1800)
         );
         assert_eq!(state_hash(&restored), state_hash(&vm));
+    }
+
+    #[test]
+    fn gsi_04_05_response_suspend_remaining_matches_native_signed_boundaries() {
+        assert_eq!(response_suspend_remaining(100, 3, 100), 3);
+        assert_eq!(response_suspend_remaining(100, 3, 102), 1);
+        assert_eq!(response_suspend_remaining(100, 3, 103), 0);
+        assert_eq!(response_suspend_remaining(100, 0, 100), 0);
+        assert_eq!(response_suspend_remaining(100, -7, 100), 0);
+        assert_eq!(response_suspend_remaining(-1, 9, i32::MAX), 9);
+        assert_eq!(response_suspend_remaining(-1, -7, i32::MIN), -7);
+        assert_eq!(response_suspend_remaining(i32::MAX - 1, 5, i32::MIN), 3);
+    }
+
+    #[test]
+    fn gsi_04_05_suspension_blocks_before_other_gates_and_resumes_on_equality() {
+        let owner = InternedId::from_index(1);
+        let script = InternedId::from_index(2);
+        let task_force = InternedId::from_index(3);
+        let team_type = InternedId::from_index(4);
+        let mut vm = TeamScriptVm::default();
+        vm.register_script(TeamScriptDefinition {
+            id: script,
+            actions: vec![action(24, 0), action(2, 0)],
+        });
+        vm.register_task_force(TeamTaskForceDefinition {
+            id: task_force,
+            entries: vec![],
+        });
+        vm.register_team_type(TeamTypeDefinition {
+            id: team_type,
+            script_id: script,
+            task_force_id: task_force,
+            priority: 0,
+            is_base_defense: false,
+        });
+        let team = vm.create_team_from_type(owner, team_type, &[], None);
+        vm.suspend_teams_for_base_defense(owner, 1, 100, 3);
+
+        for frame in [100, 101, 102] {
+            vm.tick_effects(frame, |_| {
+                panic!("native timer must precede later Team gates")
+            });
+            let state = vm.team(team).unwrap();
+            assert!(!state.advance_pending());
+            assert_eq!(
+                state.response_suspension_state(),
+                (true, true, true, 100, 3)
+            );
+        }
+
+        let encoded = serde_json::to_string(&vm).unwrap();
+        let mut restored: TeamScriptVm = serde_json::from_str(&encoded).unwrap();
+        restored.tick_effects(103, |_| true);
+        let state = restored.team(team).unwrap();
+        assert!(
+            state.advance_pending(),
+            "expiry resumes in the equality pass"
+        );
+        assert_eq!(
+            state.response_suspension_state(),
+            (true, true, false, 100, 3),
+            "timer clears only +0x83"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_rearming_restarts_the_full_response_delay() {
+        let owner = InternedId::from_index(1);
+        let script = InternedId::from_index(2);
+        let task_force = InternedId::from_index(3);
+        let team_type = InternedId::from_index(4);
+        let member_type = InternedId::from_index(5);
+        let mut vm = TeamScriptVm::default();
+        vm.register_script(TeamScriptDefinition {
+            id: script,
+            actions: vec![action(24, 0)],
+        });
+        vm.register_task_force(TeamTaskForceDefinition {
+            id: task_force,
+            entries: vec![TeamTaskForceEntry {
+                member_type,
+                count: 1,
+            }],
+        });
+        vm.register_team_type(TeamTypeDefinition {
+            id: team_type,
+            script_id: script,
+            task_force_id: task_force,
+            priority: 0,
+            is_base_defense: false,
+        });
+        let team = vm.create_team_from_type(
+            owner,
+            team_type,
+            &[TeamScriptMember {
+                entity_id: 10,
+                member_type,
+            }],
+            None,
+        );
+
+        assert_eq!(
+            vm.suspend_teams_for_base_defense(owner, 1, 100, 5),
+            vec![10]
+        );
+        vm.tick_effects(103, |_| panic!("first delay remains active"));
+        assert!(
+            vm.suspend_teams_for_base_defense(owner, 1, 103, 5)
+                .is_empty()
+        );
+        vm.tick_effects(107, |_| panic!("rearmed delay remains active"));
+        vm.tick_effects(108, |_| true);
+
+        let state = vm.team(team).unwrap();
+        assert!(state.advance_pending());
+        assert_eq!(
+            state.response_suspension_state(),
+            (true, true, false, 103, 5)
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_team_hash_normalizes_response_timer_to_remaining_frames() {
+        let owner = InternedId::from_index(1);
+        let script = InternedId::from_index(2);
+        let mut first = TeamScriptVm::default();
+        first.register_script(TeamScriptDefinition {
+            id: script,
+            actions: vec![action(2, 0)],
+        });
+        let team = first.create_team(owner, script, vec![], None);
+        let mut second = first.clone();
+
+        {
+            let state = first.teams.get_mut(&team).unwrap();
+            state.response_latch_7d = true;
+            state.response_latch_7e = true;
+            state.response_latch_83 = true;
+            state.response_suspend_start_frame = 90;
+            state.response_suspend_duration_frames = 20;
+        }
+        {
+            let state = second.teams.get_mut(&team).unwrap();
+            state.response_latch_7d = true;
+            state.response_latch_7e = true;
+            state.response_latch_83 = true;
+            state.response_suspend_start_frame = 95;
+            state.response_suspend_duration_frames = 15;
+        }
+
+        assert_eq!(state_hash_at(&first, 100), state_hash_at(&second, 100));
+        second
+            .teams
+            .get_mut(&team)
+            .unwrap()
+            .response_suspend_duration_frames = 16;
+        assert_ne!(state_hash_at(&first, 100), state_hash_at(&second, 100));
     }
 }
