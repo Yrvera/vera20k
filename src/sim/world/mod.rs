@@ -1228,9 +1228,10 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
 
 impl Simulation {
     /// Combat borrows a staged house map while fatal lifecycle hooks temporarily
-    /// re-enter `Simulation`. Merge only the receiver-owned anger fields back so
-    /// live lifecycle mutations to counts, economy, or defeat state are kept.
-    fn merge_receiver_anger_state(
+    /// re-enter `Simulation`. Merge only receiver-owned fields back so live
+    /// lifecycle mutations to strategy mode, counts, economy, or defeat state
+    /// are kept.
+    fn merge_receiver_house_state(
         &mut self,
         staged: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
     ) {
@@ -1238,6 +1239,11 @@ impl Simulation {
             if let Some(live_house) = self.houses.get_mut(&owner) {
                 live_house.grudge_scores = staged_house.grudge_scores.clone();
                 live_house.enemy_house = staged_house.enemy_house;
+                live_house.strategy_emergency.note_building_attack(
+                    staged_house
+                        .strategy_emergency
+                        .last_building_attack_frame(),
+                );
             }
         }
     }
@@ -1425,7 +1431,7 @@ impl Simulation {
         self.bridge_state = bridge_state;
         self.radiation = radiation;
         self.sound_events = sound_events;
-        self.merge_receiver_anger_state(&houses);
+        self.merge_receiver_house_state(&houses);
         let mut combat_result = combat_result;
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
         self.mark_wall_mutations_radar_dirty(&combat_result.wall_mutations);
@@ -1515,7 +1521,7 @@ impl Simulation {
         self.resolved_terrain = resolved_terrain;
         self.bridge_state = bridge_state;
         self.sound_events = sound_events;
-        self.merge_receiver_anger_state(&houses);
+        self.merge_receiver_house_state(&houses);
 
         for projectile in commit.projectile_spawns {
             let stable_id = self.allocate_stable_id();
@@ -1702,7 +1708,7 @@ impl Simulation {
         self.overlay_grid = overlay_grid;
         self.resolved_terrain = resolved_terrain;
         self.sound_events = sound_events;
-        self.merge_receiver_anger_state(&houses);
+        self.merge_receiver_house_state(&houses);
         self.absorb_noncombat_damage_effects(
             rules,
             overlay_registry,

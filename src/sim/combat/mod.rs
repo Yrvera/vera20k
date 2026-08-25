@@ -2556,6 +2556,51 @@ fn receiver_effect_coord(
     ProjectileCoord::new(x, y, z)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildingReceivePrelude {
+    Continue,
+    ReturnZero,
+}
+
+/// Execute the BuildingClass wrapper work which natively precedes the shared
+/// Techno receiver.
+///
+/// gamemd-derived: `BuildingClass__ReceiveDamage @ 0x00442230` returns zero at
+/// `0x00442262` for disallowed self damage. A non-null attacker then writes the
+/// victim owner's `House+0x54D8` at `0x0044229C`, before Building immunity,
+/// the already-dead gate, and `TechnoClass__ReceiveDamage @ 0x00442425`.
+fn apply_building_receive_prelude(
+    event: &EntityDamageEvent,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    current_tick: u64,
+) -> BuildingReceivePrelude {
+    let Some(target) = entities.get(event.target_id) else {
+        return BuildingReceivePrelude::Continue;
+    };
+    if target.category != EntityCategory::Structure {
+        return BuildingReceivePrelude::Continue;
+    }
+    let Some(target_type) = rules.object(interner.resolve(target.type_ref)) else {
+        return BuildingReceivePrelude::Continue;
+    };
+
+    if event.attacker_id == event.target_id && !target_type.damage_self {
+        return BuildingReceivePrelude::ReturnZero;
+    }
+    if event.attacker_id != RAD_NO_ATTACKER && !target_type.is_1x1_with_undeploy() {
+        if let Some(owner) = houses.get_mut(&target.owner) {
+            owner
+                .strategy_emergency
+                .note_building_attack(current_tick as u32 as i32);
+        }
+    }
+
+    BuildingReceivePrelude::Continue
+}
+
 fn resolve_receive_damage(
     event: &EntityDamageEvent,
     entities: &EntityStore,
@@ -3244,6 +3289,11 @@ fn commit_damage_events_with_isolation(
         }
         let target_id = event.target_id;
         let attacker_id = event.attacker_id;
+        if apply_building_receive_prelude(event, entities, rules, interner, houses, current_tick)
+            == BuildingReceivePrelude::ReturnZero
+        {
+            continue;
+        }
         // ReceiveDamage carries sourceHouse separately from the source object.
         // Area records snapshot it at detonation; legacy precomputed records
         // retain the former live-source lookup. Periodic radiation supplies

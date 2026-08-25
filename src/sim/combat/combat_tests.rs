@@ -216,6 +216,358 @@ fn make_entity_owned(
     e
 }
 
+fn gsi_04_05_attack_frame_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=SOURCE\n\
+         [BuildingTypes]\n0=NORMAL\n1=MOD1X1\n2=STOCK2X2\n3=SELFNO\n4=SELFYES\n5=IMMUNE\n\
+         [Warheads]\n0=HITWH\n\
+         [SOURCE]\nStrength=100\nArmor=heavy\n\
+         [NORMAL]\nStrength=100\nArmor=wood\nFoundation=2x2\n\
+         [MOD1X1]\nStrength=100\nArmor=wood\nUndeploysInto=MODUNIT\nFoundation=1x1\n\
+         [STOCK2X2]\nStrength=100\nArmor=wood\nUndeploysInto=MODUNIT\nFoundation=2x2\n\
+         [SELFNO]\nStrength=100\nArmor=wood\nFoundation=2x2\nDamageSelf=no\n\
+         [SELFYES]\nStrength=100\nArmor=wood\nFoundation=2x2\nDamageSelf=yes\n\
+         [IMMUNE]\nStrength=100\nArmor=wood\nFoundation=2x2\nImmune=yes\n\
+         [HITWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("House attack-frame rules parse")
+}
+
+#[test]
+fn gsi_04_05_building_attack_frame_prelude_obeys_object_and_type_gates() {
+    let rules = gsi_04_05_attack_frame_rules();
+    let mut entities = EntityStore::new();
+    entities.insert(make_entity_owned(1, "SOURCE", 4, 4, 100, "Enemy"));
+    for (id, type_name) in [
+        (2, "NORMAL"),
+        (3, "MOD1X1"),
+        (4, "STOCK2X2"),
+        (5, "SELFNO"),
+        (6, "SELFYES"),
+    ] {
+        let mut target = make_entity_owned(id, type_name, id as u16 + 3, 4, 100, "Victim");
+        target.category = EntityCategory::Structure;
+        entities.insert(target);
+    }
+    let mut unit_target = make_entity_owned(7, "SOURCE", 10, 4, 100, "Victim");
+    unit_target.category = EntityCategory::Unit;
+    entities.insert(unit_target);
+    entities.insert(make_entity_owned(8, "SOURCE", 11, 4, 100, "Victim"));
+    let mut dead_target = make_entity_owned(9, "NORMAL", 12, 4, 0, "Victim");
+    dead_target.category = EntityCategory::Structure;
+    entities.insert(dead_target);
+
+    let mut interner = test_interner();
+    let victim_owner = interner.intern("Victim");
+    let source_owner = interner.intern("Enemy");
+    let wh = interner.intern("HITWH");
+    let mut houses = BTreeMap::from([(
+        victim_owner,
+        HouseState::new(victim_owner, 0, None, false, 0, 10),
+    )]);
+    let frame = |houses: &BTreeMap<InternedId, HouseState>| {
+        houses[&victim_owner]
+            .strategy_emergency
+            .last_building_attack_frame()
+    };
+
+    let event = EntityDamageEvent::area(2, -7, 0, 1, Some(source_owner), wh);
+    assert_eq!(
+        apply_building_receive_prelude(&event, &entities, &rules, &interner, &mut houses, 41),
+        BuildingReceivePrelude::Continue
+    );
+    assert_eq!(
+        frame(&houses),
+        41,
+        "negative damage still records the frame"
+    );
+
+    let event = EntityDamageEvent::area(2, 0, 0, 1, Some(victim_owner), wh);
+    assert_eq!(
+        apply_building_receive_prelude(&event, &entities, &rules, &interner, &mut houses, 42),
+        BuildingReceivePrelude::Continue
+    );
+    assert_eq!(frame(&houses), 42, "alliance and zero damage are not gates");
+
+    let null_attacker = EntityDamageEvent::area(2, 10, 0, RAD_NO_ATTACKER, Some(source_owner), wh);
+    apply_building_receive_prelude(
+        &null_attacker,
+        &entities,
+        &rules,
+        &interner,
+        &mut houses,
+        43,
+    );
+    assert_eq!(
+        frame(&houses),
+        42,
+        "source House cannot replace a null object"
+    );
+
+    let removed_attacker = EntityDamageEvent::area(2, 10, 0, 999, None, wh);
+    apply_building_receive_prelude(
+        &removed_attacker,
+        &entities,
+        &rules,
+        &interner,
+        &mut houses,
+        43,
+    );
+    assert_eq!(
+        frame(&houses),
+        43,
+        "the retained non-null object argument does not require a live lookup"
+    );
+
+    let no_source_house = EntityDamageEvent::area(2, 10, 0, 1, None, wh);
+    apply_building_receive_prelude(
+        &no_source_house,
+        &entities,
+        &rules,
+        &interner,
+        &mut houses,
+        44,
+    );
+    assert_eq!(frame(&houses), 44, "source House is not required for the write");
+
+    let allied = EntityDamageEvent::area(2, 10, 0, 8, Some(victim_owner), wh);
+    apply_building_receive_prelude(&allied, &entities, &rules, &interner, &mut houses, 45);
+    assert_eq!(
+        frame(&houses),
+        45,
+        "a distinct attacker owned by the victim House still writes"
+    );
+
+    let modded_skip = EntityDamageEvent::area(3, 10, 0, 1, Some(source_owner), wh);
+    apply_building_receive_prelude(&modded_skip, &entities, &rules, &interner, &mut houses, 46);
+    assert_eq!(
+        frame(&houses),
+        45,
+        "a 1x1 undeployer takes vtable +0x80 skip"
+    );
+
+    let stock_shape = EntityDamageEvent::area(4, 10, 0, 1, Some(source_owner), wh);
+    apply_building_receive_prelude(&stock_shape, &entities, &rules, &interner, &mut houses, 47);
+    assert_eq!(
+        frame(&houses),
+        47,
+        "larger retail-shaped undeployer records"
+    );
+
+    let already_dead = EntityDamageEvent::area(9, 10, 0, 1, Some(source_owner), wh);
+    apply_building_receive_prelude(
+        &already_dead,
+        &entities,
+        &rules,
+        &interner,
+        &mut houses,
+        48,
+    );
+    assert_eq!(frame(&houses), 48, "Health zero is later than this prelude");
+
+    let self_no = EntityDamageEvent::area(5, 10, 0, 5, Some(victim_owner), wh);
+    assert_eq!(
+        apply_building_receive_prelude(&self_no, &entities, &rules, &interner, &mut houses, 49,),
+        BuildingReceivePrelude::ReturnZero
+    );
+    assert_eq!(frame(&houses), 48);
+
+    let self_yes = EntityDamageEvent::area(6, 10, 0, 6, Some(victim_owner), wh);
+    assert_eq!(
+        apply_building_receive_prelude(
+            &self_yes,
+            &entities,
+            &rules,
+            &interner,
+            &mut houses,
+            0x1_8000_0001,
+        ),
+        BuildingReceivePrelude::Continue
+    );
+    assert_eq!(
+        frame(&houses),
+        i32::MIN + 1,
+        "native stores the raw low dword"
+    );
+
+    let unit = EntityDamageEvent::area(7, 10, 0, 1, Some(source_owner), wh);
+    apply_building_receive_prelude(&unit, &entities, &rules, &interner, &mut houses, 47);
+    assert_eq!(frame(&houses), i32::MIN + 1, "the wrapper is Building-only");
+}
+
+#[test]
+fn gsi_04_05_building_attack_frame_precedes_immune_receiver_exit() {
+    let rules = gsi_04_05_attack_frame_rules();
+    let mut entities = EntityStore::new();
+    entities.insert(make_entity_owned(1, "SOURCE", 4, 4, 100, "Enemy"));
+    let mut target = make_entity_owned(2, "IMMUNE", 5, 4, 100, "Victim");
+    target.category = EntityCategory::Structure;
+    entities.insert(target);
+    let mut interner = test_interner();
+    let victim_owner = interner.intern("Victim");
+    let source_owner = interner.intern("Enemy");
+    let wh = interner.intern("HITWH");
+    let mut houses = BTreeMap::from([
+        (
+            victim_owner,
+            HouseState::new(victim_owner, 0, None, false, 0, 10),
+        ),
+        (
+            source_owner,
+            HouseState::new(source_owner, 1, None, false, 0, 10),
+        ),
+    ]);
+    let mut occupancy = OccupancyGrid::new();
+    let mut main_rng = SimRng::new(5);
+    let mut scenario_rng = SimRng::new(7);
+    let mut handled_deaths = Vec::new();
+    let mut resources = BTreeMap::new();
+    let mut fatal_lifecycle = None;
+    let mut sound_sink = None;
+
+    let _ = commit_damage_events(
+        &[EntityDamageEvent::area(2, 10, 0, 1, Some(source_owner), wh)],
+        &mut entities,
+        &mut occupancy,
+        &rules,
+        &mut interner,
+        &mut houses,
+        &[victim_owner, source_owner],
+        &HouseAllianceMap::new(),
+        &mut main_rng,
+        &mut scenario_rng,
+        &mut handled_deaths,
+        &mut resources,
+        None,
+        None,
+        None,
+        77,
+        &mut fatal_lifecycle,
+        &mut sound_sink,
+    );
+
+    assert_eq!(entities.get(2).unwrap().health.current, 100);
+    assert_eq!(
+        houses[&victim_owner]
+            .strategy_emergency
+            .last_building_attack_frame(),
+        77,
+        "the House write happens before ObjectClass immunity rejects damage"
+    );
+}
+
+#[test]
+fn gsi_04_05_building_self_damage_return_zero_stops_receiver_commit() {
+    let rules = gsi_04_05_attack_frame_rules();
+    let mut entities = EntityStore::new();
+    let mut target = make_entity_owned(5, "SELFNO", 5, 4, 100, "Victim");
+    target.category = EntityCategory::Structure;
+    entities.insert(target);
+    let mut interner = test_interner();
+    let victim_owner = interner.intern("Victim");
+    let wh = interner.intern("HITWH");
+    let mut houses = BTreeMap::from([(
+        victim_owner,
+        HouseState::new(victim_owner, 0, None, false, 0, 10),
+    )]);
+    let mut occupancy = OccupancyGrid::new();
+    let mut main_rng = SimRng::new(5);
+    let mut scenario_rng = SimRng::new(7);
+    let mut handled_deaths = Vec::new();
+    let mut resources = BTreeMap::new();
+    let mut fatal_lifecycle = None;
+    let mut sound_sink = None;
+
+    let _ = commit_damage_events(
+        &[EntityDamageEvent::direct_receiver(
+            5,
+            10,
+            0,
+            5,
+            Some(victim_owner),
+            wh,
+            ReceiverCallFlags {
+                ignore_defenses: false,
+                arg6: false,
+            },
+        )],
+        &mut entities,
+        &mut occupancy,
+        &rules,
+        &mut interner,
+        &mut houses,
+        &[victim_owner],
+        &HouseAllianceMap::new(),
+        &mut main_rng,
+        &mut scenario_rng,
+        &mut handled_deaths,
+        &mut resources,
+        None,
+        None,
+        None,
+        88,
+        &mut fatal_lifecycle,
+        &mut sound_sink,
+    );
+
+    assert_eq!(entities.get(5).unwrap().health.current, 100);
+    assert_eq!(
+        houses[&victim_owner]
+            .strategy_emergency
+            .last_building_attack_frame(),
+        0
+    );
+}
+
+#[test]
+fn gsi_04_05_building_attack_frame_survives_world_receiver_merge() {
+    let rules = gsi_04_05_attack_frame_rules();
+    let mut sim = crate::sim::world::Simulation::new();
+    let heights = BTreeMap::new();
+    let source_id = sim
+        .spawn_object("SOURCE", "Enemy", 4, 4, 0, &rules, &heights)
+        .expect("source spawns");
+    let target_id = sim
+        .spawn_object("NORMAL", "Victim", 6, 4, 0, &rules, &heights)
+        .expect("Building target spawns");
+    let source_owner = sim.substrate.entities.get(source_id).unwrap().owner;
+    let victim_owner = sim.substrate.entities.get(target_id).unwrap().owner;
+    sim.houses.insert(
+        source_owner,
+        HouseState::new(source_owner, 0, None, false, 0, 10),
+    );
+    sim.houses.insert(
+        victim_owner,
+        HouseState::new(victim_owner, 1, None, false, 0, 10),
+    );
+    sim.session.house_order = vec![source_owner, victim_owner];
+    sim.session.binary_frame = 77;
+    let warhead = sim.interner.intern("HITWH");
+
+    let event = EntityDamageEvent::area(
+        target_id,
+        10,
+        0,
+        source_id,
+        Some(source_owner),
+        warhead,
+    );
+    sim.commit_noncombat_aoe_hits(&rules, None, &[event, event]);
+
+    assert_eq!(
+        sim.houses[&victim_owner]
+            .strategy_emergency
+            .last_building_attack_frame(),
+        77,
+        "the world owner must retain the timestamp written into its staged House map"
+    );
+    assert_eq!(
+        sim.substrate.entities.get(target_id).unwrap().health.current,
+        80,
+        "repeated qualifying receiver records in one frame remain admitted"
+    );
+}
+
 fn make_infantry_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> GameEntity {
     let mut e = make_entity(id, type_ref, rx, ry, hp);
     e.category = EntityCategory::Infantry;

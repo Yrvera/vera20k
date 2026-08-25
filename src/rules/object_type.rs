@@ -1079,12 +1079,21 @@ fn native_minutes_to_ticks(value: f32) -> u32 {
 }
 
 impl ObjectType {
+    /// BuildingType virtual used by the Building receive-damage prelude and
+    /// the native base-reservation writer.
+    ///
+    /// gamemd-derived: `BuildingClass` vtable `+0x80` resolves through
+    /// `0x00457620` to `BuildingTypeClass__Is1x1WithUndeploy @ 0x00465D40`.
+    pub fn is_1x1_with_undeploy(&self) -> bool {
+        self.undeploys_into.is_some()
+            && crate::rules::foundation::foundation_dimensions(&self.foundation) == (1, 1)
+    }
+
     /// BuildingType gate used by the native base-reservation setter.
     pub fn base_reservation_writer_eligible(&self) -> bool {
         self.category == ObjectCategory::Building
             && (self.undeploys_into.is_none() || !self.resource_gatherer)
-            && !(self.undeploys_into.is_some()
-                && crate::rules::foundation::foundation_dimensions(&self.foundation) == (1, 1))
+            && !self.is_1x1_with_undeploy()
     }
 
     /// gamemd's TechnoTypeClass `+0xC8F` — whether `AI_Update` runs the per-tick
@@ -2110,6 +2119,15 @@ mod tests {
             ObjectType::from_ini_section("GACNST", section, ObjectCategory::Building);
         assert_eq!(obj.undeploys_into, Some("AMCV".to_string()));
         assert_eq!(obj.deploys_into, None);
+        assert!(!obj.is_1x1_with_undeploy());
+
+        let one_by_one = IniFile::from_str("[MODDEPLOY]\nUndeploysInto=MODUNIT\nFoundation=1x1\n");
+        let obj = ObjectType::from_ini_section(
+            "MODDEPLOY",
+            one_by_one.section("MODDEPLOY").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(obj.is_1x1_with_undeploy());
     }
 
     #[test]
