@@ -117,24 +117,48 @@ pub enum TeamAiIniDiagnostic {
     MissingDefinitionSection {
         registry: &'static str,
         id: String,
+        source: TeamAiDefinitionSource,
     },
     MalformedScriptAction {
         script_id: String,
         key: usize,
         value: String,
+        source: TeamAiDefinitionSource,
     },
     MalformedTaskForceEntry {
         task_force_id: String,
         key: usize,
         value: String,
+        source: TeamAiDefinitionSource,
     },
     MalformedAiTrigger {
         trigger_id: String,
         token_count: usize,
+        source: TeamAiDefinitionSource,
     },
     UnknownAiTriggerEnable {
         trigger_id: String,
     },
+}
+
+impl TeamAiIniDiagnostic {
+    fn source(&self) -> TeamAiDefinitionSource {
+        match self {
+            Self::MissingDefinitionSection { source, .. }
+            | Self::MalformedScriptAction { source, .. }
+            | Self::MalformedTaskForceEntry { source, .. }
+            | Self::MalformedAiTrigger { source, .. } => *source,
+            Self::UnknownAiTriggerEnable { .. } => TeamAiDefinitionSource::Scenario,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TeamAiRegistryCounts {
+    pub team_types: usize,
+    pub scripts: usize,
+    pub task_forces: usize,
+    pub ai_triggers: usize,
 }
 
 /// Ordered unresolved AI definitions from fixed AIMD and the scenario INI.
@@ -145,6 +169,7 @@ pub struct TeamAiIniRegistry {
     pub task_forces: Vec<TaskForceIni>,
     pub ai_triggers: Vec<AiTriggerTypeIni>,
     pub diagnostics: Vec<TeamAiIniDiagnostic>,
+    pub fixed_counts: TeamAiRegistryCounts,
 }
 
 impl TeamAiIniRegistry {
@@ -160,19 +185,37 @@ impl TeamAiIniRegistry {
         let mut registry = Self::default();
 
         registry.read_team_types(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
+        registry.fixed_counts.team_types = registry.team_types.len();
         registry.read_team_types(scenario, TeamAiDefinitionSource::Scenario);
 
         registry.read_scripts(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
+        registry.fixed_counts.scripts = registry.scripts.len();
         registry.read_scripts(scenario, TeamAiDefinitionSource::Scenario);
 
         registry.read_task_forces(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
+        registry.fixed_counts.task_forces = registry.task_forces.len();
         registry.read_task_forces(scenario, TeamAiDefinitionSource::Scenario);
 
         registry.read_ai_triggers(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
+        registry.fixed_counts.ai_triggers = registry.ai_triggers.len();
         registry.read_ai_triggers(scenario, TeamAiDefinitionSource::Scenario);
         registry.read_ai_trigger_enables(scenario, game_mode_nonzero);
 
         registry
+    }
+
+    /// Whether the required fixed AIMD source produced all four non-empty
+    /// registries without a refused definition. Scenario diagnostics do not
+    /// invalidate the fixed source because map additions are optional overlays.
+    pub fn fixed_source_is_complete(&self) -> bool {
+        self.fixed_counts.team_types > 0
+            && self.fixed_counts.scripts > 0
+            && self.fixed_counts.task_forces > 0
+            && self.fixed_counts.ai_triggers > 0
+            && !self
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.source() == TeamAiDefinitionSource::FixedAimd)
     }
 
     fn read_team_types(&mut self, ini: &IniFile, source: TeamAiDefinitionSource) {
@@ -186,6 +229,7 @@ impl TeamAiIniRegistry {
                     .push(TeamAiIniDiagnostic::MissingDefinitionSection {
                         registry: "TeamTypes",
                         id: id.to_string(),
+                        source,
                     });
                 continue;
             };
@@ -216,6 +260,7 @@ impl TeamAiIniRegistry {
                     .push(TeamAiIniDiagnostic::MissingDefinitionSection {
                         registry: "ScriptTypes",
                         id: id.to_string(),
+                        source,
                     });
                 continue;
             };
@@ -230,6 +275,7 @@ impl TeamAiIniRegistry {
                             script_id: id.to_string(),
                             key,
                             value: value.to_string(),
+                            source,
                         });
                     continue;
                 };
@@ -258,6 +304,7 @@ impl TeamAiIniRegistry {
                     .push(TeamAiIniDiagnostic::MissingDefinitionSection {
                         registry: "TaskForces",
                         id: id.to_string(),
+                        source,
                     });
                 continue;
             };
@@ -272,6 +319,7 @@ impl TeamAiIniRegistry {
                             task_force_id: id.to_string(),
                             key,
                             value: value.to_string(),
+                            source,
                         });
                     continue;
                 };
@@ -320,6 +368,7 @@ impl TeamAiIniRegistry {
                     .push(TeamAiIniDiagnostic::MalformedAiTrigger {
                         trigger_id: id.to_string(),
                         token_count,
+                        source,
                     });
                 continue;
             };
@@ -423,6 +472,93 @@ mod tests {
         .join(",")
     }
 
+    fn complete_fixed_aimd() -> IniFile {
+        IniFile::from_str(&format!(
+            "[TeamTypes]\n0=TEAM\n[TEAM]\nScript=SCRIPT\nTaskForce=FORCE\n\
+             [ScriptTypes]\n0=SCRIPT\n[SCRIPT]\n0=2,0\n\
+             [TaskForces]\n0=FORCE\n[FORCE]\n0=1,E1\nGroup=-1\n\
+             [AITriggerTypes]\nTRIGGER={}\n",
+            eighteen_tokens("Trigger", "TEAM")
+        ))
+    }
+
+    #[test]
+    fn complete_fixed_source_requires_all_four_nonempty_clean_registries() {
+        let loaded = TeamAiIniRegistry::from_sources(
+            &complete_fixed_aimd(),
+            &IniFile::from_str(""),
+            false,
+        );
+
+        assert_eq!(
+            loaded.fixed_counts,
+            TeamAiRegistryCounts {
+                team_types: 1,
+                scripts: 1,
+                task_forces: 1,
+                ai_triggers: 1,
+            }
+        );
+        assert!(loaded.fixed_source_is_complete());
+        assert!(loaded.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn scenario_cannot_repair_refused_fixed_definitions() {
+        let fixed = IniFile::from_str(&format!(
+            "[TeamTypes]\n0=GOOD_TEAM\n1=MISSING_TEAM\n\
+             [GOOD_TEAM]\nScript=GOOD_SCRIPT\nTaskForce=GOOD_FORCE\n\
+             [ScriptTypes]\n0=GOOD_SCRIPT\n1=BAD_SCRIPT\n\
+             [GOOD_SCRIPT]\n0=2,0\n[BAD_SCRIPT]\n0=missing-comma\n\
+             [TaskForces]\n0=GOOD_FORCE\n1=BAD_FORCE\n\
+             [GOOD_FORCE]\n0=1,E1\n[BAD_FORCE]\n0=missing-comma\n\
+             [AITriggerTypes]\nGOOD={}\nBAD=a,b,c\n",
+            eighteen_tokens("Good", "GOOD_TEAM")
+        ));
+        let scenario = IniFile::from_str(&format!(
+            "[TeamTypes]\n0=MISSING_TEAM\n\
+             [MISSING_TEAM]\nScript=BAD_SCRIPT\nTaskForce=BAD_FORCE\n\
+             [ScriptTypes]\n0=BAD_SCRIPT\n[BAD_SCRIPT]\n0=2,0\n\
+             [TaskForces]\n0=BAD_FORCE\n[BAD_FORCE]\n0=1,E2\n\
+             [AITriggerTypes]\nBAD={}\n",
+            eighteen_tokens("Repaired", "MISSING_TEAM")
+        ));
+
+        let loaded = TeamAiIniRegistry::from_sources(&fixed, &scenario, false);
+
+        assert_eq!(loaded.team_types.len(), 2);
+        assert_eq!(loaded.scripts.len(), 2);
+        assert_eq!(loaded.task_forces.len(), 2);
+        assert_eq!(loaded.ai_triggers.len(), 2);
+        assert!(!loaded.fixed_source_is_complete());
+        assert_eq!(
+            loaded
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.source() == TeamAiDefinitionSource::FixedAimd
+                })
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn refused_scenario_definition_does_not_invalidate_clean_fixed_source() {
+        let scenario = IniFile::from_str("[ScriptTypes]\n0=MISSING_MAP_SCRIPT\n");
+        let loaded = TeamAiIniRegistry::from_sources(&complete_fixed_aimd(), &scenario, false);
+
+        assert!(loaded.fixed_source_is_complete());
+        assert_eq!(
+            loaded.diagnostics,
+            vec![TeamAiIniDiagnostic::MissingDefinitionSection {
+                registry: "ScriptTypes",
+                id: "MISSING_MAP_SCRIPT".to_string(),
+                source: TeamAiDefinitionSource::Scenario,
+            }]
+        );
+    }
+
     #[test]
     fn fixed_then_map_reuses_identity_in_place_and_appends_new_ids() {
         let fixed = IniFile::from_str(&format!(
@@ -508,6 +644,7 @@ mod tests {
             vec![TeamAiIniDiagnostic::MalformedAiTrigger {
                 trigger_id: "BAD".to_string(),
                 token_count: 3,
+                source: TeamAiDefinitionSource::FixedAimd,
             }]
         );
     }

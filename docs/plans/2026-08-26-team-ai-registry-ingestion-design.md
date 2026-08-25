@@ -148,8 +148,8 @@ The future House selector will read the resolved AITrigger order; it will not pa
 
 ### Error Handling
 
-- fixed `aimd.ini` absent or structurally unreadable: fail the normal app scenario load with a descriptive error;
-- missing registry section: produce an empty registry plus diagnostic for that registry; stock acceptance catches this;
+- fixed `aimd.ini` absent, empty in any of the four required registries, or containing a refused definition: fail the normal app scenario load with a descriptive error before installing the registry;
+- a missing or malformed scenario definition: omit the refused map addition and retain a source-tagged diagnostic without invalidating the clean fixed registry;
 - malformed ScriptType action: omit that action exactly where native parse proof supports omission and diagnose it;
 - unresolved TaskForce TechnoType: omit the row and do not increment resolved entry count;
 - missing TeamType Script/TaskForce: use the first resolved definition only where nonempty; otherwise keep the identity/refusal diagnostic and do not invent a definition;

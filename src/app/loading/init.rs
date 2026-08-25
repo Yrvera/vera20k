@@ -1334,6 +1334,13 @@ pub(crate) fn load_map_from_initial(
         &map_data.ini,
         skirmish_launch_session.is_some(),
     );
+    if !team_ai_registry.fixed_source_is_complete() {
+        anyhow::bail!(
+            "active YR aimd.ini failed structural validation: fixed_counts={:?}, diagnostics={:?}",
+            team_ai_registry.fixed_counts,
+            team_ai_registry.diagnostics
+        );
+    }
     for diagnostic in &team_ai_registry.diagnostics {
         log::warn!("Team AI INI diagnostic: {diagnostic:?}");
     }
