@@ -82,13 +82,28 @@ pub struct HouseOutcomeState {
 /// The live Strategy scheduler and its independent timers do not belong in
 /// this value. This is only the state consumed by the post-superweapon
 /// emergency block at `HouseClass__AI_Building_Strategy @ 0x004FD7A0`.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HouseStrategyEmergencyState {
     pub(crate) mode: i32,
     pub(crate) all_to_hunt_bias: bool,
     pub(crate) last_building_attack_frame: i32,
+    #[serde(default = "last_attacker_house_index_default")]
+    pub(crate) last_attacker_house_index: i32,
+}
+
+const fn last_attacker_house_index_default() -> i32 {
+    -1
+}
+
+impl Default for HouseStrategyEmergencyState {
+    fn default() -> Self {
+        Self {
+            mode: 0,
+            all_to_hunt_bias: false,
+            last_building_attack_frame: 0,
+            last_attacker_house_index: last_attacker_house_index_default(),
+        }
+    }
 }
 
 impl HouseStrategyEmergencyState {
@@ -104,6 +119,10 @@ impl HouseStrategyEmergencyState {
         self.last_building_attack_frame
     }
 
+    pub(crate) const fn last_attacker_house_index(&self) -> i32 {
+        self.last_attacker_house_index
+    }
+
     /// Trigger action 9 and Team script opcode 30 write state four directly.
     pub(crate) fn set_state_four(&mut self) {
         self.mode = 4;
@@ -117,6 +136,12 @@ impl HouseStrategyEmergencyState {
     /// Native Building damage admission writes the current signed frame.
     pub(crate) fn note_building_attack(&mut self, current_frame: i32) {
         self.last_building_attack_frame = current_frame;
+    }
+
+    /// Native Building damage admission stores the attacker's raw House-array
+    /// index alongside the current attack frame before shared Techno damage.
+    pub(crate) fn note_building_attacker(&mut self, attacker_house_index: i32) {
+        self.last_attacker_house_index = attacker_house_index;
     }
 }
 

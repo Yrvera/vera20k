@@ -87,6 +87,7 @@ mod tests {
             mode,
             all_to_hunt_bias: false,
             last_building_attack_frame: last_attack,
+            last_attacker_house_index: -1,
         }
     }
 

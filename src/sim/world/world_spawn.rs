@@ -137,6 +137,8 @@ impl Simulation {
                 uses_voxel,
                 self.session.binary_frame,
             );
+            ge.base_defense_response.recruitable_a = map_ent.recruitable_a;
+            ge.base_defense_response.recruitable_b = map_ent.recruitable_b;
 
             if self.debug_event_logging {
                 ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());

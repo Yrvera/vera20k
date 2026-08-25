@@ -284,7 +284,9 @@ use crate::sim::world::Simulation;
 // Bumped 92 -> 93: HouseState gains the serialized/hash-authoritative strategy
 // emergency mode, persistent All-To-Hunt target-bias latch, and signed last-
 // Building-attack frame. Bincode cannot safely default an absent struct tail.
-const SNAPSHOT_VERSION: u32 = 93;
+// Bumped 93 -> 94: add the House last-attacker index plus persistent Techno
+// recruitment/archive/base-response cooldown state.
+const SNAPSHOT_VERSION: u32 = 94;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2613,14 +2615,15 @@ mod tests {
     /// delivery retries cannot replay completion after load; 91 -> 92 adds the
     /// persisted per-house BaseClass reservation bounds/vector while retaining
     /// the native reconstruct-cleared reservation dummy mask; 92 -> 93 adds
-    /// House strategy emergency state.
+    /// House strategy emergency state; 93 -> 94 adds the House last-attacker
+    /// index plus persistent Techno recruitment/archive/base-response state.
     #[test]
-    fn phase3_house_strategy_snapshot_version_is_93() {
-        assert_eq!(super::SNAPSHOT_VERSION, 93);
+    fn phase3_house_base_defense_snapshot_version_is_94() {
+        assert_eq!(super::SNAPSHOT_VERSION, 94);
     }
 
     #[test]
-    fn gsi_04_05_house_strategy_emergency_state_roundtrips_with_hash() {
+    fn gsi_04_05_house_and_techno_base_defense_state_roundtrip_with_hash() {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Computer1");
         let mut house = crate::sim::house_state::HouseState::new(
@@ -2629,8 +2632,23 @@ mod tests {
         house.strategy_emergency.set_state_four();
         house.strategy_emergency.set_all_to_hunt_bias();
         house.strategy_emergency.note_building_attack(-17);
+        house.strategy_emergency.note_building_attacker(3);
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
+        let mut responder = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "E1",
+            "Computer1",
+            4,
+            5,
+        );
+        responder.base_defense_response.recruitable_a = false;
+        responder.base_defense_response.recruitable_b = true;
+        responder.base_defense_response.archive_target =
+            Some(crate::sim::combat::TargetKind::Entity(9));
+        responder.base_defense_response.cooldown_start_frame = -11;
+        responder.base_defense_response.cooldown_duration_frames = 225;
+        sim.substrate.entities.insert(responder);
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
@@ -2639,11 +2657,26 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v93 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v94 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
         assert_eq!(emergency.last_building_attack_frame(), -17);
+        assert_eq!(emergency.last_attacker_house_index(), 3);
+        let response = restored
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .base_defense_response;
+        assert!(!response.recruitable_a);
+        assert!(response.recruitable_b);
+        assert_eq!(
+            response.archive_target,
+            Some(crate::sim::combat::TargetKind::Entity(9))
+        );
+        assert_eq!(response.cooldown_start_frame, -11);
+        assert_eq!(response.cooldown_duration_frames, 225);
         assert_eq!(restored.state_hash(), expected_hash);
     }
 

@@ -48,11 +48,31 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
         veterancy: 0,
         high: false,
         mission: None,
+        recruitable_a: true,
+        recruitable_b: true,
     }
 }
 
 pub(crate) fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+#[test]
+fn gsi_04_05_map_recruitment_bytes_reach_persistent_techno_state() {
+    let mut sim = Simulation::new();
+    let mut placement = make_test_entity("MTNK", EntityCategory::Unit);
+    placement.recruitable_a = false;
+    placement.recruitable_b = true;
+    assert_eq!(sim.spawn_from_map(&[placement], None, &empty_heights()), 1);
+
+    let response = sim
+        .substrate
+        .entities
+        .get(1)
+        .expect("map unit spawned")
+        .base_defense_response;
+    assert!(!response.recruitable_a);
+    assert!(response.recruitable_b);
 }
 
 fn game_speed_command_sim() -> (Simulation, crate::sim::intern::InternedId) {
@@ -3169,6 +3189,8 @@ fn test_spawn_from_map_high_unit_uses_bridge_layer_and_deck_level() {
             veterancy: 0,
             high: true,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &heights,
@@ -3267,6 +3289,8 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
             veterancy: 0,
             high: true,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &heights,
@@ -3472,6 +3496,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
             veterancy: 0,
             high: true,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::from([((5, 5), 1)]),
@@ -3530,6 +3556,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
             veterancy: 0,
             high: true,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -3593,6 +3621,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
             veterancy: 0,
             high: true,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -3648,6 +3678,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
             veterancy: 0,
             high: true,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -3706,6 +3738,8 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
             veterancy: 0,
             high: true,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -3773,6 +3807,8 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -5045,6 +5081,8 @@ fn test_execute_tick_delay_blocks_early_execution() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         None,
         &empty_heights(),
@@ -5122,6 +5160,8 @@ fn test_move_queue_command_appends_waypoint() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         None,
         &empty_heights(),
@@ -5183,6 +5223,8 @@ fn test_stop_command_clears_move_and_attack_intent() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         None,
         &empty_heights(),
@@ -5240,6 +5282,8 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         None,
         &empty_heights(),
@@ -5471,6 +5515,8 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         None,
         &empty_heights(),
@@ -5574,6 +5620,8 @@ fn test_move_command_rejects_non_owned_entity() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         None,
         &empty_heights(),
@@ -5752,6 +5800,8 @@ fn test_attack_command_rejects_friendly_target() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                recruitable_a: true,
+                recruitable_b: true,
             },
             MapEntity {
                 owner: "British".to_string(),
@@ -5765,6 +5815,8 @@ fn test_attack_command_rejects_friendly_target() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                recruitable_a: true,
+                recruitable_b: true,
             },
         ],
         None,
@@ -5810,6 +5862,8 @@ fn test_attack_move_auto_acquires_enemy() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                recruitable_a: true,
+                recruitable_b: true,
             },
             MapEntity {
                 owner: "Russians".to_string(),
@@ -5823,6 +5877,8 @@ fn test_attack_move_auto_acquires_enemy() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                recruitable_a: true,
+                recruitable_b: true,
             },
         ],
         None,
@@ -5892,6 +5948,8 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                recruitable_a: true,
+                recruitable_b: true,
             },
             MapEntity {
                 owner: "Russians".to_string(),
@@ -5905,6 +5963,8 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                recruitable_a: true,
+                recruitable_b: true,
             },
         ],
         None,
@@ -5977,6 +6037,8 @@ fn test_guard_returns_to_anchor_when_displaced() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }],
         None,
         &empty_heights(),

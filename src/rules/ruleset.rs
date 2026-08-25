@@ -285,6 +285,18 @@ pub struct GeneralRules {
     pub veteran_cap: f64,
     /// Difficulty armor doubles in native Hard/Normal/Easy table order.
     pub difficulty_armor: [f64; 3],
+    /// `[General] ComputerBaseDefenseResponse=`. The active House responder
+    /// forms its signed/wrapping budget as `attacker Cost * this value`.
+    pub computer_base_defense_response: i32,
+    /// `[General] BaseDefenseDelay=` in minutes. A strict responder-budget
+    /// overshoot arms the attacker cooldown for `ftol(value * 900)` frames.
+    pub base_defense_delay_minutes: f64,
+    /// `[General] SuspendPriority=`. Teams owned by the attacked House whose
+    /// signed priority is lower than this value are suspended before scanning.
+    pub suspend_priority: i32,
+    /// `[General] SuspendDelay=` in minutes. Suspended TeamClass instances arm
+    /// their native timer for `ftol(value * 900)` frames.
+    pub suspend_delay_minutes: f64,
     /// Leptons of elevation per +1 sight cell (LeptonsPerSightIncrease=).
     /// 256 leptons = 1 z-level in RA2. 0 disables the elevation bonus.
     pub leptons_per_sight_increase: i32,
@@ -907,6 +919,10 @@ impl Default for GeneralRules {
             veteran_ratio: VETERAN_RATIO_DEFAULT,
             veteran_cap: VETERAN_CAP_DEFAULT,
             difficulty_armor: [1.0; 3],
+            computer_base_defense_response: 3,
+            base_defense_delay_minutes: 0.25,
+            suspend_priority: 20,
+            suspend_delay_minutes: 2.0,
             leptons_per_sight_increase: 0,
             gap_radius: 10,
             reveal_by_height: true,
@@ -1543,6 +1559,18 @@ impl GeneralRules {
                 .unwrap_or(VETERAN_RATIO_DEFAULT),
             veteran_cap: general.get_f64("VeteranCap").unwrap_or(VETERAN_CAP_DEFAULT),
             difficulty_armor,
+            computer_base_defense_response: general
+                .get_i32("ComputerBaseDefenseResponse")
+                .unwrap_or(defaults.computer_base_defense_response),
+            base_defense_delay_minutes: general.read_double(
+                "BaseDefenseDelay",
+                defaults.base_defense_delay_minutes,
+            ),
+            suspend_priority: general
+                .get_i32("SuspendPriority")
+                .unwrap_or(defaults.suspend_priority),
+            suspend_delay_minutes: general
+                .read_double("SuspendDelay", defaults.suspend_delay_minutes),
             leptons_per_sight_increase: general.get_i32("LeptonsPerSightIncrease").unwrap_or(0),
             gap_radius: general.get_i32("GapRadius").unwrap_or(10),
             reveal_by_height: general.get_bool("RevealByHeight").unwrap_or(true),
@@ -4140,6 +4168,27 @@ CellSpread=0
                 "raw INI integer {raw}"
             );
         }
+    }
+
+    #[test]
+    fn gsi_04_05_base_defense_response_rules_preserve_native_defaults_and_ini_values() {
+        let defaults = GeneralRules::default();
+        assert_eq!(defaults.computer_base_defense_response, 3);
+        assert_eq!(defaults.base_defense_delay_minutes, 0.25);
+        assert_eq!(defaults.suspend_priority, 20);
+        assert_eq!(defaults.suspend_delay_minutes, 2.0);
+
+        let parsed = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\n\
+             ComputerBaseDefenseResponse=-4\n\
+             BaseDefenseDelay=.125\n\
+             SuspendPriority=-2\n\
+             SuspendDelay=1.5\n",
+        ));
+        assert_eq!(parsed.computer_base_defense_response, -4);
+        assert_eq!(parsed.base_defense_delay_minutes, 0.125_f32 as f64);
+        assert_eq!(parsed.suspend_priority, -2);
+        assert_eq!(parsed.suspend_delay_minutes, 1.5_f32 as f64);
     }
 
     #[test]

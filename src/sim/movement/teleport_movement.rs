@@ -587,6 +587,7 @@ mod tests {
             elite_radar_invisible: false,
             radar_visible: false,
             insignificant: false,
+            to_protect: false,
             harvester: false,
             refinery: false,
             weeder: false,

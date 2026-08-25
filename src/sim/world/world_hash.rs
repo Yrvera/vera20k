@@ -250,7 +250,9 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true, true, true, true, true, true, true)
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true,
+        )
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -260,7 +262,7 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
-            true, false, false, false, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -271,7 +273,7 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
-            false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -287,6 +289,7 @@ impl Simulation {
         include_techno_playfield_v87: bool,
         include_sensor_deposit_v88: bool,
         include_real_cell_bridge_flags_v90: bool,
+        include_base_defense_response_v97: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -329,7 +332,7 @@ impl Simulation {
         self.substrate.fold_base_reservations(&mut hasher);
 
         self.session.fold_game_options(&mut hasher);
-        self.hash_houses(&mut hasher);
+        self.hash_houses(&mut hasher, include_base_defense_response_v97);
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
         }
@@ -378,6 +381,7 @@ impl Simulation {
             include_building_anim_overlays_v45,
             include_techno_playfield_v87,
             include_sensor_deposit_v88,
+            include_base_defense_response_v97,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -526,7 +530,7 @@ impl Simulation {
     }
 
     /// Hash per-player house state (BTreeMap = deterministic order).
-    fn hash_houses(&self, hasher: &mut impl Hasher) {
+    fn hash_houses(&self, hasher: &mut impl Hasher, include_base_defense_response_v97: bool) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
             house.credits.hash(hasher);
@@ -549,7 +553,16 @@ impl Simulation {
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
             house.current_iq.hash(hasher);
-            house.strategy_emergency.hash(hasher);
+            if include_base_defense_response_v97 {
+                house.strategy_emergency.hash(hasher);
+            } else {
+                house.strategy_emergency.mode.hash(hasher);
+                house.strategy_emergency.all_to_hunt_bias.hash(hasher);
+                house
+                    .strategy_emergency
+                    .last_building_attack_frame
+                    .hash(hasher);
+            }
             house.grudge_scores.len().hash(hasher);
             for (other, score) in &house.grudge_scores {
                 other.hash(hasher);
@@ -901,6 +914,7 @@ impl Simulation {
         include_building_anim_overlays_v45: bool,
         include_techno_playfield_v87: bool,
         include_sensor_deposit_v88: bool,
+        include_base_defense_response_v97: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -992,6 +1006,10 @@ impl Simulation {
             entity.armor_multiplier.bits().hash(hasher);
             entity.berserk.hash(hasher);
             entity.was_attacked_by_enemy.hash(hasher);
+            if include_base_defense_response_v97 {
+                b"base-defense-response-v1".hash(hasher);
+                entity.base_defense_response.hash(hasher);
+            }
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
@@ -2318,6 +2336,43 @@ mod rally_hash_tests {
             attack_frame.state_hash(),
             "last Building attack frame is hashed"
         );
+
+        let (mut attacker_index, owner) = fixture();
+        attacker_index
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .last_attacker_house_index = 2;
+        assert_ne!(
+            baseline_hash,
+            attacker_index.state_hash(),
+            "last attacker House index is hashed"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_techno_base_defense_state_changes_world_hash() {
+        let mut baseline = Simulation::new();
+        let entity = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "E1",
+            "Computer1",
+            3,
+            4,
+        );
+        baseline.substrate.entities.insert(entity.clone());
+        let baseline_hash = baseline.state_hash();
+
+        let mut changed = Simulation::new();
+        let mut entity = entity;
+        entity.base_defense_response.recruitable_b = false;
+        entity.base_defense_response.archive_target =
+            Some(crate::sim::combat::TargetKind::Entity(7));
+        entity.base_defense_response.cooldown_start_frame = 12;
+        entity.base_defense_response.cooldown_duration_frames = 225;
+        changed.substrate.entities.insert(entity);
+        assert_ne!(baseline_hash, changed.state_hash());
     }
 
     #[test]

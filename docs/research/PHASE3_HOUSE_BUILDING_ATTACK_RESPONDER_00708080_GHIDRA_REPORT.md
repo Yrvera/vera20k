@@ -1,10 +1,14 @@
 # Phase 3 House Building-Attack Responder (`0x00708080`) Ghidra Report
 
-**Date:** 2026-08-25  
-**Binary:** active retail Yuri's Revenge `gamemd.exe`  
-**Mode:** exhaustive-slice  
-**Status:** COMPLETE RESEARCH — implementation required  
-**Scope:** the active House/base-defence response transaction entered by Building and protected-Techno damage, including callers, entry/cooldown gates, team suspension, responder pool admission and ranking, mission/target writes, RNG, persistence, retail Rules bindings, and the downstream ground `Rescue`/`Area Guard` behavior needed for a closed player loop.  
+**Date:** 2026-08-25
+
+**Binary:** active retail Yuri's Revenge `gamemd.exe`
+
+**Mode:** exhaustive-slice
+
+**Status:** COMPLETE RESEARCH — implementation required
+
+**Scope:** the active House/base-defence response transaction entered by Building and protected-Techno damage, including callers, entry/cooldown gates, team suspension, responder pool admission and ranking, mission/target writes, RNG, persistence, retail Rules bindings, and the downstream ground `Rescue`/`Area Guard` behavior needed for a closed player loop.
 **Excluded:** the already-closed `House+0x54D8` timestamp implementation; broad House strategy; ordinary self-retaliation; Railgun; LaserDraw; Sonic Wave; destroyable cliffs; and Tiberian Sun legacy.
 
 ## Verdict

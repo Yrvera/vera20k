@@ -477,6 +477,10 @@ pub struct ObjectType {
     /// pixel gate this is distinct from `RadarVisible`: insignificant objects
     /// owned by a passive/missing house are skipped unless RadarVisible is set.
     pub insignificant: bool,
+    /// `ToProtect=` (`TechnoTypeClass+0xC96`). The active generic Techno
+    /// damage receiver invokes the House base-defence responder only when this
+    /// type byte is set. This is independent of dormant instance ShouldProtect.
+    pub to_protect: bool,
     /// Whether this unit is a resource harvester (Harvester=yes in rules.ini).
     /// Data-driven replacement for hardcoded type ID string checks.
     pub harvester: bool,
@@ -1326,6 +1330,7 @@ impl ObjectType {
             ),
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
             insignificant: section.get_bool("Insignificant").unwrap_or(false),
+            to_protect: section.get_bool("ToProtect").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
             weeder: section.get_bool("Weeder").unwrap_or(false),
@@ -2608,6 +2613,23 @@ mod tests {
         assert!(!a.radar_visible);
         assert!(!b.insignificant);
         assert!(b.radar_visible);
+    }
+
+    #[test]
+    fn gsi_04_05_to_protect_is_an_independent_false_default_type_gate() {
+        let ini = IniFile::from_str("[PLAIN]\nStrength=100\n[GUARDED]\nToProtect=yes\n");
+        let plain = ObjectType::from_ini_section(
+            "PLAIN",
+            ini.section("PLAIN").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        let guarded = ObjectType::from_ini_section(
+            "GUARDED",
+            ini.section("GUARDED").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(!plain.to_protect);
+        assert!(guarded.to_protect);
     }
 
     #[test]

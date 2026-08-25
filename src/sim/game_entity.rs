@@ -86,6 +86,32 @@ fn default_foundation() -> String {
     "1x1".to_string()
 }
 
+/// Persistent TechnoClass state used by the active House base-defence
+/// responder. The two admission bytes are constructor-true; archive/cooldown
+/// writes occur only after a responder assignment or strict budget overshoot.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub(crate) struct BaseDefenseResponseState {
+    pub(crate) recruitable_a: bool,
+    pub(crate) recruitable_b: bool,
+    pub(crate) archive_target: Option<TargetKind>,
+    pub(crate) cooldown_start_frame: i32,
+    pub(crate) cooldown_duration_frames: i32,
+}
+
+impl Default for BaseDefenseResponseState {
+    fn default() -> Self {
+        Self {
+            recruitable_a: true,
+            recruitable_b: true,
+            archive_target: None,
+            cooldown_start_frame: 0,
+            cooldown_duration_frames: 0,
+        }
+    }
+}
+
 fn default_armor_multiplier() -> NativeF64Bits {
     NativeF64Bits::ONE
 }
@@ -776,6 +802,10 @@ pub struct GameEntity {
     pub(crate) mission_leaf: MissionLeafState,
     /// Target identity archived by the Techno Override wrapper.
     pub(crate) suspended_attack_target: Option<TargetKind>,
+    /// Active House/base-defence recruitment, archive and attacker-cooldown
+    /// bytes. Snapshot migration defaults reproduce Techno construction.
+    #[serde(default)]
+    pub(crate) base_defense_response: BaseDefenseResponseState,
     /// ObjectClass falling-down byte read by Infantry readiness.
     pub(crate) object_is_falling_down: u8,
     /// Sim-side model of gamemd's TechnoClass `+0x308` (`DamageSparkSystem`): the
@@ -1125,6 +1155,7 @@ impl GameEntity {
             passively_acquired_target: false,
             mission_leaf: MissionLeafState::for_entity_category(category),
             suspended_attack_target: None,
+            base_defense_response: BaseDefenseResponseState::default(),
             object_is_falling_down: 0,
             damage_particle_live_until: 0,
             damage_smoke_system_id: None,
