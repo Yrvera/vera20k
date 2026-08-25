@@ -453,6 +453,90 @@ fn gsi_04_01_nonbridge_getzoneid_rejects_non_native_topology_metadata() {
     );
 }
 
+fn base_defense_reachability_fixture() -> ZoneGrid {
+    let mut zones = native_nonbridge_zone_fixture(4, 4);
+    let base = zones.base_topology_mut().unwrap();
+    base.movement_classes = vec![0; 16];
+    base.zone_ids = (2..18).collect();
+    base.zone_count = 17;
+    let row = MovementZone::Normal.matrix_row().unwrap();
+    base.raw_zone_ids_by_row[row] = (0..18).map(|cluster| 100 + cluster).collect();
+    zones
+}
+
+#[test]
+fn gsi_04_05_base_defense_reachability_preserves_bypass_fringe_and_raw_equality() {
+    let zones = base_defense_reachability_fixture();
+    assert!(zones.can_reach_base_defense_response(
+        None,
+        (0, 0),
+        (3, 3),
+        false,
+        true,
+        4,
+        4,
+    ));
+
+    assert!(zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (3, 2),
+        (0, 0),
+        false,
+        false,
+        4,
+        4,
+    ));
+    assert!(!zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (3, 2),
+        (0, 0),
+        false,
+        true,
+        4,
+        4,
+    ));
+
+    assert!(zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (4, 0),
+        (0, 4),
+        false,
+        true,
+        4,
+        4,
+    ), "two raw padded-cluster-zero labels compare equal");
+}
+
+#[test]
+fn gsi_04_05_base_defense_reachability_redirects_only_the_candidate_bridge_side() {
+    let mut zones = base_defense_reachability_fixture();
+    let mut redirect = vec![None; 16];
+    redirect[5] = Some((3, 3));
+    zones
+        .map_mut(MovementZone::Normal)
+        .unwrap()
+        .set_bridge_redirect(Some(redirect));
+
+    assert!(zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (1, 1),
+        (3, 3),
+        true,
+        true,
+        4,
+        4,
+    ));
+    assert!(!zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (1, 1),
+        (3, 3),
+        false,
+        true,
+        4,
+        4,
+    ));
+}
+
 #[test]
 fn gsi_04_06_scanline_storage_fringe_merges_isometric_cardinal_cells() {
     let terrain = terrain_from_zone_classes(
