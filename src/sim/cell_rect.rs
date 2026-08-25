@@ -419,7 +419,60 @@ pub(crate) fn scan_cell_rect(rect: CellRect, mut visit: impl FnMut(i32, i32) -> 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CellReservationGrid {
     masks: BTreeMap<(u16, u16), u32>,
+    /// Native save iterates allocated CellClass pointers only. The process-global
+    /// fallback CellClass is reconstructed cleared during load/Resize.
+    #[serde(skip)]
     dummy_mask: u32,
+}
+
+#[derive(Debug, Clone)]
+enum ReservationCellSelection {
+    Real(u16, u16),
+    SharedDummy(SharedCellDummy),
+    /// Unit-level/detached callers have no persistent shared dummy coordinate,
+    /// but retain the existing real fixed-stride versus fallback mask split.
+    DetachedDummy { requested: (i32, i32) },
+}
+
+impl ReservationCellSelection {
+    fn live_coord(&self) -> (i32, i32) {
+        match self {
+            Self::Real(rx, ry) => (i32::from(*rx), i32::from(*ry)),
+            Self::SharedDummy(cell) => cell.snapshot().coord,
+            Self::DetachedDummy { requested } => *requested,
+        }
+    }
+}
+
+fn resolve_reservation_cell(
+    terrain: Option<&ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+) -> ReservationCellSelection {
+    let Some(terrain) = terrain else {
+        return canonical_cell_coord(x, y).map_or_else(
+            || ReservationCellSelection::DetachedDummy {
+                requested: packed_cell_coord(x, y),
+            },
+            |(rx, ry)| ReservationCellSelection::Real(rx, ry),
+        );
+    };
+    match get_cellclass_fallback(Some(terrain), x, y) {
+        CellRef::Real(cell) => ReservationCellSelection::Real(cell.rx, cell.ry),
+        CellRef::Dummy { cell } => ReservationCellSelection::SharedDummy(cell),
+    }
+}
+
+pub(crate) fn resolve_reservation_real_cell(
+    terrain: Option<&ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+) -> Option<(u16, u16)> {
+    match resolve_reservation_cell(terrain, x, y) {
+        ReservationCellSelection::Real(rx, ry) => Some((rx, ry)),
+        ReservationCellSelection::SharedDummy(_)
+        | ReservationCellSelection::DetachedDummy { .. } => None,
+    }
 }
 
 impl CellReservationGrid {
@@ -438,10 +491,12 @@ impl CellReservationGrid {
         if mask == 0 {
             return;
         }
-        if let Some(cell) = reservation_cell_coord(terrain, x, y) {
-            *self.masks.entry(cell).or_default() |= mask;
-        } else {
-            self.dummy_mask |= mask;
+        match resolve_reservation_cell(terrain, x, y) {
+            ReservationCellSelection::Real(rx, ry) => {
+                *self.masks.entry((rx, ry)).or_default() |= mask;
+            }
+            ReservationCellSelection::SharedDummy(_)
+            | ReservationCellSelection::DetachedDummy { .. } => self.dummy_mask |= mask,
         }
     }
 
@@ -456,22 +511,44 @@ impl CellReservationGrid {
         if mask == 0 {
             return;
         }
-        let Some(cell) = reservation_cell_coord(terrain, x, y) else {
-            self.dummy_mask &= !mask;
-            return;
-        };
-        if let Some(bits) = self.masks.get_mut(&cell) {
-            *bits &= !mask;
-            if *bits == 0 {
-                self.masks.remove(&cell);
+        match resolve_reservation_cell(terrain, x, y) {
+            ReservationCellSelection::Real(rx, ry) => {
+                let cell = (rx, ry);
+                if let Some(bits) = self.masks.get_mut(&cell) {
+                    *bits &= !mask;
+                    if *bits == 0 {
+                        self.masks.remove(&cell);
+                    }
+                }
             }
+            ReservationCellSelection::SharedDummy(_)
+            | ReservationCellSelection::DetachedDummy { .. } => self.dummy_mask &= !mask,
         }
     }
 
     pub fn raw_mask(&self, terrain: Option<&ResolvedTerrainGrid>, x: i32, y: i32) -> u32 {
-        reservation_cell_coord(terrain, x, y).map_or(self.dummy_mask, |cell| {
-            self.masks.get(&cell).copied().unwrap_or(0)
-        })
+        self.raw_mask_for_selection(&resolve_reservation_cell(terrain, x, y))
+    }
+
+    fn raw_mask_for_selection(&self, cell: &ReservationCellSelection) -> u32 {
+        match cell {
+            ReservationCellSelection::Real(rx, ry) => {
+                self.masks.get(&(*rx, *ry)).copied().unwrap_or(0)
+            }
+            ReservationCellSelection::SharedDummy(_)
+            | ReservationCellSelection::DetachedDummy { .. } => self.dummy_mask,
+        }
+    }
+
+    pub(crate) fn raw_mask_for_cell_ref(&self, cell: &CellRef<'_>) -> u32 {
+        match cell {
+            CellRef::Real(cell) => self
+                .masks
+                .get(&(cell.rx, cell.ry))
+                .copied()
+                .unwrap_or(0),
+            CellRef::Dummy { .. } => self.dummy_mask,
+        }
     }
 
     pub fn has_reservation(
@@ -551,7 +628,12 @@ impl CellReservationGrid {
         y: i32,
         reservation_arg: i32,
     ) -> u32 {
-        if !self.has_reservation(terrain, x, y, reservation_arg) {
+        let mask = reservation_mask(reservation_arg);
+        if mask == 0 {
+            return u32::MAX;
+        }
+        let center = resolve_reservation_cell(terrain, x, y);
+        if self.raw_mask_for_selection(&center) & mask == 0 {
             return u32::MAX;
         }
         const NEIGHBORS: [(i32, i32); 8] = [
@@ -566,12 +648,13 @@ impl CellReservationGrid {
         ];
         let mut result = 0u32;
         for (index, (dx, dy)) in NEIGHBORS.into_iter().enumerate() {
-            if self.has_reservation(
+            let (origin_x, origin_y) = center.live_coord();
+            let neighbor = resolve_reservation_cell(
                 terrain,
-                x.wrapping_add(dx),
-                y.wrapping_add(dy),
-                reservation_arg,
-            ) {
+                origin_x.wrapping_add(dx),
+                origin_y.wrapping_add(dy),
+            );
+            if self.raw_mask_for_selection(&neighbor) & mask != 0 {
                 result |= 1u32 << index;
             }
         }
@@ -595,15 +678,6 @@ impl CellReservationGrid {
     pub(crate) fn reconstruct_dummy_for_map_resize(&mut self) {
         self.dummy_mask = 0;
     }
-}
-
-fn reservation_cell_coord(
-    terrain: Option<&ResolvedTerrainGrid>,
-    x: i32,
-    y: i32,
-) -> Option<(u16, u16)> {
-    canonical_cell_coord(x, y)
-        .filter(|&(rx, ry)| terrain.is_none_or(|terrain| terrain.cell(rx, ry).is_some()))
 }
 
 pub struct CellRectPassabilityContext<'a> {
@@ -687,13 +761,14 @@ fn occupancy_blocker_at(
     let reserved = reservation_mask != 0
         && ctx.reservations.is_some_and(|reservations| {
             let raw_mask = match &cell {
-                CellRef::Real(_) => reservations.raw_mask(ctx.resolved_terrain, x, y),
+                CellRef::Real(_) => reservations.raw_mask_for_cell_ref(&cell),
                 CellRef::Dummy { .. } if ctx.resolved_terrain.is_some() => {
-                    reservations.raw_mask(ctx.resolved_terrain, x, y)
+                    reservations.raw_mask_for_cell_ref(&cell)
                 }
-                // A detached lookup has no backing CellClass array. Its only
-                // native-shaped +0xDC authority is the shared dummy slot.
-                CellRef::Dummy { .. } => reservations.dummy_mask(),
+                // Detached tests have no shared CellClass identity to stamp.
+                // Preserve CellReservationGrid's established canonical
+                // real-versus-fallback split without inventing dummy state.
+                CellRef::Dummy { .. } => reservations.raw_mask(None, x, y),
             };
             raw_mask & reservation_mask != 0
         });
@@ -2508,6 +2583,82 @@ mod tests {
         assert_eq!(
             neighbors.house_reservation_neighbor_mask(None, 10, 10, 4),
             0xff
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_lookups_stamp_dummy_but_real_alias_does_not() {
+        let mut terrain = flat_terrain(512, 2);
+        terrain.test_set_native_allocated_cells(&[(0, 0), (511, 0)]);
+        let mut grid = CellReservationGrid::new();
+
+        grid.reserve(Some(&terrain), -2, 0, 3);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
+        assert_eq!(grid.dummy_mask(), 1 << 3);
+
+        assert_eq!(grid.raw_mask(Some(&terrain), -3, 0), 1 << 3);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-3, 0));
+        grid.clear(Some(&terrain), -4, 0, 3);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-4, 0));
+        assert_eq!(grid.dummy_mask(), 0);
+
+        grid.reserve(Some(&terrain), -1, 1, 4);
+        assert_eq!(grid.raw_mask(Some(&terrain), 511, 0), 1 << 4);
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-4, 0),
+            "the fixed-stride real alias must not stamp the shared dummy"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_neighbor_mask_real_center_keeps_fixed_origin() {
+        let mut terrain = flat_terrain(1, 1);
+        terrain.test_set_native_allocated_cells(&[(0, 0)]);
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(Some(&terrain), 0, 0, 0);
+        let _ = get_cellclass_fallback(Some(&terrain), 77, 77);
+
+        assert_eq!(
+            grid.house_reservation_neighbor_mask(Some(&terrain), 0, 0, 0),
+            0
+        );
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, -1),
+            "all eight probes reload the unchanged real center coordinate"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_neighbor_mask_dummy_center_rolls_and_real_hits_preserve_origin() {
+        let mut all_dummy = flat_terrain(1, 1);
+        all_dummy.test_set_native_allocated_cells(&[]);
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(Some(&all_dummy), -1, 0, 0);
+        assert_eq!(
+            grid.house_reservation_neighbor_mask(Some(&all_dummy), -1, 0, 0),
+            0xff
+        );
+        assert_eq!(
+            all_dummy.dummy_cell_requested_coord(),
+            (-1, 0),
+            "each miss moves the shared center used by the next direction"
+        );
+
+        let mut with_real_hits = flat_terrain(3, 1);
+        with_real_hits.test_set_native_allocated_cells(&[(0, 0), (2, 0)]);
+        let mut mixed = CellReservationGrid::new();
+        mixed.reserve(Some(&with_real_hits), -1, 0, 0);
+        assert_eq!(
+            mixed.house_reservation_neighbor_mask(Some(&with_real_hits), -1, 0, 0),
+            0xaf,
+            "the real S and W hits lack the owner bit"
+        );
+        assert_eq!(
+            with_real_hits.dummy_cell_requested_coord(),
+            (0, -1),
+            "real hits do not stamp and therefore preserve the rolling dummy origin"
         );
     }
 

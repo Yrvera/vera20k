@@ -569,6 +569,7 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            house.base_reservation.hash(hasher);
             house.waypoint_edge.hash(hasher);
         }
     }
@@ -2247,6 +2248,28 @@ mod rally_hash_tests {
         let mut hard_house = HouseState::new(owner_b, 0, None, false, 0, 10);
         hard_house.difficulty = HouseDifficulty::Hard;
         sim_b.houses.insert(owner_b, hard_house);
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_05_base_reservation_state_changes_world_hash() {
+        use crate::sim::house_state::HouseState;
+
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let owner_a = sim_a.interner.intern("Computer1");
+        let owner_b = sim_b.interner.intern("Computer1");
+        assert_eq!(owner_a, owner_b);
+        sim_a
+            .houses
+            .insert(owner_a, HouseState::new(owner_a, 0, None, false, 0, 10));
+        let mut changed = HouseState::new(owner_b, 0, None, false, 0, 10);
+        changed.base_reservation.update_bounds(3, 4, 5, 6);
+        changed
+            .base_reservation
+            .append_perimeter_cell_if_absent(u32::from(3u16) | (u32::from(4u16) << 16));
+        sim_b.houses.insert(owner_b, changed);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }

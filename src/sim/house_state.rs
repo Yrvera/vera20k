@@ -72,6 +72,76 @@ pub struct HouseOutcomeState {
     pub exit_ready: bool,
 }
 
+/// Writer-owned `BaseClass` state embedded in native `HouseClass`.
+///
+/// `BuildingClass::MarkBaseReservation @ 0x00455F10` updates the four bounds on
+/// every normal and repair-only writer call. Normal writers and
+/// `BuildingClass::ClearBaseReservationAndRepairNeighbors @ 0x004561F0` also
+/// maintain the ordered packed-cell perimeter vector.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct BaseReservationState {
+    pub(crate) min_x: i32,
+    pub(crate) min_y: i32,
+    pub(crate) width: i32,
+    pub(crate) height: i32,
+    pub(crate) perimeter_cells: Vec<u32>,
+}
+
+impl BaseReservationState {
+    fn update_axis(minimum: &mut i32, span: &mut i32, incoming_start: i32, incoming_span: i32) {
+        // Literal native order. A legitimate zero minimum is treated as
+        // uninitialized again, and the prior span is deliberately retained.
+        if *minimum == 0 {
+            *minimum = incoming_start;
+        }
+        if incoming_start < *minimum {
+            *span = span.wrapping_add(minimum.wrapping_sub(incoming_start));
+            *minimum = incoming_start;
+        }
+        if incoming_start.wrapping_add(incoming_span) > minimum.wrapping_add(*span) {
+            *span = incoming_start
+                .wrapping_sub(*minimum)
+                .wrapping_add(incoming_span);
+        }
+    }
+
+    pub(crate) fn update_bounds(
+        &mut self,
+        start_x: i32,
+        start_y: i32,
+        width: i32,
+        height: i32,
+    ) {
+        Self::update_axis(&mut self.min_x, &mut self.width, start_x, width);
+        Self::update_axis(&mut self.min_y, &mut self.height, start_y, height);
+    }
+
+    pub(crate) fn append_perimeter_cell_if_absent(&mut self, packed_cell: u32) {
+        if !self.perimeter_cells.contains(&packed_cell) {
+            self.perimeter_cells.push(packed_cell);
+        }
+    }
+
+    pub(crate) fn remove_perimeter_cell(&mut self, packed_cell: u32) {
+        if let Some(index) = self
+            .perimeter_cells
+            .iter()
+            .position(|candidate| *candidate == packed_cell)
+        {
+            // Vec::remove performs the native stable shift-left removal.
+            self.perimeter_cells.remove(index);
+        }
+    }
+
+    pub(crate) fn bounds(&self) -> (i32, i32, i32, i32) {
+        (self.min_x, self.min_y, self.width, self.height)
+    }
+
+    pub(crate) fn perimeter_cells(&self) -> &[u32] {
+        &self.perimeter_cells
+    }
+}
+
 /// Per-player game state.
 ///
 /// Created once per player at game start, lives for the duration of the match.
@@ -152,6 +222,9 @@ pub struct HouseState {
     pub owned_unit_count: u32,
     /// Initial base location (MCV deploy point or first ConYard).
     pub base_center: Option<(u16, u16)>,
+    /// Native `HouseClass+0x5700` BaseClass reservation writer outputs.
+    #[serde(default)]
+    pub base_reservation: BaseReservationState,
     /// Max tech level for this player. From game options at match start.
     pub tech_level: i32,
     /// Live HouseClass CurrentIQ (+0x24C), used by AI behavior thresholds.
@@ -282,6 +355,7 @@ impl HouseState {
             owned_building_count: 0,
             owned_unit_count: 0,
             base_center: None,
+            base_reservation: BaseReservationState::default(),
             tech_level,
             current_iq: 0,
             grudge_scores: BTreeMap::new(),
@@ -584,6 +658,50 @@ mod difficulty_tests {
         let house = HouseState::new(Default::default(), 0, None, false, 0, 10);
         assert_eq!(house.difficulty, HouseDifficulty::Normal);
         assert_eq!(house.current_iq, 0);
+    }
+}
+
+#[cfg(test)]
+mod base_reservation_tests {
+    use super::BaseReservationState;
+
+    #[test]
+    fn gsi_04_05_zero_minimum_rebases_and_retains_prior_span() {
+        let mut state = BaseReservationState::default();
+        state.update_bounds(0, 0, 3, 4);
+        assert_eq!(state.bounds(), (0, 0, 3, 4));
+
+        state.update_bounds(10, 20, 3, 5);
+        assert_eq!(
+            state.bounds(),
+            (10, 20, 3, 5),
+            "a zero minimum is treated as uninitialized again"
+        );
+
+        let mut retained = BaseReservationState {
+            min_x: 0,
+            width: 20,
+            ..BaseReservationState::default()
+        };
+        retained.update_bounds(10, 1, 3, 1);
+        assert_eq!(
+            (retained.min_x, retained.width),
+            (10, 20),
+            "the sentinel assignment does not reset an already larger span"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_perimeter_vector_append_and_remove_are_stable() {
+        let mut state = BaseReservationState::default();
+        state.append_perimeter_cell_if_absent(30);
+        state.append_perimeter_cell_if_absent(10);
+        state.append_perimeter_cell_if_absent(20);
+        state.append_perimeter_cell_if_absent(10);
+        assert_eq!(state.perimeter_cells(), &[30, 10, 20]);
+
+        state.remove_perimeter_cell(10);
+        assert_eq!(state.perimeter_cells(), &[30, 20]);
     }
 }
 

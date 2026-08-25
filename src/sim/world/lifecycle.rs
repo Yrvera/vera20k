@@ -4,10 +4,8 @@
 //! and pending-delete transitions.  Upper-layer work is emitted as ordered data;
 //! this module never depends on render, UI, sidebar, audio, or net.
 
-use std::collections::BTreeSet;
-
 use crate::map::entities::EntityCategory;
-use crate::sim::cell_rect::{CellRect, canonical_cell_coord, scan_cell_rect};
+use crate::sim::cell_rect::{CellRect, resolve_reservation_real_cell, scan_cell_rect};
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::intern::InternedId;
@@ -84,13 +82,35 @@ pub(crate) enum PlacementEvidence {
     EvaluateMark,
 }
 
-fn building_base_reservation_rect(rx: u16, ry: u16, foundation: &str, spacing: i32) -> CellRect {
+pub(super) fn building_base_reservation_rect(
+    rx: u16,
+    ry: u16,
+    foundation: &str,
+    spacing: i32,
+) -> CellRect {
     let (width, height) = crate::rules::foundation::foundation_dimensions(foundation);
     CellRect::new(
-        i32::from(rx).wrapping_sub(spacing),
-        i32::from(ry).wrapping_sub(spacing),
+        native_base_reservation_start(rx, spacing),
+        native_base_reservation_start(ry, spacing),
         i32::from(width).wrapping_add(spacing.wrapping_mul(2)),
         i32::from(height).wrapping_add(spacing.wrapping_mul(2)),
+    )
+}
+
+fn native_base_reservation_start(anchor: u16, spacing: i32) -> i32 {
+    i32::from(i32::from(anchor).wrapping_sub(spacing) as i16)
+}
+
+fn packed_reservation_coord(x: i32, y: i32) -> u32 {
+    u32::from(x as i16 as u16) | (u32::from(y as i16 as u16) << 16)
+}
+
+fn base_reservation_perimeter_rect(rect: CellRect) -> CellRect {
+    CellRect::new(
+        rect.x.wrapping_sub(1),
+        rect.y.wrapping_sub(1),
+        rect.width.wrapping_add(3),
+        rect.height.wrapping_add(3),
     )
 }
 
@@ -137,11 +157,12 @@ pub(super) fn building_base_reservation_repair_rect(
     foundation_height: u16,
     spacing: i32,
 ) -> CellRect {
-    let twice_spacing = spacing.wrapping_mul(2);
     let five_times_spacing = spacing.wrapping_mul(5);
+    let primary_x = native_base_reservation_start(rx, spacing);
+    let primary_y = native_base_reservation_start(ry, spacing);
     CellRect::new(
-        i32::from(rx).wrapping_sub(twice_spacing),
-        i32::from(ry).wrapping_sub(twice_spacing),
+        primary_x.wrapping_sub(spacing),
+        primary_y.wrapping_sub(spacing),
         i32::from(foundation_width).wrapping_add(five_times_spacing),
         i32::from(foundation_height).wrapping_add(five_times_spacing),
     )
@@ -881,6 +902,14 @@ impl Simulation {
     }
 
     fn mark_building_base_reservation(&mut self, stable_id: u64) -> bool {
+        self.mark_building_base_reservation_with_arg(stable_id, false)
+    }
+
+    fn mark_building_base_reservation_with_arg(
+        &mut self,
+        stable_id: u64,
+        repair_only: bool,
+    ) -> bool {
         let Some((owner, rect)) = self.base_reservation_writer(stable_id) else {
             return false;
         };
@@ -892,9 +921,87 @@ impl Simulation {
             rect,
             house_index,
         );
+        if let Some(house) = self.houses.get_mut(&owner) {
+            house.base_reservation
+                .update_bounds(rect.x, rect.y, rect.width, rect.height);
+        } else {
+            debug_assert!(false, "base-reservation owner must have HouseState");
+        }
+        if !repair_only {
+            self.update_base_reservation_perimeter_after_mark(owner, house_index, rect);
+        }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::BaseReservationMarked);
         true
+    }
+
+    fn update_base_reservation_perimeter_after_mark(
+        &mut self,
+        owner: InternedId,
+        house_index: i32,
+        rect: CellRect,
+    ) {
+        scan_cell_rect(base_reservation_perimeter_rect(rect), |x, y| {
+            let neighbor_mask = self
+                .substrate
+                .base_reservations
+                .house_reservation_neighbor_mask(self.resolved_terrain.as_ref(), x, y, house_index);
+            let packed = packed_reservation_coord(x, y);
+            if let Some(house) = self.houses.get_mut(&owner) {
+                match neighbor_mask {
+                    0x0000_00ff => house.base_reservation.remove_perimeter_cell(packed),
+                    1..=0x0000_00fe => house
+                        .base_reservation
+                        .append_perimeter_cell_if_absent(packed),
+                    0 | u32::MAX => {}
+                    _ => unreachable!("neighbor mask is eight bits or the absent-center sentinel"),
+                }
+            }
+            true
+        });
+    }
+
+    fn update_base_reservation_perimeter_after_clear(
+        &mut self,
+        owner: InternedId,
+        house_index: i32,
+        rect: CellRect,
+    ) {
+        scan_cell_rect(base_reservation_perimeter_rect(rect), |x, y| {
+            let neighbor_mask = self
+                .substrate
+                .base_reservations
+                .house_reservation_neighbor_mask(self.resolved_terrain.as_ref(), x, y, house_index);
+            let packed = packed_reservation_coord(x, y);
+            match neighbor_mask {
+                0x0000_00ff => {
+                    if let Some(house) = self.houses.get_mut(&owner) {
+                        house.base_reservation.remove_perimeter_cell(packed);
+                    }
+                }
+                1..=0x0000_00fe => {
+                    if let Some(house) = self.houses.get_mut(&owner) {
+                        house
+                            .base_reservation
+                            .append_perimeter_cell_if_absent(packed);
+                    }
+                }
+                0 | u32::MAX => {
+                    if let Some(house) = self.houses.get_mut(&owner) {
+                        house.base_reservation.remove_perimeter_cell(packed);
+                    }
+                    // Native resolves the center again before the extra clear.
+                    self.substrate.base_reservations.clear(
+                        self.resolved_terrain.as_ref(),
+                        x,
+                        y,
+                        house_index,
+                    );
+                }
+                _ => unreachable!("neighbor mask is eight bits or the absent-center sentinel"),
+            }
+            true
+        });
     }
 
     fn base_reservation_writer(&self, stable_id: u64) -> Option<(InternedId, CellRect)> {
@@ -962,28 +1069,29 @@ impl Simulation {
         self.trace_lifecycle_for_test(LifecycleTestEvent::BaseReservationCleared);
 
         // The native repair scan happens while this building is still linked in
-        // the ground object lists. Gather stable identities first, then re-run
-        // each neighbor's own exact writer without holding a grid borrow.
-        let mut repair_ids = BTreeSet::new();
+        // the ground list. Each lookup selects only the first Building and calls
+        // its repair-only writer immediately; identities are not deduplicated.
         scan_cell_rect(repair_rect, |x, y| {
-            if let Some((rx, ry)) = canonical_cell_coord(x, y)
-                && self
-                    .resolved_terrain
-                    .as_ref()
-                    .is_none_or(|terrain| terrain.cell(rx, ry).is_some())
-                && let Some(cell) = self.substrate.occupancy.get(rx, ry)
+            let neighbor_id = resolve_reservation_real_cell(
+                self.resolved_terrain.as_ref(),
+                x,
+                y,
+            )
+            .and_then(|(rx, ry)| {
+                self.substrate.occupancy.first_building_on_layer(
+                    rx,
+                    ry,
+                    crate::sim::movement::locomotor::MovementLayer::Ground,
+                )
+            });
+            if let Some(neighbor_id) = neighbor_id
+                && neighbor_id != stable_id
             {
-                repair_ids.extend(
-                    cell.iter_layer(crate::sim::movement::locomotor::MovementLayer::Ground)
-                        .map(|occupant| occupant.entity_id),
-                );
+                self.mark_building_base_reservation_with_arg(neighbor_id, true);
             }
             true
         });
-        repair_ids.remove(&stable_id);
-        for neighbor_id in repair_ids {
-            self.mark_building_base_reservation(neighbor_id);
-        }
+        self.update_base_reservation_perimeter_after_clear(owner, house_index, rect);
         true
     }
 

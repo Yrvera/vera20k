@@ -278,7 +278,10 @@ use crate::sim::world::Simulation;
 // Bumped 90 -> 91: the active factory PendingObject now persists the one-shot
 // completion-accounted latch so a refused delivery resumed after load cannot
 // increment the score-screen Built statistic again.
-const SNAPSHOT_VERSION: u32 = 91;
+// Bumped 91 -> 92: persist each House's BaseClass reservation bounds/vector;
+// the process-global reservation dummy mask remains outside the payload and
+// reconstructs cleared like native CellClass save/load.
+const SNAPSHOT_VERSION: u32 = 92;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2604,10 +2607,12 @@ mod tests {
     /// persistence/hash plus the live dummy subset to the canonical hash,
     /// while retaining the native dummy reconstruct-to-zero load behavior;
     /// 90 -> 91 adds the held factory object's completion-accounted latch so
-    /// delivery retries cannot replay completion after load.
+    /// delivery retries cannot replay completion after load; 91 -> 92 adds the
+    /// persisted per-house BaseClass reservation bounds/vector while retaining
+    /// the native reconstruct-cleared reservation dummy mask.
     #[test]
-    fn gsi_04_01_snapshot_version_is_91() {
-        assert_eq!(super::SNAPSHOT_VERSION, 91);
+    fn phase3_base_reservation_snapshot_version_is_92() {
+        assert_eq!(super::SNAPSHOT_VERSION, 92);
     }
 
     #[test]
@@ -3718,8 +3723,15 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_05_reservation_v50_roundtrip_and_hash_cover_real_dummy_and_profile() {
+    fn gsi_04_05_reservation_roundtrip_preserves_real_and_house_state_but_clears_dummy() {
         let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10);
+        house.base_reservation.update_bounds(3, 4, 5, 6);
+        house
+            .base_reservation
+            .append_perimeter_cell_if_absent(u32::from(3u16) | (u32::from(4u16) << 16));
+        sim.houses.insert(owner, house);
         let entity_id = sim.allocate_stable_id();
         let mut building = crate::sim::game_entity::GameEntity::test_default(
             entity_id,
@@ -3729,6 +3741,7 @@ mod tests {
             4,
         );
         building.category = crate::map::entities::EntityCategory::Structure;
+        building.owner = owner;
         building.base_reservation_spacing = Some(-3);
         sim.substrate.entities.insert(building);
         let mut reservation_terrain = flat_terrain(4, 5);
@@ -3792,12 +3805,23 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let mut restored = GameSnapshot::load(&bytes).expect("v50 snapshot").sim;
+        sim.substrate
+            .base_reservations
+            .clear(sim.resolved_terrain.as_ref(), 2, 0, 1);
+        let expected_loaded_hash = sim.state_hash();
+
+        let mut restored = GameSnapshot::load(&bytes).expect("reservation snapshot").sim;
         restored
             .restore_after_snapshot_load()
             .expect("restore transient caches without rebuilding reservations");
         assert_eq!(restored.substrate.base_reservations.raw_mask(None, 3, 4), 1);
-        assert_eq!(restored.substrate.base_reservations.dummy_mask(), 1 << 1);
+        assert_eq!(restored.substrate.base_reservations.dummy_mask(), 0);
+        let restored_house = restored.houses.get(&owner).expect("restored owner");
+        assert_eq!(restored_house.base_reservation.bounds(), (3, 4, 5, 6));
+        assert_eq!(
+            restored_house.base_reservation.perimeter_cells(),
+            &[u32::from(3u16) | (u32::from(4u16) << 16)]
+        );
         assert_eq!(
             restored
                 .substrate
@@ -3807,7 +3831,7 @@ mod tests {
                 .base_reservation_spacing,
             Some(-3)
         );
-        assert_eq!(restored.state_hash(), expected_hash);
+        assert_eq!(restored.state_hash(), expected_loaded_hash);
     }
 
     #[test]
