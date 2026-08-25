@@ -2692,6 +2692,7 @@ mod tests {
                 member_type,
             }],
             None,
+            sim.session.binary_frame as i32,
         );
         assert_eq!(
             sim.team_script_vm

@@ -164,6 +164,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
             member_type,
         }],
         None,
+        0,
     );
     let alliances = HouseAllianceMap::new();
     let mut scenario_rng = SimRng::new(0x0405);

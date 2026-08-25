@@ -25,6 +25,7 @@ The Team owner identity is independently bound by the RTTI walk: `vtable 0x007F4
 | `Team+0x64` | signed 32-bit frame | response suspension start frame | writer `0x006EC2D7-0x006EC2E0`; consumer `0x006E9153-0x006E9168`; constructor `decompile_function 0x006E8A90` |
 | `Team+0x68` | 32-bit indeterminate payload | middle dword written from a non-dominating stack slot; not read by the expiry owner and omitted from the Team CRC sequence | writer `0x006EC2D3-0x006EC2E2`; CRC bytes `read_memory 0x006EC5A0` decoded through first `RET 4` at `0x006EC720` |
 | `Team+0x6C` | signed 32-bit duration | low dword of the chopped `SuspendDelay*900.0` conversion | writer `0x006EC2C2-0x006EC2E5`; consumer `0x006E9156-0x006E916E` |
+| `Team+0x78` | byte/bool | remembers that the Team has reached its TaskForce required-member total; controls empty-Team teardown in the `+0x7D` helper | constructor `0x006E8AFC`; helper `0x006EA406-0x006EA412`, `0x006EA483-0x006EA4E7`; CRC `0x006EC68C` |
 | `Team+0x7D` | byte/bool | response/recruitment status latch; set by suspension, tested immediately after expiry | writer `0x006EC2B3`; Team update `0x006E917B-0x006E918B` |
 | `Team+0x7E` | byte/bool | second response/recruitment status latch; set by suspension, not cleared by the timer block | writer `0x006EC2B0`; follow-on helper `0x006EA467` |
 | `Team+0x83` | byte/bool | response suspension active gate | writer `0x006EC2DA`; first Team update read `0x006E9149`; sole expiry clear in the mapped block `0x006E9174` |
@@ -93,11 +94,12 @@ Tiny but load-bearing details from `0x006E9149-0x006E918B`:
 
 ### 3.3 Same-call latch behavior after expiry
 
-The direct follow-on helper at `0x006EA3E0` is not the timer owner, but its first-order effects are required to avoid inventing an expiry clear:
+The direct follow-on helper at `0x006EA3E0` is not the timer owner, but its first-order effects are required to avoid inventing an expiry clear or a false post-expiry ScriptType visit:
 
-- When its `Team+0x48` count is positive, it evaluates TeamType required-member totals, then clears `+0x7E` at `0x006EA467` and `+0x7D` at `0x006EA46A` before returning `1`.
-- When `Team+0x48 <= 0`, it takes `0x006EA483`; if `+0x78==0`, it reaches the common return without executing those two clears. An empty suspended Team can therefore retain both latches after timer expiry.
-- Consequently, Rust must not fold `+0x7D/+0x7E` clearing into the timer-expiry operation. Their later lifecycle belongs to the recruitment/status mechanism.
+- When its signed `Team+0x48` count is positive, it compares that count with the wrapping signed sum of the TeamType TaskForce entry counts returned by `0x006E8160`. Equality sets `+0x78=1`; the path then clears `+0x7E` at `0x006EA467` and `+0x7D` at `0x006EA46A` before returning `1`.
+- When `Team+0x48 <= 0`, it takes `0x006EA483`. If `+0x78==0`, it reaches the common `AL=1` return at `0x006EA47E` without executing those two clears. That empty Team therefore retains both latches and may continue through later TeamClass AI gates in the same call.
+- If the empty Team instead has `+0x78!=0`, the helper takes the teardown tail, optionally dispatches the `+0x82` scenario action, invokes the Team vtable `+0x20` teardown with argument `1`, and returns `0` at `0x006EA4E3`. `TeamClass::AI` then exits at `0x006E9189-0x006E918B` without ScriptType work.
+- Consequently, Rust must not fold `+0x7D/+0x7E` clearing into timer expiry or assume every empty expiry has the same continuation. Their lifecycle and the retained `+0x78` state belong to the mandatory helper.
 
 The full recruitment mechanism is intentionally non-scope; only the branches directly reached from timer expiry were read.
 
@@ -107,6 +109,7 @@ Constructor `0x006E8A90` establishes:
 
 - `+0x64 = g_CurrentFrameCounter`
 - `+0x6C = 0`
+- `+0x78 = 0`
 - `+0x7D = 1`
 - `+0x7E = 0`
 - `+0x83 = 0`
@@ -128,6 +131,7 @@ The Team CRC/checksum callback is the vtable `+0x34` entry `0x006EC5A0`. Ghidra 
 - Otherwise it performs the same wrapping subtraction and signed `elapsed < duration` test, feeding `duration-elapsed` while active and `0` at/after expiry.
 - It does not feed raw `+0x64` or `+0x6C` as two independent values.
 - It skips `+0x68`.
+- It feeds `+0x78` before the response latch bytes (`0x006EC68C`).
 - It feeds bytes `+0x7D`, `+0x7E`, and `+0x83` individually (`0x006EC6C3`, `0x006EC6CE`, `0x006EC700`).
 
 This makes remaining-time normalization and latch coverage deterministic lockstep behavior, not save-file trivia.
@@ -158,7 +162,9 @@ INI evidence: `ini/rulesmd.ini:65-66` and `ini/rules.ini:61-62`. Binary key mapp
 - This Team loop runs before the later DiskLaser and main object-AI loops in the ordinary active scheduler. No TS-only flag guards the copied Team loop.
 - The standard YR INI supplies both enabling values, and the arm path begins at ordinary YR damage receivers. Active in YR is therefore **Yes**, conditional only on the responder's ordinary House/attacker gates and the Team owner/priority tests.
 
-## 6. Current Rust Implementation Status
+## 6. Rust Implementation Status at Investigation Start
+
+This scan records the pre-implementation parent state used to derive the handoff; later commits must be judged from their Rust diff and validation rather than treating this section as a live status page.
 
 Scanned surfaces:
 
@@ -168,7 +174,7 @@ Scanned surfaces:
 - The current tick skips completed/refused/inactive-owner Teams before any Team logic. Native evaluates `+0x83` first. Placing expiry beneath the current Rust skip would preserve a mismatch for retained Team state.
 - Rust decrements `delay_remaining_frames` as a separate ScriptType wait. That field is not the response timer and must not be substituted for the `+0x64/+0x6C` absolute-frame mechanism.
 - `src/sim/team_script_vm.rs:479-501` hashes raw response start and raw response duration independently. Native hashes one normalized remaining-time dword, skips `+0x68`, and then hashes the three latch bytes. The current hash is mismatched even when execution eventually gains a gate.
-- `src/sim/team_script_vm.rs:528-565` initializes the response fields as `false,false,false,0,0`; native constructor defaults are `true,false,false,current_frame,0` with `+0x83=false`. The active suspension result is unaffected because the writer overwrites them, but initial serialized/hash state and the ordinary recruitment latch are not native.
+- `src/sim/team_script_vm.rs:528-565` initializes the response fields as `false,false,false,0,0`; native constructor defaults include `+0x78=0`, `+0x7D=1`, `+0x7E=0`, `+0x83=0`, `start=current_frame`, and `duration=0`. The active suspension result is unaffected because the writer overwrites most of them, but initial serialized/hash state and the ordinary recruitment latch are not native.
 - `src/sim/combat/base_defense_response.rs:120-135` already owns an exact x87-chop `minutes*900` helper and the suspension writer calls it. The implementation is suitable for `SuspendDelay`, although its provenance prose currently names only the sibling `BaseDefenseDelay` callsite.
 - `src/sim/world/mod.rs:1128-1166` arms suspension with `session.binary_frame as i32`, matching the native frame domain.
 - `src/sim/world/mod.rs:6584-6593` calls Team updates in the correct broad scheduler rung but passes monotonic `execute_tick`; `TeamScriptVm::tick_effects` ignores that value. Exact expiry needs the pre-increment wrapping `binary_frame`, not the monotonic command ordinal.
@@ -216,10 +222,10 @@ The zero-add pass re-read the complete timer prologue, writer, constructor, dire
 - `[RESOLVED] OQ-11 — Does frame arithmetic clamp or wrap? → The 32-bit SUB wraps; its result is interpreted by a signed compare.` (evidence: `0x006E915E-0x006E9168`)
 - `[RESOLVED] OQ-12 — Which fields clear at expiry? → Only +0x83; timer fields and +0x7D/+0x7E remain untouched by the timer block.` (evidence: `0x006E9174-0x006E918B`)
 - `[RESOLVED] OQ-13 — Does normal Team work resume in the same update? → Yes; execution falls directly into the +0x7D helper and then later Team branches if that helper permits.` (evidence: `0x006E9174-0x006E9191`)
-- `[RESOLVED] OQ-14 — May +0x7D/+0x7E remain true after expiry? → Yes; the empty-count/+0x78==0 path in 0x006EA3E0 returns without its positive-count clears.` (evidence: `0x006EA483-0x006EA46D` control flow)
+- `[RESOLVED] OQ-14 — May +0x7D/+0x7E remain true after expiry? → Yes; empty-count/+0x78==0 reaches the common AL=1 return without the positive-count clears. Empty-count/+0x78!=0 instead tears down the Team and returns 0, so it does not reach ScriptType work.` (evidence: `0x006EA483-0x006EA4E7` control flow)
 - `[RESOLVED] OQ-15 — What do zero and negative durations do? → With a normal writer start, both expire on the first Team update under the signed comparison.` (evidence: `0x006E915E-0x006E9174`)
 - `[RESOLVED] OQ-16 — Are these fields persisted? → Yes; Team Save/Load uses the raw 0xA0-byte object block, then repairs vtables/swizzles without timer normalization.` (evidence: vtable slots; `0x00410320`, `0x00410380`, `0x006EC450`, `0x006EC540`, `0x006F0430`)
-- `[RESOLVED] OQ-17 — What does native CRC observe? → One normalized remaining-time dword, bytes +0x7D/+0x7E/+0x83, not raw start/duration and not +0x68.` (evidence: bytes `0x006EC5A0-0x006EC720`)
+- `[RESOLVED] OQ-17 — What does native CRC observe? → One normalized remaining-time dword, then the mapped +0x78/+0x7D/+0x7E/+0x83 bytes in field order, not raw start/duration and not +0x68.` (evidence: bytes `0x006EC5A0-0x006EC720`)
 - `[RESOLVED] OQ-18 — What is +0x68? → It is not required to compute or expire suspension in the mapped owner and is excluded from CRC; its exact broader class meaning is intentionally not promoted from indeterminate writer data.` (evidence: writer, constructor, Team AI, CRC sequence)
 - `[RESOLVED] OQ-19 — Does Rust currently block Team execution? → No; tick_effects never reads the response fields.` (evidence: `src/sim/team_script_vm.rs:380-474`)
 - `[RESOLVED] OQ-20 — Does Rust hash the native timer state? → No; it hashes raw start and duration independently instead of native normalized remaining time.` (evidence: `src/sim/team_script_vm.rs:479-501`; native CRC sequence)
@@ -239,9 +245,9 @@ Adversarial questions covered by the log include exact equality (`OQ-10`), rearm
 | Expiry continues in the same update | `0x006E9174-0x006E9191` | missing | `tick_effects` control flow | after clearing `+0x83`, continue through represented Team work in that same pass | a supported action/effect becomes observable exactly at `N+D`, not `N+D+1` | do not `continue` merely because the timer was active at entry |
 | Timer expiry clears only `+0x83` | timer block plus `0x006EA3E0` | missing | `TeamScriptState` mutation | preserve raw start/duration and `+0x7D/+0x7E`; leave their lifecycle to recruitment work | empty Team expiry retains both latches while `+0x83` becomes false | do not clear all three response bytes together |
 | Repeated writer calls restart the full delay | complete `0x006EC250` | arm path already matches | `suspend_teams_for_base_defense` regression tests | retain unconditional overwrite and ordered drain | arm at `N`, rearm at `N+k`, prove expiry at `N+k+D` and removal of a member added between calls | do not retain the earlier deadline or take max/min |
-| CRC hashes normalized remaining time and latch bytes | `0x006EC643-0x006EC709` raw decode | mismatched | `TeamScriptVm::hash_state` and world hash call if current frame is unavailable | hash one native-shaped remaining-time value plus `+0x7D/+0x7E/+0x83`; do not hash raw start separately | two states with different `(start,duration)` but identical native remaining/latches hash identically; one-frame remaining difference hashes differently | do not hash `+0x68`; do not call raw start “equivalent” |
+| CRC hashes normalized remaining time and latch bytes | `0x006EC643-0x006EC709` raw decode | mismatched | `TeamScriptVm::hash_state` and world hash call if current frame is unavailable | hash one native-shaped remaining-time value followed by mapped `+0x78/+0x7D/+0x7E/+0x83`; do not hash raw start separately | two states with different `(start,duration)` but identical native remaining/latches hash identically; one-frame remaining difference hashes differently | do not hash `+0x68`; do not call raw start “equivalent” |
 | Save/load preserves an active timer | Team raw Save/Load chain | fields already serde-persisted; continuation untested | Team VM serde/snapshot tests | restore raw response state and use restored binary frame for remaining calculation | save halfway, restore, prove the same expiry frame and same pre-/post-expiry hash transitions | do not reset the start to load time |
-| Native constructor defaults are `7D=1,7E=0,83=0,start=current,duration=0` | `0x006E8A90` | initial fields differ | `insert_team` / creation context and hash tests | either model these defaults with the correct frame authority or explicitly keep the broader recruitment mismatch open | newly constructed Team is not suspended, native-shaped CRC timer contribution is zero, and latch bytes reflect constructor state | do not infer `7D=1` means active suspension; `83` is the suspension gate |
+| Native constructor defaults include `78=0,7D=1,7E=0,83=0,start=current,duration=0` | `0x006E8A90` | initial fields differ | `insert_team` / creation context and hash tests | model these defaults with the correct frame authority | newly constructed Team is not suspended, native-shaped CRC timer contribution is zero, and latch bytes reflect constructor state | do not infer `7D=1` means active suspension; `83` is the suspension gate |
 | Existing minute conversion is suitable for SuspendDelay | writer + `Math__ftol` | mechanism matches | `base_defense_response::response_delay_frames` provenance/tests | retain x87 53-bit chop and low-dword behavior; cite the SuspendDelay callsite too | stock `2.0 -> 1800`, fractional/negative/out-of-range cases match the helper's native golden set | do not replace with ordinary Rust float cast without the established x87 contract |
 
 Classification: execution gate, exact equality, same-call continuation, and CRC normalization are **milestone-blocking/compounding** because they change ordinary AI Team behavior and deterministic state after every qualifying base attack. Constructor-default correction is a **broader Team exactification dependency**: it affects initial latch/hash state but not the writer's armed result. Native save-byte treatment of `+0x68` is an **out-of-scope compatibility residual**, not a gameplay implementation requirement.
@@ -268,5 +274,3 @@ No Ghidra metadata was synchronized; this investigation was read-only.
 - Existing feature-worktree report: `docs/research/PHASE3_HOUSE_BUILDING_ATTACK_RESPONDER_00708080_GHIDRA_REPORT.md`
 - Retail data: `ini/rulesmd.ini`, `ini/rules.ini`
 - Rust implementation: `src/sim/team_script_vm.rs`, `src/sim/combat/base_defense_response.rs`, `src/sim/world/mod.rs`
-
-

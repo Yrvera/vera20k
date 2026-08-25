@@ -99,6 +99,8 @@ pub struct TeamScriptState {
     /// Three independent TeamClass bytes written by `FUN_006EC250`. Neutral
     /// displacement names avoid assigning broader semantics than the live
     /// suspension transaction proves.
+    #[serde(default)]
+    reached_required_strength_78: bool,
     response_latch_7d: bool,
     response_latch_7e: bool,
     response_latch_83: bool,
@@ -213,6 +215,7 @@ impl TeamScriptVm {
         script_id: InternedId,
         members: Vec<u64>,
         target: Option<u64>,
+        current_frame: i32,
     ) -> u64 {
         self.insert_team(
             owner,
@@ -222,6 +225,7 @@ impl TeamScriptVm {
             members,
             BTreeMap::new(),
             target,
+            current_frame,
         )
     }
 
@@ -233,6 +237,7 @@ impl TeamScriptVm {
         team_type_id: InternedId,
         candidates: &[TeamScriptMember],
         target: Option<u64>,
+        current_frame: i32,
     ) -> u64 {
         let Some(team_type) = self.team_types.get(&team_type_id).copied() else {
             return self.insert_refused_team(
@@ -240,6 +245,7 @@ impl TeamScriptVm {
                 team_type_id,
                 TeamScriptRefusal::MissingTeamType { team_type_id },
                 target,
+                current_frame,
             );
         };
         let Some(task_force) = self.task_forces.get(&team_type.task_force_id) else {
@@ -250,6 +256,7 @@ impl TeamScriptVm {
                     task_force_id: team_type.task_force_id,
                 },
                 target,
+                current_frame,
             );
         };
         if !self.scripts.contains_key(&team_type.script_id) {
@@ -260,6 +267,7 @@ impl TeamScriptVm {
                     script_id: team_type.script_id,
                 },
                 target,
+                current_frame,
             );
         }
 
@@ -289,6 +297,7 @@ impl TeamScriptVm {
             members,
             counts,
             target,
+            current_frame,
         )
     }
 
@@ -382,6 +391,9 @@ impl TeamScriptVm {
         F: FnMut(InternedId) -> bool,
     {
         let mut result = TeamScriptTick::default();
+        let mut deleted_teams = Vec::new();
+        let team_types = &self.team_types;
+        let task_forces = &self.task_forces;
 
         for team in self.teams.values_mut() {
             // gamemd-derived: TeamClass::AI @ 0x006E9140 checks the
@@ -398,6 +410,36 @@ impl TeamScriptVm {
                     continue;
                 }
                 team.response_latch_83 = false;
+            }
+
+            // TeamClass::AI @ 0x006E917B calls FUN_006EA3E0 whenever +0x7D
+            // remains set. A positive member count clears +0x7D/+0x7E and
+            // records +0x78 once the TaskForce's signed total is reached. An
+            // empty Team that has reached that state is deleted and returns 0;
+            // an empty +0x78==0 Team retains both latches and returns 1.
+            if team.response_latch_7d {
+                if team.members.is_empty() {
+                    if team.reached_required_strength_78 {
+                        deleted_teams.push(team.id);
+                        continue;
+                    }
+                } else {
+                    let required_count =
+                        team.team_type_id
+                            .and_then(|team_type_id| team_types.get(&team_type_id))
+                            .and_then(|team_type| task_forces.get(&team_type.task_force_id))
+                            .map(|task_force| {
+                                task_force.entries.iter().fold(0i32, |total, entry| {
+                                    total.wrapping_add(entry.count as i32)
+                                })
+                            })
+                            .unwrap_or(team.members.len() as i32);
+                    if team.members.len() as i32 == required_count {
+                        team.reached_required_strength_78 = true;
+                    }
+                    team.response_latch_7e = false;
+                    team.response_latch_7d = false;
+                }
             }
 
             if team.completed || team.refusal.is_some() || !owner_is_active(team.owner) {
@@ -489,6 +531,10 @@ impl TeamScriptVm {
             }
         }
 
+        for team_id in deleted_teams {
+            self.teams.remove(&team_id);
+        }
+
         result
     }
 
@@ -506,18 +552,20 @@ impl TeamScriptVm {
             team.cursor.hash(hasher);
             team.advance_pending.hash(hasher);
             team.delay_remaining_frames.hash(hasher);
-            team.response_latch_7d.hash(hasher);
-            team.response_latch_7e.hash(hasher);
-            team.response_latch_83.hash(hasher);
             // gamemd-derived: TeamClass CRC callback at vtable +0x34,
             // raw body 0x006EC5A0..0x006EC720, feeds one normalized remaining
-            // time for +0x64/+0x6C. It skips +0x68 and never feeds raw start.
+            // time for +0x64/+0x6C before the +0x78/+0x7D/+0x7E/+0x83
+            // bytes. It skips +0x68 and never feeds raw start.
             response_suspend_remaining(
                 team.response_suspend_start_frame,
                 team.response_suspend_duration_frames,
                 current_frame,
             )
             .hash(hasher);
+            team.reached_required_strength_78.hash(hasher);
+            team.response_latch_7d.hash(hasher);
+            team.response_latch_7e.hash(hasher);
+            team.response_latch_83.hash(hasher);
             team.members.hash(hasher);
             team.target.hash(hasher);
             team.member_type_counts.hash(hasher);
@@ -530,6 +578,7 @@ impl TeamScriptVm {
         team_type_id: InternedId,
         refusal: TeamScriptRefusal,
         target: Option<u64>,
+        current_frame: i32,
     ) -> u64 {
         let script_id = match refusal {
             TeamScriptRefusal::MissingScript { script_id } => script_id,
@@ -543,6 +592,7 @@ impl TeamScriptVm {
             Vec::new(),
             BTreeMap::new(),
             target,
+            current_frame,
         );
         self.teams.get_mut(&id).expect("inserted team").refusal = Some(refusal);
         id
@@ -557,6 +607,7 @@ impl TeamScriptVm {
         members: Vec<u64>,
         member_type_counts: BTreeMap<InternedId, u32>,
         target: Option<u64>,
+        current_frame: i32,
     ) -> u64 {
         let id = self.next_team_id;
         self.next_team_id = self.next_team_id.wrapping_add(1);
@@ -572,10 +623,11 @@ impl TeamScriptVm {
                 advance_pending: false,
                 delay_remaining_frames: 0,
                 wait_condition_complete: false,
-                response_latch_7d: false,
+                reached_required_strength_78: false,
+                response_latch_7d: true,
                 response_latch_7e: false,
                 response_latch_83: false,
-                response_suspend_start_frame: 0,
+                response_suspend_start_frame: current_frame,
                 response_suspend_duration_frames: 0,
                 members,
                 member_type_counts,
@@ -644,7 +696,7 @@ mod tests {
             id: script,
             actions: vec![action(6, 2), action(2, 0)],
         });
-        let team = vm.create_team(owner, script, vec![], None);
+        let team = vm.create_team(owner, script, vec![], None, 0);
 
         vm.tick_effects(1, |_| true);
         assert_eq!(vm.team(team).expect("team").cursor(), 0);
@@ -664,7 +716,7 @@ mod tests {
             id: script,
             actions: vec![action(5, 2), action(43, 0)],
         });
-        let team = vm.create_team(owner, script, vec![], None);
+        let team = vm.create_team(owner, script, vec![], None, 0);
 
         vm.tick_effects(10, |_| true);
         assert_eq!(vm.team(team).expect("team").cursor(), 0);
@@ -685,7 +737,7 @@ mod tests {
             id: script,
             actions: vec![action(19, 0), action(2, 0)],
         });
-        let team = vm.create_team(owner, script, vec![9, 3, 7], None);
+        let team = vm.create_team(owner, script, vec![9, 3, 7], None, 0);
 
         let tick = vm.tick_effects(1, |_| true);
         assert_eq!(
@@ -710,7 +762,7 @@ mod tests {
             id: script,
             actions: vec![action(49, 0)],
         });
-        let team = vm.create_team(owner, script, vec![], None);
+        let team = vm.create_team(owner, script, vec![], None, 0);
         vm.tick_effects(1, |_| true);
 
         let mut without_success = vm.clone();
@@ -737,8 +789,8 @@ mod tests {
             id: out_of_range,
             actions: vec![action(65, 0)],
         });
-        let first = vm.create_team(owner, supported, vec![], None);
-        let second = vm.create_team(owner, out_of_range, vec![], None);
+        let first = vm.create_team(owner, supported, vec![], None, 0);
+        let second = vm.create_team(owner, out_of_range, vec![], None, 0);
 
         vm.tick_effects(1, |_| true);
         assert_eq!(
@@ -802,6 +854,7 @@ mod tests {
                 },
             ],
             None,
+            0,
         );
 
         let state = vm.team(team).expect("team");
@@ -852,7 +905,7 @@ mod tests {
                     member_type,
                 })
                 .collect::<Vec<_>>();
-            vm.create_team_from_type(owner, team_type, &candidates, None)
+            vm.create_team_from_type(owner, team_type, &candidates, None, 0)
         }
 
         let owner = InternedId::from_index(1);
@@ -899,6 +952,25 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_05_team_constructor_uses_native_response_latch_defaults() {
+        let owner = InternedId::from_index(1);
+        let script = InternedId::from_index(2);
+        let mut vm = TeamScriptVm::default();
+        vm.register_script(TeamScriptDefinition {
+            id: script,
+            actions: vec![action(2, 0)],
+        });
+
+        let team = vm.create_team(owner, script, vec![], None, -19);
+        let state = vm.team(team).unwrap();
+        assert!(!state.reached_required_strength_78);
+        assert_eq!(
+            state.response_suspension_state(),
+            (true, false, false, -19, 0)
+        );
+    }
+
+    #[test]
     fn gsi_04_05_suspension_blocks_before_other_gates_and_resumes_on_equality() {
         let owner = InternedId::from_index(1);
         let script = InternedId::from_index(2);
@@ -920,7 +992,7 @@ mod tests {
             priority: 0,
             is_base_defense: false,
         });
-        let team = vm.create_team_from_type(owner, team_type, &[], None);
+        let team = vm.create_team_from_type(owner, team_type, &[], None, 0);
         vm.suspend_teams_for_base_defense(owner, 1, 100, 3);
 
         for frame in [100, 101, 102] {
@@ -984,6 +1056,15 @@ mod tests {
                 member_type,
             }],
             None,
+            99,
+        );
+
+        vm.tick_effects(99, |_| true);
+        let admitted = vm.team(team).unwrap();
+        assert!(admitted.reached_required_strength_78);
+        assert_eq!(
+            admitted.response_suspension_state(),
+            (false, false, false, 99, 0)
         );
 
         assert_eq!(
@@ -995,14 +1076,27 @@ mod tests {
             vm.suspend_teams_for_base_defense(owner, 1, 103, 5)
                 .is_empty()
         );
-        vm.tick_effects(107, |_| panic!("rearmed delay remains active"));
-        vm.tick_effects(108, |_| true);
+        let mut without_reached = vm.clone();
+        without_reached
+            .teams
+            .get_mut(&team)
+            .unwrap()
+            .reached_required_strength_78 = false;
+        assert_ne!(
+            state_hash_at(&vm, 103),
+            state_hash_at(&without_reached, 103),
+            "native CRC feeds +0x78"
+        );
 
-        let state = vm.team(team).unwrap();
-        assert!(state.advance_pending());
-        assert_eq!(
-            state.response_suspension_state(),
-            (true, true, false, 103, 5)
+        let encoded = serde_json::to_string(&vm).unwrap();
+        let mut restored: TeamScriptVm = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(state_hash_at(&vm, 103), state_hash_at(&restored, 103));
+        restored.tick_effects(107, |_| panic!("rearmed delay remains active"));
+        restored.tick_effects(108, |_| true);
+
+        assert!(
+            restored.team(team).is_none(),
+            "empty +0x78 Team is deleted by the mandatory +0x7D helper at expiry"
         );
     }
 
@@ -1015,7 +1109,7 @@ mod tests {
             id: script,
             actions: vec![action(2, 0)],
         });
-        let team = first.create_team(owner, script, vec![], None);
+        let team = first.create_team(owner, script, vec![], None, 0);
         let mut second = first.clone();
 
         {

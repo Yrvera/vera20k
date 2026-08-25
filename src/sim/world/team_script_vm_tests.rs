@@ -19,9 +19,13 @@ fn install_wait_then_advance_fixture(sim: &mut Simulation, members: Vec<u64>) ->
         id: opening,
         actions: vec![action(24, 0)],
     });
-    let team = sim
-        .team_script_vm
-        .create_team(owner, opening, members, Some(99));
+    let team = sim.team_script_vm.create_team(
+        owner,
+        opening,
+        members,
+        Some(99),
+        sim.session.binary_frame as i32,
+    );
     assert!(sim.team_script_vm.set_delay(team, 2));
     team
 }
