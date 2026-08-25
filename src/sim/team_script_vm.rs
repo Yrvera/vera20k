@@ -49,6 +49,10 @@ pub struct TeamTypeDefinition {
     pub id: InternedId,
     pub script_id: InternedId,
     pub task_force_id: InternedId,
+    /// Signed TeamType `Priority=` consumed by House base-defence suspension.
+    pub priority: i32,
+    /// TeamType `IsBaseDefense=` byte used by responder admission/assignment.
+    pub is_base_defense: bool,
 }
 
 /// A candidate member passed to TeamType/TaskForce admission.
@@ -92,6 +96,14 @@ pub struct TeamScriptState {
     advance_pending: bool,
     delay_remaining_frames: u32,
     wait_condition_complete: bool,
+    /// Three independent TeamClass bytes written by `FUN_006EC250`. Neutral
+    /// displacement names avoid assigning broader semantics than the live
+    /// suspension transaction proves.
+    response_latch_7d: bool,
+    response_latch_7e: bool,
+    response_latch_83: bool,
+    response_suspend_start_frame: i32,
+    response_suspend_duration_frames: i32,
     members: Vec<u64>,
     member_type_counts: BTreeMap<InternedId, u32>,
     target: Option<u64>,
@@ -135,6 +147,16 @@ impl TeamScriptState {
 
     pub fn members(&self) -> &[u64] {
         &self.members
+    }
+
+    pub(crate) fn response_suspension_state(&self) -> (bool, bool, bool, i32, i32) {
+        (
+            self.response_latch_7d,
+            self.response_latch_7e,
+            self.response_latch_83,
+            self.response_suspend_start_frame,
+            self.response_suspend_duration_frames,
+        )
     }
 
     pub fn member_type_counts(&self) -> &BTreeMap<InternedId, u32> {
@@ -272,6 +294,55 @@ impl TeamScriptVm {
 
     pub fn team(&self, id: u64) -> Option<&TeamScriptState> {
         self.teams.get(&id)
+    }
+
+    /// Resolve one entity's TeamClass pointer analogue in stable Team creation
+    /// order. A member can belong to at most one live TeamClass in native.
+    pub(crate) fn team_for_member(&self, entity_id: u64) -> Option<(u64, bool)> {
+        self.teams.values().find_map(|team| {
+            team.members.contains(&entity_id).then(|| {
+                let is_base_defense = team
+                    .team_type_id
+                    .and_then(|id| self.team_types.get(&id))
+                    .is_some_and(|definition| definition.is_base_defense);
+                (team.id, is_base_defense)
+            })
+        })
+    }
+
+    /// Native `FUN_006EC250`: visit TeamClass instances in creation order,
+    /// suspend those owned by `owner` whose signed TeamType priority is below
+    /// `suspend_priority`, remove every member in member-list order, set the
+    /// three response bytes, and arm the signed start/duration timer.
+    pub(crate) fn suspend_teams_for_base_defense(
+        &mut self,
+        owner: InternedId,
+        suspend_priority: i32,
+        current_frame: i32,
+        duration_frames: i32,
+    ) -> Vec<u64> {
+        let team_types = &self.team_types;
+        let mut removed = Vec::new();
+        for team in self.teams.values_mut() {
+            let Some(definition) = team
+                .team_type_id
+                .and_then(|team_type_id| team_types.get(&team_type_id))
+            else {
+                continue;
+            };
+            if team.owner != owner || definition.priority >= suspend_priority {
+                continue;
+            }
+
+            removed.extend(team.members.drain(..));
+            team.member_type_counts.clear();
+            team.response_latch_7d = true;
+            team.response_latch_7e = true;
+            team.response_latch_83 = true;
+            team.response_suspend_start_frame = current_frame;
+            team.response_suspend_duration_frames = duration_frames;
+        }
+        removed
     }
 
     pub fn set_delay(&mut self, id: u64, remaining_frames: u32) -> bool {
@@ -419,6 +490,11 @@ impl TeamScriptVm {
             team.cursor.hash(hasher);
             team.advance_pending.hash(hasher);
             team.delay_remaining_frames.hash(hasher);
+            team.response_latch_7d.hash(hasher);
+            team.response_latch_7e.hash(hasher);
+            team.response_latch_83.hash(hasher);
+            team.response_suspend_start_frame.hash(hasher);
+            team.response_suspend_duration_frames.hash(hasher);
             team.members.hash(hasher);
             team.target.hash(hasher);
             team.member_type_counts.hash(hasher);
@@ -473,6 +549,11 @@ impl TeamScriptVm {
                 advance_pending: false,
                 delay_remaining_frames: 0,
                 wait_condition_complete: false,
+                response_latch_7d: false,
+                response_latch_7e: false,
+                response_latch_83: false,
+                response_suspend_start_frame: 0,
+                response_suspend_duration_frames: 0,
                 members,
                 member_type_counts,
                 target,
@@ -657,6 +738,8 @@ mod tests {
             id: team_type,
             script_id: script,
             task_force_id: task_force,
+            priority: 0,
+            is_base_defense: false,
         });
         let team = vm.create_team_from_type(
             owner,
@@ -682,5 +765,81 @@ mod tests {
         assert_eq!(state.members(), &[20, 30, 10]);
         assert_eq!(state.member_type_counts().get(&infantry), Some(&2));
         assert_eq!(state.member_type_counts().get(&tank), Some(&1));
+    }
+
+    #[test]
+    fn gsi_04_05_base_defense_suspension_uses_signed_priority_and_ordered_removal() {
+        fn install(
+            vm: &mut TeamScriptVm,
+            owner: InternedId,
+            ordinal: u32,
+            priority: i32,
+            is_base_defense: bool,
+            members: &[u64],
+        ) -> u64 {
+            let script = InternedId::from_index(100);
+            let member_type = InternedId::from_index(101);
+            let task_force = InternedId::from_index(110 + ordinal);
+            let team_type = InternedId::from_index(120 + ordinal);
+            if !vm.scripts.contains_key(&script) {
+                vm.register_script(TeamScriptDefinition {
+                    id: script,
+                    actions: vec![action(2, 0)],
+                });
+            }
+            vm.register_task_force(TeamTaskForceDefinition {
+                id: task_force,
+                entries: vec![TeamTaskForceEntry {
+                    member_type,
+                    count: members.len() as u32,
+                }],
+            });
+            vm.register_team_type(TeamTypeDefinition {
+                id: team_type,
+                script_id: script,
+                task_force_id: task_force,
+                priority,
+                is_base_defense,
+            });
+            let candidates = members
+                .iter()
+                .copied()
+                .map(|entity_id| TeamScriptMember {
+                    entity_id,
+                    member_type,
+                })
+                .collect::<Vec<_>>();
+            vm.create_team_from_type(owner, team_type, &candidates, None)
+        }
+
+        let owner = InternedId::from_index(1);
+        let other_owner = InternedId::from_index(2);
+        let mut vm = TeamScriptVm::default();
+        let low = install(&mut vm, owner, 0, 0, false, &[10, 20]);
+        let high_base_defense = install(&mut vm, owner, 1, 1, true, &[30]);
+        let other = install(&mut vm, other_owner, 2, -7, false, &[40]);
+        assert_eq!(vm.team_for_member(30), Some((high_base_defense, true)));
+
+        let before = state_hash(&vm);
+        let removed = vm.suspend_teams_for_base_defense(owner, 1, -9, 1800);
+        assert_eq!(removed, vec![10, 20]);
+        assert!(vm.team(low).unwrap().members().is_empty());
+        assert!(vm.team(low).unwrap().member_type_counts().is_empty());
+        assert_eq!(
+            vm.team(low).unwrap().response_suspension_state(),
+            (true, true, true, -9, 1800)
+        );
+        assert_eq!(vm.team(high_base_defense).unwrap().members(), &[30]);
+        assert_eq!(vm.team(other).unwrap().members(), &[40]);
+        assert_eq!(vm.team_for_member(10), None);
+        assert_ne!(before, state_hash(&vm));
+
+        let restored: TeamScriptVm =
+            serde_json::from_str(&serde_json::to_string(&vm).unwrap()).unwrap();
+        assert_eq!(
+            restored.team(low).unwrap().response_suspension_state(),
+            (true, true, true, -9, 1800)
+        );
+        assert_eq!(state_hash(&restored), state_hash(&vm));
     }
 }

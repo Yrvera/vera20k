@@ -286,7 +286,9 @@ use crate::sim::world::Simulation;
 // Building-attack frame. Bincode cannot safely default an absent struct tail.
 // Bumped 93 -> 94: add the House last-attacker index plus persistent Techno
 // recruitment/archive/base-response cooldown state.
-const SNAPSHOT_VERSION: u32 = 94;
+// Bumped 94 -> 95: add TeamType priority/base-defence metadata and TeamClass
+// response latches/timer state.
+const SNAPSHOT_VERSION: u32 = 95;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2616,10 +2618,12 @@ mod tests {
     /// persisted per-house BaseClass reservation bounds/vector while retaining
     /// the native reconstruct-cleared reservation dummy mask; 92 -> 93 adds
     /// House strategy emergency state; 93 -> 94 adds the House last-attacker
-    /// index plus persistent Techno recruitment/archive/base-response state.
+    /// index plus persistent Techno recruitment/archive/base-response state;
+    /// 94 -> 95 adds TeamType priority/base-defence metadata and TeamClass
+    /// response latches/timer state.
     #[test]
-    fn phase3_house_base_defense_snapshot_version_is_94() {
-        assert_eq!(super::SNAPSHOT_VERSION, 94);
+    fn phase3_house_base_defense_snapshot_version_is_95() {
+        assert_eq!(super::SNAPSHOT_VERSION, 95);
     }
 
     #[test]
@@ -2649,6 +2653,51 @@ mod tests {
         responder.base_defense_response.cooldown_start_frame = -11;
         responder.base_defense_response.cooldown_duration_frames = 225;
         sim.substrate.entities.insert(responder);
+        let script_id = sim.interner.intern("BaseDefenseScript");
+        let task_force_id = sim.interner.intern("BaseDefenseTaskForce");
+        let team_type_id = sim.interner.intern("BaseDefenseTeamType");
+        let member_type = sim.interner.intern("E1");
+        sim.team_script_vm.register_script(
+            crate::sim::team_script_vm::TeamScriptDefinition {
+                id: script_id,
+                actions: vec![crate::sim::team_script_vm::TeamScriptAction {
+                    action_id: 2,
+                    argument: 0,
+                }],
+            },
+        );
+        sim.team_script_vm.register_task_force(
+            crate::sim::team_script_vm::TeamTaskForceDefinition {
+                id: task_force_id,
+                entries: vec![crate::sim::team_script_vm::TeamTaskForceEntry {
+                    member_type,
+                    count: 1,
+                }],
+            },
+        );
+        sim.team_script_vm.register_team_type(
+            crate::sim::team_script_vm::TeamTypeDefinition {
+                id: team_type_id,
+                script_id,
+                task_force_id,
+                priority: 0,
+                is_base_defense: true,
+            },
+        );
+        let team_id = sim.team_script_vm.create_team_from_type(
+            owner,
+            team_type_id,
+            &[crate::sim::team_script_vm::TeamScriptMember {
+                entity_id: 1,
+                member_type,
+            }],
+            None,
+        );
+        assert_eq!(
+            sim.team_script_vm
+                .suspend_teams_for_base_defense(owner, 1, -12, 1800),
+            vec![1]
+        );
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
@@ -2677,6 +2726,12 @@ mod tests {
         );
         assert_eq!(response.cooldown_start_frame, -11);
         assert_eq!(response.cooldown_duration_frames, 225);
+        let team = restored.team_script_vm.team(team_id).unwrap();
+        assert!(team.members().is_empty());
+        assert_eq!(
+            team.response_suspension_state(),
+            (true, true, true, -12, 1800)
+        );
         assert_eq!(restored.state_hash(), expected_hash);
     }
 
