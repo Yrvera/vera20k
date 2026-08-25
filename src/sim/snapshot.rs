@@ -288,7 +288,10 @@ use crate::sim::world::Simulation;
 // recruitment/archive/base-response cooldown state.
 // Bumped 94 -> 95: add TeamType priority/base-defence metadata and TeamClass
 // response latches/timer state.
-const SNAPSHOT_VERSION: u32 = 95;
+// Bumped 95 -> 96: TeamScriptVm now persists the ordered AIMD/map ScriptType,
+// TaskForce, TeamType, and AITriggerType registries. Bincode encodes structs
+// positionally, so serde defaults cannot safely decode the shorter v95 record.
+const SNAPSHOT_VERSION: u32 = 96;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2620,10 +2623,11 @@ mod tests {
     /// House strategy emergency state; 93 -> 94 adds the House last-attacker
     /// index plus persistent Techno recruitment/archive/base-response state;
     /// 94 -> 95 adds TeamType priority/base-defence metadata and TeamClass
-    /// response latches/timer state.
+    /// response latches/timer state; 95 -> 96 adds the ordered AIMD/map static
+    /// registries retained by TeamScriptVm.
     #[test]
-    fn phase3_house_base_defense_snapshot_version_is_95() {
-        assert_eq!(super::SNAPSHOT_VERSION, 95);
+    fn phase3_team_ai_registry_snapshot_version_is_96() {
+        assert_eq!(super::SNAPSHOT_VERSION, 96);
     }
 
     #[test]
@@ -2707,7 +2711,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v94 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v96 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
@@ -2729,6 +2733,19 @@ mod tests {
         assert_eq!(response.cooldown_duration_frames, 225);
         let team = restored.team_script_vm.team(team_id).unwrap();
         assert!(team.members().is_empty());
+        assert_eq!(restored.team_script_vm.registry_counts(), (1, 1, 1, 0));
+        assert_eq!(
+            restored.team_script_vm.team_type_order(),
+            &[team_type_id]
+        );
+        assert_eq!(
+            restored.team_script_vm.script_order(),
+            &[script_id]
+        );
+        assert_eq!(
+            restored.team_script_vm.task_force_order(),
+            &[task_force_id]
+        );
         assert_eq!(
             team.response_suspension_state(),
             (true, true, true, -12, 1800)

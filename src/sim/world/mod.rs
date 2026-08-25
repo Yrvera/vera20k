@@ -5362,6 +5362,19 @@ impl Simulation {
         }
     }
 
+    /// Install fixed AIMD plus scenario AI definitions after RuleSet identities
+    /// are interned and before the first gameplay tick. This is data ingress
+    /// only: the installed VM contains no live TeamClass instances.
+    pub(crate) fn install_team_ai_registry(
+        &mut self,
+        registry: &crate::rules::team_ai_ini::TeamAiIniRegistry,
+        rules: &RuleSet,
+    ) -> Vec<crate::sim::team_script_vm::TeamAiInstallDiagnostic> {
+        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(registry, &mut self.interner, rules);
+        self.team_script_vm = vm;
+        diagnostics
+    }
+
     /// Fixture-only frame adapter (F09): unit tests drive one Main_Tick-shaped
     /// frame with explicitly supplied rules/heights/navigation. Production and
     /// tooling advance exclusively through `SimRuntime::advance_frame`, whose

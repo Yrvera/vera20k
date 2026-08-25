@@ -45,6 +45,7 @@ pub mod shp_vehicle_sequence;
 pub mod smudge_type;
 pub mod sound_ini;
 pub mod superweapon_type;
+pub mod team_ai_ini;
 pub mod terrain_asset_catalog;
 pub mod terrain_object_type;
 pub mod terrain_rules;

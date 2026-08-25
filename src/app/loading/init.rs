@@ -1326,6 +1326,17 @@ pub(crate) fn load_map_from_initial(
     )
     .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?
     .into_parts();
+    let fixed_team_ai_ini =
+        crate::app::loading::init_helpers::load_retail_team_ai_source(&asset_manager)
+            .ok_or_else(|| anyhow::anyhow!("failed to load active YR aimd.ini"))?;
+    let team_ai_registry = crate::rules::team_ai_ini::TeamAiIniRegistry::from_sources(
+        &fixed_team_ai_ini,
+        &map_data.ini,
+        skirmish_launch_session.is_some(),
+    );
+    for diagnostic in &team_ai_registry.diagnostics {
+        log::warn!("Team AI INI diagnostic: {diagnostic:?}");
+    }
     let mut rules: Option<RuleSet> = Some(loaded_rules);
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
     let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
@@ -1698,6 +1709,9 @@ pub(crate) fn load_map_from_initial(
         // warhead handles combat compares during the bridge-damage path;
         // resolution must happen before any combat tick.
         sim.resolve_type_handles(ruleset);
+        for diagnostic in sim.install_team_ai_registry(&team_ai_registry, ruleset) {
+            log::warn!("Team AI install diagnostic: {diagnostic:?}");
+        }
     }
 
     // SpawnPick phase is disabled — MCV always spawns directly at the chosen position.

@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
+use crate::rules::ini_parser::IniFile;
+use crate::rules::ruleset::RuleSet;
+use crate::rules::team_ai_ini::TeamAiIniRegistry;
 use crate::sim::snapshot::GameSnapshot;
 use crate::sim::team_script_vm::{TeamScriptAction, TeamScriptDefinition};
 
 use super::{MasterFrameTestRung, Simulation};
 
-fn action(action_id: u8, argument: i32) -> TeamScriptAction {
+fn action(action_id: i32, argument: i32) -> TeamScriptAction {
     TeamScriptAction {
         action_id,
         argument,
@@ -81,4 +84,31 @@ fn team_member_order_is_hashed() {
     install_wait_then_advance_fixture(&mut reverse, vec![11, 7, 19]);
 
     assert_ne!(forward.state_hash(), reverse.state_hash());
+}
+
+#[test]
+fn production_install_boundary_resolves_aimd_without_creating_a_team() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+    ))
+    .expect("minimal rules");
+    let aimd = IniFile::from_str(
+        "[TeamTypes]\n0=TT\n[TT]\nScript=S\nTaskForce=F\n\
+         [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
+         [TaskForces]\n0=F\n[F]\n0=1,E1\n\
+         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,00,40,10,40,1,0,1,0,<none>,1,1,1\n",
+    );
+    let registry = TeamAiIniRegistry::from_sources(&aimd, &IniFile::from_str(""), true);
+    let mut sim = Simulation::new();
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+
+    let diagnostics = sim.install_team_ai_registry(&registry, &rules);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(sim.team_script_vm.registry_counts(), (1, 1, 1, 1));
+    assert!(
+        sim.team_script_vm.team(1).is_none(),
+        "definition installation must not allocate a live TeamClass"
+    );
 }

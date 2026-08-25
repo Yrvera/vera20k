@@ -9,8 +9,11 @@ use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::rules::team_ai_ini::TeamAiDefinitionSource;
 use crate::sim::command::CommandEnvelope;
 use crate::sim::intern::InternedId;
+
+mod registry_install;
 
 /// One resolved ScriptType action record.
 ///
@@ -18,7 +21,7 @@ use crate::sim::intern::InternedId;
 /// promoting descriptive opcode names into a complete, guessed enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamScriptAction {
-    pub action_id: u8,
+    pub action_id: i32,
     pub argument: i32,
 }
 
@@ -33,7 +36,7 @@ pub struct TeamScriptDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamTaskForceEntry {
     pub member_type: InternedId,
-    pub count: u32,
+    pub count: i32,
 }
 
 /// The TeamType-attached TaskForce definition.
@@ -53,6 +56,61 @@ pub struct TeamTypeDefinition {
     pub priority: i32,
     /// TeamType `IsBaseDefense=` byte used by responder admission/assignment.
     pub is_base_defense: bool,
+}
+
+/// Lossless load metadata beside the narrow TeamType fields already consumed
+/// by live Team behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamTypeIniMetadata {
+    pub max_teams: i32,
+    pub autocreate: bool,
+    pub are_team_members_recruitable: bool,
+    pub raw_fields: Vec<(String, String)>,
+    pub source: TeamAiDefinitionSource,
+}
+
+impl Default for TeamTypeIniMetadata {
+    fn default() -> Self {
+        Self {
+            max_teams: -1,
+            autocreate: false,
+            are_team_members_recruitable: true,
+            raw_fields: Vec::new(),
+            source: TeamAiDefinitionSource::FixedAimd,
+        }
+    }
+}
+
+/// One lossless 18-token AITriggerType record. Selector semantics remain a
+/// later evidence-gated stage; source order and references are closed here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamAiTriggerDefinition {
+    pub id: InternedId,
+    pub tokens: [String; 18],
+    pub enabled: bool,
+    pub primary_team_type: Option<InternedId>,
+    pub secondary_team_type: Option<InternedId>,
+    pub source: TeamAiDefinitionSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TeamAiInstallDiagnostic {
+    UnknownTaskForceMember {
+        task_force_id: String,
+        member_type: String,
+    },
+    MissingTeamTypeScript {
+        team_type_id: String,
+        script_id: String,
+    },
+    MissingTeamTypeTaskForce {
+        team_type_id: String,
+        task_force_id: String,
+    },
+    MissingAiTriggerTeamType {
+        trigger_id: String,
+        team_type_id: String,
+    },
 }
 
 /// A candidate member passed to TeamType/TaskForce admission.
@@ -80,8 +138,8 @@ pub enum TeamScriptRefusal {
     MissingScript { script_id: InternedId },
     MissingTeamType { team_type_id: InternedId },
     MissingTaskForce { task_force_id: InternedId },
-    UnsupportedAction { action_id: u8 },
-    OutOfRangeAction { action_id: u8 },
+    UnsupportedAction { action_id: i32 },
+    OutOfRangeAction { action_id: i32 },
 }
 
 /// Persistent TeamClass execution state.
@@ -186,22 +244,44 @@ impl TeamScriptState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TeamScriptVm {
     scripts: BTreeMap<InternedId, TeamScriptDefinition>,
+    #[serde(default)]
+    script_order: Vec<InternedId>,
     task_forces: BTreeMap<InternedId, TeamTaskForceDefinition>,
+    #[serde(default)]
+    task_force_order: Vec<InternedId>,
     team_types: BTreeMap<InternedId, TeamTypeDefinition>,
+    #[serde(default)]
+    team_type_order: Vec<InternedId>,
+    #[serde(default)]
+    team_type_ini: BTreeMap<InternedId, TeamTypeIniMetadata>,
+    #[serde(default)]
+    ai_triggers: BTreeMap<InternedId, TeamAiTriggerDefinition>,
+    #[serde(default)]
+    ai_trigger_order: Vec<InternedId>,
     teams: BTreeMap<u64, TeamScriptState>,
     next_team_id: u64,
 }
 
 impl TeamScriptVm {
     pub fn register_script(&mut self, definition: TeamScriptDefinition) {
+        if !self.scripts.contains_key(&definition.id) {
+            self.script_order.push(definition.id);
+        }
         self.scripts.insert(definition.id, definition);
     }
 
     pub fn register_task_force(&mut self, definition: TeamTaskForceDefinition) {
+        if !self.task_forces.contains_key(&definition.id) {
+            self.task_force_order.push(definition.id);
+        }
         self.task_forces.insert(definition.id, definition);
     }
 
     pub fn register_team_type(&mut self, definition: TeamTypeDefinition) {
+        if !self.team_types.contains_key(&definition.id) {
+            self.team_type_order.push(definition.id);
+        }
+        self.team_type_ini.entry(definition.id).or_default();
         self.team_types.insert(definition.id, definition);
     }
 
@@ -275,7 +355,7 @@ impl TeamScriptVm {
         let mut members = Vec::new();
         let mut counts = BTreeMap::new();
         for entry in &task_force.entries {
-            for _ in 0..entry.count {
+            for _ in 0..entry.count.max(0) {
                 let Some((index, candidate)) =
                     candidates.iter().enumerate().find(|(index, candidate)| {
                         !used[*index] && candidate.member_type == entry.member_type
@@ -430,7 +510,7 @@ impl TeamScriptVm {
                             .and_then(|team_type| task_forces.get(&team_type.task_force_id))
                             .map(|task_force| {
                                 task_force.entries.iter().fold(0i32, |total, entry| {
-                                    total.wrapping_add(entry.count as i32)
+                                    total.wrapping_add(entry.count)
                                 })
                             })
                             .unwrap_or(team.members.len() as i32);
@@ -670,7 +750,11 @@ mod tests {
     use super::*;
     use std::collections::hash_map::DefaultHasher;
 
-    fn action(action_id: u8, argument: i32) -> TeamScriptAction {
+    use crate::rules::ruleset::RuleSet;
+    use crate::rules::team_ai_ini::TeamAiIniRegistry;
+    use crate::sim::intern::StringInterner;
+
+    fn action(action_id: i32, argument: i32) -> TeamScriptAction {
         TeamScriptAction {
             action_id,
             argument,
@@ -887,7 +971,7 @@ mod tests {
                 id: task_force,
                 entries: vec![TeamTaskForceEntry {
                     member_type,
-                    count: members.len() as u32,
+                    count: members.len() as i32,
                 }],
             });
             vm.register_team_type(TeamTypeDefinition {
@@ -1136,5 +1220,160 @@ mod tests {
             .unwrap()
             .response_suspend_duration_frames = 16;
         assert_ne!(state_hash_at(&first, 100), state_hash_at(&second, 100));
+    }
+
+    #[test]
+    fn gsi_04_05_aimd_install_preserves_registry_order_and_creates_no_teams() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+        ))
+        .expect("minimal rules");
+        let fixed = IniFile::from_str(
+            "[TeamTypes]\n0=TT1\n1=TT2\n\
+             [TT1]\nScript=S1\nTaskForce=TF1\nPriority=5\nAutocreate=yes\nIsBaseDefense=yes\n\
+             [TT2]\nScript=S1\nTaskForce=TF1\nPriority=7\n\
+             [ScriptTypes]\n0=S1\n[S1]\n0=-1,9\n\
+             [TaskForces]\n0=TF1\n[TF1]\n0=-2,E1\n\
+             [AITriggerTypes]\nAT=Trigger,TT1,<all>,2,4,<none>,00,40,10,40,1,0,1,0,TT2,1,1,1\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) =
+            TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(vm.registry_counts(), (1, 1, 2, 1));
+        assert_eq!(
+            vm.team_type_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["TT1", "TT2"]
+        );
+        assert_eq!(
+            vm.script_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["S1"]
+        );
+        assert_eq!(
+            vm.task_force_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["TF1"]
+        );
+        assert_eq!(
+            vm.ai_trigger_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["AT"]
+        );
+        assert!(vm.teams.is_empty(), "definition ingress must not create Teams");
+
+        let tt1 = interner.get("TT1").unwrap();
+        let metadata = vm.team_type_ini(tt1).expect("TeamType metadata");
+        assert_eq!(metadata.max_teams, -1);
+        assert!(metadata.autocreate);
+        assert!(metadata.are_team_members_recruitable);
+        assert_eq!(vm.task_forces[&interner.get("TF1").unwrap()].entries[0].count, -2);
+        assert_eq!(vm.scripts[&interner.get("S1").unwrap()].actions[0].action_id, -1);
+
+        let encoded = serde_json::to_string(&vm).unwrap();
+        let restored: TeamScriptVm = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.registry_counts(), vm.registry_counts());
+        assert_eq!(restored.team_type_order(), vm.team_type_order());
+        assert_eq!(restored.ai_trigger_order(), vm.ai_trigger_order());
+    }
+
+    #[test]
+    fn gsi_04_05_aimd_install_applies_native_reference_fallback_and_omits_unknown_members() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+        ))
+        .expect("minimal rules");
+        let fixed = IniFile::from_str(
+            "[TeamTypes]\n0=TT\n[TT]\nScript=MISSING_SCRIPT\nTaskForce=MISSING_TF\n\
+             [ScriptTypes]\n0=FIRST_SCRIPT\n[FIRST_SCRIPT]\n0=2,0\n\
+             [TaskForces]\n0=FIRST_TF\n1=PARTIAL_TF\n\
+             [FIRST_TF]\n0=1,E1\n[PARTIAL_TF]\n0=1,E1\n1=2,GHOST\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) =
+            TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert_eq!(
+            diagnostics,
+            vec![
+                TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                    task_force_id: "PARTIAL_TF".to_string(),
+                    member_type: "GHOST".to_string(),
+                },
+                TeamAiInstallDiagnostic::MissingTeamTypeScript {
+                    team_type_id: "TT".to_string(),
+                    script_id: "MISSING_SCRIPT".to_string(),
+                },
+                TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
+                    team_type_id: "TT".to_string(),
+                    task_force_id: "MISSING_TF".to_string(),
+                },
+            ]
+        );
+        let team_type = &vm.team_types[&interner.get("TT").unwrap()];
+        assert_eq!(team_type.script_id, interner.get("FIRST_SCRIPT").unwrap());
+        assert_eq!(team_type.task_force_id, interner.get("FIRST_TF").unwrap());
+        assert_eq!(
+            vm.task_forces[&interner.get("PARTIAL_TF").unwrap()]
+                .entries
+                .len(),
+            1,
+            "unresolved TechnoTypes do not increment the native TaskForce entry count"
+        );
+        assert!(vm.teams.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires extracted retail rulesmd.ini and aimd.ini"]
+    fn gsi_04_05_retail_aimd_installs_all_resolved_definitions_without_teams() {
+        use crate::rules::ini_parser::IniFile;
+
+        let aimd_path = std::env::var_os("VERA20K_RETAIL_AIMD")
+            .expect("set VERA20K_RETAIL_AIMD to extracted retail aimd.ini");
+        let rules_path = std::env::var_os("VERA20K_RETAIL_RULESMD")
+            .expect("set VERA20K_RETAIL_RULESMD to extracted retail rulesmd.ini");
+        let aimd = IniFile::from_bytes(&std::fs::read(aimd_path).expect("read aimd.ini"))
+            .expect("parse aimd.ini");
+        let rules_ini = IniFile::from_bytes(&std::fs::read(rules_path).expect("read rulesmd.ini"))
+            .expect("parse rulesmd.ini");
+        let rules = RuleSet::from_ini(&rules_ini).expect("load retail rules");
+        let registry = TeamAiIniRegistry::from_sources(&aimd, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) =
+            TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(vm.registry_counts(), (132, 88, 163, 165));
+        assert_eq!(
+            vm.team_type_ini
+                .values()
+                .filter(|metadata| metadata.autocreate)
+                .count(),
+            163
+        );
+        assert_eq!(
+            vm.team_types
+                .values()
+                .filter(|team_type| team_type.is_base_defense)
+                .count(),
+            12
+        );
+        assert!(vm.teams.is_empty());
     }
 }
