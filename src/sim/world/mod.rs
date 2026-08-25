@@ -1091,6 +1091,48 @@ struct SimulationCombatInlineHooks<'a> {
 
 impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
     #[allow(clippy::too_many_arguments)]
+    fn respond_to_base_attack(
+        &mut self,
+        _site: crate::sim::combat::BaseDefenseResponseCallSite,
+        victim_id: u64,
+        attacker_id: u64,
+        borrowed_entities: &mut EntityStore,
+        rules: &RuleSet,
+        borrowed_interner: &StringInterner,
+        borrowed_houses: &mut BTreeMap<InternedId, HouseState>,
+        borrowed_scenario_rng: &mut SimRng,
+        borrowed_terrain: Option<&ResolvedTerrainGrid>,
+    ) {
+        let current_frame = self.sim.session.binary_frame as i32;
+        let game_mode_nonzero = self.sim.session.game_mode_nonzero;
+        let map_size_width = i32::from(self.sim.session.map_width);
+        let map_size_height = i32::from(self.sim.session.map_height);
+        let playfield_bounds = self.sim.playfield_bounds;
+        let mut context =
+            crate::sim::combat::base_defense_response::BaseDefenseResponseContext {
+                entities: borrowed_entities,
+                rules,
+                interner: borrowed_interner,
+                houses: borrowed_houses,
+                alliances: &self.sim.house_alliances,
+                scenario_rng: borrowed_scenario_rng,
+                teams: &mut self.sim.team_script_vm,
+                zone_grid: self.sim.zone_grid.as_ref(),
+                terrain: borrowed_terrain,
+                playfield_bounds,
+                map_size_width,
+                map_size_height,
+                current_frame,
+                game_mode_nonzero,
+            };
+        crate::sim::combat::base_defense_response::respond_to_base_attack(
+            victim_id,
+            attacker_id,
+            &mut context,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn fatal_lifecycle(
         &mut self,
         rules: &RuleSet,
@@ -1243,6 +1285,11 @@ impl Simulation {
                     staged_house
                         .strategy_emergency
                         .last_building_attack_frame(),
+                );
+                live_house.strategy_emergency.note_building_attacker(
+                    staged_house
+                        .strategy_emergency
+                        .last_attacker_house_index(),
                 );
             }
         }

@@ -4,7 +4,26 @@
 //! This module keeps the native signed arithmetic and ranking pathology small
 //! enough to prove independently before those authorities are borrowed.
 
+use std::collections::BTreeMap;
+
+use crate::map::entities::EntityCategory;
+use crate::map::houses::{HouseAllianceMap, is_allied_with};
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::rules::locomotor_type::MovementZone;
+use crate::rules::ruleset::RuleSet;
+use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
+use crate::sim::entity_store::EntityStore;
+use crate::sim::house_state::HouseState;
+use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::mission::authority::queue_entity_mission_deferred;
+use crate::sim::mission::concrete_effects::represented_assign_target;
+use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::pathfinding::zone_map::ZoneGrid;
+use crate::sim::rng::SimRng;
+use crate::sim::team_script_vm::TeamScriptVm;
 use crate::util::native_x87::{NativeF64Bits, X87Chop53, distance_3d_leptons};
+
+use super::TargetKind;
 
 const RESPONSE_LIST_CAPACITY: usize = 6;
 const FRAMES_PER_MINUTE: i32 = 900;
@@ -51,6 +70,36 @@ pub(crate) struct ResponseSelection {
 pub(crate) enum ResponseMission {
     Rescue,
     AreaGuard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+#[allow(dead_code)]
+pub(crate) enum ResponderPeekFireError {
+    Clear = 0,
+    Ammo = 1,
+    Busy = 3,
+    Illegal = 5,
+    Cant = 6,
+    MustDeploy = 8,
+    Cloaked = 9,
+}
+
+pub(crate) struct BaseDefenseResponseContext<'a> {
+    pub(crate) entities: &'a mut EntityStore,
+    pub(crate) rules: &'a RuleSet,
+    pub(crate) interner: &'a StringInterner,
+    pub(crate) houses: &'a BTreeMap<InternedId, HouseState>,
+    pub(crate) alliances: &'a HouseAllianceMap,
+    pub(crate) scenario_rng: &'a mut SimRng,
+    pub(crate) teams: &'a mut TeamScriptVm,
+    pub(crate) zone_grid: Option<&'a ZoneGrid>,
+    pub(crate) terrain: Option<&'a ResolvedTerrainGrid>,
+    pub(crate) playfield_bounds: Option<PlayfieldBounds>,
+    pub(crate) map_size_width: i32,
+    pub(crate) map_size_height: i32,
+    pub(crate) current_frame: i32,
+    pub(crate) game_mode_nonzero: bool,
 }
 
 /// gamemd-derived: `TechnoClass__RespondToBaseAttack @ 0x00708080` checks the
@@ -228,139 +277,238 @@ pub(crate) fn add_assigned_cost(accumulated: i32, cost: i32, budget: i32) -> (i3
     (accumulated, accumulated > budget)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod admission;
 
-    fn threat(cost: i32, distance: i32, range: i32, speed: i32) -> ThreatFacts {
-        ThreatFacts {
-            cost,
-            speed_leptons_per_frame: speed,
-            current_coord: [0, 0, 0],
-            attacker_coord: [distance, 0, 0],
-            primary_range_leptons: range,
-            existing_target: ExistingTargetDisposition::NoneOrUnarmed,
-            in_non_base_defense_team: false,
-            mission_is_harvest: false,
+use admission::{
+    candidate_admitted, current_target_disposition, destination_cell, entity_coord,
+    object_has_weapon, primary_range_leptons, should_be_on_bridge_for_response,
+};
+
+/// Execute one complete native response transaction after the receiver owner
+/// has selected the exact Building or protected-Techno call site.
+///
+/// gamemd-derived: `TechnoClass__RespondToBaseAttack @ 0x00708080`.
+pub(crate) fn respond_to_base_attack(
+    victim_id: u64,
+    attacker_id: u64,
+    context: &mut BaseDefenseResponseContext<'_>,
+) {
+    let Some(victim) = context.entities.get(victim_id) else {
+        return;
+    };
+    let Some(attacker) = context.entities.get(attacker_id) else {
+        return;
+    };
+    let Some(victim_object) = context
+        .rules
+        .object(context.interner.resolve(victim.type_ref))
+    else {
+        return;
+    };
+    let Some(attacker_object) = context
+        .rules
+        .object(context.interner.resolve(attacker.type_ref))
+    else {
+        return;
+    };
+    let victim_owner = victim.owner;
+    let attacker_owner = attacker.owner;
+    let budget = attacker_object
+        .cost
+        .wrapping_mul(context.rules.general.computer_base_defense_response);
+
+    if is_allied_with(
+        context.alliances,
+        context.interner.resolve(victim_owner),
+        context.interner.resolve(attacker_owner),
+    ) || context
+        .houses
+        .get(&victim_owner)
+        .is_some_and(|house| house.is_human)
+        || attacker.lifecycle.in_limbo
+        || (!context.game_mode_nonzero && object_has_weapon(victim_object))
+        || !matches!(
+            attacker.category,
+            EntityCategory::Unit | EntityCategory::Infantry
+        )
+        || victim_object.insignificant
+        || cooldown_remaining(
+            attacker.base_defense_response.cooldown_start_frame,
+            attacker.base_defense_response.cooldown_duration_frames,
+            context.current_frame,
+        ) != 0
+    {
+        return;
+    }
+
+    // Rust's map caches are derived rather than native globals. A live positive
+    // scan cannot be exact without both authorities; fail atomically before the
+    // native Team suspension point instead of partially mutating the response.
+    if budget > 0 && (context.zone_grid.is_none() || context.terrain.is_none()) {
+        return;
+    }
+
+    context.teams.suspend_teams_for_base_defense(
+        victim_owner,
+        context.rules.general.suspend_priority,
+        context.current_frame,
+        response_delay_frames(context.rules.general.suspend_delay_minutes),
+    );
+    let mut selection = ResponseSelection::new(budget);
+    if !selection.can_scan() {
+        return;
+    }
+
+    let attacker_coord = entity_coord(
+        context
+            .entities
+            .get(attacker_id)
+            .expect("entry retained attacker"),
+        context.terrain,
+    );
+    let victim_is_self_anchor = context
+        .entities
+        .get(victim_id)
+        .and_then(|victim| victim.base_defense_response.archive_target)
+        == Some(TargetKind::Entity(victim_id));
+    let candidate_ids = context.entities.keys_sorted();
+
+    for class in [ResponderClass::Infantry, ResponderClass::Unit] {
+        for &candidate_id in &candidate_ids {
+            if !selection.can_scan() {
+                break;
+            }
+            let expected_category = match class {
+                ResponderClass::Infantry => EntityCategory::Infantry,
+                ResponderClass::Unit => EntityCategory::Unit,
+            };
+            let Some(candidate) = context.entities.get(candidate_id) else {
+                continue;
+            };
+            if candidate.category != expected_category {
+                continue;
+            }
+            let Some(candidate_object) = context
+                .rules
+                .object(context.interner.resolve(candidate.type_ref))
+            else {
+                continue;
+            };
+            let victim = context
+                .entities
+                .get(victim_id)
+                .expect("entry retained victim");
+            if !candidate_admitted(
+                candidate,
+                candidate_object,
+                victim,
+                victim_owner,
+                attacker_id,
+                context,
+            ) {
+                continue;
+            }
+
+            let destination = destination_cell(candidate, context.entities, context.terrain);
+            let victim_destination = destination_cell(victim, context.entities, context.terrain);
+            let terrain = context.terrain.expect("positive scan validated terrain");
+            let Some(source_should_be_on_bridge) =
+                should_be_on_bridge_for_response(candidate, context.entities, terrain)
+            else {
+                continue;
+            };
+            let source_in_playfield = cell_is_in_playfield_height_aware(
+                destination,
+                context.playfield_bounds,
+                Some(terrain),
+            );
+            let movement_zone = (candidate_object.movement_zone != MovementZone::Invalid)
+                .then_some(candidate_object.movement_zone);
+            if !context
+                .zone_grid
+                .expect("positive scan validated zone grid")
+                .can_reach_base_defense_response(
+                    movement_zone,
+                    destination,
+                    victim_destination,
+                    source_should_be_on_bridge,
+                    source_in_playfield,
+                    context.map_size_width,
+                    context.map_size_height,
+                )
+            {
+                continue;
+            }
+
+            let raw_score = evaluate_target_threat(ThreatFacts {
+                cost: candidate_object.cost,
+                speed_leptons_per_frame: candidate_object.speed,
+                current_coord: entity_coord(candidate, context.terrain),
+                attacker_coord,
+                primary_range_leptons: primary_range_leptons(
+                    candidate,
+                    candidate_object,
+                    context.rules,
+                ),
+                existing_target: current_target_disposition(
+                    candidate,
+                    attacker_id,
+                    context.entities,
+                    context.rules,
+                    context.interner,
+                ),
+                in_non_base_defense_team: context
+                    .teams
+                    .team_for_member(candidate_id)
+                    .is_some_and(|(_, is_base_defense)| !is_base_defense),
+                mission_is_harvest: candidate.mission.current().known()
+                    == Some(MissionType::Harvest),
+            });
+            selection.consider(candidate_id, raw_score, class, victim_is_self_anchor);
         }
     }
 
-    #[test]
-    fn gsi_04_05_cooldown_uses_inactive_sentinel_and_signed_wrapping_elapsed() {
-        assert_eq!(cooldown_remaining(-1, 225, 100), 0);
-        assert_eq!(cooldown_remaining(100, 225, 100), 225);
-        assert_eq!(cooldown_remaining(100, 225, 324), 1);
-        assert_eq!(cooldown_remaining(100, 225, 325), 0);
-        assert_eq!(cooldown_remaining(i32::MAX - 2, 6, i32::MIN + 1), 2);
-        assert_eq!(response_delay_frames(0.25), 225);
-        assert_eq!(response_delay_frames(-0.25), -225);
+    let (budget, responders) = selection.into_ranked();
+    if budget <= 0 {
+        return;
     }
 
-    #[test]
-    fn gsi_04_05_threat_preserves_special_targets_and_signed_integer_math() {
-        let mut facts = threat(100, 1024, 256, 128);
-        assert_eq!(evaluate_target_threat(facts), (100_i32 << 10) / 6);
-        facts.attacker_coord = [256, 0, 0];
-        assert_eq!(evaluate_target_threat(facts), 100_i32 << 10);
-        facts.existing_target = ExistingTargetDisposition::RequestedAttacker;
-        assert_eq!(evaluate_target_threat(facts), -100);
-        facts.existing_target = ExistingTargetDisposition::OtherArmedTarget;
-        assert_eq!(evaluate_target_threat(facts), 0);
-        facts.existing_target = ExistingTargetDisposition::NoneOrUnarmed;
-        facts.mission_is_harvest = true;
-        assert_eq!(evaluate_target_threat(facts), 0);
-    }
-
-    #[test]
-    fn gsi_04_05_threat_uses_wrapping_base_and_native_sqrt_distance() {
-        let facts = threat(i32::MAX, 513, 0, 256);
-        assert_eq!(evaluate_target_threat(facts), 1);
-        let diagonal = ThreatFacts {
-            attacker_coord: [256, 256, 256],
-            primary_range_leptons: 0,
-            speed_leptons_per_frame: 1,
-            cost: 2,
-            ..threat(2, 0, 0, 1)
+    let mut accumulated = 0;
+    for responder in responders {
+        let in_base_defense_team = context
+            .teams
+            .team_for_member(responder.entity_id)
+            .is_some_and(|(_, is_base_defense)| is_base_defense);
+        let draw = context.scenario_rng.next_range_u32_inclusive(0, 99);
+        let mission = match response_mission(draw, in_base_defense_team) {
+            ResponseMission::Rescue => MissionType::Rescue,
+            ResponseMission::AreaGuard => MissionType::AreaGuard,
         };
-        assert_eq!(distance_3d_leptons([0, 0, 0], [256, 256, 256]), 443);
-        assert_eq!(evaluate_target_threat(diagonal), 4);
-    }
-
-    #[test]
-    fn gsi_04_05_negative_scores_debit_budget_with_class_specific_anchor_order() {
-        let mut selection = ResponseSelection::new(500);
-        selection.consider(1, -2, ResponderClass::Infantry, true);
-        assert_eq!(selection.remaining_budget(), 300);
-        selection.consider(2, -2, ResponderClass::Unit, true);
-        assert_eq!(selection.remaining_budget(), 298);
-        assert!(selection.can_scan());
-        selection.consider(3, -298, ResponderClass::Unit, false);
-        assert!(!selection.can_scan());
-    }
-
-    #[test]
-    fn gsi_04_05_first_six_leave_minimum_zero_and_seventh_only_exposes_minimum() {
-        let mut selection = ResponseSelection::new(1);
-        for (id, score) in [(1, 9), (2, 2), (3, 8), (4, 3), (5, 7), (6, 4)] {
-            selection.consider(id, score, ResponderClass::Unit, false);
+        let Some(responder_entity) = context.entities.get_mut(responder.entity_id) else {
+            continue;
+        };
+        let Some(responder_object) = context
+            .rules
+            .object(context.interner.resolve(responder_entity.type_ref))
+        else {
+            continue;
+        };
+        queue_entity_mission_deferred(responder_entity, MissionId::from_known(mission));
+        responder_entity.base_defense_response.archive_target = Some(TargetKind::Entity(victim_id));
+        represented_assign_target(responder_entity, Some(TargetKind::Entity(attacker_id)));
+        let (next, overshot) = add_assigned_cost(accumulated, responder_object.cost, budget);
+        accumulated = next;
+        if overshot {
+            if let Some(attacker) = context.entities.get_mut(attacker_id) {
+                attacker.base_defense_response.cooldown_start_frame = context.current_frame;
+                attacker.base_defense_response.cooldown_duration_frames =
+                    response_delay_frames(context.rules.general.base_defense_delay_minutes);
+            }
+            break;
         }
-        selection.consider(7, 100, ResponderClass::Unit, false);
-        let (_, ranked) = selection.into_ranked();
-        assert_eq!(
-            ranked
-                .iter()
-                .map(|entry| entry.entity_id)
-                .collect::<Vec<_>>(),
-            [1, 3, 5, 6, 4, 2]
-        );
-    }
-
-    #[test]
-    fn gsi_04_05_replacement_overwrites_every_old_minimum_with_duplicates() {
-        let mut selection = ResponseSelection::new(1);
-        for (id, score) in [(1, 9), (2, 2), (3, 2), (4, 8), (5, 7), (6, 6)] {
-            selection.consider(id, score, ResponderClass::Unit, false);
-        }
-        selection.consider(7, 100, ResponderClass::Unit, false);
-        selection.consider(8, 5, ResponderClass::Unit, false);
-        let (_, ranked) = selection.into_ranked();
-        assert_eq!(
-            ranked.iter().filter(|entry| entry.entity_id == 8).count(),
-            2
-        );
-        assert_eq!(
-            ranked
-                .iter()
-                .map(|entry| entry.entity_id)
-                .collect::<Vec<_>>(),
-            [1, 4, 5, 6, 8, 8]
-        );
-    }
-
-    #[test]
-    fn gsi_04_05_stable_descending_sort_retains_equal_score_order() {
-        let mut selection = ResponseSelection::new(1);
-        for (id, score) in [(1, 4), (2, 9), (3, 4), (4, 7)] {
-            selection.consider(id, score, ResponderClass::Infantry, false);
-        }
-        let (_, ranked) = selection.into_ranked();
-        assert_eq!(
-            ranked
-                .iter()
-                .map(|entry| entry.entity_id)
-                .collect::<Vec<_>>(),
-            [2, 4, 1, 3]
-        );
-    }
-
-    #[test]
-    fn gsi_04_05_draw_boundary_and_strict_budget_overshoot_are_literal() {
-        assert_eq!(response_mission(65, false), ResponseMission::Rescue);
-        assert_eq!(response_mission(66, false), ResponseMission::AreaGuard);
-        assert_eq!(response_mission(0, true), ResponseMission::AreaGuard);
-
-        assert_eq!(add_assigned_cost(0, 100, 100), (100, false));
-        assert_eq!(add_assigned_cost(100, 1, 100), (101, true));
-        assert_eq!(add_assigned_cost(i32::MAX, 1, -1), (i32::MIN, false));
     }
 }
+
+#[cfg(test)]
+#[path = "base_defense_response_tests.rs"]
+mod tests;

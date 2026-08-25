@@ -106,7 +106,7 @@ impl Default for BaseDefenseResponseState {
             recruitable_a: true,
             recruitable_b: true,
             archive_target: None,
-            cooldown_start_frame: 0,
+            cooldown_start_frame: -1,
             cooldown_duration_frames: 0,
         }
     }

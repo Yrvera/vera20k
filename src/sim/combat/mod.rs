@@ -1706,11 +1706,32 @@ pub(crate) enum FatalLifecycleStage {
     AfterDeathEffects,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BaseDefenseResponseCallSite {
+    BuildingPrelude,
+    ProtectedTechno,
+}
+
 /// World bridge for synchronous side effects whose authoritative
 /// storage lives outside combat's move-out transaction. One object owns both
 /// methods so `Simulation` is borrowed only once while combat temporarily owns
 /// entities, map grids, and the scenario RNG.
 pub(crate) trait CombatInlineHooks {
+    #[allow(clippy::too_many_arguments)]
+    fn respond_to_base_attack(
+        &mut self,
+        _site: BaseDefenseResponseCallSite,
+        _victim_id: u64,
+        _attacker_id: u64,
+        _entities: &mut EntityStore,
+        _rules: &RuleSet,
+        _interner: &StringInterner,
+        _houses: &mut BTreeMap<InternedId, HouseState>,
+        _scenario_rng: &mut SimRng,
+        _terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    ) {
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn fatal_lifecycle(
         &mut self,
@@ -2560,6 +2581,7 @@ fn receiver_effect_coord(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildingReceivePrelude {
     Continue,
+    Respond,
     ReturnZero,
 }
 
@@ -2599,7 +2621,7 @@ fn apply_building_receive_prelude(
         }
     }
 
-    BuildingReceivePrelude::Continue
+    BuildingReceivePrelude::Respond
 }
 
 fn resolve_receive_damage(
@@ -3290,10 +3312,47 @@ fn commit_damage_events_with_isolation(
         }
         let target_id = event.target_id;
         let attacker_id = event.attacker_id;
-        if apply_building_receive_prelude(event, entities, rules, interner, houses, current_tick)
-            == BuildingReceivePrelude::ReturnZero
-        {
-            continue;
+        match apply_building_receive_prelude(
+            event,
+            entities,
+            rules,
+            interner,
+            houses,
+            current_tick,
+        ) {
+            BuildingReceivePrelude::ReturnZero => continue,
+            BuildingReceivePrelude::Respond => {
+                if let Some(victim_owner) = entities.get(event.target_id).map(|victim| victim.owner)
+                {
+                    let attacker_house_index = entities
+                        .get(event.attacker_id)
+                        .and_then(|attacker| {
+                            house_order
+                                .iter()
+                                .position(|owner| *owner == attacker.owner)
+                        })
+                        .map_or(-1, |index| index as i32);
+                    if let Some(owner) = houses.get_mut(&victim_owner) {
+                        owner
+                            .strategy_emergency
+                            .note_building_attacker(attacker_house_index);
+                    }
+                }
+                if let Some(hook) = inline_hooks.as_deref_mut() {
+                    hook.respond_to_base_attack(
+                        BaseDefenseResponseCallSite::BuildingPrelude,
+                        event.target_id,
+                        event.attacker_id,
+                        entities,
+                        rules,
+                        interner,
+                        houses,
+                        scenario_rng,
+                        terrain.as_deref(),
+                    );
+                }
+            }
+            BuildingReceivePrelude::Continue => {}
         }
         // ReceiveDamage carries sourceHouse separately from the source object.
         // Area records snapshot it at detonation; legacy precomputed records
@@ -3465,6 +3524,37 @@ fn commit_damage_events_with_isolation(
                     latch_hostile_hit = false;
                 }
             }
+        }
+
+        // gamemd-derived: `TechnoClass__ReceiveDamage @
+        // 0x007027AE..0x007027EE` invokes the protected-Techno response after
+        // ObjectClass has committed health/visual state and before the dead
+        // branch. `ShouldProtect+0x3CF` has no active YR writer; `ToProtect=`
+        // is the exact live gate retained here.
+        let protected_techno_response = event.distance_leptons.is_some()
+            && attacker_id != RAD_NO_ATTACKER
+            && entities.get(target_id).is_some_and(|target| {
+                rules
+                    .object(interner.resolve(target.type_ref))
+                    .is_some_and(|object| object.to_protect)
+                    && houses
+                        .get(&target.owner)
+                        .is_some_and(|house| !house.is_human)
+            });
+        if protected_techno_response
+            && let Some(hook) = inline_hooks.as_deref_mut()
+        {
+            hook.respond_to_base_attack(
+                BaseDefenseResponseCallSite::ProtectedTechno,
+                target_id,
+                attacker_id,
+                entities,
+                rules,
+                interner,
+                houses,
+                scenario_rng,
+                terrain.as_deref(),
+            );
         }
 
         if reached_exact_zero && let Some(target) = entities.get_mut(target_id) {
