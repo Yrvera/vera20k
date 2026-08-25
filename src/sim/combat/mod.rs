@@ -18,6 +18,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 pub(crate) mod cell_spread;
+pub(crate) mod base_defense_response;
 pub(crate) mod combat_aoe;
 pub(crate) mod combat_fire_gate;
 pub(crate) mod combat_targeting;
