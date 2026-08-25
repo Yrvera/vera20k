@@ -71,7 +71,11 @@ impl TeamScriptVm {
                     })
                 })
                 .collect();
-            vm.register_task_force(TeamTaskForceDefinition { id, entries });
+            vm.register_task_force(TeamTaskForceDefinition {
+                id,
+                group: task_force.group,
+                entries,
+            });
         }
 
         for team_type in &registry.team_types {
@@ -177,6 +181,10 @@ impl TeamScriptVm {
 
     pub(crate) fn task_force_order(&self) -> &[InternedId] {
         &self.task_force_order
+    }
+
+    pub(crate) fn task_force(&self, id: InternedId) -> Option<&TeamTaskForceDefinition> {
+        self.task_forces.get(&id)
     }
 
     pub(crate) fn ai_trigger_order(&self) -> &[InternedId] {

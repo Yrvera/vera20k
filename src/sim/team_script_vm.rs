@@ -43,6 +43,8 @@ pub struct TeamTaskForceEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamTaskForceDefinition {
     pub id: InternedId,
+    /// Signed TaskForce `Group=` fallback consumed by Team recruitment.
+    pub group: i32,
     pub entries: Vec<TeamTaskForceEntry>,
 }
 
@@ -902,6 +904,7 @@ mod tests {
         });
         vm.register_task_force(TeamTaskForceDefinition {
             id: task_force,
+            group: -1,
             entries: vec![
                 TeamTaskForceEntry {
                     member_type: infantry,
@@ -969,6 +972,7 @@ mod tests {
             }
             vm.register_task_force(TeamTaskForceDefinition {
                 id: task_force,
+                group: -1,
                 entries: vec![TeamTaskForceEntry {
                     member_type,
                     count: members.len() as i32,
@@ -1067,6 +1071,7 @@ mod tests {
         });
         vm.register_task_force(TeamTaskForceDefinition {
             id: task_force,
+            group: -1,
             entries: vec![],
         });
         vm.register_team_type(TeamTypeDefinition {
@@ -1120,6 +1125,7 @@ mod tests {
         });
         vm.register_task_force(TeamTaskForceDefinition {
             id: task_force,
+            group: -1,
             entries: vec![TeamTaskForceEntry {
                 member_type,
                 count: 1,
@@ -1235,10 +1241,13 @@ mod tests {
              [TT1]\nScript=S1\nTaskForce=TF1\nPriority=5\nAutocreate=yes\nIsBaseDefense=yes\n\
              [TT2]\nScript=S1\nTaskForce=TF1\nPriority=7\n\
              [ScriptTypes]\n0=S1\n[S1]\n0=-1,9\n\
-             [TaskForces]\n0=TF1\n[TF1]\n0=-2,E1\n\
+             [TaskForces]\n0=TF1\n[TF1]\n0=-2,E1\nGroup=3\n\
              [AITriggerTypes]\nAT=Trigger,TT1,<all>,2,4,<none>,00,40,10,40,1,0,1,0,TT2,1,1,1\n",
         );
-        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let map = IniFile::from_str(
+            "[TaskForces]\n0=TF1\n[TF1]\n0=-2,E1\nGroup=9\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &map, true);
         let mut interner = StringInterner::new();
         let (vm, diagnostics) =
             TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
@@ -1281,6 +1290,11 @@ mod tests {
         assert!(metadata.autocreate);
         assert!(metadata.are_team_members_recruitable);
         assert_eq!(vm.task_forces[&interner.get("TF1").unwrap()].entries[0].count, -2);
+        assert_eq!(
+            vm.task_forces[&interner.get("TF1").unwrap()].group,
+            9,
+            "map TaskForce re-read must preserve its signed Group in the resolved registry"
+        );
         assert_eq!(vm.scripts[&interner.get("S1").unwrap()].actions[0].action_id, -1);
 
         let encoded = serde_json::to_string(&vm).unwrap();
@@ -1288,6 +1302,7 @@ mod tests {
         assert_eq!(restored.registry_counts(), vm.registry_counts());
         assert_eq!(restored.team_type_order(), vm.team_type_order());
         assert_eq!(restored.ai_trigger_order(), vm.ai_trigger_order());
+        assert_eq!(restored.task_force(interner.get("TF1").unwrap()).unwrap().group, 9);
     }
 
     #[test]

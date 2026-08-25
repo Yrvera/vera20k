@@ -2673,6 +2673,7 @@ mod tests {
         sim.team_script_vm.register_task_force(
             crate::sim::team_script_vm::TeamTaskForceDefinition {
                 id: task_force_id,
+                group: 7,
                 entries: vec![crate::sim::team_script_vm::TeamTaskForceEntry {
                     member_type,
                     count: 1,
@@ -2745,6 +2746,14 @@ mod tests {
         assert_eq!(
             restored.team_script_vm.task_force_order(),
             &[task_force_id]
+        );
+        assert_eq!(
+            restored
+                .team_script_vm
+                .task_force(task_force_id)
+                .unwrap()
+                .group,
+            7
         );
         assert_eq!(
             team.response_suspension_state(),

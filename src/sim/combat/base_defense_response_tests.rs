@@ -144,6 +144,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
     });
     teams.register_task_force(TeamTaskForceDefinition {
         id: task_force_id,
+        group: -1,
         entries: vec![TeamTaskForceEntry {
             member_type,
             count: 1,
