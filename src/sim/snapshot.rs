@@ -4486,7 +4486,7 @@ mod tests {
         assert!(rebuilt_dummy.same_identity(&process_dummy));
         assert_eq!(rebuilt_dummy.snapshot().coord, (7, 9));
 
-        restored.reconstruct_shared_cell_dummy_for_map_resize();
+        restored.reconstruct_cellclass_dummy_for_map_resize();
         assert_eq!(
             rebuilt_dummy.snapshot(),
             crate::map::resolved_terrain::SharedCellDummySnapshot {
@@ -4696,7 +4696,7 @@ mod tests {
 
         // MouseClass::Load reaches Resize only at accepted commit. That ctor
         // zeros the same dummy identity and does not rewrite loaded real cells.
-        restored.reconstruct_shared_cell_dummy_for_map_resize();
+        restored.reconstruct_cellclass_dummy_for_map_resize();
 
         let reconstructed = restored.effective_shared_cell_dummy();
         assert!(reconstructed.same_identity(&process_dummy));

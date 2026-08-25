@@ -585,6 +585,16 @@ impl CellReservationGrid {
     pub(crate) fn dummy_mask(&self) -> u32 {
         self.dummy_mask
     }
+
+    /// Reconstruct only the split `+0xDC` state of the fixed fallback
+    /// CellClass; real-cell reservation authority is deliberately untouched.
+    ///
+    /// `MapClass::Resize @ 0x00565C10` reconstructs the fixed dummy through
+    /// `CellClass::Constructor @ 0x0047BBF0`, whose write at `0x0047BC76`
+    /// clears `CellClass+0xDC`.
+    pub(crate) fn reconstruct_dummy_for_map_resize(&mut self) {
+        self.dummy_mask = 0;
+    }
 }
 
 fn reservation_cell_coord(
@@ -2499,6 +2509,18 @@ mod tests {
             neighbors.house_reservation_neighbor_mask(None, 10, 10, 4),
             0xff
         );
+    }
+
+    #[test]
+    fn gsi_04_01_resize_reconstruction_clears_only_dummy_reservation() {
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(None, 3, 4, 2);
+        grid.reserve(None, -1, 0, 5);
+
+        grid.reconstruct_dummy_for_map_resize();
+
+        assert_eq!(grid.raw_mask(None, 3, 4), 1 << 2);
+        assert_eq!(grid.dummy_mask(), 0);
     }
 
     #[test]

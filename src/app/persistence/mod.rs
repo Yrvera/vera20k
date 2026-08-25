@@ -259,7 +259,7 @@ impl PreparedLoad {
     }
 
     pub(crate) fn into_parts(
-        self,
+        mut self,
     ) -> (
         Simulation,
         Vec<crate::map::overlay::OverlayEntry>,
@@ -268,10 +268,11 @@ impl PreparedLoad {
         // This is the first infallible successful-load seam. Native
         // `MouseClass::Load @ 0x005BE150` reaches
         // `MapClass::Resize @ 0x00565C10` and reconstructs the fixed fallback
-        // CellClass here; doing it during candidate preparation would leak
-        // mutation from a rejected transactional load into the running match.
+        // CellClass here, including its split `+0xDC` reservation state; doing
+        // it during candidate preparation would leak mutation from a rejected
+        // transactional load into the running match.
         self.simulation
-            .reconstruct_shared_cell_dummy_for_map_resize();
+            .reconstruct_cellclass_dummy_for_map_resize();
         (
             self.simulation,
             self.map_restore.occupied_overlays,
@@ -899,10 +900,19 @@ mod tests {
         let mut state = RunningMatchTestState::running(&rules);
         let directory = isolated_directory("load-transaction-startup");
         let repository = SaveRepository::at(&directory);
+        let mut saved = load_fixture_simulation(true);
+        saved
+            .substrate
+            .base_reservations
+            .reserve(None, 3, 4, 2);
+        saved
+            .substrate
+            .base_reservations
+            .reserve(None, -1, 0, 5);
         let path = repository
             .write_named(
                 "same-content.bin",
-                &snapshot_bytes(&load_fixture_simulation(true), &rules),
+                &snapshot_bytes(&saved, &rules),
             )
             .expect("write same-content transaction fixture");
 
@@ -933,7 +943,25 @@ mod tests {
 
         let live_dummy = state.simulation.effective_shared_cell_dummy();
         assert_eq!(live_dummy.snapshot().coord, (7, 9));
-        let (simulation, _occupied_overlays, preserved_startup) = prepared.into_parts();
+        assert_eq!(
+            prepared
+                .simulation
+                .substrate
+                .base_reservations
+                .raw_mask(None, 3, 4),
+            1 << 2,
+            "candidate preparation restores real reservation authority verbatim"
+        );
+        assert_eq!(
+            prepared
+                .simulation
+                .substrate
+                .base_reservations
+                .dummy_mask(),
+            1 << 5,
+            "raw snapshot decode retains the dummy mask before accepted Resize"
+        );
+        let (mut simulation, _occupied_overlays, preserved_startup) = prepared.into_parts();
         let restored_dummy = simulation.effective_shared_cell_dummy();
         assert!(restored_dummy.same_identity(&live_dummy));
         assert_eq!(
@@ -945,6 +973,29 @@ mod tests {
                 bridge_flags_0x1180: 0,
             },
             "successful in-scenario load reconstructs the fixed dummy at the commit seam"
+        );
+        assert_eq!(
+            simulation
+                .substrate
+                .base_reservations
+                .raw_mask(None, 3, 4),
+            1 << 2,
+            "the narrow dummy reconstruction leaves real reservation state untouched"
+        );
+        assert_eq!(simulation.substrate.base_reservations.dummy_mask(), 0);
+
+        let accepted_hash = simulation.state_hash();
+        simulation
+            .substrate
+            .base_reservations
+            .reserve(None, -1, 0, 6);
+        assert_ne!(simulation.state_hash(), accepted_hash);
+        simulation.reconstruct_cellclass_dummy_for_map_resize();
+        assert_eq!(simulation.substrate.base_reservations.dummy_mask(), 0);
+        assert_eq!(
+            simulation.state_hash(),
+            accepted_hash,
+            "with the shared dummy already zero, reconstruction removes only the hashed stale mask"
         );
         // Production calls this exact restore after its enumerated commit. Clear
         // the owner slots first so the assertion proves the snapshot carries the
