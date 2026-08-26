@@ -10,7 +10,8 @@ use crate::sim::pathfinding::passability::combine_team_movement_zones;
 
 use super::{
     TeamAiInstallDiagnostic, TeamAiTriggerDefinition, TeamAiTriggerOwner, TeamScriptAction,
-    TeamScriptDefinition, TeamScriptVm, TeamTaskForceDefinition, TeamTaskForceEntry,
+    TeamMemberTypeIdentity, TeamScriptDefinition, TeamScriptVm, TeamTaskForceDefinition,
+    TeamTaskForceEntry,
     TeamTypeDefinition, TeamTypeIniMetadata,
 };
 
@@ -164,7 +165,7 @@ impl TeamScriptVm {
                 .entries
                 .iter()
                 .filter_map(|entry| {
-                    let Some(_member_type) = rules.task_force_member_object(&entry.member_type)
+                    let Some(member_type) = rules.task_force_member_object(&entry.member_type)
                     else {
                         diagnostics.push(TeamAiInstallDiagnostic::UnknownTaskForceMember {
                             task_force_id: task_force.id.clone(),
@@ -174,7 +175,10 @@ impl TeamScriptVm {
                         return None;
                     };
                     Some(TeamTaskForceEntry {
-                        member_type: interner.intern(&entry.member_type),
+                        member_type: TeamMemberTypeIdentity {
+                            category: member_type.category,
+                            id: interner.intern(&entry.member_type),
+                        },
                         count: entry.count,
                     })
                 })
@@ -442,7 +446,10 @@ fn trigger_task_force_tech_level(
                 .entries
                 .iter()
                 .filter_map(|entry| {
-                    rules.task_force_member_object(interner.resolve(entry.member_type))
+                    rules.object_in_category(
+                        entry.member_type.category,
+                        interner.resolve(entry.member_type.id),
+                    )
                 })
                 .fold(0_i32, |current, member_type| {
                     let tech_level = member_type.tech_level;
@@ -470,9 +477,10 @@ fn derive_team_type_zone_fields(vm: &mut TeamScriptVm, interner: &StringInterner
 
         if let Some(task_force) = vm.task_forces.get(&team_type.task_force_id) {
             for entry in &task_force.entries {
-                let Some(member_type) =
-                    rules.task_force_member_object(interner.resolve(entry.member_type))
-                else {
+                let Some(member_type) = rules.object_in_category(
+                    entry.member_type.category,
+                    interner.resolve(entry.member_type.id),
+                ) else {
                     continue;
                 };
                 if member_type.naval {

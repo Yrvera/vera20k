@@ -38,7 +38,18 @@ use crate::util::fixed_math::{SimFixed, sim_from_f32};
 /// Determines which `[XxxTypes]` section listed this object and affects
 /// which game behaviors apply (e.g., only buildings have power, only
 /// infantry can garrison).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum ObjectCategory {
     Infantry,
     Vehicle,

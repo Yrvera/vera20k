@@ -298,7 +298,9 @@ use crate::sim::world::Simulation;
 // native requires that token but discards it before deriving `+0xB0`.
 // Bumped 99 -> 100: retain the three TeamType post-load zone-derivation
 // fields serialized inside the ordered TeamScriptVm registry.
-const SNAPSHOT_VERSION: u32 = 100;
+// Bumped 100 -> 101: retain each compact TaskForce member's category-distinct
+// resolved TechnoType identity rather than an ambiguous interned name alone.
+const SNAPSHOT_VERSION: u32 = 101;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2636,10 +2638,11 @@ mod tests {
     /// AITrigger owner/object/scalar/mask/weight/difficulty payload; 98 -> 99
     /// removes the falsely retained AITrigger token-4 scalar after binary
     /// verification proved that token is required but discarded; 99 -> 100
-    /// adds the three post-load TeamType zone-derivation fields.
+    /// adds the three post-load TeamType zone-derivation fields; 100 -> 101
+    /// adds category-distinct resolved TaskForce member identities.
     #[test]
-    fn phase3_team_ai_registry_snapshot_version_is_100() {
-        assert_eq!(super::SNAPSHOT_VERSION, 100);
+    fn phase3_team_ai_registry_snapshot_version_is_101() {
+        assert_eq!(super::SNAPSHOT_VERSION, 101);
     }
 
     #[test]
@@ -2674,6 +2677,10 @@ mod tests {
         let team_type_id = sim.interner.intern("BaseDefenseTeamType");
         let ai_trigger_id = sim.interner.intern("BaseDefenseAITrigger");
         let member_type = sim.interner.intern("E1");
+        let member_identity = crate::sim::team_script_vm::TeamMemberTypeIdentity {
+            category: crate::rules::object_type::ObjectCategory::Infantry,
+            id: member_type,
+        };
         sim.team_script_vm.register_script(
             crate::sim::team_script_vm::TeamScriptDefinition {
                 id: script_id,
@@ -2690,7 +2697,7 @@ mod tests {
                 source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
                 group: 7,
                 entries: vec![crate::sim::team_script_vm::TeamTaskForceEntry {
-                    member_type,
+                    member_type: member_identity,
                     count: 1,
                 }],
             },
@@ -2740,7 +2747,7 @@ mod tests {
             team_type_id,
             &[crate::sim::team_script_vm::TeamScriptMember {
                 entity_id: 1,
-                member_type,
+                member_type: member_identity,
             }],
             None,
             sim.session.binary_frame as i32,
@@ -2758,7 +2765,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v100 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v101 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
@@ -2827,7 +2834,7 @@ mod tests {
             crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd
         );
         assert_eq!(restored_task_force.entries.len(), 1);
-        assert_eq!(restored_task_force.entries[0].member_type, member_type);
+        assert_eq!(restored_task_force.entries[0].member_type, member_identity);
         assert_eq!(restored_task_force.entries[0].count, 1);
         assert_eq!(
             restored_task_force.group,

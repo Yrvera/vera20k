@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::rules::locomotor_type::MovementZone;
+use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::CountryIdx;
 use crate::rules::team_ai_ini::TeamAiDefinitionSource;
 use crate::sim::command::CommandEnvelope;
@@ -36,10 +37,21 @@ pub struct TeamScriptDefinition {
     pub source: TeamAiDefinitionSource,
 }
 
-/// One TaskForce requirement. `member_type` is a resolved TechnoType identity.
+/// A category-distinct TechnoType identity retained from native TaskForce
+/// resolution. The ID alone is insufficient for custom rules that register
+/// the same name in multiple native type families.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct TeamMemberTypeIdentity {
+    pub category: ObjectCategory,
+    pub id: InternedId,
+}
+
+/// One TaskForce requirement. `member_type` is the resolved native identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamTaskForceEntry {
-    pub member_type: InternedId,
+    pub member_type: TeamMemberTypeIdentity,
     pub count: i32,
 }
 
@@ -181,7 +193,7 @@ impl TeamAiInstallDiagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamScriptMember {
     pub entity_id: u64,
-    pub member_type: InternedId,
+    pub member_type: TeamMemberTypeIdentity,
 }
 
 /// Action-19 side effect emitted in TeamClass member-list order.
@@ -229,7 +241,9 @@ pub struct TeamScriptState {
     response_suspend_start_frame: i32,
     response_suspend_duration_frames: i32,
     members: Vec<u64>,
-    member_type_counts: BTreeMap<InternedId, u32>,
+    // Stable identity-aware admission summary. A vector keeps the ordered
+    // category-distinct keys JSON-serializable as well as snapshot-safe.
+    member_type_counts: Vec<(TeamMemberTypeIdentity, u32)>,
     target: Option<u64>,
     succeeded: bool,
     completed: bool,
@@ -283,7 +297,7 @@ impl TeamScriptState {
         )
     }
 
-    pub fn member_type_counts(&self) -> &BTreeMap<InternedId, u32> {
+    pub fn member_type_counts(&self) -> &[(TeamMemberTypeIdentity, u32)] {
         &self.member_type_counts
     }
 
@@ -756,7 +770,7 @@ impl TeamScriptVm {
         task_force_id: Option<InternedId>,
         script_id: InternedId,
         members: Vec<u64>,
-        member_type_counts: BTreeMap<InternedId, u32>,
+        member_type_counts: BTreeMap<TeamMemberTypeIdentity, u32>,
         target: Option<u64>,
         current_frame: i32,
     ) -> u64 {
@@ -781,7 +795,7 @@ impl TeamScriptVm {
                 response_suspend_start_frame: current_frame,
                 response_suspend_duration_frames: 0,
                 members,
-                member_type_counts,
+                member_type_counts: member_type_counts.into_iter().collect(),
                 target,
                 succeeded: false,
                 completed: false,
@@ -972,6 +986,14 @@ mod tests {
         let team_type = InternedId::from_index(4);
         let tank = InternedId::from_index(5);
         let infantry = InternedId::from_index(6);
+        let tank_identity = TeamMemberTypeIdentity {
+            category: ObjectCategory::Vehicle,
+            id: tank,
+        };
+        let infantry_identity = TeamMemberTypeIdentity {
+            category: ObjectCategory::Infantry,
+            id: infantry,
+        };
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
@@ -984,11 +1006,11 @@ mod tests {
             group: -1,
             entries: vec![
                 TeamTaskForceEntry {
-                    member_type: infantry,
+                    member_type: infantry_identity,
                     count: 2,
                 },
                 TeamTaskForceEntry {
-                    member_type: tank,
+                    member_type: tank_identity,
                     count: 1,
                 },
             ],
@@ -1009,15 +1031,15 @@ mod tests {
             &[
                 TeamScriptMember {
                     entity_id: 10,
-                    member_type: tank,
+                    member_type: tank_identity,
                 },
                 TeamScriptMember {
                     entity_id: 20,
-                    member_type: infantry,
+                    member_type: infantry_identity,
                 },
                 TeamScriptMember {
                     entity_id: 30,
-                    member_type: infantry,
+                    member_type: infantry_identity,
                 },
             ],
             None,
@@ -1026,8 +1048,73 @@ mod tests {
 
         let state = vm.team(team).expect("team");
         assert_eq!(state.members(), &[20, 30, 10]);
-        assert_eq!(state.member_type_counts().get(&infantry), Some(&2));
-        assert_eq!(state.member_type_counts().get(&tank), Some(&1));
+        assert!(state.member_type_counts().contains(&(infantry_identity, 2)));
+        assert!(state.member_type_counts().contains(&(tank_identity, 1)));
+    }
+
+    #[test]
+    fn gsi_04_05_task_force_admission_distinguishes_duplicate_native_families() {
+        let owner = InternedId::from_index(1);
+        let script = InternedId::from_index(2);
+        let task_force = InternedId::from_index(3);
+        let team_type = InternedId::from_index(4);
+        let duplicate_id = InternedId::from_index(5);
+        let infantry_identity = TeamMemberTypeIdentity {
+            category: ObjectCategory::Infantry,
+            id: duplicate_id,
+        };
+        let vehicle_identity = TeamMemberTypeIdentity {
+            category: ObjectCategory::Vehicle,
+            id: duplicate_id,
+        };
+        let mut vm = TeamScriptVm::default();
+        vm.register_script(TeamScriptDefinition {
+            id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
+            actions: vec![action(2, 0)],
+        });
+        vm.register_task_force(TeamTaskForceDefinition {
+            id: task_force,
+            source: TeamAiDefinitionSource::FixedAimd,
+            group: -1,
+            entries: vec![TeamTaskForceEntry {
+                member_type: infantry_identity,
+                count: 1,
+            }],
+        });
+        vm.register_team_type(TeamTypeDefinition {
+            id: team_type,
+            script_id: script,
+            task_force_id: task_force,
+            priority: 0,
+            is_base_defense: false,
+            combined_movement_zone: MovementZone::Fly,
+            base_zone_relation_enforced: true,
+            transport_crossing_required: false,
+        });
+
+        let team = vm.create_team_from_type(
+            owner,
+            team_type,
+            &[
+                TeamScriptMember {
+                    entity_id: 10,
+                    member_type: vehicle_identity,
+                },
+                TeamScriptMember {
+                    entity_id: 20,
+                    member_type: infantry_identity,
+                },
+            ],
+            None,
+            0,
+        );
+
+        assert_eq!(
+            vm.team(team).unwrap().members(),
+            &[20],
+            "same-name Unit candidate must not satisfy an Infantry pointer requirement"
+        );
     }
 
     #[test]
@@ -1042,6 +1129,10 @@ mod tests {
         ) -> u64 {
             let script = InternedId::from_index(100);
             let member_type = InternedId::from_index(101);
+            let member_identity = TeamMemberTypeIdentity {
+                category: ObjectCategory::Infantry,
+                id: member_type,
+            };
             let task_force = InternedId::from_index(110 + ordinal);
             let team_type = InternedId::from_index(120 + ordinal);
             if !vm.scripts.contains_key(&script) {
@@ -1056,7 +1147,7 @@ mod tests {
                 source: TeamAiDefinitionSource::FixedAimd,
                 group: -1,
                 entries: vec![TeamTaskForceEntry {
-                    member_type,
+                    member_type: member_identity,
                     count: members.len() as i32,
                 }],
             });
@@ -1075,7 +1166,7 @@ mod tests {
                 .copied()
                 .map(|entity_id| TeamScriptMember {
                     entity_id,
-                    member_type,
+                    member_type: member_identity,
                 })
                 .collect::<Vec<_>>();
             vm.create_team_from_type(owner, team_type, &candidates, None, 0)
@@ -1209,6 +1300,10 @@ mod tests {
         let task_force = InternedId::from_index(3);
         let team_type = InternedId::from_index(4);
         let member_type = InternedId::from_index(5);
+        let member_identity = TeamMemberTypeIdentity {
+            category: ObjectCategory::Infantry,
+            id: member_type,
+        };
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
@@ -1220,7 +1315,7 @@ mod tests {
             source: TeamAiDefinitionSource::FixedAimd,
             group: -1,
             entries: vec![TeamTaskForceEntry {
-                member_type,
+                member_type: member_identity,
                 count: 1,
             }],
         });
@@ -1239,7 +1334,7 @@ mod tests {
             team_type,
             &[TeamScriptMember {
                 entity_id: 10,
-                member_type,
+                member_type: member_identity,
             }],
             None,
             99,
@@ -1538,7 +1633,7 @@ mod tests {
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
             "[InfantryTypes]\n0=E1\n1=DUP\n\
-             [VehicleTypes]\n0=TANK\n1=BOAT\n2=ODDTRANSPORT\n\
+             [VehicleTypes]\n0=TANK\n1=BOAT\n2=ODDTRANSPORT\n3=DUP\n\
              [BuildingTypes]\n0=BLD\n1=DUP\n\
              [E1]\nStrength=100\nMovementZone=Infantry\n\
              [DUP]\nStrength=100\nTechLevel=6\nMovementZone=Infantry\n\
@@ -1649,12 +1744,30 @@ mod tests {
         );
         let duplicate = definition("DUPLICATE");
         assert_eq!(duplicate.combined_movement_zone, MovementZone::Infantry);
+        let duplicate_task_force = vm
+            .task_force(interner.get("DUP_TF").unwrap())
+            .unwrap();
+        assert_eq!(duplicate_task_force.entries.len(), 1);
+        let duplicate_identity = TeamMemberTypeIdentity {
+            category: ObjectCategory::Infantry,
+            id: interner.get("DUP").unwrap(),
+        };
         assert_eq!(
-            vm.task_force(interner.get("DUP_TF").unwrap())
+            duplicate_task_force.entries[0].member_type,
+            duplicate_identity,
+            "the first searched native family is retained instead of an ambiguous name"
+        );
+
+        let encoded = serde_json::to_string(&vm).unwrap();
+        let restored: TeamScriptVm = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            restored
+                .task_force(interner.get("DUP_TF").unwrap())
                 .unwrap()
-                .entries
-                .len(),
-            1
+                .entries[0]
+                .member_type,
+            duplicate_identity,
+            "category-distinct TaskForce identity survives registry serialization"
         );
     }
 

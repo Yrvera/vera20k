@@ -2901,6 +2901,19 @@ impl RuleSet {
         self.type_handle(id).map(|h| self.object_by_handle(h))
     }
 
+    /// Resolve one name within a specific native TechnoType registry.
+    /// Category plus case-insensitive ID is the stable analogue of the
+    /// category-distinct pointer retained by native TaskForce entries.
+    pub(crate) fn object_in_category(
+        &self,
+        category: ObjectCategory,
+        id: &str,
+    ) -> Option<&ObjectType> {
+        self.object_category_index
+            .get(&(category, id.to_ascii_uppercase()))
+            .map(|handle| self.object_by_handle(*handle))
+    }
+
     /// Resolve a TaskForce member through the exact native family order used
     /// by `gamemd.exe 0x004C4EF0`: Infantry, Unit, then Aircraft. BuildingType
     /// is never searched.
@@ -2912,11 +2925,7 @@ impl RuleSet {
             ObjectCategory::Aircraft,
         ]
         .into_iter()
-        .find_map(|category| {
-            self.object_category_index
-                .get(&(category, key.clone()))
-                .map(|handle| self.object_by_handle(*handle))
-        })
+        .find_map(|category| self.object_in_category(category, &key))
     }
 
     /// First registered BuildingType whose merged ART `ToOverlay=` resolves to

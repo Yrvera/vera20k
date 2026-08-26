@@ -4,14 +4,15 @@ use super::*;
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainCell;
 use crate::rules::ini_parser::IniFile;
+use crate::rules::object_type::ObjectCategory;
 use crate::rules::team_ai_ini::TeamAiDefinitionSource;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::test_interner;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::team_script_vm::{
-    TeamScriptAction, TeamScriptDefinition, TeamScriptMember, TeamTaskForceDefinition,
-    TeamTaskForceEntry, TeamTypeDefinition,
+    TeamMemberTypeIdentity, TeamScriptAction, TeamScriptDefinition, TeamScriptMember,
+    TeamTaskForceDefinition, TeamTaskForceEntry, TeamTypeDefinition,
 };
 
 fn threat(cost: i32, distance: i32, range: i32, speed: i32) -> ThreatFacts {
@@ -136,6 +137,10 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
         ),
     ]);
     let mut teams = TeamScriptVm::default();
+    let member_identity = TeamMemberTypeIdentity {
+        category: ObjectCategory::Infantry,
+        id: member_type,
+    };
     teams.register_script(TeamScriptDefinition {
         id: script_id,
         source: TeamAiDefinitionSource::FixedAimd,
@@ -149,7 +154,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
         source: TeamAiDefinitionSource::FixedAimd,
         group: -1,
         entries: vec![TeamTaskForceEntry {
-            member_type,
+            member_type: member_identity,
             count: 1,
         }],
     });
@@ -168,7 +173,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
         team_type_id,
         &[TeamScriptMember {
             entity_id: 99,
-            member_type,
+            member_type: member_identity,
         }],
         None,
         0,

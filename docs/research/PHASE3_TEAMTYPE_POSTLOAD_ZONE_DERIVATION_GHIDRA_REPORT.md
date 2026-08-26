@@ -61,6 +61,7 @@ There is no BuildingType lookup. At `0x006E8496..0x006E84C1`, the parser writes 
 Consequences for parity:
 
 - a Building ID must not become a valid TaskForce member merely because it exists in the broad rules object registry;
+- the compact entry must retain the selected category-distinct type identity, not only its ambiguous case-insensitive name, because native stores the resolved pointer returned by the first successful family lookup;
 - an unresolved ID contributes neither a member nor a movement row;
 - the authored member count, including zero or negative custom values, does not suppress an otherwise resolved type during zone derivation;
 - the native six-slot limit and compact-order behavior remain the TaskForce parser's responsibility.
@@ -193,7 +194,7 @@ Current Rust evidence inspected for this report:
 Required implementation sequence:
 
 1. preserve signed `Passengers` parsing;
-2. resolve TaskForce members in native Infantry, Unit/vehicle, Aircraft order, preserve category-distinct duplicate IDs, and keep unresolved members diagnostic;
+2. resolve TaskForce members in native Infantry, Unit/vehicle, Aircraft order, retain the selected category-distinct identity in the compact entry and snapshot, and keep unresolved members diagnostic;
 3. implement the exact matrix selection rule, including strict tie handling and explicit active-binary `Invalid` absorption;
 4. retain combined row, enforcement, and crossing-required fields on every TeamType definition;
 5. after all final registries and triggers are resolved, derive every TeamType in source order from its compact resolved TaskForce;
