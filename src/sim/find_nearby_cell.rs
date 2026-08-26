@@ -216,13 +216,24 @@ pub fn find_nearby_passable_cell_with_options(
         return None;
     }
 
+    // Native re-runs the projection while partitioning the stored candidates;
+    // collection-time classification only owns the per-ring early-out.
+    let mut direct_pool: Vec<&Candidate> = Vec::new();
+    let mut indirect_pool: Vec<&Candidate> = Vec::new();
+    for candidate in &candidates {
+        if is_direct_candidate(q, candidate.cell.0, candidate.cell.1) {
+            direct_pool.push(candidate);
+        } else {
+            indirect_pool.push(candidate);
+        }
+    }
     // Direct candidates are preferred; only fall back to indirects when there are
     // no directs at all.
-    let has_direct = candidates.iter().any(|c| c.direct);
-    let pool: Vec<&Candidate> = candidates
-        .iter()
-        .filter(|c| c.direct == has_direct)
-        .collect();
+    let pool = if direct_pool.is_empty() {
+        indirect_pool
+    } else {
+        direct_pool
+    };
     if pool.is_empty() {
         return None;
     }
@@ -371,27 +382,40 @@ fn ring_cells(seed: (i32, i32), r: i32) -> Vec<(i32, i32)> {
 /// under a level-8 neighbour is not. Off-grid probes read level 0, matching the engine's
 /// out-of-range cell lookup, which returns a shared zeroed cell rather than failing.
 ///
-/// The candidate's own bridge bit deliberately plays NO part here — it belongs to the
-/// caller's height gate ([`candidate_height_ok`]) and to the bridge filter, and folding
-/// it in was what made this port call every bridge cell indirect.
-///
-/// VERA-internal, gamemd equivalent UNCHECKED: the engine adds four levels to a *probe*
-/// cell that carries a bridge, but only when the candidate cell carries a second,
-/// unidentified cell flag. That flag's writer was not found, so the correction is
-/// omitted rather than invented. Direction of the residual: gamemd classifies slightly
-/// MORE cells indirect than we do near a bridge deck. Trigger: a candidate within six
-/// diagonal steps north-west of a bridge deck that also carries the unidentified flag;
-/// free-unit placement rejects bridge cells outright, so it is unreachable there.
+/// A candidate's structural `0x100` bridge bit alone plays no part here. Its distinct
+/// forward-side `0x1000` bit gates a four-level addition for each projected probe that
+/// carries structural `0x100`; without candidate `0x1000`, probe bridge bits are ignored.
+// gamemd-derived: `FUN_006D6410 @ 0x006D6410`; candidate `CellClass+0x140 & 0x1000`
+// gates probe `CellClass+0x140 & 0x100` times four at `0x006D6473..0x006D6513`.
 fn is_direct_candidate(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
     let base_level = cell_level(q, cx, cy);
+    let candidate_is_forward_side =
+        cell_bridge_flags(q, cx, cy) & crate::map::bridge_facts::BRIDGE_FLAG_FORWARD_SIDE != 0;
     for step in 1..=OCCLUSION_PROBE_CELLS {
-        let rise = cell_level(q, cx + step, cy + step).saturating_sub(base_level);
+        let probe_x = cx + step;
+        let probe_y = cy + step;
+        let probe_is_structural = candidate_is_forward_side
+            && cell_bridge_flags(q, probe_x, probe_y)
+                & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                != 0;
+        let probe_level = cell_level(q, probe_x, probe_y)
+            + if probe_is_structural {
+                BRIDGE_LEVEL_RISE
+            } else {
+                0
+            };
+        let rise = probe_level.saturating_sub(base_level);
         let rise_that_occludes = OCCLUSION_RISE_PER_STEP * step as i16 + OCCLUSION_RISE_BIAS;
         if rise >= rise_that_occludes {
             return false;
         }
     }
     true
+}
+
+fn cell_bridge_flags(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> u32 {
+    q.resolved_terrain
+        .map_or(0, |terrain| terrain.cellclass_bridge_flags_0x1180(cx, cy))
 }
 
 /// Run the per-candidate predicates in engine order: the independent height-aware
@@ -553,7 +577,9 @@ fn cell_to_u16(cell: (i32, i32)) -> Option<(u16, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::bridge_facts::{
+        BRIDGE_FLAG_FORWARD_SIDE, BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts,
+    };
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
@@ -857,6 +883,114 @@ mod tests {
         let mut terrain = flat_terrain(20, 20);
         terrain.cells[5 * 20 + 5].bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
         assert!(direct_at(&terrain, (5, 5)));
+    }
+
+    #[test]
+    fn find_nearby_bridge_projection_adds_exactly_four_probe_levels() {
+        const GRID: usize = 20;
+        let mut terrain = flat_terrain(GRID as u16, GRID as u16);
+        terrain.cells[5 * GRID + 5].bridge_facts.raw_flags = BRIDGE_FLAG_FORWARD_SIDE;
+        terrain.cells[8 * GRID + 8].bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+
+        assert!(
+            direct_at(&terrain, (5, 5)),
+            "step-three threshold is five, so a structural probe's +4 remains direct"
+        );
+        terrain.cells[8 * GRID + 8].level = 1;
+        assert!(
+            !direct_at(&terrain, (5, 5)),
+            "the same +1 probe becomes +5 only after the exact four-level correction"
+        );
+    }
+
+    #[test]
+    fn find_nearby_bridge_projection_ignores_structural_probe_without_forward_candidate() {
+        const GRID: usize = 20;
+        let mut terrain = flat_terrain(GRID as u16, GRID as u16);
+        terrain.cells[8 * GRID + 8].level = 1;
+        terrain.cells[8 * GRID + 8].bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+
+        assert!(
+            direct_at(&terrain, (5, 5)),
+            "probe structural bit is ignored while candidate 0x1000 is clear"
+        );
+        terrain.cells[5 * GRID + 5].bridge_facts.raw_flags = BRIDGE_FLAG_FORWARD_SIDE;
+        assert!(
+            !direct_at(&terrain, (5, 5)),
+            "the same probe contributes four only after candidate 0x1000 is set"
+        );
+    }
+
+    #[test]
+    fn find_nearby_bridge_projection_changes_collection_stop_and_frame_pool_exactly() {
+        const GRID: usize = 20;
+        let seed = (5, 5);
+
+        let baseline = flat_terrain(GRID as u16, GRID as u16);
+        let baseline_path = PathGrid::from_resolved_terrain(&baseline);
+        let mut baseline_query = base_query(&baseline, &baseline_path);
+        baseline_query.radius_cap = 2;
+        let baseline_candidates =
+            collect_candidates(seed, &baseline_query, NearbySearchOptions::default());
+        assert_eq!(baseline_candidates.len(), 2);
+        assert!(baseline_candidates.iter().all(|candidate| candidate.direct));
+        assert_eq!(
+            find_nearby_passable_cell(seed, &baseline_query, 0),
+            Some((5, 5))
+        );
+        assert_eq!(
+            find_nearby_passable_cell(seed, &baseline_query, 1),
+            Some((5, 5))
+        );
+
+        let mut projected = flat_terrain(GRID as u16, GRID as u16);
+        let projected_path = PathGrid::from_resolved_terrain(&projected);
+        projected.cells[5 * GRID + 5].bridge_facts.raw_flags = BRIDGE_FLAG_FORWARD_SIDE;
+        projected.cells[6 * GRID + 6].bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        let mut projected_query = base_query(&projected, &projected_path);
+        projected_query.radius_cap = 2;
+
+        let projected_candidates =
+            collect_candidates(seed, &projected_query, NearbySearchOptions::default());
+        assert_eq!(
+            projected_candidates.len(),
+            10,
+            "two indirect radius-zero entries defer early-stop through ring one"
+        );
+        assert!(
+            projected_candidates[..2]
+                .iter()
+                .all(|candidate| !candidate.direct)
+        );
+        assert!(
+            projected_candidates[2..]
+                .iter()
+                .all(|candidate| candidate.direct)
+        );
+
+        let ring_one = ring_cells(seed, 1);
+        for (frame, expected) in ring_one.into_iter().enumerate() {
+            assert_eq!(
+                find_nearby_passable_cell(seed, &projected_query, frame as u32),
+                cell_to_u16(expected),
+                "frame modulo must walk the final direct pool in ring order"
+            );
+        }
+    }
+
+    #[test]
+    fn find_nearby_bridge_projection_leaves_nonbridge_callers_unchanged() {
+        let terrain = plateau_terrain(20, 20, 7);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut q = base_query(&terrain, &path_grid);
+        q.radius_cap = 2;
+
+        let candidates = collect_candidates((5, 5), &q, NearbySearchOptions::default());
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|candidate| candidate.direct));
+        for frame in 0..4 {
+            assert_eq!(find_nearby_passable_cell((5, 5), &q, frame), Some((5, 5)));
+        }
     }
 
     #[test]
