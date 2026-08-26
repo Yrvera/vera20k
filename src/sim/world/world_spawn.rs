@@ -16,7 +16,7 @@ use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
-use crate::rules::ruleset::{CountryIdx, RuleSet};
+use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{Animation, SequenceKind};
 use crate::sim::base_plan::pack_base_plan_cell;
 use crate::sim::base_plan_generation::{preflight_recalc, recalc_base_plan};
@@ -1907,8 +1907,7 @@ impl Simulation {
             .then(|| {
                 let country_name = house
                     .country
-                    .map(|country| self.interner.resolve(country).to_owned())
-                    .or_else(|| rules.country_name(CountryIdx(0)).map(str::to_owned));
+                    .map(|country| self.interner.resolve(country).to_owned());
                 (
                     country_name,
                     house.side_index,
