@@ -1215,7 +1215,11 @@ impl ObjectType {
             accelerates: section.get_bool("Accelerates").unwrap_or(true),
             slowdown_distance: section.get_i32("SlowdownDistance").unwrap_or(500),
             sight: section.get_i32("Sight").unwrap_or(0),
-            tech_level: section.get_i32("TechLevel").unwrap_or(-1),
+            // TechnoTypeClass ctor @ gamemd.exe 0x00711082 initializes
+            // +0x634 to 255; ReadINI preserves that current value when the
+            // key is absent. Explicit TechLevel=-1 remains a distinct
+            // civilian/unbuildable sentinel.
+            tech_level: section.get_i32("TechLevel").unwrap_or(255),
             build_time_multiplier: btm_f32,
             build_time_multiplier_x1000: (btm_f32.max(0.01) as f64 * 1000.0).round() as u64,
             owner,
@@ -2019,7 +2023,7 @@ mod tests {
         assert_eq!(obj.walk_rate, 1);
         assert_eq!(obj.idle_rate, 0);
         assert_eq!(obj.sight, 0);
-        assert_eq!(obj.tech_level, -1);
+        assert_eq!(obj.tech_level, 255);
         assert!((obj.build_time_multiplier - 1.0).abs() < f32::EPSILON);
         assert!(obj.owner.is_empty());
         assert!(obj.required_houses.is_empty());

@@ -1458,27 +1458,31 @@ mod tests {
         use crate::rules::ini_parser::IniFile;
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
-            "[InfantryTypes]\n0=E1\n1=GGI\n2=HIGH\n3=HIDDEN\n\
+            "[InfantryTypes]\n0=E1\n1=GGI\n2=HIGH\n3=HIDDEN\n4=MISSING\n\
              [E1]\nStrength=100\nTechLevel=1\n\
              [GGI]\nStrength=100\nTechLevel=5\n\
              [HIGH]\nStrength=100\nTechLevel=12\n\
-             [HIDDEN]\nStrength=100\nTechLevel=-1\n",
+             [HIDDEN]\nStrength=100\nTechLevel=-1\n\
+             [MISSING]\nStrength=100\n",
         ))
         .expect("minimal rules");
         let comparison = "00".repeat(32);
         let fixed = IniFile::from_str(&format!(
-            "[TeamTypes]\n0=PRIMARY\n1=DOWN\n2=UP\n\
+            "[TeamTypes]\n0=PRIMARY\n1=DOWN\n2=UP\n3=DEFAULTED\n\
              [PRIMARY]\nScript=S\nTaskForce=PRIMARY_TF\n\
              [DOWN]\nScript=S\nTaskForce=DOWN_TF\n\
              [UP]\nScript=S\nTaskForce=UP_TF\n\
+             [DEFAULTED]\nScript=S\nTaskForce=DEFAULTED_TF\n\
              [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
-             [TaskForces]\n0=PRIMARY_TF\n1=DOWN_TF\n2=UP_TF\n\
+             [TaskForces]\n0=PRIMARY_TF\n1=DOWN_TF\n2=UP_TF\n3=DEFAULTED_TF\n\
              [PRIMARY_TF]\n0=99,E1\n1=77,GGI\n\
              [DOWN_TF]\n0=1,HIGH\n1=1,HIDDEN\n\
              [UP_TF]\n0=1,HIDDEN\n1=1,HIGH\n\
+             [DEFAULTED_TF]\n0=1,MISSING\n\
              [AITriggerTypes]\n\
              AT=Threshold down,PRIMARY,<all>,99,0,<none>,{comparison},1,1,1,1,0,1,0,DOWN,1,1,1\n\
-             AT2=Threshold up,UP,<all>,99,0,<none>,{comparison},1,1,1,1,0,1,0,<none>,1,1,1\n"
+             AT2=Threshold up,UP,<all>,99,0,<none>,{comparison},1,1,1,1,0,1,0,<none>,1,1,1\n\
+             AT3=Missing default,DEFAULTED,<all>,99,0,<none>,{comparison},1,1,1,1,0,1,0,<none>,1,1,1\n"
         ));
         let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
         let mut interner = StringInterner::new();
@@ -1499,6 +1503,13 @@ mod tests {
             12,
             "slot order remains load-bearing because a later 12 raises the -1 sentinel's 11"
         );
+        assert_eq!(
+            vm.ai_trigger(interner.get("AT3").unwrap())
+                .unwrap()
+                .threshold,
+            255,
+            "an omitted TechLevel keeps the native constructor value in nonzero modes"
+        );
 
         let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), false);
         let mut interner = StringInterner::new();
@@ -1511,6 +1522,13 @@ mod tests {
                 .threshold,
             12,
             "TechLevel=-1 is ignored when g_GameMode is zero"
+        );
+        assert_eq!(
+            vm.ai_trigger(interner.get("AT3").unwrap())
+                .unwrap()
+                .threshold,
+            255,
+            "the missing-key constructor value is mode-independent"
         );
     }
 
