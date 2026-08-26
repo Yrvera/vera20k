@@ -2,9 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::rules::locomotor_type::MovementZone;
+use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::team_ai_ini::{AiTriggerOwnerIni, TeamAiDefinitionSource, TeamAiIniRegistry};
 use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::pathfinding::passability::combine_team_movement_zones;
 
 use super::{
     TeamAiInstallDiagnostic, TeamAiTriggerDefinition, TeamAiTriggerOwner, TeamScriptAction,
@@ -121,6 +124,9 @@ impl TeamScriptVm {
                 task_force_id,
                 priority: team_type.read_int("Priority", 7),
                 is_base_defense: team_type.read_bool("IsBaseDefense", false),
+                combined_movement_zone: MovementZone::Fly,
+                base_zone_relation_enforced: true,
+                transport_crossing_required: false,
             });
             vm.team_type_ini.insert(
                 id,
@@ -159,7 +165,15 @@ impl TeamScriptVm {
                 .entries
                 .iter()
                 .filter_map(|entry| {
-                    if rules.object(&entry.member_type).is_none() {
+                    let Some(member_type) = rules.object(&entry.member_type) else {
+                        diagnostics.push(TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                            task_force_id: task_force.id.clone(),
+                            member_type: entry.member_type.clone(),
+                            source: task_force.source,
+                        });
+                        return None;
+                    };
+                    if member_type.category == ObjectCategory::Building {
                         diagnostics.push(TeamAiInstallDiagnostic::UnknownTaskForceMember {
                             task_force_id: task_force.id.clone(),
                             member_type: entry.member_type.clone(),
@@ -270,6 +284,11 @@ impl TeamScriptVm {
             });
         }
 
+        // ScenarioClass calls 0x006F2040 once after the final AITrigger pass.
+        // Recompute from the final resolved TaskForces instead of deriving from
+        // an earlier fixed/map section read.
+        derive_team_type_zone_fields(&mut vm, interner, rules);
+
         (vm, diagnostics)
     }
 
@@ -312,6 +331,10 @@ impl TeamScriptVm {
 
     pub(crate) fn team_type_ini(&self, id: InternedId) -> Option<&TeamTypeIniMetadata> {
         self.team_type_ini.get(&id)
+    }
+
+    pub(crate) fn team_type(&self, id: InternedId) -> Option<&TeamTypeDefinition> {
+        self.team_types.get(&id)
     }
 }
 
@@ -438,6 +461,45 @@ fn trigger_task_force_tech_level(
                     }
                 })
         })
+}
+
+// gamemd.exe 0x006F2040 -> 0x006F1FA0: reset and derive the retained
+// TeamTypeClass +0xEC/+0xF0/+0xF1 fields in final registry order.
+fn derive_team_type_zone_fields(vm: &mut TeamScriptVm, interner: &StringInterner, rules: &RuleSet) {
+    for team_type_id in vm.team_type_order.clone() {
+        let Some(team_type) = vm.team_types.get(&team_type_id).copied() else {
+            continue;
+        };
+        let mut combined_movement_zone = MovementZone::Fly;
+        let mut base_zone_relation_enforced = true;
+        let mut transport_crossing_required = false;
+
+        if let Some(task_force) = vm.task_forces.get(&team_type.task_force_id) {
+            for entry in &task_force.entries {
+                let Some(member_type) = rules.object(interner.resolve(entry.member_type)) else {
+                    continue;
+                };
+                if member_type.naval {
+                    if member_type.passengers == 0 {
+                        base_zone_relation_enforced = false;
+                    } else {
+                        transport_crossing_required = true;
+                    }
+                }
+                combined_movement_zone =
+                    combine_team_movement_zones(member_type.movement_zone, combined_movement_zone);
+            }
+        }
+
+        if team_type.is_base_defense {
+            base_zone_relation_enforced = false;
+        }
+        if let Some(stored) = vm.team_types.get_mut(&team_type_id) {
+            stored.combined_movement_zone = combined_movement_zone;
+            stored.base_zone_relation_enforced = base_zone_relation_enforced;
+            stored.transport_crossing_required = transport_crossing_required;
+        }
+    }
 }
 
 fn same_install_issue(

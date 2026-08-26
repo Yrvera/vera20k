@@ -1359,7 +1359,7 @@ ConditionYellow=50%
         entity.type_ref = type_id;
         entity.category = EntityCategory::Unit;
         entity.passenger_role = PassengerRole::Transport {
-            cargo: PassengerCargo::new(obj.passengers, obj.size_limit),
+            cargo: PassengerCargo::new(obj.passengers.max(0) as u32, obj.size_limit),
         };
         sim.substrate.entities.insert(entity);
         assert!(matches!(

@@ -4,8 +4,8 @@ use super::*;
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainCell;
 use crate::rules::ini_parser::IniFile;
-use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::rules::team_ai_ini::TeamAiDefinitionSource;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::test_interner;
 use crate::sim::pathfinding::PathGrid;
@@ -159,6 +159,9 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
         task_force_id,
         priority: 0,
         is_base_defense: false,
+        combined_movement_zone: crate::rules::locomotor_type::MovementZone::Fly,
+        base_zone_relation_enforced: true,
+        transport_crossing_required: false,
     });
     let team_id = teams.create_team_from_type(
         victim_owner,

@@ -756,10 +756,10 @@ pub struct ObjectType {
     /// exclusion in Spark collision (`LaserFence=yes`).
     pub laser_fence: bool,
 
-    /// Maximum number of infantry passengers this vehicle can carry.
-    /// Parsed from `Passengers=N` in rules.ini. >0 enables `Enter` cursor
-    /// for friendly infantry hovering this transport.
-    pub passengers: u32,
+    /// Signed native `Passengers=` value at `TechnoTypeClass+0x5E0`.
+    /// Positive values allocate transport capacity; TeamType post-load zone
+    /// derivation distinguishes exact zero from every signed nonzero value.
+    pub passengers: i32,
 
     /// Maximum Size= of individual passenger allowed (SizeLimit= in rules.ini).
     /// 0 means no size restriction. SizeLimit=2 means only Size<=2 can enter.
@@ -1481,7 +1481,7 @@ impl ObjectType {
             show_occupant_pips: section.get_bool("ShowOccupantPips").unwrap_or(true),
             bridge_repair_hut: section.get_bool("BridgeRepairHut").unwrap_or(false),
             laser_fence: section.get_bool("LaserFence").unwrap_or(false),
-            passengers: section.get_i32("Passengers").unwrap_or(0).max(0) as u32,
+            passengers: section.get_i32("Passengers").unwrap_or(0),
             size_limit: section.get_i32("SizeLimit").unwrap_or(0).max(0) as u32,
             size: section
                 .get_i32("Size")
@@ -2349,6 +2349,17 @@ mod tests {
         assert!(!obj.open_topped);
         assert!(!obj.gunner);
         assert!(obj.weapon_list.is_empty());
+    }
+
+    #[test]
+    fn gsi_04_05_passengers_preserves_native_signed_nonzero_value() {
+        let ini = IniFile::from_str("[ODDTRANSPORT]\nPassengers=-3\n");
+        let obj = ObjectType::from_ini_section(
+            "ODDTRANSPORT",
+            ini.section("ODDTRANSPORT").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(obj.passengers, -3);
     }
 
     #[test]

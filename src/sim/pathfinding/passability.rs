@@ -95,6 +95,48 @@ pub fn passability_value(zone_layer: usize, reduced_zone_type: u8) -> u8 {
     MOVEMENT_ZONE_PASSABILITY[zone_layer][reduced_zone_type as usize]
 }
 
+/// Fold two movement rows using the TeamType post-load selector at
+/// `gamemd.exe 0x005889F0`.
+///
+/// Retail scores all 13 candidate rows in numeric order. A candidate is
+/// rejected when it admits a column (`1`) that either input blocks (`2`), and
+/// otherwise scores only columns admitted by both inputs and the candidate.
+/// Score-zero candidates never win and equal scores retain the lower row.
+/// The active binary's pre-table words make row `-1` absorbing; preserve that
+/// result explicitly instead of reproducing its out-of-bounds read.
+pub fn combine_team_movement_zones(first: MovementZone, second: MovementZone) -> MovementZone {
+    let (Some(first_row), Some(second_row)) = (first.matrix_row(), second.matrix_row()) else {
+        return MovementZone::Invalid;
+    };
+    let first_values = MOVEMENT_ZONE_PASSABILITY[first_row];
+    let second_values = MOVEMENT_ZONE_PASSABILITY[second_row];
+    let mut best = MovementZone::Invalid;
+    let mut best_score = 0_u8;
+
+    for (candidate_index, candidate_values) in MOVEMENT_ZONE_PASSABILITY.iter().enumerate() {
+        let mut valid = true;
+        let mut score = 0_u8;
+        for column in 0..TERRAIN_TYPE_COUNT {
+            let candidate = candidate_values[column];
+            let first = first_values[column];
+            let second = second_values[column];
+            if (first == PASS_BLOCKED || second == PASS_BLOCKED) && candidate == PASS_OK {
+                valid = false;
+                break;
+            }
+            if first == PASS_OK && second == PASS_OK && candidate == PASS_OK {
+                score += 1;
+            }
+        }
+        if valid && score > best_score {
+            best_score = score;
+            best = MovementZone::all_ground()[candidate_index];
+        }
+    }
+
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +271,72 @@ mod tests {
     fn invalid_movement_zone_is_not_passable() {
         assert_eq!(MovementZone::Invalid.matrix_row(), None);
         assert!(!is_passable_for_zone(0, MovementZone::Invalid));
+    }
+
+    #[test]
+    fn gsi_04_05_team_type_zone_combine_uses_strict_native_score_and_ties() {
+        assert_eq!(
+            combine_team_movement_zones(MovementZone::Normal, MovementZone::Fly),
+            MovementZone::Normal,
+            "Fly is the constructor-neutral row"
+        );
+        assert_eq!(
+            combine_team_movement_zones(MovementZone::CrusherAll, MovementZone::Fly),
+            MovementZone::Destroyer,
+            "identical rows 2 and 12 tie, so the lower native candidate wins"
+        );
+        assert_eq!(
+            combine_team_movement_zones(MovementZone::Fly, MovementZone::CrusherAll),
+            MovementZone::Destroyer,
+            "the verified selector is symmetric for valid rows"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_team_type_zone_combine_matches_all_invalid_pairs() {
+        let expected = [
+            (0, 10),
+            (0, 11),
+            (1, 10),
+            (1, 11),
+            (2, 10),
+            (2, 11),
+            (6, 10),
+            (6, 11),
+            (7, 10),
+            (7, 11),
+            (8, 10),
+            (8, 11),
+            (10, 12),
+            (11, 12),
+        ];
+        for first in 0..ZONE_LAYER_COUNT {
+            for second in first..ZONE_LAYER_COUNT {
+                let actual = combine_team_movement_zones(
+                    MovementZone::all_ground()[first],
+                    MovementZone::all_ground()[second],
+                ) == MovementZone::Invalid;
+                assert_eq!(
+                    actual,
+                    expected.contains(&(first, second)),
+                    "invalid-pair verdict for rows {first}+{second}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gsi_04_05_invalid_team_type_zone_is_absorbing() {
+        for &valid in MovementZone::all_ground() {
+            assert_eq!(
+                combine_team_movement_zones(MovementZone::Invalid, valid),
+                MovementZone::Invalid
+            );
+            assert_eq!(
+                combine_team_movement_zones(valid, MovementZone::Invalid),
+                MovementZone::Invalid
+            );
+        }
     }
 
     // -- LandType mapping tests --

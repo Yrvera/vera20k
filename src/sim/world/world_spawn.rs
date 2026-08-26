@@ -229,7 +229,7 @@ impl Simulation {
                 if obj.passengers > 0 {
                     ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
                         cargo: crate::sim::passenger::PassengerCargo::new(
-                            obj.passengers,
+                            obj.passengers as u32,
                             obj.size_limit,
                         ),
                     };
@@ -478,7 +478,10 @@ impl Simulation {
         // Passenger cargo for transports and garrisonable buildings.
         if obj.passengers > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
-                cargo: crate::sim::passenger::PassengerCargo::new(obj.passengers, obj.size_limit),
+                cargo: crate::sim::passenger::PassengerCargo::new(
+                    obj.passengers as u32,
+                    obj.size_limit,
+                ),
             };
         } else if obj.can_be_occupied && obj.max_number_occupants > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
@@ -633,7 +636,10 @@ impl Simulation {
         }
         if obj.passengers > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
-                cargo: crate::sim::passenger::PassengerCargo::new(obj.passengers, obj.size_limit),
+                cargo: crate::sim::passenger::PassengerCargo::new(
+                    obj.passengers as u32,
+                    obj.size_limit,
+                ),
             };
         } else if obj.can_be_occupied && obj.max_number_occupants > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {

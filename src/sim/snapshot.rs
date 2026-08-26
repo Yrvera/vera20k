@@ -296,7 +296,9 @@ use crate::sim::world::Simulation;
 // typed raw-reader field in addition to their lossless 18-token source record.
 // Bumped 98 -> 99: remove the falsely retained AITrigger token-4 scalar;
 // native requires that token but discards it before deriving `+0xB0`.
-const SNAPSHOT_VERSION: u32 = 99;
+// Bumped 99 -> 100: retain the three TeamType post-load zone-derivation
+// fields serialized inside the ordered TeamScriptVm registry.
+const SNAPSHOT_VERSION: u32 = 100;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2633,10 +2635,11 @@ mod tests {
     /// and TaskForce source provenance; 97 -> 98 adds the resolved typed
     /// AITrigger owner/object/scalar/mask/weight/difficulty payload; 98 -> 99
     /// removes the falsely retained AITrigger token-4 scalar after binary
-    /// verification proved that token is required but discarded.
+    /// verification proved that token is required but discarded; 99 -> 100
+    /// adds the three post-load TeamType zone-derivation fields.
     #[test]
-    fn phase3_team_ai_registry_snapshot_version_is_99() {
-        assert_eq!(super::SNAPSHOT_VERSION, 99);
+    fn phase3_team_ai_registry_snapshot_version_is_100() {
+        assert_eq!(super::SNAPSHOT_VERSION, 100);
     }
 
     #[test]
@@ -2699,6 +2702,10 @@ mod tests {
                 task_force_id,
                 priority: 0,
                 is_base_defense: true,
+                combined_movement_zone:
+                    crate::rules::locomotor_type::MovementZone::Amphibious,
+                base_zone_relation_enforced: false,
+                transport_crossing_required: true,
             },
         );
         sim.team_script_vm.register_ai_trigger(
@@ -2751,7 +2758,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v99 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v100 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
@@ -2778,6 +2785,16 @@ mod tests {
             restored.team_script_vm.team_type_order(),
             &[team_type_id]
         );
+        let restored_team_type = restored
+            .team_script_vm
+            .team_type(team_type_id)
+            .expect("persisted TeamType");
+        assert_eq!(
+            restored_team_type.combined_movement_zone,
+            crate::rules::locomotor_type::MovementZone::Amphibious
+        );
+        assert!(!restored_team_type.base_zone_relation_enforced);
+        assert!(restored_team_type.transport_crossing_required);
         assert_eq!(
             restored.team_script_vm.script_order(),
             &[script_id]

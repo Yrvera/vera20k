@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::rules::locomotor_type::MovementZone;
 use crate::rules::ruleset::CountryIdx;
 use crate::rules::team_ai_ini::TeamAiDefinitionSource;
 use crate::sim::command::CommandEnvelope;
@@ -62,6 +63,13 @@ pub struct TeamTypeDefinition {
     pub priority: i32,
     /// TeamType `IsBaseDefense=` byte used by responder admission/assignment.
     pub is_base_defense: bool,
+    /// `TeamTypeClass+0xEC`: post-load fold of resolved TaskForce movement rows.
+    pub combined_movement_zone: MovementZone,
+    /// `TeamTypeClass+0xF0`: whether AI eligibility compares House base zones.
+    pub base_zone_relation_enforced: bool,
+    /// `TeamTypeClass+0xF1`: require separation under the combined row and
+    /// connectivity under the native Amphibious row.
+    pub transport_crossing_required: bool,
 }
 
 /// Lossless load metadata beside the narrow TeamType fields already consumed
@@ -991,6 +999,9 @@ mod tests {
             task_force_id: task_force,
             priority: 0,
             is_base_defense: false,
+            combined_movement_zone: MovementZone::Fly,
+            base_zone_relation_enforced: true,
+            transport_crossing_required: false,
         });
         let team = vm.create_team_from_type(
             owner,
@@ -1055,6 +1066,9 @@ mod tests {
                 task_force_id: task_force,
                 priority,
                 is_base_defense,
+                combined_movement_zone: MovementZone::Fly,
+                base_zone_relation_enforced: !is_base_defense,
+                transport_crossing_required: false,
             });
             let candidates = members
                 .iter()
@@ -1154,6 +1168,9 @@ mod tests {
             task_force_id: task_force,
             priority: 0,
             is_base_defense: false,
+            combined_movement_zone: MovementZone::Fly,
+            base_zone_relation_enforced: true,
+            transport_crossing_required: false,
         });
         let team = vm.create_team_from_type(owner, team_type, &[], None, 0);
         vm.suspend_teams_for_base_defense(owner, 1, 100, 3);
@@ -1213,6 +1230,9 @@ mod tests {
             task_force_id: task_force,
             priority: 0,
             is_base_defense: false,
+            combined_movement_zone: MovementZone::Fly,
+            base_zone_relation_enforced: true,
+            transport_crossing_required: false,
         });
         let team = vm.create_team_from_type(
             owner,
@@ -1495,6 +1515,109 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_05_team_type_zone_fields_derive_from_final_resolved_task_force() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n\
+             [VehicleTypes]\n0=TANK\n1=BOAT\n2=ODDTRANSPORT\n\
+             [BuildingTypes]\n0=BLD\n\
+             [E1]\nStrength=100\nMovementZone=Infantry\n\
+             [TANK]\nStrength=100\nMovementZone=Normal\n\
+             [BOAT]\nStrength=100\nMovementZone=Water\nNaval=yes\nPassengers=0\n\
+             [ODDTRANSPORT]\nStrength=100\nMovementZone=Amphibious\nNaval=yes\nPassengers=-3\n\
+             [BLD]\nStrength=100\nMovementZone=Normal\n",
+        ))
+        .expect("zone derivation rules");
+        let fixed = IniFile::from_str(
+            "[TeamTypes]\n0=EMPTY\n1=COUNTS\n2=PURE_NAVAL\n3=TRANSPORT\n4=BASE\n5=INVALID\n6=BUILDING\n\
+             [EMPTY]\nScript=S\nTaskForce=EMPTY_TF\n\
+             [COUNTS]\nScript=S\nTaskForce=COUNTS_TF\n\
+             [PURE_NAVAL]\nScript=S\nTaskForce=NAV_TF\n\
+             [TRANSPORT]\nScript=S\nTaskForce=TRANSPORT_TF\n\
+             [BASE]\nScript=S\nTaskForce=TRANSPORT_TF\nIsBaseDefense=yes\n\
+             [INVALID]\nScript=S\nTaskForce=INVALID_TF\n\
+             [BUILDING]\nScript=S\nTaskForce=BUILDING_TF\n\
+             [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
+             [TaskForces]\n0=EMPTY_TF\n1=COUNTS_TF\n2=NAV_TF\n3=TRANSPORT_TF\n4=INVALID_TF\n5=BUILDING_TF\n\
+             [EMPTY_TF]\nGroup=-1\n\
+             [COUNTS_TF]\n0=0,E1\n1=-7,TANK\n\
+             [NAV_TF]\n0=1,BOAT\n\
+             [TRANSPORT_TF]\n0=1,ODDTRANSPORT\n\
+             [INVALID_TF]\n0=1,TANK\n1=1,BOAT\n2=1,E1\n\
+             [BUILDING_TF]\n0=1,BLD\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) =
+            TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert_eq!(
+            diagnostics,
+            vec![TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                task_force_id: "BUILDING_TF".to_string(),
+                member_type: "BLD".to_string(),
+                source: TeamAiDefinitionSource::FixedAimd,
+            }],
+            "native TaskForce lookup never searches BuildingTypeClass"
+        );
+        let definition = |name: &str| vm.team_type(interner.get(name).unwrap()).copied().unwrap();
+        let empty = definition("EMPTY");
+        assert_eq!(empty.combined_movement_zone, MovementZone::Fly);
+        assert!(empty.base_zone_relation_enforced);
+        assert!(!empty.transport_crossing_required);
+
+        let counts = definition("COUNTS");
+        assert_eq!(counts.combined_movement_zone, MovementZone::Normal);
+        assert!(counts.base_zone_relation_enforced);
+        assert_eq!(
+            vm.task_force(interner.get("COUNTS_TF").unwrap())
+                .unwrap()
+                .entries
+                .iter()
+                .map(|entry| entry.count)
+                .collect::<Vec<_>>(),
+            [0, -7],
+            "signed authored counts are retained but do not gate the native fold"
+        );
+
+        let pure_naval = definition("PURE_NAVAL");
+        assert_eq!(pure_naval.combined_movement_zone, MovementZone::Water);
+        assert!(!pure_naval.base_zone_relation_enforced);
+        assert!(!pure_naval.transport_crossing_required);
+
+        let transport = definition("TRANSPORT");
+        assert_eq!(transport.combined_movement_zone, MovementZone::Amphibious);
+        assert!(transport.base_zone_relation_enforced);
+        assert!(transport.transport_crossing_required);
+
+        let base = definition("BASE");
+        assert_eq!(base.combined_movement_zone, MovementZone::Amphibious);
+        assert!(!base.base_zone_relation_enforced);
+        assert!(
+            base.transport_crossing_required,
+            "IsBaseDefense overrides only +0xF0 after the member fold"
+        );
+
+        let invalid = definition("INVALID");
+        assert_eq!(invalid.combined_movement_zone, MovementZone::Invalid);
+        assert!(
+            !invalid.base_zone_relation_enforced,
+            "the pure-naval member still disables enforcement before the fold becomes invalid"
+        );
+        assert!(!invalid.transport_crossing_required);
+
+        let building = definition("BUILDING");
+        assert_eq!(building.combined_movement_zone, MovementZone::Fly);
+        assert!(
+            vm.task_force(interner.get("BUILDING_TF").unwrap())
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn gsi_04_05_aimd_install_retains_unfilled_reference_placeholders_and_omits_unknown_members() {
         use crate::rules::ini_parser::IniFile;
 
@@ -1667,6 +1790,40 @@ mod tests {
                 .filter(|team_type| team_type.is_base_defense)
                 .count(),
             12
+        );
+        let zone_rows = vm
+            .team_type_order()
+            .iter()
+            .map(|id| {
+                let team_type = vm.team_type(*id).expect("ordered TeamType");
+                format!(
+                    "{}\t{}\t{}\t{}\n",
+                    interner.resolve(*id),
+                    team_type.combined_movement_zone as i8,
+                    u8::from(team_type.base_zone_relation_enforced),
+                    u8::from(team_type.transport_crossing_required),
+                )
+            })
+            .collect::<String>();
+        assert_eq!(zone_rows.lines().count(), 163);
+        assert_eq!(
+            vm.team_types
+                .values()
+                .filter(|team_type| !team_type.base_zone_relation_enforced)
+                .count(),
+            19
+        );
+        assert_eq!(
+            vm.team_types
+                .values()
+                .filter(|team_type| team_type.transport_crossing_required)
+                .count(),
+            0
+        );
+        assert_eq!(
+            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(zone_rows.as_bytes()),
+            "1274426ac3e9ce7adc7d4babab8bd9a04b61519cca02a720b0d0a38cd22da2e1",
+            "all stock TeamType post-load zone fields must match the native oracle"
         );
         assert_eq!(
             vm.ai_triggers
