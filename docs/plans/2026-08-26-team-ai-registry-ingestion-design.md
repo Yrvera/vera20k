@@ -36,7 +36,7 @@ Expected touchpoints:
 Risks and mitigations:
 
 - **Order loss:** BTreeMap key order is not native registry order. Store explicit order vectors and use lookup maps only for identity resolution.
-- **Snapshot migration:** bincode encodes structs positionally, so new serialized VM fields cannot safely default from a shorter record. The initial registry payload bumped `SNAPSHOT_VERSION` 98 → 99; retaining resolved ScriptType/TaskForce provenance bumps 99 → 100. Older bytes are rejected cleanly, and v100 saves carry the complete resolved registry.
+- **Snapshot migration:** bincode encodes structs positionally, so new serialized VM fields cannot safely default from a shorter record. The initial registry payload bumped `SNAPSHOT_VERSION` 98 → 99; retaining resolved ScriptType/TaskForce provenance bumped 99 → 100; retaining the complete proven typed AITrigger payload bumps 100 → 101. Older bytes are rejected cleanly, and v101 saves carry the complete resolved registry.
 - **Hash drift:** native Team CRC excludes static type registries. Keep `TeamScriptVm::hash_state` restricted to live Teams, matching the existing verified contract. Static definitions are analogous to RuleSet: deterministic match inputs, not per-frame CRC payload.
 - **Interner drift:** install exactly once, after the existing rule-type pre-intern step and before gameplay. Intern each registry in native source order. Do not use HashMap iteration as an ID source.
 - **Wrong source composition:** never merge AIMD into Rules layers. Parse fixed AIMD and map as separate passes.
@@ -174,7 +174,7 @@ Before every Cargo command, check `cargo`/`rustc`; every command carries `--lib`
 
 All native registry order is represented by vectors. Identity lookup maps must be BTreeMap or otherwise excluded from iteration authority. The parser consumes source order only from `IniSection::keys/get_values`, never HashMap entry order. Installation happens before the first gameplay tick and consumes no RNG.
 
-Resolved definitions and order vectors serialize with `TeamScriptVm`. Because bincode cannot safely default a shorter positional struct, the initial registry payload bumped `SNAPSHOT_VERSION` 98 → 99 and the added resolved ScriptType/TaskForce provenance bumps 99 → 100; older bytes are rejected at the envelope boundary. The custom Team CRC remains unchanged because the verified native CRC includes live Team/Script instance state, not the source registry. Tests must prove save/restore retains counts, order, IDs, and definitions.
+Resolved definitions and order vectors serialize with `TeamScriptVm`. Because bincode cannot safely default a shorter positional struct, the initial registry payload bumped `SNAPSHOT_VERSION` 98 → 99, resolved ScriptType/TaskForce provenance bumped 99 → 100, and the complete proven typed AITrigger payload bumps 100 → 101; older bytes are rejected at the envelope boundary. The custom Team CRC remains unchanged because the verified native CRC includes live Team/Script instance state, not the source registry. Tests must prove save/restore retains counts, order, IDs, and definitions.
 
 ## Architectural Decisions
 

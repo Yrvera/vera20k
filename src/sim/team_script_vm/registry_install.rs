@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 
 use crate::rules::ruleset::RuleSet;
-use crate::rules::team_ai_ini::TeamAiIniRegistry;
+use crate::rules::team_ai_ini::{AiTriggerOwnerIni, TeamAiDefinitionSource, TeamAiIniRegistry};
 use crate::sim::intern::{InternedId, StringInterner};
 
 use super::{
-    TeamAiInstallDiagnostic, TeamAiTriggerDefinition, TeamScriptAction, TeamScriptDefinition,
-    TeamScriptVm, TeamTaskForceDefinition, TeamTaskForceEntry, TeamTypeDefinition,
-    TeamTypeIniMetadata,
+    TeamAiInstallDiagnostic, TeamAiTriggerDefinition, TeamAiTriggerOwner, TeamScriptAction,
+    TeamScriptDefinition, TeamScriptVm, TeamTaskForceDefinition, TeamTaskForceEntry,
+    TeamTypeDefinition, TeamTypeIniMetadata,
 };
 
 impl TeamScriptVm {
@@ -138,7 +138,7 @@ impl TeamScriptVm {
             let id = interner.intern(&trigger.id);
             let primary_team_type = resolve_trigger_team_type(
                 &trigger.id,
-                &trigger.tokens[1],
+                trigger.primary_team_type.as_deref(),
                 &vm.team_types,
                 interner,
                 &mut diagnostics,
@@ -146,24 +146,40 @@ impl TeamScriptVm {
             );
             let secondary_team_type = resolve_trigger_team_type(
                 &trigger.id,
-                &trigger.tokens[14],
+                trigger.secondary_team_type.as_deref(),
                 &vm.team_types,
                 interner,
                 &mut diagnostics,
                 trigger.source,
             );
-            vm.ai_trigger_order.push(id);
-            vm.ai_triggers.insert(
+            let owner = resolve_trigger_owner(trigger, rules, &mut diagnostics);
+            let object_type = resolve_trigger_object(trigger, rules, interner, &mut diagnostics);
+            let primary_total = trigger_task_force_total(&vm, primary_team_type);
+            let secondary_total = trigger_task_force_total(&vm, secondary_team_type);
+            let threshold = [primary_total, secondary_total]
+                .into_iter()
+                .flatten()
+                .fold(trigger.authored_threshold, i32::max);
+            vm.register_ai_trigger(TeamAiTriggerDefinition {
                 id,
-                TeamAiTriggerDefinition {
-                    id,
-                    tokens: trigger.tokens.clone(),
-                    enabled: trigger.enabled,
-                    primary_team_type,
-                    secondary_team_type,
-                    source: trigger.source,
-                },
-            );
+                tokens: trigger.tokens.clone(),
+                display_name: trigger.display_name.clone(),
+                enabled: trigger.enabled,
+                primary_team_type,
+                owner,
+                authored_threshold: trigger.authored_threshold,
+                threshold,
+                condition: trigger.condition,
+                object_type,
+                comparison_mask: trigger.comparison_mask,
+                weights: trigger.weights,
+                storage_flag_d0: trigger.storage_flag_d0,
+                storage_i32_ac: trigger.storage_i32_ac,
+                storage_flag_d1: trigger.storage_flag_d1,
+                secondary_team_type,
+                difficulty_enabled: trigger.difficulty_enabled,
+                source: trigger.source,
+            });
         }
 
         (vm, diagnostics)
@@ -202,6 +218,10 @@ impl TeamScriptVm {
         &self.ai_trigger_order
     }
 
+    pub(crate) fn ai_trigger(&self, id: InternedId) -> Option<&TeamAiTriggerDefinition> {
+        self.ai_triggers.get(&id)
+    }
+
     pub(crate) fn team_type_ini(&self, id: InternedId) -> Option<&TeamTypeIniMetadata> {
         self.team_type_ini.get(&id)
     }
@@ -221,15 +241,13 @@ fn definition_id<T>(
 
 fn resolve_trigger_team_type(
     trigger_id: &str,
-    requested: &str,
+    requested: Option<&str>,
     definitions: &BTreeMap<InternedId, TeamTypeDefinition>,
     interner: &StringInterner,
     diagnostics: &mut Vec<TeamAiInstallDiagnostic>,
-    source: crate::rules::team_ai_ini::TeamAiDefinitionSource,
+    source: TeamAiDefinitionSource,
 ) -> Option<InternedId> {
-    if requested.is_empty() || requested.starts_with('<') {
-        return None;
-    }
+    let requested = requested?;
     let resolved = interner
         .get(requested)
         .filter(|id| definitions.contains_key(id));
@@ -241,4 +259,55 @@ fn resolve_trigger_team_type(
         });
     }
     resolved
+}
+
+fn resolve_trigger_owner(
+    trigger: &crate::rules::team_ai_ini::AiTriggerTypeIni,
+    rules: &RuleSet,
+    diagnostics: &mut Vec<TeamAiInstallDiagnostic>,
+) -> Option<TeamAiTriggerOwner> {
+    match &trigger.owner {
+        AiTriggerOwnerIni::All => Some(TeamAiTriggerOwner::All),
+        AiTriggerOwnerIni::Country(owner) => rules
+            .country_index(owner)
+            .map(TeamAiTriggerOwner::Country)
+            .or_else(|| {
+                diagnostics.push(TeamAiInstallDiagnostic::UnknownAiTriggerOwner {
+                    trigger_id: trigger.id.clone(),
+                    owner: owner.clone(),
+                    source: trigger.source,
+                });
+                None
+            }),
+    }
+}
+
+fn resolve_trigger_object(
+    trigger: &crate::rules::team_ai_ini::AiTriggerTypeIni,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    diagnostics: &mut Vec<TeamAiInstallDiagnostic>,
+) -> Option<InternedId> {
+    let object_type = trigger.object_type.as_deref()?;
+    if rules.object(object_type).is_some() {
+        return Some(interner.intern(object_type));
+    }
+    diagnostics.push(TeamAiInstallDiagnostic::UnknownAiTriggerObject {
+        trigger_id: trigger.id.clone(),
+        object_type: object_type.to_string(),
+        source: trigger.source,
+    });
+    None
+}
+
+fn trigger_task_force_total(vm: &TeamScriptVm, team_type_id: Option<InternedId>) -> Option<i32> {
+    team_type_id
+        .and_then(|id| vm.team_types.get(&id))
+        .and_then(|team_type| vm.task_forces.get(&team_type.task_force_id))
+        .map(|task_force| {
+            task_force
+                .entries
+                .iter()
+                .fold(0_i32, |total, entry| total.wrapping_add(entry.count))
+        })
 }

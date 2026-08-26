@@ -292,7 +292,9 @@ use crate::sim::world::Simulation;
 // Bumped 96 -> 97: resolved ScriptType and TaskForce records now persist their
 // fixed-AIMD/scenario provenance. Bincode encodes structs positionally, so serde
 // defaults cannot safely decode the shorter v96 record.
-const SNAPSHOT_VERSION: u32 = 97;
+// Bumped 97 -> 98: resolved AITriggerType records now persist every proven
+// typed raw-reader field in addition to their lossless 18-token source record.
+const SNAPSHOT_VERSION: u32 = 98;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2626,10 +2628,11 @@ mod tests {
     /// 94 -> 95 adds TeamType priority/base-defence metadata and TeamClass
     /// response latches/timer state; 95 -> 96 adds the ordered AIMD/map static
     /// registries retained by TeamScriptVm; 96 -> 97 adds resolved ScriptType
-    /// and TaskForce source provenance.
+    /// and TaskForce source provenance; 97 -> 98 adds the resolved typed
+    /// AITrigger owner/object/scalar/mask/weight/difficulty payload.
     #[test]
-    fn phase3_team_ai_registry_snapshot_version_is_97() {
-        assert_eq!(super::SNAPSHOT_VERSION, 97);
+    fn phase3_team_ai_registry_snapshot_version_is_98() {
+        assert_eq!(super::SNAPSHOT_VERSION, 98);
     }
 
     #[test]
@@ -2662,6 +2665,7 @@ mod tests {
         let script_id = sim.interner.intern("BaseDefenseScript");
         let task_force_id = sim.interner.intern("BaseDefenseTaskForce");
         let team_type_id = sim.interner.intern("BaseDefenseTeamType");
+        let ai_trigger_id = sim.interner.intern("BaseDefenseAITrigger");
         let member_type = sim.interner.intern("E1");
         sim.team_script_vm.register_script(
             crate::sim::team_script_vm::TeamScriptDefinition {
@@ -2693,6 +2697,34 @@ mod tests {
                 is_base_defense: true,
             },
         );
+        sim.team_script_vm.register_ai_trigger(
+            crate::sim::team_script_vm::TeamAiTriggerDefinition {
+                id: ai_trigger_id,
+                tokens: std::array::from_fn(|index| format!("raw-token-{index}")),
+                display_name: "Base defense trigger".to_string(),
+                enabled: true,
+                primary_team_type: Some(team_type_id),
+                owner: Some(crate::sim::team_script_vm::TeamAiTriggerOwner::Country(
+                    crate::rules::ruleset::CountryIdx(4),
+                )),
+                authored_threshold: -3,
+                threshold: 7,
+                condition: 6,
+                object_type: Some(member_type),
+                comparison_mask: std::array::from_fn(|index| index as u8),
+                weights: [
+                    crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits()),
+                    crate::util::native_x87::NativeF64Bits::from_bits(2.5_f64.to_bits()),
+                    crate::util::native_x87::NativeF64Bits::from_bits(3.5_f64.to_bits()),
+                ],
+                storage_flag_d0: true,
+                storage_i32_ac: -9,
+                storage_flag_d1: false,
+                secondary_team_type: None,
+                difficulty_enabled: [true, false, true],
+                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
+            },
+        );
         let team_id = sim.team_script_vm.create_team_from_type(
             owner,
             team_type_id,
@@ -2716,7 +2748,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v97 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v98 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
@@ -2738,7 +2770,7 @@ mod tests {
         assert_eq!(response.cooldown_duration_frames, 225);
         let team = restored.team_script_vm.team(team_id).unwrap();
         assert!(team.members().is_empty());
-        assert_eq!(restored.team_script_vm.registry_counts(), (1, 1, 1, 0));
+        assert_eq!(restored.team_script_vm.registry_counts(), (1, 1, 1, 1));
         assert_eq!(
             restored.team_script_vm.team_type_order(),
             &[team_type_id]
@@ -2750,6 +2782,10 @@ mod tests {
         assert_eq!(
             restored.team_script_vm.task_force_order(),
             &[task_force_id]
+        );
+        assert_eq!(
+            restored.team_script_vm.ai_trigger_order(),
+            &[ai_trigger_id]
         );
         let restored_script = restored
             .team_script_vm
@@ -2776,6 +2812,42 @@ mod tests {
         assert_eq!(
             restored_task_force.group,
             7
+        );
+        let restored_trigger = restored
+            .team_script_vm
+            .ai_trigger(ai_trigger_id)
+            .expect("persisted typed AITriggerType");
+        assert_eq!(restored_trigger.tokens[11], "raw-token-11");
+        assert_eq!(restored_trigger.display_name, "Base defense trigger");
+        assert!(restored_trigger.enabled);
+        assert_eq!(restored_trigger.primary_team_type, Some(team_type_id));
+        assert_eq!(
+            restored_trigger.owner,
+            Some(crate::sim::team_script_vm::TeamAiTriggerOwner::Country(
+                crate::rules::ruleset::CountryIdx(4)
+            ))
+        );
+        assert_eq!(restored_trigger.authored_threshold, -3);
+        assert_eq!(restored_trigger.threshold, 7);
+        assert_eq!(restored_trigger.condition, 6);
+        assert_eq!(restored_trigger.object_type, Some(member_type));
+        assert_eq!(restored_trigger.comparison_mask[31], 31);
+        assert_eq!(
+            restored_trigger.weights,
+            [
+                crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits()),
+                crate::util::native_x87::NativeF64Bits::from_bits(2.5_f64.to_bits()),
+                crate::util::native_x87::NativeF64Bits::from_bits(3.5_f64.to_bits()),
+            ]
+        );
+        assert!(restored_trigger.storage_flag_d0);
+        assert_eq!(restored_trigger.storage_i32_ac, -9);
+        assert!(!restored_trigger.storage_flag_d1);
+        assert_eq!(restored_trigger.secondary_team_type, None);
+        assert_eq!(restored_trigger.difficulty_enabled, [true, false, true]);
+        assert_eq!(
+            restored_trigger.source,
+            crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd
         );
         assert_eq!(
             team.response_suspension_state(),

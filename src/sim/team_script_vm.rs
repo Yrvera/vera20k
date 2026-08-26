@@ -9,9 +9,11 @@ use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::rules::ruleset::CountryIdx;
 use crate::rules::team_ai_ini::TeamAiDefinitionSource;
 use crate::sim::command::CommandEnvelope;
 use crate::sim::intern::InternedId;
+use crate::util::native_x87::NativeF64Bits;
 
 mod registry_install;
 
@@ -85,15 +87,35 @@ impl Default for TeamTypeIniMetadata {
     }
 }
 
-/// One lossless 18-token AITriggerType record. Selector semantics remain a
-/// later evidence-gated stage; source order and references are closed here.
+/// Native AITrigger owner mode retained by the Stage-A registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TeamAiTriggerOwner {
+    All,
+    Country(CountryIdx),
+}
+
+/// One resolved AITriggerType record. Selector semantics remain a later
+/// evidence-gated stage; this retains every field whose storage is proven by
+/// the active YR raw reader at `0x0041F580` plus the lossless 18-token source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamAiTriggerDefinition {
     pub id: InternedId,
     pub tokens: [String; 18],
+    pub display_name: String,
     pub enabled: bool,
     pub primary_team_type: Option<InternedId>,
+    pub owner: Option<TeamAiTriggerOwner>,
+    pub authored_threshold: i32,
+    pub threshold: i32,
+    pub condition: i32,
+    pub object_type: Option<InternedId>,
+    pub comparison_mask: [u8; 32],
+    pub weights: [NativeF64Bits; 3],
+    pub storage_flag_d0: bool,
+    pub storage_i32_ac: i32,
+    pub storage_flag_d1: bool,
     pub secondary_team_type: Option<InternedId>,
+    pub difficulty_enabled: [bool; 3],
     pub source: TeamAiDefinitionSource,
 }
 
@@ -119,6 +141,16 @@ pub enum TeamAiInstallDiagnostic {
         team_type_id: String,
         source: TeamAiDefinitionSource,
     },
+    UnknownAiTriggerOwner {
+        trigger_id: String,
+        owner: String,
+        source: TeamAiDefinitionSource,
+    },
+    UnknownAiTriggerObject {
+        trigger_id: String,
+        object_type: String,
+        source: TeamAiDefinitionSource,
+    },
 }
 
 impl TeamAiInstallDiagnostic {
@@ -127,7 +159,9 @@ impl TeamAiInstallDiagnostic {
             Self::UnknownTaskForceMember { source, .. }
             | Self::MissingTeamTypeScript { source, .. }
             | Self::MissingTeamTypeTaskForce { source, .. }
-            | Self::MissingAiTriggerTeamType { source, .. } => *source,
+            | Self::MissingAiTriggerTeamType { source, .. }
+            | Self::UnknownAiTriggerOwner { source, .. }
+            | Self::UnknownAiTriggerObject { source, .. } => *source,
         }
     }
 
@@ -306,6 +340,13 @@ impl TeamScriptVm {
         }
         self.team_type_ini.entry(definition.id).or_default();
         self.team_types.insert(definition.id, definition);
+    }
+
+    pub fn register_ai_trigger(&mut self, definition: TeamAiTriggerDefinition) {
+        if !self.ai_triggers.contains_key(&definition.id) {
+            self.ai_trigger_order.push(definition.id);
+        }
+        self.ai_triggers.insert(definition.id, definition);
     }
 
     /// Install an already-admitted TeamClass member list.
@@ -1270,17 +1311,18 @@ mod tests {
         use crate::rules::ini_parser::IniFile;
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
-            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+            "[Countries]\n0=British\n[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
         ))
         .expect("minimal rules");
-        let fixed = IniFile::from_str(
+        let comparison = "0100000003000000000000000000000000000000000000000000000000000000";
+        let fixed = IniFile::from_str(&format!(
             "[TeamTypes]\n0=TT1\n1=TT2\n\
              [TT1]\nScript=S1\nTaskForce=TF1\nPriority=5\nAutocreate=yes\nIsBaseDefense=yes\n\
              [TT2]\nScript=S1\nTaskForce=TF1\nPriority=7\n\
              [ScriptTypes]\n0=S1\n[S1]\n0=-1,9\n\
              [TaskForces]\n0=TF1\n[TF1]\n0=-2,E1\nGroup=3\n\
-             [AITriggerTypes]\nAT=Trigger,TT1,<all>,2,4,<none>,00,40,10,40,1,0,1,0,TT2,1,1,1\n",
-        );
+             [AITriggerTypes]\nAT=Trigger,TT1,British,2,4,E1,{comparison},40,10,40,1,0,1,0,TT2,1,0,1\n"
+        ));
         let map = IniFile::from_str(
             "[TaskForces]\n0=TF1\n[TF1]\n0=-2,E1\nGroup=9\n",
         );
@@ -1341,12 +1383,43 @@ mod tests {
             vm.task_forces[&interner.get("TF1").unwrap()].source,
             TeamAiDefinitionSource::Scenario
         );
+        let trigger = vm
+            .ai_trigger(interner.get("AT").unwrap())
+            .expect("typed AITrigger");
+        assert_eq!(trigger.display_name, "Trigger");
+        assert_eq!(trigger.primary_team_type, Some(tt1));
+        assert_eq!(
+            trigger.owner,
+            Some(TeamAiTriggerOwner::Country(CountryIdx(0)))
+        );
+        assert_eq!(trigger.authored_threshold, 2);
+        assert_eq!(trigger.threshold, 2);
+        assert_eq!(trigger.condition, 4);
+        assert_eq!(trigger.object_type, interner.get("E1"));
+        assert_eq!(&trigger.comparison_mask[..5], &[1, 0, 0, 0, 3]);
+        assert_eq!(
+            trigger.weights,
+            [
+                NativeF64Bits::from_bits(40.0_f64.to_bits()),
+                NativeF64Bits::from_bits(10.0_f64.to_bits()),
+                NativeF64Bits::from_bits(40.0_f64.to_bits()),
+            ]
+        );
+        assert!(trigger.storage_flag_d0);
+        assert_eq!(trigger.storage_i32_ac, 1);
+        assert!(!trigger.storage_flag_d1);
+        assert_eq!(trigger.secondary_team_type, interner.get("TT2"));
+        assert_eq!(trigger.difficulty_enabled, [true, false, true]);
 
         let encoded = serde_json::to_string(&vm).unwrap();
         let restored: TeamScriptVm = serde_json::from_str(&encoded).unwrap();
         assert_eq!(restored.registry_counts(), vm.registry_counts());
         assert_eq!(restored.team_type_order(), vm.team_type_order());
         assert_eq!(restored.ai_trigger_order(), vm.ai_trigger_order());
+        assert_eq!(
+            restored.ai_trigger(interner.get("AT").unwrap()),
+            vm.ai_trigger(interner.get("AT").unwrap())
+        );
         assert_eq!(restored.task_force(interner.get("TF1").unwrap()).unwrap().group, 9);
         assert_eq!(
             restored.scripts[&interner.get("S1").unwrap()].source,
@@ -1359,6 +1432,35 @@ mod tests {
                 .source,
             TeamAiDefinitionSource::Scenario
         );
+    }
+
+    #[test]
+    fn gsi_04_05_ai_trigger_threshold_is_raised_to_each_referenced_task_force_total() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+        ))
+        .expect("minimal rules");
+        let comparison = "00".repeat(32);
+        let fixed = IniFile::from_str(&format!(
+            "[TeamTypes]\n0=PRIMARY\n1=SECONDARY\n\
+             [PRIMARY]\nScript=S\nTaskForce=SMALL\n\
+             [SECONDARY]\nScript=S\nTaskForce=LARGE\n\
+             [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
+             [TaskForces]\n0=SMALL\n1=LARGE\n\
+             [SMALL]\n0=2,E1\n[LARGE]\n0=3,E1\n1=2,E1\n\
+             [AITriggerTypes]\nAT=Threshold,PRIMARY,<all>,3,0,<none>,{comparison},1,1,1,1,0,1,0,SECONDARY,1,1,1\n"
+        ));
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) =
+            TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let trigger = vm.ai_trigger(interner.get("AT").unwrap()).unwrap();
+        assert_eq!(trigger.authored_threshold, 3);
+        assert_eq!(trigger.threshold, 5);
     }
 
     #[test]
@@ -1453,6 +1555,49 @@ mod tests {
                 .count(),
             12
         );
+        assert_eq!(
+            vm.ai_triggers
+                .values()
+                .filter(|trigger| { matches!(trigger.owner, Some(TeamAiTriggerOwner::Country(_))) })
+                .count(),
+            10
+        );
+        assert_eq!(
+            vm.ai_triggers
+                .values()
+                .filter(|trigger| trigger.object_type.is_some())
+                .count(),
+            109
+        );
+        assert_eq!(
+            vm.ai_triggers
+                .values()
+                .filter(|trigger| trigger.secondary_team_type.is_some())
+                .count(),
+            49
+        );
+        let anti_nuke = vm
+            .ai_trigger(interner.get("0CAD0DCC-G").expect("stock trigger identity"))
+            .expect("resolved stock Allied Anti-Nuke trigger");
+        assert_eq!(anti_nuke.display_name, "Allied Anti-Nuke 1");
+        assert_eq!(anti_nuke.owner, Some(TeamAiTriggerOwner::All));
+        assert_eq!(anti_nuke.authored_threshold, 9);
+        assert_eq!(anti_nuke.threshold, 9);
+        assert_eq!(anti_nuke.condition, 0);
+        assert_eq!(anti_nuke.object_type, interner.get("NAMISL"));
+        assert_eq!(&anti_nuke.comparison_mask[..5], &[1, 0, 0, 0, 3]);
+        assert_eq!(
+            anti_nuke.weights,
+            [
+                NativeF64Bits::from_bits(70.0_f64.to_bits()),
+                NativeF64Bits::from_bits(10.0_f64.to_bits()),
+                NativeF64Bits::from_bits(70.0_f64.to_bits()),
+            ]
+        );
+        assert!(anti_nuke.storage_flag_d0);
+        assert_eq!(anti_nuke.storage_i32_ac, 1);
+        assert!(!anti_nuke.storage_flag_d1);
+        assert_eq!(anti_nuke.difficulty_enabled, [false, true, true]);
         assert!(vm.teams.is_empty());
     }
 }

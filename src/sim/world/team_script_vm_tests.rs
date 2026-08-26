@@ -17,6 +17,10 @@ fn action(action_id: i32, argument: i32) -> TeamScriptAction {
     }
 }
 
+fn zero_ai_trigger_comparison() -> String {
+    "00".repeat(32)
+}
+
 fn install_wait_then_advance_fixture(sim: &mut Simulation, members: Vec<u64>) -> u64 {
     let owner = sim.interner.intern("Americans");
     let opening = sim.interner.intern("TEAM_OPENING");
@@ -95,12 +99,13 @@ fn production_install_boundary_resolves_aimd_without_creating_a_team() {
         "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
     ))
     .expect("minimal rules");
-    let aimd = IniFile::from_str(
+    let comparison = zero_ai_trigger_comparison();
+    let aimd = IniFile::from_str(&format!(
         "[TeamTypes]\n0=TT\n[TT]\nScript=S\nTaskForce=F\n\
          [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
          [TaskForces]\n0=F\n[F]\n0=1,E1\n\
-         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,00,40,10,40,1,0,1,0,<none>,1,1,1\n",
-    );
+         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,{comparison},40,10,40,1,0,1,0,<none>,1,1,1\n"
+    ));
     let registry = TeamAiIniRegistry::from_sources(&aimd, &IniFile::from_str(""), true);
     let mut sim = Simulation::new();
     sim.intern_rule_type_ids(&rules);
@@ -122,12 +127,13 @@ fn production_install_refuses_fixed_resolution_loss_but_keeps_scenario_omissions
         "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
     ))
     .expect("minimal rules");
-    let fixed_with_unknown = IniFile::from_str(
+    let comparison = zero_ai_trigger_comparison();
+    let fixed_with_unknown = IniFile::from_str(&format!(
         "[TeamTypes]\n0=TT\n[TT]\nScript=S\nTaskForce=F\n\
          [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
          [TaskForces]\n0=F\n[F]\n0=1,GHOST\n\
-         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,00,40,10,40,1,0,1,0,<none>,1,1,1\n",
-    );
+         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,{comparison},40,10,40,1,0,1,0,<none>,1,1,1\n"
+    ));
     let fixed_registry =
         TeamAiIniRegistry::from_sources(&fixed_with_unknown, &IniFile::from_str(""), true);
     assert!(fixed_registry.fixed_source_is_complete());
@@ -152,12 +158,12 @@ fn production_install_refuses_fixed_resolution_loss_but_keeps_scenario_omissions
         "a fixed-origin resolution refusal must not install a partial registry"
     );
 
-    let clean_fixed = IniFile::from_str(
+    let clean_fixed = IniFile::from_str(&format!(
         "[TeamTypes]\n0=TT\n[TT]\nScript=S\nTaskForce=F\n\
          [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
          [TaskForces]\n0=F\n[F]\n0=1,E1\n\
-         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,00,40,10,40,1,0,1,0,<none>,1,1,1\n",
-    );
+         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,{comparison},40,10,40,1,0,1,0,<none>,1,1,1\n"
+    ));
     let scenario = IniFile::from_str(
         "[TaskForces]\n0=MAP_F\n[MAP_F]\n0=1,GHOST\n",
     );
@@ -183,5 +189,42 @@ fn production_install_refuses_fixed_resolution_loss_but_keeps_scenario_omissions
         scenario_sim.team_script_vm.registry_counts(),
         (2, 1, 1, 1),
         "scenario-origin omissions remain diagnosed, nonfatal overlays"
+    );
+}
+
+#[test]
+fn production_install_refuses_unknown_fixed_ai_trigger_object() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+    ))
+    .expect("minimal rules");
+    let comparison = zero_ai_trigger_comparison();
+    let fixed = IniFile::from_str(&format!(
+        "[TeamTypes]\n0=TT\n[TT]\nScript=S\nTaskForce=F\n\
+         [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
+         [TaskForces]\n0=F\n[F]\n0=1,E1\n\
+         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,GHOST,{comparison},40,10,40,1,0,1,0,<none>,1,1,1\n"
+    ));
+    let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+    assert!(registry.fixed_source_is_complete());
+    let mut sim = Simulation::new();
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+
+    let diagnostics = sim.install_team_ai_registry(&registry, &rules);
+
+    assert_eq!(
+        diagnostics,
+        vec![TeamAiInstallDiagnostic::UnknownAiTriggerObject {
+            trigger_id: "A".to_string(),
+            object_type: "GHOST".to_string(),
+            source: TeamAiDefinitionSource::FixedAimd,
+        }]
+    );
+    assert!(diagnostics[0].is_fixed_source_refusal());
+    assert_eq!(
+        sim.team_script_vm.registry_counts(),
+        (0, 0, 0, 0),
+        "unknown fixed AITrigger token-6 references must refuse the whole registry install"
     );
 }

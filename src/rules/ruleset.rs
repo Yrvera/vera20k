@@ -126,7 +126,7 @@ impl CountryRules {
 }
 
 /// Stable source-order identity in the `[Countries]` registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CountryIdx(pub u16);
 
 /// Stable source-order identity in the `[Sides]` registry.

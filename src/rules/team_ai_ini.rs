@@ -9,7 +9,8 @@
 use std::collections::BTreeMap;
 
 use crate::rules::ini_parser::{IniFile, IniSection};
-use crate::rules::ini_value::{atoi_lenient, parse_read_int_value};
+use crate::rules::ini_value::{atoi_lenient, parse_read_double, parse_read_int_value};
+use crate::util::native_x87::NativeF64Bits;
 
 const SCRIPT_ACTION_CAPACITY: usize = 50;
 const TASK_FORCE_CAPACITY: usize = 6;
@@ -105,9 +106,33 @@ impl TeamTypeIni {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiTriggerOwnerIni {
+    All,
+    Country(String),
+}
+
+/// One AITriggerType after the fixed/map replacement pass.
+///
+/// The typed fields are limited to storage proven in the active YR raw reader
+/// at `0x0041F580`. `tokens` remains authoritative for token 12 and for the
+/// still-untraced semantic names of tokens 11 through 14.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiTriggerTypeIni {
     pub id: String,
     pub tokens: [String; AI_TRIGGER_TOKEN_COUNT],
+    pub display_name: String,
+    pub primary_team_type: Option<String>,
+    pub owner: AiTriggerOwnerIni,
+    pub authored_threshold: i32,
+    pub condition: i32,
+    pub object_type: Option<String>,
+    pub comparison_mask: [u8; 32],
+    pub weights: [NativeF64Bits; 3],
+    pub storage_flag_d0: bool,
+    pub storage_i32_ac: i32,
+    pub storage_flag_d1: bool,
+    pub secondary_team_type: Option<String>,
+    pub difficulty_enabled: [bool; 3],
     pub enabled: bool,
     pub source: TeamAiDefinitionSource,
 }
@@ -136,6 +161,11 @@ pub enum TeamAiIniDiagnostic {
         token_count: usize,
         source: TeamAiDefinitionSource,
     },
+    MalformedAiTriggerComparison {
+        trigger_id: String,
+        value: String,
+        source: TeamAiDefinitionSource,
+    },
     UnknownAiTriggerEnable {
         trigger_id: String,
     },
@@ -147,7 +177,8 @@ impl TeamAiIniDiagnostic {
             Self::MissingDefinitionSection { source, .. }
             | Self::MalformedScriptAction { source, .. }
             | Self::MalformedTaskForceEntry { source, .. }
-            | Self::MalformedAiTrigger { source, .. } => *source,
+            | Self::MalformedAiTrigger { source, .. }
+            | Self::MalformedAiTriggerComparison { source, .. } => *source,
             Self::UnknownAiTriggerEnable { .. } => TeamAiDefinitionSource::Scenario,
         }
     }
@@ -379,24 +410,57 @@ impl TeamAiIniRegistry {
                     });
                 continue;
             };
+            let Some(comparison_mask) = parse_ai_trigger_comparison(&tokens[6]) else {
+                self.diagnostics
+                    .push(TeamAiIniDiagnostic::MalformedAiTriggerComparison {
+                        trigger_id: id.to_string(),
+                        value: tokens[6].clone(),
+                        source,
+                    });
+                continue;
+            };
             let identity = canonical_identity(id);
-            if let Some(position) = index.get(&identity).copied() {
-                let enabled = self.ai_triggers[position].enabled;
-                self.ai_triggers[position] = AiTriggerTypeIni {
-                    id: id.to_string(),
-                    tokens,
-                    enabled,
-                    source,
-                };
-            } else {
-                let enabled = source == TeamAiDefinitionSource::FixedAimd;
-                index.insert(identity, self.ai_triggers.len());
-                self.ai_triggers.push(AiTriggerTypeIni {
-                    id: id.to_string(),
-                    tokens,
-                    enabled,
-                    source,
+            let enabled = index
+                .get(&identity)
+                .map_or(source == TeamAiDefinitionSource::FixedAimd, |position| {
+                    self.ai_triggers[*position].enabled
                 });
+            let definition = AiTriggerTypeIni {
+                id: id.to_string(),
+                display_name: tokens[0].clone(),
+                primary_team_type: optional_reference(&tokens[1]),
+                owner: if tokens[2].eq_ignore_ascii_case("<all>") {
+                    AiTriggerOwnerIni::All
+                } else {
+                    AiTriggerOwnerIni::Country(tokens[2].clone())
+                },
+                authored_threshold: atoi_lenient(&tokens[3]),
+                condition: atoi_lenient(&tokens[4]),
+                object_type: optional_reference(&tokens[5]),
+                comparison_mask,
+                weights: [
+                    NativeF64Bits::from_bits(parse_read_double(&tokens[7]).to_bits()),
+                    NativeF64Bits::from_bits(parse_read_double(&tokens[8]).to_bits()),
+                    NativeF64Bits::from_bits(parse_read_double(&tokens[9]).to_bits()),
+                ],
+                storage_flag_d0: read_bool(&tokens[10], false),
+                storage_i32_ac: atoi_lenient(&tokens[12]),
+                storage_flag_d1: read_bool(&tokens[13], false),
+                secondary_team_type: optional_reference(&tokens[14]),
+                difficulty_enabled: [
+                    read_bool(&tokens[15], true),
+                    read_bool(&tokens[16], true),
+                    read_bool(&tokens[17], true),
+                ],
+                tokens,
+                enabled,
+                source,
+            };
+            if let Some(position) = index.get(&identity).copied() {
+                self.ai_triggers[position] = definition;
+            } else {
+                index.insert(identity, self.ai_triggers.len());
+                self.ai_triggers.push(definition);
             }
         }
     }
@@ -427,6 +491,34 @@ impl TeamAiIniRegistry {
 fn valid_identity(id: &str) -> bool {
     let id = id.trim();
     !id.is_empty() && !id.starts_with('<')
+}
+
+fn optional_reference(raw: &str) -> Option<String> {
+    valid_identity(raw).then(|| raw.trim().to_string())
+}
+
+fn parse_ai_trigger_comparison(raw: &str) -> Option<[u8; 32]> {
+    let bytes = raw.trim().as_bytes();
+    if bytes.len() != 64 {
+        return None;
+    }
+
+    let mut decoded = [0_u8; 32];
+    for (index, slot) in decoded.iter_mut().enumerate() {
+        let high = hex_nibble(bytes[index * 2])?;
+        let low = hex_nibble(bytes[index * 2 + 1])?;
+        *slot = (high << 4) | low;
+    }
+    Some(decoded)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn canonical_identity(id: &str) -> String {
@@ -472,9 +564,26 @@ mod tests {
     use super::*;
 
     fn eighteen_tokens(name: &str, primary: &str) -> String {
+        let comparison = "00".repeat(32);
         [
-            name, primary, "<all>", "2", "4", "<none>", "00", "40.0", "10.0",
-            "40.0", "1", "0", "1", "0", "<none>", "1", "1", "1",
+            name,
+            primary,
+            "<all>",
+            "2",
+            "4",
+            "<none>",
+            comparison.as_str(),
+            "40.0",
+            "10.0",
+            "40.0",
+            "1",
+            "0",
+            "1",
+            "0",
+            "<none>",
+            "1",
+            "1",
+            "1",
         ]
         .join(",")
     }
@@ -606,6 +715,27 @@ mod tests {
         assert_eq!(loaded.ai_triggers.len(), 2);
         assert!(!loaded.ai_triggers[0].enabled);
         assert!(loaded.ai_triggers[1].enabled);
+        let trigger = &loaded.ai_triggers[0];
+        assert_eq!(trigger.display_name, "Map override");
+        assert_eq!(trigger.primary_team_type.as_deref(), Some("FIRST"));
+        assert_eq!(trigger.owner, AiTriggerOwnerIni::All);
+        assert_eq!(trigger.authored_threshold, 2);
+        assert_eq!(trigger.condition, 4);
+        assert_eq!(trigger.object_type, None);
+        assert_eq!(trigger.comparison_mask, [0; 32]);
+        assert_eq!(
+            trigger.weights,
+            [
+                NativeF64Bits::from_bits(40.0_f64.to_bits()),
+                NativeF64Bits::from_bits(10.0_f64.to_bits()),
+                NativeF64Bits::from_bits(40.0_f64.to_bits()),
+            ]
+        );
+        assert!(trigger.storage_flag_d0);
+        assert_eq!(trigger.storage_i32_ac, 1);
+        assert!(!trigger.storage_flag_d1);
+        assert_eq!(trigger.secondary_team_type, None);
+        assert_eq!(trigger.difficulty_enabled, [true, true, true]);
         assert!(loaded.diagnostics.is_empty());
 
         let skirmish = TeamAiIniRegistry::from_sources(&fixed, &map, true);
@@ -657,6 +787,30 @@ mod tests {
     }
 
     #[test]
+    fn malformed_ai_trigger_comparison_is_a_source_tagged_refusal() {
+        let fixed = IniFile::from_str(&format!(
+            "[AITriggerTypes]\nBAD={}\n",
+            [
+                "Bad", "<none>", "<all>", "0", "0", "<none>", "0g", "1", "1", "1", "1", "0", "1",
+                "0", "<none>", "1", "1", "1",
+            ]
+            .join(",")
+        ));
+        let loaded = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), false);
+
+        assert!(loaded.ai_triggers.is_empty());
+        assert_eq!(
+            loaded.diagnostics,
+            vec![TeamAiIniDiagnostic::MalformedAiTriggerComparison {
+                trigger_id: "BAD".to_string(),
+                value: "0g".to_string(),
+                source: TeamAiDefinitionSource::FixedAimd,
+            }]
+        );
+        assert!(!loaded.fixed_source_is_complete());
+    }
+
+    #[test]
     fn sentinel_task_force_member_is_a_source_tagged_refusal() {
         let fixed = IniFile::from_str(
             "[TaskForces]\n0=BAD_FORCE\n[BAD_FORCE]\n0=1,<none>\n",
@@ -691,6 +845,55 @@ mod tests {
         assert_eq!(loaded.team_types.len(), 163);
         assert_eq!(loaded.ai_triggers.len(), 165);
         assert!(loaded.ai_triggers.iter().all(|trigger| trigger.tokens.len() == 18));
+        assert_eq!(
+            loaded
+                .ai_triggers
+                .iter()
+                .filter(|trigger| matches!(trigger.owner, AiTriggerOwnerIni::Country(_)))
+                .count(),
+            10
+        );
+        assert_eq!(
+            loaded
+                .ai_triggers
+                .iter()
+                .filter(|trigger| trigger.object_type.is_some())
+                .count(),
+            109
+        );
+        assert_eq!(
+            loaded
+                .ai_triggers
+                .iter()
+                .filter(|trigger| trigger.secondary_team_type.is_some())
+                .count(),
+            49
+        );
+        let anti_nuke = loaded
+            .ai_triggers
+            .iter()
+            .find(|trigger| trigger.id == "0CAD0DCC-G")
+            .expect("stock Allied Anti-Nuke trigger");
+        assert_eq!(anti_nuke.display_name, "Allied Anti-Nuke 1");
+        assert_eq!(anti_nuke.primary_team_type.as_deref(), Some("08DA125C-G"));
+        assert_eq!(anti_nuke.owner, AiTriggerOwnerIni::All);
+        assert_eq!(anti_nuke.authored_threshold, 9);
+        assert_eq!(anti_nuke.condition, 0);
+        assert_eq!(anti_nuke.object_type.as_deref(), Some("NAMISL"));
+        assert_eq!(&anti_nuke.comparison_mask[..5], &[1, 0, 0, 0, 3]);
+        assert_eq!(
+            anti_nuke.weights,
+            [
+                NativeF64Bits::from_bits(70.0_f64.to_bits()),
+                NativeF64Bits::from_bits(10.0_f64.to_bits()),
+                NativeF64Bits::from_bits(70.0_f64.to_bits()),
+            ]
+        );
+        assert!(anti_nuke.storage_flag_d0);
+        assert_eq!(anti_nuke.storage_i32_ac, 1);
+        assert!(!anti_nuke.storage_flag_d1);
+        assert_eq!(anti_nuke.secondary_team_type.as_deref(), Some("0CB246CC-G"));
+        assert_eq!(anti_nuke.difficulty_enabled, [false, true, true]);
         assert_eq!(
             loaded
                 .team_types
