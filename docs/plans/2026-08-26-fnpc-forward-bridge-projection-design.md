@@ -9,49 +9,60 @@ ring, gate, ordering, and selection behavior.
 ## Architecture Context
 
 `src/sim/find_nearby_cell.rs` owns deterministic FNPC search. Candidate validation feeds
-`collect_candidates`, which calls `is_direct_candidate` per accepted coordinate and retains the
-result for collection diagnostics and early-stop. At inspected base revision `eeb2515e`, Rust
-reuses that cached value for final pool partition, while native invokes `FUN_006D6410` again
-there. Bridge-aware-zone queries
-intentionally arm early-stop without the collection projection result while final selection still
-re-runs projection.
+`collect_candidates`. Ordinary collection invokes the projection per accepted coordinate for
+per-ring early-stop; bridge-aware-zone collection skips it entirely and lets any accepted
+candidate arm early-stop. Final selection independently invokes the projection for every stored
+candidate in order. At inspected base revision `eeb2515e`, Rust reused a cached classification;
+the first builder revision `2cef3ea2` restored the second call site but still ran an approximate
+six-cell projection and incorrectly performed projection during bridge-aware collection.
 
 `ResolvedTerrainCell.bridge_facts.raw_flags` already owns the modeled live
-`CellClass+0x140` bits. `ResolvedTerrainGrid::cellclass_bridge_flags_0x1180` is the existing
-real-cell/shared-dummy lookup seam; `src/map/bridge_facts.rs` names `0x1000` as
+`CellClass+0x140` bits. `ResolvedTerrainGrid` owns the real-cell/shared-dummy lookup seam;
+this design adds one narrow projection view that returns signed `CellClass+0x11B` and raw
+`CellClass+0x140 & 0x1180` from the same lookup. `src/map/bridge_facts.rs` names `0x1000` as
 `BRIDGE_FLAG_FORWARD_SIDE` and `0x100` as `BRIDGE_FLAG_STRUCTURAL`, and active
 `SetBridgeDirection` stamping preserves both. No new state or writer is needed.
 
-Native `FUN_006D6410 @ 0x006D6410` reads the candidate flag at
-`0x006D6473..0x006D6486`; only when `0x1000` is set does it read each projected probe's
-`0x100` bit and add four to that probe's signed height delta at
-`0x006D64F8..0x006D6513`. The naval FNPC query reaches both the collection and final-pool
-uses of this helper. [docs/research/PHASE3_AI_BASE_PLACEMENT_VECTOR_SELECTOR_005060B0_GHIDRA_REPORT.md
+Native `FUN_006D6410 @ 0x006D6410` performs two separate candidate lookups (first flags,
+then signed level), starts at candidate centre plus `0x600` leptons on both axes, subtracts
+eight leptons before every probe lookup, and therefore reads repeated cells far-to-near. Each
+probe is looked up once, and its signed level and raw flags come from that same returned
+CellClass. Only when candidate `0x1000` is set does probe `0x100` add four to the signed height
+delta. The helper returns either the current probe cell after the projected-axis comparison or
+the candidate after the later equality check. [Ghidra `0x006D641B..0x006D6588`;
+docs/research/PHASE3_AI_BASE_PLACEMENT_VECTOR_SELECTOR_005060B0_GHIDRA_REPORT.md
 §2.2, §9 Handoff B; docs/research/PHASE3_HOUSECLASS_ORDINARY_BASE_PLACEMENT_005060B0_GHIDRA_REPORT.md
 §8.2, §11.1 item 13]
 
 ## Impact Analysis
 
-- Change only `src/sim/find_nearby_cell.rs`: read candidate/probe flags inside
-  `is_direct_candidate`, call that corrected classifier again during final pool partition,
-  replace its stale UNCHECKED residual comment, and add focused tests.
-- Reuse `ResolvedTerrainGrid::cellclass_bridge_flags_0x1180`; do not change bridge facts,
-  `PathGrid`, snapshots, hashing, callers, or function signatures.
+- Change `src/sim/find_nearby_cell.rs` plus the narrow CellClass lookup seam in
+  `src/map/resolved_terrain.rs`; do not change bridge facts, `PathGrid`, snapshots, hashing,
+  public callers, or persistent state.
+- Replace the threshold shortcut with a pure instruction-faithful projection kernel. Feed it
+  one lookup closure so transcript/order tests and the runtime real-or-dummy view exercise the
+  same arithmetic.
 - Blast radius is every FNPC caller because the helper is shared, but observable change is
   gated by the exact candidate-`0x1000` plus projected-probe-`0x100` combination. Nonbridge
   terrain and structural probes without candidate forward-side remain bit-for-bit unchanged.
-- The search consumes no RNG and changes no caller-owned state. Its CellClass flag lookups retain
-  native shared-dummy coordinate side effects through the existing accessor. Candidate order,
-  ring termination, frame-modulo indexing, and same-tick determinism remain owned by existing code.
+- The search consumes no RNG. Its CellClass lookups intentionally retain native shared-dummy
+  coordinate side effects: every missed lookup stamps the packed requested coordinate once and
+  returns the dummy's live signed level and flags. Candidate order, frame-modulo indexing, and
+  same-tick determinism remain owned by existing code.
 
 ## Chosen Approach
 
-Read the candidate's modeled raw bridge flags once before the six-step projection loop. For
-each probe, add `BRIDGE_LEVEL_RISE` (`4`) to its signed level only when the cached candidate
-has `BRIDGE_FLAG_FORWARD_SIDE` and that probe has `BRIDGE_FLAG_STRUCTURAL`; then feed the
-adjusted probe level into the existing relative-rise threshold unchanged. Invoke the same
-classifier during collection and again, in stored candidate order, when partitioning the final
-direct and indirect pools.
+Implement native lepton-to-cell truncation, wrapped 32-bit arithmetic, two candidate lookups,
+and the subtract-eight projection loop exactly. Cache only the candidate's forward-side bit.
+For each probe, consume one CellClass view; compute the signed level delta, conditionally add
+`BRIDGE_LEVEL_RISE` (`4`) from that same view, perform the two projected-axis comparisons, then
+the current-cell equality check in native order. The candidate is direct exactly when the
+returned packed cell equals the candidate.
+
+Ordinary collection invokes this classifier per accepted candidate. Bridge-aware collection
+does not invoke it at all; accepted candidates retain only a diagnostic `direct = false` value
+and arm early-stop. Final partition invokes the classifier independently for every stored
+candidate in order and never reads cached `Candidate.direct`.
 
 This is the smallest Rust-native translation: it changes the classifier at the exact point
 native changes its height delta, uses the existing CellClass flag authority, and restores the
@@ -68,9 +79,9 @@ native two-site projection call pattern without changing candidate or selection 
 - **COMPOUNDING — both semantic uses:** the classifier runs during ordinary collection
   early-stop and again during final direct/indirect pool partition, which can change pool length
   and `frame % pool_len` output. [selector report §2.2; exhaustive report §8.2]
-- **COMPOUNDING — preserve bridge-aware asymmetry:** `bridge_aware_zone` still arms early-stop
-  on any accepted candidate, while final selection uses projected classification. This slice
-  changes only the projection result. [current `collect_candidates`; FNPC caller evidence]
+- **COMPOUNDING — preserve bridge-aware asymmetry:** `bridge_aware_zone` collection performs
+  zero projection/dummy lookups and any accepted candidate arms early-stop, while final selection
+  still projects every stored candidate. [Ghidra FNPC collection branch and final partition]
 - **COMPOUNDING — flag authority:** use modeled live CellClass flags through the existing
   resolved-terrain/shared-dummy seam; do not infer forward-side from path passability or add a
   writer. [current `bridge_facts.rs`, `resolved_terrain.rs`; exhaustive report §8.2]
@@ -85,40 +96,47 @@ native two-site projection call pattern without changing candidate or selection 
 
 ### Components
 
-- `is_direct_candidate`: add the exact flag-gated probe-level correction and canonical
-  `gamemd-derived` provenance for `FUN_006D6410 @ 0x006D6410`.
-- Final pool construction: invoke `is_direct_candidate` once per stored candidate in order,
-  matching native's final partition use rather than reusing collection-time classification.
+- `ResolvedTerrainGrid::cellclass_projection_view`: one stamping MapClass lookup returning
+  signed level and modeled raw flags together. A miss stamps exactly once and snapshots the live
+  shared dummy after that stamp.
+- `project_candidate_with_lookup`: exact pure `FUN_006D6410` kernel, including packed shorts,
+  wrapped lepton arithmetic, duplicate candidate reads, repeated far-to-near probes, two-bit
+  bridge correction, comparison order, and returned cell.
+- Collection/final orchestration: inject one classifier internally so tests can prove invocation
+  count/order. Bridge-aware collection skips it; final partition always invokes it once per stored
+  candidate and ignores `Candidate.direct`.
 - Test fixtures in the same leaf module: stamp raw flags directly on resolved terrain so each
   load-bearing branch is executable without adding production-only scaffolding.
 
 ### Interfaces / Contracts
 
-No public API changes. Missing resolved terrain continues to expose no modeled bridge flags,
-matching existing compatibility behavior. The exact active runtime supplies resolved terrain.
+No public API changes. The active runtime supplies resolved terrain and therefore uses the exact
+real-or-dummy projection view. The existing no-terrain compatibility path retains its level
+facade and zero flags; it has no CellClass authority to mutate.
 
 ### Data Flow
 
-`ResolvedTerrainGrid bridge flags -> collection is_direct_candidate -> per-ring early-stop;
-stored candidate order -> final is_direct_candidate -> preferred pool -> existing target/frame
+`MapClass-like real/dummy view -> exact projection kernel -> ordinary collection early-stop;
+stored candidate order -> fresh exact projection -> preferred pool -> existing target/frame
 choice`.
 
 ### Error Handling
 
-No new failure state. Off-grid/unallocated flag reads use the existing CellClass dummy accessor;
-existing level lookup and candidate conversion behavior are unchanged.
+No new failure state. Off-grid/unallocated projection reads stamp and expose the one live shared
+dummy. Candidate/probe packed-short conversion and signed levels follow native instructions.
 
 ### Testing Strategy
 
 Focused executable tests will prove:
 
-1. a forward-side candidate plus structural probe contributes exactly four levels at a known
-   projection threshold;
-2. the same structural probe is ignored without candidate forward-side;
-3. the correction turns the duplicated radius-zero seed indirect, extends collection through
-   ring one, and changes the final frame-modulo direct pool in exact ring order;
-4. nonbridge candidate classifications, collection, and frame-selected outputs remain unchanged;
-5. the complete existing `sim::find_nearby_cell::tests::` module still passes.
+1. the pure kernel performs two candidate reads followed by the exact far-to-near repeated probe
+   transcript/count (179 lookups for flat candidate `(5,5)`);
+2. a sparse allocated edge consumes live shared-dummy signed level/flags and leaves the dummy at
+   the final requested coordinate;
+3. ordinary collection and final partition invoke projection separately and in order;
+4. bridge-aware collection performs no projection, while final partition still projects;
+5. candidate-forward plus probe-structural adds exactly four, the probe bit is ignored without
+   candidate-forward, and existing nonbridge results are unchanged.
 
 ## Architectural Decisions
 
@@ -131,25 +149,29 @@ Focused executable tests will prove:
 
 ## Alternatives Considered
 
-1. **Recommended: adjust probe level inside `is_direct_candidate` and invoke it at both native
-   sites.** Exact native location and call pattern, one implementation, and existing architecture
-   stays intact.
+1. **Chosen: exact lepton kernel plus one real-or-dummy CellClass view, invoked at both native
+   sites.** Preserves native arithmetic, lookup order, dummy side effects, and one implementation.
 2. **Fold the correction into generic `cell_level`.** Rejected because it would affect FNPC's
    separate seed-height gate and every caller, while native gates it only inside projection.
 3. **Keep the current cached final classification.** Rejected: native re-runs the helper, and the
    authoritative CellClass flag accessor retains shared-dummy lookup side effects, so equivalence
    is no longer proven even though ordinary in-grid classification values are identical.
+4. **Keep the six-cell threshold shortcut.** Rejected after critic review: it cannot reproduce
+   repeated far-to-near misses, live dummy level/flags, or the exact return point.
 
 ## Autonomous Approval Record
 
-**Review verdict: APPROVE.** Initial review found one P1 issue: the first draft treated cached
-collection classification as sufficient for final partition, but the live body/callsites prove a
-second native invocation and the raw-flag accessor carries CellClass dummy lookup semantics. The
-design now calls one corrected classifier at both sites.
+**Review verdict after first critic: APPROVE REVISION.** The first builder revision fixed cached
+final classification but the fresh critic found one P1: its six unique near-to-far probes skipped
+native's repeated far-to-near lookups, forced misses to zero, skipped probe lookups when candidate
+`0x1000` was clear, and still projected during bridge-aware collection. Cold assembly at
+`0x006D6410..0x006D6588` confirms the finding. This revision resolves it with the exact kernel,
+one real-or-dummy view, explicit collection skip, and mutation-resistant lookup transcripts.
 
-Why approve: every behavior claim is grounded in the two cited exhaustive reports, current Rust,
-and a cold decompile/assembly read of `0x006D6410`; all blocking details have executable tests; no
-new state, RNG, scheduler, or cross-layer dependency is introduced.
+Why approve: every behavior claim is grounded in the two cited exhaustive reports, the critic's
+exact finding, current Rust at `2cef3ea2`, and a cold decompile/assembly read of `0x006D6410`; all
+blocking details now have executable order/count/side-effect tests, with no new state, RNG,
+scheduler, or cross-layer dependency.
 
 What could still make ordinary skirmish wrong: changing ring order, the bridge-aware early-stop
 asymmetry, direct-pool preference, or frame-modulo ordering. The design explicitly leaves those
