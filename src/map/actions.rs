@@ -12,6 +12,12 @@ use crate::rules::ini_parser::IniFile;
 pub struct ActionEntry {
     pub kind: i32,
     pub params: Vec<String>,
+    /// Materialized native `TActionClass+0x44` waypoint destination.
+    ///
+    /// `Some(0)` includes the constructor default retained by a missing token
+    /// and parameter types 5/9/11. `None` safely represents native `-1` from
+    /// a present non-alphabetic token.
+    pub waypoint_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,19 +115,28 @@ fn parse_action_entries(fields: &[String], raw_fields: &[&str]) -> Vec<ActionEnt
     if let Some(count) = declared_count {
         let payload = &fields[1..];
         let chunk_len = 8;
-        let max_chunks = payload.len() / chunk_len;
-        let chunk_count = count.min(max_chunks);
-        if chunk_count > 0 {
+        if count > 0
+            && payload
+                .first()
+                .is_some_and(|kind| kind.parse::<i32>().is_ok())
+        {
             let raw_payload = &raw_fields[1..];
             return payload
-                .chunks_exact(chunk_len)
-                .zip(raw_payload.chunks_exact(chunk_len))
-                .take(chunk_count)
+                .chunks(chunk_len)
+                .zip(raw_payload.chunks(chunk_len))
+                .take(count)
                 .filter_map(|(chunk, raw_chunk)| {
                     let kind = chunk[0].trim().parse::<i32>().ok()?;
-                    let mut params = chunk[1..].to_vec();
-                    params[6] = raw_chunk[7].to_string();
-                    Some(ActionEntry { kind, params })
+                    let params = chunk[1..].to_vec();
+                    let waypoint_index = materialize_waypoint_index(
+                        chunk.get(1).map(String::as_str),
+                        raw_chunk.get(7).copied(),
+                    );
+                    Some(ActionEntry {
+                        kind,
+                        params,
+                        waypoint_index,
+                    })
                 })
                 .collect();
         }
@@ -129,13 +144,30 @@ fn parse_action_entries(fields: &[String], raw_fields: &[&str]) -> Vec<ActionEnt
 
     let kind = fields[0].trim().parse::<i32>().ok();
     kind.map(|kind| {
-        let mut params = fields[1..].to_vec();
-        if let (Some(token), Some(slot)) = (raw_fields.get(7), params.get_mut(6)) {
-            *slot = (*token).to_string();
-        }
-        vec![ActionEntry { kind, params }]
+        let params = fields[1..].to_vec();
+        let waypoint_index = materialize_waypoint_index(
+            fields.get(1).map(String::as_str),
+            raw_fields.get(7).copied(),
+        );
+        vec![ActionEntry {
+            kind,
+            params,
+            waypoint_index,
+        }]
     })
     .unwrap_or_default()
+}
+
+fn materialize_waypoint_index(param_type: Option<&str>, token_8: Option<&str>) -> Option<u32> {
+    if matches!(
+        param_type.and_then(|value| value.trim().parse::<i32>().ok()),
+        Some(5 | 9 | 11)
+    ) {
+        // These parameter types parse token 8 numerically into other TAction
+        // fields and leave the constructor-initialized +0x44 untouched.
+        return Some(0);
+    }
+    read_waypoint_token(token_8)
 }
 
 #[cfg(test)]
@@ -184,6 +216,7 @@ mod tests {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                     ActionEntry {
                         kind: 112,
@@ -196,6 +229,7 @@ mod tests {
                             "0".to_string(),
                             "9".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                 ],
             })
@@ -210,6 +244,7 @@ mod tests {
                 &[ActionEntry {
                     kind: 11,
                     params: vec!["Americans".to_string(), "5".to_string()],
+                    waypoint_index: Some(0),
                 }][..]
             )
         );
@@ -248,8 +283,27 @@ mod tests {
         assert_eq!(read_waypoint_token(Some("")), Some(0));
         assert_eq!(read_waypoint_token(Some("   ")), None);
 
-        let ini = IniFile::from_str("[Actions]\nEMPTY=1,137,0,0,0,0,0,0,\n");
+        let ini = IniFile::from_str(
+            "[Actions]\n\
+             EMPTY=1,137,0,0,0,0,0,0,\n\
+             MISSING=1,112,0,0,0,0,0,0\n\
+             ALPHA=2,48,0,0,0,0,0,0,NZ,112,0,0,0,0,0,0,7\n\
+             NUMERIC=3,48,5,0,0,0,0,0,P,112,9,0,0,0,0,0,NZ,137,11,0,0,0,0,0,AA\n",
+        );
         let actions = parse_actions(&ini);
-        assert_eq!(actions["EMPTY"].entries[0].params[6], "");
+        assert_eq!(actions["EMPTY"].entries[0].waypoint_index, Some(0));
+        assert_eq!(actions["MISSING"].entries[0].kind, 112);
+        assert_eq!(actions["MISSING"].entries[0].params.len(), 6);
+        assert_eq!(actions["MISSING"].entries[0].waypoint_index, Some(0));
+        assert_eq!(actions["ALPHA"].entries[0].waypoint_index, Some(389));
+        assert_eq!(actions["ALPHA"].entries[1].waypoint_index, None);
+        assert_eq!(
+            actions["NUMERIC"]
+                .entries
+                .iter()
+                .map(|entry| (entry.kind, entry.waypoint_index))
+                .collect::<Vec<_>>(),
+            vec![(48, Some(0)), (112, Some(0)), (137, Some(0))]
+        );
     }
 }

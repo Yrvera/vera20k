@@ -208,6 +208,7 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
                     .into_iter()
                     .map(str::to_string)
                     .collect(),
+                waypoint_index: Some(0),
             }],
         },
     )]
@@ -497,6 +498,8 @@ fn time_trigger_can_center_camera_at_waypoint() {
             ],
             entries: vec![ActionEntry {
                 kind: 112,
+                // Runtime owns the reader-materialized +0x44 value below;
+                // changing retained source text must not trigger re-decoding.
                 params: vec![
                     "0".to_string(),
                     "0".to_string(),
@@ -504,8 +507,9 @@ fn time_trigger_can_center_camera_at_waypoint() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "J".to_string(),
+                    "ZZ".to_string(),
                 ],
+                waypoint_index: Some(9),
             }],
         },
     )]
@@ -576,6 +580,7 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
                     "0".to_string(),
                     "J".to_string(),
                 ],
+                waypoint_index: Some(9),
             }],
         },
     )]
@@ -660,6 +665,7 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
             entries: vec![ActionEntry {
                 kind: 28,
                 params: vec!["13".to_string()],
+                waypoint_index: Some(0),
             }],
         },
     )]
@@ -922,6 +928,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                     ActionEntry {
                         kind: 53,
@@ -934,6 +941,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                     ActionEntry {
                         kind: 22,
@@ -946,6 +954,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                 ],
             },
@@ -976,6 +985,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                         "0".to_string(),
                         "D".to_string(),
                     ],
+                    waypoint_index: Some(3),
                 }],
             },
         ),
@@ -1077,6 +1087,7 @@ fn linked_trigger_field_queues_followup_trigger() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: Some(0),
                 }],
             },
         ),
@@ -1106,6 +1117,7 @@ fn linked_trigger_field_queues_followup_trigger() {
                         "0".to_string(),
                         "E".to_string(),
                     ],
+                    waypoint_index: Some(4),
                 }],
             },
         ),
@@ -1207,6 +1219,7 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: None,
                 }],
             },
         ),
@@ -1236,6 +1249,7 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
                         "0".to_string(),
                         "I".to_string(),
                     ],
+                    waypoint_index: Some(8),
                 }],
             },
         ),
@@ -1318,6 +1332,7 @@ fn mission_announce_then_force_end_emits_result_effects() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: None,
                 },
                 ActionEntry {
                     kind: 69,
@@ -1330,6 +1345,7 @@ fn mission_announce_then_force_end_emits_result_effects() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: None,
                 },
             ],
         },
@@ -1436,6 +1452,7 @@ fn local_variables_seed_and_gate_followup_triggers() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: Some(0),
                 }],
             },
         ),
@@ -1465,6 +1482,7 @@ fn local_variables_seed_and_gate_followup_triggers() {
                         "0".to_string(),
                         "G".to_string(),
                     ],
+                    waypoint_index: Some(6),
                 }],
             },
         ),
@@ -1581,6 +1599,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
                         "0".to_string(),
                         "L".to_string(),
                     ],
+                    waypoint_index: Some(11),
                 }],
             },
         ),
@@ -1610,6 +1629,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
                         "0".to_string(),
                         "M".to_string(),
                     ],
+                    waypoint_index: Some(12),
                 }],
             },
         ),
@@ -1685,7 +1705,11 @@ fn run_waypoint_action(
         MapAction {
             id: "WAYPOINT_ACTION".to_string(),
             fields: Vec::new(),
-            entries: vec![ActionEntry { kind, params }],
+            entries: vec![ActionEntry {
+                kind,
+                params,
+                waypoint_index: crate::map::actions::read_waypoint_token(token),
+            }],
         },
     )]
     .into_iter()
