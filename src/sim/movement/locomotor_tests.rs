@@ -187,6 +187,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         deploy_facing: 0x80,
         construction_yard: false,
         build_const_eligible: false,
+        base_plan_type_index: -1,
+        is_base_defense: false,
         factory: None,
         weapons_factory: false,
         cloning: false,
