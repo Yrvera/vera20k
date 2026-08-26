@@ -4,10 +4,8 @@
 //! and pending-delete transitions.  Upper-layer work is emitted as ordered data;
 //! this module never depends on render, UI, sidebar, audio, or net.
 
-use std::collections::BTreeSet;
-
 use crate::map::entities::EntityCategory;
-use crate::sim::cell_rect::{CellRect, canonical_cell_coord, scan_cell_rect};
+use crate::sim::cell_rect::{CellRect, resolve_reservation_real_cell, scan_cell_rect};
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::intern::InternedId;
@@ -78,15 +76,41 @@ pub(crate) enum PlacementEvidence {
     RejectedEarly,
     MarkFailed,
     MarkSucceeded,
+    /// Run the modeled Mark(PUT) transaction and consume its result. Production
+    /// Unit Unlimbo uses this after exact-zero CanEnter admission instead of
+    /// asserting or caller-hardcoding Mark success.
+    EvaluateMark,
 }
 
-fn building_base_reservation_rect(rx: u16, ry: u16, foundation: &str, spacing: i32) -> CellRect {
+pub(super) fn building_base_reservation_rect(
+    rx: u16,
+    ry: u16,
+    foundation: &str,
+    spacing: i32,
+) -> CellRect {
     let (width, height) = crate::rules::foundation::foundation_dimensions(foundation);
     CellRect::new(
-        i32::from(rx).wrapping_sub(spacing),
-        i32::from(ry).wrapping_sub(spacing),
+        native_base_reservation_start(rx, spacing),
+        native_base_reservation_start(ry, spacing),
         i32::from(width).wrapping_add(spacing.wrapping_mul(2)),
         i32::from(height).wrapping_add(spacing.wrapping_mul(2)),
+    )
+}
+
+fn native_base_reservation_start(anchor: u16, spacing: i32) -> i32 {
+    i32::from(i32::from(anchor).wrapping_sub(spacing) as i16)
+}
+
+fn packed_reservation_coord(x: i32, y: i32) -> u32 {
+    u32::from(x as i16 as u16) | (u32::from(y as i16 as u16) << 16)
+}
+
+fn base_reservation_perimeter_rect(rect: CellRect) -> CellRect {
+    CellRect::new(
+        rect.x.wrapping_sub(1),
+        rect.y.wrapping_sub(1),
+        rect.width.wrapping_add(3),
+        rect.height.wrapping_add(3),
     )
 }
 
@@ -133,11 +157,12 @@ pub(super) fn building_base_reservation_repair_rect(
     foundation_height: u16,
     spacing: i32,
 ) -> CellRect {
-    let twice_spacing = spacing.wrapping_mul(2);
     let five_times_spacing = spacing.wrapping_mul(5);
+    let primary_x = native_base_reservation_start(rx, spacing);
+    let primary_y = native_base_reservation_start(ry, spacing);
     CellRect::new(
-        i32::from(rx).wrapping_sub(twice_spacing),
-        i32::from(ry).wrapping_sub(twice_spacing),
+        primary_x.wrapping_sub(spacing),
+        primary_y.wrapping_sub(spacing),
         i32::from(foundation_width).wrapping_add(five_times_spacing),
         i32::from(foundation_height).wrapping_add(five_times_spacing),
     )
@@ -656,7 +681,12 @@ impl Simulation {
             return RevealOutcome::Failed(RevealFailure::MarkFailed);
         }
 
-        self.mark_entity_put(stable_id);
+        if !self.mark_entity_put(stable_id) {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.lifecycle.in_limbo = true;
+            }
+            return RevealOutcome::Failed(RevealFailure::MarkFailed);
+        }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id)
             && entity.spotlight_capable
             && entity.category == crate::map::entities::EntityCategory::Structure
@@ -715,12 +745,12 @@ impl Simulation {
         }
     }
 
-    fn mark_entity_put(&mut self, stable_id: u64) {
+    fn mark_entity_put(&mut self, stable_id: u64) -> bool {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
-            return;
+            return false;
         };
         if entity.lifecycle.cell_marked {
-            return;
+            return false;
         }
         let cells = entity_occupancy_cells(entity);
         let layer = cell_list_layer_for_entity(entity);
@@ -845,6 +875,10 @@ impl Simulation {
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::CellMarked);
+        self.substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.lifecycle.cell_marked)
     }
 
     pub(crate) fn base_reservation_house_index(&self, owner: InternedId) -> Option<i32> {
@@ -868,6 +902,14 @@ impl Simulation {
     }
 
     fn mark_building_base_reservation(&mut self, stable_id: u64) -> bool {
+        self.mark_building_base_reservation_with_arg(stable_id, false)
+    }
+
+    fn mark_building_base_reservation_with_arg(
+        &mut self,
+        stable_id: u64,
+        repair_only: bool,
+    ) -> bool {
         let Some((owner, rect)) = self.base_reservation_writer(stable_id) else {
             return false;
         };
@@ -879,9 +921,87 @@ impl Simulation {
             rect,
             house_index,
         );
+        if let Some(house) = self.houses.get_mut(&owner) {
+            house.base_reservation
+                .update_bounds(rect.x, rect.y, rect.width, rect.height);
+        } else {
+            debug_assert!(false, "base-reservation owner must have HouseState");
+        }
+        if !repair_only {
+            self.update_base_reservation_perimeter_after_mark(owner, house_index, rect);
+        }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::BaseReservationMarked);
         true
+    }
+
+    fn update_base_reservation_perimeter_after_mark(
+        &mut self,
+        owner: InternedId,
+        house_index: i32,
+        rect: CellRect,
+    ) {
+        scan_cell_rect(base_reservation_perimeter_rect(rect), |x, y| {
+            let neighbor_mask = self
+                .substrate
+                .base_reservations
+                .house_reservation_neighbor_mask(self.resolved_terrain.as_ref(), x, y, house_index);
+            let packed = packed_reservation_coord(x, y);
+            if let Some(house) = self.houses.get_mut(&owner) {
+                match neighbor_mask {
+                    0x0000_00ff => house.base_reservation.remove_perimeter_cell(packed),
+                    1..=0x0000_00fe => house
+                        .base_reservation
+                        .append_perimeter_cell_if_absent(packed),
+                    0 | u32::MAX => {}
+                    _ => unreachable!("neighbor mask is eight bits or the absent-center sentinel"),
+                }
+            }
+            true
+        });
+    }
+
+    fn update_base_reservation_perimeter_after_clear(
+        &mut self,
+        owner: InternedId,
+        house_index: i32,
+        rect: CellRect,
+    ) {
+        scan_cell_rect(base_reservation_perimeter_rect(rect), |x, y| {
+            let neighbor_mask = self
+                .substrate
+                .base_reservations
+                .house_reservation_neighbor_mask(self.resolved_terrain.as_ref(), x, y, house_index);
+            let packed = packed_reservation_coord(x, y);
+            match neighbor_mask {
+                0x0000_00ff => {
+                    if let Some(house) = self.houses.get_mut(&owner) {
+                        house.base_reservation.remove_perimeter_cell(packed);
+                    }
+                }
+                1..=0x0000_00fe => {
+                    if let Some(house) = self.houses.get_mut(&owner) {
+                        house
+                            .base_reservation
+                            .append_perimeter_cell_if_absent(packed);
+                    }
+                }
+                0 | u32::MAX => {
+                    if let Some(house) = self.houses.get_mut(&owner) {
+                        house.base_reservation.remove_perimeter_cell(packed);
+                    }
+                    // Native resolves the center again before the extra clear.
+                    self.substrate.base_reservations.clear(
+                        self.resolved_terrain.as_ref(),
+                        x,
+                        y,
+                        house_index,
+                    );
+                }
+                _ => unreachable!("neighbor mask is eight bits or the absent-center sentinel"),
+            }
+            true
+        });
     }
 
     fn base_reservation_writer(&self, stable_id: u64) -> Option<(InternedId, CellRect)> {
@@ -949,28 +1069,29 @@ impl Simulation {
         self.trace_lifecycle_for_test(LifecycleTestEvent::BaseReservationCleared);
 
         // The native repair scan happens while this building is still linked in
-        // the ground object lists. Gather stable identities first, then re-run
-        // each neighbor's own exact writer without holding a grid borrow.
-        let mut repair_ids = BTreeSet::new();
+        // the ground list. Each lookup selects only the first Building and calls
+        // its repair-only writer immediately; identities are not deduplicated.
         scan_cell_rect(repair_rect, |x, y| {
-            if let Some((rx, ry)) = canonical_cell_coord(x, y)
-                && self
-                    .resolved_terrain
-                    .as_ref()
-                    .is_none_or(|terrain| terrain.cell(rx, ry).is_some())
-                && let Some(cell) = self.substrate.occupancy.get(rx, ry)
+            let neighbor_id = resolve_reservation_real_cell(
+                self.resolved_terrain.as_ref(),
+                x,
+                y,
+            )
+            .and_then(|(rx, ry)| {
+                self.substrate.occupancy.first_building_on_layer(
+                    rx,
+                    ry,
+                    crate::sim::movement::locomotor::MovementLayer::Ground,
+                )
+            });
+            if let Some(neighbor_id) = neighbor_id
+                && neighbor_id != stable_id
             {
-                repair_ids.extend(
-                    cell.iter_layer(crate::sim::movement::locomotor::MovementLayer::Ground)
-                        .map(|occupant| occupant.entity_id),
-                );
+                self.mark_building_base_reservation_with_arg(neighbor_id, true);
             }
             true
         });
-        repair_ids.remove(&stable_id);
-        for neighbor_id in repair_ids {
-            self.mark_building_base_reservation(neighbor_id);
-        }
+        self.update_base_reservation_perimeter_after_clear(owner, house_index, rect);
         true
     }
 
@@ -1117,7 +1238,7 @@ impl Simulation {
     /// Test/fixture helper retained at the transaction boundary.  It is
     /// idempotent and updates the authoritative `cell_marked` fact.
     pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
-        self.mark_entity_put(stable_id);
+        let _ = self.mark_entity_put(stable_id);
     }
 
     /// Existing movement and fixture boundary; common lifecycle code calls the
@@ -2175,9 +2296,8 @@ impl Simulation {
     /// gamemd-derived: active YR `DispatchPointerExpiredCleanup @ 0x007258D0`
     /// is called directly by `ObjectClass__UnInit @ 0x005F65F0` and again by
     /// `ObjectClass::Destroy @ 0x005F5280` inside the virtual Conceal path.
-    /// The caller's terrain context stays unread: the projectile replacement
-    /// below is decided from the expiring object's own coordinate alone, and the
-    /// `Get_CellClass` note there says why no grid lookup gates it. The other
+    /// The caller's legacy terrain context stays unread: production queries the
+    /// Simulation-resident resolved grid below as its MapClass table. The other
     /// listener arms still read the object's liveness, health and mission from
     /// the same destructure.
     fn notify_pointer_expired(&mut self, expired_id: u64, _context: UninitContext<'_>) {
@@ -2206,67 +2326,12 @@ impl Simulation {
             return;
         };
 
-        // gamemd-derived: `BulletClass::PointerExpired @ 0x004684E0` replaces
-        // a matching ordinary target with MapClass's Cell target from the
-        // pre-Conceal location. Nothing about being off the map produces null:
-        // only the high-flying predicate, map-editor mode, and the exact (0, 0)
-        // coordinate below do.
-        //
-        // The lookup itself cannot fail into null. `MapClass::Get_CellClass @
-        // 0x005657A0` returns the shared dummy CellClass at `0x00ABDC50` — after
-        // stamping the requested coord into `dummy + 0x24` — for both an
-        // out-of-range index and an in-range slot whose pointer is NULL, i.e.
-        // for the sparse cells outside the map diamond. So an unallocated cell
-        // is still a Cell target here, not a null one.
-        //
-        // Null comes only from the callback's own gates, all writing the `EBX`
-        // that `0x004684FD` zeroes. Two are modelled: the high-flying predicate
-        // and the coordinate sentinel at `0x0046856E`/`0x0046857C`, which
-        // compares the truncated cell against `DAT_0089DDF0`/`DAT_0089DDF2`.
-        // Both sentinel words are zero in the image and the only writer in the
-        // program (`0x00466270`) zeroes them again, so the sentinel is the cell
-        // (0, 0). The third gate, `g_MapEditorMode`, is deliberately omitted:
-        // it is zero for the whole of ordinary gameplay.
-        //
-        // DRIFT (GSI-05.11) — recorded, not pending. Re-verified against the
-        // binary on the Phase 6 second pass: every cited address checks out
-        // instruction for instruction, and four neighbouring claims came back
-        // NO-DIFF — the high-flying predicate (`ObjectClass::IsHighFlying @
-        // 0x005F6B90`), the null-firer mapping, the sign-biased truncation, and
-        // the `+0xAC`/`+0x130` arms, which are BulletTypeClass/WeaponTypeClass
-        // comparisons this port cannot reach and must not implement.
-        // `MapClass::Get_CellClass @
-        // 0x005657A0` stamps the requested packed coord into the shared dummy
-        // CellClass (`0x00ABDC50`, coord at `+0x24`) on both miss paths — an
-        // index outside `[0, 0x40000)` and an in-range NULL sparse slot — and
-        // returns that one process-global object. A native Bullet holding it
-        // therefore reads whichever coordinate was requested most recently
-        // anywhere in the program, not the one stamped when it took the target.
-        // `Cell { rx, ry }` pins a stable coordinate instead.
-        // - Trigger: any cell-lookup miss anywhere in the frame while a Bullet
-        //   holds a dummy target. The stamp is not confined to
-        //   `Get_CellClass`: the same fallback is inlined into
-        //   `Is_Cell_In_Playfield @ 0x00578498`, `Find_Nearby_Passable_Cell`,
-        //   `GetZoneID` and the bridge walkers among others.
-        // - Player effect: a homing shot that lost an unallocated-cell target
-        //   drifts toward an unrelated cell in native and flies straight here.
-        // - Frequency: needs a target to die on an unallocated cell — outside
-        //   the map diamond — first, which ordinary skirmish play does not
-        //   produce.
-        // - Downstream risk: none today. Reproducing it is not blocked by the
-        //   id model — a single hashed scalar on `Simulation` would carry the
-        //   coord — but it is not *correct* without also reproducing every
-        //   cell-lookup miss engine-wide in native call order, since that walk
-        //   is what decides which coord is current. That is the unbounded part,
-        //   and it is why this stays recorded rather than approximated: a
-        //   scalar fed by VERA's own miss order would be a different wrong
-        //   answer wearing native's shape.
-        let projectile_replacement_target = (!expired_is_high_flying)
-            .then_some(())
-            .and(expired_target_cell)
-            .filter(|&cell| cell != NULL_TARGET_CELL_SENTINEL)
-            .map(|(rx, ry)| ProjectileTarget::Cell { rx, ry })
-            .unwrap_or(ProjectileTarget::None);
+        // `BulletClass::PointerExpired @ 0x004684E0` performs the packed
+        // `MapClass::Get_CellClass @ 0x005657A0` lookup only for a matching
+        // target. Its result pointer is stored at Bullet+0x10C: an allocated
+        // slot therefore remains a stable Cell target, while a miss stores the
+        // one shared dummy at `0x00ABDC50`. Later `BulletClass::AI @ 0x004666E0`
+        // dispatches that live pointer and observes its most recent coord stamp.
 
         for listener_id in self.removal_listener_order() {
             let is_entity = self.substrate.entities.contains(listener_id);
@@ -2334,6 +2399,38 @@ impl Simulation {
                     system.done_spawning = true;
                 }
             } else if is_projectile {
+                let target_matches = self
+                    .projectiles
+                    .get(listener_id)
+                    .is_some_and(|projectile| {
+                        projectile.target == ProjectileTarget::Entity(expired_id)
+                    });
+                let projectile_replacement_target = if !target_matches
+                    || expired_is_high_flying
+                    || expired_target_cell.is_none()
+                    || expired_target_cell == Some(NULL_TARGET_CELL_SENTINEL)
+                {
+                    ProjectileTarget::None
+                } else {
+                    let (rx, ry) = expired_target_cell.expect("checked target cell");
+                    match self.resolved_terrain.as_ref() {
+                        Some(terrain) => match crate::sim::cell_rect::get_cellclass_fallback(
+                            Some(terrain),
+                            i32::from(rx),
+                            i32::from(ry),
+                        ) {
+                            crate::sim::cell_rect::CellRef::Real(_) => {
+                                ProjectileTarget::Cell { rx, ry }
+                            }
+                            crate::sim::cell_rect::CellRef::Dummy { .. } => {
+                                ProjectileTarget::DummyCell
+                            }
+                        },
+                        // Terrainless synthetic fixtures keep their historical
+                        // stable-cell fallback. Production is terrain-backed.
+                        None => ProjectileTarget::Cell { rx, ry },
+                    }
+                };
                 let present = self.projectiles.pointer_expired(
                     listener_id,
                     expired_id,

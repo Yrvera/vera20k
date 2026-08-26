@@ -410,11 +410,19 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
     let terrain = water_terrain(32, 32);
     let grid = PathGrid::from_resolved_terrain(&terrain);
     sim.resolved_terrain = Some(terrain.clone());
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -100,
+        off_100: -100,
+        off_104: 200,
+        off_108: 200,
+    });
     sim.terrain_costs.insert(
         SpeedType::Float,
         TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Float),
     );
     spawn_structure(&mut sim, 1, "Americans", "GAYARD", 20, 20);
+    sim.substrate.entities.get_mut(1).unwrap().rally_target = Some((26, 21));
     let americans_key = sim.interner.intern("AMERICANS");
     let americans_display = sim.interner.intern("Americans");
     sim.houses.insert(
@@ -431,21 +439,21 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
     if let Some(h) = sim.houses.get_mut(&americans_key) {
         h.rally_point = Some((26, 21));
     }
-    // P5d: arm the naval (collapsed-to-Vehicle) factory directly in the registry, then force
-    // it to ready so `tick_production` spawns the destroyer this tick.
+    // Arm the native Ship-slot factory directly in the registry, then force it
+    // ready so `tick_production` spawns the destroyer this tick.
     arm_build_via(
         &mut sim,
         &rules,
         "Americans",
         "DEST",
-        ProductionCategory::Vehicle,
+        ProductionCategory::Ship,
         100,
         0,
     );
     assert!(
         sim.production
             .factory_shadow
-            .test_arm_ready(americans_display, ProductionCategory::Vehicle)
+            .test_arm_ready(americans_display, ProductionCategory::Ship)
     );
 
     let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid));
@@ -461,9 +469,19 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
                 .eq_ignore_ascii_case("DEST")
         })
         .expect("spawned destroyer");
+    assert_eq!(
+        ship.navigation.nav_com,
+        Some(crate::sim::components::NavTargetRef::cell(26, 21)),
+        "the selected producer owns the represented rally destination"
+    );
+    assert_eq!(
+        ship.mission.queued(),
+        crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Move),
+        "the producer rally queues Move before the immediate-path adapter"
+    );
     assert!(
         ship.movement_target.is_some(),
-        "spawned naval unit should receive a rally move over water"
+        "the clear water fixture should also build its optional immediate A* path"
     );
 }
 

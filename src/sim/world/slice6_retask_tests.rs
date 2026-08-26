@@ -67,6 +67,8 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
         veterancy: 0,
         high: false,
         mission: None,
+        recruitable_a: true,
+        recruitable_b: true,
     }
 }
 
@@ -289,7 +291,16 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
 // None of this fixture's types has SensorsSight; both historical probes stayed
 // byte-identical and the same-run hash is stable, proving a composition-only
 // current-schema move.
-const SLICE6_BASELINE_HASH: u64 = 0x06F9_C141_04F9_AC27;
+// Re-baselined 2026-08-24 for snapshot/hash schema v90: current hashing now
+// folds the exact serialized real `CellClass+0x140 & 0x1180` value authority
+// once behind its schema tag. The pre-v28 and pre-v29 probes above remain
+// byte-identical, and record/replay remains exact, proving composition-only.
+// Re-baselined 2026-08-26 for snapshot/hash schemas v92-v102: Phase 3 adds
+// empty/default base-reservation, House strategy/base-defense, TeamScript VM,
+// AIMD/TeamType/TaskForce, and typed AITrigger authority to the current hash.
+// Both historical probes remain byte-identical; this 16-tick fixture creates
+// no Teams or AI registries, so the shift is current-schema composition only.
+const SLICE6_BASELINE_HASH: u64 = 0xDD7D_7757_3ACD_3A22;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

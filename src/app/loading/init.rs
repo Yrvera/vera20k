@@ -1236,6 +1236,7 @@ pub(crate) fn load_map_from_initial(
     theater_cache_mismatch: bool,
     runtime_color_scheme_count: usize,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+    shared_cell_dummy: crate::map::resolved_terrain::SharedCellDummy,
     tile_variant_selector_cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
     progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
@@ -1325,6 +1326,24 @@ pub(crate) fn load_map_from_initial(
     )
     .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?
     .into_parts();
+    let fixed_team_ai_ini =
+        crate::app::loading::init_helpers::load_retail_team_ai_source(&asset_manager)
+            .ok_or_else(|| anyhow::anyhow!("failed to load active YR aimd.ini"))?;
+    let team_ai_registry = crate::rules::team_ai_ini::TeamAiIniRegistry::from_sources(
+        &fixed_team_ai_ini,
+        &map_data.ini,
+        skirmish_launch_session.is_some(),
+    );
+    if !team_ai_registry.fixed_source_is_complete() {
+        anyhow::bail!(
+            "active YR aimd.ini failed structural validation: fixed_counts={:?}, diagnostics={:?}",
+            team_ai_registry.fixed_counts,
+            team_ai_registry.diagnostics
+        );
+    }
+    for diagnostic in &team_ai_registry.diagnostics {
+        log::warn!("Team AI INI diagnostic: {diagnostic:?}");
+    }
     let mut rules: Option<RuleSet> = Some(loaded_rules);
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
     let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
@@ -1391,7 +1410,12 @@ pub(crate) fn load_map_from_initial(
         |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
     let mut variant_draw = || variant_main_rng.next_u32();
     let mut variant_selector = tile_variant_selector_cache.begin_load(&mut variant_draw);
-    let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
+    // Native `MapClass::Resize @ 0x00565C10` reconstructs the fixed fallback
+    // CellClass through `CellClass::Constructor @ 0x0047BBF0` before Fill and
+    // IsoMapPack materialize the new map. Reset its modeled bytes in place;
+    // replacing this handle would break process-global pointer identity.
+    shared_cell_dummy.reconstruct_for_map_resize();
+    let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
         &map_data,
         theater_result.as_ref(),
         Some(&asset_manager),
@@ -1402,6 +1426,7 @@ pub(crate) fn load_map_from_initial(
         cliff_back,
         &mut scenario_fill_ranged,
         &mut variant_selector,
+        shared_cell_dummy,
     );
     // Bind the complete scheduler closure only after theater Tile##Anim rows
     // have resolved, but before any atlas or AnimClass construction. Missing
@@ -1691,6 +1716,17 @@ pub(crate) fn load_map_from_initial(
         // warhead handles combat compares during the bridge-damage path;
         // resolution must happen before any combat tick.
         sim.resolve_type_handles(ruleset);
+        let diagnostics = sim.install_team_ai_registry(&team_ai_registry, ruleset);
+        if diagnostics.iter().any(
+            crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal,
+        ) {
+            anyhow::bail!(
+                "active YR aimd.ini failed RuleSet resolution: diagnostics={diagnostics:?}"
+            );
+        }
+        for diagnostic in diagnostics {
+            log::warn!("Team AI install diagnostic: {diagnostic:?}");
+        }
     }
 
     // SpawnPick phase is disabled — MCV always spawns directly at the chosen position.

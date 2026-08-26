@@ -328,6 +328,215 @@ fn terrain_from_zone_classes(
     ResolvedTerrainGrid::from_cells(width, height, cells)
 }
 
+fn native_nonbridge_zone_fixture(width: u16, height: u16) -> ZoneGrid {
+    let cell_count = usize::from(width) * usize::from(height);
+    let terrain = terrain_from_zone_classes(
+        width,
+        height,
+        &vec![zone_class::GROUND; cell_count],
+        &vec![0; cell_count],
+    );
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    ZoneGrid::build_with_terrain(
+        &path_grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &[],
+        width,
+        height,
+    )
+}
+
+#[test]
+fn gsi_04_01_nonbridge_getzoneid_uses_padded_square_clamps_and_raw_rows() {
+    let mut zones = native_nonbridge_zone_fixture(2, 2);
+    {
+        let base = zones.base_topology_mut().unwrap();
+        base.movement_classes = vec![0; 4];
+        base.zone_ids = vec![2, 3, 4, 5];
+        base.zone_count = 5;
+        for row in &mut base.raw_zone_ids_by_row {
+            row.resize(6, 0);
+        }
+        base.raw_zone_ids_by_row[MovementZone::Normal.matrix_row().unwrap()][0] = 41;
+        base.raw_zone_ids_by_row[MovementZone::Normal.matrix_row().unwrap()][2] = 42;
+        base.raw_zone_ids_by_row[MovementZone::Crusher.matrix_row().unwrap()][2] = 1;
+        base.raw_zone_ids_by_row[MovementZone::Destroyer.matrix_row().unwrap()][2] = u16::MAX;
+        base.raw_zone_ids_by_row[MovementZone::Amphibious.matrix_row().unwrap()][2] = 73;
+    }
+
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((2, 0), MovementZone::Normal),
+        Some(41),
+        "the native W+1 padded final column owns base cluster 0"
+    );
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((0, 2), MovementZone::Normal),
+        Some(41),
+        "the native W+1 padded final row owns base cluster 0"
+    );
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((-1, 0), MovementZone::Normal),
+        Some(42),
+        "a negative linear index clamps to the first real base entry"
+    );
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((u16::MAX.into(), 0), MovementZone::Normal),
+        Some(42),
+        "coordinate components truncate to their packed signed-i16 words"
+    );
+    assert_eq!(
+        zones
+            .get_zone_id_nonbridge_native((i16::MAX.into(), i16::MAX.into()), MovementZone::Normal),
+        Some(41),
+        "an oversized positive linear index clamps to the final padded entry"
+    );
+
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((0, 0), MovementZone::Normal),
+        Some(42)
+    );
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((0, 0), MovementZone::Crusher),
+        Some(1),
+        "raw reserved label 1 is not flattened"
+    );
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((0, 0), MovementZone::Destroyer),
+        Some(u16::MAX),
+        "raw 0xffff is not flattened"
+    );
+    assert_eq!(
+        zones.get_zone_id_nonbridge_native((0, 0), MovementZone::Amphibious),
+        Some(73),
+        "the same base cluster projects through the selected movement row"
+    );
+}
+
+#[test]
+fn gsi_04_01_nonbridge_getzoneid_rejects_non_native_topology_metadata() {
+    let path_grid = PathGrid::new(2, 2);
+    let compatibility_only = ZoneGrid::build(&path_grid, &BTreeMap::new(), 2, 2);
+    assert_eq!(
+        compatibility_only.get_zone_id_nonbridge_native((0, 0), MovementZone::Normal),
+        None,
+        "flattened compatibility maps have no native base topology authority"
+    );
+
+    let nonsquare = native_nonbridge_zone_fixture(2, 1);
+    assert_eq!(
+        nonsquare.get_zone_id_nonbridge_native((0, 0), MovementZone::Normal),
+        None
+    );
+
+    let mut inconsistent = native_nonbridge_zone_fixture(2, 2);
+    inconsistent.base_topology_mut().unwrap().zone_ids.pop();
+    assert_eq!(
+        inconsistent.get_zone_id_nonbridge_native((0, 0), MovementZone::Normal),
+        None
+    );
+
+    let mut missing_raw_cluster = native_nonbridge_zone_fixture(2, 2);
+    {
+        let base = missing_raw_cluster.base_topology_mut().unwrap();
+        base.zone_ids[0] = 500;
+        base.raw_zone_ids_by_row[MovementZone::Normal.matrix_row().unwrap()].truncate(2);
+    }
+    assert_eq!(
+        missing_raw_cluster.get_zone_id_nonbridge_native((0, 0), MovementZone::Normal),
+        None
+    );
+    assert_eq!(
+        missing_raw_cluster.get_zone_id_nonbridge_native((0, 0), MovementZone::Invalid),
+        None,
+        "native's unchecked invalid row is an explicit safe failure in Rust"
+    );
+}
+
+fn base_defense_reachability_fixture() -> ZoneGrid {
+    let mut zones = native_nonbridge_zone_fixture(4, 4);
+    let base = zones.base_topology_mut().unwrap();
+    base.movement_classes = vec![0; 16];
+    base.zone_ids = (2..18).collect();
+    base.zone_count = 17;
+    let row = MovementZone::Normal.matrix_row().unwrap();
+    base.raw_zone_ids_by_row[row] = (0..18).map(|cluster| 100 + cluster).collect();
+    zones
+}
+
+#[test]
+fn gsi_04_05_base_defense_reachability_preserves_bypass_fringe_and_raw_equality() {
+    let zones = base_defense_reachability_fixture();
+    assert!(zones.can_reach_base_defense_response(
+        None,
+        (0, 0),
+        (3, 3),
+        false,
+        true,
+        4,
+        4,
+    ));
+
+    assert!(zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (3, 2),
+        (0, 0),
+        false,
+        false,
+        4,
+        4,
+    ));
+    assert!(!zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (3, 2),
+        (0, 0),
+        false,
+        true,
+        4,
+        4,
+    ));
+
+    assert!(zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (4, 0),
+        (0, 4),
+        false,
+        true,
+        4,
+        4,
+    ), "two raw padded-cluster-zero labels compare equal");
+}
+
+#[test]
+fn gsi_04_05_base_defense_reachability_redirects_only_the_candidate_bridge_side() {
+    let mut zones = base_defense_reachability_fixture();
+    let mut redirect = vec![None; 16];
+    redirect[5] = Some((3, 3));
+    zones
+        .map_mut(MovementZone::Normal)
+        .unwrap()
+        .set_bridge_redirect(Some(redirect));
+
+    assert!(zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (1, 1),
+        (3, 3),
+        true,
+        true,
+        4,
+        4,
+    ));
+    assert!(!zones.can_reach_base_defense_response(
+        Some(MovementZone::Normal),
+        (1, 1),
+        (3, 3),
+        false,
+        true,
+        4,
+        4,
+    ));
+}
+
 #[test]
 fn gsi_04_06_scanline_storage_fringe_merges_isometric_cardinal_cells() {
     let terrain = terrain_from_zone_classes(

@@ -387,7 +387,7 @@ where
             );
         }
     }
-    sim.resolved_terrain = Some(resolved_terrain.clone());
+    sim.install_resolved_terrain_for_new_map(resolved_terrain.clone());
     // Wire the cliff/slope coefficients from [General] into the live World config;
     // it otherwise holds compiled vanilla defaults and never sees a modded INI.
     if let Some(rules) = rules {

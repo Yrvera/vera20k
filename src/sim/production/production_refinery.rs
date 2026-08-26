@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::find_nearby_cell::{
-    NearbyQuery, NearbySearchOptions, PassabilityArgs, RADIUS_HARD_CAP,
-    find_nearby_passable_cell_with_options,
+    NearbyAnchorGate, NearbyFootprint, NearbyQuery, NearbySearchOptions, PassabilityArgs,
+    RADIUS_HARD_CAP, find_nearby_passable_cell_with_options,
 };
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
@@ -330,6 +330,8 @@ fn find_free_unit_nearby_cell(
             movement_zone: free_unit.movement_zone,
             bridge_aware_zone: false,
         },
+        footprint: NearbyFootprint::SINGLE,
+        anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
         // Both callsites reject bridge cells.
         allow_bridge_cells: false,
         // Both callsites enable the terrain-level gate.

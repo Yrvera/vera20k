@@ -63,6 +63,13 @@ pub struct MapEntity {
     /// `Sleep(0)`, so the two must not be folded together. `[Structures]` has
     /// no MISSION column at all and is always `None`.
     pub mission: Option<MissionType>,
+    /// First persistent scenario recruitment-admission byte (`Techno+0x421`).
+    /// Unit/Infantry/Aircraft scenario lines store it at trailing field 12;
+    /// constructors and absent fields default true.
+    pub recruitable_a: bool,
+    /// Second independent recruitment-admission byte (`Techno+0x422`), stored
+    /// at trailing field 13 and likewise constructor-default true.
+    pub recruitable_b: bool,
 }
 
 /// Field index of the `MISSION=` column in `[Units]`, `[Infantry]` and
@@ -208,6 +215,8 @@ fn parse_infantry_section(
             veterancy,
             high: parse_boolish_field(fields.get(11).copied()),
             mission: parse_mission_field(&fields),
+            recruitable_a: parse_recruitment_field(fields.get(12).copied()),
+            recruitable_b: parse_recruitment_field(fields.get(13).copied()),
         });
     }
 }
@@ -322,6 +331,10 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
         high: matches!(category, EntityCategory::Unit)
             && parse_atoi_bool_field(fields.get(10).copied()),
         mission,
+        recruitable_a: matches!(category, EntityCategory::Structure)
+            || parse_recruitment_field(fields.get(12).copied()),
+        recruitable_b: matches!(category, EntityCategory::Structure)
+            || parse_recruitment_field(fields.get(13).copied()),
     })
 }
 
@@ -337,6 +350,15 @@ fn parse_boolish_field(value: Option<&str>) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+fn parse_recruitment_field(value: Option<&str>) -> bool {
+    value.map_or(true, |value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -363,6 +385,8 @@ mod tests {
         assert_eq!(entities[0].category, EntityCategory::Unit);
         assert_eq!(entities[0].veterancy, 0);
         assert!(!entities[0].high);
+        assert!(entities[0].recruitable_a);
+        assert!(!entities[0].recruitable_b);
 
         assert_eq!(entities[1].owner, "Soviet");
         assert_eq!(entities[1].type_id, "HTNK");
@@ -370,6 +394,8 @@ mod tests {
         assert_eq!(entities[1].facing, 128);
         assert_eq!(entities[1].veterancy, 100);
         assert!(!entities[1].high);
+        assert!(!entities[1].recruitable_a);
+        assert!(!entities[1].recruitable_b);
     }
 
     #[test]
@@ -389,6 +415,8 @@ mod tests {
         assert_eq!(entities[0].category, EntityCategory::Infantry);
         assert_eq!(entities[0].veterancy, 200);
         assert!(!entities[0].high);
+        assert!(entities[0].recruitable_a);
+        assert!(!entities[0].recruitable_b);
     }
 
     #[test]
@@ -418,6 +446,8 @@ mod tests {
         assert_eq!(entities[0].type_id, "DRON");
         assert_eq!(entities[0].category, EntityCategory::Aircraft);
         assert!(!entities[0].high);
+        assert!(entities[0].recruitable_a);
+        assert!(entities[0].recruitable_b);
     }
 
     #[test]
@@ -452,6 +482,20 @@ mod tests {
         assert!(entities[2].high, "High=-1 parses as nonzero");
         assert!(!entities[3].high, "missing High defaults false");
         assert!(!entities[4].high, "nonnumeric High parses as atoi 0");
+    }
+
+    #[test]
+    fn gsi_04_05_missing_recruitment_tail_defaults_both_bytes_true() {
+        let ini = IniFile::from_str(
+            "[Units]\n0=Americans,MTNK,256,30,40,64,Guard,None,0,-1\n\
+             [Infantry]\n0=Soviet,E1,256,10,20,2,Guard,192\n",
+        );
+        let entities = parse_map_entities(&ini);
+        assert_eq!(entities.len(), 2);
+        for entity in entities {
+            assert!(entity.recruitable_a);
+            assert!(entity.recruitable_b);
+        }
     }
 
     /// Literal retail lines: `[Units]` from `EB4.mmx` and `[Infantry]` from

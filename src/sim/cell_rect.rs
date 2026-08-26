@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
 use crate::map::playfield::{lepton_to_packed_cell_component, rect_playfield_corners};
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+use crate::map::resolved_terrain::{
+    ResolvedTerrainCell, ResolvedTerrainGrid, SharedCellDummy, SharedCellDummySnapshot, zone_class,
+};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -25,49 +27,61 @@ pub(crate) use crate::map::cell_index::{canonical_cell_coord, packed_cell_coord}
 pub use crate::map::playfield::PlayfieldBounds;
 
 /// A non-null cell reference — `Real` for an in-range, present cell, or `Dummy`
-/// carrying the requested coord and shared fallback height bytes for an
-/// out-of-range / missing lookup.
+/// viewing the one live fallback CellClass identity after an out-of-range /
+/// missing lookup.
 ///
 /// Never the absence of a value: the engine's coord→cell lookup returns a
 /// non-null dummy that stores the requested coord and lets the caller keep
 /// dispatching on it. Coordinate writes do not reconstruct or clear its
 /// independently persistent level/slope state.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum CellRef<'a> {
     Real(&'a ResolvedTerrainCell),
-    Dummy {
-        coord: (i32, i32),
-        level: i8,
-        slope_type: u8,
-    },
+    Dummy { cell: SharedCellDummy },
 }
 
 // `ResolvedTerrainCell` is not `PartialEq`; compare `Real` by pointer identity
-// (same backing cell) and `Dummy` by the value snapshot returned by the lookup.
+// (same backing cell) and `Dummy` by the process-global CellClass identity.
 impl PartialEq for CellRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (CellRef::Real(a), CellRef::Real(b)) => std::ptr::eq(*a, *b),
-            (
-                CellRef::Dummy {
-                    coord: a,
-                    level: al,
-                    slope_type: aslope,
-                },
-                CellRef::Dummy {
-                    coord: b,
-                    level: bl,
-                    slope_type: bslope,
-                },
-            ) => a == b && al == bl && aslope == bslope,
+            (CellRef::Dummy { cell: a }, CellRef::Dummy { cell: b }) => a.same_identity(b),
             _ => false,
         }
     }
 }
 impl Eq for CellRef<'_> {}
 
+impl CellRef<'_> {
+    pub fn dummy_snapshot(&self) -> Option<SharedCellDummySnapshot> {
+        match self {
+            CellRef::Real(_) => None,
+            CellRef::Dummy { cell } => Some(cell.snapshot()),
+        }
+    }
+
+    /// Live `CellClass+0x140 & 0x1180` view for consumers that must inspect
+    /// the same real-or-dummy result selected by the stamping lookup.
+    pub(crate) fn bridge_flags_0x1180(&self) -> u32 {
+        match self {
+            CellRef::Real(cell) => {
+                cell.bridge_facts.raw_flags
+                    & crate::map::bridge_facts::MODELED_CELLCLASS_BRIDGE_FLAG_MASK
+            }
+            CellRef::Dummy { cell } => cell.bridge_flags_0x1180(),
+        }
+    }
+}
+
+fn detached_dummy(x: i32, y: i32) -> SharedCellDummy {
+    let dummy = SharedCellDummy::fresh();
+    dummy.stamp_coord(x, y);
+    dummy
+}
+
 /// Engine `Get_CellClass`: coord → cell via the fixed stride; an out-of-range or
-/// missing cell returns `CellRef::Dummy` carrying the packed requested coord and
+/// missing cell returns `CellRef::Dummy` viewing the packed requested coord and
 /// preserved shared fallback bytes (NOT `(0,0)`, NOT `None`). The width-based
 /// `PathGrid`/`ResolvedTerrainGrid` index stays as the cache; this is the
 /// never-null parity lookup. Components are not checked separately: any valid
@@ -85,14 +99,50 @@ pub fn get_cellclass_fallback<'a>(
             return CellRef::Real(cell);
         }
     }
-    let (level, slope_type) = terrain
-        .map(ResolvedTerrainGrid::dummy_cell_level_slope)
-        .unwrap_or((0, 0));
-    CellRef::Dummy {
-        coord: (x, y),
-        level,
-        slope_type,
+    let cell = terrain.map_or_else(
+        || detached_dummy(x, y),
+        |terrain| {
+            terrain.stamp_dummy_cell_requested_coord(x, y);
+            terrain.shared_cell_dummy()
+        },
+    );
+    CellRef::Dummy { cell }
+}
+
+/// Engine world/lepton coordinate lookup, preserving full signed-i32 `/256`
+/// quotients and wrapping fixed-stride index arithmetic. Coordinate words are
+/// narrowed only after a miss, when native stamps the shared dummy.
+///
+/// Verified against `MapClass::Get_CellClass @ 0x00565730`: a real slot leaves
+/// the shared dummy untouched, while either an invalid slot or a null entry
+/// stamps the converted packed coordinate before returning the dummy.
+pub fn get_cellclass_fallback_leptons<'a>(
+    terrain: Option<&'a ResolvedTerrainGrid>,
+    x_leptons: i32,
+    y_leptons: i32,
+) -> CellRef<'a> {
+    let x = x_leptons / 256;
+    let y = y_leptons / 256;
+    let index = y
+        .wrapping_mul(CELL_ROW_STRIDE as i32)
+        .wrapping_add(x);
+    if (0..=MAX_CELL_INDEX as i32).contains(&index) {
+        let rx = (index % CELL_ROW_STRIDE as i32) as u16;
+        let ry = (index / CELL_ROW_STRIDE as i32) as u16;
+        if let Some(cell) = terrain.and_then(|terrain| terrain.cell(rx, ry)) {
+            return CellRef::Real(cell);
+        }
     }
+
+    let (x, y) = packed_cell_coord(x, y);
+    let cell = terrain.map_or_else(
+        || detached_dummy(x, y),
+        |terrain| {
+            terrain.stamp_dummy_cell_requested_coord(x, y);
+            terrain.shared_cell_dummy()
+        },
+    );
+    CellRef::Dummy { cell }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,7 +419,60 @@ pub(crate) fn scan_cell_rect(rect: CellRect, mut visit: impl FnMut(i32, i32) -> 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CellReservationGrid {
     masks: BTreeMap<(u16, u16), u32>,
+    /// Native save iterates allocated CellClass pointers only. The process-global
+    /// fallback CellClass is reconstructed cleared during load/Resize.
+    #[serde(skip)]
     dummy_mask: u32,
+}
+
+#[derive(Debug, Clone)]
+enum ReservationCellSelection {
+    Real(u16, u16),
+    SharedDummy(SharedCellDummy),
+    /// Unit-level/detached callers have no persistent shared dummy coordinate,
+    /// but retain the existing real fixed-stride versus fallback mask split.
+    DetachedDummy { requested: (i32, i32) },
+}
+
+impl ReservationCellSelection {
+    fn live_coord(&self) -> (i32, i32) {
+        match self {
+            Self::Real(rx, ry) => (i32::from(*rx), i32::from(*ry)),
+            Self::SharedDummy(cell) => cell.snapshot().coord,
+            Self::DetachedDummy { requested } => *requested,
+        }
+    }
+}
+
+fn resolve_reservation_cell(
+    terrain: Option<&ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+) -> ReservationCellSelection {
+    let Some(terrain) = terrain else {
+        return canonical_cell_coord(x, y).map_or_else(
+            || ReservationCellSelection::DetachedDummy {
+                requested: packed_cell_coord(x, y),
+            },
+            |(rx, ry)| ReservationCellSelection::Real(rx, ry),
+        );
+    };
+    match get_cellclass_fallback(Some(terrain), x, y) {
+        CellRef::Real(cell) => ReservationCellSelection::Real(cell.rx, cell.ry),
+        CellRef::Dummy { cell } => ReservationCellSelection::SharedDummy(cell),
+    }
+}
+
+pub(crate) fn resolve_reservation_real_cell(
+    terrain: Option<&ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+) -> Option<(u16, u16)> {
+    match resolve_reservation_cell(terrain, x, y) {
+        ReservationCellSelection::Real(rx, ry) => Some((rx, ry)),
+        ReservationCellSelection::SharedDummy(_)
+        | ReservationCellSelection::DetachedDummy { .. } => None,
+    }
 }
 
 impl CellReservationGrid {
@@ -388,10 +491,12 @@ impl CellReservationGrid {
         if mask == 0 {
             return;
         }
-        if let Some(cell) = reservation_cell_coord(terrain, x, y) {
-            *self.masks.entry(cell).or_default() |= mask;
-        } else {
-            self.dummy_mask |= mask;
+        match resolve_reservation_cell(terrain, x, y) {
+            ReservationCellSelection::Real(rx, ry) => {
+                *self.masks.entry((rx, ry)).or_default() |= mask;
+            }
+            ReservationCellSelection::SharedDummy(_)
+            | ReservationCellSelection::DetachedDummy { .. } => self.dummy_mask |= mask,
         }
     }
 
@@ -406,22 +511,44 @@ impl CellReservationGrid {
         if mask == 0 {
             return;
         }
-        let Some(cell) = reservation_cell_coord(terrain, x, y) else {
-            self.dummy_mask &= !mask;
-            return;
-        };
-        if let Some(bits) = self.masks.get_mut(&cell) {
-            *bits &= !mask;
-            if *bits == 0 {
-                self.masks.remove(&cell);
+        match resolve_reservation_cell(terrain, x, y) {
+            ReservationCellSelection::Real(rx, ry) => {
+                let cell = (rx, ry);
+                if let Some(bits) = self.masks.get_mut(&cell) {
+                    *bits &= !mask;
+                    if *bits == 0 {
+                        self.masks.remove(&cell);
+                    }
+                }
             }
+            ReservationCellSelection::SharedDummy(_)
+            | ReservationCellSelection::DetachedDummy { .. } => self.dummy_mask &= !mask,
         }
     }
 
     pub fn raw_mask(&self, terrain: Option<&ResolvedTerrainGrid>, x: i32, y: i32) -> u32 {
-        reservation_cell_coord(terrain, x, y).map_or(self.dummy_mask, |cell| {
-            self.masks.get(&cell).copied().unwrap_or(0)
-        })
+        self.raw_mask_for_selection(&resolve_reservation_cell(terrain, x, y))
+    }
+
+    fn raw_mask_for_selection(&self, cell: &ReservationCellSelection) -> u32 {
+        match cell {
+            ReservationCellSelection::Real(rx, ry) => {
+                self.masks.get(&(*rx, *ry)).copied().unwrap_or(0)
+            }
+            ReservationCellSelection::SharedDummy(_)
+            | ReservationCellSelection::DetachedDummy { .. } => self.dummy_mask,
+        }
+    }
+
+    pub(crate) fn raw_mask_for_cell_ref(&self, cell: &CellRef<'_>) -> u32 {
+        match cell {
+            CellRef::Real(cell) => self
+                .masks
+                .get(&(cell.rx, cell.ry))
+                .copied()
+                .unwrap_or(0),
+            CellRef::Dummy { .. } => self.dummy_mask,
+        }
     }
 
     pub fn has_reservation(
@@ -501,7 +628,12 @@ impl CellReservationGrid {
         y: i32,
         reservation_arg: i32,
     ) -> u32 {
-        if !self.has_reservation(terrain, x, y, reservation_arg) {
+        let mask = reservation_mask(reservation_arg);
+        if mask == 0 {
+            return u32::MAX;
+        }
+        let center = resolve_reservation_cell(terrain, x, y);
+        if self.raw_mask_for_selection(&center) & mask == 0 {
             return u32::MAX;
         }
         const NEIGHBORS: [(i32, i32); 8] = [
@@ -516,12 +648,13 @@ impl CellReservationGrid {
         ];
         let mut result = 0u32;
         for (index, (dx, dy)) in NEIGHBORS.into_iter().enumerate() {
-            if self.has_reservation(
+            let (origin_x, origin_y) = center.live_coord();
+            let neighbor = resolve_reservation_cell(
                 terrain,
-                x.wrapping_add(dx),
-                y.wrapping_add(dy),
-                reservation_arg,
-            ) {
+                origin_x.wrapping_add(dx),
+                origin_y.wrapping_add(dy),
+            );
+            if self.raw_mask_for_selection(&neighbor) & mask != 0 {
                 result |= 1u32 << index;
             }
         }
@@ -535,15 +668,16 @@ impl CellReservationGrid {
     pub(crate) fn dummy_mask(&self) -> u32 {
         self.dummy_mask
     }
-}
 
-fn reservation_cell_coord(
-    terrain: Option<&ResolvedTerrainGrid>,
-    x: i32,
-    y: i32,
-) -> Option<(u16, u16)> {
-    canonical_cell_coord(x, y)
-        .filter(|&(rx, ry)| terrain.is_none_or(|terrain| terrain.cell(rx, ry).is_some()))
+    /// Reconstruct only the split `+0xDC` state of the fixed fallback
+    /// CellClass; real-cell reservation authority is deliberately untouched.
+    ///
+    /// `MapClass::Resize @ 0x00565C10` reconstructs the fixed dummy through
+    /// `CellClass::Constructor @ 0x0047BBF0`, whose write at `0x0047BC76`
+    /// clears `CellClass+0xDC`.
+    pub(crate) fn reconstruct_dummy_for_map_resize(&mut self) {
+        self.dummy_mask = 0;
+    }
 }
 
 pub struct CellRectPassabilityContext<'a> {
@@ -578,24 +712,7 @@ pub struct CellRectOccupancyContext<'a> {
 }
 
 pub fn check_passability_rect(ctx: CellRectPassabilityContext<'_>) -> bool {
-    if ctx.rect.width <= 0 || ctx.rect.height <= 0 {
-        return true;
-    }
-
-    let mut x = 0;
-    while x < ctx.rect.width {
-        let mut y = 0;
-        while y < ctx.rect.height {
-            let cx = ctx.rect.x.saturating_add(x);
-            let cy = ctx.rect.y.saturating_add(y);
-            if !check_cell_passability(&ctx, cx, cy) {
-                return false;
-            }
-            y += 1;
-        }
-        x += 1;
-    }
-    true
+    scan_cell_rect(ctx.rect, |x, y| check_cell_passability(&ctx, x, y))
 }
 
 pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
@@ -626,7 +743,14 @@ fn occupancy_blocker_at(
     y: i32,
     reservation_mask: u32,
 ) -> Option<OccupancyBlocker> {
-    let canonical = canonical_cell_coord(x, y);
+    // Native `CellRect::CheckOccupancy @ 0x00586780` resolves the never-null
+    // CellClass first. All following columns therefore observe the lookup's
+    // shared-dummy coordinate write before their own first-blocker return.
+    let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
+    let canonical = match &cell {
+        CellRef::Real(cell) => Some((cell.rx, cell.ry)),
+        CellRef::Dummy { .. } => None,
+    };
 
     if canonical.is_some_and(|cell| {
         ctx.terrain_object_cells
@@ -634,24 +758,33 @@ fn occupancy_blocker_at(
     }) {
         return Some(OccupancyBlocker::TerrainObject);
     }
-    if reservation_mask != 0
+    let reserved = reservation_mask != 0
         && ctx.reservations.is_some_and(|reservations| {
-            reservations.raw_mask(ctx.resolved_terrain, x, y) & reservation_mask != 0
-        })
-    {
+            let raw_mask = match &cell {
+                CellRef::Real(_) => reservations.raw_mask_for_cell_ref(&cell),
+                CellRef::Dummy { .. } if ctx.resolved_terrain.is_some() => {
+                    reservations.raw_mask_for_cell_ref(&cell)
+                }
+                // Detached tests have no shared CellClass identity to stamp.
+                // Preserve CellReservationGrid's established canonical
+                // real-versus-fallback split without inventing dummy state.
+                CellRef::Dummy { .. } => reservations.raw_mask(None, x, y),
+            };
+            raw_mask & reservation_mask != 0
+        });
+    if reserved {
         return Some(OccupancyBlocker::Reservation);
     }
     if canonical.is_some_and(|(rx, ry)| overlay_present(ctx.overlay_grid, rx, ry)) {
         return Some(OccupancyBlocker::Overlay);
     }
 
-    let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
-    if matches!(cell, CellRef::Real(cell) if cell.zone_type != zone_class::GROUND) {
+    if matches!(&cell, CellRef::Real(cell) if cell.zone_type != zone_class::GROUND) {
         return Some(OccupancyBlocker::ZoneType);
     }
-    if match cell {
+    if match &cell {
         CellRef::Real(cell) => cell.slope_type != 0,
-        CellRef::Dummy { slope_type, .. } => slope_type != 0,
+        CellRef::Dummy { cell } => cell.snapshot().slope_type != 0,
     } {
         return Some(OccupancyBlocker::Slope);
     }
@@ -664,11 +797,34 @@ fn occupancy_blocker_at(
 }
 
 fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) -> bool {
-    let Some((rx, ry)) = to_cell_coord(x, y) else {
-        return false;
+    // Native `CellRect::CheckPassability @ 0x0056E7C0` calls packed
+    // `MapClass::GetCellClass @ 0x005657A0` before the optional overlay column
+    // and before `CellClass::CheckCellPassability @ 0x004834A0`. In particular,
+    // Winged still performs the lookup and fixed-stride aliases use the real
+    // backing CellClass coordinates for every projected Rust grid.
+    let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
+    let canonical = match &cell {
+        CellRef::Real(cell) => Some((cell.rx, cell.ry)),
+        CellRef::Dummy { .. } => None,
     };
+    // VERA-internal compatibility seam: some focused/headless callers still
+    // carry PathGrid without a resolved CellClass array. Keep their former
+    // checked-u16 cache projection, but never let it replace a terrain-backed
+    // native dummy or the canonical coordinates of a packed real alias.
+    let path_only_projection = canonical.is_none()
+        && ctx.resolved_terrain.is_none()
+        && ctx.path_grid.is_some();
+    let projection_coord = canonical.or_else(|| {
+        if path_only_projection {
+            checked_u16_cell_coord(x, y)
+        } else {
+            None
+        }
+    });
 
-    if ctx.reject_any_overlay && overlay_present(ctx.overlay_grid, rx, ry) {
+    if ctx.reject_any_overlay
+        && projection_coord.is_some_and(|(rx, ry)| overlay_present(ctx.overlay_grid, rx, ry))
+    {
         return false;
     }
 
@@ -676,11 +832,13 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
         return true;
     }
 
-    let terrain_cell = ctx
-        .resolved_terrain
-        .and_then(|terrain| terrain.cell(rx, ry));
-    let path_cell = ctx.path_grid.and_then(|grid| grid.cell(rx, ry));
-    if terrain_cell.is_none() && path_cell.is_none() {
+    let terrain_cell = match &cell {
+        CellRef::Real(cell) => Some(*cell),
+        CellRef::Dummy { .. } => None,
+    };
+    let path_cell =
+        projection_coord.and_then(|(rx, ry)| ctx.path_grid.and_then(|grid| grid.cell(rx, ry)));
+    if path_only_projection && path_cell.is_none() {
         return false;
     }
 
@@ -688,23 +846,55 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
         let Some(zone_grid) = ctx.zone_grid else {
             return false;
         };
-        let Some(zone_map) = zone_grid.map_for(ctx.movement_zone) else {
-            return false;
-        };
-        let layer = if ctx.bridge_aware_zone {
-            MovementLayer::Bridge
+
+        let actual_zone = if !ctx.bridge_aware_zone && ctx.resolved_terrain.is_some() {
+            // `CellClass::CheckCellPassability @ 0x004834A0` passes the
+            // already-resolved CellClass's stored +0x24 coordinate into
+            // non-bridge `MapClass::GetZoneID @ 0x0056D230`. A fixed-stride
+            // alias therefore uses the real slot's canonical coordinate, while
+            // the shared dummy uses the live coordinate stamped by the outer
+            // GetCellClass call. GetZoneID itself performs no CellClass lookup
+            // and leaves the shared dummy untouched.
+            let coord = match &cell {
+                CellRef::Real(cell) => (i32::from(cell.rx), i32::from(cell.ry)),
+                CellRef::Dummy { cell } => cell.snapshot().coord,
+            };
+            zone_grid.get_zone_id_nonbridge_native(coord, ctx.movement_zone)
         } else {
-            MovementLayer::Ground
+            // UNCHECKED residual: the bridge-aware GetZoneID redirect has not
+            // yet been parity-closed. Keep its existing flattened bridge-layer
+            // projection separate from the exact non-bridge adapter. The same
+            // compatibility projection remains for terrain-less PathGrid-only
+            // callers, which have no retained native base topology.
+            let Some((rx, ry)) = projection_coord else {
+                return false;
+            };
+            let Some(zone_map) = zone_grid.map_for(ctx.movement_zone) else {
+                return false;
+            };
+            let layer = if ctx.bridge_aware_zone {
+                MovementLayer::Bridge
+            } else {
+                MovementLayer::Ground
+            };
+            Some(zone_map.zone_at(rx, ry, layer))
         };
-        if zone_map.zone_at(rx, ry, layer) != required_zone {
+        if actual_zone != Some(required_zone) {
             return false;
         }
     }
 
-    let base_level = path_cell
-        .map(|cell| cell.signed_level())
-        .or_else(|| terrain_cell.map(|cell| cell.level as i8 as i16))
-        .unwrap_or(0);
+    let base_level = if path_only_projection {
+        path_cell.map(|cell| cell.signed_level()).unwrap_or(0)
+    } else {
+        match &cell {
+            CellRef::Real(_) => path_cell
+                .map(|cell| cell.signed_level())
+                .or_else(|| terrain_cell.map(|cell| cell.level as i8 as i16))
+                .unwrap_or(0),
+            CellRef::Dummy { cell } => i16::from(cell.snapshot().level),
+        }
+    };
     let structural_bridge = path_cell.is_some_and(|cell| cell.has_structural_bridge())
         || terrain_cell.is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
 
@@ -712,17 +902,22 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
     // do not yet carry the raw occupation grid, so their existing object-list
     // blocker projection is kept explicit here. World/movement callers with raw
     // bytes must construct `IsClearToMoveRequest` directly rather than infer bits.
-    let projected_ground_bits = u8::from(
+    let projected_ground_bits = u8::from(projection_coord.is_some_and(|(rx, ry)| {
         ctx.occupancy
-            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Ground) > 0),
-    ) * 0x40;
-    let projected_deck_bits = u8::from(
+            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Ground) > 0)
+    })) * 0x40;
+    let projected_deck_bits = u8::from(projection_coord.is_some_and(|(rx, ry)| {
         ctx.occupancy
-            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Bridge) > 0),
-    ) * 0x40;
+            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Bridge) > 0)
+    })) * 0x40;
     let is_wall_overlay = terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::WALL);
     let land_passable = terrain_cell.map_or_else(
-        || ctx.path_grid.map_or(true, |grid| grid.is_walkable(rx, ry)),
+        || {
+            !path_only_projection
+                || projection_coord.is_some_and(|(rx, ry)| {
+                    ctx.path_grid.is_some_and(|grid| grid.is_walkable(rx, ry))
+                })
+        },
         |cell| speed_type_allows_cell(cell, ctx.speed_type, ctx.movement_zone),
     );
     matches!(
@@ -831,9 +1026,10 @@ pub(crate) fn cell_is_in_playfield_height_aware(
     let (x, y) = packed_cell_coord(cell.0, cell.1);
     let (level, slope) = match get_cellclass_fallback(terrain, x, y) {
         CellRef::Real(cell) => (cell.level as i8, cell.slope_type),
-        CellRef::Dummy {
-            level, slope_type, ..
-        } => (level, slope_type),
+        CellRef::Dummy { cell } => {
+            let snapshot = cell.snapshot();
+            (snapshot.level, snapshot.slope_type)
+        }
     };
     bounds.contains_height_aware_packed(x, y, level, slope)
 }
@@ -861,7 +1057,7 @@ fn reservation_mask(reservation_arg: i32) -> u32 {
     }
 }
 
-fn to_cell_coord(x: i32, y: i32) -> Option<(u16, u16)> {
+fn checked_u16_cell_coord(x: i32, y: i32) -> Option<(u16, u16)> {
     if x < 0 || y < 0 || x > i32::from(u16::MAX) || y > i32::from(u16::MAX) {
         return None;
     }
@@ -1203,6 +1399,23 @@ mod tests {
         ResolvedTerrainGrid::from_cells(width, height, cells)
     }
 
+    fn assert_dummy(
+        cell: CellRef<'_>,
+        coord: (i32, i32),
+        level: i8,
+        slope_type: u8,
+    ) {
+        assert_eq!(
+            cell.dummy_snapshot(),
+            Some(SharedCellDummySnapshot {
+                coord,
+                level,
+                slope_type,
+                bridge_flags_0x1180: 0,
+            })
+        );
+    }
+
     fn wide_test_playfield() -> PlayfieldBounds {
         PlayfieldBounds {
             base: 0,
@@ -1211,6 +1424,246 @@ mod tests {
             off_104: 2_000,
             off_108: 2_000,
         }
+    }
+
+    fn clear_passability_context<'a>(
+        rect: CellRect,
+        terrain: Option<&'a ResolvedTerrainGrid>,
+    ) -> CellRectPassabilityContext<'a> {
+        CellRectPassabilityContext {
+            rect,
+            speed_type: SpeedType::Track,
+            required_zone_id: None,
+            movement_zone: MovementZone::Normal,
+            required_height_or_level: None,
+            bridge_aware_zone: false,
+            reject_any_overlay: false,
+            path_grid: None,
+            resolved_terrain: terrain,
+            overlay_grid: None,
+            occupancy: None,
+            zone_grid: None,
+        }
+    }
+
+    fn clear_occupancy_context<'a>(
+        rect: CellRect,
+        terrain: Option<&'a ResolvedTerrainGrid>,
+    ) -> CellRectOccupancyContext<'a> {
+        CellRectOccupancyContext {
+            rect,
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: None,
+            entities: None,
+            terrain_object_cells: None,
+            resolved_terrain: terrain,
+            overlay_grid: None,
+            playfield_bounds: Some(wide_test_playfield()),
+        }
+    }
+
+    fn square_zone_grid(terrain: &ResolvedTerrainGrid) -> (PathGrid, ZoneGrid) {
+        assert_eq!(terrain.width(), terrain.height());
+        let path_grid = PathGrid::from_resolved_terrain(terrain);
+        let zone_grid = ZoneGrid::build_with_terrain(
+            &path_grid,
+            &BTreeMap::new(),
+            Some(terrain),
+            &[],
+            terrain.width(),
+            terrain.height(),
+        );
+        (path_grid, zone_grid)
+    }
+
+    #[test]
+    fn gsi_04_01_passability_missing_cell_stamps_then_uses_clear_dummy_defaults() {
+        let terrain = flat_terrain(1, 1);
+
+        assert!(check_passability_rect(clear_passability_context(
+            CellRect::new(5, 7, 1, 1),
+            Some(&terrain),
+        )));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (5, 7));
+    }
+
+    #[test]
+    fn gsi_04_01_passability_path_grid_only_keeps_checked_projection() {
+        let mut path_grid = PathGrid::new(2, 1);
+        path_grid.set_blocked(0, 0, true);
+
+        for (cell, expected) in [
+            ((0, 0), false),
+            ((1, 0), true),
+            ((2, 0), false),
+            ((-1, 0), false),
+        ] {
+            let mut ctx =
+                clear_passability_context(CellRect::new(cell.0, cell.1, 1, 1), None);
+            ctx.path_grid = Some(&path_grid);
+            assert_eq!(
+                check_passability_rect(ctx),
+                expected,
+                "path-only projection at {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_01_missing_cell_ignores_real_grid_overlay_and_object_projections() {
+        let mut terrain = flat_terrain(1, 1);
+        terrain.test_set_native_allocated_cells(&[]);
+        let mut overlays = OverlayGrid::new(1, 1);
+        overlays.place_overlay(0, 0, 7, 0);
+
+        let mut passability = clear_passability_context(CellRect::single(0, 0), Some(&terrain));
+        passability.reject_any_overlay = true;
+        passability.overlay_grid = Some(&overlays);
+        assert!(
+            check_passability_rect(passability),
+            "dummy +0x44 has constructor-default no-overlay state"
+        );
+
+        let terrain_objects = BTreeMap::from([((0, 0), 88)]);
+        let mut occupancy = clear_occupancy_context(CellRect::single(0, 0), Some(&terrain));
+        occupancy.terrain_object_cells = Some(&terrain_objects);
+        occupancy.overlay_grid = Some(&overlays);
+        assert!(
+            check_occupancy_rect(occupancy),
+            "the dummy owns neither the real slot's ground list nor its +0x44 overlay"
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (0, 0));
+    }
+
+    #[test]
+    fn gsi_04_01_passability_fixed_stride_alias_uses_real_cell_without_stamping() {
+        let terrain = flat_terrain(512, 1);
+        let _ = get_cellclass_fallback(Some(&terrain), -2, 0);
+
+        assert!(check_passability_rect(clear_passability_context(
+            CellRect::new(-1, 1, 1, 1),
+            Some(&terrain),
+        )));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-2, 0),
+            "packed (-1,1) aliases the real (511,0) slot"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_passability_scan_is_x_outer_y_inner_and_first_failure_stops() {
+        let terrain = flat_terrain(1, 2);
+        let mut overlays = OverlayGrid::new(1, 2);
+        overlays.place_overlay(0, 1, 7, 0);
+        let mut ctx = clear_passability_context(CellRect::new(-1, 0, 2, 3), Some(&terrain));
+        ctx.reject_any_overlay = true;
+        ctx.overlay_grid = Some(&overlays);
+
+        assert!(!check_passability_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 2),
+            "the real (0,1) overlay stops before the later (0,2) miss"
+        );
+
+        assert!(check_passability_rect(clear_passability_context(
+            CellRect::new(2, 3, 2, 2),
+            Some(&terrain),
+        )));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (3, 4),
+            "a clear scan visits (2,3),(2,4),(3,3),(3,4)"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_passability_winged_missing_cell_still_stamps_before_success() {
+        let terrain = flat_terrain(1, 1);
+        let mut ctx = clear_passability_context(CellRect::new(9, -3, 1, 1), Some(&terrain));
+        ctx.speed_type = SpeedType::Winged;
+
+        assert!(check_passability_rect(ctx));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (9, -3));
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_lookup_precedes_terrain_object_blocker() {
+        let terrain = flat_terrain(1, 1);
+        let terrain_objects = BTreeMap::from([((0, 0), 88)]);
+        let mut ctx = clear_occupancy_context(CellRect::new(-1, 0, 3, 1), Some(&terrain));
+        ctx.terrain_object_cells = Some(&terrain_objects);
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 0),
+            "lookup of the first miss precedes the real terrain-object blocker, which stops before (1,0)"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_lookup_stamps_before_dummy_reservation_blocker() {
+        let terrain = flat_terrain(1, 1);
+        let mut reservations = CellReservationGrid::new();
+        reservations.reserve(Some(&terrain), -5, 0, 3);
+        let mut ctx = clear_occupancy_context(CellRect::new(5, 7, 1, 1), Some(&terrain));
+        ctx.reservation_arg = 3;
+        ctx.reservations = Some(&reservations);
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (5, 7),
+            "the current probe remains the last dummy writer on reservation failure"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_lookup_precedes_overlay_blocker() {
+        let terrain = flat_terrain(1, 1);
+        let mut overlays = OverlayGrid::new(1, 1);
+        overlays.place_overlay(0, 0, 7, 0);
+        let mut ctx = clear_occupancy_context(CellRect::new(-1, 0, 3, 1), Some(&terrain));
+        ctx.overlay_grid = Some(&overlays);
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 0),
+            "the real overlay blocker stops before the later (1,0) miss"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_clear_scan_leaves_se_playfield_corner_as_last_writer() {
+        let terrain = flat_terrain(1, 1);
+
+        assert!(check_occupancy_rect(clear_occupancy_context(
+            CellRect::new(100, 100, 0, 0),
+            Some(&terrain),
+        )));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (99, 99),
+            "zero-size corners are NW (100,100), NE (99,100), SW (100,99), SE (99,99)"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_occupancy_failed_nw_playfield_corner_short_circuits() {
+        let terrain = flat_terrain(1, 1);
+        let mut ctx = clear_occupancy_context(CellRect::new(6, 6, 0, 0), Some(&terrain));
+        ctx.playfield_bounds = Some(diamond_bounds());
+
+        assert!(!check_occupancy_rect(ctx));
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (6, 6),
+            "failed NW must stop before the distinct decremented corners"
+        );
     }
 
     #[test]
@@ -1295,7 +1748,7 @@ mod tests {
 
     #[test]
     fn cellrect_passability_uses_movement_zone_zone_id_and_speed_type_separately() {
-        let mut terrain = flat_terrain(2, 1);
+        let mut terrain = flat_terrain(2, 2);
         terrain.cells[0].speed_costs = SpeedCostProfile {
             track: Some(100),
             foot: Some(0),
@@ -1310,11 +1763,9 @@ mod tests {
             terrain.width(),
             terrain.height(),
         );
-        let zone_id =
-            zone_grid
-                .map_for(MovementZone::Normal)
-                .unwrap()
-                .zone_at(0, 0, MovementLayer::Ground);
+        let zone_id = zone_grid
+            .get_zone_id_nonbridge_native((0, 0), MovementZone::Normal)
+            .unwrap();
 
         let wrong_zone = CellRectPassabilityContext {
             rect: CellRect::single(0, 0),
@@ -1363,6 +1814,147 @@ mod tests {
             zone_grid: Some(&zone_grid),
         };
         assert!(check_passability_rect(track_passes));
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_nonbridge_zone_uses_resolved_cell_canonical_coord() {
+        let terrain = flat_terrain(2, 2);
+        let (path_grid, mut zone_grid) = square_zone_grid(&terrain);
+        {
+            let base = zone_grid.base_topology_mut().unwrap();
+            base.movement_classes = vec![0; 4];
+            base.zone_ids = vec![2, 3, 4, 5];
+            base.zone_count = 5;
+            let row = MovementZone::Normal.matrix_row().unwrap();
+            base.raw_zone_ids_by_row[row].resize(6, 0);
+            base.raw_zone_ids_by_row[row][0] = 10;
+            base.raw_zone_ids_by_row[row][4] = 44;
+        }
+        let _ = get_cellclass_fallback(Some(&terrain), -1, 0);
+
+        let mut ctx = clear_passability_context(CellRect::single(512, 0), Some(&terrain));
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&zone_grid);
+        ctx.required_zone_id = Some(44);
+        assert!(
+            check_passability_rect(ctx),
+            "packed (512,0) resolves backing slot 512, whose stored coordinate is (0,1)"
+        );
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, 0),
+            "the real fixed-stride alias and nested non-bridge GetZoneID do not stamp the dummy"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_dummy_routes_raw_nonbridge_zone_without_restamping() {
+        let mut terrain = flat_terrain(2, 2);
+        let (path_grid, mut zone_grid) = square_zone_grid(&terrain);
+        {
+            let base = zone_grid.base_topology_mut().unwrap();
+            base.movement_classes = vec![0; 4];
+            base.zone_ids = vec![2, 3, 4, 5];
+            base.zone_count = 5;
+            let row = MovementZone::Normal.matrix_row().unwrap();
+            base.raw_zone_ids_by_row[row].resize(6, 0);
+            base.raw_zone_ids_by_row[row][3] = 77;
+        }
+        terrain.test_set_native_allocated_cells(&[(0, 0)]);
+
+        let check = |required_zone_id, zone_grid: &ZoneGrid| {
+            let mut ctx = clear_passability_context(CellRect::single(1, 0), Some(&terrain));
+            ctx.path_grid = Some(&path_grid);
+            ctx.zone_grid = Some(zone_grid);
+            ctx.required_zone_id = Some(required_zone_id);
+            check_passability_rect(ctx)
+        };
+
+        assert!(check(77, &zone_grid));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+        assert!(!check(78, &zone_grid));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+
+        let row = MovementZone::Normal.matrix_row().unwrap();
+        zone_grid.base_topology_mut().unwrap().raw_zone_ids_by_row[row][3] = 1;
+        assert!(
+            !check(77, &zone_grid),
+            "raw reserved label 1 stays distinct"
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+        zone_grid.base_topology_mut().unwrap().raw_zone_ids_by_row[row][3] = u16::MAX;
+        assert!(!check(77, &zone_grid), "raw 0xffff stays distinct");
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (1, 0),
+            "non-bridge GetZoneID performs no second CellClass lookup or dummy write"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_required_zone_fails_without_native_topology() {
+        let terrain = flat_terrain(2, 2);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let compatibility_zones = ZoneGrid::build(
+            &path_grid,
+            &BTreeMap::new(),
+            terrain.width(),
+            terrain.height(),
+        );
+        let compatibility_zone = compatibility_zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(0, 0, MovementLayer::Ground);
+        let mut ctx = clear_passability_context(CellRect::single(0, 0), Some(&terrain));
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&compatibility_zones);
+        ctx.required_zone_id = Some(compatibility_zone);
+        assert!(
+            !check_passability_rect(ctx),
+            "terrain-backed required-zone checks must not fall back to a flattened ZoneMap"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_cellrect_pathgrid_only_required_zone_keeps_compatibility_projection() {
+        let path_grid = PathGrid::new(2, 1);
+        let compatibility_zones = ZoneGrid::build(&path_grid, &BTreeMap::new(), 2, 1);
+        let zone = compatibility_zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(1, 0, MovementLayer::Ground);
+        let mut ctx = clear_passability_context(CellRect::single(1, 0), None);
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&compatibility_zones);
+        ctx.required_zone_id = Some(zone);
+        assert!(check_passability_rect(ctx));
+    }
+
+    #[test]
+    fn gsi_04_01_bridge_required_zone_stays_off_nonbridge_raw_adapter() {
+        let terrain = flat_terrain(2, 2);
+        let (path_grid, mut zone_grid) = square_zone_grid(&terrain);
+        {
+            let base = zone_grid.base_topology_mut().unwrap();
+            let cluster = base.zone_ids[0] as usize;
+            let row = MovementZone::Normal.matrix_row().unwrap();
+            base.raw_zone_ids_by_row[row].resize(cluster + 1, 0);
+            base.raw_zone_ids_by_row[row][cluster] = 91;
+        }
+        assert_eq!(
+            zone_grid.get_zone_id_nonbridge_native((0, 0), MovementZone::Normal),
+            Some(91)
+        );
+
+        let mut ctx = clear_passability_context(CellRect::single(0, 0), Some(&terrain));
+        ctx.path_grid = Some(&path_grid);
+        ctx.zone_grid = Some(&zone_grid);
+        ctx.required_zone_id = Some(91);
+        ctx.bridge_aware_zone = true;
+        assert!(
+            !check_passability_rect(ctx),
+            "this locks branch separation only: exact bridge-aware GetZoneID remains UNCHECKED"
+        );
     }
 
     #[test]
@@ -1432,14 +2024,7 @@ mod tests {
         ));
         // Out of bounds: a non-null dummy carrying the *requested* coord
         // (never None, never (0,0)).
-        assert_eq!(
-            get_cellclass_fallback(Some(&g), -3, 7),
-            CellRef::Dummy {
-                coord: (-3, 7),
-                level: 0,
-                slope_type: 0,
-            }
-        );
+        assert_dummy(get_cellclass_fallback(Some(&g), -3, 7), (-3, 7), 0, 0);
     }
 
     #[test]
@@ -1455,23 +2040,145 @@ mod tests {
             CellRef::Real(terrain.cell(0, 1).expect("canonical index 512"))
         );
 
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), -1, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (-1, 0),
+            0,
+            0,
         );
         let missing_canonical_cell = flat_terrain(2, 1);
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&missing_canonical_cell), 512, 0),
-            CellRef::Dummy {
-                coord: (512, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (512, 0),
+            0,
+            0,
         );
+    }
+
+    #[test]
+    fn gsi_04_01_lookup_misses_stamp_only_packed_dummy_coord() {
+        let mut terrain = flat_terrain(512, 2);
+        terrain.test_set_native_allocated_cells(&[(0, 0), (511, 0)]);
+        terrain.test_set_dummy_cell_level_slope(-5, 7);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (0, 0));
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -1, 1),
+            CellRef::Real(terrain.cell(511, 0).expect("fixed-stride alias slot"))
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (0, 0));
+
+        assert_dummy(
+            get_cellclass_fallback(Some(&terrain), -1, 0),
+            (-1, 0),
+            -5,
+            7,
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
+
+        // Packed (512,0) has a valid fixed-array index, but its canonical
+        // (0,1) slot is null in this allocation mask. Native still stamps the
+        // requested words; high Rust-only bits do not survive the seam.
+        assert_dummy(
+            get_cellclass_fallback(Some(&terrain), 0x1_0200, 0x1_0000),
+            (512, 0),
+            -5,
+            7,
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (512, 0));
+        assert_eq!(terrain.dummy_cell_level_slope(), (-5, 7));
+    }
+
+    #[test]
+    fn gsi_04_01_lookup_world_leptons_truncate_before_fallback() {
+        let terrain = flat_terrain(1, 1);
+        assert_dummy(
+            get_cellclass_fallback(Some(&terrain), -2, 0),
+            (-2, 0),
+            0,
+            0,
+        );
+
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), -1, -255),
+            CellRef::Real(terrain.cell(0, 0).expect("negative fractions truncate to zero"))
+        );
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), -255, -1),
+            CellRef::Real(terrain.cell(0, 0).expect("negative fractions truncate to zero"))
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
+
+        // Full quotients (32768,-64) cancel to fixed index zero before either
+        // component is narrowed to its dummy-cell word.
+        assert_eq!(
+            get_cellclass_fallback_leptons(Some(&terrain), 8_388_608, -16_384),
+            CellRef::Real(terrain.cell(0, 0).expect("full-i32 quotient index cancellation"))
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
+
+        assert_dummy(
+            get_cellclass_fallback_leptons(Some(&terrain), -256, 0),
+            (-1, 0),
+            0,
+            0,
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-1, 0));
+
+        assert_dummy(
+            get_cellclass_fallback_leptons(Some(&terrain), 256, 0),
+            (1, 0),
+            0,
+            0,
+        );
+        assert_eq!(terrain.dummy_cell_requested_coord(), (1, 0));
+    }
+
+    #[test]
+    fn gsi_04_01_lookup_allocation_probe_has_no_dummy_side_effect() {
+        let mut terrain = flat_terrain(512, 2);
+        terrain.test_set_native_allocated_cells(&[(0, 0), (511, 0)]);
+        terrain.test_set_dummy_cell_level_slope(-4, 9);
+        let _ = get_cellclass_fallback(Some(&terrain), -3, 0);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-3, 0));
+
+        assert!(terrain.cellclass_allocation_probe(0, 0));
+        assert!(terrain.cellclass_allocation_probe(-1, 1));
+        assert!(!terrain.cellclass_allocation_probe(1, 0));
+        assert!(!terrain.cellclass_allocation_probe(512, 0));
+        assert!(!terrain.cellclass_allocation_probe(-1, 0));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-3, 0));
+        assert_eq!(terrain.dummy_cell_level_slope(), (-4, 9));
+    }
+
+    #[test]
+    fn gsi_04_01_shared_dummy_ref_and_grid_clone_retain_live_identity() {
+        let terrain = flat_terrain(1, 1);
+        terrain.test_set_dummy_cell_level_slope(-6, 11);
+        let miss_a = get_cellclass_fallback(Some(&terrain), -1, 0);
+        let real = get_cellclass_fallback(Some(&terrain), 0, 0);
+
+        let cloned = terrain.clone();
+        assert_eq!(cloned.dummy_cell_requested_coord(), (-1, 0));
+        assert_eq!(cloned.dummy_cell_level_slope(), (-6, 11));
+        let miss_b = get_cellclass_fallback(Some(&cloned), -2, 0);
+        assert_eq!(miss_a, miss_b, "both misses return one CellClass identity");
+        assert_dummy(miss_a, (-2, 0), -6, 11);
+        assert_eq!(cloned.dummy_cell_requested_coord(), (-2, 0));
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
+        assert_eq!(cloned.dummy_cell_level_slope(), (-6, 11));
+        assert_eq!(terrain.dummy_cell_level_slope(), (-6, 11));
+        assert_eq!(
+            real,
+            CellRef::Real(terrain.cell(0, 0).expect("allocated cell stays stable"))
+        );
+
+        let reconstructed = flat_terrain(1, 1);
+        assert!(!terrain
+            .shared_cell_dummy()
+            .same_identity(&reconstructed.shared_cell_dummy()));
+        assert_eq!(reconstructed.dummy_cell_requested_coord(), (0, 0));
+        assert_eq!(reconstructed.dummy_cell_level_slope(), (0, 0));
     }
 
     #[test]
@@ -1486,13 +2193,11 @@ mod tests {
             get_cellclass_fallback(Some(&terrain), 0xFFFF, 1),
             CellRef::Real(terrain.cell(511, 0).expect("canonical index 511"))
         );
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&flat_terrain(2, 1)), 0xFFFF, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: 0,
-                slope_type: 0,
-            }
+            (-1, 0),
+            0,
+            0,
         );
 
         // Far corners use x+width-1/y+height-1, then truncate each component
@@ -1602,27 +2307,23 @@ mod tests {
 
     #[test]
     fn gsi_04_01_dummy_state_persists_across_fallback_lookups() {
-        let mut terrain = flat_terrain(1, 1);
+        let terrain = flat_terrain(1, 1);
         assert_eq!(terrain.dummy_cell_level_slope(), (0, 0));
         terrain.test_set_dummy_cell_level_slope(-4, 7);
         terrain.set_dummy_cell_level(-5);
         assert_eq!(terrain.clone().dummy_cell_level_slope(), (-5, 7));
 
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), 0xFFFF, 0),
-            CellRef::Dummy {
-                coord: (-1, 0),
-                level: -5,
-                slope_type: 7,
-            }
+            (-1, 0),
+            -5,
+            7,
         );
-        assert_eq!(
+        assert_dummy(
             get_cellclass_fallback(Some(&terrain), 0xFFFE, 0),
-            CellRef::Dummy {
-                coord: (-2, 0),
-                level: -5,
-                slope_type: 7,
-            }
+            (-2, 0),
+            -5,
+            7,
         );
 
         let bounds = PlayfieldBounds {
@@ -1883,6 +2584,94 @@ mod tests {
             neighbors.house_reservation_neighbor_mask(None, 10, 10, 4),
             0xff
         );
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_lookups_stamp_dummy_but_real_alias_does_not() {
+        let mut terrain = flat_terrain(512, 2);
+        terrain.test_set_native_allocated_cells(&[(0, 0), (511, 0)]);
+        let mut grid = CellReservationGrid::new();
+
+        grid.reserve(Some(&terrain), -2, 0, 3);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-2, 0));
+        assert_eq!(grid.dummy_mask(), 1 << 3);
+
+        assert_eq!(grid.raw_mask(Some(&terrain), -3, 0), 1 << 3);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-3, 0));
+        grid.clear(Some(&terrain), -4, 0, 3);
+        assert_eq!(terrain.dummy_cell_requested_coord(), (-4, 0));
+        assert_eq!(grid.dummy_mask(), 0);
+
+        grid.reserve(Some(&terrain), -1, 1, 4);
+        assert_eq!(grid.raw_mask(Some(&terrain), 511, 0), 1 << 4);
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-4, 0),
+            "the fixed-stride real alias must not stamp the shared dummy"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_neighbor_mask_real_center_keeps_fixed_origin() {
+        let mut terrain = flat_terrain(1, 1);
+        terrain.test_set_native_allocated_cells(&[(0, 0)]);
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(Some(&terrain), 0, 0, 0);
+        let _ = get_cellclass_fallback(Some(&terrain), 77, 77);
+
+        assert_eq!(
+            grid.house_reservation_neighbor_mask(Some(&terrain), 0, 0, 0),
+            0
+        );
+        assert_eq!(
+            terrain.dummy_cell_requested_coord(),
+            (-1, -1),
+            "all eight probes reload the unchanged real center coordinate"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_neighbor_mask_dummy_center_rolls_and_real_hits_preserve_origin() {
+        let mut all_dummy = flat_terrain(1, 1);
+        all_dummy.test_set_native_allocated_cells(&[]);
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(Some(&all_dummy), -1, 0, 0);
+        assert_eq!(
+            grid.house_reservation_neighbor_mask(Some(&all_dummy), -1, 0, 0),
+            0xff
+        );
+        assert_eq!(
+            all_dummy.dummy_cell_requested_coord(),
+            (-1, 0),
+            "each miss moves the shared center used by the next direction"
+        );
+
+        let mut with_real_hits = flat_terrain(3, 1);
+        with_real_hits.test_set_native_allocated_cells(&[(0, 0), (2, 0)]);
+        let mut mixed = CellReservationGrid::new();
+        mixed.reserve(Some(&with_real_hits), -1, 0, 0);
+        assert_eq!(
+            mixed.house_reservation_neighbor_mask(Some(&with_real_hits), -1, 0, 0),
+            0xaf,
+            "the real S and W hits lack the owner bit"
+        );
+        assert_eq!(
+            with_real_hits.dummy_cell_requested_coord(),
+            (0, -1),
+            "real hits do not stamp and therefore preserve the rolling dummy origin"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_resize_reconstruction_clears_only_dummy_reservation() {
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(None, 3, 4, 2);
+        grid.reserve(None, -1, 0, 5);
+
+        grid.reconstruct_dummy_for_map_resize();
+
+        assert_eq!(grid.raw_mask(None, 3, 4), 1 << 2);
+        assert_eq!(grid.dummy_mask(), 0);
     }
 
     #[test]

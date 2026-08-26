@@ -408,6 +408,7 @@ mod tests {
             briefing: crate::map::briefing::BriefingSection::default(),
             preview: crate::map::preview::PreviewSection::default(),
             cells: Vec::new(),
+            iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
             overlays: Vec::new(),
             overlay_data: crate::map::overlay::OverlayDataPack::default(),
@@ -710,6 +711,8 @@ mod tests {
             &occupancy,
             bounds,
             Some(playfield_bounds),
+            Some(map.header.height as i32),
+            0,
             &mut rng,
         );
 
@@ -721,54 +724,149 @@ mod tests {
             (54, 21),
             "first native ranged draw is Y, second is X"
         );
-        assert!(deficient_start_rect_track_passable(
-            &terrain,
-            &occupancy,
-            starts[1].rx,
-            starts[1].ry
-        ));
+        assert_eq!(
+            find_nearby_start_rect(
+                &terrain,
+                &occupancy,
+                Some(playfield_bounds),
+                Some(map.header.height as i32),
+                0,
+                starts[1].rx,
+                starts[1].ry,
+            ),
+            Some((starts[1].rx, starts[1].ry)),
+        );
         assert_eq!(rng.logical_state(), expected.logical_state());
     }
 
     #[test]
     fn native_gather_rejects_a_blocked_cell_inside_the_8x8_rect() {
-        let mut terrain = test_terrain(16, 8);
-        let blocked = terrain.cell_mut(7, 7).unwrap();
+        let mut terrain = test_terrain(32, 32);
+        let blocked = terrain.cell_mut(11, 11).unwrap();
         blocked.speed_costs.track = Some(0);
         blocked.base_speed_costs.track = Some(0);
         blocked.zone_type = zone_class::IMPASSABLE;
         let occupancy = crate::sim::occupancy::OccupancyGrid::new();
+        let diamond = PlayfieldBounds {
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
+        };
 
-        assert!(!deficient_start_rect_track_passable(
-            &terrain, &occupancy, 0, 0
-        ));
-        assert!(deficient_start_rect_track_passable(
-            &terrain, &occupancy, 8, 0
-        ));
+        let moved = find_nearby_start_rect(&terrain, &occupancy, Some(diamond), Some(32), 0, 4, 4)
+            .expect("a ring-1 8x8 rectangle clears the blocked far corner");
+        assert_ne!(moved, (4, 4), "all 64 footprint cells must pass");
+        assert_eq!(
+            find_nearby_start_rect(&terrain, &occupancy, Some(diamond), Some(32), 0, 16, 4,),
+            Some((16, 4)),
+            "an unobstructed 8x8 seed remains eligible",
+        );
     }
 
     #[test]
     fn native_gather_rejects_live_occupation_inside_the_8x8_rect() {
-        let terrain = test_terrain(16, 8);
+        let terrain = test_terrain(32, 32);
         let mut occupancy = crate::sim::occupancy::OccupancyGrid::new();
         occupancy.add(
-            7,
-            7,
+            11,
+            11,
             1,
             crate::sim::movement::locomotor::MovementLayer::Ground,
             None,
             crate::sim::occupancy::CellListInsertion::PrependNonBuilding,
         );
+        let diamond = PlayfieldBounds {
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
+        };
 
-        assert!(!deficient_start_rect_track_passable(
-            &terrain, &occupancy, 0, 0
-        ));
-        assert!(deficient_start_rect_track_passable(
-            &terrain, &occupancy, 8, 0
-        ));
+        assert_ne!(
+            find_nearby_start_rect(&terrain, &occupancy, Some(diamond), Some(32), 0, 4, 4,),
+            Some((4, 4)),
+            "CellRect passability must read occupation across the 8x8 footprint",
+        );
+        assert_eq!(
+            find_nearby_start_rect(&terrain, &occupancy, Some(diamond), Some(32), 0, 16, 4,),
+            Some((16, 4)),
+        );
     }
 
-    /// gamemd-derived: active YR `FootClass__Find_Nearby_Passable_Cell
+    /// gamemd-derived: the null-reference start row selects
+    /// `g_CurrentFrameCounter % direct_pool_count` after completing the first
+    /// direct ring (`0x0056E5BF..0x0056E6ED`).
+    #[test]
+    fn deficient_start_uses_binary_frame_modulo_not_first_candidate() {
+        let mut terrain = test_terrain(40, 40);
+        let blocked = terrain.cell_mut(22, 22).unwrap();
+        blocked.speed_costs.track = Some(0);
+        blocked.base_speed_costs.track = Some(0);
+        blocked.zone_type = zone_class::IMPASSABLE;
+        let occupancy = crate::sim::occupancy::OccupancyGrid::new();
+        let diamond = PlayfieldBounds {
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
+        };
+
+        let find = |frame| {
+            find_nearby_start_rect(&terrain, &occupancy, Some(diamond), Some(40), frame, 15, 15)
+        };
+        assert_eq!(find(0), Some((14, 14)));
+        assert_eq!(find(1), Some((14, 16)));
+        assert_eq!(find(2), Some((15, 14)));
+        assert_ne!(
+            find(0),
+            find(1),
+            "the adapter must not return accepted.first()"
+        );
+    }
+
+    /// gamemd-derived: `ScenarioClass::Gather_Start_Positions @ 0x00688380`
+    /// reaches `MapClass::Find_Nearby_Passable_Cell @ 0x0056DC20`, whose null
+    /// reference branch reads `g_CurrentFrameCounter` at `0x0056E6A8..0x0056E6ED`.
+    #[test]
+    fn simulation_gather_threads_live_binary_frame_into_deficient_start_selection() {
+        let authored = Waypoint {
+            index: 0,
+            rx: 30,
+            ry: 30,
+        };
+        let map = test_map_with_starts(&[authored]);
+        let mut terrain = test_terrain(64, 64);
+        let blocked = terrain.cell_mut(61, 28).unwrap();
+        blocked.speed_costs.track = Some(0);
+        blocked.base_speed_costs.track = Some(0);
+        blocked.zone_type = zone_class::IMPASSABLE;
+        let bounds = NativeStartBounds {
+            min_rx: 0,
+            min_ry: 0,
+            width: 64,
+            height: 64,
+        };
+
+        let gather = |frame| {
+            let mut sim = Simulation::new();
+            sim.install_playfield_from_map_header(&map.header);
+            sim.session.binary_frame = frame;
+            sim.scenario_rng = SimRng::new(9);
+            sim.gather_native_start_positions(&map.waypoints, 2, &terrain, bounds)[1]
+        };
+
+        let frame_zero = gather(0);
+        let frame_one = gather(1);
+        assert_eq!((frame_zero.rx, frame_zero.ry), (53, 20));
+        assert_eq!((frame_one.rx, frame_one.ry), (53, 22));
+        assert_ne!(frame_zero, frame_one);
+    }
+
+    /// gamemd-derived: active YR `MapClass__Find_Nearby_Passable_Cell
     /// @ 0x0056DC20` gates the candidate anchor through
     /// `MapClass__Is_Cell_In_Playfield_CellClass @ 0x00578540` before the 8x8
     /// scan. Research:
@@ -777,12 +875,6 @@ mod tests {
     fn deficient_start_skips_passable_anchor_outside_diamond() {
         let terrain = test_terrain(32, 32);
         let occupancy = crate::sim::occupancy::OccupancyGrid::new();
-        let bounds = NativeStartBounds {
-            min_rx: 0,
-            min_ry: 0,
-            width: 32,
-            height: 32,
-        };
         let diamond = PlayfieldBounds {
             base: 10,
             off_fc: 2,
@@ -790,9 +882,6 @@ mod tests {
             off_104: 10,
             off_108: 6,
         };
-        assert!(deficient_start_rect_track_passable(
-            &terrain, &occupancy, 6, 6
-        ));
         assert!(!cell_is_in_playfield_height_aware(
             (6, 6),
             Some(diamond),
@@ -800,7 +889,7 @@ mod tests {
         ));
 
         assert_eq!(
-            find_nearby_start_rect(&terrain, &occupancy, bounds, Some(diamond), 6, 6),
+            find_nearby_start_rect(&terrain, &occupancy, Some(diamond), Some(32), 0, 6, 6,),
             Some((6, 7))
         );
     }
@@ -811,35 +900,35 @@ mod tests {
     /// `docs/research/skirmish-ui/FOOTCLASS_FIND_NEARBY_PASSABLE_CELL_0056DC20_START_FALLBACK_GHIDRA_REPORT.md`.
     #[test]
     fn deficient_start_gates_anchor_not_full_8x8_footprint() {
-        let terrain = test_terrain(32, 32);
+        let terrain = test_terrain(8, 8);
         let occupancy = crate::sim::occupancy::OccupancyGrid::new();
-        let bounds = NativeStartBounds {
+        let old_axis_bounds = NativeStartBounds {
             min_rx: 0,
             min_ry: 0,
-            width: 32,
-            height: 32,
+            width: 8,
+            height: 8,
         };
         let diamond = PlayfieldBounds {
-            base: 10,
-            off_fc: 2,
-            off_100: 1,
-            off_104: 10,
-            off_108: 6,
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
         };
         assert!(cell_is_in_playfield_height_aware(
-            (6, 7),
+            (7, 7),
             Some(diamond),
             Some(&terrain),
         ));
-        assert!(!cell_is_in_playfield_height_aware(
-            (13, 14),
-            Some(diamond),
-            Some(&terrain),
-        ));
+        assert!(
+            7 + 8 - 1 > i32::from(old_axis_bounds.min_rx) + i32::from(old_axis_bounds.width) - 1,
+            "the retired full-rectangle bounds gate would reject this anchor",
+        );
 
         assert_eq!(
-            find_nearby_start_rect(&terrain, &occupancy, bounds, Some(diamond), 6, 7),
-            Some((6, 7))
+            find_nearby_start_rect(&terrain, &occupancy, Some(diamond), Some(8), 0, 7, 7,),
+            Some((7, 7)),
+            "only the anchor is diamond-gated; the remaining footprint uses real/dummy CellRect lookup",
         );
     }
 
@@ -881,6 +970,8 @@ mod tests {
             &empty_occupancy,
             bounds,
             playfield_bounds,
+            Some(map.header.height as i32),
+            sim.session.binary_frame,
             &mut expected_rng,
         );
         let final_starts = native_gather_start_positions(
@@ -890,6 +981,8 @@ mod tests {
             &empty_occupancy,
             bounds,
             playfield_bounds,
+            Some(map.header.height as i32),
+            sim.session.binary_frame,
             &mut expected_rng,
         );
         assert_ne!(provisional[1], final_starts[1]);
@@ -998,6 +1091,8 @@ mod tests {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                recruitable_a: true,
+                recruitable_b: true,
             }],
             Some(&rules),
             &BTreeMap::new(),

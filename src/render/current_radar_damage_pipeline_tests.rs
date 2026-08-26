@@ -2,7 +2,9 @@ use super::*;
 
 use std::collections::BTreeMap;
 
-use crate::map::bridge_facts::{Axis, BridgeCellFacts, BridgeheadAnchorClass};
+use crate::map::bridge_facts::{
+    Axis, BRIDGE_FLAG_ANCHOR_SELF, BridgeCellFacts, BridgeheadAnchorClass,
+};
 use crate::map::entities::EntityCategory;
 use crate::map::playfield::PlayfieldBounds;
 use crate::map::resolved_terrain::{
@@ -125,6 +127,11 @@ fn simulation_fixture() -> (Simulation, crate::map::terrain::TerrainGrid) {
         .flat_map(|ry| (0..SIDE).map(move |rx| cell(rx, ry)))
         .collect();
     let mut terrain = ResolvedTerrainGrid::from_cells(SIDE, SIDE, cells);
+    terrain
+        .cell_mut(FLOOD[0].0, FLOOD[0].1)
+        .expect("perpendicular anchor terrain cell")
+        .bridge_facts
+        .raw_flags |= BRIDGE_FLAG_ANCHOR_SELF;
     for &(rx, ry) in &FLOOD {
         terrain.test_set_damaged_radar_metadata(
             rx,

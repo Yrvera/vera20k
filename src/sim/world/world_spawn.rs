@@ -137,6 +137,8 @@ impl Simulation {
                 uses_voxel,
                 self.session.binary_frame,
             );
+            ge.base_defense_response.recruitable_a = map_ent.recruitable_a;
+            ge.base_defense_response.recruitable_b = map_ent.recruitable_b;
 
             if self.debug_event_logging {
                 ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
@@ -227,7 +229,7 @@ impl Simulation {
                 if obj.passengers > 0 {
                     ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
                         cargo: crate::sim::passenger::PassengerCargo::new(
-                            obj.passengers,
+                            obj.passengers as u32,
                             obj.size_limit,
                         ),
                     };
@@ -476,7 +478,10 @@ impl Simulation {
         // Passenger cargo for transports and garrisonable buildings.
         if obj.passengers > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
-                cargo: crate::sim::passenger::PassengerCargo::new(obj.passengers, obj.size_limit),
+                cargo: crate::sim::passenger::PassengerCargo::new(
+                    obj.passengers as u32,
+                    obj.size_limit,
+                ),
             };
         } else if obj.can_be_occupied && obj.max_number_occupants > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
@@ -496,7 +501,11 @@ impl Simulation {
         );
         let has_spawn_manager = ge.spawn_manager.is_some();
         let (stable_id, outcome) = self.unlimbo(ge);
-        debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        if !matches!(outcome, RevealOutcome::Revealed { .. }) {
+            // Callers own the failed placement outcome; production delivery,
+            // in particular, retains its completed queue item.
+            return None;
+        }
         self.initialize_cloak_after_unlimbo(stable_id, rules);
         self.add_unit_sensor_after_unlimbo(stable_id, rules);
         if has_spawn_manager {
@@ -627,7 +636,10 @@ impl Simulation {
         }
         if obj.passengers > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
-                cargo: crate::sim::passenger::PassengerCargo::new(obj.passengers, obj.size_limit),
+                cargo: crate::sim::passenger::PassengerCargo::new(
+                    obj.passengers as u32,
+                    obj.size_limit,
+                ),
             };
         } else if obj.can_be_occupied && obj.max_number_occupants > 0 {
             ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
@@ -640,6 +652,82 @@ impl Simulation {
         ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
 
         let stable_id = self.create_limbo(ge);
+        self.commit_spawn_harvest_mission(stable_id);
+        Some(stable_id)
+    }
+
+    /// Construct and account for the one Unit identity held by a completed
+    /// production queue entry before its first delivery attempt. Unlike the
+    /// paradrop limbo path, production also initializes the parent spawn
+    /// manager now; its child pool is committed only after successful Unlimbo.
+    pub(crate) fn create_production_object_limbo_at_height(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        let stable_id =
+            self.spawn_object_limbo_at_height(type_id, owner, rx, ry, facing, z, rules)?;
+        let object = rules.object(type_id)?;
+        let spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
+            object,
+            rules,
+            &mut self.interner,
+            self.session.binary_frame,
+        );
+        self.substrate.entities.get_mut(stable_id)?.spawn_manager = spawn_manager;
+        Some(stable_id)
+    }
+
+    /// Run one result-bearing Unlimbo transaction against an already stored
+    /// production object. Mark failure restores this same identity to limbo;
+    /// construction and owned-count accounting are deliberately not repeated.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn unlimbo_held_production_object(
+        &mut self,
+        stable_id: u64,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        placement: PlacementEvidence,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        let (sub_x, sub_y, has_spawn_manager) = {
+            let entity = self.substrate.entities.get_mut(stable_id)?;
+            entity.facing = facing;
+            (
+                entity.position.sub_x,
+                entity.position.sub_y,
+                entity.spawn_manager.is_some(),
+            )
+        };
+        let outcome = self.try_reveal_entity(
+            stable_id,
+            RevealRequest {
+                position: RevealPosition {
+                    rx,
+                    ry,
+                    z,
+                    sub_x,
+                    sub_y,
+                },
+                placement,
+                logic_eligible: true,
+            },
+        );
+        if !matches!(outcome, RevealOutcome::Revealed { .. }) {
+            return None;
+        }
+        self.initialize_cloak_after_unlimbo(stable_id, rules);
+        self.add_unit_sensor_after_unlimbo(stable_id, rules);
+        if has_spawn_manager {
+            crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, rules);
+        }
         self.commit_spawn_harvest_mission(stable_id);
         Some(stable_id)
     }

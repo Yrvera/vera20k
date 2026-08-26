@@ -10,7 +10,8 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::components::MovementTarget;
 use crate::sim::find_nearby_cell::{
-    NearbyQuery, PassabilityArgs, RADIUS_HARD_CAP, find_nearby_passable_cell,
+    NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, RADIUS_HARD_CAP,
+    find_nearby_passable_cell,
 };
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::LayeredEntityBlockMap;
@@ -287,6 +288,8 @@ pub(super) fn resolve_reachable_move_goal(
             movement_zone: zone_mz,
             bridge_aware_zone: goal_layer == MovementLayer::Bridge,
         },
+        footprint: NearbyFootprint::SINGLE,
+        anchor_gate: NearbyAnchorGate::UnverifiedCompatibilityBypass,
         allow_bridge_cells: true,
         check_height: false,
         check_occupancy: false,

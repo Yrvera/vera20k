@@ -164,6 +164,24 @@ pub struct MapCell {
     pub z: u8,
 }
 
+/// One native fixed-table lookup performed while decoding IsoMapPack5.
+///
+/// Payload-bearing `MapCell`s retain canonical coordinates; this separate,
+/// load-only trace preserves the raw request needed when the lookup resolves
+/// to MapClass's shared dummy instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IsoMapPackLookup {
+    pub(crate) raw_x: i16,
+    pub(crate) raw_y: u16,
+    pub(crate) canonical: Option<(u16, u16)>,
+}
+
+#[derive(Debug)]
+struct ParsedIsoMapPack {
+    cells: Vec<MapCell>,
+    lookups: Vec<IsoMapPackLookup>,
+}
+
 /// A parsed RA2 map file.
 #[derive(Debug)]
 pub struct MapFile {
@@ -175,6 +193,9 @@ pub struct MapFile {
     /// Parsed preview metadata from `[Preview]` / `[PreviewPack]`.
     pub preview: PreviewSection,
     pub cells: Vec<MapCell>,
+    /// Ordered native lookup evidence for production IsoMapPack materialization.
+    /// Synthetic and RMG maps leave this empty and use their explicit cells.
+    pub(crate) iso_map_pack_lookups: Vec<IsoMapPackLookup>,
     /// Entity placements from [Units], [Infantry], [Structures], [Aircraft] sections.
     pub entities: Vec<MapEntity>,
     /// Overlay objects from [OverlayPack] + [OverlayDataPack] (ore, walls, fences, etc.).
@@ -231,7 +252,7 @@ impl MapFile {
                 log::warn!("Map preview decode failed; continuing without preview: {err}");
             }
         }
-        let cells: Vec<MapCell> = parse_iso_map_pack(&ini)?;
+        let iso_map_pack = parse_iso_map_pack(&ini)?;
         let entities: Vec<MapEntity> = entities::parse_map_entities(&ini);
         let overlay_packs = overlay::parse_overlay_packs(&ini);
         let terrain_objects: Vec<TerrainObject> = overlay::parse_terrain_objects(&ini);
@@ -251,7 +272,8 @@ impl MapFile {
             basic,
             briefing,
             preview,
-            cells,
+            cells: iso_map_pack.cells,
+            iso_map_pack_lookups: iso_map_pack.lookups,
             entities,
             overlays: overlay_packs.entries,
             overlay_data: overlay_packs.data,
@@ -425,7 +447,7 @@ fn scan_decimal_i32(bytes: &[u8], mut cursor: usize) -> Option<(i32, usize)> {
 /// 2. Base64 decode the concatenated string.
 /// 3. LZO decompress the chunks.
 /// 4. Parse 11-byte terrain cell records.
-fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
+fn parse_iso_map_pack(ini: &IniFile) -> Result<ParsedIsoMapPack, MapError> {
     let section = ini
         .section("IsoMapPack5")
         .ok_or(MapError::MissingIsoMapPack)?;
@@ -446,7 +468,7 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
     let compressed: Vec<u8> = base64::base64_decode(&b64_data).map_err(MapError::Base64)?;
     let decompressed: Vec<u8> = lzo::decompress_chunks(&compressed)?;
 
-    let cells = parse_iso_map_pack_records(&decompressed)?;
+    let parsed = parse_iso_map_pack_records(&decompressed)?;
 
     // Diagnostic: tile_index distribution. Lets a reader of the load logs see
     // how high a map's IsoMapPack5 reaches vs. what the theater INI defines.
@@ -454,7 +476,7 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
     let mut max_idx: i32 = -1;
     let mut no_tile: usize = 0;
     let mut distinct: std::collections::HashSet<i32> = std::collections::HashSet::new();
-    for c in &cells {
+    for c in &parsed.cells {
         if c.tile_index < 0 {
             no_tile += 1;
         } else {
@@ -469,19 +491,21 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
     }
     log::info!(
         "IsoMapPack5: {} cells, {} no-tile, tile_index min={}, max={}, distinct={}",
-        cells.len(),
+        parsed.cells.len(),
         no_tile,
         if min_pos == i32::MAX { -1 } else { min_pos },
         max_idx,
         distinct.len()
     );
 
-    Ok(cells)
+    Ok(parsed)
 }
 
 /// Parse native IsoMapPack5 records after chunk decompression.
-fn parse_iso_map_pack_records(decompressed: &[u8]) -> Result<Vec<MapCell>, MapError> {
+fn parse_iso_map_pack_records(decompressed: &[u8]) -> Result<ParsedIsoMapPack, MapError> {
     let mut cells: Vec<MapCell> = Vec::with_capacity(decompressed.len() / CELL_RECORD_SIZE);
+    let mut lookups: Vec<IsoMapPackLookup> =
+        Vec::with_capacity(decompressed.len() / CELL_RECORD_SIZE);
     let mut offset: usize = 0;
 
     while offset < decompressed.len() {
@@ -513,21 +537,35 @@ fn parse_iso_map_pack_records(decompressed: &[u8]) -> Result<Vec<MapCell>, MapEr
         // d[10] is the legacy ice-growth byte; loading consumes but does not apply it here.
         offset += CELL_RECORD_SIZE;
 
+        // gamemd.exe IsoMapPack5 decoder @ 0x0056BAC0: X is sign-extended,
+        // Y is unsigned, and every non-sentinel header performs this fixed
+        // 512-wide lookup before either applying or discarding its payload.
         let linear: i32 = i32::from(y) * ISO_MAP_ROW_WIDTH + i32::from(x);
-        if !(0..ISO_MAP_CELL_COUNT).contains(&linear) {
+        let canonical = (0..ISO_MAP_CELL_COUNT)
+            .contains(&linear)
+            .then_some((
+                (linear % ISO_MAP_ROW_WIDTH) as u16,
+                (linear / ISO_MAP_ROW_WIDTH) as u16,
+            ));
+        lookups.push(IsoMapPackLookup {
+            raw_x: x,
+            raw_y: y,
+            canonical,
+        });
+        let Some((rx, ry)) = canonical else {
             continue;
-        }
+        };
 
         cells.push(MapCell {
-            rx: (linear % ISO_MAP_ROW_WIDTH) as u16,
-            ry: (linear / ISO_MAP_ROW_WIDTH) as u16,
+            rx,
+            ry,
             tile_index,
             sub_tile,
             z,
         });
     }
 
-    Ok(cells)
+    Ok(ParsedIsoMapPack { cells, lookups })
 }
 
 /// Parse pre-placed smudges from the map's `[Smudge]` section.
@@ -823,7 +861,8 @@ LocalSize=2,4,96,92
         bytes.extend_from_slice(&[0; CELL_HEADER_SIZE]);
         bytes.extend_from_slice(&iso_map_record(2, 0, 8, 4, 5));
 
-        let cells = parse_iso_map_pack_records(&bytes).expect("sentinel terminates decoding");
+        let parsed = parse_iso_map_pack_records(&bytes).expect("sentinel terminates decoding");
+        let cells = parsed.cells;
 
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].rx, 1);
@@ -834,7 +873,8 @@ LocalSize=2,4,96,92
     fn gsi_02_09_eof_after_complete_record_is_accepted() {
         let bytes = iso_map_record(10, 20, 5, 3, 2);
 
-        let cells = parse_iso_map_pack_records(&bytes).expect("complete final record is valid");
+        let parsed = parse_iso_map_pack_records(&bytes).expect("complete final record is valid");
+        let cells = parsed.cells;
 
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].rx, 10);
@@ -877,17 +917,17 @@ LocalSize=2,4,96,92
     fn gsi_02_09_signed_x_uses_native_flattening_and_bounds() {
         let negative = parse_iso_map_pack_records(&iso_map_record(-1, 0, 1, 0, 0))
             .expect("out-of-range records are consumed");
-        assert!(negative.is_empty());
+        assert!(negative.cells.is_empty());
 
         let canonical = parse_iso_map_pack_records(&iso_map_record(-1, 1, 2, 0, 0))
             .expect("in-range flattened record is valid");
-        assert_eq!(canonical.len(), 1);
-        assert_eq!(canonical[0].rx, 511);
-        assert_eq!(canonical[0].ry, 0);
+        assert_eq!(canonical.cells.len(), 1);
+        assert_eq!(canonical.cells[0].rx, 511);
+        assert_eq!(canonical.cells[0].ry, 0);
 
         let upper = parse_iso_map_pack_records(&iso_map_record(0, 512, 3, 0, 0))
             .expect("out-of-range records are consumed");
-        assert!(upper.is_empty());
+        assert!(upper.cells.is_empty());
     }
 
     #[test]
@@ -896,10 +936,54 @@ LocalSize=2,4,96,92
         bytes.extend_from_slice(&iso_map_record(1, 0, 0x0000_FFFF, 0, 0));
         bytes.extend_from_slice(&iso_map_record(2, 0, -1, 0, 0));
 
-        let cells = parse_iso_map_pack_records(&bytes).expect("records are valid");
+        let parsed = parse_iso_map_pack_records(&bytes).expect("records are valid");
+        let cells = parsed.cells;
 
         assert_eq!(cells[0].tile_index, 65_535);
         assert_eq!(cells[1].tile_index, -1);
+    }
+
+    #[test]
+    fn gsi_04_01_isomap_parser_retains_ordered_raw_lookup_trace() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&iso_map_record(-1, 0, 101, 1, 2));
+        bytes.extend_from_slice(&iso_map_record(-1, 1, 102, 3, 4));
+        bytes.extend_from_slice(&iso_map_record(511, 511, 103, 5, 6));
+        bytes.extend_from_slice(&[0; CELL_HEADER_SIZE]);
+
+        let parsed = parse_iso_map_pack_records(&bytes).expect("complete records parse");
+
+        assert_eq!(
+            parsed.lookups,
+            vec![
+                IsoMapPackLookup {
+                    raw_x: -1,
+                    raw_y: 0,
+                    canonical: None,
+                },
+                IsoMapPackLookup {
+                    raw_x: -1,
+                    raw_y: 1,
+                    canonical: Some((511, 0)),
+                },
+                IsoMapPackLookup {
+                    raw_x: 511,
+                    raw_y: 511,
+                    canonical: Some((511, 511)),
+                },
+            ]
+        );
+        assert_eq!(parsed.cells.len(), 2);
+        assert_eq!((parsed.cells[0].rx, parsed.cells[0].ry), (511, 0));
+        assert_eq!((parsed.cells[1].rx, parsed.cells[1].ry), (511, 511));
+        assert_eq!(
+            parsed
+                .cells
+                .iter()
+                .map(|cell| cell.tile_index)
+                .collect::<Vec<_>>(),
+            vec![102, 103]
+        );
     }
 
     #[test]

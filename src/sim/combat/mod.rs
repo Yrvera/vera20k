@@ -18,6 +18,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 pub(crate) mod cell_spread;
+pub(crate) mod base_defense_response;
 pub(crate) mod combat_aoe;
 pub(crate) mod combat_fire_gate;
 pub(crate) mod combat_targeting;
@@ -1705,11 +1706,32 @@ pub(crate) enum FatalLifecycleStage {
     AfterDeathEffects,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BaseDefenseResponseCallSite {
+    BuildingPrelude,
+    ProtectedTechno,
+}
+
 /// World bridge for synchronous side effects whose authoritative
 /// storage lives outside combat's move-out transaction. One object owns both
 /// methods so `Simulation` is borrowed only once while combat temporarily owns
 /// entities, map grids, and the scenario RNG.
 pub(crate) trait CombatInlineHooks {
+    #[allow(clippy::too_many_arguments)]
+    fn respond_to_base_attack(
+        &mut self,
+        _site: BaseDefenseResponseCallSite,
+        _victim_id: u64,
+        _attacker_id: u64,
+        _entities: &mut EntityStore,
+        _rules: &RuleSet,
+        _interner: &StringInterner,
+        _houses: &mut BTreeMap<InternedId, HouseState>,
+        _scenario_rng: &mut SimRng,
+        _terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    ) {
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn fatal_lifecycle(
         &mut self,
@@ -2556,6 +2578,52 @@ fn receiver_effect_coord(
     ProjectileCoord::new(x, y, z)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildingReceivePrelude {
+    Continue,
+    Respond,
+    ReturnZero,
+}
+
+/// Execute the BuildingClass wrapper work which natively precedes the shared
+/// Techno receiver.
+///
+/// gamemd-derived: `BuildingClass__ReceiveDamage @ 0x00442230` returns zero at
+/// `0x00442262` for disallowed self damage. A non-null attacker then writes the
+/// victim owner's `House+0x54D8` at `0x0044229C`, before Building immunity,
+/// the already-dead gate, and `TechnoClass__ReceiveDamage @ 0x00442425`.
+fn apply_building_receive_prelude(
+    event: &EntityDamageEvent,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    current_tick: u64,
+) -> BuildingReceivePrelude {
+    let Some(target) = entities.get(event.target_id) else {
+        return BuildingReceivePrelude::Continue;
+    };
+    if target.category != EntityCategory::Structure {
+        return BuildingReceivePrelude::Continue;
+    }
+    let Some(target_type) = rules.object(interner.resolve(target.type_ref)) else {
+        return BuildingReceivePrelude::Continue;
+    };
+
+    if event.attacker_id == event.target_id && !target_type.damage_self {
+        return BuildingReceivePrelude::ReturnZero;
+    }
+    if event.attacker_id != RAD_NO_ATTACKER && !target_type.is_1x1_with_undeploy() {
+        if let Some(owner) = houses.get_mut(&target.owner) {
+            owner
+                .strategy_emergency
+                .note_building_attack(current_tick as u32 as i32);
+        }
+    }
+
+    BuildingReceivePrelude::Respond
+}
+
 fn resolve_receive_damage(
     event: &EntityDamageEvent,
     entities: &EntityStore,
@@ -3244,6 +3312,48 @@ fn commit_damage_events_with_isolation(
         }
         let target_id = event.target_id;
         let attacker_id = event.attacker_id;
+        match apply_building_receive_prelude(
+            event,
+            entities,
+            rules,
+            interner,
+            houses,
+            current_tick,
+        ) {
+            BuildingReceivePrelude::ReturnZero => continue,
+            BuildingReceivePrelude::Respond => {
+                if let Some(victim_owner) = entities.get(event.target_id).map(|victim| victim.owner)
+                {
+                    let attacker_house_index = entities
+                        .get(event.attacker_id)
+                        .and_then(|attacker| {
+                            house_order
+                                .iter()
+                                .position(|owner| *owner == attacker.owner)
+                        })
+                        .map_or(-1, |index| index as i32);
+                    if let Some(owner) = houses.get_mut(&victim_owner) {
+                        owner
+                            .strategy_emergency
+                            .note_building_attacker(attacker_house_index);
+                    }
+                }
+                if let Some(hook) = inline_hooks.as_deref_mut() {
+                    hook.respond_to_base_attack(
+                        BaseDefenseResponseCallSite::BuildingPrelude,
+                        event.target_id,
+                        event.attacker_id,
+                        entities,
+                        rules,
+                        interner,
+                        houses,
+                        scenario_rng,
+                        terrain.as_deref(),
+                    );
+                }
+            }
+            BuildingReceivePrelude::Continue => {}
+        }
         // ReceiveDamage carries sourceHouse separately from the source object.
         // Area records snapshot it at detonation; legacy precomputed records
         // retain the former live-source lookup. Periodic radiation supplies
@@ -3414,6 +3524,37 @@ fn commit_damage_events_with_isolation(
                     latch_hostile_hit = false;
                 }
             }
+        }
+
+        // gamemd-derived: `TechnoClass__ReceiveDamage @
+        // 0x007027AE..0x007027EE` invokes the protected-Techno response after
+        // ObjectClass has committed health/visual state and before the dead
+        // branch. `ShouldProtect+0x3CF` has no active YR writer; `ToProtect=`
+        // is the exact live gate retained here.
+        let protected_techno_response = event.distance_leptons.is_some()
+            && attacker_id != RAD_NO_ATTACKER
+            && entities.get(target_id).is_some_and(|target| {
+                rules
+                    .object(interner.resolve(target.type_ref))
+                    .is_some_and(|object| object.to_protect)
+                    && houses
+                        .get(&target.owner)
+                        .is_some_and(|house| !house.is_human)
+            });
+        if protected_techno_response
+            && let Some(hook) = inline_hooks.as_deref_mut()
+        {
+            hook.respond_to_base_attack(
+                BaseDefenseResponseCallSite::ProtectedTechno,
+                target_id,
+                attacker_id,
+                entities,
+                rules,
+                interner,
+                houses,
+                scenario_rng,
+                terrain.as_deref(),
+            );
         }
 
         if reached_exact_zero && let Some(target) = entities.get_mut(target_id) {
@@ -3837,7 +3978,6 @@ fn emit_projectile_shrapnel(
     rules: &RuleSet,
     interner: &mut StringInterner,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
-    bridge_state: Option<&BridgeRuntimeState>,
     house_alliances: &HouseAllianceMap,
     scenario_rng: &mut SimRng,
     out: &mut CombatEmit,
@@ -3883,11 +4023,17 @@ fn emit_projectile_shrapnel(
         }),
         ProjectileTarget::Cell { rx, ry } => Some(crate::sim::projectile::cell_target_coord(
             terrain,
-            bridge_state,
             rx,
             ry,
         )),
         ProjectileTarget::None => Some(ProjectileCoord::new(0, 0, 0)),
+        ProjectileTarget::DummyCell => Some(
+            terrain
+                .map(crate::map::resolved_terrain::ResolvedTerrainGrid::shared_cell_dummy)
+                .as_ref()
+                .map(crate::sim::projectile::dummy_cell_target_coord)
+                .unwrap_or(ProjectileCoord::new(0, 0, 0)),
+        ),
     };
     let distance_cells = target_position.map_or(0, |target| {
         let dx = i64::from(target.x - detonation.impact.x);
@@ -3913,7 +4059,13 @@ fn emit_projectile_shrapnel(
     let source_owner = entities
         .get(detonation.source_id)
         .map(|source| source.owner);
-    let mut targets = Vec::with_capacity(count as usize);
+    // Random CellClass selections must capture their target coordinate at the
+    // lookup call point: every miss returns the same mutable process dummy, so
+    // resolving a collected list afterward would give all missed children the
+    // final lookup's coordinate. Entity entries deliberately remain live reads
+    // until child construction, preserving their existing behavior.
+    let mut targets: Vec<(ProjectileTarget, Option<ProjectileCoord>)> =
+        Vec::with_capacity(count as usize);
     let scan_radius = child_weapon.range.to_num::<i32>().max(0);
     for &(dx, dy) in self::cell_spread::splash_cells(SimFixed::from_num(scan_radius))
         .iter()
@@ -3953,14 +4105,43 @@ fn emit_projectile_shrapnel(
         if allied {
             continue;
         }
-        targets.push(ProjectileTarget::Entity(target_id));
+        targets.push((ProjectileTarget::Entity(target_id), None));
     }
     while targets.len() < count as usize {
         let (rx, ry) = projectile_random_shrapnel_cell(center_rx, center_ry, scenario_rng);
-        targets.push(ProjectileTarget::Cell {
-            rx: rx as u16,
-            ry: ry as u16,
-        });
+        let selected = crate::sim::cell_rect::get_cellclass_fallback(terrain, rx, ry);
+        let (target, initial_target_position) = if terrain.is_none() {
+            // Rules-less/terrain-less fixtures historically retain a stable
+            // Cell target and flat fallback surface. Native always has a map;
+            // do not invent a persistent process-dummy pointer for this Rust
+            // compatibility path without separate evidence.
+            let target = ProjectileTarget::Cell {
+                rx: rx as u16,
+                ry: ry as u16,
+            };
+            (
+                target,
+                crate::sim::projectile::cell_target_coord(terrain, rx as u16, ry as u16),
+            )
+        } else {
+            match selected {
+                crate::sim::cell_rect::CellRef::Real(cell) => {
+                    let target = ProjectileTarget::Cell {
+                        rx: cell.rx,
+                        ry: cell.ry,
+                    };
+                    (
+                        target,
+                        crate::sim::projectile::cell_target_coord(terrain, cell.rx, cell.ry),
+                    )
+                }
+                crate::sim::cell_rect::CellRef::Dummy { cell } => (
+                    ProjectileTarget::DummyCell,
+                    crate::sim::projectile::dummy_cell_target_coord(&cell),
+                ),
+            }
+        };
+        targets.push((target, Some(initial_target_position)));
     }
 
     let gravity = if child_projectile.floater {
@@ -3968,22 +4149,31 @@ fn emit_projectile_shrapnel(
     } else {
         rules.general.gravity
     };
-    for target in targets {
-        let target_coord = match target {
-            ProjectileTarget::Entity(id) => {
-                let Some(entity) = entities.get(id) else {
-                    continue;
-                };
-                ProjectileCoord::new(
-                    i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
-                    i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
-                    i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
-                )
+    for (target, captured_target_coord) in targets {
+        let target_coord = if let Some(captured) = captured_target_coord {
+            captured
+        } else {
+            match target {
+                ProjectileTarget::Entity(id) => {
+                    let Some(entity) = entities.get(id) else {
+                        continue;
+                    };
+                    ProjectileCoord::new(
+                        i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                        i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+                        i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                    )
+                }
+                ProjectileTarget::Cell { rx, ry } => {
+                    crate::sim::projectile::cell_target_coord(terrain, rx, ry)
+                }
+                ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
+                ProjectileTarget::DummyCell => terrain
+                    .map(crate::map::resolved_terrain::ResolvedTerrainGrid::shared_cell_dummy)
+                    .as_ref()
+                    .map(crate::sim::projectile::dummy_cell_target_coord)
+                    .unwrap_or(ProjectileCoord::new(0, 0, 0)),
             }
-            ProjectileTarget::Cell { rx, ry } => {
-                crate::sim::projectile::cell_target_coord(terrain, bridge_state, rx, ry)
-            }
-            ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
         };
         out.projectile_spawns.push(ProjectileSpawn {
             source_id: detonation.source_id,
@@ -4036,7 +4226,7 @@ fn emit_one_projectile_detonation(
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
-    bridge_state: Option<&BridgeRuntimeState>,
+    _bridge_state: Option<&BridgeRuntimeState>,
     terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
@@ -4108,7 +4298,6 @@ fn emit_one_projectile_detonation(
         rules,
         interner,
         terrain.as_deref(),
-        bridge_state,
         house_alliances,
         scenario_rng,
         out,
@@ -7259,7 +7448,7 @@ mod impact_height_tests {
         }
     }
 
-    fn terrain_at_level(level: u8) -> ResolvedTerrainGrid {
+    pub(super) fn terrain_at_level(level: u8) -> ResolvedTerrainGrid {
         let cells: Vec<ResolvedTerrainCell> = (0..TEST_GRID)
             .flat_map(|ry| (0..TEST_GRID).map(move |rx| terrain_cell(rx, ry, level)))
             .collect();

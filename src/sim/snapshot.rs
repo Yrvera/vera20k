@@ -270,7 +270,39 @@ use crate::sim::world::Simulation;
 // cell, add/remove radii and building/unit discriminator. Limbo, movement, and
 // owner transfer must remove the historical deposit rather than recomputing it
 // from current position/rules, so this future-affecting cache is hash authority.
-const SNAPSHOT_VERSION: u32 = 88;
+// Bumped 88 -> 89: ProjectileTarget adds the native shared-dummy pointer kind.
+// Bumped 89 -> 90: exact real-cell 0x1180 values join Scenario persistence and
+// hashing, while the process-global dummy's live subset joins the canonical
+// hash even without a retained projectile. The dummy remains outside the
+// payload and accepted Resize/load reconstructs it to zero.
+// Bumped 90 -> 91: the active factory PendingObject now persists the one-shot
+// completion-accounted latch so a refused delivery resumed after load cannot
+// increment the score-screen Built statistic again.
+// Bumped 91 -> 92: persist each House's BaseClass reservation bounds/vector;
+// the process-global reservation dummy mask remains outside the payload and
+// reconstructs cleared like native CellClass save/load.
+// Bumped 92 -> 93: HouseState gains the serialized/hash-authoritative strategy
+// emergency mode, persistent All-To-Hunt target-bias latch, and signed last-
+// Building-attack frame. Bincode cannot safely default an absent struct tail.
+// Bumped 93 -> 94: add the House last-attacker index plus persistent Techno
+// recruitment/archive/base-response cooldown state.
+// Bumped 94 -> 95: add TeamType priority/base-defence metadata and TeamClass
+// response latches/timer state.
+// Bumped 95 -> 96: TeamScriptVm persists the ordered AIMD/map registries.
+// Bumped 96 -> 97: resolved ScriptType and TaskForce records now persist their
+// fixed-AIMD/scenario provenance. Bincode encodes structs positionally, so serde
+// defaults cannot safely decode the shorter v96 record.
+// Bumped 97 -> 98: resolved AITriggerType records now persist every proven
+// typed raw-reader field in addition to their lossless 18-token source record.
+// Bumped 98 -> 99: remove the falsely retained AITrigger token-4 scalar;
+// native requires that token but discards it before deriving `+0xB0`.
+// Bumped 99 -> 100: retain the three TeamType post-load zone-derivation
+// fields serialized inside the ordered TeamScriptVm registry.
+// Bumped 100 -> 101: retain each compact TaskForce member's category-distinct
+// resolved TechnoType identity rather than an ambiguous interned name alone.
+// Bumped 101 -> 102: retain AITrigger token 6's category-distinct resolved
+// TechnoType identity rather than an ambiguous interned name alone.
+const SNAPSHOT_VERSION: u32 = 102;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -456,6 +488,8 @@ pub enum SnapshotRestoreError {
         "snapshot overlay grid storage has {found} cells, but its dimensions require {expected}"
     )]
     MapAuthorityCellStorageMismatch { expected: usize, found: usize },
+    #[error("snapshot real-cell bridge flags do not match restored CellClass allocation")]
+    RealCellBridgeFlagAuthorityMismatch,
 }
 
 /// Derived facts produced by the transactional map-authority restore seam.
@@ -1515,6 +1549,19 @@ impl Simulation {
             });
         }
 
+        // Native CellClass::Load restores allocated real-cell flag words as
+        // values. Do this before derived overlay/bridge reconstruction and do
+        // not route through GetCell or SetBridgeDirection: those would stamp
+        // the process-global dummy that Resize reconstructs at commit.
+        if !self
+            .resolved_terrain
+            .as_mut()
+            .expect("validated terrain cache")
+            .restore_real_cell_bridge_flags_0x1180(&self.real_cell_bridge_flags_0x1180)
+        {
+            return Err(SnapshotRestoreError::RealCellBridgeFlagAuthorityMismatch);
+        }
+
         // The app-supplied terrain template is the immutable load-time map.
         // Action 40's mutable LocalSize is serialized on Simulation, so replay
         // its CellClass-derived cache before overlay and zone reconstruction.
@@ -1782,7 +1829,7 @@ mod tests {
                 overlays.place_overlay(rx, ry, ore_id, 5);
             }
             sim.overlay_grid = Some(overlays);
-            sim.resolved_terrain = Some(flat_terrain(4, 1));
+            sim.install_resolved_terrain_for_new_map(flat_terrain(4, 1));
             sim
         }
 
@@ -2164,7 +2211,7 @@ mod tests {
             3,
             1,
         ));
-        sim.resolved_terrain = Some(map_terrain.clone());
+        sim.install_resolved_terrain_for_new_map(map_terrain.clone());
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "overlay_restore.map", 0);
         let mut restored = GameSnapshot::load(&bytes)
@@ -2574,10 +2621,268 @@ mod tests {
     /// gone, so old bytes no longer decode; 84 -> 85 retained signed map Size
     /// height for action-40 normalization; 85 -> 86 added the mutable
     /// playfield revision; 86 -> 87 added Techno+0x3D5 membership; 87 -> 88
-    /// added the exact historical sensor deposit needed for later removal.
+    /// added the exact historical sensor deposit needed for later removal;
+    /// 88 -> 89 adds the `ProjectileTarget::DummyCell` pointer kind while the
+    /// process-global dummy contents remain deliberately outside the payload;
+    /// 89 -> 90 adds exact allocated real-cell 0x1180 values to Scenario
+    /// persistence/hash plus the live dummy subset to the canonical hash,
+    /// while retaining the native dummy reconstruct-to-zero load behavior;
+    /// 90 -> 91 adds the held factory object's completion-accounted latch so
+    /// delivery retries cannot replay completion after load; 91 -> 92 adds the
+    /// persisted per-house BaseClass reservation bounds/vector while retaining
+    /// the native reconstruct-cleared reservation dummy mask; 92 -> 93 adds
+    /// House strategy emergency state; 93 -> 94 adds the House last-attacker
+    /// index plus persistent Techno recruitment/archive/base-response state;
+    /// 94 -> 95 adds TeamType priority/base-defence metadata and TeamClass
+    /// response latches/timer state; 95 -> 96 adds the ordered AIMD/map static
+    /// registries retained by TeamScriptVm; 96 -> 97 adds resolved ScriptType
+    /// and TaskForce source provenance; 97 -> 98 adds the resolved typed
+    /// AITrigger owner/object/scalar/mask/weight/difficulty payload; 98 -> 99
+    /// removes the falsely retained AITrigger token-4 scalar after binary
+    /// verification proved that token is required but discarded; 99 -> 100
+    /// adds the three post-load TeamType zone-derivation fields; 100 -> 101
+    /// adds category-distinct resolved TaskForce member identities; 101 -> 102
+    /// adds category-distinct resolved AITrigger token-6 identities.
     #[test]
-    fn gsi_04_01_snapshot_version_is_88() {
-        assert_eq!(super::SNAPSHOT_VERSION, 88);
+    fn phase3_team_ai_registry_snapshot_version_is_102() {
+        assert_eq!(super::SNAPSHOT_VERSION, 102);
+    }
+
+    #[test]
+    fn gsi_04_05_house_and_techno_base_defense_state_roundtrip_with_hash() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let mut house = crate::sim::house_state::HouseState::new(
+            owner, 0, None, false, 10_000, 10,
+        );
+        house.strategy_emergency.set_state_four();
+        house.strategy_emergency.set_all_to_hunt_bias();
+        house.strategy_emergency.note_building_attack(-17);
+        house.strategy_emergency.note_building_attacker(3);
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        let mut responder = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "E1",
+            "Computer1",
+            4,
+            5,
+        );
+        responder.base_defense_response.recruitable_a = false;
+        responder.base_defense_response.recruitable_b = true;
+        responder.base_defense_response.archive_target =
+            Some(crate::sim::combat::TargetKind::Entity(9));
+        responder.base_defense_response.cooldown_start_frame = -11;
+        responder.base_defense_response.cooldown_duration_frames = 225;
+        sim.substrate.entities.insert(responder);
+        let script_id = sim.interner.intern("BaseDefenseScript");
+        let task_force_id = sim.interner.intern("BaseDefenseTaskForce");
+        let team_type_id = sim.interner.intern("BaseDefenseTeamType");
+        let ai_trigger_id = sim.interner.intern("BaseDefenseAITrigger");
+        let member_type = sim.interner.intern("E1");
+        let member_identity = crate::sim::team_script_vm::TeamMemberTypeIdentity {
+            category: crate::rules::object_type::ObjectCategory::Infantry,
+            id: member_type,
+        };
+        sim.team_script_vm.register_script(
+            crate::sim::team_script_vm::TeamScriptDefinition {
+                id: script_id,
+                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
+                actions: vec![crate::sim::team_script_vm::TeamScriptAction {
+                    action_id: 2,
+                    argument: 0,
+                }],
+            },
+        );
+        sim.team_script_vm.register_task_force(
+            crate::sim::team_script_vm::TeamTaskForceDefinition {
+                id: task_force_id,
+                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
+                group: 7,
+                entries: vec![crate::sim::team_script_vm::TeamTaskForceEntry {
+                    member_type: member_identity,
+                    count: 1,
+                }],
+            },
+        );
+        sim.team_script_vm.register_team_type(
+            crate::sim::team_script_vm::TeamTypeDefinition {
+                id: team_type_id,
+                script_id,
+                task_force_id,
+                priority: 0,
+                is_base_defense: true,
+                combined_movement_zone:
+                    crate::rules::locomotor_type::MovementZone::Amphibious,
+                base_zone_relation_enforced: false,
+                transport_crossing_required: true,
+            },
+        );
+        sim.team_script_vm.register_ai_trigger(
+            crate::sim::team_script_vm::TeamAiTriggerDefinition {
+                id: ai_trigger_id,
+                tokens: std::array::from_fn(|index| format!("raw-token-{index}")),
+                display_name: "Base defense trigger".to_string(),
+                enabled: true,
+                primary_team_type: Some(team_type_id),
+                owner: Some(crate::sim::team_script_vm::TeamAiTriggerOwner::Country(
+                    crate::rules::ruleset::CountryIdx(4),
+                )),
+                threshold: 7,
+                condition: 6,
+                object_type: Some(member_identity),
+                comparison_mask: std::array::from_fn(|index| index as u8),
+                weights: [
+                    crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits()),
+                    crate::util::native_x87::NativeF64Bits::from_bits(2.5_f64.to_bits()),
+                    crate::util::native_x87::NativeF64Bits::from_bits(3.5_f64.to_bits()),
+                ],
+                storage_flag_d0: true,
+                storage_i32_ac: -9,
+                storage_flag_d1: false,
+                secondary_team_type: None,
+                difficulty_enabled: [true, false, true],
+                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
+            },
+        );
+        let team_id = sim.team_script_vm.create_team_from_type(
+            owner,
+            team_type_id,
+            &[crate::sim::team_script_vm::TeamScriptMember {
+                entity_id: 1,
+                member_type: member_identity,
+            }],
+            None,
+            sim.session.binary_frame as i32,
+        );
+        assert_eq!(
+            sim.team_script_vm
+                .suspend_teams_for_base_defense(owner, 1, -12, 1800),
+            vec![1]
+        );
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_05_strategy", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("v102 snapshot").sim;
+        let emergency = &restored.houses[&owner].strategy_emergency;
+        assert_eq!(emergency.mode(), 4);
+        assert!(emergency.all_to_hunt_bias());
+        assert_eq!(emergency.last_building_attack_frame(), -17);
+        assert_eq!(emergency.last_attacker_house_index(), 3);
+        let response = restored
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .base_defense_response;
+        assert!(!response.recruitable_a);
+        assert!(response.recruitable_b);
+        assert_eq!(
+            response.archive_target,
+            Some(crate::sim::combat::TargetKind::Entity(9))
+        );
+        assert_eq!(response.cooldown_start_frame, -11);
+        assert_eq!(response.cooldown_duration_frames, 225);
+        let team = restored.team_script_vm.team(team_id).unwrap();
+        assert!(team.members().is_empty());
+        assert_eq!(restored.team_script_vm.registry_counts(), (1, 1, 1, 1));
+        assert_eq!(
+            restored.team_script_vm.team_type_order(),
+            &[team_type_id]
+        );
+        let restored_team_type = restored
+            .team_script_vm
+            .team_type(team_type_id)
+            .expect("persisted TeamType");
+        assert_eq!(
+            restored_team_type.combined_movement_zone,
+            crate::rules::locomotor_type::MovementZone::Amphibious
+        );
+        assert!(!restored_team_type.base_zone_relation_enforced);
+        assert!(restored_team_type.transport_crossing_required);
+        assert_eq!(
+            restored.team_script_vm.script_order(),
+            &[script_id]
+        );
+        assert_eq!(
+            restored.team_script_vm.task_force_order(),
+            &[task_force_id]
+        );
+        assert_eq!(
+            restored.team_script_vm.ai_trigger_order(),
+            &[ai_trigger_id]
+        );
+        let restored_script = restored
+            .team_script_vm
+            .script(script_id)
+            .expect("persisted ScriptType");
+        assert_eq!(
+            restored_script.source,
+            crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd
+        );
+        assert_eq!(restored_script.actions.len(), 1);
+        assert_eq!(restored_script.actions[0].action_id, 2);
+        assert_eq!(restored_script.actions[0].argument, 0);
+        let restored_task_force = restored
+            .team_script_vm
+            .task_force(task_force_id)
+            .expect("persisted TaskForce");
+        assert_eq!(
+            restored_task_force.source,
+            crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd
+        );
+        assert_eq!(restored_task_force.entries.len(), 1);
+        assert_eq!(restored_task_force.entries[0].member_type, member_identity);
+        assert_eq!(restored_task_force.entries[0].count, 1);
+        assert_eq!(
+            restored_task_force.group,
+            7
+        );
+        let restored_trigger = restored
+            .team_script_vm
+            .ai_trigger(ai_trigger_id)
+            .expect("persisted typed AITriggerType");
+        assert_eq!(restored_trigger.tokens[11], "raw-token-11");
+        assert_eq!(restored_trigger.display_name, "Base defense trigger");
+        assert!(restored_trigger.enabled);
+        assert_eq!(restored_trigger.primary_team_type, Some(team_type_id));
+        assert_eq!(
+            restored_trigger.owner,
+            Some(crate::sim::team_script_vm::TeamAiTriggerOwner::Country(
+                crate::rules::ruleset::CountryIdx(4)
+            ))
+        );
+        assert_eq!(restored_trigger.threshold, 7);
+        assert_eq!(restored_trigger.condition, 6);
+        assert_eq!(restored_trigger.object_type, Some(member_identity));
+        assert_eq!(restored_trigger.comparison_mask[31], 31);
+        assert_eq!(
+            restored_trigger.weights,
+            [
+                crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits()),
+                crate::util::native_x87::NativeF64Bits::from_bits(2.5_f64.to_bits()),
+                crate::util::native_x87::NativeF64Bits::from_bits(3.5_f64.to_bits()),
+            ]
+        );
+        assert!(restored_trigger.storage_flag_d0);
+        assert_eq!(restored_trigger.storage_i32_ac, -9);
+        assert!(!restored_trigger.storage_flag_d1);
+        assert_eq!(restored_trigger.secondary_team_type, None);
+        assert_eq!(restored_trigger.difficulty_enabled, [true, false, true]);
+        assert_eq!(
+            restored_trigger.source,
+            crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd
+        );
+        assert_eq!(
+            team.response_suspension_state(),
+            (true, true, true, -12, 1800)
+        );
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]
@@ -3688,8 +3993,15 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_05_reservation_v50_roundtrip_and_hash_cover_real_dummy_and_profile() {
+    fn gsi_04_05_reservation_roundtrip_preserves_real_and_house_state_but_clears_dummy() {
         let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10);
+        house.base_reservation.update_bounds(3, 4, 5, 6);
+        house
+            .base_reservation
+            .append_perimeter_cell_if_absent(u32::from(3u16) | (u32::from(4u16) << 16));
+        sim.houses.insert(owner, house);
         let entity_id = sim.allocate_stable_id();
         let mut building = crate::sim::game_entity::GameEntity::test_default(
             entity_id,
@@ -3699,6 +4011,7 @@ mod tests {
             4,
         );
         building.category = crate::map::entities::EntityCategory::Structure;
+        building.owner = owner;
         building.base_reservation_spacing = Some(-3);
         sim.substrate.entities.insert(building);
         let mut reservation_terrain = flat_terrain(4, 5);
@@ -3762,12 +4075,23 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let mut restored = GameSnapshot::load(&bytes).expect("v50 snapshot").sim;
+        sim.substrate
+            .base_reservations
+            .clear(sim.resolved_terrain.as_ref(), 2, 0, 1);
+        let expected_loaded_hash = sim.state_hash();
+
+        let mut restored = GameSnapshot::load(&bytes).expect("reservation snapshot").sim;
         restored
             .restore_after_snapshot_load()
             .expect("restore transient caches without rebuilding reservations");
         assert_eq!(restored.substrate.base_reservations.raw_mask(None, 3, 4), 1);
-        assert_eq!(restored.substrate.base_reservations.dummy_mask(), 1 << 1);
+        assert_eq!(restored.substrate.base_reservations.dummy_mask(), 0);
+        let restored_house = restored.houses.get(&owner).expect("restored owner");
+        assert_eq!(restored_house.base_reservation.bounds(), (3, 4, 5, 6));
+        assert_eq!(
+            restored_house.base_reservation.perimeter_cells(),
+            &[u32::from(3u16) | (u32::from(4u16) << 16)]
+        );
         assert_eq!(
             restored
                 .substrate
@@ -3777,7 +4101,7 @@ mod tests {
                 .base_reservation_spacing,
             Some(-3)
         );
-        assert_eq!(restored.state_hash(), expected_hash);
+        assert_eq!(restored.state_hash(), expected_loaded_hash);
     }
 
     #[test]
@@ -4384,6 +4708,324 @@ mod tests {
         );
 
         assert_eq!(sim.restore_after_snapshot_load(), Ok(()));
+    }
+
+    #[test]
+    fn gsi_04_01_snapshot_handoff_retains_live_process_dummy_without_serializing_it() {
+        use crate::sim::combat::RAD_NO_ATTACKER;
+        use crate::sim::projectile::ProjectileTarget;
+
+        let mut live = Simulation::new();
+        let process_dummy = live.shared_cell_dummy.clone();
+        process_dummy.set_level_slope(-7, 11);
+        process_dummy.stamp_coord(7, 9);
+        let projectile_id = live.allocate_stable_id();
+        live.admit_projectile(
+            projectile_id,
+            gsi_17_03_projectile(RAD_NO_ATTACKER, ProjectileTarget::DummyCell),
+        );
+
+        let hash_at_a = live.state_hash();
+        process_dummy.stamp_coord(8, 10);
+        assert_ne!(
+            hash_at_a,
+            live.state_hash(),
+            "a retained Bullet pointer makes the live dummy snapshot future behavior"
+        );
+        process_dummy.stamp_coord(7, 9);
+
+        let bytes = GameSnapshot::save(&live, 0, 0, "shared-dummy.map", 0);
+        let cold = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert_eq!(
+            cold.projectiles.get(projectile_id).unwrap().target,
+            ProjectileTarget::DummyCell
+        );
+        assert_eq!(
+            cold.shared_cell_dummy.snapshot().coord,
+            (0, 0),
+            "the process-global CellClass bytes are not Scenario payload"
+        );
+        assert!(!cold.shared_cell_dummy.same_identity(&process_dummy));
+
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored.retain_in_scenario_process_state_from(&live);
+        assert!(restored.shared_cell_dummy.same_identity(&process_dummy));
+        assert_eq!(
+            restored.shared_cell_dummy.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (7, 9),
+                level: -7,
+                slope_type: 11,
+                bridge_flags_0x1180: 0,
+            },
+            "fallible candidate preparation retains identity without mutating the live process"
+        );
+        restored
+            .restore_after_snapshot_load()
+            .expect("dummy CellClass target needs no Object identity fixup");
+
+        let terrain_template = flat_terrain(2, 2);
+        restored.rebuild_caches_after_load(
+            terrain_template,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        let rebuilt_dummy = restored
+            .resolved_terrain
+            .as_ref()
+            .expect("rebuilt terrain")
+            .shared_cell_dummy();
+        assert!(rebuilt_dummy.same_identity(&process_dummy));
+        assert_eq!(rebuilt_dummy.snapshot().coord, (7, 9));
+
+        restored.reconstruct_cellclass_dummy_for_map_resize();
+        assert_eq!(
+            rebuilt_dummy.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (0, 0),
+                level: 0,
+                slope_type: 0,
+                bridge_flags_0x1180: 0,
+            }
+        );
+
+        process_dummy.stamp_coord(-2, 7);
+        assert_eq!(
+            rebuilt_dummy.snapshot().coord,
+            (-2, 7),
+            "the restored DummyCell target retains the same live identity after reconstruction"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_successful_load_restores_real_flags_and_zeroes_only_dummy() {
+        use crate::map::bridge_facts::{
+            BRIDGE_FLAG_STRUCTURAL, BridgeFlagStamp, BridgeStampSlot,
+            MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+        };
+        use crate::map::overlay_types::OverlayTypeRegistry;
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::overlay_grid::OverlayGrid;
+
+        let mut live = Simulation::new();
+        let mut map_load_terrain = flat_terrain(4, 3);
+        map_load_terrain.test_set_native_allocated_cells(&[(0, 0), (1, 1)]);
+        {
+            let pristine_bridge_cell = map_load_terrain.cell_mut(1, 1).unwrap();
+            pristine_bridge_cell.level = 2;
+            pristine_bridge_cell.slope_type = 1;
+            pristine_bridge_cell.bridge_facts.raw_flags =
+                MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        }
+        let pristine_load_template = map_load_terrain.clone();
+        let expected_ground_z = {
+            let target = crate::sim::projectile::cell_target_coord(
+                Some(&pristine_load_template),
+                1,
+                1,
+            );
+            let cell = pristine_load_template.cell(1, 1).unwrap();
+            crate::util::lepton::cellclass_ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                target.x,
+                target.y,
+            )
+            .expect("fixture uses a native-supported CellClass slope")
+        };
+        live.install_resolved_terrain_for_new_map(map_load_terrain);
+        live.overlay_grid = Some(OverlayGrid::new(4, 3));
+        assert_ne!(
+            live.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & BRIDGE_FLAG_STRUCTURAL,
+            0,
+            "the pristine allocated CellClass starts on the high bridge target surface"
+        );
+        let hash_with_pristine_bridge = live.state_hash();
+
+        // The real anchor is allocated. Every neighbor is unallocated or
+        // missing, so this live clear updates both serialized real authority
+        // and the process dummy through their distinct native targets before
+        // the snapshot is written.
+        live.apply_runtime_bridge_flag_stamp(BridgeFlagStamp::new((1, 1), 0, false));
+        let process_dummy = live.effective_shared_cell_dummy();
+        assert_eq!(
+            live.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "the live runtime setter clears the allocated CellClass before save"
+        );
+        assert_eq!(
+            live.real_cell_bridge_flags_0x1180,
+            live.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .capture_real_cell_bridge_flags_0x1180(),
+            "serialized real-cell authority records the runtime-cleared value"
+        );
+        process_dummy.reconstruct_for_map_resize();
+        let hash_after_runtime_clear = live.state_hash();
+        assert_ne!(
+            hash_after_runtime_clear,
+            hash_with_pristine_bridge,
+            "the future-affecting real-cell value authority is hashed even with a clear dummy"
+        );
+        process_dummy.stamp_coord(-23, 17);
+        process_dummy.set_level_slope(-7, 11);
+        process_dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
+        let dirty_dummy_before_load = process_dummy.snapshot();
+        assert_ne!(dirty_dummy_before_load.bridge_flags_0x1180, 0);
+
+        let bytes = GameSnapshot::save(&live, 0, 0, "bridge-dummy.map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored.retain_in_scenario_process_state_from(&live);
+        restored
+            .restore_after_snapshot_load()
+            .expect("snapshot references restore");
+        restored.rebuild_caches_after_load(
+            pristine_load_template,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        let rebuilt_terrain = restored.resolved_terrain.as_ref().unwrap();
+        assert_eq!(
+            rebuilt_terrain.cell(1, 1).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            "candidate cache rebuild starts from the nonzero pristine map template"
+        );
+        assert_eq!(
+            crate::sim::projectile::cell_target_coord(Some(rebuilt_terrain), 1, 1).z,
+            expected_ground_z + crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32,
+            "before direct value restore the pristine raw 0x100 selects the +416 target surface"
+        );
+        let pristine_candidate_authority =
+            rebuilt_terrain.capture_real_cell_bridge_flags_0x1180();
+        let serialized_cleared_authority = restored.real_cell_bridge_flags_0x1180.clone();
+        assert_ne!(serialized_cleared_authority, pristine_candidate_authority);
+        let hash_with_serialized_clear = restored.state_hash();
+        restored.real_cell_bridge_flags_0x1180 = pristine_candidate_authority.clone();
+        let hash_if_pristine_template_were_authority = restored.state_hash();
+        assert_ne!(
+            hash_with_serialized_clear,
+            hash_if_pristine_template_were_authority,
+            "the canonical hash distinguishes the saved clear from the pristine nonzero template"
+        );
+        restored.real_cell_bridge_flags_0x1180 = serialized_cleared_authority.clone();
+        assert_eq!(restored.state_hash(), hash_with_serialized_clear);
+        let candidate_dummy_before_authority_restore =
+            restored.effective_shared_cell_dummy().snapshot();
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n[OverlayTypes]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("empty map-authority rules");
+        restored
+            .restore_map_authority_after_snapshot_load(&rules, &OverlayTypeRegistry::empty())
+            .expect("serialized real CellClass values restore directly");
+
+        let candidate_dummy = restored.effective_shared_cell_dummy();
+        assert!(candidate_dummy.same_identity(&process_dummy));
+        assert_eq!(
+            candidate_dummy.snapshot(),
+            candidate_dummy_before_authority_restore,
+            "direct real-cell restoration must not lookup, stamp, or mutate the dummy"
+        );
+        assert_eq!(candidate_dummy.snapshot(), dirty_dummy_before_load);
+        let restored_terrain = restored.resolved_terrain.as_ref().unwrap();
+        assert_eq!(
+            restored_terrain.cell(1, 1).unwrap().bridge_facts.raw_flags & BRIDGE_FLAG_STRUCTURAL,
+            0,
+            "the saved clear removes the pristine real CellClass structural bit"
+        );
+        assert_eq!(
+            restored_terrain.cell(1, 1).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "direct CellClass value restore replaces the complete pristine modeled mask"
+        );
+        assert_eq!(
+            crate::sim::projectile::cell_target_coord(Some(restored_terrain), 1, 1).z,
+            expected_ground_z,
+            "restored raw 0x100 clear removes +416 while retaining the 90-lepton ground kernel"
+        );
+        assert_eq!(
+            restored.state_hash(),
+            hash_with_serialized_clear,
+            "direct CellClass cache restoration leaves the saved-cleared authority hash unchanged"
+        );
+        assert_ne!(
+            restored.state_hash(),
+            hash_if_pristine_template_were_authority,
+            "the restored state hash must not adopt the pristine nonzero template authority"
+        );
+        assert_eq!(
+            restored_terrain.cell(0, 0).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "untouched allocated cells retain their exact saved zero"
+        );
+        assert!(restored_terrain.cell(1, 0).is_none());
+        assert_eq!(
+            restored_terrain.cells[1].bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "unallocated storage is not promoted into real-cell authority"
+        );
+
+        // MouseClass::Load reaches Resize only at accepted commit. That ctor
+        // zeros the same dummy identity and does not rewrite loaded real cells.
+        restored.reconstruct_cellclass_dummy_for_map_resize();
+
+        let reconstructed = restored.effective_shared_cell_dummy();
+        assert!(reconstructed.same_identity(&process_dummy));
+        assert_eq!(
+            reconstructed.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (0, 0),
+                level: 0,
+                slope_type: 0,
+                bridge_flags_0x1180: 0,
+            }
+        );
+        assert_eq!(
+            restored
+                .resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(1, 1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "dummy reconstruction must not resurrect pristine real CellClass flags"
+        );
+        assert_eq!(
+            crate::sim::projectile::cell_target_coord(restored.resolved_terrain.as_ref(), 1, 1,).z,
+            expected_ground_z,
+            "accepted Resize keeps the restored real CellClass on the 90-lepton ground surface"
+        );
+        assert_eq!(
+            restored.real_cell_bridge_flags_0x1180,
+            serialized_cleared_authority,
+            "accepted Resize clears only the dummy and retains saved real-cell hash authority"
+        );
     }
 
     #[test]

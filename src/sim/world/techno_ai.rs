@@ -161,8 +161,8 @@ impl Simulation {
             return true;
         }
         if self.projectiles.get(id).is_some() {
+            let shared_cell_dummy = self.effective_shared_cell_dummy();
             let terrain = self.resolved_terrain.as_ref();
-            let bridge_state = self.bridge_state.as_ref();
             let overlay_grid = self.overlay_grid.as_ref();
             let occupancy = &self.substrate.occupancy;
             let entities = &self.substrate.entities;
@@ -185,7 +185,7 @@ impl Simulation {
                         ))
                     },
                     terrain,
-                    bridge_state,
+                    &shared_cell_dummy,
                     |projectile, candidate| {
                         super::projectile_collides_at(
                             terrain,
@@ -1600,6 +1600,8 @@ mod tests {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         }
     }
 

@@ -22,6 +22,9 @@ use crate::assets::asset_manager::AssetManager;
 pub(crate) struct ProcessAssets {
     manager: Option<AssetManager>,
     leased: bool,
+    /// MapClass's one process-global fallback CellClass (`0x00ABDC50`). Map
+    /// reloads bind their resolved grid to this same live identity.
+    pub(crate) shared_cell_dummy: crate::map::resolved_terrain::SharedCellDummy,
     /// CSF string table — localized display names for units, buildings, UI
     /// text. Loaded once at startup from the retail archives; process-wide.
     pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
@@ -39,6 +42,7 @@ impl ProcessAssets {
         Self {
             manager,
             leased: false,
+            shared_cell_dummy: Default::default(),
             csf,
             tile_variant_selector_cache: Default::default(),
         }
@@ -161,5 +165,41 @@ mod tests {
         assets.note_lease_ended_without_return();
         assert!(!assets.is_available());
         assert!(assets.lease_for_loading().is_none(), "manager is truly gone");
+    }
+
+    #[test]
+    fn gsi_04_01_process_owner_binds_grid_clones_and_map_reloads() {
+        let assets = ProcessAssets::from_startup(None, None);
+        let process_dummy = assets.shared_cell_dummy.clone();
+        let mut first = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+            0,
+            0,
+            Vec::new(),
+        );
+        first.bind_shared_cell_dummy(process_dummy.clone());
+        let first_clone = first.clone();
+        first.stamp_dummy_cell_requested_coord(7, 9);
+        assert!(first
+            .shared_cell_dummy()
+            .same_identity(&first_clone.shared_cell_dummy()));
+        assert_eq!(first_clone.dummy_cell_requested_coord(), (7, 9));
+
+        process_dummy.set_level_slope(-7, 11);
+        process_dummy.reconstruct_for_map_resize();
+        let mut reloaded = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+            0,
+            0,
+            Vec::new(),
+        );
+        reloaded.bind_shared_cell_dummy(assets.shared_cell_dummy.clone());
+        assert!(reloaded
+            .shared_cell_dummy()
+            .same_identity(&first.shared_cell_dummy()));
+        assert_eq!(reloaded.dummy_cell_requested_coord(), (0, 0));
+        assert_eq!(reloaded.dummy_cell_level_slope(), (0, 0));
+
+        let headless_process = crate::map::resolved_terrain::SharedCellDummy::fresh();
+        assert!(!headless_process.same_identity(&assets.shared_cell_dummy));
+        assert_eq!(headless_process.snapshot().coord, (0, 0));
     }
 }

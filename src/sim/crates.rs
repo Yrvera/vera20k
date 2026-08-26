@@ -27,7 +27,9 @@ use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::ruleset::{CrateRules, RuleSet};
 use crate::rules::terrain_rules::LandType;
 use crate::sim::cell_rect::cell_is_in_playfield_height_aware;
-use crate::sim::find_nearby_cell::{NearbyQuery, PassabilityArgs, find_nearby_passable_cell};
+use crate::sim::find_nearby_cell::{
+    NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, find_nearby_passable_cell,
+};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
@@ -262,11 +264,19 @@ fn snap_to_passable(
             movement_zone: MovementZone::Normal,
             bridge_aware_zone: false,
         },
+        footprint: NearbyFootprint::SINGLE,
+        // gamemd-derived: every FNPC candidate path, including crate placement,
+        // calls Is_Cell_In_Playfield_CellClass(cell, 1) @ 0x00578540 before
+        // CellRect passability (caller PlaceCrateAtRandomCell @ 0x0056BD40).
+        anchor_gate: NearbyAnchorGate::NativeHeightAware,
         allow_bridge_cells: true,
         check_height: false,
         check_occupancy: false,
         radius_cap: sim.session.map_width.min(CRATE_SNAP_RADIUS_CAP),
-        target_cell: Some((0, 0)),
+        // gamemd-derived: PlaceCrateAtRandomCell @ 0x0056BD40 initializes
+        // this reference to the engine zero cell. FNPC @ 0x0056DC20 treats
+        // that zero sentinel as "no target" and selects by live frame modulo.
+        target_cell: None,
         path_grid,
         resolved_terrain: sim.resolved_terrain.as_ref(),
         overlay_grid: sim.overlay_grid.as_ref(),
@@ -578,7 +588,8 @@ mod tests {
         let registry = crate_registry();
         let grid = PathGrid::test_all_passable(MAP, MAP);
         let mut sim = sim_with_grid(0xF411_ED);
-        // Empty diamond: every nearby result fails the separate playfield gate.
+        // Empty diamond: every FNPC candidate fails the mandatory anchor gate
+        // (and the independent final playfield gate would reject it too).
         sim.playfield_bounds = Some(PlayfieldBounds {
             base: 0,
             off_fc: 0,
@@ -801,15 +812,16 @@ mod tests {
     }
 
     #[test]
-    fn gsi_01_04_crate_snap_uses_target_zero_bridge_allowance_no_occupancy_and_radius_over_eight() {
+    fn gsi_01_04_crate_snap_zero_reference_uses_live_frame_modulo() {
         let registry = crate_registry();
         let mut sim = sim_with_grid(1);
         let mut terrain = uniform_terrain(false);
         for cell in &mut terrain.cells {
             cell.speed_costs.track = Some(0);
         }
-        // Both candidates are on ring 9. Ring order encounters (29,11)
-        // first, but target (0,0) selects the nearer (11,20).
+        // Both preferred candidates are on ring 9. Engine ring order encounters
+        // (29,11) first and (11,20) second, while nearest-to-origin would choose
+        // (11,20). Native's zero reference is a sentinel, not a real target.
         terrain
             .cell_mut(29, 11)
             .expect("candidate A")
@@ -830,9 +842,64 @@ mod tests {
             .place_overlay(11, 20, ore, 0);
         let grid = PathGrid::test_all_passable(MAP, MAP);
 
+        sim.session.binary_frame = 0;
         assert_eq!(
             snap_to_passable(&sim, Some(&grid), (20, 20), CrateSurface::Land),
-            Some((11, 20))
+            Some((29, 11)),
+            "frame zero selects the first preferred survivor, not nearest to (0,0)"
+        );
+
+        sim.session.binary_frame = 1;
+        assert_eq!(
+            snap_to_passable(&sim, Some(&grid), (20, 20), CrateSurface::Land),
+            Some((11, 20)),
+            "the live frame advances modulo the preferred pool"
+        );
+    }
+
+    #[test]
+    fn gsi_01_04_crate_snap_requires_native_candidate_anchor_diamond() {
+        let mut sim = sim_with_grid(1);
+        let mut terrain = uniform_terrain(false);
+        for cell in &mut terrain.cells {
+            cell.speed_costs.track = Some(0);
+        }
+        // Both candidates are valid cells inside the 40x40 terrain rectangle.
+        // Ring order visits (8,3) first, but the native diamond below admits
+        // (8,5) only: on flat terrain it requires 12 < x+y <= 26,
+        // x-y < 14, and y-x < 6.
+        terrain
+            .cell_mut(8, 3)
+            .expect("rectangular-only candidate")
+            .speed_costs
+            .track = Some(100);
+        terrain
+            .cell_mut(8, 5)
+            .expect("in-diamond candidate")
+            .speed_costs
+            .track = Some(100);
+        sim.resolved_terrain = Some(terrain);
+        sim.playfield_bounds = Some(PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        });
+        sim.session.binary_frame = 0;
+        let grid = PathGrid::test_all_passable(MAP, MAP);
+
+        assert_eq!(
+            snap_to_passable(&sim, Some(&grid), (9, 4), CrateSurface::Land),
+            Some((8, 5)),
+            "the earlier rectangularly valid but off-diamond anchor must be rejected"
+        );
+
+        sim.playfield_bounds = None;
+        assert_eq!(
+            snap_to_passable(&sim, Some(&grid), (9, 4), CrateSurface::Land),
+            None,
+            "missing MapClass playfield authority must reject, not bypass"
         );
     }
 

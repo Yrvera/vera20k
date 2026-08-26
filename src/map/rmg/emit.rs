@@ -64,6 +64,7 @@ pub fn empty_map_file(options: &RmgOptions, gen_w: u32, gen_h: u32) -> MapFile {
         briefing: Default::default(),
         preview: Default::default(),
         cells: Vec::new(),
+        iso_map_pack_lookups: Vec::new(),
         entities: Vec::new(),
         overlays: Vec::new(),
         overlay_data: Default::default(),
@@ -158,6 +159,8 @@ pub fn populate(
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         });
     }
 

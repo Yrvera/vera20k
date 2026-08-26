@@ -983,7 +983,11 @@ impl BridgeRuntimeState {
         StateOutcome::Collapsed {
             binary_success: true,
             destroyed_cells: destroyed,
-            set_bridge_direction: SetBridgeDirectionResult { actions },
+            set_bridge_direction: SetBridgeDirectionResult {
+                actions,
+                flag_stamp: None,
+            },
+            setter_transcript: Vec::new(),
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,
@@ -1082,7 +1086,11 @@ impl BridgeRuntimeState {
         StateOutcome::Collapsed {
             binary_success: true,
             destroyed_cells: destroyed,
-            set_bridge_direction: SetBridgeDirectionResult { actions },
+            set_bridge_direction: SetBridgeDirectionResult {
+                actions,
+                flag_stamp: None,
+            },
+            setter_transcript: Vec::new(),
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,
@@ -1389,7 +1397,11 @@ impl BridgeRuntimeState {
         StateOutcome::Collapsed {
             binary_success: true,
             destroyed_cells: destroyed,
-            set_bridge_direction: SetBridgeDirectionResult { actions },
+            set_bridge_direction: SetBridgeDirectionResult {
+                actions,
+                flag_stamp: None,
+            },
+            setter_transcript: Vec::new(),
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,
@@ -1495,7 +1507,11 @@ impl BridgeRuntimeState {
         StateOutcome::Collapsed {
             binary_success: true,
             destroyed_cells: destroyed,
-            set_bridge_direction: SetBridgeDirectionResult { actions },
+            set_bridge_direction: SetBridgeDirectionResult {
+                actions,
+                flag_stamp: None,
+            },
+            setter_transcript: Vec::new(),
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
             radar_cells,

@@ -50,7 +50,9 @@ use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay::OverlayEntry;
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{
+    RealCellBridgeFlags0x1180, ResolvedTerrainGrid, SharedCellDummy,
+};
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::LocomotorKind;
@@ -205,7 +207,8 @@ fn projectile_collides_at(
     let target_owner = match projectile.target {
         crate::sim::projectile::ProjectileTarget::Entity(id) => entities.get(id).map(|e| e.owner),
         crate::sim::projectile::ProjectileTarget::Cell { .. }
-        | crate::sim::projectile::ProjectileTarget::None => None,
+        | crate::sim::projectile::ProjectileTarget::None
+        | crate::sim::projectile::ProjectileTarget::DummyCell => None,
     };
     let building_owner = building_id.and_then(|id| entities.get(id)).map(|e| e.owner);
     let allied = target_owner
@@ -246,7 +249,8 @@ fn projectile_collides_at(
             Some(ProjectileCollisionResponse::TargetZClamp(impact))
         }
         crate::sim::projectile::ProjectileTarget::Cell { .. }
-        | crate::sim::projectile::ProjectileTarget::None => {
+        | crate::sim::projectile::ProjectileTarget::None
+        | crate::sim::projectile::ProjectileTarget::DummyCell => {
             let velocity =
                 projectile_slope_reflect(projectile.velocity, candidate_cell.slope_type)?;
             Some(ProjectileCollisionResponse::SlopeMatrixReflect { impact, velocity })
@@ -766,6 +770,17 @@ pub struct Simulation {
     path_grid: Option<Arc<PathGrid>>,
     #[serde(skip)]
     pub resolved_terrain: Option<ResolvedTerrainGrid>,
+    /// Process-global MapClass fallback CellClass identity. Native owns this at
+    /// `0x00ABDC50`, outside Scenario serialization; live in-scenario loads
+    /// retain the current handle and rebuilt terrain is rebound to it.
+    #[serde(skip, default)]
+    pub(crate) shared_cell_dummy: SharedCellDummy,
+    /// Serialized value authority for allocated real CellClass bridge bits.
+    /// The derived terrain grid is skipped; load installs its pristine map
+    /// template and then writes these saved values directly back onto real
+    /// cells. This is value state, never a setter/replay log.
+    #[serde(default)]
+    pub(crate) real_cell_bridge_flags_0x1180: RealCellBridgeFlags0x1180,
     pub bridge_state: Option<BridgeRuntimeState>,
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
@@ -1076,6 +1091,48 @@ struct SimulationCombatInlineHooks<'a> {
 
 impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
     #[allow(clippy::too_many_arguments)]
+    fn respond_to_base_attack(
+        &mut self,
+        _site: crate::sim::combat::BaseDefenseResponseCallSite,
+        victim_id: u64,
+        attacker_id: u64,
+        borrowed_entities: &mut EntityStore,
+        rules: &RuleSet,
+        borrowed_interner: &StringInterner,
+        borrowed_houses: &mut BTreeMap<InternedId, HouseState>,
+        borrowed_scenario_rng: &mut SimRng,
+        borrowed_terrain: Option<&ResolvedTerrainGrid>,
+    ) {
+        let current_frame = self.sim.session.binary_frame as i32;
+        let game_mode_nonzero = self.sim.session.game_mode_nonzero;
+        let map_size_width = i32::from(self.sim.session.map_width);
+        let map_size_height = i32::from(self.sim.session.map_height);
+        let playfield_bounds = self.sim.playfield_bounds;
+        let mut context =
+            crate::sim::combat::base_defense_response::BaseDefenseResponseContext {
+                entities: borrowed_entities,
+                rules,
+                interner: borrowed_interner,
+                houses: borrowed_houses,
+                alliances: &self.sim.house_alliances,
+                scenario_rng: borrowed_scenario_rng,
+                teams: &mut self.sim.team_script_vm,
+                zone_grid: self.sim.zone_grid.as_ref(),
+                terrain: borrowed_terrain,
+                playfield_bounds,
+                map_size_width,
+                map_size_height,
+                current_frame,
+                game_mode_nonzero,
+            };
+        crate::sim::combat::base_defense_response::respond_to_base_attack(
+            victim_id,
+            attacker_id,
+            &mut context,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn fatal_lifecycle(
         &mut self,
         rules: &RuleSet,
@@ -1213,9 +1270,10 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
 
 impl Simulation {
     /// Combat borrows a staged house map while fatal lifecycle hooks temporarily
-    /// re-enter `Simulation`. Merge only the receiver-owned anger fields back so
-    /// live lifecycle mutations to counts, economy, or defeat state are kept.
-    fn merge_receiver_anger_state(
+    /// re-enter `Simulation`. Merge only receiver-owned fields back so live
+    /// lifecycle mutations to strategy mode, counts, economy, or defeat state
+    /// are kept.
+    fn merge_receiver_house_state(
         &mut self,
         staged: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
     ) {
@@ -1223,6 +1281,16 @@ impl Simulation {
             if let Some(live_house) = self.houses.get_mut(&owner) {
                 live_house.grudge_scores = staged_house.grudge_scores.clone();
                 live_house.enemy_house = staged_house.enemy_house;
+                live_house.strategy_emergency.note_building_attack(
+                    staged_house
+                        .strategy_emergency
+                        .last_building_attack_frame(),
+                );
+                live_house.strategy_emergency.note_building_attacker(
+                    staged_house
+                        .strategy_emergency
+                        .last_attacker_house_index(),
+                );
             }
         }
     }
@@ -1410,7 +1478,7 @@ impl Simulation {
         self.bridge_state = bridge_state;
         self.radiation = radiation;
         self.sound_events = sound_events;
-        self.merge_receiver_anger_state(&houses);
+        self.merge_receiver_house_state(&houses);
         let mut combat_result = combat_result;
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
         self.mark_wall_mutations_radar_dirty(&combat_result.wall_mutations);
@@ -1500,7 +1568,7 @@ impl Simulation {
         self.resolved_terrain = resolved_terrain;
         self.bridge_state = bridge_state;
         self.sound_events = sound_events;
-        self.merge_receiver_anger_state(&houses);
+        self.merge_receiver_house_state(&houses);
 
         for projectile in commit.projectile_spawns {
             let stable_id = self.allocate_stable_id();
@@ -1687,7 +1755,7 @@ impl Simulation {
         self.overlay_grid = overlay_grid;
         self.resolved_terrain = resolved_terrain;
         self.sound_events = sound_events;
-        self.merge_receiver_anger_state(&houses);
+        self.merge_receiver_house_state(&houses);
         self.absorb_noncombat_damage_effects(
             rules,
             overlay_registry,
@@ -1906,6 +1974,103 @@ impl Simulation {
         self.session.seed = live.session.seed;
         self.main_rng = live.main_rng.clone();
         self.mapgen_rng = live.mapgen_rng.clone();
+        self.bind_shared_cell_dummy(live.effective_shared_cell_dummy());
+    }
+
+    /// Apply the successful load's native MapClass Resize reconstruction to
+    /// every modeled field of the fixed fallback CellClass.
+    ///
+    /// `MouseClass::Load @ 0x005BE150` routes restored dimensions through
+    /// `MapClass::Resize @ 0x00565C10`, whose unconditional call to
+    /// `CellClass::Constructor @ 0x0047BBF0` reconstructs the fixed dummy in
+    /// place. The app invokes this only after fallible candidate preparation,
+    /// so a rejected transactional load cannot mutate the running world.
+    pub(crate) fn reconstruct_cellclass_dummy_for_map_resize(&mut self) {
+        self.effective_shared_cell_dummy()
+            .reconstruct_for_map_resize();
+        self.substrate
+            .base_reservations
+            .reconstruct_dummy_for_map_resize();
+    }
+
+    /// Adopt the process-global CellClass identity already bound to a load's
+    /// resolved grid, before that grid is cloned into Simulation.
+    pub(crate) fn bind_shared_cell_dummy(&mut self, shared_cell_dummy: SharedCellDummy) {
+        self.shared_cell_dummy = shared_cell_dummy.clone();
+        if let Some(terrain) = self.resolved_terrain.as_mut() {
+            terrain.bind_shared_cell_dummy(shared_cell_dummy);
+        }
+    }
+
+    /// Install a newly constructed map grid and capture the real CellClass
+    /// `0x1180` value authority after row-major OverlayPack marking.
+    pub(crate) fn install_resolved_terrain_for_new_map(
+        &mut self,
+        resolved_terrain: ResolvedTerrainGrid,
+    ) {
+        self.bind_shared_cell_dummy(resolved_terrain.shared_cell_dummy());
+        self.real_cell_bridge_flags_0x1180 =
+            resolved_terrain.capture_real_cell_bridge_flags_0x1180();
+        self.resolved_terrain = Some(resolved_terrain);
+    }
+
+    /// Apply one live runtime setter and update only the allocated real-cell
+    /// serialized values it changed. Missing slots remain owned solely by the
+    /// process dummy and are intentionally absent from Scenario payload.
+    pub(crate) fn apply_runtime_bridge_flag_stamp(
+        &mut self,
+        stamp: crate::map::bridge_facts::BridgeFlagStamp,
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        if !terrain.bridge_flag_authority_matches_shape(&self.real_cell_bridge_flags_0x1180) {
+            self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
+        }
+        let updates = self
+            .resolved_terrain
+            .as_mut()
+            .expect("terrain presence checked before runtime bridge setter")
+            .apply_runtime_bridge_flag_stamp(stamp);
+        for (index, flags) in updates {
+            self.real_cell_bridge_flags_0x1180
+                .set_allocated_cell(index, flags);
+        }
+    }
+
+    /// Commit the allocated real-cell half of a runtime setter that already
+    /// executed synchronously through `CellClassBridgeFlagState`. Dummy
+    /// coordinate/flag effects are live at the native call point and must not
+    /// be replayed here.
+    pub(crate) fn apply_planned_bridge_flag_stamp_to_real_cells(
+        &mut self,
+        stamp: crate::map::bridge_facts::BridgeFlagStamp,
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        if !terrain.bridge_flag_authority_matches_shape(&self.real_cell_bridge_flags_0x1180) {
+            self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
+        }
+        let updates = self
+            .resolved_terrain
+            .as_mut()
+            .expect("terrain presence checked before planned bridge setter projection")
+            .apply_planned_bridge_flag_stamp_to_real_cells(stamp);
+        for (index, flags) in updates {
+            self.real_cell_bridge_flags_0x1180
+                .set_allocated_cell(index, flags);
+        }
+    }
+
+    /// Synthetic fixtures may assign a detached grid directly. Production
+    /// construction binds both owners, but gameplay must still read the live
+    /// handle attached to the actual CellClass table it queried.
+    pub(crate) fn effective_shared_cell_dummy(&self) -> SharedCellDummy {
+        self.resolved_terrain
+            .as_ref()
+            .map(ResolvedTerrainGrid::shared_cell_dummy)
+            .unwrap_or_else(|| self.shared_cell_dummy.clone())
     }
 
     /// Install the Scenario cursor advanced by the pre-IsoMapPack Fill pass.
@@ -2057,6 +2222,8 @@ impl Simulation {
             zone_grid: None,
             path_grid: None,
             resolved_terrain: None,
+            shared_cell_dummy: SharedCellDummy::fresh(),
+            real_cell_bridge_flags_0x1180: RealCellBridgeFlags0x1180::default(),
             bridge_state: None,
             overlay_grid: None,
             smudge_grid: None,
@@ -3705,6 +3872,7 @@ impl Simulation {
         metallic_debris: Vec<InternedId>,
         bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
     ) {
+        resolved_terrain.bind_shared_cell_dummy(self.shared_cell_dummy.clone());
         // Restore externally-derived data only. Substrate caches are rebuilt
         // transactionally by `restore_after_snapshot_load` before this call.
         // The supplied map grid predates runtime Terrain lifecycle changes, so
@@ -5011,40 +5179,6 @@ impl Simulation {
             self.check_defeat(rules);
         }
 
-        // gamemd.exe TeamClass::AI advances scenario teams after house defeat
-        // admission and before the generic HouseClass AI tail.
-        #[cfg(test)]
-        self.trace_master_frame_rung(MasterFrameTestRung::TeamScript);
-        let mut team_script_vm = std::mem::take(&mut self.team_script_vm);
-        let team_tick = team_script_vm.tick_effects(execute_tick, |owner| {
-            !crate::sim::house_state::house_state_for_owner_id(&self.houses, owner)
-                .is_some_and(|house| house.is_defeated)
-        });
-        self.team_script_vm = team_script_vm;
-        for effect in team_tick.effects {
-            match effect {
-                // Original: TeamClass::AI action 19 walks TeamClass+0x54 and
-                // invokes FootClass's panic-family virtual in member order.
-                TeamScriptEffect::PanicMember { entity_id } => {
-                    let Some(rules) = rules else { continue };
-                    let Some(type_ref) = self
-                        .substrate
-                        .entities
-                        .get(entity_id)
-                        .map(|entity| entity.type_ref)
-                    else {
-                        continue;
-                    };
-                    let Some(object_type) = rules.object(self.interner.resolve(type_ref)) else {
-                        continue;
-                    };
-                    if let Some(entity) = self.substrate.entities.get_mut(entity_id) {
-                        crate::sim::infantry::apply_panic_force(object_type, entity);
-                    }
-                }
-            }
-        }
-
         // --- Phase 8 (cont.): AI ---
         // DEPENDS ON: all prior phases + the defeat status set just above (defeated
         // houses are gated out inside tick_ai).
@@ -5185,6 +5319,64 @@ impl Simulation {
         // its existing post-debug-validation relation.
         self.session.tick = execute_tick;
         true
+    }
+
+    /// Run the copied TeamClass AI pass before the live LogicClass object walk.
+    ///
+    /// Native `LogicClass::PerTickUpdate @ 0x0055AFB0` snapshots the Team array
+    /// and calls TeamClass's `+0x5C` slot at `0x0055B502..0x0055B59F`; only
+    /// afterwards can Building/Foot `ReceiveDamage` reach the base-defense
+    /// suspension writer. A frame-N hit therefore arms suspension for the next
+    /// Team visit, not the Team visit already completed on frame N.
+    fn run_team_script_pass(&mut self, rules: Option<&RuleSet>) {
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::TeamScript);
+        let mut team_script_vm = std::mem::take(&mut self.team_script_vm);
+        let team_tick = team_script_vm.tick_effects(self.session.binary_frame as i32, |owner| {
+            !crate::sim::house_state::house_state_for_owner_id(&self.houses, owner)
+                .is_some_and(|house| house.is_defeated)
+        });
+        self.team_script_vm = team_script_vm;
+        for effect in team_tick.effects {
+            match effect {
+                // Original: TeamClass::AI action 19 walks TeamClass+0x54 and
+                // invokes FootClass's panic-family virtual in member order.
+                TeamScriptEffect::PanicMember { entity_id } => {
+                    let Some(rules) = rules else { continue };
+                    let Some(type_ref) = self
+                        .substrate
+                        .entities
+                        .get(entity_id)
+                        .map(|entity| entity.type_ref)
+                    else {
+                        continue;
+                    };
+                    let Some(object_type) = rules.object(self.interner.resolve(type_ref)) else {
+                        continue;
+                    };
+                    if let Some(entity) = self.substrate.entities.get_mut(entity_id) {
+                        crate::sim::infantry::apply_panic_force(object_type, entity);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Install fixed AIMD plus scenario AI definitions after RuleSet identities
+    /// are interned and before the first gameplay tick. This is data ingress
+    /// only: the installed VM contains no live TeamClass instances.
+    pub(crate) fn install_team_ai_registry(
+        &mut self,
+        registry: &crate::rules::team_ai_ini::TeamAiIniRegistry,
+        rules: &RuleSet,
+    ) -> Vec<crate::sim::team_script_vm::TeamAiInstallDiagnostic> {
+        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(registry, &mut self.interner, rules);
+        if !diagnostics.iter().any(
+            crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal,
+        ) {
+            self.team_script_vm = vm;
+        }
+        diagnostics
     }
 
     /// Fixture-only frame adapter (F09): unit tests drive one Main_Tick-shaped
@@ -5353,6 +5545,10 @@ impl Simulation {
                 self.resolved_terrain.as_ref(),
             );
         }
+        // Native TeamClass AI precedes the main LogicClass object vector. In
+        // particular, ordinary object ReceiveDamage paths that arm a Team's
+        // base-defense suspension occur only after this frame's Team visit.
+        self.run_team_script_pass(rules);
         if rules.is_some() {
             crate::sim::miner::sweep_dead_dock_reservations(self);
         }

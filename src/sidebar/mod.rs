@@ -295,6 +295,7 @@ pub fn tab_for_category(category: ProductionCategory) -> SidebarTab {
         ProductionCategory::Infantry => SidebarTab::Infantry,
         ProductionCategory::Vehicle => SidebarTab::Vehicle,
         ProductionCategory::Aircraft => SidebarTab::Vehicle,
+        ProductionCategory::Ship => SidebarTab::Vehicle,
     }
 }
 

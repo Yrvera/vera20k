@@ -462,6 +462,10 @@ pub enum CellAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetBridgeDirectionResult {
     pub actions: Vec<((u16, u16), usize, CellAction)>,
+    /// Present only when this outcome represents an actual native
+    /// `SetBridgeDirection_*` group transaction. Other bridge walkers may emit
+    /// BlowUpBridge actions without that setter and therefore leave it absent.
+    pub flag_stamp: Option<crate::map::bridge_facts::BridgeFlagStamp>,
 }
 
 /// Emit the per-cell action list for an anchor span. Mirrors binary's
@@ -502,7 +506,14 @@ pub fn set_bridge_direction(span: &AnchorSpan, set: bool) -> SetBridgeDirectionR
         };
         actions.push((cell, slot, action));
     }
-    SetBridgeDirectionResult { actions }
+    SetBridgeDirectionResult {
+        actions,
+        flag_stamp: Some(crate::map::bridge_facts::BridgeFlagStamp::new(
+            span.anchor,
+            span.direction as u8,
+            set,
+        )),
+    }
 }
 
 /// Outcome of one perpendicular `UpdateRamp_*` call. One Rust function stands
@@ -531,12 +542,17 @@ pub fn set_bridge_direction(span: &AnchorSpan, set: bool) -> SetBridgeDirectionR
 ///    repaint remains the narrower residual pinned in bridge-state tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RampOutcome {
-    /// True if the target cell's `damage_state` was mutated (target was an
-    /// anchor and the `apply_ramp_transition` returned `Some`).
+    /// True if this frame or any recursive same-helper frame mutated modeled
+    /// damage state or bridgehead tile class.
     pub state_changed: bool,
-    /// Exact pre-order cells whose TMP damaged selector changed through
+    /// Ordered cells whose TMP damaged selector changed through
     /// `MapClass::ToggleBridgePavement @ 0x0056E990`.
     pub damaged_variant_cells: Vec<(u16, u16)>,
+    /// Ordered native `SetBridgeDirection_*` calls made inside this ramp
+    /// helper, including every recursive same-helper invocation. Recursive
+    /// calls remain in call order and duplicates are never removed. This is an
+    /// ephemeral execution transcript, never snapshot authority.
+    pub setter_transcript: Vec<crate::map::bridge_facts::BridgeFlagStamp>,
 }
 
 /// Compute the perpendicular-walk direction for a body-driver UpdateRamp call.
@@ -556,13 +572,15 @@ fn perpendicular_direction(axis: Axis, phase: Phase) -> Direction {
 /// Walk one perpendicular cell from `anchor_pos` and fire the appropriate
 /// per-target-role side effects, mirroring the reference UpdateRamp helpers.
 ///
-/// - **Anchor target**: state-byte transition (`apply_ramp_transition`) +
-///   tile-class transition (`apply_anchor_class_transition`). Fires
-///   `apply_damaged_variant_flood_fill` after a successful state-byte write.
-/// - **Bridgehead target**: tile-class transition only. This is the
-///   mechanism by which the body-damage cascade shows the intermediate
-///   variant on a neighbor bridgehead.
-/// - **Other roles**: no-op.
+/// - **Live `CellClass+0x140 & 0x80` target**: state-byte transition
+///   (`apply_ramp_transition`) regardless of Rust's persistent topology role.
+///   Fires `apply_damaged_variant_flood_fill` after a successful state-byte
+///   write.
+/// - **Anchor / Bridgehead role**: independent tile-class transition
+///   (`apply_anchor_class_transition`). This is the mechanism by which the
+///   body-damage cascade shows the intermediate variant on a neighboring
+///   bridgehead.
+/// - **Other roles without live `0x80`**: no-op.
 ///
 /// `is_high_bridge` is currently unused (state transitions are identical for
 /// HIGH and LOW per HIGH §11.1) but kept for API symmetry.
@@ -571,112 +589,260 @@ pub fn update_ramp_perpendicular(
     anchor_pos: (u16, u16),
     axis: Axis,
     phase: Phase,
-    _is_high_bridge: bool,
+    is_high_bridge: bool,
     terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
 ) -> RampOutcome {
-    use crate::sim::bridge_state::BridgeCellRole;
+    let mut live_flags = terrain.bridge_flag_execution_state();
+    update_ramp_perpendicular_with_flags(
+        state,
+        anchor_pos,
+        axis,
+        phase,
+        is_high_bridge,
+        terrain,
+        &mut live_flags,
+    )
+}
 
+pub(crate) fn update_ramp_perpendicular_with_flags(
+    state: &mut BridgeRuntimeState,
+    anchor_pos: (u16, u16),
+    axis: Axis,
+    phase: Phase,
+    is_high_bridge: bool,
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
+) -> RampOutcome {
     let dir = perpendicular_direction(axis, phase);
+    update_ramp_perpendicular_recursive(
+        state,
+        anchor_pos,
+        axis,
+        phase,
+        is_high_bridge,
+        terrain,
+        dir,
+        live_flags,
+    )
+}
+
+/// One native same-helper frame. Every recursive call keeps `dir` unchanged
+/// and advances its anchor to this frame's target, exactly like the eight
+/// CollapseA/B helpers in each low/high family. There is no depth constant:
+/// the cardinal step is monotonic and recursion only continues from an
+/// existing real cell in the finite runtime grid. Every frame still performs
+/// native's fixed-stride GetCell before deciding whether the returned cell can
+/// continue: a missing/off-grid lookup restamps the shared dummy, then ends the
+/// represented setter path because its +0x11E/tile selectors are not modeled.
+fn update_ramp_perpendicular_recursive(
+    state: &mut BridgeRuntimeState,
+    anchor_pos: (u16, u16),
+    axis: Axis,
+    phase: Phase,
+    is_high_bridge: bool,
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    dir: Direction,
+    live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
+) -> RampOutcome {
+    use crate::sim::bridge_state::{BridgeCellRole, BridgeheadAnchorClass};
+
     let (dx, dy) = dir.offset();
     let target_x = anchor_pos.0 as i32 + dx;
     let target_y = anchor_pos.1 as i32 + dy;
-    if target_x < 0 || target_y < 0 {
-        return RampOutcome {
-            state_changed: false,
-            damaged_variant_cells: Vec::new(),
-        };
-    }
-    let target_pos = (target_x as u16, target_y as u16);
+    let target_pos = match crate::sim::cell_rect::get_cellclass_fallback(
+        Some(terrain),
+        target_x,
+        target_y,
+    ) {
+        // MapClass applies signed packed/fixed-stride indexing before this
+        // helper reads CellClass state. Retain the resolved cell's canonical
+        // coordinate rather than re-casting the requested components.
+        crate::sim::cell_rect::CellRef::Real(cell) => (cell.rx, cell.ry),
+        // Native GetCell has already stamped the one shared dummy identity at
+        // this exact call point. Its +0x11E/tile selectors remain unmodeled,
+        // so no represented transition or setter follows from this frame.
+        crate::sim::cell_rect::CellRef::Dummy { .. } => {
+            return RampOutcome {
+                state_changed: false,
+                damaged_variant_cells: Vec::new(),
+                setter_transcript: Vec::new(),
+            };
+        }
+    };
 
     // Snapshot target read (avoids borrow conflict with subsequent mut access).
     let Some(target_cell) = state.cell(target_pos.0, target_pos.1).copied() else {
         return RampOutcome {
             state_changed: false,
             damaged_variant_cells: Vec::new(),
+            setter_transcript: Vec::new(),
         };
     };
 
-    let mut state_byte_changed = false;
-    let mut tile_class_changed = false;
+    let mut local_state_byte_changed = false;
+    let mut local_tile_class_changed = false;
+    let mut recursive_state_changed = false;
+    let mut damaged_variant_cells = Vec::new();
+    let mut setter_transcript = Vec::new();
 
-    match target_cell.role {
-        BridgeCellRole::Anchor => {
-            // State-byte branch (existing behavior).
-            let Some(target_axis) = target_cell.axis else {
-                return RampOutcome {
-                    state_changed: false,
-                    damaged_variant_cells: Vec::new(),
-                };
-            };
-            let current_byte = target_cell.damage_state.to_state_byte(target_axis);
-            if let Some(next_byte) = apply_ramp_transition(current_byte, axis, phase) {
-                // Decode next byte. Per `apply_ramp_transition` docstring,
-                // next_byte == 0 fires only for the collapse-final case
-                // (state 7/8/0x10/0x11 + matching CollapseA/B phase) and
-                // means Destroyed in our model.
-                let next_state = if next_byte == 0 {
-                    DamageState::Destroyed
-                } else {
-                    match DamageState::from_state_byte(next_byte) {
-                        Some(s) => s,
-                        None => {
-                            return RampOutcome {
-                                state_changed: false,
-                                damaged_variant_cells: Vec::new(),
-                            };
-                        }
+    // Native state-byte writes are gated only by the selected live
+    // CellClass+0x140 anchor bit. BridgeCellRole is persistent Rust topology
+    // metadata and must not stand in for this setter-mutable flag.
+    if live_flags.flags_at(target_pos) & crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF != 0
+        && let Some(target_axis) = target_cell.axis
+    {
+        let current_byte = target_cell.damage_state.to_state_byte(target_axis);
+        if let Some(next_byte) = apply_ramp_transition(current_byte, axis, phase) {
+            // Decode next byte. Per `apply_ramp_transition` docstring,
+            // next_byte == 0 fires only for the collapse-final case
+            // (state 7/8/0x10/0x11 + matching CollapseA/B phase) and
+            // means Destroyed in our model.
+            let next_state = if next_byte == 0 {
+                DamageState::Destroyed
+            } else {
+                match DamageState::from_state_byte(next_byte) {
+                    Some(s) => s,
+                    None => {
+                        return RampOutcome {
+                            state_changed: false,
+                            damaged_variant_cells: Vec::new(),
+                            setter_transcript: Vec::new(),
+                        };
                     }
-                };
-                if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
-                    cell_mut.damage_state = next_state;
-                    state_byte_changed = true;
                 }
-            }
-
-            // Tile-class branch (new): asymmetric A/B progression on the
-            // anchor's bridgehead_anchor_class.
-            let new_class =
-                apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
-            if new_class != target_cell.bridgehead_anchor_class
-                && let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1)
-            {
-                cell_mut.bridgehead_anchor_class = new_class;
-                tile_class_changed = true;
-            }
-        }
-        BridgeCellRole::Bridgehead => {
-            // Tile-class write only. No state-byte transition because
-            // bridgeheads don't carry the anchor-flag in the reference
-            // model.
-            let new_class =
-                apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
-            if new_class != target_cell.bridgehead_anchor_class
-                && let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1)
-            {
-                cell_mut.bridgehead_anchor_class = new_class;
-                tile_class_changed = true;
-            }
-        }
-        _ => {
-            return RampOutcome {
-                state_changed: false,
-                damaged_variant_cells: Vec::new(),
             };
+            if next_byte == 0 {
+                // Collapse-final state branch order is recursive helper,
+                // current SetBridgeDirection, then current +0x11E clear.
+                let recursive = update_ramp_perpendicular_recursive(
+                    state,
+                    target_pos,
+                    axis,
+                    phase,
+                    is_high_bridge,
+                    terrain,
+                    dir,
+                    live_flags,
+                );
+                recursive_state_changed |= recursive.state_changed;
+                damaged_variant_cells.extend(recursive.damaged_variant_cells);
+                setter_transcript.extend(recursive.setter_transcript);
+
+                // gamemd-derived collapse-final calls, all with set=false:
+                // NS low/high CollapseA/B 0x56EF50/0x56F2F0 and
+                // 0x572440/0x5727E0 call direction 0; EW low/high
+                // 0x56F8B0/0x56FC80 and 0x572DA0/0x573170 call direction 6.
+                // The low NWSE and high NESW setters are byte-identical for
+                // the represented CellClass+0x140 0x1180 subset.
+                let setter_direction = match axis {
+                    Axis::NS => Direction::N,
+                    Axis::EW => Direction::W,
+                };
+                let stamp = crate::map::bridge_facts::BridgeFlagStamp::new(
+                    target_pos,
+                    setter_direction as u8,
+                    false,
+                );
+                // Native SetBridgeDirection mutates +0x140 before the
+                // later independent AboutToFall recursion. Update the
+                // transaction-local live seam now, then record the same
+                // call for terrain/authority projection.
+                live_flags.apply_stamp(stamp);
+                setter_transcript.push(stamp);
+            }
+            if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
+                cell_mut.damage_state = next_state;
+                local_state_byte_changed = true;
+            }
         }
     }
 
-    // Damaged-variant flood-fill: fires on any successful state-byte write
-    // on an Anchor target. Composes with the new tile-class write — both
-    // can fire on the same call.
-    let damaged_variant_cells = if state_byte_changed {
-        state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain)
-    } else {
-        Vec::new()
-    };
+    match target_cell.role {
+        BridgeCellRole::Anchor => {
+            // The independent tile-class +3 branch recursively calls the same
+            // helper before its footprint/final +3 write. It still runs after
+            // a collapse-final state recursion and current setter, so both
+            // recursion paths must be retained in the transcript.
+            if matches!(phase, Phase::CollapseA | Phase::CollapseB)
+                && target_cell.bridgehead_anchor_class == BridgeheadAnchorClass::AboutToFall
+            {
+                let recursive = update_ramp_perpendicular_recursive(
+                    state,
+                    target_pos,
+                    axis,
+                    phase,
+                    is_high_bridge,
+                    terrain,
+                    dir,
+                    live_flags,
+                );
+                recursive_state_changed |= recursive.state_changed;
+                damaged_variant_cells.extend(recursive.damaged_variant_cells);
+                setter_transcript.extend(recursive.setter_transcript);
+            }
+
+            // Tile-class branch: asymmetric A/B progression on the anchor's
+            // bridgehead_anchor_class.
+            let new_class =
+                apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
+            if new_class != target_cell.bridgehead_anchor_class
+                && let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1)
+            {
+                cell_mut.bridgehead_anchor_class = new_class;
+                local_tile_class_changed = true;
+            }
+        }
+        BridgeCellRole::Bridgehead => {
+            // The role selects this tile-class write only. A state-byte
+            // transition above remains possible only when the independently
+            // selected live CellClass carries raw anchor bit 0x80.
+            if matches!(phase, Phase::CollapseA | Phase::CollapseB)
+                && target_cell.bridgehead_anchor_class == BridgeheadAnchorClass::AboutToFall
+            {
+                let recursive = update_ramp_perpendicular_recursive(
+                    state,
+                    target_pos,
+                    axis,
+                    phase,
+                    is_high_bridge,
+                    terrain,
+                    dir,
+                    live_flags,
+                );
+                recursive_state_changed |= recursive.state_changed;
+                damaged_variant_cells.extend(recursive.damaged_variant_cells);
+                setter_transcript.extend(recursive.setter_transcript);
+            }
+            let new_class =
+                apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
+            if new_class != target_cell.bridgehead_anchor_class
+                && let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1)
+            {
+                cell_mut.bridgehead_anchor_class = new_class;
+                local_tile_class_changed = true;
+            }
+        }
+        _ => {}
+    }
+
+    // Damaged-variant flood-fill: fires on any successful live-0x80-gated
+    // state-byte write. Composes with the tile-class write — both can fire on
+    // the same call.
+    if local_state_byte_changed {
+        damaged_variant_cells.extend(state.apply_damaged_variant_flood_fill(
+            target_pos.0,
+            target_pos.1,
+            true,
+            terrain,
+        ));
+    }
 
     RampOutcome {
-        state_changed: state_byte_changed || tile_class_changed,
+        state_changed: recursive_state_changed
+            || local_state_byte_changed
+            || local_tile_class_changed,
         damaged_variant_cells,
+        setter_transcript,
     }
 }
 
@@ -933,6 +1099,15 @@ mod tests {
             }
         }
         ResolvedTerrainGrid::from_cells(20, 20, cells)
+    }
+
+    fn ramp_test_terrain_with_anchor_bits(coords: &[(u16, u16)]) -> ResolvedTerrainGrid {
+        let mut terrain = ramp_test_terrain();
+        for &(rx, ry) in coords {
+            terrain.cell_mut(rx, ry).unwrap().bridge_facts.raw_flags |=
+                crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+        }
+        terrain
     }
 
     #[test]
@@ -1515,13 +1690,14 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_a_anchor_target_transitions_to_4() {
         let mut state = make_perpendicular_test_state();
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(6, 5)]);
         let outcome = update_ramp_perpendicular(
             &mut state,
             (5, 5),
             Axis::NS,
             Phase::DamageA,
             true,
-            &ramp_test_terrain(),
+            &terrain,
         );
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
@@ -1531,13 +1707,14 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_b_anchor_target_walks_west() {
         let mut state = make_perpendicular_test_state();
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(4, 5)]);
         let outcome = update_ramp_perpendicular(
             &mut state,
             (5, 5),
             Axis::NS,
             Phase::DamageB,
             true,
-            &ramp_test_terrain(),
+            &terrain,
         );
         assert!(outcome.state_changed);
         let target = state.cell(4, 5).expect("W target");
@@ -1565,8 +1742,14 @@ mod tests {
     }
 
     #[test]
-    fn update_ramp_perpendicular_target_off_map_no_change() {
+    fn gsi_04_01_update_ramp_perpendicular_negative_probe_restamps_dummy() {
+        use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeStampSlot};
+
         let mut state = make_perpendicular_test_state();
+        let terrain = ramp_test_terrain();
+        terrain.test_set_dummy_cell_level_slope(2, 0);
+        let dummy = terrain.shared_cell_dummy();
+        dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
         // Anchor at (0, 0) calling NS DamageB → walks W → target x = -1 → out of bounds.
         let outcome = update_ramp_perpendicular(
             &mut state,
@@ -1574,22 +1757,130 @@ mod tests {
             Axis::NS,
             Phase::DamageB,
             true,
-            &ramp_test_terrain(),
+            &terrain,
         );
         assert!(!outcome.state_changed);
+        assert!(outcome.setter_transcript.is_empty());
+        assert_eq!(dummy.snapshot().coord, (-1, 0));
+        assert_ne!(
+            dummy.snapshot().bridge_flags_0x1180 & BRIDGE_FLAG_STRUCTURAL,
+            0,
+            "mandatory GetCell restamps only the dummy coordinate"
+        );
+        let retained_target = crate::sim::projectile::ProjectileTarget::DummyCell;
+        let observed_target = match retained_target {
+            crate::sim::projectile::ProjectileTarget::DummyCell => {
+                crate::sim::projectile::dummy_cell_target_coord(&dummy)
+            }
+            _ => unreachable!("fixture retains the shared dummy pointer kind"),
+        };
+        assert_eq!(
+            observed_target,
+            crate::sim::projectile::ProjectileCoord::new(-128, 128, 2 * 90 + 416),
+            "a retained DummyCell target observes the ramp helper's live restamp and structural height"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_update_ramp_perpendicular_unallocated_probe_restamps_dummy() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let mut terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2)]);
+        terrain.test_set_native_allocated_cells(&[(0, 0)]);
+        let dummy = terrain.shared_cell_dummy();
+        dummy.stamp_coord(8, 9);
+
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageA,
+            true,
+            &terrain,
+        );
+
+        assert!(!outcome.state_changed);
+        assert!(outcome.setter_transcript.is_empty());
+        assert_eq!(dummy.snapshot().coord, (3, 2));
+        assert_eq!(
+            state.cell(3, 2).unwrap().damage_state,
+            DamageState::Healthy { variant: 0 },
+            "an unallocated CellClass cannot borrow the runtime cache cell's modeled selectors"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_update_ramp_perpendicular_real_fixed_alias_preserves_dummy() {
+        use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+
+        let template = ramp_test_terrain()
+            .cell(0, 0)
+            .expect("flat template cell")
+            .clone();
+        let cells = (0..512u16)
+            .map(|rx| {
+                let mut cell = template.clone();
+                cell.rx = rx;
+                cell.ry = 0;
+                cell
+            })
+            .collect();
+        let mut terrain = ResolvedTerrainGrid::from_cells(512, 1, cells);
+        terrain.test_set_native_allocated_cells(&[(511, 0)]);
+        terrain
+            .cell_mut(511, 0)
+            .unwrap()
+            .bridge_facts
+            .raw_flags |= BRIDGE_FLAG_ANCHOR_SELF;
+        let dummy = terrain.shared_cell_dummy();
+        dummy.stamp_coord(7, 8);
+        terrain.test_set_dummy_cell_level_slope(2, 0);
+        let dummy_before = dummy.snapshot();
+        let mut state = perpendicular_neighbor_state(
+            (511, 0),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::Variant0,
+        );
+
+        // Requested (-1,1) aliases fixed slot 511, whose canonical coordinate
+        // is (511,0). Native returns that real CellClass without stamping the
+        // shared dummy.
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (0, 1),
+            Axis::NS,
+            Phase::DamageB,
+            true,
+            &terrain,
+        );
+
+        assert!(outcome.state_changed);
+        assert!(outcome.setter_transcript.is_empty());
+        assert_eq!(
+            state.cell(511, 0).unwrap().damage_state,
+            DamageState::Healthy { variant: 5 }
+        );
+        assert_eq!(dummy.snapshot(), dummy_before);
     }
 
     #[test]
     fn update_ramp_perpendicular_collapse_final_target_to_destroyed() {
         let mut state = make_perpendicular_test_state();
         state.cell_mut(6, 5).unwrap().damage_state = DamageState::PartialCollapseB;
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(6, 5)]);
         let outcome = update_ramp_perpendicular(
             &mut state,
             (5, 5),
             Axis::NS,
             Phase::CollapseA,
             true,
-            &ramp_test_terrain(),
+            &terrain,
         );
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
@@ -1619,6 +1910,7 @@ mod tests {
         for (rx, ry) in [(5u16, 4u16), (5, 5), (5, 6)] {
             state.test_seed_cell(rx, ry, template);
         }
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(5, 6)]);
         // EW CollapseA → walks S → target (5, 6).
         // Target state byte 9 (Healthy{0} EW) → apply_ramp_transition EW
         // CollapseA: 9..=15 → 0x11 = PartialCollapseA.
@@ -1628,7 +1920,7 @@ mod tests {
             Axis::EW,
             Phase::CollapseA,
             true,
-            &ramp_test_terrain(),
+            &terrain,
         );
         assert!(outcome.state_changed);
         let target = state.cell(5, 6).expect("S target");
@@ -1790,6 +2082,210 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_01_ramp_same_side_partial_emits_no_invented_setter() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::Variant0,
+        );
+        state.cell_mut(3, 2).unwrap().damage_state = DamageState::PartialCollapseA;
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2)]);
+
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::CollapseA,
+            true,
+            &terrain,
+        );
+
+        assert!(outcome.setter_transcript.is_empty());
+        assert_eq!(
+            state.cell(3, 2).unwrap().damage_state,
+            DamageState::PartialCollapseA,
+            "NS CollapseA only finalizes the complementary state 8, not same-side state 7"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_ramp_state_branch_gates_on_live_raw_anchor_bit_not_role() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+
+        let mut cleared = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let cleared_outcome = update_ramp_perpendicular(
+            &mut cleared,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageA,
+            true,
+            &ramp_test_terrain(),
+        );
+        assert!(!cleared_outcome.state_changed);
+        assert_eq!(
+            cleared.cell(3, 2).unwrap().damage_state,
+            DamageState::Healthy { variant: 0 },
+            "persistent Anchor role cannot replace a cleared live +0x140 bit 0x80"
+        );
+
+        let mut live = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2)]);
+        let live_outcome =
+            update_ramp_perpendicular(&mut live, (2, 2), Axis::NS, Phase::DamageA, true, &terrain);
+        assert!(live_outcome.state_changed);
+        assert_eq!(
+            live.cell(3, 2).unwrap().damage_state,
+            DamageState::Healthy { variant: 4 },
+            "selected real CellClass raw 0x80 admits the native state-byte branch"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_ramp_recursive_state_chain_emits_deepest_first_setters() {
+        use crate::map::bridge_facts::BridgeFlagStamp;
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let mut chained = *state.cell(3, 2).expect("first perpendicular anchor");
+        chained.damage_state = DamageState::PartialCollapseB;
+        for x in 3..=5 {
+            state.test_seed_cell(x, 2, chained);
+        }
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2), (4, 2), (5, 2)]);
+
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::CollapseA,
+            true,
+            &terrain,
+        );
+
+        assert_eq!(
+            outcome.setter_transcript,
+            vec![
+                BridgeFlagStamp::new((5, 2), Direction::N as u8, false),
+                BridgeFlagStamp::new((4, 2), Direction::N as u8, false),
+                BridgeFlagStamp::new((3, 2), Direction::N as u8, false),
+            ],
+            "recursive CollapseA returns deepest-first before each current dir0 setter"
+        );
+        for x in 3..=5 {
+            assert_eq!(
+                state.cell(x, 2).unwrap().damage_state,
+                DamageState::Destroyed,
+                "every complementary state is cleared while recursion unwinds"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_01_ramp_about_to_fall_branch_recurses_without_state_branch() {
+        use crate::map::bridge_facts::BridgeFlagStamp;
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::AboutToFall,
+        );
+        state.cell_mut(3, 2).unwrap().damage_state = DamageState::PartialCollapseA;
+        let mut successor = *state.cell(3, 2).unwrap();
+        successor.damage_state = DamageState::PartialCollapseB;
+        successor.bridgehead_anchor_class = BridgeheadAnchorClass::Variant0;
+        state.test_seed_cell(4, 2, successor);
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2), (4, 2)]);
+
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::CollapseA,
+            true,
+            &terrain,
+        );
+
+        assert_eq!(
+            outcome.setter_transcript,
+            vec![BridgeFlagStamp::new((4, 2), Direction::N as u8, false)],
+            "AboutToFall +3 branch independently reaches the successor even when the current state branch does not recurse"
+        );
+        assert_eq!(
+            state.cell(3, 2).unwrap().damage_state,
+            DamageState::PartialCollapseA,
+            "same-side current state remains unchanged"
+        );
+        assert_eq!(
+            state.cell(4, 2).unwrap().damage_state,
+            DamageState::Destroyed,
+            "tile-class recursion executes the successor's complementary collapse"
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_ramp_setter_clear_precedes_about_to_fall_second_traversal() {
+        use crate::map::bridge_facts::BridgeFlagStamp;
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::AboutToFall,
+        );
+        state.cell_mut(3, 2).unwrap().damage_state = DamageState::PartialCollapseB;
+
+        let mut recursive_bridgehead = *state.cell(3, 2).unwrap();
+        recursive_bridgehead.role = BridgeCellRole::Bridgehead;
+        recursive_bridgehead.damage_state = DamageState::Healthy { variant: 0 };
+        recursive_bridgehead.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
+        state.test_seed_cell(4, 2, recursive_bridgehead);
+
+        let mut deepest = *state.cell(3, 2).unwrap();
+        deepest.damage_state = DamageState::PartialCollapseB;
+        deepest.bridgehead_anchor_class = BridgeheadAnchorClass::Variant0;
+        state.test_seed_cell(5, 2, deepest);
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2), (5, 2)]);
+
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::CollapseA,
+            true,
+            &terrain,
+        );
+
+        assert_eq!(
+            outcome.setter_transcript,
+            vec![
+                BridgeFlagStamp::new((5, 2), Direction::N as u8, false),
+                BridgeFlagStamp::new((3, 2), Direction::N as u8, false),
+            ],
+            "state recursion reaches the deep setter before the current setter; the later tile recursion sees live 0x80 already cleared"
+        );
+        assert_eq!(
+            state.cell(5, 2).unwrap().damage_state,
+            DamageState::Destroyed,
+            "the first setter clears live x5 anchor bit before the independent AboutToFall traversal reaches it again"
+        );
+    }
+
+    #[test]
     fn update_ramp_perpendicular_body_role_is_noop() {
         use crate::sim::bridge_state::BridgeheadAnchorClass;
         // Body role is not Anchor and not Bridgehead — should be a no-op.
@@ -1831,13 +2327,14 @@ mod tests {
             BridgeCellRole::Anchor,
             BridgeheadAnchorClass::Variant0,
         );
+        let terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2)]);
         let outcome = update_ramp_perpendicular(
             &mut state,
             (2, 2),
             Axis::NS,
             Phase::DamageA,
             true,
-            &ramp_test_terrain(),
+            &terrain,
         );
         assert!(outcome.state_changed);
         // State byte advanced.

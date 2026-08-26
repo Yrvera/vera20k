@@ -21,6 +21,83 @@ const RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY: u8 = 2;
 /// back, so writing it is what makes the random-map thumbnail appear there.
 const RANDMAP_PREVIEW_FILE: &str = "RandMap.img";
 
+/// Native RMG map-storage identity used by its guarded Resize predicate.
+///
+/// `RandomMapGenerator @ 0x00599D48` compares the normalized current theater,
+/// player count, width, and height against its cached MapSeed clone at
+/// `0x00599B8E..0x00599BD3`. Other options can regenerate content in the same
+/// storage and therefore do not participate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RandomMapStorageKey {
+    theater: i32,
+    num_players: i32,
+    width: i32,
+    height: i32,
+}
+
+impl RandomMapStorageKey {
+    fn from_options(options: &crate::map::rmg::RmgOptions) -> Self {
+        let mut normalized = options.clone();
+        normalized.normalize();
+        Self {
+            theater: normalized.theater,
+            num_players: normalized.num_players,
+            width: normalized.width,
+            height: normalized.height,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RandomMapStorageDecision {
+    key: RandomMapStorageKey,
+    reinitialize: bool,
+}
+
+impl RandomMapStorageDecision {
+    /// Apply only the guarded native Resize side effect. Preview redraws never
+    /// receive this decision and cannot reconstruct the process dummy.
+    fn apply_resize_to(&self, shared_cell_dummy: &crate::map::resolved_terrain::SharedCellDummy) {
+        if self.reinitialize {
+            // The JZ at 0x00599D48..0x00599D95 skips this call when the cached
+            // tuple matches. On a miss, MapClass::Resize @ 0x00565C10 invokes
+            // CellClass::Constructor @ 0x0047BBF0 on the fixed dummy in place.
+            shared_cell_dummy.reconstruct_for_map_resize();
+        }
+    }
+}
+
+/// Resolve one RMG preview without touching process-global MapClass state.
+fn build_random_map_preview_grid(
+    map_file: &crate::map::map_file::MapFile,
+    theater: Option<&crate::map::theater::TheaterData>,
+    asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+    terrain_rules: Option<&crate::rules::terrain_rules::TerrainRules>,
+    frontend_main_rng: &mut crate::sim::rng::SimRng,
+    selector_cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
+) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+    let mut raw_draw = || frontend_main_rng.next_u32();
+    let mut selector = selector_cache.begin_load(&mut raw_draw);
+    // RMG InitMap supplies explicit Clear cells. Its preview never borrows a
+    // Scenario cursor; equal-bound Fill remains zero-cost.
+    let mut scenario_fill_ranged = |low, high| {
+        debug_assert_eq!((low, high), (0, 0));
+        0
+    };
+    crate::map::resolved_terrain::ResolvedTerrainGrid::build_with_variant_selector(
+        map_file,
+        theater,
+        asset_manager,
+        terrain_rules,
+        None,
+        None,
+        false,
+        RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
+        &mut scenario_fill_ranged,
+        &mut selector,
+    )
+}
+
 /// A random-map generation handed to a worker thread.
 ///
 /// The worker only *generates*; colouring a preview needs the terrain resolver
@@ -48,9 +125,34 @@ pub(crate) struct RandomMapGenerationJob {
 pub(crate) struct RandomMapGenerationRetention {
     candidate: Option<crate::map::rmg::GeneratedMap>,
     accepted: Option<(String, crate::map::rmg::GeneratedMap)>,
+    /// The native MapSeed+0x178 clone survives repeated Generate/OK work while
+    /// the dialog is open. A four-field mismatch replaces its backing storage,
+    /// and common dialog teardown destroys it before a later reopen.
+    map_storage_key: Option<RandomMapStorageKey>,
 }
 
 impl RandomMapGenerationRetention {
+    fn map_storage_decision(
+        &self,
+        options: &crate::map::rmg::RmgOptions,
+    ) -> RandomMapStorageDecision {
+        let key = RandomMapStorageKey::from_options(options);
+        RandomMapStorageDecision {
+            key,
+            reinitialize: self.map_storage_key != Some(key),
+        }
+    }
+
+    fn commit_map_storage_decision(&mut self, decision: RandomMapStorageDecision) {
+        self.map_storage_key = Some(decision.key);
+    }
+
+    fn destroy_map_storage(&mut self) {
+        // RandomMapSetupDialog__Run @ 0x00595BC0 destroys DAT_00ABE150 and
+        // nulls it at 0x00595CB2..0x00595CC2 whenever the modal returns.
+        self.map_storage_key = None;
+    }
+
     fn begin_generation(&mut self) {
         self.candidate = None;
         self.accepted = None;
@@ -179,11 +281,17 @@ impl App {
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let options = options.clone();
+        let shared_cell_dummy = state.process_assets.shared_cell_dummy.clone();
+        let map_storage_decision = state
+            .frontend
+            .random_map_retention
+            .map_storage_decision(&options);
         // Generation stays single-threaded and seed-driven; the thread changes
         // only where it runs, never the order it consumes its RNG in.
         let spawned = std::thread::Builder::new()
             .name("random-map-generate".to_string())
             .spawn(move || {
+                map_storage_decision.apply_resize_to(&shared_cell_dummy);
                 let generated = crate::map::rmg::build::generate_map_observed(
                     &options,
                     &settings,
@@ -210,6 +318,10 @@ impl App {
             });
         match spawned {
             Ok(_handle) => {
+                state
+                    .frontend
+                    .random_map_retention
+                    .commit_map_storage_decision(map_storage_decision);
                 state.frontend.random_map_generation = Some(RandomMapGenerationJob {
                     receiver,
                     theater: Box::new(theater),
@@ -313,10 +425,13 @@ impl App {
     }
 
     /// Remove the setup dialog and any in-flight worker without changing the
-    /// retention disposition already chosen by accept or cancel.
+    /// retained-map disposition already chosen by accept or cancel. The cached
+    /// RMG map storage has the dialog's lifetime and is destroyed here on both
+    /// return paths.
     fn dismiss_random_map_setup(state: &mut AppState) {
         state.frontend.skirmish_shell_state.random_map_setup_modal = None;
         state.frontend.random_map_generation = None;
+        state.frontend.random_map_retention.destroy_map_storage();
     }
 
     /// Cancel the setup dialog, abandoning any generation and every retained
@@ -391,25 +506,13 @@ impl App {
             let frontend_main_rng = &mut state.frontend.frontend_main_rng;
             let (manager, selector_cache) = state.process_assets.manager_mut_with_tile_cache();
             let asset_manager = manager.map(|m| &*m);
-            let mut raw_draw = || frontend_main_rng.next_u32();
-            let mut selector = selector_cache.begin_load(&mut raw_draw);
-            // RMG InitMap supplies explicit Clear cells. Its preview never
-            // borrows a Scenario cursor; equal-bound Fill remains zero-cost.
-            let mut scenario_fill_ranged = |low, high| {
-                debug_assert_eq!((low, high), (0, 0));
-                0
-            };
-            crate::map::resolved_terrain::ResolvedTerrainGrid::build_with_variant_selector(
+            build_random_map_preview_grid(
                 map_file,
                 Some(&job.theater),
                 asset_manager,
                 Some(&job.terrain_rules),
-                None,
-                None,
-                false,
-                RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
-                &mut scenario_fill_ranged,
-                &mut selector,
+                frontend_main_rng,
+                selector_cache,
             )
         };
         // Ore and gem cells take their colour from the overlay's own SHP: the
@@ -981,6 +1084,175 @@ mod tests {
         );
     }
 
+    fn apply_storage_decision_for_test(
+        retention: &mut RandomMapGenerationRetention,
+        options: &crate::map::rmg::RmgOptions,
+        process_dummy: &crate::map::resolved_terrain::SharedCellDummy,
+    ) -> bool {
+        let decision = retention.map_storage_decision(options);
+        decision.apply_resize_to(process_dummy);
+        retention.commit_map_storage_decision(decision);
+        decision.reinitialize
+    }
+
+    #[test]
+    fn gsi_04_01_rmg_resize_predicate_matches_cached_native_tuple() {
+        let mut retention = RandomMapGenerationRetention::default();
+        let process_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
+        process_dummy.set_level_slope(-7, 11);
+        process_dummy.stamp_coord(7, 9);
+        let options = crate::map::rmg::RmgOptions::default();
+
+        retention.begin_generation();
+        assert!(apply_storage_decision_for_test(
+            &mut retention,
+            &options,
+            &process_dummy
+        ));
+        assert_eq!(
+            process_dummy.snapshot(),
+            crate::map::resolved_terrain::SharedCellDummySnapshot {
+                coord: (0, 0),
+                level: 0,
+                slope_type: 0,
+                bridge_flags_0x1180: 0,
+            }
+        );
+
+        process_dummy.set_level_slope(-3, 5);
+        process_dummy.stamp_coord(12, -4);
+        let expected = process_dummy.snapshot();
+        let mut same_storage = options.clone();
+        same_storage.seed = 0x401;
+        same_storage.map_type = 4;
+        same_storage.resources = 3;
+        retention.begin_generation();
+        assert!(!apply_storage_decision_for_test(
+            &mut retention,
+            &same_storage,
+            &process_dummy
+        ));
+        assert_eq!(
+            process_dummy.snapshot(),
+            expected,
+            "repeated Generate in one open dialog reuses the cached RMG map storage"
+        );
+
+        let changes: [(&str, fn(&mut crate::map::rmg::RmgOptions)); 4] = [
+            ("theater", |changed| changed.theater = 1),
+            ("num_players", |changed| changed.num_players = 3),
+            ("width", |changed| changed.width = 1),
+            ("height", |changed| changed.height = 1),
+        ];
+        for (field, change) in changes {
+            let mut isolated_retention = RandomMapGenerationRetention::default();
+            let isolated_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
+            assert!(apply_storage_decision_for_test(
+                &mut isolated_retention,
+                &options,
+                &isolated_dummy
+            ));
+            isolated_dummy.set_level_slope(-6, 9);
+            isolated_dummy.stamp_coord(8, -10);
+            let mut changed = options.clone();
+            change(&mut changed);
+            assert_ne!(
+                RandomMapStorageKey::from_options(&changed),
+                RandomMapStorageKey::from_options(&options),
+                "{field} fixture must remain distinct after native normalization"
+            );
+            assert!(apply_storage_decision_for_test(
+                &mut isolated_retention,
+                &changed,
+                &isolated_dummy
+            ));
+            assert_eq!(
+                isolated_dummy.snapshot(),
+                crate::map::resolved_terrain::SharedCellDummySnapshot {
+                    coord: (0, 0),
+                    level: 0,
+                    slope_type: 0,
+                    bridge_flags_0x1180: 0,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_01_rmg_dialog_teardown_destroys_cached_storage_on_ok_and_cancel() {
+        let options = crate::map::rmg::RmgOptions::default();
+
+        for accepted in [true, false] {
+            let close_path = if accepted { "OK" } else { "Cancel" };
+            let mut retention = RandomMapGenerationRetention::default();
+            let process_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
+
+            retention.begin_generation();
+            assert!(apply_storage_decision_for_test(
+                &mut retention,
+                &options,
+                &process_dummy
+            ));
+            retention.finish_generation(retained_map(0x401, 10));
+            if accepted {
+                retention.accept_setup(RANDMAP_SED_FILE);
+            } else {
+                retention.cancel_setup();
+            }
+            // App::dismiss_random_map_setup owns this common native teardown
+            // after the retained-map disposition has already been selected.
+            retention.destroy_map_storage();
+
+            process_dummy.set_level_slope(-4, 7);
+            process_dummy.stamp_coord(13, -9);
+            retention.begin_generation();
+            assert!(
+                apply_storage_decision_for_test(&mut retention, &options, &process_dummy),
+                "the first Generate after {close_path} must allocate fresh RMG map storage"
+            );
+            assert_eq!(
+                process_dummy.snapshot(),
+                crate::map::resolved_terrain::SharedCellDummySnapshot {
+                    coord: (0, 0),
+                    level: 0,
+                    slope_type: 0,
+                    bridge_flags_0x1180: 0,
+                },
+                "the first Generate after {close_path} must run MapClass::Resize"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_01_rmg_preview_resolution_does_not_reconstruct_dummy() {
+        let process_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
+        process_dummy.set_level_slope(-3, 5);
+        process_dummy.stamp_coord(12, -4);
+        let expected = process_dummy.snapshot();
+        let map = retained_map(11, 10).map_file;
+        let mut frontend_main_rng = crate::sim::rng::SimRng::new(0x0401_599D);
+        let mut selector_cache =
+            crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        for _ in 0..6 {
+            let preview_grid = build_random_map_preview_grid(
+                &map,
+                None,
+                None,
+                None,
+                &mut frontend_main_rng,
+                &mut selector_cache,
+            );
+            assert!(!preview_grid
+                .shared_cell_dummy()
+                .same_identity(&process_dummy));
+            assert_eq!(
+                process_dummy.snapshot(),
+                expected,
+                "preview rasterization must not run another MapClass Resize"
+            );
+        }
+    }
+
     fn retained_map(seed: i32, start_x: u16) -> crate::map::rmg::GeneratedMap {
         let mut options = crate::map::rmg::RmgOptions::default();
         options.seed = seed;
@@ -1076,7 +1348,9 @@ mod tests {
         let mut accepted_after_successful_close = RandomMapGenerationRetention::default();
         accepted_after_successful_close.finish_generation(retained_map(44, 40));
         accepted_after_successful_close.accept_setup("RandMap.Sed");
-        // App::dismiss_random_map_setup has no retention side effect after OK.
+        // Common dialog teardown destroys only the cached RMG map storage; it
+        // must not discard the accepted generated map awaiting LoadingRequest.
+        accepted_after_successful_close.destroy_map_storage();
         accepted_after_successful_close.select_map("RANDMAP.SED");
         let transferred = accepted_after_successful_close
             .take_for_loading(Some("randmap.sed"))

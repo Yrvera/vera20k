@@ -771,6 +771,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     "loading job lost its process asset manager"
                 ));
             };
+            let shared_cell_dummy = state.process_assets.shared_cell_dummy.clone();
             let load_result = match session.native.as_mut() {
                 // Only repaint when the atlas is present; without it the bar
                 // cannot draw, so fall back to the gate-only sink.
@@ -807,6 +808,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
+                        shared_cell_dummy.clone(),
                         &mut state.process_assets.tile_variant_selector_cache,
                         &mut sink,
                     )
@@ -829,6 +831,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
+                        shared_cell_dummy.clone(),
                         &mut state.process_assets.tile_variant_selector_cache,
                         &mut sink,
                     )
@@ -844,6 +847,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     false,
                     0,
                     state.renderer.vxl_compute.as_mut(),
+                    shared_cell_dummy,
                     &mut state.process_assets.tile_variant_selector_cache,
                     &mut NoopProgressSink,
                 ),

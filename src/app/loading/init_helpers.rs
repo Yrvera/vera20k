@@ -308,6 +308,38 @@ pub(crate) fn load_retail_rules_source(asset_manager: &AssetManager) -> Option<I
     Some(compose_rules_layers(rulesmd, langrule.as_ref(), None, None).into_ini())
 }
 
+/// Load the distinct active-YR AI definition root.
+///
+/// Retail provenance: `Load_Game_Rules @ 0x0052CD70` opens `AIMD.INI` as its
+/// standalone root. It is intentionally not merged with Rules layers; the
+/// scenario loader applies map overrides per AI registry later.
+pub(crate) fn load_retail_team_ai_source(asset_manager: &AssetManager) -> Option<IniFile> {
+    let (data, source) = asset_manager.get_with_source("aimd.ini")?;
+    log::info!("Loading aimd.ini ({} bytes) from {}", data.len(), source);
+    let ini = IniFile::from_bytes(&data).ok()?;
+    let missing = missing_active_team_ai_registry_sections(&ini);
+    if !missing.is_empty() {
+        log::warn!(
+            "aimd.ini from {source} is missing required active-YR registries: {}",
+            missing.join(", ")
+        );
+        return None;
+    }
+    Some(ini)
+}
+
+fn missing_active_team_ai_registry_sections(ini: &IniFile) -> Vec<&'static str> {
+    [
+        "TeamTypes",
+        "ScriptTypes",
+        "TaskForces",
+        "AITriggerTypes",
+    ]
+    .into_iter()
+    .filter(|section| ini.section(section).is_none())
+    .collect()
+}
+
 /// Load active YR rules and retain the exact composed source.
 ///
 /// Retail starts from RULESMD.INI, then processes optional LANGRULE.INI, the
@@ -679,8 +711,8 @@ mod tests {
 
     use crate::sim::runtime::spawn_terrain_tile_animations;
     use super::{
-        LoadedRules, compose_rules_layers, load_rules_with_merged_ini, scheduler_anim_roots,
-        
+        LoadedRules, compose_rules_layers, load_rules_with_merged_ini,
+        missing_active_team_ai_registry_sections, scheduler_anim_roots,
     };
     use crate::assets::asset_manager::AssetManager;
     use crate::map::entities::EntityCategory;
@@ -898,6 +930,20 @@ mod tests {
 
     const RULES_BASE: &str = "[InfantryTypes]\n0=E1\n[E1]\nStrength=125\n\
         [General]\nBuildSpeed=.7\n[CombatDamage]\nC4Delay=.03\n";
+
+    #[test]
+    fn active_team_ai_root_requires_all_four_native_registries() {
+        let complete = IniFile::from_str(
+            "[TeamTypes]\n0=T\n[ScriptTypes]\n0=S\n[TaskForces]\n0=F\n[AITriggerTypes]\nA=x\n",
+        );
+        assert!(missing_active_team_ai_registry_sections(&complete).is_empty());
+
+        let incomplete = IniFile::from_str("[TeamTypes]\n0=T\n[TaskForces]\n0=F\n");
+        assert_eq!(
+            missing_active_team_ai_registry_sections(&incomplete),
+            ["ScriptTypes", "AITriggerTypes"]
+        );
+    }
 
     /// AT-9: a map embedding [General]/[CombatDamage] overrides lands those
     /// values in RuleSet, including a sim-consumed path (C4 delay ticks).

@@ -27,6 +27,9 @@ fn hash_projectile_target(
         crate::sim::projectile::ProjectileTarget::None => {
             2u8.hash(hasher);
         }
+        crate::sim::projectile::ProjectileTarget::DummyCell => {
+            3u8.hash(hasher);
+        }
     }
 }
 
@@ -70,6 +73,64 @@ mod playfield_authority_hash_tests {
         assert_ne!(baseline.state_hash(), changed_bounds.state_hash());
         assert_ne!(baseline.state_hash(), changed_size_height.state_hash());
         assert_ne!(baseline.state_hash(), changed_revision.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod shared_dummy_bridge_hash_tests {
+    use super::Simulation;
+    use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+
+    #[test]
+    fn gsi_04_01_hashes_dummy_bridge_bits_without_retained_projectile() {
+        let sim = Simulation::new();
+        let dummy = sim.effective_shared_cell_dummy();
+        let clear_hash = sim.state_hash();
+
+        dummy.set_bridge_flags_0x1180(BRIDGE_FLAG_ANCHOR_SELF);
+        let bridge_hash = sim.state_hash();
+        assert_ne!(
+            clear_hash, bridge_hash,
+            "live anchor bit 0x80 alone is future-affecting hash authority"
+        );
+
+        dummy.stamp_coord(17, -3);
+        assert_eq!(
+            bridge_hash,
+            sim.state_hash(),
+            "without a retained Bullet only persistent 0x1180 joins the hash"
+        );
+    }
+}
+
+#[cfg(test)]
+mod real_cell_bridge_hash_schema_tests {
+    use super::Simulation;
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+
+    #[test]
+    fn gsi_04_01_real_cell_bridge_authority_is_current_schema_only() {
+        let baseline = Simulation::new();
+        let mut different_authority = Simulation::new();
+        different_authority.install_resolved_terrain_for_new_map(
+            ResolvedTerrainGrid::from_cells(0, 1, Vec::new()),
+        );
+
+        assert_ne!(
+            baseline.state_hash(),
+            different_authority.state_hash(),
+            "current schema hashes the exact real-cell bridge authority, including its aligned shape"
+        );
+        assert_eq!(
+            baseline.state_hash_before_lifecycle_v28_and_mission_v29(),
+            different_authority.state_hash_before_lifecycle_v28_and_mission_v29(),
+            "the pre-v28 provenance schema excludes both the v90 tag and authority"
+        );
+        assert_eq!(
+            baseline.state_hash_without_mission_v29(),
+            different_authority.state_hash_without_mission_v29(),
+            "the pre-v29 provenance schema excludes both the v90 tag and authority"
+        );
     }
 }
 
@@ -189,7 +250,9 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true, true, true, true, true, true)
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true,
+        )
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -198,7 +261,9 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false, false, false, false, false, false, false)
+        self.state_hash_with_schema(
+            true, false, false, false, false, false, false, false, false, false, false,
+        )
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -207,7 +272,9 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false, false, false, false, false, false, false)
+        self.state_hash_with_schema(
+            false, false, false, false, false, false, false, false, false, false, false,
+        )
     }
 
     fn state_hash_with_schema(
@@ -221,6 +288,8 @@ impl Simulation {
         include_playfield_authority_v47: bool,
         include_techno_playfield_v87: bool,
         include_sensor_deposit_v88: bool,
+        include_real_cell_bridge_flags_v90: bool,
+        include_base_defense_response_v97: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -235,7 +304,8 @@ impl Simulation {
         // their camera/message outcomes stay app-owned and are not hashed.
         if include_master_frame_v43 {
             self.trigger_runtime.hash_state(&mut hasher);
-            self.team_script_vm.hash_state(&mut hasher);
+            self.team_script_vm
+                .hash_state(self.session.binary_frame as i32, &mut hasher);
         }
         if include_playfield_authority_v47 {
             self.hash_playfield_authority(&mut hasher);
@@ -263,7 +333,7 @@ impl Simulation {
         self.substrate.fold_base_reservations(&mut hasher);
 
         self.session.fold_game_options(&mut hasher);
-        self.hash_houses(&mut hasher);
+        self.hash_houses(&mut hasher, include_base_defense_response_v97);
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
         }
@@ -271,11 +341,36 @@ impl Simulation {
         self.hash_power_states(&mut hasher);
         self.hash_fog_and_alliances(&mut hasher);
         self.hash_bridge_state(&mut hasher);
+        if include_real_cell_bridge_flags_v90 {
+            // `resolved_terrain` is derived/skipped. Fold the exact saved real
+            // CellClass `0x1180` values once through their serialized authority.
+            // Historical pre-v28/pre-v29 provenance probes must omit both this
+            // schema tag and the value authority introduced at snapshot v90.
+            b"real-cell-bridge-flags-v2".hash(&mut hasher);
+            self.real_cell_bridge_flags_0x1180.hash(&mut hasher);
+        }
         self.hash_overlay_grid(&mut hasher);
         self.hash_smudge_grid(&mut hasher);
         self.hash_radiation(&mut hasher);
         if include_master_frame_v43 {
             self.hash_projectiles(&mut hasher);
+            let shared_dummy = self.effective_shared_cell_dummy().snapshot();
+            // Unlike the requested coordinate, native `+0x140 & 0x1180`
+            // survives ordinary lookups and changes later bridge/FNPC/target
+            // behavior even when no Bullet currently retains the dummy.
+            b"shared-cell-dummy-bridge-v3".hash(&mut hasher);
+            shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+            if self.projectiles.iter().any(|(_, projectile)| {
+                projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
+            }) {
+                // A retained Bullet pointer additionally makes coordinate,
+                // level, and slope deterministic future behavior. The bridge
+                // subset was folded unconditionally above.
+                b"shared-cell-dummy-target-v2".hash(&mut hasher);
+                shared_dummy.coord.hash(&mut hasher);
+                shared_dummy.level.hash(&mut hasher);
+                shared_dummy.slope_type.hash(&mut hasher);
+            }
             self.hash_waves(&mut hasher);
         }
         self.hash_super_weapons(&mut hasher);
@@ -287,6 +382,7 @@ impl Simulation {
             include_building_anim_overlays_v45,
             include_techno_playfield_v87,
             include_sensor_deposit_v88,
+            include_base_defense_response_v97,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -435,7 +531,7 @@ impl Simulation {
     }
 
     /// Hash per-player house state (BTreeMap = deterministic order).
-    fn hash_houses(&self, hasher: &mut impl Hasher) {
+    fn hash_houses(&self, hasher: &mut impl Hasher, include_base_defense_response_v97: bool) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
             house.credits.hash(hasher);
@@ -458,6 +554,16 @@ impl Simulation {
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
             house.current_iq.hash(hasher);
+            if include_base_defense_response_v97 {
+                house.strategy_emergency.hash(hasher);
+            } else {
+                house.strategy_emergency.mode.hash(hasher);
+                house.strategy_emergency.all_to_hunt_bias.hash(hasher);
+                house
+                    .strategy_emergency
+                    .last_building_attack_frame
+                    .hash(hasher);
+            }
             house.grudge_scores.len().hash(hasher);
             for (other, score) in &house.grudge_scores {
                 other.hash(hasher);
@@ -478,6 +584,7 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            house.base_reservation.hash(hasher);
             house.waypoint_edge.hash(hasher);
         }
     }
@@ -597,6 +704,7 @@ impl Simulation {
                         }
                         None => 0u8.hash(hasher),
                     }
+                    o.completion_accounted.hash(hasher);
                 }
                 None => 0u8.hash(hasher),
             }
@@ -807,6 +915,7 @@ impl Simulation {
         include_building_anim_overlays_v45: bool,
         include_techno_playfield_v87: bool,
         include_sensor_deposit_v88: bool,
+        include_base_defense_response_v97: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -898,6 +1007,10 @@ impl Simulation {
             entity.armor_multiplier.bits().hash(hasher);
             entity.berserk.hash(hasher);
             entity.was_attacked_by_enemy.hash(hasher);
+            if include_base_defense_response_v97 {
+                b"base-defense-response-v1".hash(hasher);
+                entity.base_defense_response.hash(hasher);
+            }
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
@@ -2157,6 +2270,110 @@ mod rally_hash_tests {
         sim_b.houses.insert(owner_b, hard_house);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_05_base_reservation_state_changes_world_hash() {
+        use crate::sim::house_state::HouseState;
+
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let owner_a = sim_a.interner.intern("Computer1");
+        let owner_b = sim_b.interner.intern("Computer1");
+        assert_eq!(owner_a, owner_b);
+        sim_a
+            .houses
+            .insert(owner_a, HouseState::new(owner_a, 0, None, false, 0, 10));
+        let mut changed = HouseState::new(owner_b, 0, None, false, 0, 10);
+        changed.base_reservation.update_bounds(3, 4, 5, 6);
+        changed
+            .base_reservation
+            .append_perimeter_cell_if_absent(u32::from(3u16) | (u32::from(4u16) << 16));
+        sim_b.houses.insert(owner_b, changed);
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_05_house_strategy_emergency_fields_each_change_world_hash() {
+        use crate::sim::house_state::HouseState;
+
+        fn fixture() -> (Simulation, crate::sim::intern::InternedId) {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Computer1");
+            sim.houses
+                .insert(owner, HouseState::new(owner, 0, None, false, 0, 10));
+            (sim, owner)
+        }
+
+        let (baseline, _) = fixture();
+        let baseline_hash = baseline.state_hash();
+
+        let (mut mode, owner) = fixture();
+        mode.houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .mode = 4;
+        assert_ne!(baseline_hash, mode.state_hash(), "mode is hashed");
+
+        let (mut bias, owner) = fixture();
+        bias.houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .all_to_hunt_bias = true;
+        assert_ne!(baseline_hash, bias.state_hash(), "bias latch is hashed");
+
+        let (mut attack_frame, owner) = fixture();
+        attack_frame
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .last_building_attack_frame = -17;
+        assert_ne!(
+            baseline_hash,
+            attack_frame.state_hash(),
+            "last Building attack frame is hashed"
+        );
+
+        let (mut attacker_index, owner) = fixture();
+        attacker_index
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .strategy_emergency
+            .last_attacker_house_index = 2;
+        assert_ne!(
+            baseline_hash,
+            attacker_index.state_hash(),
+            "last attacker House index is hashed"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_techno_base_defense_state_changes_world_hash() {
+        let mut baseline = Simulation::new();
+        let entity = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "E1",
+            "Computer1",
+            3,
+            4,
+        );
+        baseline.substrate.entities.insert(entity.clone());
+        let baseline_hash = baseline.state_hash();
+
+        let mut changed = Simulation::new();
+        let mut entity = entity;
+        entity.base_defense_response.recruitable_b = false;
+        entity.base_defense_response.archive_target =
+            Some(crate::sim::combat::TargetKind::Entity(7));
+        entity.base_defense_response.cooldown_start_frame = 12;
+        entity.base_defense_response.cooldown_duration_frames = 225;
+        changed.substrate.entities.insert(entity);
+        assert_ne!(baseline_hash, changed.state_hash());
     }
 
     #[test]

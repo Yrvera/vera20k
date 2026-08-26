@@ -397,6 +397,12 @@ pub enum StateOutcome {
         /// Orchestrator dispatches these (kill ground occupants, Limbo
         /// bridge-deck, spawn debris).
         set_bridge_direction: crate::sim::bridge_specs::SetBridgeDirectionResult,
+        /// Exact native setter call order for the represented 0x1180 subset.
+        /// Perpendicular ramp-helper setters precede the parent span setter;
+        /// bridgehead collapse can carry a helper setter even when the legacy
+        /// action result above has no setter header. Execution-only: snapshot
+        /// persistence stores final real-cell values, never this transcript.
+        setter_transcript: Vec<crate::map::bridge_facts::BridgeFlagStamp>,
         /// Cells where `UpdateAdjacentBridges_High` should run for rim
         /// re-evaluation. Orchestrator (Phase F Task 27) runs the actual
         /// rim helper.
@@ -454,6 +460,15 @@ impl StateOutcome {
                 ..
             } => damaged_variant_cells,
             StateOutcome::NoChange => &[],
+        }
+    }
+
+    pub fn setter_transcript(&self) -> &[crate::map::bridge_facts::BridgeFlagStamp] {
+        match self {
+            StateOutcome::Collapsed {
+                setter_transcript, ..
+            } => setter_transcript,
+            StateOutcome::Absorbed { .. } | StateOutcome::NoChange => &[],
         }
     }
 }
@@ -1139,6 +1154,21 @@ impl BridgeRuntimeState {
         is_high_bridge: bool,
         terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
+        let mut live_flags = terrain.bridge_flag_execution_state();
+        self.body_cell_advance_state_with_flags(rx, ry, is_high_bridge, terrain, &mut live_flags)
+    }
+
+    /// Same native body driver with a caller-owned live flag transaction.
+    /// CABHUT fallback retries keep this value across immediate attempts so
+    /// synchronous setters from one attempt gate the next one.
+    pub(crate) fn body_cell_advance_state_with_flags(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        is_high_bridge: bool,
+        terrain: &ResolvedTerrainGrid,
+        live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
+    ) -> StateOutcome {
         // 1. Resolve input cell.
         let Some(input_cell) = self.cell(rx, ry).copied() else {
             return StateOutcome::NoChange;
@@ -1191,25 +1221,27 @@ impl BridgeRuntimeState {
                 }
                 // Fire UpdateRamp_*A and _*B on perpendicular targets.
                 let mut damaged_variant_cells = Vec::new();
-                let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                     self,
                     anchor_pos,
                     axis,
                     Phase::DamageA,
                     is_high_bridge,
                     terrain,
+                    live_flags,
                 );
                 extend_unique_cells(
                     &mut damaged_variant_cells,
                     ramp_a.damaged_variant_cells,
                 );
-                let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                     self,
                     anchor_pos,
                     axis,
                     Phase::DamageB,
                     is_high_bridge,
                     terrain,
+                    live_flags,
                 );
                 extend_unique_cells(
                     &mut damaged_variant_cells,
@@ -1222,27 +1254,31 @@ impl BridgeRuntimeState {
             DamageState::Damaged => {
                 // Full collapse — fire CollapseA + CollapseB perpendicular,
                 // anchor → Destroyed, set_bridge_direction cascade.
-                let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                     self,
                     anchor_pos,
                     axis,
                     Phase::CollapseA,
                     is_high_bridge,
                     terrain,
+                    live_flags,
                 );
-                let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                     self,
                     anchor_pos,
                     axis,
                     Phase::CollapseB,
                     is_high_bridge,
                     terrain,
+                    live_flags,
                 );
                 let mut damaged_variant_cells = ramp_a.damaged_variant_cells;
+                let mut setter_transcript = ramp_a.setter_transcript;
                 extend_unique_cells(
                     &mut damaged_variant_cells,
                     ramp_b.damaged_variant_cells,
                 );
+                setter_transcript.extend(ramp_b.setter_transcript);
                 let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
                 if !destroyed.contains(&anchor_pos) {
                     destroyed.push(anchor_pos);
@@ -1266,6 +1302,10 @@ impl BridgeRuntimeState {
                     }
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
+                if let Some(stamp) = sbd.flag_stamp {
+                    live_flags.apply_stamp(stamp);
+                    setter_transcript.push(stamp);
+                }
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
@@ -1274,6 +1314,7 @@ impl BridgeRuntimeState {
                     radar_cells: destroyed.clone(),
                     destroyed_cells: destroyed,
                     set_bridge_direction: sbd,
+                    setter_transcript,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
                     damaged_variant_cells,
@@ -1281,24 +1322,31 @@ impl BridgeRuntimeState {
             }
             DamageState::PartialCollapseA => {
                 // Single CollapseA call, then collapse-finalize.
-                let ramp = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                     self,
                     anchor_pos,
                     axis,
                     Phase::CollapseA,
                     is_high_bridge,
                     terrain,
+                    live_flags,
                 );
                 let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
                 if !destroyed.contains(&anchor_pos) {
                     destroyed.push(anchor_pos);
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
+                let mut setter_transcript = ramp.setter_transcript;
+                if let Some(stamp) = sbd.flag_stamp {
+                    live_flags.apply_stamp(stamp);
+                    setter_transcript.push(stamp);
+                }
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
                     destroyed_cells: destroyed.clone(),
                     set_bridge_direction: sbd,
+                    setter_transcript,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
                     radar_cells: destroyed,
@@ -1306,24 +1354,31 @@ impl BridgeRuntimeState {
                 }
             }
             DamageState::PartialCollapseB => {
-                let ramp = crate::sim::bridge_specs::update_ramp_perpendicular(
+                let ramp = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                     self,
                     anchor_pos,
                     axis,
                     Phase::CollapseB,
                     is_high_bridge,
                     terrain,
+                    live_flags,
                 );
                 let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
                 if !destroyed.contains(&anchor_pos) {
                     destroyed.push(anchor_pos);
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
+                let mut setter_transcript = ramp.setter_transcript;
+                if let Some(stamp) = sbd.flag_stamp {
+                    live_flags.apply_stamp(stamp);
+                    setter_transcript.push(stamp);
+                }
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
                     destroyed_cells: destroyed.clone(),
                     set_bridge_direction: sbd,
+                    setter_transcript,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
                     radar_cells: destroyed,
@@ -1505,6 +1560,20 @@ impl BridgeRuntimeState {
         is_high_bridge: bool,
         terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
     ) -> StateOutcome {
+        let mut live_flags = terrain.bridge_flag_execution_state();
+        self.bridgehead_advance_state_with_flags(rx, ry, is_high_bridge, terrain, &mut live_flags)
+    }
+
+    /// Same native bridgehead driver with a caller-owned live flag
+    /// transaction. This is required by synchronous CABHUT fallback retries.
+    pub(crate) fn bridgehead_advance_state_with_flags(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        is_high_bridge: bool,
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        live_flags: &mut crate::map::resolved_terrain::CellClassBridgeFlagState,
+    ) -> StateOutcome {
         // 1. Resolve input cell.
         let Some(input_cell) = self.cell(rx, ry).copied() else {
             return StateOutcome::NoChange;
@@ -1591,27 +1660,31 @@ impl BridgeRuntimeState {
                 }
             }
 
-            let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
+            let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                 self,
                 anchor_pos,
                 axis,
                 Phase::CollapseA,
                 is_high_bridge,
                 terrain,
+                live_flags,
             );
-            let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
+            let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
                 self,
                 anchor_pos,
                 axis,
                 Phase::CollapseB,
                 is_high_bridge,
                 terrain,
+                live_flags,
             );
             let mut damaged_variant_cells = ramp_a.damaged_variant_cells;
+            let mut setter_transcript = ramp_a.setter_transcript;
             extend_unique_cells(
                 &mut damaged_variant_cells,
                 ramp_b.damaged_variant_cells,
             );
+            setter_transcript.extend(ramp_b.setter_transcript);
             for &perp_dir in &[Direction::E, Direction::W, Direction::N, Direction::S] {
                 let (dx, dy) = perp_dir.offset();
                 let nx = anchor_pos.0 as i32 + dx;
@@ -1636,7 +1709,11 @@ impl BridgeRuntimeState {
                 // perpendicular finals are the minimap-dirty set (BR-16).
                 radar_cells: destroyed.clone(),
                 destroyed_cells: destroyed,
-                set_bridge_direction: SetBridgeDirectionResult { actions },
+                set_bridge_direction: SetBridgeDirectionResult {
+                    actions,
+                    flag_stamp: None,
+                },
+                setter_transcript,
                 adjacent_bridges_dirty: adj,
                 zones_dirty: true,
                 damaged_variant_cells,
@@ -1656,21 +1733,23 @@ impl BridgeRuntimeState {
         // 5. Fire the perpendicular DamageA + DamageB writes. These do the
         //    state-byte bump on Anchor targets and the asymmetric A/B
         //    tile-class progression on both Anchor and Bridgehead targets.
-        let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular(
+        let ramp_a = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
             self,
             anchor_pos,
             axis,
             Phase::DamageA,
             is_high_bridge,
             terrain,
+            live_flags,
         );
-        let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular(
+        let ramp_b = crate::sim::bridge_specs::update_ramp_perpendicular_with_flags(
             self,
             anchor_pos,
             axis,
             Phase::DamageB,
             is_high_bridge,
             terrain,
+            live_flags,
         );
         let mut damaged_variant_cells = ramp_a.damaged_variant_cells;
         extend_unique_cells(

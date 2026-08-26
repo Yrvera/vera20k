@@ -301,6 +301,127 @@ impl ZoneGrid {
         self.maps.get(&mz)
     }
 
+    /// Exact non-bridge `MapClass::GetZoneID` raw-row lookup.
+    ///
+    /// Native `MapClass::GetZoneID @ 0x0056D230` packs both coordinate
+    /// components to signed 16-bit, indexes an `(W + 1) * (W + 1)` square,
+    /// clamps only the resulting signed linear index, and projects the base
+    /// cluster through the requested raw movement-zone row. The extra final
+    /// row and column are zero-initialized base cluster 0; raw labels `1` and
+    /// `0xffff` are returned unchanged.
+    ///
+    /// This seam deliberately refuses compatibility-only or malformed Rust
+    /// topology. Native permits an unchecked movement-row access, but Rust has
+    /// no sound equivalent for that undefined read, so a non-concrete row or a
+    /// missing cluster entry fails explicitly.
+    pub(crate) fn get_zone_id_nonbridge_native(
+        &self,
+        coord: (i32, i32),
+        movement_zone: MovementZone,
+    ) -> Option<ZoneId> {
+        let base = self.base_topology.as_ref()?;
+        if self.width != self.height {
+            return None;
+        }
+
+        let width = usize::from(self.width);
+        let cell_count = width.checked_mul(width)?;
+        if base.movement_classes.len() != cell_count || base.zone_ids.len() != cell_count {
+            return None;
+        }
+
+        let row = movement_zone.matrix_row()?;
+        let raw_row = base.raw_zone_ids_by_row.get(row)?;
+        let side = i32::from(self.width).checked_add(1)?;
+        let padded_count = side.checked_mul(side)?;
+        let x = i32::from(coord.0 as i16);
+        let y = i32::from(coord.1 as i16);
+        let linear = side.wrapping_mul(y).wrapping_add(x);
+        let clamped = linear.clamp(0, padded_count - 1);
+        let padded_x = clamped % side;
+        let padded_y = clamped / side;
+        let cluster = if padded_x < i32::from(self.width) && padded_y < i32::from(self.height) {
+            let index = padded_y as usize * width + padded_x as usize;
+            *base.zone_ids.get(index)?
+        } else {
+            ZONE_INVALID
+        };
+        raw_row.get(cluster as usize).copied()
+    }
+
+    /// Exact response-owned `MapClass::Can_Reach_Zone @ 0x0056D100` surface.
+    ///
+    /// `None` is native MovementZone `-1`. The response passes the candidate
+    /// destination as source A, the protected victim destination as B, the
+    /// candidate's `ShouldBeOnBridge` for A, false for B, and disables the
+    /// second asymmetric B-fringe shortcut. Both raw invalid labels compare
+    /// equal exactly as native; no adjacency/super-zone widening is consulted.
+    pub(crate) fn can_reach_base_defense_response(
+        &self,
+        movement_zone: Option<MovementZone>,
+        source: (i32, i32),
+        destination: (i32, i32),
+        source_should_be_on_bridge: bool,
+        source_in_tactical_playfield: bool,
+        map_size_width: i32,
+        map_size_height: i32,
+    ) -> bool {
+        let Some(movement_zone) = movement_zone else {
+            return true;
+        };
+
+        if !source_in_tactical_playfield
+            && cell_is_in_native_map_diamond(
+                source,
+                map_size_width,
+                map_size_height,
+            )
+        {
+            return true;
+        }
+
+        let source_zone = self.get_zone_id_response_native(
+            source,
+            movement_zone,
+            source_should_be_on_bridge,
+        );
+        let destination_zone =
+            self.get_zone_id_response_native(destination, movement_zone, false);
+        source_zone.is_some() && source_zone == destination_zone
+    }
+
+    fn get_zone_id_response_native(
+        &self,
+        coord: (i32, i32),
+        movement_zone: MovementZone,
+        check_bridge: bool,
+    ) -> Option<ZoneId> {
+        if !check_bridge {
+            return self.get_zone_id_nonbridge_native(coord, movement_zone);
+        }
+
+        let packed = (coord.0 as i16 as i32, coord.1 as i16 as i32);
+        if packed.0 >= 0
+            && packed.1 >= 0
+            && packed.0 < i32::from(self.width)
+            && packed.1 < i32::from(self.height)
+        {
+            let map = self.maps.get(&movement_zone)?;
+            let index = packed.1 as usize * usize::from(self.width) + packed.0 as usize;
+            if let Some(Some(endpoint)) = map
+                .bridge_redirect
+                .as_ref()
+                .and_then(|redirect| redirect.get(index))
+            {
+                return self.get_zone_id_nonbridge_native(
+                    (i32::from(endpoint.0), i32::from(endpoint.1)),
+                    movement_zone,
+                );
+            }
+        }
+        self.get_zone_id_nonbridge_native(packed, movement_zone)
+    }
+
     /// Get the adjacency graph for a movement zone.
     pub fn adjacency_for(&self, mz: MovementZone) -> Option<&ZoneAdjacency> {
         self.adjacency.get(&mz)
@@ -555,6 +676,21 @@ impl ZoneGrid {
         };
         zone_graph_connected(adj, za, zb, zone_map.zone_count)
     }
+}
+
+fn cell_is_in_native_map_diamond(
+    coord: (i32, i32),
+    map_size_width: i32,
+    map_size_height: i32,
+) -> bool {
+    let x = coord.0 as i16 as i32;
+    let y = coord.1 as i16 as i32;
+    let sum = x.wrapping_add(y);
+    map_size_width < sum
+        && x.wrapping_sub(y) < map_size_width
+        && y.wrapping_sub(x) < map_size_width
+        && sum
+            <= map_size_width.wrapping_add(map_size_height.wrapping_mul(2))
 }
 
 /// BFS on the zone adjacency graph to check connectivity.

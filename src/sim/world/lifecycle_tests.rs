@@ -76,6 +76,9 @@ fn insert_reservation_building(
     spacing: i32,
 ) -> crate::sim::intern::InternedId {
     let owner = sim.interner.intern(owner_name);
+    sim.houses.entry(owner).or_insert_with(|| {
+        HouseState::new(owner, 0, None, owner_name.eq_ignore_ascii_case("Americans"), 0, 10)
+    });
     let type_ref = sim.interner.intern(&format!("BUILDING{stable_id}"));
     let mut entity = GameEntity::new_at_frame_zero_for_test(
         stable_id,
@@ -112,6 +115,10 @@ fn request(rx: u16, ry: u16, placement: PlacementEvidence) -> RevealRequest {
         placement,
         logic_eligible: true,
     }
+}
+
+fn packed_reservation_test_coord(x: i32, y: i32) -> u32 {
+    u32::from(x as i16 as u16) | (u32::from(y as i16 as u16) << 16)
 }
 
 #[test]
@@ -296,7 +303,8 @@ fn install_common_raw_terrain(
             })
         })
         .collect();
-    let terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+    let mut terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+    terrain.bind_shared_cell_dummy(sim.shared_cell_dummy.clone());
     sim.bridge_state = Some(
         crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500),
     );
@@ -2751,6 +2759,27 @@ fn gsi_04_05_reservation_successful_reveal_marks_expanded_rect_after_lists() {
     }
     assert_eq!(sim.substrate.base_reservations.raw_mask(None, 8, 20), 0);
     assert_eq!(sim.substrate.base_reservations.raw_mask(None, 13, 20), 0);
+    let house = sim.houses.get(&owner).expect("reservation owner");
+    assert_eq!(house.base_reservation.bounds(), (9, 19, 4, 5));
+    assert_eq!(
+        house.base_reservation.perimeter_cells(),
+        &[
+            packed_reservation_test_coord(9, 19),
+            packed_reservation_test_coord(9, 20),
+            packed_reservation_test_coord(9, 21),
+            packed_reservation_test_coord(9, 22),
+            packed_reservation_test_coord(9, 23),
+            packed_reservation_test_coord(10, 19),
+            packed_reservation_test_coord(10, 23),
+            packed_reservation_test_coord(11, 19),
+            packed_reservation_test_coord(11, 23),
+            packed_reservation_test_coord(12, 19),
+            packed_reservation_test_coord(12, 20),
+            packed_reservation_test_coord(12, 21),
+            packed_reservation_test_coord(12, 22),
+            packed_reservation_test_coord(12, 23),
+        ]
+    );
 
     let cell_marked = sim
         .lifecycle_test_events
@@ -2870,6 +2899,29 @@ fn gsi_04_05_reservation_failed_reveal_never_writes() {
 }
 
 #[test]
+fn gsi_04_05_reservation_clear_removes_perimeter_but_retains_bounds() {
+    let mut sim = Simulation::new();
+    let owner = insert_reservation_building(&mut sim, 111, "Americans", 10, 10, "1x1", 1);
+    sim.session.house_order.push(owner);
+    let _ = sim.try_reveal_entity(111, request(10, 10, PlacementEvidence::MarkSucceeded));
+    assert_eq!(
+        sim.houses
+            .get(&owner)
+            .unwrap()
+            .base_reservation
+            .perimeter_cells()
+            .len(),
+        8
+    );
+
+    assert_eq!(sim.techno_limbo(111), super::ConcealOutcome::Concealed);
+    let state = &sim.houses.get(&owner).unwrap().base_reservation;
+    assert_eq!(state.bounds(), (9, 9, 3, 3));
+    assert!(state.perimeter_cells().is_empty());
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 10, 10), 0);
+}
+
+#[test]
 fn gsi_04_05_reservation_limbo_clears_before_unlink_repairs_overlap_and_preserves_other_house() {
     let mut sim = Simulation::new();
     let owner = insert_reservation_building(&mut sim, 103, "Americans", 10, 10, "1x1", 1);
@@ -2932,6 +2984,40 @@ fn gsi_04_05_reservation_repair_scan_reaches_asymmetric_high_edge() {
         sim.substrate.base_reservations.raw_mask(None, 14, 20),
         1,
         "the x=16 neighbor, omitted by the old [8,16) scan, re-marks its overlap"
+    );
+}
+
+#[test]
+fn gsi_04_05_reservation_origins_truncate_after_first_spacing_subtraction() {
+    assert_eq!(
+        super::lifecycle::building_base_reservation_rect(0, 0, "1x1", 32_769),
+        crate::sim::cell_rect::CellRect::new(32_767, 32_767, 65_539, 65_539)
+    );
+    assert_eq!(
+        super::lifecycle::building_base_reservation_repair_rect(0, 0, 1, 1, 32_769),
+        crate::sim::cell_rect::CellRect::new(-2, -2, 163_846, 163_846),
+        "repair subtracts spacing from the already signed-16-truncated primary start"
+    );
+}
+
+#[test]
+fn gsi_04_05_reservation_repair_replays_multicell_neighbor_for_every_hit() {
+    let mut sim = Simulation::new();
+    let owner = insert_reservation_building(&mut sim, 109, "Americans", 10, 10, "1x1", 1);
+    sim.session.house_order.push(owner);
+    insert_reservation_building(&mut sim, 110, "Americans", 12, 10, "2x2", 1);
+    let _ = sim.try_reveal_entity(109, request(10, 10, PlacementEvidence::MarkSucceeded));
+    let _ = sim.try_reveal_entity(110, request(12, 10, PlacementEvidence::MarkSucceeded));
+
+    sim.lifecycle_test_events.clear();
+    assert_eq!(sim.techno_limbo(109), super::ConcealOutcome::Concealed);
+    assert_eq!(
+        sim.lifecycle_test_events
+            .iter()
+            .filter(|event| **event == LifecycleTestEvent::BaseReservationMarked)
+            .count(),
+        4,
+        "the 2x2 neighbor is invoked immediately once for each occupied repair cell"
     );
 }
 
@@ -3972,12 +4058,21 @@ fn gsi_05_04_ground_source_and_target_retarget_before_removal_without_expiry() {
             }
     }));
 
+    let _ = crate::sim::cell_rect::get_cellclass_fallback(
+        sim.resolved_terrain.as_ref(),
+        20,
+        -1,
+    );
     assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
     assert!(sim.pending_projectile_detonations.is_empty());
     assert!(sim.projectiles.get(projectile_id).is_some());
     assert_eq!(
         sim.projectiles.get(projectile_id).unwrap().target,
         cell_target
+    );
+    assert!(
+        sim.projectiles.get(projectile_id).unwrap().velocity.y > 0,
+        "allocated Cell target remains at (9,11) despite the unrelated dummy stamp"
     );
 }
 
@@ -4020,11 +4115,21 @@ fn gsi_05_04_building_get_coords_uses_foundation_center_cell() {
 }
 
 #[test]
-fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
+fn gsi_04_01_cell_target_uses_live_structural_bit_when_runtime_unwalkable() {
     let mut sim = Simulation::new();
     sim.session.map_width = 16;
     sim.session.map_height = 16;
     install_common_raw_terrain(&mut sim, 16, 16, 0, Some((6, 7)));
+    {
+        let cell = sim
+            .resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(6, 7)
+            .unwrap();
+        cell.level = 2;
+        cell.slope_type = 1;
+    }
 
     let target_id = sim.allocate_stable_id();
     insert_entity(&mut sim, target_id, EntityCategory::Unit);
@@ -4033,8 +4138,12 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
         RevealOutcome::Revealed { .. }
     ));
     let projectile_id = sim.allocate_stable_id();
-    let bridge_z = crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
-    let center = ProjectileCoord::new(6 * 256 + 128, 7 * 256 + 128, bridge_z);
+    let center_x = 6 * 256 + 128;
+    let center_y = 7 * 256 + 128;
+    let bridge_z = crate::util::lepton::cellclass_ground_height_leptons(2, 1, center_x, center_y)
+        .unwrap()
+        .wrapping_add(crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
+    let center = ProjectileCoord::new(center_x, center_y, bridge_z);
     let mut spawn = gsi_05_04_guided_projectile(
         crate::sim::combat::RAD_NO_ATTACKER,
         ProjectileTarget::Entity(target_id),
@@ -4053,7 +4162,6 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
     assert_eq!(
         cell_target_coord(
             sim.resolved_terrain.as_ref(),
-            sim.bridge_state.as_ref(),
             6,
             7
         ),
@@ -4075,19 +4183,21 @@ fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
     assert_eq!(
         cell_target_coord(
             sim.resolved_terrain.as_ref(),
-            sim.bridge_state.as_ref(),
             6,
             7
         ),
-        ProjectileCoord::new(6 * 256 + 128, 7 * 256 + 128, 0)
+        center,
+        "CellClass target height follows live +0x100, not bridge runtime walkability"
     );
 
     assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
 
-    assert!(sim.pending_projectile_detonations.is_empty());
-    let projectile = sim.projectiles.get(projectile_id).expect("Bullet survives");
-    assert_eq!(projectile.velocity.z, -64);
-    assert_eq!(projectile.position.z, bridge_z - 64);
+    assert_eq!(sim.pending_projectile_detonations.len(), 1);
+    assert_eq!(sim.pending_projectile_detonations[0].impact, center);
+    assert_eq!(
+        sim.pending_projectile_detonations[0].reason,
+        crate::sim::projectile::ProjectileDetonationReason::ReachedTarget
+    );
 }
 
 #[test]
@@ -4359,7 +4469,7 @@ fn gsi_05_04_combat_fatal_garrison_recursion_keeps_cell_target() {
 }
 
 #[test]
-fn gsi_05_04_unallocated_cell_still_retains_the_never_null_dummy_cell_target() {
+fn gsi_04_01_unallocated_expiry_retains_live_dummy_identity_for_bullet_ai() {
     let mut sim = Simulation::new();
     sim.session.map_width = 16;
     sim.session.map_height = 16;
@@ -4395,11 +4505,31 @@ fn gsi_05_04_unallocated_cell_still_retains_the_never_null_dummy_cell_target() {
 
     assert_eq!(
         sim.projectiles.get(projectile_id).unwrap().target,
-        ProjectileTarget::Cell { rx: 8, ry: 8 },
+        ProjectileTarget::DummyCell,
         "MapClass::Get_CellClass @ 0x005657A0 answers an unallocated slot with \
          the shared dummy CellClass carrying the requested coord, never NULL"
     );
     assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+    let dummy = sim.effective_shared_cell_dummy();
+    assert_eq!(dummy.snapshot().coord, (8, 8));
+
+    // Any later packed miss writes the same object. BulletClass::AI @
+    // 0x004666E0 dispatches the retained pointer, so steering observes this
+    // later coordinate rather than a cleanup-time snapshot.
+    assert!(matches!(
+        crate::sim::cell_rect::get_cellclass_fallback(
+            sim.resolved_terrain.as_ref(),
+            20,
+            -1,
+        ),
+        crate::sim::cell_rect::CellRef::Dummy { .. }
+    ));
+    assert_eq!(dummy.snapshot().coord, (20, -1));
+    assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
+    assert!(
+        sim.projectiles.get(projectile_id).unwrap().velocity.y < 0,
+        "guided Bullet must steer toward the later south-negative dummy stamp"
+    );
 }
 
 /// The sentinel arm of `BulletClass::PointerExpired`: `0x0046856E`/`0x0046857C`

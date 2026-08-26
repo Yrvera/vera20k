@@ -30,6 +30,7 @@ use glam::IVec3;
 use crate::rules::ini_parser::IniSection;
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+use crate::rules::terrain_rules::LandType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
 
 /// Which type registry an object belongs to.
@@ -37,7 +38,18 @@ use crate::util::fixed_math::{SimFixed, sim_from_f32};
 /// Determines which `[XxxTypes]` section listed this object and affects
 /// which game behaviors apply (e.g., only buildings have power, only
 /// infantry can garrison).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum ObjectCategory {
     Infantry,
     Vehicle,
@@ -433,6 +445,10 @@ pub struct ObjectType {
     /// elite bytes independently; elite inherits the veteran byte.
     pub veteran_cloak: bool,
     pub elite_cloak: bool,
+    /// `CRUSHER` in the rank-selected ability lists. The static `Crusher=`
+    /// byte remains independent; elite objects inherit the veteran list.
+    pub veteran_crusher: bool,
+    pub elite_crusher: bool,
     /// Specific weapon fired on death (overrides default explosion behavior).
     /// References a [WeaponName] section in rules.ini.
     pub death_weapon: Option<String>,
@@ -472,11 +488,18 @@ pub struct ObjectType {
     /// pixel gate this is distinct from `RadarVisible`: insignificant objects
     /// owned by a passive/missing house are skipped unless RadarVisible is set.
     pub insignificant: bool,
+    /// `ToProtect=` (`TechnoTypeClass+0xC96`). The active generic Techno
+    /// damage receiver invokes the House base-defence responder only when this
+    /// type byte is set. This is independent of dormant instance ShouldProtect.
+    pub to_protect: bool,
     /// Whether this unit is a resource harvester (Harvester=yes in rules.ini).
     /// Data-driven replacement for hardcoded type ID string checks.
     pub harvester: bool,
     /// Whether this structure accepts ore/gem delivery (Refinery=yes in rules.ini).
     pub refinery: bool,
+    /// Native BuildingType `Weeder=` classification. ExitObject dispatch tests
+    /// this independently from `Refinery=`, `WeaponsFactory=`, and `Naval=`.
+    pub weeder: bool,
     /// Whether this building has a bib (`Bib=yes` in rules.ini). When true, the
     /// east-edge column of the foundation footprint is unit-passable — units
     /// can drive across that strip even though the cells remain part of the
@@ -597,6 +620,9 @@ pub struct ObjectType {
     pub speed_type: SpeedType,
     /// Pathfinder routing assumptions (MovementZone= in rules.ini).
     pub movement_zone: MovementZone,
+    /// UnitType `MovementRestrictedTo=`. Native constructor default `-1` is
+    /// represented as `None`; a parsed value is a canonical CellClass LandType.
+    pub movement_restricted_to: Option<LandType>,
     /// Whether this unit is treated as aircraft for game logic (ConsideredAircraft=).
     pub considered_aircraft: bool,
     /// Per-type render depth bias used when a unit is near or under a bridge.
@@ -741,10 +767,10 @@ pub struct ObjectType {
     /// exclusion in Spark collision (`LaserFence=yes`).
     pub laser_fence: bool,
 
-    /// Maximum number of infantry passengers this vehicle can carry.
-    /// Parsed from `Passengers=N` in rules.ini. >0 enables `Enter` cursor
-    /// for friendly infantry hovering this transport.
-    pub passengers: u32,
+    /// Signed native `Passengers=` value at `TechnoTypeClass+0x5E0`.
+    /// Positive values allocate transport capacity; TeamType post-load zone
+    /// derivation distinguishes exact zero from every signed nonzero value.
+    pub passengers: i32,
 
     /// Maximum Size= of individual passenger allowed (SizeLimit= in rules.ini).
     /// 0 means no size restriction. SizeLimit=2 means only Size<=2 can enter.
@@ -936,10 +962,10 @@ pub struct ObjectType {
     /// Unit or building is classified as naval (Naval=yes in INI).
     /// Controls AI targeting priority, factory classification, and UI filtering.
     pub naval: bool,
-    /// Number of foundation rows (from the top, Y-axis) that are impassable.
-    /// Default -1 = all rows impassable. Parsed from NumberImpassableRows= in rules.ini.
-    /// Controls which foundation cells units can path through (e.g., war factory
-    /// exit lanes, naval yard docks).
+    /// Number of foundation columns from the west edge (X-axis) that remain
+    /// impassable in the UnitClass live building-occupant helper. Default -1
+    /// keeps the whole checked building as a blocker. Parsed from
+    /// `NumberImpassableRows=` despite the native name.
     pub number_impassable_rows: i32,
 
     // -- Point light source fields (from rules.ini, primarily buildings) --
@@ -1068,12 +1094,21 @@ fn native_minutes_to_ticks(value: f32) -> u32 {
 }
 
 impl ObjectType {
+    /// BuildingType virtual used by the Building receive-damage prelude and
+    /// the native base-reservation writer.
+    ///
+    /// gamemd-derived: `BuildingClass` vtable `+0x80` resolves through
+    /// `0x00457620` to `BuildingTypeClass__Is1x1WithUndeploy @ 0x00465D40`.
+    pub fn is_1x1_with_undeploy(&self) -> bool {
+        self.undeploys_into.is_some()
+            && crate::rules::foundation::foundation_dimensions(&self.foundation) == (1, 1)
+    }
+
     /// BuildingType gate used by the native base-reservation setter.
     pub fn base_reservation_writer_eligible(&self) -> bool {
         self.category == ObjectCategory::Building
             && (self.undeploys_into.is_none() || !self.resource_gatherer)
-            && !(self.undeploys_into.is_some()
-                && crate::rules::foundation::foundation_dimensions(&self.foundation) == (1, 1))
+            && !self.is_1x1_with_undeploy()
     }
 
     /// gamemd's TechnoTypeClass `+0xC8F` — whether `AI_Update` runs the per-tick
@@ -1191,7 +1226,11 @@ impl ObjectType {
             accelerates: section.get_bool("Accelerates").unwrap_or(true),
             slowdown_distance: section.get_i32("SlowdownDistance").unwrap_or(500),
             sight: section.get_i32("Sight").unwrap_or(0),
-            tech_level: section.get_i32("TechLevel").unwrap_or(-1),
+            // TechnoTypeClass ctor @ gamemd.exe 0x00711082 initializes
+            // +0x634 to 255; ReadINI preserves that current value when the
+            // key is absent. Explicit TechLevel=-1 remains a distinct
+            // civilian/unbuildable sentinel.
+            tech_level: section.get_i32("TechLevel").unwrap_or(255),
             build_time_multiplier: btm_f32,
             build_time_multiplier_x1000: (btm_f32.max(0.01) as f64 * 1000.0).round() as u64,
             owner,
@@ -1284,6 +1323,8 @@ impl ObjectType {
             elite_scatter: ability_list_has(section.get_list("EliteAbilities"), "SCATTER"),
             veteran_cloak: ability_list_has(section.get_list("VeteranAbilities"), "CLOAK"),
             elite_cloak: ability_list_has(section.get_list("EliteAbilities"), "CLOAK"),
+            veteran_crusher: ability_list_has(section.get_list("VeteranAbilities"), "CRUSHER"),
+            elite_crusher: ability_list_has(section.get_list("EliteAbilities"), "CRUSHER"),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             death_weapon_damage_modifier: section
                 .get_f32("DeathWeaponDamageModifier")
@@ -1304,8 +1345,10 @@ impl ObjectType {
             ),
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
             insignificant: section.get_bool("Insignificant").unwrap_or(false),
+            to_protect: section.get_bool("ToProtect").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
+            weeder: section.get_bool("Weeder").unwrap_or(false),
             bib: section.get_bool("Bib").unwrap_or(false),
             gate: section.get_bool("Gate").unwrap_or(false),
             deploy_time_ticks: native_minutes_to_ticks(
@@ -1377,6 +1420,11 @@ impl ObjectType {
                 .get("MovementZone")
                 .map(MovementZone::from_ini)
                 .unwrap_or_default(),
+            movement_restricted_to: section.get("MovementRestrictedTo").and_then(|value| {
+                LandType::ALL
+                    .into_iter()
+                    .find(|land| value.eq_ignore_ascii_case(land.section_name()))
+            }),
             considered_aircraft: section.get_bool("ConsideredAircraft").unwrap_or(false),
             zfudge_bridge: section.get_i32("ZFudgeBridge").unwrap_or(7),
             too_big_to_fit_under_bridge: section
@@ -1448,7 +1496,7 @@ impl ObjectType {
             show_occupant_pips: section.get_bool("ShowOccupantPips").unwrap_or(true),
             bridge_repair_hut: section.get_bool("BridgeRepairHut").unwrap_or(false),
             laser_fence: section.get_bool("LaserFence").unwrap_or(false),
-            passengers: section.get_i32("Passengers").unwrap_or(0).max(0) as u32,
+            passengers: section.get_i32("Passengers").unwrap_or(0),
             size_limit: section.get_i32("SizeLimit").unwrap_or(0).max(0) as u32,
             size: section
                 .get_i32("Size")
@@ -1986,7 +2034,7 @@ mod tests {
         assert_eq!(obj.walk_rate, 1);
         assert_eq!(obj.idle_rate, 0);
         assert_eq!(obj.sight, 0);
-        assert_eq!(obj.tech_level, -1);
+        assert_eq!(obj.tech_level, 255);
         assert!((obj.build_time_multiplier - 1.0).abs() < f32::EPSILON);
         assert!(obj.owner.is_empty());
         assert!(obj.required_houses.is_empty());
@@ -2091,6 +2139,15 @@ mod tests {
             ObjectType::from_ini_section("GACNST", section, ObjectCategory::Building);
         assert_eq!(obj.undeploys_into, Some("AMCV".to_string()));
         assert_eq!(obj.deploys_into, None);
+        assert!(!obj.is_1x1_with_undeploy());
+
+        let one_by_one = IniFile::from_str("[MODDEPLOY]\nUndeploysInto=MODUNIT\nFoundation=1x1\n");
+        let obj = ObjectType::from_ini_section(
+            "MODDEPLOY",
+            one_by_one.section("MODDEPLOY").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(obj.is_1x1_with_undeploy());
     }
 
     #[test]
@@ -2307,6 +2364,17 @@ mod tests {
         assert!(!obj.open_topped);
         assert!(!obj.gunner);
         assert!(obj.weapon_list.is_empty());
+    }
+
+    #[test]
+    fn gsi_04_05_passengers_preserves_native_signed_nonzero_value() {
+        let ini = IniFile::from_str("[ODDTRANSPORT]\nPassengers=-3\n");
+        let obj = ObjectType::from_ini_section(
+            "ODDTRANSPORT",
+            ini.section("ODDTRANSPORT").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(obj.passengers, -3);
     }
 
     #[test]
@@ -2571,6 +2639,23 @@ mod tests {
         assert!(!a.radar_visible);
         assert!(!b.insignificant);
         assert!(b.radar_visible);
+    }
+
+    #[test]
+    fn gsi_04_05_to_protect_is_an_independent_false_default_type_gate() {
+        let ini = IniFile::from_str("[PLAIN]\nStrength=100\n[GUARDED]\nToProtect=yes\n");
+        let plain = ObjectType::from_ini_section(
+            "PLAIN",
+            ini.section("PLAIN").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        let guarded = ObjectType::from_ini_section(
+            "GUARDED",
+            ini.section("GUARDED").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(!plain.to_protect);
+        assert!(guarded.to_protect);
     }
 
     #[test]

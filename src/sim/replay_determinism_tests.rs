@@ -28,6 +28,8 @@ fn make_test_sim() -> Simulation {
         veterancy: 0,
         high: false,
         mission: None,
+        recruitable_a: true,
+        recruitable_b: true,
     };
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     sim.spawn_from_map(&[entity], None, &heights);
@@ -133,6 +135,8 @@ fn replay_reapplies_header_seed() {
             veterancy: 0,
             high: false,
             mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
         };
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         sim.spawn_from_map(&[entity], None, &heights);

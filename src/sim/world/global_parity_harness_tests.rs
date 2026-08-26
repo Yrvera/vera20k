@@ -481,7 +481,17 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC5B2_3DFA_C256_6948;
 // This fixture has no sensor-bearing type, so every deposit is absent; both
 // historical schema probes, all three RNG streams, and tick-for-tick replay
 // equality remained byte-identical. The move is hash composition only.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE5DF_D3D7_0D84_791B;
+// Re-baselined 2026-08-24 for snapshot/hash schema v90: current hashing now
+// folds the exact serialized real `CellClass+0x140 & 0x1180` value authority
+// once behind its schema tag. Both historical probes and all three final RNG
+// stream states remain byte-identical, while record/replay remains exact, so
+// this is composition-only and does not rebaseline historical provenance.
+// Re-baselined 2026-08-26 for snapshot/hash schemas v92-v102: Phase 3 adds
+// empty/default base-reservation, House strategy/base-defense, TeamScript VM,
+// AIMD/TeamType/TaskForce, and typed AITrigger authority to the current hash.
+// Both historical probes and all three final RNG fingerprints remain exact,
+// and tick-for-tick record/replay equality passes, proving composition-only.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x0407_5297_2B7A_F360;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -531,6 +541,8 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
         veterancy: 0,
         high: false,
         mission: None,
+        recruitable_a: true,
+        recruitable_b: true,
     }
 }
 

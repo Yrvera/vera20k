@@ -278,6 +278,21 @@ impl RawCellOccupationGrid {
         self.cells.get(&(rx, ry)).map_or(0, |cell| cell.deck)
     }
 
+    /// Infantry owner identity paired with the selected native occupation byte.
+    /// Ground (`+0x124`) and deck (`+0x128`) are independent planes.
+    pub(crate) fn infantry_owner(
+        &self,
+        rx: u16,
+        ry: u16,
+        layer: MovementLayer,
+    ) -> Option<u64> {
+        self.cells.get(&(rx, ry)).and_then(|cell| match layer {
+            MovementLayer::Ground => cell.ground_infantry_owner,
+            MovementLayer::Bridge => cell.deck_infantry_owner,
+            MovementLayer::Air | MovementLayer::Underground => None,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn deck_infantry_owner(&self, rx: u16, ry: u16) -> Option<u64> {
         self.cells

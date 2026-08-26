@@ -262,7 +262,7 @@ pub(crate) fn build_sidebar_view_with_spec(
                 display_name: entry.display_name,
                 cost: entry.cost,
                 has_cameo_art: false,
-                queue_category: selected_category,
+                queue_category: entry.queue_category,
                 enabled: entry.enabled,
                 progress: entry.progress,
                 queued_count: entry.queued_count,
@@ -284,14 +284,41 @@ pub(crate) fn build_sidebar_view_with_spec(
     let btn_x1 = layout.sidebar_x + btn_pad;
     let btn_x2 = layout.sidebar_x + layout_spec.sidebar_width - btn_w - btn_pad;
 
-    let active_queue_exists = queue_items
-        .iter()
-        .any(|item| item.queue_category == selected_category);
-    let active_queue_paused = queue_items
-        .iter()
-        .find(|item| item.queue_category == selected_category)
-        .map(|item| item.state == BuildQueueState::Paused)
-        .unwrap_or(false);
+    // These two buttons are app-local controls, not native sidebar gadgets.
+    // A native unit-tab cameo retains its own FactoryPtr/category, so the
+    // combined presentation tab is not authority for a House factory slot.
+    // When exactly one real queue category is present, use it. With multiple
+    // independent categories there is no evidenced global selector; omitting
+    // the ambiguous controls is safer than emitting a command for Vehicle.
+    let active_queue_category = unique_category_for_tab(
+        selected_category,
+        queue_items.iter().map(|item| item.queue_category),
+    );
+    let active_queue_paused = active_queue_category.is_some_and(|category| {
+        queue_items
+            .iter()
+            .find(|item| item.queue_category == category)
+            .is_some_and(|item| item.state == BuildQueueState::Paused)
+    });
+    let producer_category = active_queue_category
+        .filter(|category| {
+            producer_focus
+                .iter()
+                .any(|focus| focus.category == *category)
+        })
+        .or_else(|| {
+            if queue_items
+                .iter()
+                .any(|item| category_is_on_tab(selected_category, item.queue_category))
+            {
+                None
+            } else {
+                unique_category_for_tab(
+                    selected_category,
+                    producer_focus.iter().map(|focus| focus.category),
+                )
+            }
+        });
 
     SidebarView {
         panel_rect,
@@ -310,33 +337,30 @@ pub(crate) fn build_sidebar_view_with_spec(
         sell_button,
         scroll_down_button,
         scroll_up_button,
-        pause_button: active_queue_exists.then_some(SidebarControlButton {
+        pause_button: active_queue_category.map(|category| SidebarControlButton {
             rect: Rect {
                 x: btn_x1,
                 y: btn_y,
                 w: btn_w,
                 h: btn_h,
             },
-            action: SidebarAction::TogglePauseQueue(selected_category),
+            action: SidebarAction::TogglePauseQueue(category),
             label: if active_queue_paused {
                 "Resume".to_string()
             } else {
                 "Pause".to_string()
             },
         }),
-        producer_button: producer_focus
-            .iter()
-            .any(|f| f.category == selected_category)
-            .then_some(SidebarControlButton {
-                rect: Rect {
-                    x: btn_x2,
-                    y: btn_y,
-                    w: btn_w,
-                    h: btn_h,
-                },
-                action: SidebarAction::CycleProducer(selected_category),
-                label: "Factory".to_string(),
-            }),
+        producer_button: producer_category.map(|category| SidebarControlButton {
+            rect: Rect {
+                x: btn_x2,
+                y: btn_y,
+                w: btn_w,
+                h: btn_h,
+            },
+            action: SidebarAction::CycleProducer(category),
+            label: "Factory".to_string(),
+        }),
         cancel_button: SidebarControlButton {
             rect: Rect {
                 x: btn_x1,
@@ -380,10 +404,43 @@ pub(crate) fn build_sidebar_view_with_spec(
     }
 }
 
+fn category_is_on_tab(
+    selected_category: ProductionCategory,
+    actual_category: ProductionCategory,
+) -> bool {
+    actual_category == selected_category
+        || (selected_category == ProductionCategory::Vehicle
+            && matches!(
+                actual_category,
+                ProductionCategory::Aircraft | ProductionCategory::Ship
+            ))
+}
+
+fn unique_category_for_tab(
+    selected_category: ProductionCategory,
+    categories: impl IntoIterator<Item = ProductionCategory>,
+) -> Option<ProductionCategory> {
+    let mut unique = None;
+    for category in categories {
+        if !category_is_on_tab(selected_category, category) {
+            continue;
+        }
+        match unique {
+            None => unique = Some(category),
+            Some(existing) if existing == category => {}
+            Some(_) => return None,
+        }
+    }
+    unique
+}
+
 struct BuildEntry {
     type_id: String,
     display_name: String,
     cost: Option<i32>,
+    /// Exact House factory/queue slot represented by this cameo. The Vehicle
+    /// tab is presentation-only grouping and must not replace Ship/Aircraft.
+    queue_category: ProductionCategory,
     enabled: bool,
     progress: f32,
     queued_count: usize,
@@ -411,8 +468,7 @@ fn collect_build_entries(
         .and_then(ArmedSidebarEntry::as_building_placement)
         .and_then(|s| interner.and_then(|i| i.get(s)));
     // SW is_armed: matched by section name (string compare).
-    let armed_sw_section: Option<&str> =
-        armed.and_then(ArmedSidebarEntry::as_super_weapon);
+    let armed_sw_section: Option<&str> = armed.and_then(ArmedSidebarEntry::as_super_weapon);
     let resolve = |id: InternedId| -> String {
         interner.map_or(format!("#{}", id.index()), |i| i.resolve(id).to_string())
     };
@@ -431,6 +487,7 @@ fn collect_build_entries(
                 type_id,
                 display_name: sw.display_name.clone(),
                 cost: None,
+                queue_category: ProductionCategory::Defense,
                 enabled: sw.is_online,
                 progress: sw.progress,
                 queued_count: 0,
@@ -450,12 +507,7 @@ fn collect_build_entries(
     // instead of spawning a duplicate entry.
     let mut entries: Vec<BuildEntry> = build_options
         .iter()
-        .filter(|opt| {
-            (opt.queue_category == category
-                || (category == ProductionCategory::Vehicle
-                    && opt.queue_category == ProductionCategory::Aircraft))
-                && opt.visible_in_sidebar()
-        })
+        .filter(|opt| category_is_on_tab(category, opt.queue_category) && opt.visible_in_sidebar())
         .map(|opt| {
             // Check if this type has a completed building waiting for placement.
             let is_ready = ready_buildings.iter().any(|r| r.type_id == opt.type_id);
@@ -467,6 +519,7 @@ fn collect_build_entries(
                     type_id: resolve(opt.type_id),
                     display_name: opt.display_name.clone(),
                     cost: Some(opt.cost),
+                    queue_category: opt.queue_category,
                     enabled: true,
                     progress: 1.0,
                     queued_count: 1,
@@ -480,11 +533,14 @@ fn collect_build_entries(
             } else {
                 let queued_count = queue_items
                     .iter()
-                    .filter(|item| item.type_id == opt.type_id)
+                    .filter(|item| {
+                        item.type_id == opt.type_id && item.queue_category == opt.queue_category
+                    })
                     .count();
                 // Check if this type has an item in Building state (actively producing).
                 let is_building_this_type = queue_items.iter().any(|item| {
                     item.type_id == opt.type_id
+                        && item.queue_category == opt.queue_category
                         && item.state == crate::sim::production::BuildQueueState::Building
                 });
                 // Suspended production — the two ways a stock queue stalls:
@@ -492,6 +548,7 @@ fn collect_build_entries(
                 // shows its `TXT_HOLD` status text for exactly this state.
                 let is_on_hold = queue_items.iter().any(|item| {
                     item.type_id == opt.type_id
+                        && item.queue_category == opt.queue_category
                         && matches!(
                             item.state,
                             BuildQueueState::Paused | BuildQueueState::NoFunds
@@ -499,7 +556,9 @@ fn collect_build_entries(
                 });
                 let progress = queue_items
                     .iter()
-                    .find(|item| item.type_id == opt.type_id)
+                    .find(|item| {
+                        item.type_id == opt.type_id && item.queue_category == opt.queue_category
+                    })
                     .map(|item| {
                         let total = item.total_ms.max(1) as f32;
                         (total - item.remaining_ms as f32) / total
@@ -510,6 +569,7 @@ fn collect_build_entries(
                     type_id: resolve(opt.type_id),
                     display_name: opt.display_name.clone(),
                     cost: Some(opt.cost),
+                    queue_category: opt.queue_category,
                     enabled: opt.enabled,
                     progress,
                     queued_count,
@@ -540,6 +600,7 @@ fn collect_build_entries(
                 type_id: r_type_str,
                 display_name: r.display_name.clone(),
                 cost: None,
+                queue_category: r.queue_category,
                 enabled: true,
                 progress: 1.0,
                 queued_count: 1,
@@ -569,7 +630,10 @@ mod tests {
     use super::build_sidebar_view;
     use crate::rules::object_type::ObjectCategory;
     use crate::sim::intern::StringInterner;
-    use crate::sim::production::{BuildDisabledReason, BuildOption, ProductionCategory};
+    use crate::sim::production::{
+        BuildDisabledReason, BuildOption, BuildQueueState, ProducerFocusView, ProductionCategory,
+        QueueItemView,
+    };
 
     fn approx_eq(a: f32, b: f32) {
         assert!(
@@ -853,6 +917,178 @@ mod tests {
             remaining_ms: 5_000,
             total_ms: 10_000,
         }
+    }
+
+    fn unit_option(
+        interner: &mut StringInterner,
+        id: &str,
+        category: ProductionCategory,
+    ) -> BuildOption {
+        BuildOption {
+            type_id: interner.intern(id),
+            display_name: id.to_string(),
+            cost: 900,
+            object_category: ObjectCategory::Vehicle,
+            queue_category: category,
+            enabled: true,
+            reason: None,
+        }
+    }
+
+    fn categorized_queue_item(
+        interner: &mut StringInterner,
+        id: &str,
+        category: ProductionCategory,
+        state: BuildQueueState,
+        remaining_ms: u32,
+    ) -> QueueItemView {
+        QueueItemView {
+            type_id: interner.intern(id),
+            display_name: id.to_string(),
+            queue_category: category,
+            state,
+            remaining_ms,
+            total_ms: 10_000,
+        }
+    }
+
+    fn producer(category: ProductionCategory, stable_id: u64) -> ProducerFocusView {
+        ProducerFocusView {
+            stable_id,
+            display_name: format!("{category:?} factory"),
+            category,
+            rx: stable_id as u16,
+            ry: stable_id as u16,
+        }
+    }
+
+    #[test]
+    fn ship_only_unit_tab_retains_ship_queue_state_and_control_actions() {
+        let mut interner = StringInterner::new();
+        let options = vec![unit_option(&mut interner, "DEST", ProductionCategory::Ship)];
+        let queue = vec![categorized_queue_item(
+            &mut interner,
+            "DEST",
+            ProductionCategory::Ship,
+            BuildQueueState::Paused,
+            5_000,
+        )];
+        // A land producer may coexist, but the one live Ship queue is the
+        // unambiguous context for both app-local controls.
+        let focus = vec![
+            producer(ProductionCategory::Vehicle, 1),
+            producer(ProductionCategory::Ship, 2),
+        ];
+        let view = build_sidebar_view(
+            1280.0,
+            960.0,
+            SidebarTab::Vehicle,
+            5_000,
+            0,
+            0,
+            Some([28.0, 27.0]),
+            &queue,
+            &options,
+            &[],
+            None,
+            &focus,
+            0,
+            Some(&interner),
+            &SidebarGadgetState::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(view.items.len(), 1);
+        let dest = &view.items[0];
+        assert_eq!(dest.type_id, "DEST");
+        assert_eq!(dest.queue_category, ProductionCategory::Ship);
+        assert_eq!(dest.queued_count, 1);
+        assert!(dest.is_on_hold);
+        approx_eq(dest.progress, 0.5);
+        let pause = view.pause_button.as_ref().expect("Ship pause control");
+        assert_eq!(pause.label, "Resume");
+        assert_eq!(
+            pause.action,
+            SidebarAction::TogglePauseQueue(ProductionCategory::Ship)
+        );
+        assert_eq!(
+            view.producer_button
+                .as_ref()
+                .expect("Ship producer control")
+                .action,
+            SidebarAction::CycleProducer(ProductionCategory::Ship)
+        );
+    }
+
+    #[test]
+    fn mixed_vehicle_and_ship_unit_tab_never_aliases_or_emits_ambiguous_controls() {
+        let mut interner = StringInterner::new();
+        let options = vec![
+            unit_option(&mut interner, "MTNK", ProductionCategory::Vehicle),
+            unit_option(&mut interner, "DEST", ProductionCategory::Ship),
+        ];
+        let queue = vec![
+            categorized_queue_item(
+                &mut interner,
+                "MTNK",
+                ProductionCategory::Vehicle,
+                BuildQueueState::Building,
+                9_000,
+            ),
+            categorized_queue_item(
+                &mut interner,
+                "DEST",
+                ProductionCategory::Ship,
+                BuildQueueState::Done,
+                0,
+            ),
+        ];
+        let focus = vec![
+            producer(ProductionCategory::Vehicle, 1),
+            producer(ProductionCategory::Ship, 2),
+        ];
+        let view = build_sidebar_view(
+            1280.0,
+            960.0,
+            SidebarTab::Vehicle,
+            5_000,
+            0,
+            0,
+            Some([28.0, 27.0]),
+            &queue,
+            &options,
+            &[],
+            None,
+            &focus,
+            0,
+            Some(&interner),
+            &SidebarGadgetState::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(view.items.len(), 2);
+        let mtnk = view
+            .items
+            .iter()
+            .find(|item| item.type_id == "MTNK")
+            .unwrap();
+        let dest = view
+            .items
+            .iter()
+            .find(|item| item.type_id == "DEST")
+            .unwrap();
+        assert_eq!(mtnk.queue_category, ProductionCategory::Vehicle);
+        assert_eq!(dest.queue_category, ProductionCategory::Ship);
+        assert!(mtnk.is_building_this_type);
+        assert!(!dest.is_building_this_type);
+        approx_eq(mtnk.progress, 0.1);
+        approx_eq(dest.progress, 1.0);
+        assert_eq!(mtnk.queued_count, 1);
+        assert_eq!(dest.queued_count, 1);
+        assert!(view.pause_button.is_none());
+        assert!(view.producer_button.is_none());
     }
 
     /// gamemd shows its `TXT_HOLD` status text while production is suspended.

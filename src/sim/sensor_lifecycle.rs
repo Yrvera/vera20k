@@ -555,6 +555,8 @@ mod tests {
                     veterancy: 0,
                     high: false,
                     mission: None,
+                    recruitable_a: true,
+                    recruitable_b: true,
                 },
                 MapEntity {
                     owner: "Soviet".into(),
@@ -568,6 +570,8 @@ mod tests {
                     veterancy: 0,
                     high: false,
                     mission: None,
+                    recruitable_a: true,
+                    recruitable_b: true,
                 },
             ],
             Some(&rules),
