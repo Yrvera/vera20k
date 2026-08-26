@@ -210,6 +210,22 @@ impl BaseReservationState {
     }
 }
 
+/// Independent persistent House latches co-enabled by successful AI base-unit
+/// deployment. Their other native writers and consumers remain separate
+/// mechanisms.
+///
+/// gamemd-derived: `HouseClass__Constructor` clears the corresponding bytes at
+/// `0x004F56F1`, `0x004F570A`, and `0x004F5710`; `HouseClass__Save @
+/// 0x00504080` and `HouseClass__Load @ 0x00503040` persist the raw House block.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+pub struct HouseAiActivationLatches {
+    pub production: bool,
+    pub ai_triggers_active: bool,
+    pub auto_base_building: bool,
+}
+
 /// Per-player game state.
 ///
 /// Created once per player at game start, lives for the duration of the match.
@@ -363,6 +379,10 @@ pub struct HouseState {
     /// Snapshot/hash authority for the Strategy emergency-state block.
     #[serde(default)]
     pub strategy_emergency: HouseStrategyEmergencyState,
+    /// Native House bytes `+0x1EE`, `+0x1F2`, and `+0x1F3`. All three persist,
+    /// while only Production and AITriggersActive directly enter House CRC.
+    #[serde(default)]
+    pub ai_activation: HouseAiActivationLatches,
 }
 
 impl HouseState {
@@ -375,6 +395,17 @@ impl HouseState {
     /// by successful Building Unlimbo BasePlan satisfaction.
     pub(crate) const fn is_controlled_by_human(&self, game_mode_nonzero: bool) -> bool {
         self.is_human || (!game_mode_nonzero && self.player_control)
+    }
+
+    /// Co-enable the three successful AI base-unit deploy latches.
+    ///
+    /// gamemd-derived: `UnitClass__Deploy @ 0x007393C0` writes Production at
+    /// `0x007398FF`, AITriggersActive at `0x0073990C`, then AutoBaseBuilding at
+    /// `0x00739919`, with no branch or call between the stores.
+    pub(crate) fn enable_ai_deploy_latches(&mut self) {
+        self.ai_activation.production = true;
+        self.ai_activation.ai_triggers_active = true;
+        self.ai_activation.auto_base_building = true;
     }
 
     /// Accept a victory and arm its deterministic grace interval.
@@ -468,6 +499,7 @@ impl HouseState {
             stats: MatchStatistics::default(),
             economy: Economy::default(),
             strategy_emergency: HouseStrategyEmergencyState::default(),
+            ai_activation: HouseAiActivationLatches::default(),
         }
     }
 }
@@ -688,6 +720,43 @@ pub(crate) fn determine_waypoint_edge(anchor: (u16, u16), bounds: PlayfieldBound
         }
     }
     best_edge
+}
+
+#[cfg(test)]
+mod ai_activation_latch_tests {
+    use super::{HouseAiActivationLatches, HouseState};
+
+    #[test]
+    fn house_ai_activation_latches_default_false() {
+        let house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        assert_eq!(house.ai_activation, HouseAiActivationLatches::default());
+        assert!(!house.ai_activation.production);
+        assert!(!house.ai_activation.ai_triggers_active);
+        assert!(!house.ai_activation.auto_base_building);
+    }
+
+    #[test]
+    fn house_ai_activation_deploy_enable_is_ordered_and_idempotent() {
+        let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        house.ai_activation = HouseAiActivationLatches {
+            production: true,
+            ai_triggers_active: false,
+            auto_base_building: true,
+        };
+
+        house.enable_ai_deploy_latches();
+        assert_eq!(
+            house.ai_activation,
+            HouseAiActivationLatches {
+                production: true,
+                ai_triggers_active: true,
+                auto_base_building: true,
+            }
+        );
+        let once = house.ai_activation;
+        house.enable_ai_deploy_latches();
+        assert_eq!(house.ai_activation, once);
+    }
 }
 
 #[cfg(test)]
