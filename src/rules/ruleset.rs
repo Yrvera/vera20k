@@ -2394,6 +2394,52 @@ pub struct RuleSet {
     source_ini_hash: u64,
 }
 
+/// Project `[AI] BuildConst=` through the native `char[128]` reader buffer.
+///
+/// gamemd-derived: `RulesClass__ReadAI @ 0x00672AE0`, BuildConst block
+/// `0x00672B14..0x00672B96`, calls `CCINIClass__ReadString @ 0x00528A10`
+/// with length `0x80`, trims the complete copied buffer, then tokenizes with
+/// `strtok` using comma as the sole delimiter. `IniFile::from_bytes` stores
+/// each source byte as one zero-extended scalar, so narrowing that byte domain
+/// before truncation preserves the native 127-payload-byte boundary even when
+/// Rust's UTF-8 representation uses multiple bytes for one stored scalar.
+fn parse_build_const_source_tokens(value: &str) -> Vec<String> {
+    const NATIVE_PAYLOAD_BYTES: usize = 127;
+
+    let Some(mut copied) = value
+        .chars()
+        .map(|character| u8::try_from(u32::from(character)).ok())
+        .collect::<Option<Vec<_>>>()
+    else {
+        // Production INI values come through `IniFile::from_bytes` and are
+        // always in the reversible byte domain. A direct Unicode-only test
+        // value has no native narrow-byte identity and must not alias a
+        // registered BuildingType.
+        return Vec::new();
+    };
+    copied.truncate(NATIVE_PAYLOAD_BYTES);
+
+    let first = copied.iter().position(|byte| *byte > b' ');
+    let Some(first) = first else {
+        return Vec::new();
+    };
+    let last = copied
+        .iter()
+        .rposition(|byte| *byte > b' ')
+        .expect("the first non-control byte also supplies the last");
+
+    copied[first..=last]
+        .split(|byte| *byte == b',')
+        // CRT `strtok` coalesces repeated delimiters and emits no empty token
+        // for leading, repeated, or trailing commas.
+        .filter(|token| !token.is_empty())
+        .filter(|token| {
+            !token.eq_ignore_ascii_case(b"none") && !token.eq_ignore_ascii_case(b"<none>")
+        })
+        .map(crate::util::native_string::widen_bytes)
+        .collect()
+}
+
 impl RuleSet {
     /// Build from the active ordered rules sources.
     pub fn from_rules_layers(layers: &RulesLayerStack) -> Result<Self, RulesError> {
@@ -2445,15 +2491,13 @@ impl RuleSet {
         // (`0x00668E78`), then calls `RulesClass__ReadAI @ 0x00672AE0`
         // (`0x00668EC8`). Its BuildConst binding is
         // `0x00672B14..0x00672C01` (key push `0x00672B23`, resolver call
-        // `0x00672B6A`) and has no `[General]` fallback. `get_list` retains the
-        // verified INI reader's comma-only token projection; filtering here
-        // removes only the BuildingType resolver's null sentinels.
-        let build_const_source_tokens = parse_named_list("AI", "BuildConst")
-            .into_iter()
-            .filter(|type_id| {
-                !type_id.eq_ignore_ascii_case("none") && !type_id.eq_ignore_ascii_case("<none>")
-            })
-            .collect::<Vec<_>>();
+        // `0x00672B6A`) and has no `[General]` fallback. Unlike ordinary
+        // `IniSection::get_list`, the native path does not trim each token.
+        let build_const_source_tokens = ini
+            .section("AI")
+            .and_then(|section| section.get("BuildConst"))
+            .map(parse_build_const_source_tokens)
+            .unwrap_or_default();
         let build_tech_types = parse_named_list("AI", "BuildTech");
         // gamemd-derived: `RulesClass::Constructor @ 0x00666922` stores 20 at
         // +0xE0C; `RulesClass::ReadGeneral @ 0x006701D9..0x006701FE` reads the
@@ -5933,7 +5977,7 @@ ZAdjust=-10
              Shipyard=GAYARD,nayard,YAYARD\n\
              BuildConst=WRONG\n\
              AINavalYardAdjacency=-7\n\
-             [AI]\nBuildConst=gacnst,NACNST,gacnst,none,<NoNe>,YACNST\n\
+             [AI]\nBuildConst=,gacnst,,NACNST,gacnst,none,<NoNe>,YACNST,,\n\
              BuildTech=GAYARD,YAYARD\n\
              [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
              [BuildingTypes]\n\
@@ -5989,6 +6033,61 @@ ZAdjust=-10
         assert_eq!(defaults.object("YARD").unwrap().ai_base_planning_side, -1);
         assert!(defaults.build_const_types.is_empty());
         assert!(!defaults.object("YARD").unwrap().build_const_eligible);
+    }
+
+    #[test]
+    fn build_const_readai_does_not_trim_individual_tokens() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[AI]\nBuildConst=GACNST, NACNST\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GACNST\n1=NACNST\n\
+             [GACNST]\nFoundation=1x1\n\
+             [NACNST]\nFoundation=1x1\n",
+        ))
+        .expect("BuildConst whitespace rules");
+
+        assert_eq!(rules.build_const_types, ["GACNST"]);
+        assert!(rules.object("GACNST").unwrap().build_const_eligible);
+        assert!(
+            !rules.object("NACNST").unwrap().build_const_eligible,
+            "the internally space-prefixed token must not alias registered NACNST"
+        );
+    }
+
+    #[test]
+    fn build_const_readai_uses_native_127_source_byte_prefix() {
+        let oversized = format!("GACNST,{},LATE", "X".repeat(120));
+        assert_eq!(oversized.as_bytes()[127], b',');
+        let rules = RuleSet::from_ini(&IniFile::from_str(&format!(
+            "[AI]\nBuildConst={oversized}\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GACNST\n1=LATE\n\
+             [GACNST]\nFoundation=1x1\n\
+             [LATE]\nFoundation=1x1\n"
+        )))
+        .expect("oversized BuildConst rules");
+        assert_eq!(rules.build_const_types, ["GACNST"]);
+        assert!(!rules.object("LATE").unwrap().build_const_eligible);
+
+        // `IniFile::from_bytes` widens 0xE9 to U+00E9, whose Rust UTF-8
+        // encoding is two bytes. It is nevertheless one native source byte at
+        // payload index 126; the comma at source byte 127 and LATE stay outside
+        // the copied buffer without a UTF-8 boundary slice or panic.
+        let mut bytes = b"[AI]\nBuildConst=GACNST,".to_vec();
+        bytes.extend(std::iter::repeat_n(b'X', 119));
+        bytes.push(0xE9);
+        bytes.extend_from_slice(
+            b",LATE\n[InfantryTypes]\n0=DUMMY\n[DUMMY]\nStrength=1\n\
+              [BuildingTypes]\n0=GACNST\n1=LATE\n\
+              [GACNST]\nFoundation=1x1\n[LATE]\nFoundation=1x1\n",
+        );
+        let ini = IniFile::from_bytes(&bytes).expect("byte-domain BuildConst rules");
+        let stored = ini.section("AI").unwrap().get("BuildConst").unwrap();
+        assert_eq!(stored.chars().nth(126), Some(char::from(0xE9)));
+        assert_eq!(stored.chars().nth(127), Some(','));
+        let rules = RuleSet::from_ini(&ini).expect("byte-domain BuildConst RuleSet");
+        assert_eq!(rules.build_const_types, ["GACNST"]);
+        assert!(!rules.object("LATE").unwrap().build_const_eligible);
     }
 
     /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id
