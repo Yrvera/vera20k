@@ -288,8 +288,10 @@ pub struct GeneralRules {
     /// `[General] ComputerBaseDefenseResponse=`. The active House responder
     /// forms its signed/wrapping budget as `attacker Cost * this value`.
     pub computer_base_defense_response: i32,
-    /// Signed `[General] MaximumBuildingPlacementFailures=`. The Building-exit
-    /// retry writer compares strictly after incrementing; negative mods remain literal.
+    /// Signed `[General] MaximumBuildingPlacementFailures=` at `Rules+0xE48`.
+    /// Native constructor default is `5`; both active retail rules files
+    /// override it with `3`. Building exit compares strictly after incrementing;
+    /// negative mod values remain literal.
     pub maximum_building_placement_failures: i32,
     /// `[General] BaseDefenseDelay=` in minutes. A strict responder-budget
     /// overshoot arms the attacker cooldown for `ftol(value * 900)` frames.
@@ -923,6 +925,7 @@ impl Default for GeneralRules {
             veteran_cap: VETERAN_CAP_DEFAULT,
             difficulty_armor: [1.0; 3],
             computer_base_defense_response: 3,
+            // Native Rules+0xE48 constructor default; active retail overrides to 3.
             maximum_building_placement_failures: 5,
             base_defense_delay_minutes: 0.25,
             suspend_priority: 20,
@@ -1566,6 +1569,8 @@ impl GeneralRules {
             computer_base_defense_response: general
                 .get_i32("ComputerBaseDefenseResponse")
                 .unwrap_or(defaults.computer_base_defense_response),
+            // Signed [General] binding for native Rules+0xE48. The verified
+            // report establishes default 5 and active-retail override 3.
             maximum_building_placement_failures: general
                 .get_i32("MaximumBuildingPlacementFailures")
                 .unwrap_or(defaults.maximum_building_placement_failures),
@@ -3042,7 +3047,9 @@ impl RuleSet {
     }
 
     /// Resolve one scenario BasePlan token through the native BuildingType
-    /// registry only, returning its ordered registry index.
+    /// registry only, matching
+    /// `BuildingTypeClass__FindIndexByName @ 0x0045E7B0` used by
+    /// `FUN_0042EBE0`, and return its ordered index.
     pub(crate) fn building_type_index(&self, id: &str) -> Option<i32> {
         self.building_type_indices
             .get(&id.to_ascii_uppercase())

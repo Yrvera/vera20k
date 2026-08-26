@@ -667,7 +667,10 @@ pub struct ObjectType {
     /// Native BuildingType registry index used by ordered House BasePlan nodes.
     /// Non-building types retain `-1`.
     pub base_plan_type_index: i32,
-    /// BuildingType `IsBaseDefense=` immutable lifecycle input.
+    /// BuildingType `IsBaseDefense=` immutable lifecycle input at
+    /// `BuildingType+0x1706`. The BuildingType constructor store at
+    /// `0x0045E225` defaults it false; reader block
+    /// `0x00460FFC..0x00461010` binds it.
     pub is_base_defense: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.
@@ -1490,6 +1493,8 @@ impl ObjectType {
             construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
             build_const_eligible: false,
             base_plan_type_index: -1,
+            // BuildingTypeClass__ReadINI 0x00460FFC..0x00461010 writes
+            // `IsBaseDefense=` to BuildingType+0x1706; constructor default false.
             is_base_defense: section.get_bool("IsBaseDefense").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
             weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
