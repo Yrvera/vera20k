@@ -62,7 +62,7 @@ impl TeamScriptVm {
         for team_type in registry.team_type_read_sequence() {
             let id = interner.intern(&team_type.id);
             let script_name = team_type.get("Script").unwrap_or("<none>");
-            let (script_id, script_name_was_valid) = find_or_allocate_definition(
+            let script_resolution = find_or_allocate_definition(
                 script_name,
                 &mut vm.scripts,
                 &mut vm.script_order,
@@ -73,24 +73,29 @@ impl TeamScriptVm {
                     source: team_type.source,
                 },
             );
-            if script_name_was_valid {
-                pending_attachments.push(PendingTeamTypeAttachment::Script {
-                    team_type_id: team_type.id.clone(),
-                    definition_id: script_id.expect("valid Script identity was allocated"),
-                    definition_name: script_name.to_string(),
-                    source: team_type.source,
-                });
-            } else {
-                diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeScript {
-                    team_type_id: team_type.id.clone(),
-                    script_id: script_name.to_string(),
-                    source: team_type.source,
-                });
-            }
-            let script_id = script_id.unwrap_or(InternedId::from_index(0));
+            let script_id = match script_resolution {
+                DefinitionResolution::Exact(definition_id) => {
+                    pending_attachments.push(PendingTeamTypeAttachment::Script {
+                        team_type_id: team_type.id.clone(),
+                        definition_id,
+                        definition_name: script_name.to_string(),
+                        source: team_type.source,
+                    });
+                    definition_id
+                }
+                DefinitionResolution::FirstFallback(definition_id) => definition_id,
+                DefinitionResolution::Unavailable => {
+                    diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeScript {
+                        team_type_id: team_type.id.clone(),
+                        script_id: script_name.to_string(),
+                        source: team_type.source,
+                    });
+                    InternedId::from_index(0)
+                }
+            };
 
             let task_force_name = team_type.get("TaskForce").unwrap_or("<none>");
-            let (task_force_id, task_force_name_was_valid) = find_or_allocate_definition(
+            let task_force_resolution = find_or_allocate_definition(
                 task_force_name,
                 &mut vm.task_forces,
                 &mut vm.task_force_order,
@@ -102,21 +107,26 @@ impl TeamScriptVm {
                     source: team_type.source,
                 },
             );
-            if task_force_name_was_valid {
-                pending_attachments.push(PendingTeamTypeAttachment::TaskForce {
-                    team_type_id: team_type.id.clone(),
-                    definition_id: task_force_id.expect("valid TaskForce identity was allocated"),
-                    definition_name: task_force_name.to_string(),
-                    source: team_type.source,
-                });
-            } else {
-                diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
-                    team_type_id: team_type.id.clone(),
-                    task_force_id: task_force_name.to_string(),
-                    source: team_type.source,
-                });
-            }
-            let task_force_id = task_force_id.unwrap_or(InternedId::from_index(0));
+            let task_force_id = match task_force_resolution {
+                DefinitionResolution::Exact(definition_id) => {
+                    pending_attachments.push(PendingTeamTypeAttachment::TaskForce {
+                        team_type_id: team_type.id.clone(),
+                        definition_id,
+                        definition_name: task_force_name.to_string(),
+                        source: team_type.source,
+                    });
+                    definition_id
+                }
+                DefinitionResolution::FirstFallback(definition_id) => definition_id,
+                DefinitionResolution::Unavailable => {
+                    diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
+                        team_type_id: team_type.id.clone(),
+                        task_force_id: task_force_name.to_string(),
+                        source: team_type.source,
+                    });
+                    InternedId::from_index(0)
+                }
+            };
 
             vm.register_team_type(TeamTypeDefinition {
                 id,
@@ -349,15 +359,27 @@ enum PendingTeamTypeAttachment {
     },
 }
 
+enum DefinitionResolution {
+    Exact(InternedId),
+    FirstFallback(InternedId),
+    Unavailable,
+}
+
 fn find_or_allocate_definition<T>(
     requested: &str,
     definitions: &mut BTreeMap<InternedId, T>,
     order: &mut Vec<InternedId>,
     interner: &mut StringInterner,
     placeholder: impl FnOnce(InternedId) -> T,
-) -> (Option<InternedId>, bool) {
-    if requested.is_empty() || requested == "<none>" || requested == "none" {
-        return (order.first().copied(), false);
+) -> DefinitionResolution {
+    if requested.is_empty()
+        || requested.eq_ignore_ascii_case("<none>")
+        || requested.eq_ignore_ascii_case("none")
+    {
+        return order.first().copied().map_or(
+            DefinitionResolution::Unavailable,
+            DefinitionResolution::FirstFallback,
+        );
     }
 
     let id = interner.intern(requested);
@@ -365,7 +387,7 @@ fn find_or_allocate_definition<T>(
         order.push(id);
         definitions.insert(id, placeholder(id));
     }
-    (Some(id), true)
+    DefinitionResolution::Exact(id)
 }
 
 fn resolve_trigger_team_type(

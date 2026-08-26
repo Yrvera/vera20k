@@ -1903,6 +1903,82 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_05_team_type_none_attachments_use_case_insensitive_first_fallback() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+        ))
+        .expect("minimal rules");
+        let fixed = IniFile::from_str(
+            "[TeamTypes]\n0=FIRST\n1=FALLBACK\n\
+             [FIRST]\nScript=FIRST_SCRIPT\nTaskForce=FIRST_TF\n\
+             [FALLBACK]\nScript=<NONE>\nTaskForce=NONE\n\
+             [ScriptTypes]\n0=FIRST_SCRIPT\n[FIRST_SCRIPT]\n0=2,0\n\
+             [TaskForces]\n0=FIRST_TF\n[FIRST_TF]\n0=1,E1\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let first = vm.team_types[&interner.get("FIRST").unwrap()];
+        let fallback = vm.team_types[&interner.get("FALLBACK").unwrap()];
+        assert_eq!(fallback.script_id, first.script_id);
+        assert_eq!(fallback.task_force_id, first.task_force_id);
+        assert_eq!(
+            vm.script_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["FIRST_SCRIPT"]
+        );
+        assert_eq!(
+            vm.task_force_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["FIRST_TF"]
+        );
+        assert!(interner.get("<NONE>").is_none());
+        assert!(interner.get("NONE").is_none());
+    }
+
+    #[test]
+    fn gsi_04_05_team_type_none_attachments_refuse_only_when_registry_is_empty() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+        ))
+        .expect("minimal rules");
+        let fixed = IniFile::from_str(
+            "[TeamTypes]\n0=ONLY\n[ONLY]\nScript=NONE\nTaskForce=<NONE>\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert_eq!(
+            diagnostics,
+            [
+                TeamAiInstallDiagnostic::MissingTeamTypeScript {
+                    team_type_id: "ONLY".to_string(),
+                    script_id: "NONE".to_string(),
+                    source: TeamAiDefinitionSource::FixedAimd,
+                },
+                TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
+                    team_type_id: "ONLY".to_string(),
+                    task_force_id: "<NONE>".to_string(),
+                    source: TeamAiDefinitionSource::FixedAimd,
+                },
+            ]
+        );
+        assert!(vm.script_order().is_empty());
+        assert!(vm.task_force_order().is_empty());
+    }
+
+    #[test]
     #[ignore = "requires extracted retail rulesmd.ini and aimd.ini"]
     fn gsi_04_05_retail_aimd_installs_all_resolved_definitions_without_teams() {
         use crate::rules::ini_parser::IniFile;
