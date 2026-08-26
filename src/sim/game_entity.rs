@@ -86,6 +86,10 @@ fn default_foundation() -> String {
     "1x1".to_string()
 }
 
+fn default_base_plan_type_index() -> i32 {
+    -1
+}
+
 /// Persistent TechnoClass state used by the active House base-defence
 /// responder. The two admission bytes are constructor-true; archive/cooldown
 /// writes occur only after a responder assignment or strict budget overshoot.
@@ -351,6 +355,15 @@ pub struct GameEntity {
     /// transfer paths can maintain native acquisition order exactly.
     #[serde(default)]
     pub build_const_eligible: bool,
+    /// Immutable native BuildingType registry index for BasePlan lifecycle writers.
+    #[serde(default = "default_base_plan_type_index")]
+    pub base_plan_type_index: i32,
+    /// Immutable BuildingType `IsBaseDefense=` fact.
+    #[serde(default)]
+    pub base_plan_is_defense: bool,
+    /// Immutable non-null `UndeploysInto` fact used by successful Unlimbo fallback.
+    #[serde(default)]
+    pub base_plan_has_undeploy_target: bool,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
     ///
     /// A projection of [`Self::veterancy_raw`], refreshed wherever the raw
@@ -1041,6 +1054,9 @@ impl GameEntity {
             base_reservation_spacing: None,
             determines_waypoint_edge: false,
             build_const_eligible: false,
+            base_plan_type_index: -1,
+            base_plan_is_defense: false,
+            base_plan_has_undeploy_target: false,
             veterancy,
             veterancy_raw: crate::sim::combat::veterancy::raw_for_rank(veterancy),
             veterancy_rank_cache: veterancy_rank_cache_default(),

@@ -213,8 +213,11 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
     rules.bind_terrain_spawner_assets(&rules_ini, &assets, theater.extension, &map.header.theater);
     rules.bind_animation_sequences(&infantry_sequences);
-    let house_roster =
-        crate::map::houses::parse_house_roster(&map.ini, rules.color_schemes.as_slice());
+    let house_roster = crate::map::houses::parse_house_roster(
+        &map.ini,
+        rules.color_schemes.as_slice(),
+        Some(&rules),
+    );
     let mut overlay_grid = OverlayGrid::from_overlay_entries(
         &map.overlays,
         terrain_bootstrap.resolved.width(),

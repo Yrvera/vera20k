@@ -1801,6 +1801,18 @@ pub(crate) fn initialize_map_roster_houses(
             sim.session.game_options.tech_level,
         );
         house_state.player_control = player_control;
+        house_state.base_plan.percent_built = house.base_plan.percent_built;
+        house_state.base_plan.nodes = house
+            .base_plan
+            .nodes
+            .iter()
+            .map(|node| crate::sim::base_plan::BasePlanNode {
+                type_or_control: node.type_or_control,
+                packed_cell: node.packed_cell,
+                filled: node.filled,
+                retry_count: node.retry_count,
+            })
+            .collect();
         // HouseClass::Read_Scenario_INI reads `IQ=` from this exact named
         // house section, defaults it to zero, and changes a value above
         // MaxIQLevels to literal one before storing CurrentIQ (+0x24C).

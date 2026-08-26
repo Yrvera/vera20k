@@ -13,6 +13,27 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::rules::color_scheme::{ColorSchemeEntry, scheme_entry_by_name};
 use crate::rules::house_colors::{DEFAULT_SCHEME_ENTRY, HouseColorIndex};
 use crate::rules::ini_parser::IniFile;
+use crate::rules::ruleset::RuleSet;
+
+/// Ordered map-side BasePlan node, installed into House simulation state before
+/// map objects are spawned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScenarioBasePlanNode {
+    pub type_or_control: i32,
+    pub packed_cell: u32,
+    pub filled: bool,
+    pub retry_count: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScenarioBasePlanDefinition {
+    pub percent_built: i32,
+    pub nodes: Vec<ScenarioBasePlanNode>,
+}
+
+const fn pack_scenario_base_plan_cell(x: i32, y: i32) -> u32 {
+    (x as i16 as u16 as u32) | ((y as i16 as u16 as u32) << 16)
+}
 
 /// Mapping from owner name (e.g., "Americans") to house color index.
 ///
@@ -39,6 +60,8 @@ pub struct HouseDefinition {
     pub iq: Option<i32>,
     /// Allies listed in the house section.
     pub allies: Vec<String>,
+    /// Scenario-authored BasePlan in numeric node order.
+    pub base_plan: ScenarioBasePlanDefinition,
 }
 
 impl HouseDefinition {
@@ -150,7 +173,7 @@ fn normalize_house_name(name: &str) -> String {
 /// `schemes` is the parsed `[Colors]` list used to resolve each house's
 /// `Color=<name>` to a `[Colors]` entry index.
 pub fn parse_house_colors(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseColorMap {
-    parse_house_roster(ini, schemes).color_map()
+    parse_house_roster(ini, schemes, None).color_map()
 }
 
 /// Parse the ordered active-house roster from a map's INI data.
@@ -158,7 +181,11 @@ pub fn parse_house_colors(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseC
 /// `schemes` is the parsed `[Colors]` list; a house's `Color=<name>` resolves to
 /// that entry's index (case-insensitive). Houses with no/unknown color fall back
 /// to [`DEFAULT_SCHEME_ENTRY`].
-pub fn parse_house_roster(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseRoster {
+pub fn parse_house_roster(
+    ini: &IniFile,
+    schemes: &[ColorSchemeEntry],
+    rules: Option<&RuleSet>,
+) -> HouseRoster {
     let houses_section = match ini.section("Houses") {
         Some(s) => s,
         None => {
@@ -196,6 +223,7 @@ pub fn parse_house_roster(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseR
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .collect();
+        let base_plan = parse_scenario_base_plan(section, rules);
 
         houses.push(HouseDefinition {
             name: house_name,
@@ -205,6 +233,7 @@ pub fn parse_house_roster(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseR
             player_control,
             iq,
             allies,
+            base_plan,
         });
     }
 
@@ -212,9 +241,57 @@ pub fn parse_house_roster(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseR
     HouseRoster { houses }
 }
 
+fn parse_scenario_base_plan(
+    section: Option<&crate::rules::ini_parser::IniSection>,
+    rules: Option<&RuleSet>,
+) -> ScenarioBasePlanDefinition {
+    let Some(section) = section else {
+        return ScenarioBasePlanDefinition::default();
+    };
+    let percent_built = section.get_i32("PercentBuilt").unwrap_or(0);
+    let node_count = section.get_i32("NodeCount").unwrap_or(0);
+    let mut nodes = Vec::new();
+    for index in 0..node_count.max(0) {
+        let key = format!("{index:03}");
+        let value = section.get(&key).unwrap_or("");
+        let mut tokens = value.split(',');
+        let type_token = tokens.next().unwrap_or("").trim();
+        let type_or_control = if value.as_bytes().first() == Some(&b'-') {
+            crate::rules::ini_value::atoi_lenient(type_token)
+        } else {
+            rules
+                .and_then(|rules| rules.building_type_index(type_token))
+                .unwrap_or(-1)
+        };
+        let x = crate::rules::ini_value::atoi_lenient(tokens.next().unwrap_or(""));
+        let y = crate::rules::ini_value::atoi_lenient(tokens.next().unwrap_or(""));
+        nodes.push(ScenarioBasePlanNode {
+            type_or_control,
+            packed_cell: pack_scenario_base_plan_cell(x, y),
+            // Native stack bytes are undefined at this read boundary. Rust
+            // normalizes them once instead of propagating nondeterminism.
+            filled: false,
+            retry_count: 0,
+        });
+    }
+    ScenarioBasePlanDefinition {
+        percent_built,
+        nodes,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn base_plan_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=GAPOWR\n1=GACNST\n\
+             [GAPOWR]\nStrength=750\n\
+             [GACNST]\nStrength=1000\n",
+        ))
+        .expect("base-plan rules")
+    }
 
     /// Retail `[Colors]` list (declaration order) — only the entries the tests
     /// reference need exact positions: DarkRed = entry 5, DarkBlue = entry 10.
@@ -251,7 +328,7 @@ mod tests {
              [Americans]\nColor=DarkBlue\nSide=Allies\nCountry=America\nPlayerControl=yes\n\
              [Russians]\nColor=DarkRed\nSide=Soviet\nCountry=Russia\nAllies=Confederation,YuriCountry\n",
         );
-        let roster = parse_house_roster(&ini, &test_schemes());
+        let roster = parse_house_roster(&ini, &test_schemes(), None);
         let map = roster.color_map();
         assert_eq!(map.len(), 2);
         // Color=name resolves to the [Colors] entry index.
@@ -306,7 +383,7 @@ mod tests {
     #[test]
     fn test_missing_color_defaults_to_default_scheme() {
         let ini: IniFile = IniFile::from_str("[Houses]\n0=Neutral\n[Neutral]\nIQ=5\n");
-        let roster = parse_house_roster(&ini, &test_schemes());
+        let roster = parse_house_roster(&ini, &test_schemes(), None);
         let map = roster.color_map();
         assert_eq!(map["Neutral"], HouseColorIndex(DEFAULT_SCHEME_ENTRY as u8));
         assert_eq!(roster.houses[0].iq, Some(5));
@@ -325,7 +402,7 @@ mod tests {
     #[test]
     fn test_missing_houses_section() {
         let ini: IniFile = IniFile::from_str("[General]\nKey=Value\n");
-        let roster = parse_house_roster(&ini, &test_schemes());
+        let roster = parse_house_roster(&ini, &test_schemes(), None);
         assert!(roster.houses.is_empty());
     }
 
@@ -334,5 +411,32 @@ mod tests {
         let ini: IniFile = IniFile::from_str("[Houses]\n0=Ghost\n");
         let map = parse_house_colors(&ini, &test_schemes());
         assert_eq!(map["Ghost"], HouseColorIndex(DEFAULT_SCHEME_ENTRY as u8));
+    }
+
+    #[test]
+    fn gsi_04_05_scenario_nodecount_parses_percent_and_numbered_nodes_in_source_order() {
+        let rules = base_plan_rules();
+        let ini = IniFile::from_str(
+            "[Houses]\n0=AIHouse\n\
+             [AIHouse]\nPercentBuilt=-17\nNodeCount=3\n\
+             002=GACNST,32768,-32770\n\
+             000=GAPOWR,1,2\n\
+             001=-5,-32769,65535\n",
+        );
+        let roster = parse_house_roster(&ini, &test_schemes(), Some(&rules));
+        let plan = &roster.houses[0].base_plan;
+        assert_eq!(plan.percent_built, -17);
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .map(|node| node.type_or_control)
+                .collect::<Vec<_>>(),
+            [0, -5, 1]
+        );
+        assert_eq!(plan.nodes[0].packed_cell, 1u32 | (2u32 << 16));
+        assert_eq!(plan.nodes[1].packed_cell, 32_767u32 | (65_535u32 << 16));
+        assert_eq!(plan.nodes[2].packed_cell, 32_768u32 | (32_766u32 << 16));
+        assert!(plan.nodes.iter().all(|node| !node.filled));
+        assert!(plan.nodes.iter().all(|node| node.retry_count == 0));
     }
 }

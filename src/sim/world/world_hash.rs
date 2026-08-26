@@ -253,7 +253,7 @@ impl Simulation {
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -265,7 +265,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false,
+            false, false,
         )
     }
 
@@ -277,7 +277,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false,
+            false, false,
         )
     }
 
@@ -296,6 +296,7 @@ impl Simulation {
         include_base_defense_response_v97: bool,
         include_alternate_base_center_v104: bool,
         include_naval_build_const_v105: bool,
+        include_base_plan_v106: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -344,6 +345,7 @@ impl Simulation {
             include_base_defense_response_v97,
             include_alternate_base_center_v104,
             include_naval_build_const_v105,
+            include_base_plan_v106,
         );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -397,6 +399,7 @@ impl Simulation {
             include_sensor_deposit_v88,
             include_base_defense_response_v97,
             include_naval_build_const_v105,
+            include_base_plan_v106,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -547,6 +550,7 @@ impl Simulation {
         include_base_defense_response_v97: bool,
         include_alternate_base_center_v104: bool,
         include_naval_build_const_v105: bool,
+        include_base_plan_v106: bool,
     ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
@@ -607,6 +611,16 @@ impl Simulation {
                 house.build_const_order.len().hash(hasher);
                 for stable_id in &house.build_const_order {
                     stable_id.hash(hasher);
+                }
+            }
+            if include_base_plan_v106 {
+                house.base_plan.percent_built.hash(hasher);
+                house.base_plan.nodes.len().hash(hasher);
+                for node in &house.base_plan.nodes {
+                    node.type_or_control.hash(hasher);
+                    node.packed_cell.hash(hasher);
+                    node.filled.hash(hasher);
+                    node.retry_count.hash(hasher);
                 }
             }
             house.base_reservation.hash(hasher);
@@ -942,6 +956,7 @@ impl Simulation {
         include_sensor_deposit_v88: bool,
         include_base_defense_response_v97: bool,
         include_naval_build_const_v105: bool,
+        include_base_plan_v106: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -1024,6 +1039,11 @@ impl Simulation {
             entity.determines_waypoint_edge.hash(hasher);
             if include_naval_build_const_v105 {
                 entity.build_const_eligible.hash(hasher);
+            }
+            if include_base_plan_v106 {
+                entity.base_plan_type_index.hash(hasher);
+                entity.base_plan_is_defense.hash(hasher);
+                entity.base_plan_has_undeploy_target.hash(hasher);
             }
             entity.veterancy.hash(hasher);
             // The raw accumulator is authoritative — `veterancy` is only its
@@ -2342,6 +2362,101 @@ mod rally_hash_tests {
         sim_b.houses.insert(owner_b, changed);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_05_base_plan_state_and_entity_facts_are_current_schema_hash_authority() {
+        use crate::sim::base_plan::{BasePlanNode, pack_base_plan_cell};
+        use crate::sim::house_state::HouseState;
+
+        fn house_sim(nodes: Vec<BasePlanNode>, percent_built: i32) -> Simulation {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Computer1");
+            let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+            house.base_plan.percent_built = percent_built;
+            house.base_plan.nodes = nodes;
+            sim.houses.insert(owner, house);
+            sim
+        }
+
+        let first = BasePlanNode {
+            type_or_control: 4,
+            packed_cell: pack_base_plan_cell(7, 8),
+            filled: false,
+            retry_count: 2,
+        };
+        let second = BasePlanNode {
+            type_or_control: -3,
+            packed_cell: pack_base_plan_cell(-1, 5),
+            filled: true,
+            retry_count: -9,
+        };
+        let baseline = house_sim(vec![first, second], 50);
+        let reversed = house_sim(vec![second, first], 50);
+        assert_ne!(baseline.state_hash(), reversed.state_hash());
+        assert_eq!(
+            baseline.state_hash_before_lifecycle_v28_and_mission_v29(),
+            reversed.state_hash_before_lifecycle_v28_and_mission_v29(),
+            "historical schemas exclude the complete v106 authority"
+        );
+
+        for changed in [
+            house_sim(vec![first, second], 51),
+            house_sim(
+                vec![
+                    BasePlanNode {
+                        type_or_control: 5,
+                        ..first
+                    },
+                    second,
+                ],
+                50,
+            ),
+            house_sim(
+                vec![
+                    BasePlanNode {
+                        packed_cell: pack_base_plan_cell(9, 8),
+                        ..first
+                    },
+                    second,
+                ],
+                50,
+            ),
+            house_sim(
+                vec![
+                    BasePlanNode {
+                        filled: true,
+                        ..first
+                    },
+                    second,
+                ],
+                50,
+            ),
+            house_sim(
+                vec![
+                    BasePlanNode {
+                        retry_count: 3,
+                        ..first
+                    },
+                    second,
+                ],
+                50,
+            ),
+        ] {
+            assert_ne!(baseline.state_hash(), changed.state_hash());
+        }
+
+        let mut entity_a = Simulation::new();
+        let mut entity_b = Simulation::new();
+        let mut a = GameEntity::test_default(1, "GAPOWR", "Computer1", 10, 10);
+        let mut b = a.clone();
+        a.base_plan_type_index = 2;
+        a.base_plan_is_defense = true;
+        a.base_plan_has_undeploy_target = true;
+        b.base_plan_type_index = 3;
+        entity_a.substrate.entities.insert(a);
+        entity_b.substrate.entities.insert(b);
+        assert_ne!(entity_a.state_hash(), entity_b.state_hash());
     }
 
     #[test]
