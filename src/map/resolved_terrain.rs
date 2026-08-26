@@ -427,6 +427,17 @@ pub struct SharedCellDummySnapshot {
     pub bridge_flags_0x1180: u32,
 }
 
+/// One `MapClass::Get_CellClass` result as consumed by FNPC's isometric
+/// projection helper.
+///
+/// Keeping the signed level and raw bridge subset in one value prevents callers
+/// from accidentally performing two dummy-stamping lookups for one native probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CellClassProjectionView {
+    pub signed_level: i32,
+    pub raw_flags_0x1180: u32,
+}
+
 const UNALLOCATED_REAL_CELL_BRIDGE_FLAGS: u16 = u16::MAX;
 
 /// Serialized value authority for the exact `CellClass+0x140 & 0x1180`
@@ -1208,9 +1219,13 @@ impl ResolvedTerrainGrid {
         true
     }
 
-    /// Stamping lookup view for later CellClass flag consumers such as FNPC.
-    /// A miss updates the dummy coordinate before exposing its live `0x1180`.
-    pub(crate) fn cellclass_bridge_flags_0x1180(&self, x: i32, y: i32) -> u32 {
+    /// One stamping lookup for FNPC's level-plus-flags projection probe.
+    ///
+    /// Native `MapClass::Get_CellClass @ 0x005657A0` returns one real CellClass
+    /// or stamps `+0x24` on the process-global dummy before returning that same
+    /// live object (`0x005657C8..0x005657D5`). `FUN_006D6410` then reads signed
+    /// level `+0x11B` and, conditionally, flags `+0x140` from that one result.
+    pub(crate) fn cellclass_projection_view(&self, x: i32, y: i32) -> CellClassProjectionView {
         let (x, y) = crate::map::cell_index::packed_cell_coord(x, y);
         if let Some(index) = native_resolved_cell_index(
             self.width,
@@ -1220,10 +1235,24 @@ impl ResolvedTerrainGrid {
             x,
             y,
         ) {
-            return self.cells[index].bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+            let cell = &self.cells[index];
+            return CellClassProjectionView {
+                signed_level: i32::from(cell.level as i8),
+                raw_flags_0x1180: cell.bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            };
         }
         self.shared_cell_dummy.stamp_coord(x, y);
-        self.shared_cell_dummy.bridge_flags_0x1180()
+        let dummy = self.shared_cell_dummy.snapshot();
+        CellClassProjectionView {
+            signed_level: i32::from(dummy.level),
+            raw_flags_0x1180: dummy.bridge_flags_0x1180,
+        }
+    }
+
+    /// Stamping lookup view for later CellClass flag-only consumers.
+    /// A miss updates the dummy coordinate before exposing its live `0x1180`.
+    pub(crate) fn cellclass_bridge_flags_0x1180(&self, x: i32, y: i32) -> u32 {
+        self.cellclass_projection_view(x, y).raw_flags_0x1180
     }
 
     pub(crate) fn dummy_cell_level_slope(&self) -> (i8, u8) {
