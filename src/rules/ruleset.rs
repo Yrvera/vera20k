@@ -2292,9 +2292,27 @@ pub struct RuleSet {
     pub shipyard_types: Vec<String>,
     /// Source-ordered resolved `[AI] BuildConst=` BuildingType identities.
     pub build_const_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildPower=` BuildingType identities.
+    pub build_power_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildRefinery=` BuildingType identities.
+    pub build_refinery_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildBarracks=` BuildingType identities.
+    pub build_barracks_types: Vec<String>,
     /// Source-ordered `[AI] BuildTech=` identities used by the native
     /// FirstBuildableFromArray superweapon-disabled tail.
     pub build_tech_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildWeapons=` BuildingType identities.
+    pub build_weapons_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildRadar=` BuildingType identities.
+    pub build_radar_types: Vec<String>,
+    /// Source-ordered resolved `[General] HarvesterUnit=` UnitType identities.
+    pub harvester_unit_types: Vec<String>,
+    /// Signed Hard/Normal/Easy vectors consumed directly by BasePlan Recalc.
+    pub ai_slave_miner_number: Vec<i32>,
+    pub ai_extra_refineries: Vec<i32>,
+    pub allied_base_defense_counts: Vec<i32>,
+    pub soviet_base_defense_counts: Vec<i32>,
+    pub third_base_defense_counts: Vec<i32>,
     /// Signed `[General] AINavalYardAdjacency=` in cells. Native constructor
     /// default is 20 and the consumer shifts it left by eight without clamping.
     pub ai_naval_yard_adjacency: i32,
@@ -2394,16 +2412,17 @@ pub struct RuleSet {
     source_ini_hash: u64,
 }
 
-/// Project `[AI] BuildConst=` through the native `char[128]` reader buffer.
+/// Project one native AI planning type list through its `char[128]` reader.
 ///
-/// gamemd-derived: `RulesClass__ReadAI @ 0x00672AE0`, BuildConst block
-/// `0x00672B14..0x00672B96`, calls `CCINIClass__ReadString @ 0x00528A10`
+/// gamemd-derived: `RulesClass__ReadAI @ 0x00672AE0`, seven list blocks
+/// `0x00672B14..0x00673058` and `0x0067368C..0x0067375B`, plus
+/// `RulesClass__ReadGeneral @ 0x0066D530` HarvesterUnit block
+/// `0x0066F8C8..0x0066F9CB`. Each calls `CCINIClass__ReadString @ 0x00528A10`
 /// with length `0x80`, trims the complete copied buffer, then tokenizes with
-/// `strtok` using comma as the sole delimiter. `IniFile::from_bytes` stores
-/// each source byte as one zero-extended scalar, so narrowing that byte domain
-/// before truncation preserves the native 127-payload-byte boundary even when
-/// Rust's UTF-8 representation uses multiple bytes for one stored scalar.
-fn parse_build_const_source_tokens(value: &str) -> Vec<String> {
+/// comma as the sole `strtok` delimiter. `IniFile::from_bytes` stores each
+/// source byte as one zero-extended scalar, so narrowing before truncation
+/// preserves the native payload-byte boundary even when Rust UTF-8 would not.
+fn parse_native_type_list_source_tokens(value: &str) -> Vec<String> {
     const NATIVE_PAYLOAD_BYTES: usize = 127;
 
     let Some(mut copied) = value
@@ -2438,6 +2457,72 @@ fn parse_build_const_source_tokens(value: &str) -> Vec<String> {
         })
         .map(crate::util::native_string::widen_bytes)
         .collect()
+}
+
+/// Parse the signed DynamicVector payload used by Recalc difficulty tables.
+///
+/// gamemd-derived: `DifficultyClass__ReadINI_IntVector @ 0x00475D70`, reached
+/// by `RulesClass__ReadGeneral @ 0x0066D530` for AISlaveMinerNumber
+/// `0x00670585..0x006705B7`, AIExtraRefineries `0x006705F9..0x0067062A`, and
+/// the three BaseDefenseCounts vectors `0x00670013..0x006700BE`. The reader has
+/// a native `char[512]` buffer, whole-buffer trim, comma `strtok`, and CRT atoi.
+fn parse_native_difficulty_int_vector(value: &str) -> Vec<i32> {
+    const NATIVE_PAYLOAD_BYTES: usize = 511;
+
+    let Some(mut copied) = value
+        .chars()
+        .map(|character| u8::try_from(u32::from(character)).ok())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    copied.truncate(NATIVE_PAYLOAD_BYTES);
+
+    let Some(first) = copied.iter().position(|byte| *byte > b' ') else {
+        return Vec::new();
+    };
+    let last = copied
+        .iter()
+        .rposition(|byte| *byte > b' ')
+        .expect("the first non-control byte also supplies the last");
+
+    copied[first..=last]
+        .split(|byte| *byte == b',')
+        .filter(|token| !token.is_empty())
+        .map(native_atoi_bytes)
+        .collect()
+}
+
+/// CRT `atoi` byte-domain projection: skip exactly ASCII whitespace, accept an
+/// optional sign, consume the decimal prefix, and retain 32-bit wrapping.
+fn native_atoi_bytes(value: &[u8]) -> i32 {
+    let mut index = value
+        .iter()
+        .take_while(|&&byte| matches!(byte, b'\t'..=b'\r' | b' '))
+        .count();
+    let negative = value.get(index) == Some(&b'-');
+    if value
+        .get(index)
+        .is_some_and(|byte| matches!(*byte, b'-' | b'+'))
+    {
+        index += 1;
+    }
+    let mut result = 0u32;
+    let mut any = false;
+    while let Some(byte) = value.get(index).filter(|byte| byte.is_ascii_digit()) {
+        any = true;
+        result = result
+            .wrapping_mul(10)
+            .wrapping_add(u32::from(*byte - b'0'));
+        index += 1;
+    }
+    if !any {
+        0
+    } else if negative {
+        result.wrapping_neg() as i32
+    } else {
+        result as i32
+    }
 }
 
 impl RuleSet {
@@ -2487,18 +2572,37 @@ impl RuleSet {
                 .collect()
         };
         let shipyard_types = parse_named_list("General", "Shipyard");
-        // gamemd-derived: `RulesClass__Process` reads BuildingTypes first
-        // (`0x00668E78`), then calls `RulesClass__ReadAI @ 0x00672AE0`
-        // (`0x00668EC8`). Its BuildConst binding is
-        // `0x00672B14..0x00672C01` (key push `0x00672B23`, resolver call
-        // `0x00672B6A`) and has no `[General]` fallback. Unlike ordinary
-        // `IniSection::get_list`, the native path does not trim each token.
-        let build_const_source_tokens = ini
-            .section("AI")
-            .and_then(|section| section.get("BuildConst"))
-            .map(parse_build_const_source_tokens)
-            .unwrap_or_default();
-        let build_tech_types = parse_named_list("AI", "BuildTech");
+        // gamemd-derived: `RulesClass__Process` reads type registries first
+        // (`ReadBuildingTypes` 0x00668E78), then `RulesClass__ReadAI @
+        // 0x00672AE0` (0x00668EC8). All seven BasePlan lists use the exact
+        // char[128]/whole-buffer-trim/comma-only path owned by their blocks at
+        // 0x00672B14..0x00673058 and 0x0067368C..0x0067375B. None falls back
+        // to `[General]`, and individual tokens are not trimmed.
+        let parse_planning_list = |section_name: &str, key: &str| {
+            ini.section(section_name)
+                .and_then(|section| section.get(key))
+                .map(parse_native_type_list_source_tokens)
+                .unwrap_or_default()
+        };
+        let build_const_source_tokens = parse_planning_list("AI", "BuildConst");
+        let build_power_source_tokens = parse_planning_list("AI", "BuildPower");
+        let build_refinery_source_tokens = parse_planning_list("AI", "BuildRefinery");
+        let build_barracks_source_tokens = parse_planning_list("AI", "BuildBarracks");
+        let build_tech_source_tokens = parse_planning_list("AI", "BuildTech");
+        let build_weapons_source_tokens = parse_planning_list("AI", "BuildWeapons");
+        let build_radar_source_tokens = parse_planning_list("AI", "BuildRadar");
+        let harvester_unit_source_tokens = parse_planning_list("General", "HarvesterUnit");
+        let parse_difficulty_vector = |key: &str| {
+            ini.section("General")
+                .and_then(|section| section.get(key))
+                .map(parse_native_difficulty_int_vector)
+                .unwrap_or_default()
+        };
+        let ai_slave_miner_number = parse_difficulty_vector("AISlaveMinerNumber");
+        let ai_extra_refineries = parse_difficulty_vector("AIExtraRefineries");
+        let allied_base_defense_counts = parse_difficulty_vector("AlliedBaseDefenseCounts");
+        let soviet_base_defense_counts = parse_difficulty_vector("SovietBaseDefenseCounts");
+        let third_base_defense_counts = parse_difficulty_vector("ThirdBaseDefenseCounts");
         // gamemd-derived: `RulesClass::Constructor @ 0x00666922` stores 20 at
         // +0xE0C; `RulesClass::ReadGeneral @ 0x006701D9..0x006701FE` reads the
         // signed `AINavalYardAdjacency=` override.
@@ -2611,22 +2715,43 @@ impl RuleSet {
             }
         }
 
-        // Native `BuildingTypeClass__FindOrAllocate @ 0x004653C0` resolves
-        // `[AI] BuildConst=` case-insensitively to BuildingType pointers while
-        // retaining source order and duplicates. Every active-retail token was
-        // allocated by the earlier BuildingTypes pass, so resolve through that
-        // category alone. Unknown custom allocation would require the complete
-        // later ReadAI list order and remains an evidence-backed inactive
-        // exclusion; do not synthesize a partial registry tail here.
-        let mut build_const_types = Vec::new();
-        for type_id in build_const_source_tokens {
-            if let Some(handle) = object_category_index
+        // Native BuildingTypeClass__FindOrAllocate @ 0x004653C0 and
+        // UnitTypeClass__FindOrAllocate @ 0x007480D0 resolve the planning-list
+        // tokens case-insensitively while retaining source order and duplicate
+        // pointers. Active-retail tokens were allocated by the earlier type
+        // registry passes. Unknown custom allocation depends on every later
+        // ReadAI list and remains the approved stock-inactive exclusion, so the
+        // Rust projection resolves only within the matching registered family.
+        let resolve_registered = |source: Vec<String>, category: ObjectCategory| {
+            source
+                .into_iter()
+                .filter(|type_id| {
+                    object_category_index.contains_key(&(category, type_id.to_ascii_uppercase()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let build_const_types =
+            resolve_registered(build_const_source_tokens, ObjectCategory::Building);
+        let build_power_types =
+            resolve_registered(build_power_source_tokens, ObjectCategory::Building);
+        let build_refinery_types =
+            resolve_registered(build_refinery_source_tokens, ObjectCategory::Building);
+        let build_barracks_types =
+            resolve_registered(build_barracks_source_tokens, ObjectCategory::Building);
+        let build_tech_types =
+            resolve_registered(build_tech_source_tokens, ObjectCategory::Building);
+        let build_weapons_types =
+            resolve_registered(build_weapons_source_tokens, ObjectCategory::Building);
+        let build_radar_types =
+            resolve_registered(build_radar_source_tokens, ObjectCategory::Building);
+        let harvester_unit_types =
+            resolve_registered(harvester_unit_source_tokens, ObjectCategory::Vehicle);
+        for type_id in &build_const_types {
+            let handle = object_category_index
                 .get(&(ObjectCategory::Building, type_id.to_ascii_uppercase()))
                 .copied()
-            {
-                object_list[handle.0 as usize].build_const_eligible = true;
-                build_const_types.push(type_id);
-            }
+                .expect("resolved BuildConst membership remains registered");
+            object_list[handle.0 as usize].build_const_eligible = true;
         }
 
         // Step 2: Collect all weapon and warhead IDs referenced by objects.
@@ -2955,7 +3080,18 @@ impl RuleSet {
             ai_base_spacing,
             shipyard_types,
             build_const_types,
+            build_power_types,
+            build_refinery_types,
+            build_barracks_types,
             build_tech_types,
+            build_weapons_types,
+            build_radar_types,
+            harvester_unit_types,
+            ai_slave_miner_number,
+            ai_extra_refineries,
+            allied_base_defense_counts,
+            soviet_base_defense_counts,
+            third_base_defense_counts,
             ai_naval_yard_adjacency,
             initial_veteran,
             infantry_ids,
@@ -6088,6 +6224,125 @@ ZAdjust=-10
         let rules = RuleSet::from_ini(&ini).expect("byte-domain BuildConst RuleSet");
         assert_eq!(rules.build_const_types, ["GACNST"]);
         assert!(!rules.object("LATE").unwrap().build_const_eligible);
+    }
+
+    #[test]
+    fn recalc_type_lists_share_native_parser_and_registered_family_resolution() {
+        let ini = IniFile::from_str(
+            "[General]\n\
+             HarvesterUnit=harv,,none,HARV,<none>, AUNIT\n\
+             BuildPower=POISON\n\
+             [AI]\n\
+             BuildConst=con,CON\n\
+             BuildPower=pow,none,POW\n\
+             BuildRefinery=ref\n\
+             BuildBarracks=bar\n\
+             BuildTech=tech, TECH\n\
+             BuildWeapons=weap\n\
+             BuildRadar=rad,<none>,RAD\n\
+             [VehicleTypes]\n0=HARV\n1=AUNIT\n\
+             [BuildingTypes]\n0=CON\n1=POW\n2=REF\n3=BAR\n4=TECH\n5=WEAP\n6=RAD\n7=POISON\n\
+             [HARV]\nStrength=1\n[AUNIT]\nStrength=1\n\
+             [CON]\nFoundation=1x1\n[POW]\nFoundation=1x1\n\
+             [REF]\nFoundation=1x1\n[BAR]\nFoundation=1x1\n\
+             [TECH]\nFoundation=1x1\n[WEAP]\nFoundation=1x1\n\
+             [RAD]\nFoundation=1x1\n[POISON]\nFoundation=1x1\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("all Recalc type lists");
+
+        assert_eq!(rules.build_const_types, ["con", "CON"]);
+        assert_eq!(rules.build_power_types, ["pow", "POW"]);
+        assert_eq!(rules.build_refinery_types, ["ref"]);
+        assert_eq!(rules.build_barracks_types, ["bar"]);
+        assert_eq!(
+            rules.build_tech_types,
+            ["tech"],
+            "the internally space-prefixed token is not individually trimmed"
+        );
+        assert_eq!(rules.build_weapons_types, ["weap"]);
+        assert_eq!(rules.build_radar_types, ["rad", "RAD"]);
+        assert_eq!(
+            rules.harvester_unit_types,
+            ["harv", "HARV"],
+            "sentinels are omitted, duplicates retained, and a space-prefixed Unit token is unresolved"
+        );
+        assert!(rules.object("CON").unwrap().build_const_eligible);
+        assert!(!rules.object("POISON").unwrap().build_const_eligible);
+    }
+
+    #[test]
+    fn recalc_type_lists_preserve_prior_layer_when_later_key_is_missing_or_empty() {
+        let mut layers = RulesLayerStack::new(IniFile::from_str(
+            "[General]\nHarvesterUnit=HARV\n\
+             [AI]\nBuildConst=CON\nBuildPower=POW\nBuildTech=TECH\n\
+             [VehicleTypes]\n0=HARV\n[HARV]\nStrength=1\n\
+             [BuildingTypes]\n0=CON\n1=POW\n2=TECH\n3=NEWPOW\n\
+             [CON]\nFoundation=1x1\n[POW]\nFoundation=1x1\n\
+             [TECH]\nFoundation=1x1\n[NEWPOW]\nFoundation=1x1\n",
+        ));
+        layers.push(
+            RulesLayerKind::Scenario,
+            IniFile::from_str(
+                "[General]\nHarvesterUnit=\nUnrelated=1\n\
+                 [AI]\nBuildConst=\nBuildPower=NEWPOW\n",
+            ),
+        );
+        let rules = RuleSet::from_rules_layers(&layers).expect("layered Recalc lists");
+        assert_eq!(rules.harvester_unit_types, ["HARV"]);
+        assert_eq!(rules.build_const_types, ["CON"]);
+        assert_eq!(rules.build_power_types, ["NEWPOW"]);
+        assert_eq!(rules.build_tech_types, ["TECH"]);
+    }
+
+    #[test]
+    fn recalc_difficulty_vectors_match_native_projection_and_atoi() {
+        assert_eq!(
+            parse_native_difficulty_int_vector(" \t1,,  -2junk,,+3,abc,4294967297,-2147483649  \n"),
+            [1, -2, 3, 0, 1, i32::MAX]
+        );
+        assert_eq!(parse_native_difficulty_int_vector("7"), [7]);
+        assert!(parse_native_difficulty_int_vector(" \t\r\n").is_empty());
+
+        let oversized = format!("1,{},7", "0".repeat(509));
+        assert_eq!(oversized.as_bytes()[511], b',');
+        assert_eq!(
+            parse_native_difficulty_int_vector(&oversized),
+            [1, 0],
+            "bytes beyond the char[512] payload cannot add another entry"
+        );
+    }
+
+    #[test]
+    fn recalc_difficulty_vectors_parse_exact_lengths_and_layer_defaults() {
+        let mut layers = RulesLayerStack::new(IniFile::from_str(
+            "[General]\n\
+             AISlaveMinerNumber=4,3\n\
+             AIExtraRefineries=2,1,0, -1\n\
+             AlliedBaseDefenseCounts=25\n\
+             SovietBaseDefenseCounts=25,22,6\n\
+             ThirdBaseDefenseCounts=25,22,6\n\
+             [BuildingTypes]\n0=DUMMY\n[DUMMY]\nFoundation=1x1\n",
+        ));
+        layers.push(
+            RulesLayerKind::Scenario,
+            IniFile::from_str(
+                "[General]\nAISlaveMinerNumber=\nAIExtraRefineries=9,,7\nUnrelated=1\n",
+            ),
+        );
+        let rules = RuleSet::from_rules_layers(&layers).expect("difficulty vectors");
+        assert_eq!(rules.ai_slave_miner_number, [4, 3]);
+        assert_eq!(rules.ai_extra_refineries, [9, 7]);
+        assert_eq!(rules.allied_base_defense_counts, [25]);
+        assert_eq!(rules.soviet_base_defense_counts, [25, 22, 6]);
+        assert_eq!(rules.third_base_defense_counts, [25, 22, 6]);
+
+        let missing = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=DUMMY\n[DUMMY]\nFoundation=1x1\n",
+        ))
+        .expect("missing vectors");
+        assert!(missing.ai_slave_miner_number.is_empty());
+        assert!(missing.ai_extra_refineries.is_empty());
+        assert!(missing.allied_base_defense_counts.is_empty());
     }
 
     /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id
