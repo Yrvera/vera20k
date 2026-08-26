@@ -6,8 +6,8 @@
 
 use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
-use crate::rules::object_type::{ObjectCategory, ObjectType};
-use crate::rules::ruleset::{CountryIdx, RuleSet};
+use crate::rules::object_type::ObjectType;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::find_nearby_cell::{
     NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, find_nearby_passable_cell,
     map_owned_radius_cap,
@@ -85,73 +85,13 @@ fn first_buildable_shipyard<'a>(
 ) -> Option<&'a ObjectType> {
     let country = house.country?;
     let country_name = sim.interner.resolve(country);
-    let country_index = rules.trigger_house_type_index(country_name)?;
-    let country_bit = country_bit(country_index);
-
-    rules.shipyard_types.iter().find_map(|type_id| {
-        let candidate = rules.object_in_category(ObjectCategory::Building, type_id)?;
-        shipyard_candidate_allowed(candidate, country_bit, house.side_index, rules, sim)
-            .then_some(candidate)
-    })
-}
-
-fn country_bit(index: CountryIdx) -> u32 {
-    1u32.wrapping_shl(u32::from(index.0 & 31))
-}
-
-fn house_token_mask(tokens: &[String], rules: &RuleSet) -> u32 {
-    tokens.iter().fold(0u32, |mask, token| {
-        rules
-            .trigger_house_type_index(token)
-            .map_or(mask, |index| mask | country_bit(index))
-    })
-}
-
-/// gamemd-derived: `HouseClass__FirstBuildableFromArray @ 0x005051E0`.
-/// `TechnoTypeClass` construction at `0x00711193` initializes the Owner mask
-/// to zero, and its reader at `0x007149E1..0x007149F5` preserves that default;
-/// an absent `Owner=` therefore rejects this native AI-list candidate.
-fn shipyard_candidate_allowed(
-    candidate: &ObjectType,
-    country_bit: u32,
-    side_index: u8,
-    rules: &RuleSet,
-    sim: &Simulation,
-) -> bool {
-    if candidate.owner.is_empty() || house_token_mask(&candidate.owner, rules) & country_bit == 0 {
-        return false;
-    }
-    if !candidate.required_houses.is_empty()
-        && house_token_mask(&candidate.required_houses, rules) & country_bit == 0
-    {
-        return false;
-    }
-    if !candidate.forbidden_houses.is_empty()
-        && house_token_mask(&candidate.forbidden_houses, rules) & country_bit != 0
-    {
-        return false;
-    }
-    if candidate.ai_base_planning_side != -1
-        && candidate.ai_base_planning_side != i32::from(side_index)
-    {
-        return false;
-    }
-    if sim.session.game_options.super_weapons {
-        return true;
-    }
-    let Some(primary) = candidate.super_weapon.as_deref() else {
-        return true;
-    };
-    if rules
-        .build_tech_types
-        .iter()
-        .any(|type_id| type_id.eq_ignore_ascii_case(&candidate.id))
-    {
-        return true;
-    }
-    rules
-        .super_weapon(primary)
-        .is_some_and(|super_weapon| !super_weapon.disableable_from_shell)
+    crate::sim::ai_buildable::first_buildable_from_array(
+        rules,
+        &rules.shipyard_types,
+        country_name,
+        house.side_index,
+        sim.session.game_options.super_weapons,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
