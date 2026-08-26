@@ -4,10 +4,10 @@
 //! NOT a Manhattan diamond (see `ring_cells`); per-candidate passability (plus an
 //! optional occupancy check that always SKIPS reservations); frame-counter
 //! selection when no target cell is given, nearest-distance selection when a
-//! target is given. This is a read-only projection over the cell grids — it
-//! mutates nothing and consumes no RNG stream, so threading it changes no hashed
-//! state by itself. Depends only on `sim/` grids + `rules/` data; never on
-//! render/ui/sidebar/audio/net.
+//! target is given. It consumes no RNG stream. Exact CellClass projection misses
+//! do stamp the process-shared dummy coordinate, so lookup order is deterministic,
+//! future-affecting state; no other grid state is changed. Depends only on `map/`,
+//! `sim/`, and `rules/`; never on render/ui/sidebar/audio/net.
 //!
 //! Determinism contract:
 //! - The square-ring candidate ORDER is fully deterministic; it feeds both the
@@ -18,7 +18,7 @@
 //!   construction: two no-target calls on the same frame with the same candidate
 //!   count return the same index. Do NOT add any per-call perturbation.
 
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{CellClassProjectionView, ResolvedTerrainGrid};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::cell_rect::{
     CellRect, CellRectOccupancyContext, CellRectPassabilityContext,
@@ -72,19 +72,15 @@ const MAX_SEED_LEVEL_DELTA_EXCLUSIVE: i16 = 2;
 /// arithmetic and what it actually admits are spelled out in [`candidate_height_ok`].
 const BRIDGE_LEVEL_RISE: i16 = 4;
 
-/// Diagonal steps south-east of a candidate that the direct/indirect occlusion test
-/// probes. The engine's projection ray starts a fixed `0x600` leptons — six cells at
-/// 256 leptons per cell — south-east of the candidate's own centre on BOTH axes, then
-/// walks back up-screen to it, so a cell seven or more diagonal steps away can never
-/// draw over the candidate. See [`is_direct_candidate`].
-const OCCLUSION_PROBE_CELLS: i32 = 6;
-/// Terrain levels of rise per diagonal step in the occlusion threshold `2q - 1`. One
-/// terrain level lifts a cell's rendered diamond up-screen by half a cell diagonal, so
-/// covering one more diagonal step of separation costs two levels of height.
-const OCCLUSION_RISE_PER_STEP: i16 = 2;
-/// Constant term of the occlusion threshold `2q - 1`: the immediate south-east
-/// neighbour (`q == 1`) needs only a single level of rise to occlude.
-const OCCLUSION_RISE_BIAS: i16 = -1;
+/// Candidate-cell origin plus centre (`0x80`) plus native's `0x600`-lepton
+/// south-east projection reach.
+const PROJECTION_START_LEPTONS: i32 = 0x680;
+/// Native walks the projection ray back toward the candidate by eight leptons
+/// before every CellClass lookup.
+const PROJECTION_STEP_LEPTONS: i32 = 8;
+/// One signed CellClass terrain level shifts both projected map axes by half a
+/// cell (`0x80` leptons).
+const PROJECTION_LEVEL_LEPTONS: i32 = 0x80;
 
 /// The subset of the passability config the search always supplies the same way for
 /// each candidate rectangle: `required_height_or_level = -1` (None) is fixed by the search.
@@ -179,14 +175,20 @@ pub struct NearbyQuery<'a> {
     pub playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 }
 
-/// A surviving FNPC candidate, classified `direct` vs indirect by the engine's
-/// screen-occlusion test on the candidate's own south-east diagonal (see
-/// [`is_direct_candidate`]) — NOT a cardinal-axis test, and NOT an absolute-height
-/// test. Direct candidates are preferred at selection time.
+/// A surviving FNPC candidate. `direct` records only the ordinary collection-time
+/// projection used for per-ring early-stop; bridge-aware collection deliberately
+/// leaves it false, and final partition always projects again rather than reading it.
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
     cell: (i32, i32),
     direct: bool,
+}
+
+/// The two native semantic call sites for `FUN_006D6410`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionUse {
+    Collection,
+    FinalPartition,
 }
 
 /// Engine `Find_Nearby_Passable_Cell`.
@@ -211,7 +213,23 @@ pub fn find_nearby_passable_cell_with_options(
     options: NearbySearchOptions,
     frame_counter: u32,
 ) -> Option<(u16, u16)> {
-    let candidates = collect_candidates(seed, q, options);
+    let mut project = |_site: ProjectionUse, cx: i32, cy: i32| is_direct_candidate(q, cx, cy);
+    find_nearby_passable_cell_with_projection(seed, q, options, frame_counter, &mut project)
+}
+
+/// Internal seam that keeps projection ownership observable in focused tests.
+/// Production always supplies [`is_direct_candidate`].
+fn find_nearby_passable_cell_with_projection<F>(
+    seed: (i32, i32),
+    q: &NearbyQuery<'_>,
+    options: NearbySearchOptions,
+    frame_counter: u32,
+    project: &mut F,
+) -> Option<(u16, u16)>
+where
+    F: FnMut(ProjectionUse, i32, i32) -> bool,
+{
+    let candidates = collect_candidates_with_projection(seed, q, options, project);
     if candidates.is_empty() {
         return None;
     }
@@ -221,7 +239,11 @@ pub fn find_nearby_passable_cell_with_options(
     let mut direct_pool: Vec<&Candidate> = Vec::new();
     let mut indirect_pool: Vec<&Candidate> = Vec::new();
     for candidate in &candidates {
-        if is_direct_candidate(q, candidate.cell.0, candidate.cell.1) {
+        if project(
+            ProjectionUse::FinalPartition,
+            candidate.cell.0,
+            candidate.cell.1,
+        ) {
             direct_pool.push(candidate);
         } else {
             indirect_pool.push(candidate);
@@ -277,13 +299,26 @@ pub fn find_nearby_passable_cell_with_options(
 /// Arming the early-out is ASYMMETRIC with the pool split: in the bridge-aware zone the
 /// engine skips the occlusion projection entirely, so *any* accepted candidate arms the
 /// early-out there, while selection still re-runs the projection on every stored
-/// candidate to split the pools. That is why the flag and the stored classification are
-/// computed separately below.
+/// candidate to split the pools. That is why bridge-aware collection stores no
+/// projection result below.
 fn collect_candidates(
     seed: (i32, i32),
     q: &NearbyQuery<'_>,
     options: NearbySearchOptions,
 ) -> Vec<Candidate> {
+    let mut project = |_site: ProjectionUse, cx: i32, cy: i32| is_direct_candidate(q, cx, cy);
+    collect_candidates_with_projection(seed, q, options, &mut project)
+}
+
+fn collect_candidates_with_projection<F>(
+    seed: (i32, i32),
+    q: &NearbyQuery<'_>,
+    options: NearbySearchOptions,
+    project: &mut F,
+) -> Vec<Candidate>
+where
+    F: FnMut(ProjectionUse, i32, i32) -> bool,
+{
     let mut out: Vec<Candidate> = Vec::new();
     let cap = q.radius_cap.min(RADIUS_HARD_CAP) as i32;
     let mut direct_found = false;
@@ -296,9 +331,14 @@ fn collect_candidates(
             if !candidate_passes(q, options, seed_level, cx, cy) {
                 continue;
             }
-            let direct = is_direct_candidate(q, cx, cy);
-            // Bridge-aware searches skip the projection, so any accept arms the
-            // early-out; `direct` still carries the projection for the pool split.
+            // gamemd-derived: FNPC's bridge-aware collection branch skips
+            // `FUN_006D6410` entirely; final partition below is a separate call
+            // site and still projects every stored candidate.
+            let direct = if q.passability.bridge_aware_zone {
+                false
+            } else {
+                project(ProjectionUse::Collection, cx, cy)
+            };
             direct_found |= q.passability.bridge_aware_zone || direct;
             out.push(Candidate {
                 cell: (cx, cy),
@@ -349,73 +389,95 @@ fn ring_cells(seed: (i32, i32), r: i32) -> Vec<(i32, i32)> {
     cells
 }
 
-/// Engine "direct" classification — a screen-occlusion test on the candidate's own
-/// south-east diagonal, measured RELATIVE to the candidate's own terrain level.
+/// Engine "direct" classification — exact `FUN_006D6410` returned-cell test.
 ///
-/// The engine projects the candidate's lepton centre down the isometric height ray: it
-/// starts [`OCCLUSION_PROBE_CELLS`] cells south-east of that centre and walks back
-/// up-screen toward it in small steps, asking at each cell whether that cell's
-/// *rendered* diamond — its own diamond lifted up-screen by half a cell diagonal per
-/// terrain level — already covers the candidate's centre. The candidate is DIRECT when
-/// the walk resolves back to the candidate's own cell, i.e. when nothing south-east of
-/// it draws over it.
+/// The native helper performs two independent candidate CellClass lookups, then
+/// starts at candidate centre plus `0x600` leptons south-east and subtracts eight
+/// leptons before every probe. This produces repeated far-to-near CellClass reads;
+/// their lookup order and shared-dummy stamps are future-affecting behavior, not a
+/// threshold-table optimization opportunity.
 ///
-/// Why the south-east diagonal specifically: cell `+X` renders down-right and `+Y`
-/// down-left, so `+X +Y` is straight DOWN the screen. A cell south-east of the
-/// candidate is drawn in FRONT of it, and its height lifts it up-screen across the
-/// candidate. A cliff due east or due south is a different screen direction and does
-/// not occlude, so only the exact diagonal is probed.
-///
-/// The two axes carry identical offsets, so the ray arithmetic collapses to one scalar
-/// and yields a fixed threshold table — the minimum rise at diagonal step `q` that
-/// makes the candidate INDIRECT:
-///
-/// | step `q`      | 1  | 2  | 3  | 4  | 5  | 6   | 7+          |
-/// |---------------|----|----|----|----|----|-----|-------------|
-/// | rise to occlude | +1 | +3 | +5 | +7 | +9 | +11 | never probed |
-///
-/// which is `OCCLUSION_RISE_PER_STEP * q + OCCLUSION_RISE_BIAS`.
-///
-/// Being relative rather than absolute is the whole point: on a uniformly raised
-/// plateau every difference is 0, so every cell is direct exactly as at level 0, and a
-/// candidate at level 7 under a level-7 neighbour is direct while the same candidate
-/// under a level-8 neighbour is not. Off-grid probes read level 0, matching the engine's
-/// out-of-range cell lookup, which returns a shared zeroed cell rather than failing.
-///
-/// A candidate's structural `0x100` bridge bit alone plays no part here. Its distinct
-/// forward-side `0x1000` bit gates a four-level addition for each projected probe that
-/// carries structural `0x100`; without candidate `0x1000`, probe bridge bits are ignored.
-// gamemd-derived: `FUN_006D6410 @ 0x006D6410`; candidate `CellClass+0x140 & 0x1000`
-// gates probe `CellClass+0x140 & 0x100` times four at `0x006D6473..0x006D6513`.
+/// Candidate `CellClass+0x140 & 0x1000` gates a four-level addition when the same
+/// probe view carries `CellClass+0x140 & 0x100`. The probe level is signed. Native
+/// tests the projected axes before testing whether the current probe cell reached
+/// the candidate; the returned cell is direct exactly when it equals the candidate.
+// gamemd-derived: `FUN_006D6410 @ 0x006D6410`; candidate conversions/lookups
+// `0x006D641B..0x006D648E`, far-to-near 8-lepton probe loop and signed level/flag
+// correction `0x006D64B1..0x006D6513`, return decisions `0x006D6516..0x006D6588`.
 fn is_direct_candidate(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
-    let base_level = cell_level(q, cx, cy);
-    let candidate_is_forward_side =
-        cell_bridge_flags(q, cx, cy) & crate::map::bridge_facts::BRIDGE_FLAG_FORWARD_SIDE != 0;
-    for step in 1..=OCCLUSION_PROBE_CELLS {
-        let probe_x = cx + step;
-        let probe_y = cy + step;
-        let probe_is_structural = candidate_is_forward_side
-            && cell_bridge_flags(q, probe_x, probe_y)
-                & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
-                != 0;
-        let probe_level = cell_level(q, probe_x, probe_y)
-            + if probe_is_structural {
-                BRIDGE_LEVEL_RISE
-            } else {
-                0
-            };
-        let rise = probe_level.saturating_sub(base_level);
-        let rise_that_occludes = OCCLUSION_RISE_PER_STEP * step as i16 + OCCLUSION_RISE_BIAS;
-        if rise >= rise_that_occludes {
-            return false;
-        }
-    }
-    true
+    let candidate = crate::map::cell_index::packed_cell_coord(cx, cy);
+    project_candidate(q, candidate.0, candidate.1) == candidate
 }
 
-fn cell_bridge_flags(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> u32 {
-    q.resolved_terrain
-        .map_or(0, |terrain| terrain.cellclass_bridge_flags_0x1180(cx, cy))
+fn project_candidate(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> (i32, i32) {
+    project_candidate_with_lookup(cx, cy, |x, y| projection_cell_view(q, x, y))
+}
+
+fn projection_cell_view(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> CellClassProjectionView {
+    q.resolved_terrain.map_or_else(
+        || CellClassProjectionView {
+            // Compatibility-only callers without MapClass authority retain the
+            // existing path-grid level facade and have no dummy/flag state to read.
+            signed_level: i32::from(cell_level(q, cx, cy)),
+            raw_flags_0x1180: 0,
+        },
+        |terrain| terrain.cellclass_projection_view(cx, cy),
+    )
+}
+
+/// Instruction-faithful projection kernel. The lookup closure represents one
+/// native `MapClass::Get_CellClass` call and must return level and flags together.
+fn project_candidate_with_lookup<F>(cx: i32, cy: i32, mut lookup: F) -> (i32, i32)
+where
+    F: FnMut(i32, i32) -> CellClassProjectionView,
+{
+    let (cx, cy) = crate::map::cell_index::packed_cell_coord(cx, cy);
+
+    // Native looks up the candidate twice: first for +0x140, then for signed
+    // +0x11B. Do not merge these calls; misses stamp the shared dummy twice.
+    let candidate_is_forward_side =
+        lookup(cx, cy).raw_flags_0x1180 & crate::map::bridge_facts::BRIDGE_FLAG_FORWARD_SIDE != 0;
+    let candidate_level = lookup(cx, cy).signed_level;
+
+    let mut probe_world_x = cx
+        .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+        .wrapping_add(PROJECTION_START_LEPTONS);
+    let mut probe_world_y = cy
+        .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+        .wrapping_add(PROJECTION_START_LEPTONS);
+
+    loop {
+        probe_world_x = probe_world_x.wrapping_sub(PROJECTION_STEP_LEPTONS);
+        probe_world_y = probe_world_y.wrapping_sub(PROJECTION_STEP_LEPTONS);
+        let probe = (
+            native_lepton_to_cell(probe_world_x),
+            native_lepton_to_cell(probe_world_y),
+        );
+        let probe_view = lookup(probe.0, probe.1);
+        let mut level_delta = probe_view.signed_level.wrapping_sub(candidate_level);
+        if candidate_is_forward_side
+            && probe_view.raw_flags_0x1180 & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0
+        {
+            level_delta = level_delta.wrapping_add(i32::from(BRIDGE_LEVEL_RISE));
+        }
+
+        let projection_shift = level_delta.wrapping_mul(PROJECTION_LEVEL_LEPTONS);
+        let projected_x = native_lepton_to_cell(probe_world_x.wrapping_sub(projection_shift));
+        let projected_y = native_lepton_to_cell(probe_world_y.wrapping_sub(projection_shift));
+
+        if projected_x <= cx && projected_y <= cy {
+            return probe;
+        }
+        if probe == (cx, cy) {
+            return (cx, cy);
+        }
+    }
+}
+
+/// Native signed divide-by-256 conversion followed by packed-short truncation.
+fn native_lepton_to_cell(leptons: i32) -> i32 {
+    let adjusted = leptons.wrapping_add((leptons >> 31) & 0xff);
+    (adjusted >> 8) as i16 as i32
 }
 
 /// Run the per-candidate predicates in engine order: the independent height-aware
@@ -811,6 +873,134 @@ mod tests {
     }
 
     #[test]
+    fn find_nearby_projection_kernel_reads_candidate_then_repeated_far_to_near_cells() {
+        let mut transcript = Vec::new();
+        let returned = project_candidate_with_lookup(5, 5, |x, y| {
+            transcript.push((x, y));
+            CellClassProjectionView {
+                signed_level: 0,
+                raw_flags_0x1180: 0,
+            }
+        });
+
+        let mut expected = vec![(5, 5), (5, 5)];
+        expected.extend(std::iter::repeat_n((11, 11), 16));
+        for cell in [(10, 10), (9, 9), (8, 8), (7, 7), (6, 6)] {
+            expected.extend(std::iter::repeat_n(cell, 32));
+        }
+        expected.push((5, 5));
+
+        assert_eq!(returned, (5, 5));
+        assert_eq!(transcript, expected);
+        assert_eq!(transcript.len(), 179, "two candidate reads plus 177 probes");
+    }
+
+    #[test]
+    fn find_nearby_sparse_edge_uses_one_live_dummy_view_for_level_and_flags() {
+        let mut terrain = flat_terrain(3, 3);
+        terrain.cells[1 * 3 + 1].bridge_facts.raw_flags = BRIDGE_FLAG_FORWARD_SIDE;
+        terrain.test_set_native_allocated_cells(&[(1, 1)]);
+        let dummy = terrain.shared_cell_dummy();
+        dummy.set_level_slope(-3, 0);
+        dummy.set_bridge_flags_0x1180(0);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let q = base_query(&terrain, &path_grid);
+
+        assert_eq!(
+            project_candidate(&q, 1, 1),
+            (1, 1),
+            "negative dummy level alone leaves the candidate direct"
+        );
+
+        dummy.set_bridge_flags_0x1180(BRIDGE_FLAG_STRUCTURAL);
+        assert_eq!(
+            project_candidate(&q, 1, 1),
+            (2, 2),
+            "the same dummy lookup contributes -3 + 4 and returns the probe"
+        );
+        assert!(!is_direct_candidate(&q, 1, 1));
+        let snapshot = dummy.snapshot();
+        assert_eq!(snapshot.coord, (2, 2));
+        assert_eq!(snapshot.level, -3);
+        assert_eq!(snapshot.bridge_flags_0x1180, BRIDGE_FLAG_STRUCTURAL);
+    }
+
+    #[test]
+    fn find_nearby_collection_and_final_partition_project_separately_in_order() {
+        let terrain = flat_terrain(3, 3);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut q = base_query(&terrain, &path_grid);
+        q.radius_cap = 1;
+        let mut events = Vec::new();
+        let mut project = |site, x, y| {
+            events.push((site, (x, y)));
+            matches!(site, ProjectionUse::FinalPartition)
+        };
+
+        assert_eq!(
+            find_nearby_passable_cell_with_projection(
+                (1, 1),
+                &q,
+                NearbySearchOptions::default(),
+                0,
+                &mut project,
+            ),
+            Some((1, 1))
+        );
+        assert_eq!(
+            events,
+            vec![
+                (ProjectionUse::Collection, (1, 1)),
+                (ProjectionUse::Collection, (1, 1)),
+                (ProjectionUse::FinalPartition, (1, 1)),
+                (ProjectionUse::FinalPartition, (1, 1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_nearby_bridge_aware_collection_skips_projection_but_final_still_runs() {
+        let terrain = flat_terrain(3, 3);
+        let dummy = terrain.shared_cell_dummy();
+        dummy.stamp_coord(99, 99);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut q = base_query(&terrain, &path_grid);
+        q.radius_cap = 1;
+        q.passability.bridge_aware_zone = true;
+
+        let candidates = collect_candidates((1, 1), &q, NearbySearchOptions::default());
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            dummy.snapshot().coord,
+            (99, 99),
+            "bridge-aware collection must perform no hidden dummy lookup"
+        );
+
+        let mut events = Vec::new();
+        let mut project = |site, x, y| {
+            events.push((site, (x, y)));
+            true
+        };
+        assert_eq!(
+            find_nearby_passable_cell_with_projection(
+                (1, 1),
+                &q,
+                NearbySearchOptions::default(),
+                0,
+                &mut project,
+            ),
+            Some((1, 1))
+        );
+        assert_eq!(
+            events,
+            vec![
+                (ProjectionUse::FinalPartition, (1, 1)),
+                (ProjectionUse::FinalPartition, (1, 1)),
+            ]
+        );
+    }
+
+    #[test]
     fn find_nearby_direct_threshold_is_two_levels_per_diagonal_step_minus_one() {
         // A cell `q` diagonal steps SOUTH-EAST of the candidate occludes it — making the
         // candidate INDIRECT — once it rises `2q - 1` levels above it. One level below
@@ -867,9 +1057,9 @@ mod tests {
         }
         assert!(direct_at(&downhill, (5, 5)));
 
-        // At the map's south-east corner every probe leaves the grid and reads level 0,
-        // matching the engine's out-of-range cell lookup (a shared zeroed cell, never
-        // null), so a raised corner cell is still direct.
+        // At the map's south-east corner every probe leaves the grid and reads the
+        // fixture's fresh shared dummy (level 0, never null), so a raised corner cell
+        // is still direct.
         let mut corner = flat_terrain(GRID as u16, GRID as u16);
         corner.cells[(GRID - 1) * GRID + (GRID - 1)].level = 3;
         assert!(direct_at(&corner, (GRID as i32 - 1, GRID as i32 - 1)));
@@ -1053,7 +1243,7 @@ mod tests {
         assert_eq!(armed.len(), 2, "ring 0 alone arms the early-out");
         assert!(
             armed.iter().all(|c| !c.direct),
-            "the stored classification still comes from the projection"
+            "bridge-aware collection stores no projection classification"
         );
     }
 
@@ -1247,11 +1437,10 @@ mod tests {
 
     #[test]
     fn find_nearby_selection_is_bit_identical_across_runs() {
-        // Determinism guard (the hash-neutral, pre-authority-flip portion of the
-        // parity harness): replaying the same FNPC query over the same grid yields a
-        // bit-identical sequence of chosen cells across a frame sweep. When T7 flips
-        // FNPC authority, this is the determinism property the replay/baseline harness
-        // builds on; landing it now keeps the search itself replay-safe.
+        // Determinism guard: replaying the same FNPC query over the same grid yields a
+        // bit-identical sequence of chosen cells across a frame sweep. Projection may
+        // deterministically stamp the shared dummy, so repeatability includes that
+        // ordered side effect rather than claiming the helper is hash-neutral.
         let terrain = flat_terrain(11, 11);
         let path_grid = PathGrid::from_resolved_terrain(&terrain);
         let q = base_query(&terrain, &path_grid);
