@@ -297,6 +297,11 @@ pub struct HouseState {
     /// to the native invalid sentinel `(0, 0)`.
     #[serde(default)]
     pub alternate_base_center: (u16, u16),
+    /// Stable IDs in native HouseClass's owned `[General] BuildConst=` vector
+    /// order. Successful Unlimbo/re-entry and capture append at the tail;
+    /// Limbo and old-owner transfer stable-remove in place.
+    #[serde(default)]
+    pub build_const_order: Vec<u64>,
     /// Native `HouseClass+0x5700` BaseClass reservation writer outputs.
     #[serde(default)]
     pub base_reservation: BaseReservationState,
@@ -434,6 +439,7 @@ impl HouseState {
             owned_unit_count: 0,
             base_center: None,
             alternate_base_center: (0, 0),
+            build_const_order: Vec::new(),
             base_reservation: BaseReservationState::default(),
             tech_level,
             current_iq: 0,

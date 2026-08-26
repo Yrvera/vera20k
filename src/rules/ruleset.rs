@@ -1562,10 +1562,8 @@ impl GeneralRules {
             computer_base_defense_response: general
                 .get_i32("ComputerBaseDefenseResponse")
                 .unwrap_or(defaults.computer_base_defense_response),
-            base_defense_delay_minutes: general.read_double(
-                "BaseDefenseDelay",
-                defaults.base_defense_delay_minutes,
-            ),
+            base_defense_delay_minutes: general
+                .read_double("BaseDefenseDelay", defaults.base_defense_delay_minutes),
             suspend_priority: general
                 .get_i32("SuspendPriority")
                 .unwrap_or(defaults.suspend_priority),
@@ -2276,6 +2274,16 @@ pub struct RuleSet {
     pub general: GeneralRules,
     /// Signed, unclamped `[AI] AIBaseSpacing`; constructor default is 1.
     pub ai_base_spacing: i32,
+    /// Source-ordered `[General] Shipyard=` BuildingType identities.
+    pub shipyard_types: Vec<String>,
+    /// Source-ordered `[General] BuildConst=` BuildingType identities.
+    pub build_const_types: Vec<String>,
+    /// Source-ordered `[AI] BuildTech=` identities used by the native
+    /// FirstBuildableFromArray superweapon-disabled tail.
+    pub build_tech_types: Vec<String>,
+    /// Signed `[General] AINavalYardAdjacency=` in cells. Native constructor
+    /// default is 20 and the consumer shifts it left by eight without clamping.
+    pub ai_naval_yard_adjacency: i32,
     /// Reset value of `[SpecialFlags] InitialVeteran=`. The similarly named
     /// stock `[General]` key is not read by the native SpecialFlags parser.
     pub initial_veteran: bool,
@@ -2408,6 +2416,25 @@ impl RuleSet {
             .section("AI")
             .and_then(|section| section.get_i32("AIBaseSpacing"))
             .unwrap_or(1);
+        let parse_named_list = |section: &str, key: &str| -> Vec<String> {
+            ini.section(section)
+                .and_then(|section| section.get_list(key))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let shipyard_types = parse_named_list("General", "Shipyard");
+        let build_const_types = parse_named_list("General", "BuildConst");
+        let build_tech_types = parse_named_list("AI", "BuildTech");
+        // gamemd-derived: `RulesClass::Constructor @ 0x00666922` stores 20 at
+        // +0xE0C; `RulesClass::ReadGeneral @ 0x006701D9..0x006701FE` reads the
+        // signed `AINavalYardAdjacency=` override.
+        let ai_naval_yard_adjacency = ini
+            .section("General")
+            .and_then(|section| section.get_i32("AINavalYardAdjacency"))
+            .unwrap_or(20);
         let initial_veteran = ini
             .section("SpecialFlags")
             .and_then(|section| section.get_bool("InitialVeteran"))
@@ -2499,6 +2526,18 @@ impl RuleSet {
                 ObjectCategory::Vehicle => vehicle_ids = ids,
                 ObjectCategory::Aircraft => aircraft_ids = ids,
                 ObjectCategory::Building => building_ids = ids,
+            }
+        }
+
+        // gamemd stores `[General] BuildConst=` as a BuildingType pointer
+        // vector. Resolve inside that registry (not the broad cross-category
+        // compatibility lookup) after every registry has been allocated.
+        for type_id in &build_const_types {
+            if let Some(handle) = object_category_index
+                .get(&(ObjectCategory::Building, type_id.to_ascii_uppercase()))
+                .copied()
+            {
+                object_list[handle.0 as usize].build_const_eligible = true;
             }
         }
 
@@ -2825,6 +2864,10 @@ impl RuleSet {
             production,
             general,
             ai_base_spacing,
+            shipyard_types,
+            build_const_types,
+            build_tech_types,
+            ai_naval_yard_adjacency,
             initial_veteran,
             infantry_ids,
             vehicle_ids,
@@ -3972,8 +4015,7 @@ SpawnCount=3
         assert_eq!(parsed.cloak_delay_frames, 27);
         assert_eq!(parsed.cloak_sound.as_deref(), Some("NavalUnitEmerge"));
         assert_eq!(
-            GeneralRules::from_ini(&IniFile::from_str("[General]\nCloakingStages=9\n"))
-                .cloak_sound,
+            GeneralRules::from_ini(&IniFile::from_str("[General]\nCloakingStages=9\n")).cloak_sound,
             None,
             "missing CloakSound preserves the native invalid-index default"
         );
@@ -5796,6 +5838,59 @@ ZAdjust=-10
             |k| rules.super_weapon(k),
             "super_weapon",
         );
+    }
+
+    #[test]
+    fn naval_base_rules_preserve_source_order_defaults_and_buildconst_identity() {
+        let ini = IniFile::from_str(
+            "[General]\n\
+             Shipyard=GAYARD,nayard,YAYARD\n\
+             BuildConst=gacnst,NACNST,YACNST\n\
+             AINavalYardAdjacency=-7\n\
+             [AI]\nBuildTech=GAYARD,YAYARD\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAYARD\n1=NAYARD\n2=YAYARD\n3=GACNST\n4=NACNST\n5=YACNST\n\
+             [GAYARD]\nFoundation=4x4\n\
+             [NAYARD]\nFoundation=4x4\nAIBasePlanningSide=1\n\
+             [YAYARD]\nFoundation=4x4\nAIBasePlanningSide=-3\n\
+             [GACNST]\nFoundation=4x4\n\
+             [NACNST]\nFoundation=4x4\n\
+             [YACNST]\nFoundation=4x4\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("naval base rules");
+
+        assert_eq!(rules.shipyard_types, ["GAYARD", "nayard", "YAYARD"]);
+        assert_eq!(rules.build_const_types, ["gacnst", "NACNST", "YACNST"]);
+        assert_eq!(rules.build_tech_types, ["GAYARD", "YAYARD"]);
+        assert_eq!(rules.ai_naval_yard_adjacency, -7);
+        assert_eq!(rules.object("GAYARD").unwrap().ai_base_planning_side, -1);
+        assert_eq!(rules.object("NAYARD").unwrap().ai_base_planning_side, 1);
+        assert_eq!(rules.object("YAYARD").unwrap().ai_base_planning_side, -3);
+        for id in ["GACNST", "NACNST", "YACNST"] {
+            assert!(
+                rules
+                    .object_in_category(ObjectCategory::Building, &id.to_ascii_lowercase())
+                    .unwrap()
+                    .build_const_eligible,
+                "{id}"
+            );
+        }
+        for id in ["GAYARD", "NAYARD", "YAYARD"] {
+            let object = rules.object(id).unwrap();
+            assert!(!object.build_const_eligible, "{id}");
+            assert_eq!(
+                crate::rules::foundation::foundation_dimensions(&object.foundation),
+                (4, 4)
+            );
+        }
+
+        let defaults = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n0=YARD\n[YARD]\nFoundation=1x1\n",
+        ))
+        .expect("constructor defaults");
+        assert_eq!(defaults.ai_naval_yard_adjacency, 20);
+        assert_eq!(defaults.object("YARD").unwrap().ai_base_planning_side, -1);
     }
 
     /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id

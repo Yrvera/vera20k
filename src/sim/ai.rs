@@ -419,47 +419,53 @@ fn place_ready_buildings(
         return;
     }
 
-    // Find the center of the AI's existing base.
-    let base_center = find_base_center(sim, owner);
-    let Some((center_rx, center_ry)) = base_center else {
-        return;
-    };
+    // The ordinary approximation remains isolated from the native naval fast
+    // path. A missing average structure center must not gate Naval=yes, whose
+    // only origin authority is the House primary/alternate packed cell.
+    let ordinary_base_center = find_base_center(sim, owner);
+    let owner_id = sim.interner.get(owner);
 
     for ready_building in &ready {
         let type_id = ready_building.type_id;
         let type_id_str = sim.interner.resolve(type_id);
-        let foundation = rules
-            .object(type_id_str)
-            .map(|obj| obj.foundation.as_str())
-            .unwrap_or("1x1");
+        let object = rules.object(type_id_str);
+        let foundation = object.map(|obj| obj.foundation.as_str()).unwrap_or("1x1");
         let (fw, fh) = production::foundation_dimensions(foundation);
 
-        // Spiral outward from base center to find a valid placement.
-        if let Some((rx, ry)) = find_placement_cell(
-            sim,
-            rules,
-            owner,
-            type_id_str,
-            center_rx,
-            center_ry,
-            fw,
-            fh,
-            path_grid,
-            height_map,
-            overlay_registry,
-        ) {
-            if let Some(owner_id) = sim.interner.get(owner) {
-                commands.push(CommandEnvelope::new(
-                    owner_id,
-                    execute_tick,
-                    Command::PlaceReadyBuilding {
-                        owner: owner_id,
-                        type_id,
-                        rx,
-                        ry,
-                    },
-                ));
-            }
+        let placement = if object.is_some_and(|object| object.naval) {
+            owner_id.and_then(|owner_id| {
+                crate::sim::naval_base_placement::find_naval_base_placement(
+                    sim, rules, owner_id, path_grid,
+                )
+            })
+        } else {
+            ordinary_base_center.and_then(|(center_rx, center_ry)| {
+                find_placement_cell(
+                    sim,
+                    rules,
+                    owner,
+                    type_id_str,
+                    center_rx,
+                    center_ry,
+                    fw,
+                    fh,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
+                )
+            })
+        };
+        if let (Some(owner_id), Some((rx, ry))) = (owner_id, placement) {
+            commands.push(CommandEnvelope::new(
+                owner_id,
+                execute_tick,
+                Command::PlaceReadyBuilding {
+                    owner: owner_id,
+                    type_id,
+                    rx,
+                    ry,
+                },
+            ));
         }
     }
 }
