@@ -245,6 +245,8 @@ fn parse_scenario_base_plan(
     section: Option<&crate::rules::ini_parser::IniSection>,
     rules: Option<&RuleSet>,
 ) -> ScenarioBasePlanDefinition {
+    const NATIVE_ROW_PAYLOAD_BYTES: usize = 127;
+
     let Some(section) = section else {
         return ScenarioBasePlanDefinition::default();
     };
@@ -254,17 +256,21 @@ fn parse_scenario_base_plan(
     for index in 0..node_count.max(0) {
         let key = format!("{index:03}");
         let value = section.get(&key).unwrap_or("");
-        let mut tokens = value.split(',');
-        let type_token = tokens.next().unwrap_or("").trim();
-        let type_or_control = if value.as_bytes().first() == Some(&b'-') {
+        let value = value.as_bytes();
+        let value = &value[..value.len().min(NATIVE_ROW_PAYLOAD_BYTES)];
+        let mut tokens = value.split(|byte| *byte == b',');
+        let type_token = std::str::from_utf8(tokens.next().unwrap_or_default())
+            .unwrap_or("")
+            .trim();
+        let type_or_control = if value.first() == Some(&b'-') {
             crate::rules::ini_value::atoi_lenient(type_token)
         } else {
             rules
                 .and_then(|rules| rules.building_type_index(type_token))
                 .unwrap_or(-1)
         };
-        let x = atoi_scenario_base_plan_coordinate(tokens.next().unwrap_or(""));
-        let y = atoi_scenario_base_plan_coordinate(tokens.next().unwrap_or(""));
+        let x = atoi_scenario_base_plan_coordinate(tokens.next().unwrap_or_default());
+        let y = atoi_scenario_base_plan_coordinate(tokens.next().unwrap_or_default());
         nodes.push(ScenarioBasePlanNode {
             type_or_control,
             packed_cell: pack_scenario_base_plan_cell(x, y),
@@ -283,12 +289,24 @@ fn parse_scenario_base_plan(
 /// Coordinate-token projection through the CRT `atoi @ 0x007C9B72` reached
 /// by native BasePlan loading. CRT `atoi` skips only its ASCII whitespace set
 /// before inspecting the optional sign and leading decimal digits.
-fn atoi_scenario_base_plan_coordinate(value: &str) -> i32 {
+fn atoi_scenario_base_plan_coordinate(value: &[u8]) -> i32 {
     let leading_whitespace = value
-        .bytes()
-        .take_while(|byte| matches!(*byte, b'\t'..=b'\r' | b' '))
+        .iter()
+        .take_while(|&&byte| matches!(byte, b'\t'..=b'\r' | b' '))
         .count();
-    crate::rules::ini_value::atoi_lenient(&value[leading_whitespace..])
+    let value = &value[leading_whitespace..];
+    let sign_bytes = usize::from(
+        value
+            .first()
+            .is_some_and(|byte| matches!(*byte, b'-' | b'+')),
+    );
+    let digit_bytes = value[sign_bytes..]
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    let numeric_bytes = &value[..sign_bytes + digit_bytes];
+    let numeric = std::str::from_utf8(numeric_bytes).expect("BasePlan numeric grammar is ASCII");
+    crate::rules::ini_value::atoi_lenient(numeric)
 }
 
 #[cfg(test)]
@@ -476,8 +494,36 @@ mod tests {
         );
 
         assert_eq!(
-            atoi_scenario_base_plan_coordinate(" \t\n\u{000b}\u{000c}\r-14tail"),
+            atoi_scenario_base_plan_coordinate(b" \t\n\x0b\x0c\r-14tail"),
             -14
         );
+    }
+
+    #[test]
+    fn gsi_04_05_scenario_base_plan_row_uses_native_127_byte_prefix() {
+        let rules = base_plan_rules();
+        let oversized = format!("GAPOWR,{}98,77", " ".repeat(119));
+        assert_eq!(oversized.as_bytes()[126], b'9');
+        assert_eq!(oversized.as_bytes()[127], b'8');
+        let ini = IniFile::from_str(&format!(
+            "[Houses]\n0=AIHouse\n\
+             [AIHouse]\nNodeCount=3\n\
+             000={oversized}\n\
+             001=-5, 32768, -32770\n\
+             002=GACNST,\t+12,\t-13\n"
+        ));
+        let roster = parse_house_roster(&ini, &test_schemes(), Some(&rules));
+        let plan = &roster.houses[0].base_plan;
+
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .map(|node| node.type_or_control)
+                .collect::<Vec<_>>(),
+            [0, -5, 1]
+        );
+        assert_eq!(plan.nodes[0].packed_cell, 9);
+        assert_eq!(plan.nodes[1].packed_cell, 32_768u32 | (32_766u32 << 16));
+        assert_eq!(plan.nodes[2].packed_cell, 12u32 | (65_523u32 << 16));
     }
 }
