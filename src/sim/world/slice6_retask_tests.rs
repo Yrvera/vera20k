@@ -295,7 +295,12 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
 // folds the exact serialized real `CellClass+0x140 & 0x1180` value authority
 // once behind its schema tag. The pre-v28 and pre-v29 probes above remain
 // byte-identical, and record/replay remains exact, proving composition-only.
-const SLICE6_BASELINE_HASH: u64 = 0x37BA_39F7_801B_B965;
+// Re-baselined 2026-08-26 for snapshot/hash schemas v92-v102: Phase 3 adds
+// empty/default base-reservation, House strategy/base-defense, TeamScript VM,
+// AIMD/TeamType/TaskForce, and typed AITrigger authority to the current hash.
+// Both historical probes remain byte-identical; this 16-tick fixture creates
+// no Teams or AI registries, so the shift is current-schema composition only.
+const SLICE6_BASELINE_HASH: u64 = 0xDD7D_7757_3ACD_3A22;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

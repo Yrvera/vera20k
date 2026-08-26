@@ -24,6 +24,7 @@ pub mod native_string;
 pub mod native_trig;
 pub mod native_x87;
 pub mod read_helpers;
+pub(crate) mod sha256;
 pub mod single_instance;
 pub mod version;
 // pub mod rect;

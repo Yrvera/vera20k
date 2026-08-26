@@ -1364,7 +1364,14 @@ fn damaged_data_resolved_terrain(tile_id: i32) -> ResolvedTerrainGrid {
                 bridge_transition: false,
                 bridge_deck_level: 0,
                 bridge_layer: None,
-                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts {
+                    raw_flags: if ry == 10 && matches!(rx, 10 | 11) {
+                        crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF
+                    } else {
+                        0
+                    },
+                    ..Default::default()
+                },
                 tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],

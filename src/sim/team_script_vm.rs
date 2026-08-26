@@ -2048,11 +2048,11 @@ mod tests {
         let aimd_bytes = std::fs::read(aimd_path).expect("read aimd.ini");
         let rules_bytes = std::fs::read(rules_path).expect("read rulesmd.ini");
         assert_eq!(
-            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(&aimd_bytes),
+            crate::util::sha256::sha256_hex(&aimd_bytes),
             "5df41eaec00a78d0760ef5eecdf27d65ae1cd537309c7eac973318266986f89d"
         );
         assert_eq!(
-            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(&rules_bytes),
+            crate::util::sha256::sha256_hex(&rules_bytes),
             "3d341ef8a13a4b5ab24af2eef48ac94931ac2bb87d950fe3330a07e2d25672ef"
         );
         let aimd = IniFile::from_bytes(&aimd_bytes).expect("parse aimd.ini");
@@ -2109,7 +2109,7 @@ mod tests {
             0
         );
         assert_eq!(
-            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(zone_rows.as_bytes()),
+            crate::util::sha256::sha256_hex(zone_rows.as_bytes()),
             "1274426ac3e9ce7adc7d4babab8bd9a04b61519cca02a720b0d0a38cd22da2e1",
             "all stock TeamType post-load zone fields must match the native oracle"
         );
@@ -2174,7 +2174,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(threshold_rows.lines().count(), 165);
         assert_eq!(
-            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(
+            crate::util::sha256::sha256_hex(
                 threshold_rows.as_bytes()
             ),
             "76096bc2d9592ff4c1054c23a38660e74c3860afbc2882db5c6dcc2074da8aad",
@@ -2204,7 +2204,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(zero_mode_rows.lines().count(), 165);
         assert_eq!(
-            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(
+            crate::util::sha256::sha256_hex(
                 zero_mode_rows.as_bytes()
             ),
             "3253b17c65d2006bf542c38a811ec68ef2847e588dc1f21165e7070af5d5e1f7",

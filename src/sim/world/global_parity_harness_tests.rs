@@ -486,7 +486,12 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC5B2_3DFA_C256_6948;
 // once behind its schema tag. Both historical probes and all three final RNG
 // stream states remain byte-identical, while record/replay remains exact, so
 // this is composition-only and does not rebaseline historical provenance.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x4299_6B03_2510_0E9E;
+// Re-baselined 2026-08-26 for snapshot/hash schemas v92-v102: Phase 3 adds
+// empty/default base-reservation, House strategy/base-defense, TeamScript VM,
+// AIMD/TeamType/TaskForce, and typed AITrigger authority to the current hash.
+// Both historical probes and all three final RNG fingerprints remain exact,
+// and tick-for-tick record/replay equality passes, proving composition-only.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x0407_5297_2B7A_F360;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

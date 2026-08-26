@@ -958,8 +958,8 @@ mod tests {
                 .substrate
                 .base_reservations
                 .dummy_mask(),
-            1 << 5,
-            "raw snapshot decode retains the dummy mask before accepted Resize"
+            0,
+            "raw snapshot decode reconstructs the process-global dummy cleared"
         );
         let (mut simulation, _occupied_overlays, preserved_startup) = prepared.into_parts();
         let restored_dummy = simulation.effective_shared_cell_dummy();

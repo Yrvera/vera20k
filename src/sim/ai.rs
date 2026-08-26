@@ -1043,6 +1043,10 @@ mod tests {
         spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
         let owner = sim.interner.intern("Americans");
         sim.session.house_order.push(owner);
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, true, 10_000, 10),
+        );
         let conyard_profile = rules.object("GACNST").expect("ConYard profile");
         let conyard_foundation = conyard_profile.foundation.clone();
         let conyard_spacing = conyard_profile
