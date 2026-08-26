@@ -139,7 +139,7 @@ All 165 stock AIMD records contain exactly 18 comma tokens. The loader consumes 
 | 3 | owner mode at `+0xA0`; named-country index at `+0xA8`, `<all>` uses mode `2` |
 | 4 | required token, but its value is discarded; `+0xB0` is explicitly zeroed before primary/secondary TaskForce TechLevel folds from `0x006E8780` |
 | 5 | condition enum at `+0x98` |
-| 6 | optional Building/Unit/Infantry/Aircraft type pointer at `+0xD8` |
+| 6 | optional TechnoType pointer at `+0xD8`; lookup order is Infantry, Unit, Aircraft, then Building |
 | 7 | 32-byte comparison/mask payload at `+0xE4..+0x103` |
 | 8–10 | three numeric weights converted to doubles at `+0xB8`, `+0xC0`, `+0xC8` |
 | 11 | boolean at `+0xD0` |
@@ -150,6 +150,8 @@ All 165 stock AIMD records contain exactly 18 comma tokens. The loader consumes 
 | 16–18 | three difficulty booleans at `+0xD2`, `+0xD3`, `+0xD4` |
 
 The semantic names of tokens 11–14 are intentionally not guessed. Their storage and use sites must be named from a complete consumer trace before implementation.
+
+Token 6 resolves at `0x0041F77D..0x0041F7E4` in the exact family order Infantry, Unit, Aircraft, then Building and stores the selected pointer at `+0xD8`. A name alone is therefore not a sufficient retained identity when custom rules register the same ID in multiple native type families.
 
 The token-4 parser call at `0x0041F712` checks only that the token exists; `0x0041F728` writes zero to `+0xB0` without converting the token. For each referenced TeamType, `0x0041FA5C..0x0041FADD` calls `0x006E8780` on its TaskForce and keeps the larger fold result. `0x006E8780` starts at zero and walks compact TaskForce member slots in order. A member TechLevel above the accumulator replaces it. Otherwise the accumulator is retained, except that a member TechLevel of `-1` replaces it with `11` when `g_GameMode != 0`. That exception is order-sensitive: a `12` followed by `-1` yields `11`, while `-1` followed by `12` yields `12`. TaskForce member counts do not participate.
 

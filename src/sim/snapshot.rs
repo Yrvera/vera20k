@@ -300,7 +300,9 @@ use crate::sim::world::Simulation;
 // fields serialized inside the ordered TeamScriptVm registry.
 // Bumped 100 -> 101: retain each compact TaskForce member's category-distinct
 // resolved TechnoType identity rather than an ambiguous interned name alone.
-const SNAPSHOT_VERSION: u32 = 101;
+// Bumped 101 -> 102: retain AITrigger token 6's category-distinct resolved
+// TechnoType identity rather than an ambiguous interned name alone.
+const SNAPSHOT_VERSION: u32 = 102;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2639,10 +2641,11 @@ mod tests {
     /// removes the falsely retained AITrigger token-4 scalar after binary
     /// verification proved that token is required but discarded; 99 -> 100
     /// adds the three post-load TeamType zone-derivation fields; 100 -> 101
-    /// adds category-distinct resolved TaskForce member identities.
+    /// adds category-distinct resolved TaskForce member identities; 101 -> 102
+    /// adds category-distinct resolved AITrigger token-6 identities.
     #[test]
-    fn phase3_team_ai_registry_snapshot_version_is_101() {
-        assert_eq!(super::SNAPSHOT_VERSION, 101);
+    fn phase3_team_ai_registry_snapshot_version_is_102() {
+        assert_eq!(super::SNAPSHOT_VERSION, 102);
     }
 
     #[test]
@@ -2727,7 +2730,7 @@ mod tests {
                 )),
                 threshold: 7,
                 condition: 6,
-                object_type: Some(member_type),
+                object_type: Some(member_identity),
                 comparison_mask: std::array::from_fn(|index| index as u8),
                 weights: [
                     crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits()),
@@ -2765,7 +2768,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v101 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v102 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
@@ -2856,7 +2859,7 @@ mod tests {
         );
         assert_eq!(restored_trigger.threshold, 7);
         assert_eq!(restored_trigger.condition, 6);
-        assert_eq!(restored_trigger.object_type, Some(member_type));
+        assert_eq!(restored_trigger.object_type, Some(member_identity));
         assert_eq!(restored_trigger.comparison_mask[31], 31);
         assert_eq!(
             restored_trigger.weights,

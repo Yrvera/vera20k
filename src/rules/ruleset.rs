@@ -2928,6 +2928,21 @@ impl RuleSet {
         .find_map(|category| self.object_in_category(category, &key))
     }
 
+    /// Resolve AITrigger token 6 through the exact native family order used
+    /// by `gamemd.exe 0x0041F77D..0x0041F7E4`: Infantry, Unit, Aircraft,
+    /// then Building.
+    pub(crate) fn ai_trigger_object(&self, id: &str) -> Option<&ObjectType> {
+        let key = id.to_ascii_uppercase();
+        [
+            ObjectCategory::Infantry,
+            ObjectCategory::Vehicle,
+            ObjectCategory::Aircraft,
+            ObjectCategory::Building,
+        ]
+        .into_iter()
+        .find_map(|category| self.object_in_category(category, &key))
+    }
+
     /// First registered BuildingType whose merged ART `ToOverlay=` resolves to
     /// the requested overlay. Native stops on this first match even when that
     /// type is later rejected as `Unsellable=`.

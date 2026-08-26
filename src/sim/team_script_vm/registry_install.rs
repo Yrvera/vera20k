@@ -9,10 +9,9 @@ use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::pathfinding::passability::combine_team_movement_zones;
 
 use super::{
-    TeamAiInstallDiagnostic, TeamAiTriggerDefinition, TeamAiTriggerOwner, TeamScriptAction,
-    TeamMemberTypeIdentity, TeamScriptDefinition, TeamScriptVm, TeamTaskForceDefinition,
-    TeamTaskForceEntry,
-    TeamTypeDefinition, TeamTypeIniMetadata,
+    TeamAiInstallDiagnostic, TeamAiTriggerDefinition, TeamAiTriggerOwner, TeamMemberTypeIdentity,
+    TeamScriptAction, TeamScriptDefinition, TeamScriptVm, TeamTaskForceDefinition,
+    TeamTaskForceEntry, TeamTypeDefinition, TeamTypeIniMetadata,
 };
 
 impl TeamScriptVm {
@@ -372,10 +371,13 @@ fn resolve_trigger_object(
     rules: &RuleSet,
     interner: &mut StringInterner,
     diagnostics: &mut Vec<TeamAiInstallDiagnostic>,
-) -> Option<InternedId> {
+) -> Option<TeamMemberTypeIdentity> {
     let object_type = trigger.object_type.as_deref()?;
-    if rules.object(object_type).is_some() {
-        return Some(interner.intern(object_type));
+    if let Some(resolved) = rules.ai_trigger_object(object_type) {
+        return Some(TeamMemberTypeIdentity {
+            category: resolved.category,
+            id: interner.intern(object_type),
+        });
     }
     diagnostics.push(TeamAiInstallDiagnostic::UnknownAiTriggerObject {
         trigger_id: trigger.id.clone(),

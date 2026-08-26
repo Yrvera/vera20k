@@ -37,9 +37,10 @@ pub struct TeamScriptDefinition {
     pub source: TeamAiDefinitionSource,
 }
 
-/// A category-distinct TechnoType identity retained from native TaskForce
+/// A category-distinct TechnoType identity retained from native pointer
 /// resolution. The ID alone is insufficient for custom rules that register
-/// the same name in multiple native type families.
+/// the same name in multiple native type families. TaskForce entries and
+/// AITrigger token 6 both store this shape.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -127,7 +128,7 @@ pub struct TeamAiTriggerDefinition {
     pub owner: Option<TeamAiTriggerOwner>,
     pub threshold: i32,
     pub condition: i32,
-    pub object_type: Option<InternedId>,
+    pub object_type: Option<TeamMemberTypeIdentity>,
     pub comparison_mask: [u8; 32],
     pub weights: [NativeF64Bits; 3],
     pub storage_flag_d0: bool,
@@ -1509,7 +1510,13 @@ mod tests {
         assert_eq!(trigger.tokens[3], "2");
         assert_eq!(trigger.threshold, 1);
         assert_eq!(trigger.condition, 4);
-        assert_eq!(trigger.object_type, interner.get("E1"));
+        assert_eq!(
+            trigger.object_type,
+            Some(TeamMemberTypeIdentity {
+                category: ObjectCategory::Infantry,
+                id: interner.get("E1").unwrap(),
+            })
+        );
         assert_eq!(&trigger.comparison_mask[..5], &[1, 0, 0, 0, 3]);
         assert_eq!(
             trigger.weights,
@@ -1768,6 +1775,57 @@ mod tests {
                 .member_type,
             duplicate_identity,
             "category-distinct TaskForce identity survives registry serialization"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_ai_trigger_object_retains_first_native_family_across_roundtrip() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=DUP\n\
+             [VehicleTypes]\n0=DUP\n\
+             [AircraftTypes]\n0=DUP\n\
+             [BuildingTypes]\n0=DUP\n\
+             [DUP]\nStrength=100\nTechLevel=1\n",
+        ))
+        .expect("duplicate-family rules");
+        let comparison = "00".repeat(32);
+        let fixed = IniFile::from_str(&format!(
+            "[AITriggerTypes]\n\
+             AT=Duplicate,<none>,<all>,0,0,DUP,{comparison},1,1,1,1,0,1,0,<none>,1,1,1\n"
+        ));
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            rules.object("DUP").unwrap().category,
+            ObjectCategory::Building,
+            "the broad RuleSet lookup keeps its later-registry overlay winner"
+        );
+        assert_eq!(
+            rules.ai_trigger_object("DUP").unwrap().category,
+            ObjectCategory::Infantry,
+            "native AITrigger lookup stops on the first matching family"
+        );
+        let expected = TeamMemberTypeIdentity {
+            category: ObjectCategory::Infantry,
+            id: interner.get("DUP").unwrap(),
+        };
+        let trigger_id = interner.get("AT").unwrap();
+        assert_eq!(
+            vm.ai_trigger(trigger_id).unwrap().object_type,
+            Some(expected)
+        );
+
+        let restored: TeamScriptVm =
+            serde_json::from_str(&serde_json::to_string(&vm).unwrap()).unwrap();
+        assert_eq!(
+            restored.ai_trigger(trigger_id).unwrap().object_type,
+            Some(expected),
+            "category-distinct AITrigger identity survives registry serialization"
         );
     }
 
@@ -2084,7 +2142,13 @@ mod tests {
         assert_eq!(anti_nuke.tokens[3], "9");
         assert_eq!(anti_nuke.threshold, 9);
         assert_eq!(anti_nuke.condition, 0);
-        assert_eq!(anti_nuke.object_type, interner.get("NAMISL"));
+        assert_eq!(
+            anti_nuke.object_type,
+            Some(TeamMemberTypeIdentity {
+                category: ObjectCategory::Building,
+                id: interner.get("NAMISL").unwrap(),
+            })
+        );
         assert_eq!(&anti_nuke.comparison_mask[..5], &[1, 0, 0, 0, 3]);
         assert_eq!(
             anti_nuke.weights,
