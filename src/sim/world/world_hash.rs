@@ -394,7 +394,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true,
+            true, true, true, true, true,
         )
     }
 
@@ -406,7 +406,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false,
+            false, false, false, false, false,
         )
     }
 
@@ -418,7 +418,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false,
+            false, false, false, false, false,
         )
     }
 
@@ -427,8 +427,8 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false,
+            true, true, true, true, true, true, true, true, true, true, true, true,
+            false, false, false, false, false,
         )
     }
 
@@ -439,7 +439,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false,
+            false, false, false,
         )
     }
 
@@ -450,7 +450,16 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false,
+            true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v111 BasePlan-center fold.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, false,
         )
     }
 
@@ -472,6 +481,7 @@ impl Simulation {
         include_alternate_base_center_v108: bool,
         include_naval_build_const_v109: bool,
         include_base_plan_v110: bool,
+        include_base_plan_center_v111: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -521,6 +531,7 @@ impl Simulation {
             include_alternate_base_center_v108,
             include_naval_build_const_v109,
             include_base_plan_v110,
+            include_base_plan_center_v111,
         );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -739,6 +750,7 @@ impl Simulation {
         include_alternate_base_center_v108: bool,
         include_naval_build_const_v109: bool,
         include_base_plan_v110: bool,
+        include_base_plan_center_v111: bool,
     ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
@@ -811,6 +823,9 @@ impl Simulation {
                     node.filled.hash(hasher);
                     node.retry_count.hash(hasher);
                 }
+            }
+            if include_base_plan_center_v111 {
+                house.base_plan_center.hash(hasher);
             }
             house.base_reservation.hash(hasher);
             house.waypoint_edge.hash(hasher);
@@ -2710,6 +2725,29 @@ mod rally_hash_tests {
         entity_a.substrate.entities.insert(a);
         entity_b.substrate.entities.insert(b);
         assert_ne!(entity_a.state_hash(), entity_b.state_hash());
+    }
+
+    #[test]
+    fn base_plan_center_affects_only_current_v111_hash_schema() {
+        use crate::sim::house_state::HouseState;
+
+        fn fixture(center: (u16, u16)) -> Simulation {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Americans");
+            let mut house = HouseState::new(owner, 0, Some(owner), false, 0, 10);
+            house.base_plan_center = center;
+            sim.houses.insert(owner, house);
+            sim
+        }
+
+        let baseline = fixture((0, 0));
+        let changed = fixture((19, 21));
+
+        assert_ne!(baseline.state_hash(), changed.state_hash());
+        assert_eq!(
+            baseline.state_hash_without_base_plan_center_v111(),
+            changed.state_hash_without_base_plan_center_v111()
+        );
     }
 
     #[test]
