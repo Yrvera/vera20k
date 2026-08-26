@@ -350,9 +350,11 @@ pub struct GameEntity {
     /// True only when the parsed type has `Factory=BuildingType`.
     #[serde(default)]
     pub determines_waypoint_edge: bool,
-    /// Immutable resolved membership in `[General] BuildConst=`. Lifecycle
-    /// authority copies this from BuildingType so rule-less Limbo and owner
-    /// transfer paths can maintain native acquisition order exactly.
+    /// Immutable resolved membership in `[AI] BuildConst=`
+    /// (`RulesClass__ReadAI @ 0x00672AE0`, binding
+    /// `0x00672B14..0x00672C01`). Lifecycle authority copies this from
+    /// BuildingType so rule-less Limbo and owner transfer paths can maintain
+    /// native acquisition order exactly.
     #[serde(default)]
     pub build_const_eligible: bool,
     /// Immutable native BuildingType registry index for BasePlan lifecycle writers.
