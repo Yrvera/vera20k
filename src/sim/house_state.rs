@@ -295,6 +295,13 @@ pub struct HouseState {
     pub owned_unit_count: u32,
     /// Initial base location (MCV deploy point or first ConYard).
     pub base_center: Option<(u16, u16)>,
+    /// Alternate base-placement cell written by trigger actions 137/138.
+    ///
+    /// This is the packed-zero `HouseClass+0x5494` authority. It is distinct
+    /// from the launch/primary `base_center` (`HouseClass+0x5490`) and defaults
+    /// to the native invalid sentinel `(0, 0)`.
+    #[serde(default)]
+    pub alternate_base_center: (u16, u16),
     /// Native `HouseClass+0x5700` BaseClass reservation writer outputs.
     #[serde(default)]
     pub base_reservation: BaseReservationState,
@@ -431,6 +438,7 @@ impl HouseState {
             owned_building_count: 0,
             owned_unit_count: 0,
             base_center: None,
+            alternate_base_center: (0, 0),
             base_reservation: BaseReservationState::default(),
             tech_level,
             current_iq: 0,

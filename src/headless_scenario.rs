@@ -343,6 +343,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
                 triggers: Default::default(),
                 events: Default::default(),
                 actions: Default::default(),
+                waypoints: map.waypoints.clone(),
             },
         },
         map,

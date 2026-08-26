@@ -10,14 +10,15 @@
 //! - Action 40: change visible map area
 //! - Action 53/54: enable/disable trigger
 //! - Action 48/112: center camera at waypoint
+//! - Action 137/138: set/clear a House's alternate base cell
 //!
 //! The goal is to turn parsed trigger data into real runtime behavior without
 //! committing to a full mission-script system yet.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
-use crate::map::actions::{ActionEntry, ActionMap};
+use crate::map::actions::{ActionEntry, ActionMap, read_waypoint_token};
 use crate::map::events::{EventCondition, EventMap};
 use crate::map::trigger_graph::{LinkedTrigger, TriggerGraph};
 use crate::map::triggers::TriggerMap;
@@ -37,6 +38,8 @@ const ACTION_ANNOUNCE_WIN: i32 = 67;
 const ACTION_ANNOUNCE_LOSE: i32 = 68;
 const ACTION_END_SCENARIO: i32 = 69;
 const ACTION_JUMP_CAMERA: i32 = 112;
+const ACTION_SET_ALTERNATE_BASE: i32 = 137;
+const ACTION_CLEAR_ALTERNATE_BASE: i32 = 138;
 
 const EVENT_GLOBAL_IS_SET: i32 = 27;
 const EVENT_GLOBAL_IS_CLEAR: i32 = 28;
@@ -127,8 +130,32 @@ impl TriggerRuntime {
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
+        simulation: Option<&mut Simulation>,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+    ) -> Vec<TriggerEffect> {
+        self.advance_at_frame_with_waypoints(
+            current_frame,
+            graph,
+            triggers,
+            events,
+            actions,
+            simulation,
+            rules,
+            &HashMap::new(),
+        )
+    }
+
+    /// Evaluate with the complete immutable scenario waypoint table.
+    pub(crate) fn advance_at_frame_with_waypoints(
+        &mut self,
+        current_frame: u32,
+        graph: &TriggerGraph,
+        triggers: &TriggerMap,
+        events: &EventMap,
+        actions: &ActionMap,
         mut simulation: Option<&mut Simulation>,
         rules: Option<&crate::rules::ruleset::RuleSet>,
+        waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
     ) -> Vec<TriggerEffect> {
         let linked_by_id: BTreeMap<&str, &LinkedTrigger> = graph
             .triggers
@@ -179,8 +206,10 @@ impl TriggerRuntime {
                         &mut queue,
                         &mut queued,
                         triggers,
+                        trigger,
                         simulation.as_deref_mut(),
                         rules,
+                        waypoints,
                     );
                 }
             }
@@ -283,8 +312,10 @@ impl TriggerRuntime {
         queue: &mut VecDeque<String>,
         queued: &mut BTreeSet<String>,
         triggers: &TriggerMap,
+        trigger: &crate::map::triggers::MapTrigger,
         simulation: Option<&mut Simulation>,
         rules: Option<&crate::rules::ruleset::RuleSet>,
+        waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
     ) {
         match action.kind {
             ACTION_FORCE_TRIGGER => {
@@ -337,7 +368,7 @@ impl TriggerRuntime {
                 }
             }
             ACTION_CENTER_CAMERA => {
-                if let Some(waypoint) = parse_u32_param(&action.params, 6) {
+                if let Some(waypoint) = parse_waypoint_param(&action.params, 6) {
                     effects.push(TriggerEffect::CenterCameraAtWaypoint {
                         waypoint,
                         immediate: false,
@@ -345,11 +376,47 @@ impl TriggerRuntime {
                 }
             }
             ACTION_JUMP_CAMERA => {
-                if let Some(waypoint) = parse_u32_param(&action.params, 6) {
+                if let Some(waypoint) = parse_waypoint_param(&action.params, 6) {
                     effects.push(TriggerEffect::CenterCameraAtWaypoint {
                         waypoint,
                         immediate: true,
                     });
+                }
+            }
+            ACTION_SET_ALTERNATE_BASE => {
+                let Some(sim) = simulation else { return };
+                let Some(house_id) = resolve_trigger_house(sim, trigger.owner.as_deref(), rules)
+                else {
+                    return;
+                };
+                let Some(waypoint_index) = parse_waypoint_param(&action.params, 6) else {
+                    return;
+                };
+                let Some(waypoint) = waypoints.get(&waypoint_index) else {
+                    return;
+                };
+                if (waypoint.rx, waypoint.ry) == (0, 0) {
+                    return;
+                }
+                // gamemd-derived: `TriggerAction__Execute @ 0x006DD8B0`
+                // case 137 calls `FUN_006E44E0`, which rejects the packed-zero
+                // waypoint and writes only `HouseClass+0x5494` through
+                // `FUN_0050DFE0`.
+                if let Some(house) = sim.houses.get_mut(&house_id) {
+                    house.alternate_base_center = (waypoint.rx, waypoint.ry);
+                }
+            }
+            ACTION_CLEAR_ALTERNATE_BASE => {
+                let Some(sim) = simulation else { return };
+                let Some(house_id) = resolve_trigger_house(sim, trigger.owner.as_deref(), rules)
+                else {
+                    return;
+                };
+                // gamemd-derived: `TriggerAction__Execute @ 0x006DD8B0`
+                // case 138 calls `FUN_006E4540`, which writes packed zero only
+                // to `HouseClass+0x5494` through `FUN_0050DFF0`.
+                if let Some(house) = sim.houses.get_mut(&house_id) {
+                    house.alternate_base_center = (0, 0);
                 }
             }
             ACTION_ANNOUNCE_WIN => {
@@ -398,6 +465,34 @@ fn enqueue_trigger(
 
 fn parse_u32_param(fields: &[String], index: usize) -> Option<u32> {
     fields.get(index)?.trim().parse::<u32>().ok()
+}
+
+fn parse_waypoint_param(fields: &[String], index: usize) -> Option<u32> {
+    read_waypoint_token(fields.get(index).map(String::as_str))
+}
+
+/// Resolve a trigger's canonical HouseType owner to the first registered House.
+///
+/// gamemd-derived: `TriggerTypeClass::Read` canonicalizes the owner through
+/// `HouseTypeClass__FindIndexOfName @ 0x005117D0` (alias before ID in source
+/// order, with `<none>` selecting index zero). `TriggerClass::Spring @
+/// 0x007265C0` passes that type index to `HouseClass__Find_By_Country_Index @
+/// 0x00502D30`, whose global House-array scan returns the first matching
+/// registration.
+fn resolve_trigger_house(
+    sim: &Simulation,
+    trigger_owner: Option<&str>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> Option<crate::sim::intern::InternedId> {
+    let rules = rules?;
+    let trigger_house_type = rules.trigger_house_type_index(trigger_owner?)?;
+    sim.session.house_order.iter().copied().find(|house_id| {
+        sim.houses
+            .get(house_id)
+            .and_then(|house| house.country)
+            .and_then(|country| rules.country_index(sim.interner.resolve(country)))
+            == Some(trigger_house_type)
+    })
 }
 
 fn parse_i32_param(fields: &[String], index: usize) -> Option<i32> {

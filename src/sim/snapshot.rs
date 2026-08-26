@@ -304,7 +304,10 @@ use crate::sim::world::Simulation;
 // TechnoType identity rather than an ambiguous interned name alone.
 // Bumped 102 -> 103: WaveClass persists live ownership/fade/CellClass identity,
 // and destroyable-cliff replacement persists exact changed CellClass values.
-const SNAPSHOT_VERSION: u32 = 103;
+// Bumped 103 -> 104: HouseState gains the serialized/hash-authoritative packed
+// alternate base cell written by trigger actions 137/138. Bincode encodes the
+// HouseState layout positionally, so an older record cannot supply this field.
+const SNAPSHOT_VERSION: u32 = 104;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2704,10 +2707,34 @@ mod tests {
     /// adds the three post-load TeamType zone-derivation fields; 100 -> 101
     /// adds category-distinct resolved TaskForce member identities; 101 -> 102
     /// adds category-distinct resolved AITrigger token-6 identities; 102 -> 103
-    /// adds WaveClass state and destroyable-cliff replacement CellClass values.
+    /// adds WaveClass state and destroyable-cliff replacement CellClass values;
+    /// 103 -> 104 adds the packed House alternate base cell.
     #[test]
-    fn phase3_team_ai_and_wave_snapshot_version_is_103() {
-        assert_eq!(super::SNAPSHOT_VERSION, 103);
+    fn phase3_team_ai_wave_and_alternate_base_snapshot_version_is_104() {
+        assert_eq!(super::SNAPSHOT_VERSION, 104);
+    }
+
+    #[test]
+    fn alternate_base_center_roundtrips_with_primary_center_and_hash() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let country = sim.interner.intern("Americans");
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
+        house.base_center = Some((40, 50));
+        house.alternate_base_center = (93, 106);
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "alternate-base-center", 0);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 104);
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+
+        assert_eq!(restored.houses[&owner].base_center, Some((40, 50)));
+        assert_eq!(restored.houses[&owner].alternate_base_center, (93, 106));
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]
