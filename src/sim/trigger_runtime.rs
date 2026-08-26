@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
-use crate::map::actions::{ActionEntry, ActionMap, read_waypoint_token};
+use crate::map::actions::{ActionEntry, ActionMap};
 use crate::map::events::{EventCondition, EventMap};
 use crate::map::trigger_graph::{LinkedTrigger, TriggerGraph};
 use crate::map::triggers::TriggerMap;
@@ -368,7 +368,7 @@ impl TriggerRuntime {
                 }
             }
             ACTION_CENTER_CAMERA => {
-                if let Some(waypoint) = parse_waypoint_param(&action.params, 6) {
+                if let Some(waypoint) = action.waypoint_index {
                     effects.push(TriggerEffect::CenterCameraAtWaypoint {
                         waypoint,
                         immediate: false,
@@ -376,7 +376,7 @@ impl TriggerRuntime {
                 }
             }
             ACTION_JUMP_CAMERA => {
-                if let Some(waypoint) = parse_waypoint_param(&action.params, 6) {
+                if let Some(waypoint) = action.waypoint_index {
                     effects.push(TriggerEffect::CenterCameraAtWaypoint {
                         waypoint,
                         immediate: true,
@@ -389,7 +389,7 @@ impl TriggerRuntime {
                 else {
                     return;
                 };
-                let Some(waypoint_index) = parse_waypoint_param(&action.params, 6) else {
+                let Some(waypoint_index) = action.waypoint_index else {
                     return;
                 };
                 let Some(waypoint) = waypoints.get(&waypoint_index) else {
@@ -465,10 +465,6 @@ fn enqueue_trigger(
 
 fn parse_u32_param(fields: &[String], index: usize) -> Option<u32> {
     fields.get(index)?.trim().parse::<u32>().ok()
-}
-
-fn parse_waypoint_param(fields: &[String], index: usize) -> Option<u32> {
-    read_waypoint_token(fields.get(index).map(String::as_str))
 }
 
 /// Resolve a trigger's canonical HouseType owner to the first registered House.

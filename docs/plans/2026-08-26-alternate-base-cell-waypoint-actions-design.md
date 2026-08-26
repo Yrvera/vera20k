@@ -45,15 +45,20 @@ The `House+0x5750` base-plan center and all of its writers remain a separately r
 ## Ownership and data flow
 
 1. Add a single ASCII waypoint-token decoder beside map action parsing. Return `Option<u32>` as
-   the deterministic Rust translation of native `-1`; accept no numeric substitute. Preserve the
-   constructor/read distinction: absent or empty-at-end token 8 retains index 0, but a present
-   whitespace/non-letter token is invalid.
+   the deterministic Rust translation of native `-1`; accept no numeric substitute. Materialize
+   the resolved `TActionClass+0x44` value in each `ActionEntry` at this reader boundary rather than
+   retaining token 8 for runtime reinterpretation. Preserve the constructor/read distinction:
+   absent or empty-at-end token 8 retains index 0, parameter types 5/9/11 retain index 0 while
+   parsing token 8 into their other native fields, and a present whitespace/non-letter token is
+   invalid. A counted final action with token 8 absent remains that action with constructor zero;
+   it must not fall through as an uncounted action whose kind is the count field.
 2. Keep the complete parsed waypoint table in `SimResources`. It is immutable map input, just like
    trigger definitions, and survives an in-scenario load through `SimRuntime::rebind_restored`.
    It must not be duplicated into mutable `Simulation` state merely to serve one trigger action.
 3. Borrow that table through `TriggerInputs` into `TriggerRuntime::advance_at_frame` and action
-   dispatch. Camera actions emit the decoded index. Action 137 resolves the decoded index to a
-   valid map waypoint before it mutates a House.
+   dispatch. Camera actions emit the already materialized `ActionEntry` index. Action 137 resolves
+   that same reader-owned index to a valid map waypoint before it mutates a House; runtime dispatch
+   never re-decodes token text or guesses parameter-type semantics.
 4. Add `HouseState::alternate_base_center: (u16,u16)`, default/constructor `(0,0)`. It is mutable,
    future-affecting selector state and therefore participates in both snapshots and `state_hash`.
    Bump the bincode snapshot version because adding a field changes every encoded `HouseState`.
@@ -82,8 +87,9 @@ The `House+0x5750` base-plan center and all of its writers remain a separately r
 ## Acceptance tests
 
 - Decoder vectors: `A`, `Z`, `a`, `P`, `AA`, `aa`, `NZ`, `ZZ`, present first-byte nonletter,
-  present whitespace, a letter followed by a nonletter, and ignored third/trailing bytes. Action
-  reading separately proves absent and empty-at-end token 8 retain constructor index 0.
+  present whitespace, a letter followed by a nonletter, and ignored third/trailing bytes. End-to-end
+  action reading separately proves absent and empty-at-end token 8 and parameter types 5/9/11
+  retain constructor index 0, including a counted action whose final token is truly absent.
 - Existing camera actions 48/112 use alphabetic token 8 and produce the decoded index; numeric
   token 8 no longer masquerades as a native waypoint.
 - Action 137 writes only the first registration-order House with matching canonical HouseType and
