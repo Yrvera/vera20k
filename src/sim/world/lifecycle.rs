@@ -733,7 +733,9 @@ impl Simulation {
         RevealOutcome::Revealed { logic_registered }
     }
 
-    /// `BuildingClass::Unlimbo @ 0x00440580` successful-plan satisfaction.
+    /// `BuildingClass::Unlimbo @ 0x00440580` calls
+    /// `FUN_0042F260 @ 0x0042F260` at `0x0044159D..0x004415B3` for
+    /// successful non-human BasePlan satisfaction.
     fn fill_base_plan_from_successful_building_unlimbo(&mut self, stable_id: u64) {
         let Some((owner, type_index, packed_cell, has_undeploy_target)) =
             self.substrate.entities.get(stable_id).and_then(|entity| {
@@ -763,9 +765,10 @@ impl Simulation {
             .fill_successful_building(type_index, packed_cell, has_undeploy_target);
     }
 
-    /// `BuildingClass::Limbo @ 0x00443C60` BasePlan invalidation, before the
-    /// common Techno/Object concealment path. VERA has no map-editor runtime;
-    /// every call to this lifecycle seam is therefore outside editor mode.
+    /// `BuildingClass__Limbo @ 0x00445880` calls
+    /// `FUN_0050A490 @ 0x0050A490` for BasePlan invalidation before the common
+    /// Techno/Object concealment path. VERA has no map-editor runtime; every
+    /// call to this lifecycle seam is therefore outside editor mode.
     fn invalidate_base_plan_from_building_limbo(&mut self, stable_id: u64) {
         let Some((owner, type_index, packed_cell, is_base_defense, in_limbo)) =
             self.substrate.entities.get(stable_id).and_then(|entity| {

@@ -241,6 +241,18 @@ pub fn parse_house_roster(
     HouseRoster { houses }
 }
 
+/// Parse the ordered scenario BasePlan through native
+/// `FUN_0042EBE0 @ 0x0042EBE0`. `HouseClass__Read_Scenario_INI @ 0x00500B40`
+/// calls it on the embedded base constructed by
+/// `HouseClass__Constructor @ 0x004F54A0` through
+/// `BaseClass__Constructor @ 0x0042E6F0`.
+///
+/// Native formats numeric keys as `%03d`, reads each value into `char[128]`
+/// (127 payload bytes before NUL), classifies a control only when byte zero is
+/// `'-'`, otherwise resolves `BuildingTypeClass__FindIndexByName @ 0x0045E7B0`,
+/// comma-tokenizes, applies signed `atoi`, narrows X/Y to 16 bits, and appends
+/// in numeric-key order. Its undefined trailing node locals are not scenario
+/// fields, so Rust deterministically normalizes filled/retry below.
 fn parse_scenario_base_plan(
     section: Option<&crate::rules::ini_parser::IniSection>,
     rules: Option<&RuleSet>,
@@ -274,8 +286,8 @@ fn parse_scenario_base_plan(
         nodes.push(ScenarioBasePlanNode {
             type_or_control,
             packed_cell: pack_scenario_base_plan_cell(x, y),
-            // Native stack bytes are undefined at this read boundary. Rust
-            // normalizes them once instead of propagating nondeterminism.
+            // FUN_0042EBE0 assembly 0x0042ED23..0x0042ED2E copies undefined
+            // stack locals here; its writer and checksum omit both fields.
             filled: false,
             retry_count: 0,
         });
@@ -286,8 +298,8 @@ fn parse_scenario_base_plan(
     }
 }
 
-/// Coordinate-token projection through the CRT `atoi @ 0x007C9B72` reached
-/// by native BasePlan loading. CRT `atoi` skips only its ASCII whitespace set
+/// Coordinate-token projection through the CRT `atoi @ 0x007C9B72` reached by
+/// `FUN_0042EBE0 @ 0x0042EBE0`. CRT `atoi` skips only its ASCII whitespace set
 /// before inspecting the optional sign and leading decimal digits.
 fn atoi_scenario_base_plan_coordinate(value: &[u8]) -> i32 {
     let leading_whitespace = value
