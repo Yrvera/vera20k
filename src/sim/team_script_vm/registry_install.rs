@@ -21,6 +21,30 @@ impl TeamScriptVm {
         interner: &mut StringInterner,
         rules: &RuleSet,
     ) -> (Self, Vec<TeamAiInstallDiagnostic>) {
+        // Validate the immutable fixed pass independently. Final records may
+        // have been replaced or partially overlaid by the map, which must not
+        // erase a required fixed-AIMD resolution refusal.
+        let fixed_registry = registry.fixed_resolution_view();
+        let mut fixed_interner = interner.clone();
+        let (_, mut diagnostics) =
+            Self::resolve_ini_registry(&fixed_registry, &mut fixed_interner, rules);
+        let (vm, final_diagnostics) = Self::resolve_ini_registry(registry, interner, rules);
+        for diagnostic in final_diagnostics {
+            if !diagnostics
+                .iter()
+                .any(|fixed| same_install_issue(fixed, &diagnostic))
+            {
+                diagnostics.push(diagnostic);
+            }
+        }
+        (vm, diagnostics)
+    }
+
+    fn resolve_ini_registry(
+        registry: &TeamAiIniRegistry,
+        interner: &mut StringInterner,
+        rules: &RuleSet,
+    ) -> (Self, Vec<TeamAiInstallDiagnostic>) {
         let mut vm = Self::default();
         let mut diagnostics = Vec::new();
 
@@ -310,4 +334,85 @@ fn trigger_task_force_total(vm: &TeamScriptVm, team_type_id: Option<InternedId>)
                 .iter()
                 .fold(0_i32, |total, entry| total.wrapping_add(entry.count))
         })
+}
+
+fn same_install_issue(
+    left: &TeamAiInstallDiagnostic,
+    right: &TeamAiInstallDiagnostic,
+) -> bool {
+    match (left, right) {
+        (
+            TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                task_force_id: left_task_force,
+                member_type: left_member,
+                ..
+            },
+            TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                task_force_id: right_task_force,
+                member_type: right_member,
+                ..
+            },
+        ) => left_task_force == right_task_force && left_member == right_member,
+        (
+            TeamAiInstallDiagnostic::MissingTeamTypeScript {
+                team_type_id: left_team,
+                script_id: left_script,
+                ..
+            },
+            TeamAiInstallDiagnostic::MissingTeamTypeScript {
+                team_type_id: right_team,
+                script_id: right_script,
+                ..
+            },
+        ) => left_team == right_team && left_script == right_script,
+        (
+            TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
+                team_type_id: left_team,
+                task_force_id: left_task_force,
+                ..
+            },
+            TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
+                team_type_id: right_team,
+                task_force_id: right_task_force,
+                ..
+            },
+        ) => left_team == right_team && left_task_force == right_task_force,
+        (
+            TeamAiInstallDiagnostic::MissingAiTriggerTeamType {
+                trigger_id: left_trigger,
+                team_type_id: left_team,
+                ..
+            },
+            TeamAiInstallDiagnostic::MissingAiTriggerTeamType {
+                trigger_id: right_trigger,
+                team_type_id: right_team,
+                ..
+            },
+        ) => left_trigger == right_trigger && left_team == right_team,
+        (
+            TeamAiInstallDiagnostic::UnknownAiTriggerOwner {
+                trigger_id: left_trigger,
+                owner: left_owner,
+                ..
+            },
+            TeamAiInstallDiagnostic::UnknownAiTriggerOwner {
+                trigger_id: right_trigger,
+                owner: right_owner,
+                ..
+            },
+        ) => left_trigger == right_trigger && left_owner == right_owner,
+        (
+            TeamAiInstallDiagnostic::UnknownAiTriggerObject {
+                trigger_id: left_trigger,
+                object_type: left_object,
+                ..
+            },
+            TeamAiInstallDiagnostic::UnknownAiTriggerObject {
+                trigger_id: right_trigger,
+                object_type: right_object,
+                ..
+            },
+        ) => left_trigger == right_trigger && left_object == right_object,
+        _ => false,
+    }
 }

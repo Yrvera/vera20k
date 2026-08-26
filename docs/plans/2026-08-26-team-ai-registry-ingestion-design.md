@@ -51,6 +51,8 @@ This follows existing architecture: `rules/` parses data, Simulation owns determ
 
 The parser uses ordered `Vec` storage plus uppercase identity-to-index maps. On a later-source duplicate, it re-reads/replaces the record at the existing index. On a new identity, it appends. The resolved VM mirrors the order explicitly while retaining keyed lookup for current Team operations.
 
+Before each map pass mutates the live record, the parser also captures an immutable copy of that registry's fixed-AIMD definitions. The RuleSet-aware install boundary resolves this fixed view with a cloned interner, then resolves the final overlaid registry with the production interner. Fixed-origin diagnostics survive even when a same-identity map replacement repairs the final record or a partial TeamType overlay relabels inherited fields as scenario-origin; equivalent final diagnostics are deduplicated. This validation view is transient and does not change the snapshot schema.
+
 ### Why this approach is approved
 
 Adversarial question: why not wait and implement the whole producer at once? Because the exact AITrigger condition table and several live recruitment predicates remain open native questions. Combining them would either block a separately proven loader or encourage approximations. The ordered registry is independently exact and is a mandatory dependency of every later exact approach.

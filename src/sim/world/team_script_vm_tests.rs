@@ -228,3 +228,61 @@ fn production_install_refuses_unknown_fixed_ai_trigger_object() {
         "unknown fixed AITrigger token-6 references must refuse the whole registry install"
     );
 }
+
+#[test]
+fn production_install_refuses_fixed_resolution_loss_masked_by_same_identity_map_overlays() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+    ))
+    .expect("minimal rules");
+    let comparison = zero_ai_trigger_comparison();
+    let fixed = IniFile::from_str(&format!(
+        "[TeamTypes]\n0=TT\n[TT]\nScript=MISSING_SCRIPT\nTaskForce=F\nPriority=5\n\
+         [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
+         [TaskForces]\n0=F\n[F]\n0=1,GHOST\n\
+         [AITriggerTypes]\nA=Fixed bad,TT,<all>,2,4,GHOST,{comparison},40,10,40,1,0,1,0,<none>,1,1,1\n"
+    ));
+    let scenario = IniFile::from_str(&format!(
+        "[TeamTypes]\n0=TT\n[TT]\nPriority=20\n\
+         [TaskForces]\n0=F\n[F]\n0=1,E1\n\
+         [AITriggerTypes]\nA=Map repair,TT,<all>,2,4,E1,{comparison},40,10,40,1,0,1,0,<none>,1,1,1\n"
+    ));
+    let registry = TeamAiIniRegistry::from_sources(&fixed, &scenario, true);
+    assert!(registry.fixed_source_is_complete());
+    let mut sim = Simulation::new();
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+
+    let diagnostics = sim.install_team_ai_registry(&registry, &rules);
+
+    assert_eq!(
+        diagnostics,
+        vec![
+            TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                task_force_id: "F".to_string(),
+                member_type: "GHOST".to_string(),
+                source: TeamAiDefinitionSource::FixedAimd,
+            },
+            TeamAiInstallDiagnostic::MissingTeamTypeScript {
+                team_type_id: "TT".to_string(),
+                script_id: "MISSING_SCRIPT".to_string(),
+                source: TeamAiDefinitionSource::FixedAimd,
+            },
+            TeamAiInstallDiagnostic::UnknownAiTriggerObject {
+                trigger_id: "A".to_string(),
+                object_type: "GHOST".to_string(),
+                source: TeamAiDefinitionSource::FixedAimd,
+            },
+        ]
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(TeamAiInstallDiagnostic::is_fixed_source_refusal)
+    );
+    assert_eq!(
+        sim.team_script_vm.registry_counts(),
+        (0, 0, 0, 0),
+        "map repair/relabeling cannot erase fixed-AIMD resolution obligations"
+    );
+}

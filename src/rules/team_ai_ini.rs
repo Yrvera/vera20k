@@ -192,6 +192,17 @@ pub struct TeamAiRegistryCounts {
     pub ai_triggers: usize,
 }
 
+/// Immutable definitions captured immediately after the fixed AIMD pass for
+/// each registry. Map overlays may replace the live record, but cannot erase a
+/// fixed-source resolution obligation that production loading must validate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FixedTeamAiDefinitions {
+    team_types: Vec<TeamTypeIni>,
+    scripts: Vec<ScriptTypeIni>,
+    task_forces: Vec<TaskForceIni>,
+    ai_triggers: Vec<AiTriggerTypeIni>,
+}
+
 /// Ordered unresolved AI definitions from fixed AIMD and the scenario INI.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TeamAiIniRegistry {
@@ -201,6 +212,7 @@ pub struct TeamAiIniRegistry {
     pub ai_triggers: Vec<AiTriggerTypeIni>,
     pub diagnostics: Vec<TeamAiIniDiagnostic>,
     pub fixed_counts: TeamAiRegistryCounts,
+    fixed_definitions: FixedTeamAiDefinitions,
 }
 
 impl TeamAiIniRegistry {
@@ -217,18 +229,22 @@ impl TeamAiIniRegistry {
 
         registry.read_team_types(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
         registry.fixed_counts.team_types = registry.team_types.len();
+        registry.fixed_definitions.team_types = registry.team_types.clone();
         registry.read_team_types(scenario, TeamAiDefinitionSource::Scenario);
 
         registry.read_scripts(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
         registry.fixed_counts.scripts = registry.scripts.len();
+        registry.fixed_definitions.scripts = registry.scripts.clone();
         registry.read_scripts(scenario, TeamAiDefinitionSource::Scenario);
 
         registry.read_task_forces(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
         registry.fixed_counts.task_forces = registry.task_forces.len();
+        registry.fixed_definitions.task_forces = registry.task_forces.clone();
         registry.read_task_forces(scenario, TeamAiDefinitionSource::Scenario);
 
         registry.read_ai_triggers(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
         registry.fixed_counts.ai_triggers = registry.ai_triggers.len();
+        registry.fixed_definitions.ai_triggers = registry.ai_triggers.clone();
         registry.read_ai_triggers(scenario, TeamAiDefinitionSource::Scenario);
         registry.read_ai_trigger_enables(scenario, game_mode_nonzero);
 
@@ -247,6 +263,18 @@ impl TeamAiIniRegistry {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.source() == TeamAiDefinitionSource::FixedAimd)
+    }
+
+    pub(crate) fn fixed_resolution_view(&self) -> Self {
+        Self {
+            team_types: self.fixed_definitions.team_types.clone(),
+            scripts: self.fixed_definitions.scripts.clone(),
+            task_forces: self.fixed_definitions.task_forces.clone(),
+            ai_triggers: self.fixed_definitions.ai_triggers.clone(),
+            diagnostics: Vec::new(),
+            fixed_counts: self.fixed_counts,
+            fixed_definitions: self.fixed_definitions.clone(),
+        }
     }
 
     fn read_team_types(&mut self, ini: &IniFile, source: TeamAiDefinitionSource) {
