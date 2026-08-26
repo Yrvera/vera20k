@@ -659,8 +659,10 @@ pub struct ObjectType {
     pub deploy_facing: u8,
     /// Whether this building is a construction yard. Enables ConYard-only MCV repack gates.
     pub construction_yard: bool,
-    /// Immutable membership in the resolved `[General] BuildConst=` BuildingType
-    /// pointer vector. `RuleSet` stamps this after all type registries exist.
+    /// Immutable membership in the resolved `[AI] BuildConst=` BuildingType
+    /// pointer vector (`RulesClass__ReadAI @ 0x00672AE0`, binding
+    /// `0x00672B14..0x00672C01`). `RuleSet` stamps this after all type
+    /// registries exist.
     pub build_const_eligible: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.

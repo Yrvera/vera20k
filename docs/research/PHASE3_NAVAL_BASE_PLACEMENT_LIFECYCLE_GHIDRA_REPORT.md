@@ -51,8 +51,10 @@ Z, or `>=` comparison is wrong.
 ## 3. What the first construction-yard pointer means
 
 The vector at `House+0x50` is not the generic owned-object order. Its membership predicate is
-type identity in source-ordered `[General] BuildConst=` (`Rules+0x8B0/+0x8BC`), and its order is
-live insertion/acquisition order.
+type identity in source-ordered `[AI] BuildConst=` (`Rules+0x8B0/+0x8BC`), and its order is live
+insertion/acquisition order. Corrected binding evidence: `RulesClass__ReadAI @ 0x00672AE0`, block
+`0x00672B14..0x00672C01` (key push `0x00672B23`, BuildingType resolver call `0x00672B6A`);
+there is no `[General]` fallback.
 
 ### 3.1 Successful Unlimbo insertion
 
@@ -102,8 +104,8 @@ would add a nonexistent gate. `SuperWeapon2` remains ignored.
 
 ## 5. Retail activation and exclusions
 
-- `rulesmd.ini` supplies `Shipyard=GAYARD,NAYARD,YAYARD` and
-  `BuildConst=GACNST,NACNST,YACNST`; base RA2 supplies the first two of each.
+- `rulesmd.ini` supplies `[General] Shipyard=GAYARD,NAYARD,YAYARD` and
+  `[AI] BuildConst=GACNST,NACNST,YACNST`; base RA2 supplies the first two of each.
 - Every stock YR shipyard foundation is `4x4`, producing the native `6x6` FNPC footprint, but
   the side-dependent source-order selector is still active.
 - Stock playable Houses always select a non-null shipyard. The native caller immediately uses

@@ -108,6 +108,9 @@ fn house_token_mask(tokens: &[String], rules: &RuleSet) -> u32 {
 }
 
 /// gamemd-derived: `HouseClass__FirstBuildableFromArray @ 0x005051E0`.
+/// `TechnoTypeClass` construction at `0x00711193` initializes the Owner mask
+/// to zero, and its reader at `0x007149E1..0x007149F5` preserves that default;
+/// an absent `Owner=` therefore rejects this native AI-list candidate.
 fn shipyard_candidate_allowed(
     candidate: &ObjectType,
     country_bit: u32,
@@ -115,7 +118,7 @@ fn shipyard_candidate_allowed(
     rules: &RuleSet,
     sim: &Simulation,
 ) -> bool {
-    if !candidate.owner.is_empty() && house_token_mask(&candidate.owner, rules) & country_bit == 0 {
+    if candidate.owner.is_empty() || house_token_mask(&candidate.owner, rules) & country_bit == 0 {
         return false;
     }
     if !candidate.required_houses.is_empty()
@@ -393,13 +396,15 @@ mod tests {
 
     fn naval_integration_rules() -> RuleSet {
         RuleSet::from_ini(&IniFile::from_str(
-            "[General]\nShipyard=GAYARD\n\
+            "[General]\nShipyard=GAYARD\nAINavalYardAdjacency=0\n\
+             [AI]\nBuildConst=gacnst\n\
              [Countries]\n0=Americans\n[Sides]\nAllied=Americans\n[Americans]\nSide=Allied\n\
              [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
-             [BuildingTypes]\n0=GAYARD\n1=NAVAL\n2=LAND\n\
+             [BuildingTypes]\n0=GAYARD\n1=NAVAL\n2=LAND\n3=GACNST\n\
              [GAYARD]\nFoundation=1x1\nOwner=Americans\n\
              [NAVAL]\nFoundation=1x1\nNaval=yes\n\
-             [LAND]\nFoundation=1x1\n",
+             [LAND]\nFoundation=1x1\n\
+             [GACNST]\nFoundation=1x1\nStrength=1000\nOwner=Americans\nConstructionYard=yes\n",
         ))
         .expect("naval integration rules")
     }
@@ -430,6 +435,22 @@ mod tests {
 
     #[test]
     fn shipyard_selector_exact_gate_truth_table_and_source_fallthrough() {
+        let rules = selector_rules(&["YARD"], "[YARD]\nFoundation=4x4", "", 20);
+        let (sim, owner) = selector_sim("Americans", 0, true);
+        assert_eq!(
+            selected_id(&rules, &sim, owner),
+            None,
+            "native zero-default Owner mask rejects"
+        );
+
+        let rules = selector_rules(&["YARD"], "[YARD]\nFoundation=4x4\nOwner=Americans", "", 20);
+        let (sim, owner) = selector_sim("Americans", 0, true);
+        assert_eq!(
+            selected_id(&rules, &sim, owner),
+            Some("YARD"),
+            "an explicit matching Owner mask accepts"
+        );
+
         let rejected = [
             ("Owner=SovietAlias", "Owner mask"),
             ("RequiredHouses=Russians", "RequiredHouses mask"),
@@ -455,7 +476,7 @@ mod tests {
 
         let enabled = selector_rules(
             &["YARD"],
-            "[YARD]\nFoundation=4x4\nSuperWeapon=DISABLED_SW\n\
+            "[YARD]\nFoundation=4x4\nOwner=Americans\nSuperWeapon=DISABLED_SW\n\
              TechLevel=-1\nPrerequisite=MISSING\nBuildLimit=1\nCost=999999\nAIBuildThis=no",
             "",
             20,
@@ -464,27 +485,32 @@ mod tests {
         assert_eq!(selected_id(&enabled, &sim, owner), Some("YARD"));
 
         let cases = [
-            ("[YARD]\nFoundation=4x4", "", Some("YARD"), "absent primary"),
             (
-                "[YARD]\nFoundation=4x4\nSuperWeapon=DISABLED_SW",
+                "[YARD]\nFoundation=4x4\nOwner=Americans",
+                "",
+                Some("YARD"),
+                "absent primary",
+            ),
+            (
+                "[YARD]\nFoundation=4x4\nOwner=Americans\nSuperWeapon=DISABLED_SW",
                 "YARD",
                 Some("YARD"),
                 "BuildTech exemption",
             ),
             (
-                "[YARD]\nFoundation=4x4\nSuperWeapon=FIXED_SW",
+                "[YARD]\nFoundation=4x4\nOwner=Americans\nSuperWeapon=FIXED_SW",
                 "",
                 Some("YARD"),
                 "non-disableable primary",
             ),
             (
-                "[YARD]\nFoundation=4x4\nSuperWeapon=DISABLED_SW",
+                "[YARD]\nFoundation=4x4\nOwner=Americans\nSuperWeapon=DISABLED_SW",
                 "",
                 None,
                 "disableable primary",
             ),
             (
-                "[YARD]\nFoundation=4x4\nSuperWeapon2=DISABLED_SW",
+                "[YARD]\nFoundation=4x4\nOwner=Americans\nSuperWeapon2=DISABLED_SW",
                 "",
                 Some("YARD"),
                 "ignored SuperWeapon2",
@@ -736,6 +762,49 @@ mod tests {
             (10, 10),
             &elevated
         ));
+    }
+
+    #[test]
+    fn parsed_readai_buildconst_populates_house_and_enforces_naval_cap() {
+        let rules = naval_integration_rules();
+        assert_eq!(rules.build_const_types, ["gacnst"]);
+        assert!(rules.object("GACNST").unwrap().build_const_eligible);
+
+        let mut sim = Simulation::new();
+        sim.session.binary_frame = 0;
+        sim.playfield_bounds = Some(broad_bounds());
+        sim.playfield_size_height = Some(24);
+        sim.resolved_terrain = Some(water_terrain(24, 24));
+        let owner = sim.interner.intern("AIHouse");
+        let country = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            HouseState::new(owner, 0, Some(country), false, 10_000, 10),
+        );
+        let yard = sim
+            .spawn_object("GACNST", "AIHouse", 10, 10, 0, &rules, &BTreeMap::new())
+            .expect("parsed BuildConst Construction Yard reveals");
+        assert_eq!(sim.houses[&owner].build_const_order, [yard]);
+        assert!(sim.entities().get(yard).unwrap().build_const_eligible);
+
+        sim.houses.get_mut(&owner).unwrap().base_center = Some((11, 10));
+        let path = PathGrid::from_resolved_terrain(sim.resolved_terrain.as_ref().unwrap());
+        assert_eq!(
+            find_naval_base_placement(&sim, &rules, owner, Some(&path)),
+            None,
+            "the zero-cell cap rejects the adjacent result once the parsed yard reaches House state"
+        );
+
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .build_const_order
+            .clear();
+        assert_eq!(
+            find_naval_base_placement(&sim, &rules, owner, Some(&path)),
+            Some((11, 10)),
+            "the same query would pass only through the native empty-vector bypass"
+        );
     }
 
     #[test]

@@ -2276,7 +2276,7 @@ pub struct RuleSet {
     pub ai_base_spacing: i32,
     /// Source-ordered `[General] Shipyard=` BuildingType identities.
     pub shipyard_types: Vec<String>,
-    /// Source-ordered `[General] BuildConst=` BuildingType identities.
+    /// Source-ordered resolved `[AI] BuildConst=` BuildingType identities.
     pub build_const_types: Vec<String>,
     /// Source-ordered `[AI] BuildTech=` identities used by the native
     /// FirstBuildableFromArray superweapon-disabled tail.
@@ -2426,7 +2426,19 @@ impl RuleSet {
                 .collect()
         };
         let shipyard_types = parse_named_list("General", "Shipyard");
-        let build_const_types = parse_named_list("General", "BuildConst");
+        // gamemd-derived: `RulesClass__Process` reads BuildingTypes first
+        // (`0x00668E78`), then calls `RulesClass__ReadAI @ 0x00672AE0`
+        // (`0x00668EC8`). Its BuildConst binding is
+        // `0x00672B14..0x00672C01` (key push `0x00672B23`, resolver call
+        // `0x00672B6A`) and has no `[General]` fallback. `get_list` retains the
+        // verified INI reader's comma-only token projection; filtering here
+        // removes only the BuildingType resolver's null sentinels.
+        let build_const_source_tokens = parse_named_list("AI", "BuildConst")
+            .into_iter()
+            .filter(|type_id| {
+                !type_id.eq_ignore_ascii_case("none") && !type_id.eq_ignore_ascii_case("<none>")
+            })
+            .collect::<Vec<_>>();
         let build_tech_types = parse_named_list("AI", "BuildTech");
         // gamemd-derived: `RulesClass::Constructor @ 0x00666922` stores 20 at
         // +0xE0C; `RulesClass::ReadGeneral @ 0x006701D9..0x006701FE` reads the
@@ -2529,15 +2541,21 @@ impl RuleSet {
             }
         }
 
-        // gamemd stores `[General] BuildConst=` as a BuildingType pointer
-        // vector. Resolve inside that registry (not the broad cross-category
-        // compatibility lookup) after every registry has been allocated.
-        for type_id in &build_const_types {
+        // Native `BuildingTypeClass__FindOrAllocate @ 0x004653C0` resolves
+        // `[AI] BuildConst=` case-insensitively to BuildingType pointers while
+        // retaining source order and duplicates. Every active-retail token was
+        // allocated by the earlier BuildingTypes pass, so resolve through that
+        // category alone. Unknown custom allocation would require the complete
+        // later ReadAI list order and remains an evidence-backed inactive
+        // exclusion; do not synthesize a partial registry tail here.
+        let mut build_const_types = Vec::new();
+        for type_id in build_const_source_tokens {
             if let Some(handle) = object_category_index
                 .get(&(ObjectCategory::Building, type_id.to_ascii_uppercase()))
                 .copied()
             {
                 object_list[handle.0 as usize].build_const_eligible = true;
+                build_const_types.push(type_id);
             }
         }
 
@@ -5845,23 +5863,29 @@ ZAdjust=-10
         let ini = IniFile::from_str(
             "[General]\n\
              Shipyard=GAYARD,nayard,YAYARD\n\
-             BuildConst=gacnst,NACNST,YACNST\n\
+             BuildConst=WRONG\n\
              AINavalYardAdjacency=-7\n\
-             [AI]\nBuildTech=GAYARD,YAYARD\n\
+             [AI]\nBuildConst=gacnst,NACNST,gacnst,none,<NoNe>,YACNST\n\
+             BuildTech=GAYARD,YAYARD\n\
              [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
              [BuildingTypes]\n\
-             0=GAYARD\n1=NAYARD\n2=YAYARD\n3=GACNST\n4=NACNST\n5=YACNST\n\
+             0=GAYARD\n1=NAYARD\n2=YAYARD\n3=GACNST\n4=NACNST\n5=YACNST\n6=WRONG\n\
              [GAYARD]\nFoundation=4x4\n\
              [NAYARD]\nFoundation=4x4\nAIBasePlanningSide=1\n\
              [YAYARD]\nFoundation=4x4\nAIBasePlanningSide=-3\n\
              [GACNST]\nFoundation=4x4\n\
              [NACNST]\nFoundation=4x4\n\
-             [YACNST]\nFoundation=4x4\n",
+             [YACNST]\nFoundation=4x4\n\
+             [WRONG]\nFoundation=4x4\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("naval base rules");
 
         assert_eq!(rules.shipyard_types, ["GAYARD", "nayard", "YAYARD"]);
-        assert_eq!(rules.build_const_types, ["gacnst", "NACNST", "YACNST"]);
+        assert_eq!(
+            rules.build_const_types,
+            ["gacnst", "NACNST", "gacnst", "YACNST"],
+            "ReadAI retains authored case, order, and duplicates while omitting null sentinels"
+        );
         assert_eq!(rules.build_tech_types, ["GAYARD", "YAYARD"]);
         assert_eq!(rules.ai_naval_yard_adjacency, -7);
         assert_eq!(rules.object("GAYARD").unwrap().ai_base_planning_side, -1);
@@ -5884,6 +5908,10 @@ ZAdjust=-10
                 (4, 4)
             );
         }
+        assert!(
+            !rules.object("WRONG").unwrap().build_const_eligible,
+            "the poisoned General key must not contribute membership"
+        );
 
         let defaults = RuleSet::from_ini(&IniFile::from_str(
             "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n0=YARD\n[YARD]\nFoundation=1x1\n",
@@ -5891,6 +5919,8 @@ ZAdjust=-10
         .expect("constructor defaults");
         assert_eq!(defaults.ai_naval_yard_adjacency, 20);
         assert_eq!(defaults.object("YARD").unwrap().ai_base_planning_side, -1);
+        assert!(defaults.build_const_types.is_empty());
+        assert!(!defaults.object("YARD").unwrap().build_const_eligible);
     }
 
     /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id

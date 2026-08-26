@@ -106,7 +106,8 @@ null dereference/crash behavior is evidence-backed out of active-retail scope.
 Extend `RuleSet` with the exact source-ordered lists and scalar:
 
 - `[General] Shipyard=`;
-- `[General] BuildConst=`;
+- `[AI] BuildConst=` (`RulesClass__ReadAI @ 0x00672AE0`, binding
+  `0x00672B14..0x00672C01`; there is no `[General]` fallback);
 - `[AI] BuildTech=`;
 - signed `[General] AINavalYardAdjacency=` with constructor default `20`.
 
