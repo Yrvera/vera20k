@@ -501,6 +501,7 @@ mod tests {
             required_houses: vec![],
             forbidden_houses: vec![],
             ai_base_planning_side: -1,
+            ai_build_this: false,
             allowed_to_start_in_multiplayer: true,
             prerequisite: vec![],
             prerequisite_override: vec![],
