@@ -307,6 +307,12 @@ pub struct HouseState {
     /// before map-object Unlimbo; later ordinary planning remains disconnected.
     #[serde(default)]
     pub base_plan: crate::sim::base_plan::BasePlanState,
+    /// Packed-zero-default center owned by native `BaseClass` at
+    /// `HouseClass+0x5750`. A successful non-controlled ConstructionYard
+    /// deploy writes this after anchoring BasePlan node zero; it is distinct
+    /// from the launch/primary `base_center` at `HouseClass+0x5490`.
+    #[serde(default)]
+    pub base_plan_center: (u16, u16),
     /// Native `HouseClass+0x5700` BaseClass reservation writer outputs.
     #[serde(default)]
     pub base_reservation: BaseReservationState,
@@ -452,6 +458,7 @@ impl HouseState {
             alternate_base_center: (0, 0),
             build_const_order: Vec::new(),
             base_plan: crate::sim::base_plan::BasePlanState::default(),
+            base_plan_center: (0, 0),
             base_reservation: BaseReservationState::default(),
             tech_level,
             current_iq: 0,
