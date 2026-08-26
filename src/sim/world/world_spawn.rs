@@ -787,11 +787,8 @@ impl Simulation {
     /// exceptional state-2 establishment. Active evidence: constructor copy at
     /// 0x007355B6/0x00517D88 and UnitClass::Unlimbo @ 0x00737BA0.
     fn initialize_cloak_after_unlimbo(&mut self, stable_id: u64, rules: &RuleSet) {
-        let Some((category, veterancy, in_playfield, type_ref)) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| {
+        let Some((category, veterancy, in_playfield, type_ref)) =
+            self.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.category,
                     entity.veterancy,
@@ -808,8 +805,8 @@ impl Simulation {
         let Some(object) = rules.object(self.interner.resolve(type_ref)) else {
             return;
         };
-        let rank_cloak = veterancy >= 100 && object.veteran_cloak
-            || veterancy >= 200 && object.elite_cloak;
+        let rank_cloak =
+            veterancy >= 100 && object.veteran_cloak || veterancy >= 200 && object.elite_cloak;
         if !object.cloakable && !rank_cloak {
             return;
         }
@@ -1218,5 +1215,6 @@ fn stamp_building_cell_profile(
         ge.building_hidden_occupancy = Some(obj.hidden_occupancy);
         ge.base_reservation_spacing = obj.base_reservation_spacing;
         ge.determines_waypoint_edge = obj.factory == Some(FactoryType::BuildingType);
+        ge.build_const_eligible = obj.build_const_eligible;
     }
 }

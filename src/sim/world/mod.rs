@@ -4385,6 +4385,53 @@ impl Simulation {
         }
     }
 
+    /// Append one successfully committed BuildConst Building to its owning
+    /// House's native acquisition-ordered vector.
+    ///
+    /// gamemd-derived: `BuildingClass::Unlimbo @ 0x004411B6..0x00441223`.
+    pub(crate) fn append_live_build_const(&mut self, stable_id: u64) {
+        let Some(owner) = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Structure
+                && entity.build_const_eligible
+                && entity.lifecycle.object_alive
+                && !entity.lifecycle.in_limbo
+                && entity.lifecycle.cell_marked)
+                .then_some(entity.owner)
+        }) else {
+            return;
+        };
+        if let Some(house) = self.houses.get_mut(&owner)
+            && !house.build_const_order.contains(&stable_id)
+        {
+            house.build_const_order.push(stable_id);
+        }
+    }
+
+    /// Stable-remove a Building pointer from the owning House's BuildConst
+    /// vector before Limbo or owner transfer makes it unavailable.
+    ///
+    /// gamemd-derived: House pointer expiry around `0x004FBA1D` and
+    /// `BuildingClass::ChangeOwner @ 0x00448260`.
+    pub(crate) fn remove_build_const_from_owner(&mut self, stable_id: u64) {
+        let Some((owner, eligible)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .map(|entity| (entity.owner, entity.build_const_eligible))
+        else {
+            return;
+        };
+        if eligible
+            && let Some(house) = self.houses.get_mut(&owner)
+            && let Some(index) = house
+                .build_const_order
+                .iter()
+                .position(|&id| id == stable_id)
+        {
+            house.build_const_order.remove(index);
+        }
+    }
+
     /// Change an entity's owner through the authoritative ownership chokepoint.
     /// House counts, the `by_owner` index, and the entity owner move exactly once
     /// for every live transfer, regardless of whether capture or garrison code
@@ -4408,12 +4455,13 @@ impl Simulation {
         new_owner: InternedId,
         rules: Option<&RuleSet>,
     ) {
-        let Some((old_owner, category, has_spawn_manager)) =
+        let Some((old_owner, category, has_spawn_manager, build_const_eligible)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.owner,
                     entity.category,
                     entity.spawn_manager.is_some(),
+                    entity.build_const_eligible,
                 )
             })
         else {
@@ -4447,6 +4495,12 @@ impl Simulation {
         if has_spawn_manager {
             crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
         }
+        // gamemd-derived: `BuildingClass::ChangeOwner @ 0x00448260` removes
+        // this pointer from the old House BuildConst vector before delegating
+        // the Techno owner swap, then appends it to the new House tail.
+        if build_const_eligible {
+            self.remove_build_const_from_owner(stable_id);
+        }
         self.decrement_owned_count(&old_owner_name, category);
         // `TechnoClass::ChangeOwner` runs the live-detach targeting sweep next,
         // before the house swap: everything shooting at this object is released
@@ -4457,6 +4511,12 @@ impl Simulation {
         self.stop_all_targeting_on_detach(stable_id);
         self.substrate.entities.change_owner(stable_id, new_owner);
         self.increment_owned_count(&new_owner_name, category);
+        if build_const_eligible
+            && let Some(house) = self.houses.get_mut(&new_owner)
+            && !house.build_const_order.contains(&stable_id)
+        {
+            house.build_const_order.push(stable_id);
+        }
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
     }
 

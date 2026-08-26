@@ -307,7 +307,9 @@ use crate::sim::world::Simulation;
 // Bumped 103 -> 104: HouseState gains the serialized/hash-authoritative packed
 // alternate base cell written by trigger actions 137/138. Bincode encodes the
 // HouseState layout positionally, so an older record cannot supply this field.
-const SNAPSHOT_VERSION: u32 = 104;
+// Bumped 104 -> 105: persist the lifecycle-maintained per-House BuildConst
+// acquisition order and each entity's immutable resolved membership bit.
+const SNAPSHOT_VERSION: u32 = 105;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -495,7 +497,9 @@ pub enum SnapshotRestoreError {
     MapAuthorityCellStorageMismatch { expected: usize, found: usize },
     #[error("snapshot real-cell bridge flags do not match restored CellClass allocation")]
     RealCellBridgeFlagAuthorityMismatch,
-    #[error("snapshot dynamic terrain cell ({rx},{ry}) is absent from restored CellClass allocation")]
+    #[error(
+        "snapshot dynamic terrain cell ({rx},{ry}) is absent from restored CellClass allocation"
+    )]
     DynamicTerrainCellMissing { rx: u16, ry: u16 },
 }
 
@@ -2708,10 +2712,11 @@ mod tests {
     /// adds category-distinct resolved TaskForce member identities; 101 -> 102
     /// adds category-distinct resolved AITrigger token-6 identities; 102 -> 103
     /// adds WaveClass state and destroyable-cliff replacement CellClass values;
-    /// 103 -> 104 adds the packed House alternate base cell.
+    /// 103 -> 104 adds the packed House alternate base cell; 104 -> 105 adds
+    /// the ordered House BuildConst vector and immutable entity membership.
     #[test]
-    fn phase3_team_ai_wave_and_alternate_base_snapshot_version_is_104() {
-        assert_eq!(super::SNAPSHOT_VERSION, 104);
+    fn phase3_naval_build_const_snapshot_version_is_105() {
+        assert_eq!(super::SNAPSHOT_VERSION, 105);
     }
 
     #[test]
@@ -2729,7 +2734,7 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "alternate-base-center", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 104);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 105);
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.houses[&owner].base_center, Some((40, 50)));
@@ -2738,25 +2743,117 @@ mod tests {
     }
 
     #[test]
+    fn naval_build_const_order_and_membership_roundtrip_with_current_hash_only() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let country = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("GACNST");
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
+        house.build_const_order = vec![9, 3];
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let mut entity = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+            9,
+            4,
+            5,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            crate::map::entities::EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.build_const_eligible = true;
+        sim.substrate.entities.insert(entity);
+
+        let ordered_hash = sim.state_hash();
+        let historical_pre_v28 = sim.state_hash_before_lifecycle_v28_and_mission_v29();
+        let historical_pre_v29 = sim.state_hash_without_mission_v29();
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .build_const_order
+            .swap(0, 1);
+        assert_ne!(
+            sim.state_hash(),
+            ordered_hash,
+            "stored vector order is hashed"
+        );
+        assert_eq!(
+            sim.state_hash_before_lifecycle_v28_and_mission_v29(),
+            historical_pre_v28,
+            "the historical pre-v28 probe excludes v105 state"
+        );
+        assert_eq!(
+            sim.state_hash_without_mission_v29(),
+            historical_pre_v29,
+            "the historical pre-v29 probe excludes v105 state"
+        );
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .build_const_order
+            .swap(0, 1);
+
+        sim.substrate
+            .entities
+            .get_mut(9)
+            .unwrap()
+            .build_const_eligible = false;
+        assert_ne!(
+            sim.state_hash(),
+            ordered_hash,
+            "entity membership is hashed"
+        );
+        assert_eq!(
+            sim.state_hash_before_lifecycle_v28_and_mission_v29(),
+            historical_pre_v28
+        );
+        assert_eq!(sim.state_hash_without_mission_v29(), historical_pre_v29);
+        sim.substrate
+            .entities
+            .get_mut(9)
+            .unwrap()
+            .build_const_eligible = true;
+        assert_eq!(sim.state_hash(), ordered_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "naval-build-const", 0);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 105);
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+
+        assert_eq!(restored.houses[&owner].build_const_order, vec![9, 3]);
+        assert!(
+            restored
+                .substrate
+                .entities
+                .get(9)
+                .unwrap()
+                .build_const_eligible
+        );
+        assert_eq!(restored.state_hash(), ordered_hash);
+    }
+
+    #[test]
     fn gsi_04_05_house_and_techno_base_defense_state_roundtrip_with_hash() {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Computer1");
-        let mut house = crate::sim::house_state::HouseState::new(
-            owner, 0, None, false, 10_000, 10,
-        );
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 10_000, 10);
         house.strategy_emergency.set_state_four();
         house.strategy_emergency.set_all_to_hunt_bias();
         house.strategy_emergency.note_building_attack(-17);
         house.strategy_emergency.note_building_attacker(3);
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
-        let mut responder = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "E1",
-            "Computer1",
-            4,
-            5,
-        );
+        let mut responder =
+            crate::sim::game_entity::GameEntity::test_default(1, "E1", "Computer1", 4, 5);
         responder.base_defense_response.recruitable_a = false;
         responder.base_defense_response.recruitable_b = true;
         responder.base_defense_response.archive_target =
@@ -2773,16 +2870,15 @@ mod tests {
             category: crate::rules::object_type::ObjectCategory::Infantry,
             id: member_type,
         };
-        sim.team_script_vm.register_script(
-            crate::sim::team_script_vm::TeamScriptDefinition {
+        sim.team_script_vm
+            .register_script(crate::sim::team_script_vm::TeamScriptDefinition {
                 id: script_id,
                 source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
                 actions: vec![crate::sim::team_script_vm::TeamScriptAction {
                     action_id: 2,
                     argument: 0,
                 }],
-            },
-        );
+            });
         sim.team_script_vm.register_task_force(
             crate::sim::team_script_vm::TeamTaskForceDefinition {
                 id: task_force_id,
@@ -2794,19 +2890,17 @@ mod tests {
                 }],
             },
         );
-        sim.team_script_vm.register_team_type(
-            crate::sim::team_script_vm::TeamTypeDefinition {
+        sim.team_script_vm
+            .register_team_type(crate::sim::team_script_vm::TeamTypeDefinition {
                 id: team_type_id,
                 script_id,
                 task_force_id,
                 priority: 0,
                 is_base_defense: true,
-                combined_movement_zone:
-                    crate::rules::locomotor_type::MovementZone::Amphibious,
+                combined_movement_zone: crate::rules::locomotor_type::MovementZone::Amphibious,
                 base_zone_relation_enforced: false,
                 transport_crossing_required: true,
-            },
-        );
+            });
         sim.team_script_vm.register_ai_trigger(
             crate::sim::team_script_vm::TeamAiTriggerDefinition {
                 id: ai_trigger_id,
@@ -2880,10 +2974,7 @@ mod tests {
         let team = restored.team_script_vm.team(team_id).unwrap();
         assert!(team.members().is_empty());
         assert_eq!(restored.team_script_vm.registry_counts(), (1, 1, 1, 1));
-        assert_eq!(
-            restored.team_script_vm.team_type_order(),
-            &[team_type_id]
-        );
+        assert_eq!(restored.team_script_vm.team_type_order(), &[team_type_id]);
         let restored_team_type = restored
             .team_script_vm
             .team_type(team_type_id)
@@ -2894,18 +2985,9 @@ mod tests {
         );
         assert!(!restored_team_type.base_zone_relation_enforced);
         assert!(restored_team_type.transport_crossing_required);
-        assert_eq!(
-            restored.team_script_vm.script_order(),
-            &[script_id]
-        );
-        assert_eq!(
-            restored.team_script_vm.task_force_order(),
-            &[task_force_id]
-        );
-        assert_eq!(
-            restored.team_script_vm.ai_trigger_order(),
-            &[ai_trigger_id]
-        );
+        assert_eq!(restored.team_script_vm.script_order(), &[script_id]);
+        assert_eq!(restored.team_script_vm.task_force_order(), &[task_force_id]);
+        assert_eq!(restored.team_script_vm.ai_trigger_order(), &[ai_trigger_id]);
         let restored_script = restored
             .team_script_vm
             .script(script_id)
@@ -2928,10 +3010,7 @@ mod tests {
         assert_eq!(restored_task_force.entries.len(), 1);
         assert_eq!(restored_task_force.entries[0].member_type, member_identity);
         assert_eq!(restored_task_force.entries[0].count, 1);
-        assert_eq!(
-            restored_task_force.group,
-            7
-        );
+        assert_eq!(restored_task_force.group, 7);
         let restored_trigger = restored
             .team_script_vm
             .ai_trigger(ai_trigger_id)
@@ -3155,8 +3234,7 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
-        let header =
-            GameSnapshot::read_header(&bytes).expect("current building-overlay header");
+        let header = GameSnapshot::read_header(&bytes).expect("current building-overlay header");
         assert_eq!(header.version, SNAPSHOT_VERSION);
         let mut restored = GameSnapshot::load(&bytes)
             .expect("current building-overlay snapshot")
@@ -4094,7 +4172,11 @@ mod tests {
         );
         assert_eq!(
             restored_entity.sensor_deposit,
-            sim.substrate.entities.get(entity_id).unwrap().sensor_deposit
+            sim.substrate
+                .entities
+                .get(entity_id)
+                .unwrap()
+                .sensor_deposit
         );
         let same_hash = restored.state_hash();
         restored
@@ -4306,7 +4388,9 @@ mod tests {
             .clear(sim.resolved_terrain.as_ref(), 2, 0, 1);
         let expected_loaded_hash = sim.state_hash();
 
-        let mut restored = GameSnapshot::load(&bytes).expect("reservation snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("reservation snapshot")
+            .sim;
         restored
             .restore_after_snapshot_load()
             .expect("restore transient caches without rebuilding reservations");
@@ -5043,16 +5127,12 @@ mod tests {
             let pristine_bridge_cell = map_load_terrain.cell_mut(1, 1).unwrap();
             pristine_bridge_cell.level = 2;
             pristine_bridge_cell.slope_type = 1;
-            pristine_bridge_cell.bridge_facts.raw_flags =
-                MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+            pristine_bridge_cell.bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
         }
         let pristine_load_template = map_load_terrain.clone();
         let expected_ground_z = {
-            let target = crate::sim::projectile::cell_target_coord(
-                Some(&pristine_load_template),
-                1,
-                1,
-            );
+            let target =
+                crate::sim::projectile::cell_target_coord(Some(&pristine_load_template), 1, 1);
             let cell = pristine_load_template.cell(1, 1).unwrap();
             crate::util::lepton::cellclass_ground_height_leptons(
                 cell.level,
@@ -5107,8 +5187,7 @@ mod tests {
         process_dummy.reconstruct_for_map_resize();
         let hash_after_runtime_clear = live.state_hash();
         assert_ne!(
-            hash_after_runtime_clear,
-            hash_with_pristine_bridge,
+            hash_after_runtime_clear, hash_with_pristine_bridge,
             "the future-affecting real-cell value authority is hashed even with a clear dummy"
         );
         process_dummy.stamp_coord(-23, 17);
@@ -5142,16 +5221,14 @@ mod tests {
             expected_ground_z + crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32,
             "before direct value restore the pristine raw 0x100 selects the +416 target surface"
         );
-        let pristine_candidate_authority =
-            rebuilt_terrain.capture_real_cell_bridge_flags_0x1180();
+        let pristine_candidate_authority = rebuilt_terrain.capture_real_cell_bridge_flags_0x1180();
         let serialized_cleared_authority = restored.real_cell_bridge_flags_0x1180.clone();
         assert_ne!(serialized_cleared_authority, pristine_candidate_authority);
         let hash_with_serialized_clear = restored.state_hash();
         restored.real_cell_bridge_flags_0x1180 = pristine_candidate_authority.clone();
         let hash_if_pristine_template_were_authority = restored.state_hash();
         assert_ne!(
-            hash_with_serialized_clear,
-            hash_if_pristine_template_were_authority,
+            hash_with_serialized_clear, hash_if_pristine_template_were_authority,
             "the canonical hash distinguishes the saved clear from the pristine nonzero template"
         );
         restored.real_cell_bridge_flags_0x1180 = serialized_cleared_authority.clone();
@@ -5248,8 +5325,7 @@ mod tests {
             "accepted Resize keeps the restored real CellClass on the 90-lepton ground surface"
         );
         assert_eq!(
-            restored.real_cell_bridge_flags_0x1180,
-            serialized_cleared_authority,
+            restored.real_cell_bridge_flags_0x1180, serialized_cleared_authority,
             "accepted Resize clears only the dummy and retains saved real-cell hash authority"
         );
     }

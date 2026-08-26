@@ -5,6 +5,7 @@
 //! this module never depends on render, UI, sidebar, audio, or net.
 
 use crate::map::entities::EntityCategory;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::{CellRect, resolve_reservation_real_cell, scan_cell_rect};
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
@@ -18,7 +19,6 @@ use crate::sim::occupancy::{
 };
 use crate::sim::passenger::PassengerRole;
 use crate::sim::projectile::ProjectileTarget;
-use crate::rules::ruleset::RuleSet;
 use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 
@@ -716,6 +716,7 @@ impl Simulation {
                 logic_registered: false,
             };
         }
+        self.append_live_build_const(stable_id);
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
         self.mark_building_base_reservation(stable_id);
         self.lifecycle_outputs
@@ -930,7 +931,8 @@ impl Simulation {
             house_index,
         );
         if let Some(house) = self.houses.get_mut(&owner) {
-            house.base_reservation
+            house
+                .base_reservation
                 .update_bounds(rect.x, rect.y, rect.width, rect.height);
         } else {
             debug_assert!(false, "base-reservation owner must have HouseState");
@@ -1080,18 +1082,14 @@ impl Simulation {
         // the ground list. Each lookup selects only the first Building and calls
         // its repair-only writer immediately; identities are not deduplicated.
         scan_cell_rect(repair_rect, |x, y| {
-            let neighbor_id = resolve_reservation_real_cell(
-                self.resolved_terrain.as_ref(),
-                x,
-                y,
-            )
-            .and_then(|(rx, ry)| {
-                self.substrate.occupancy.first_building_on_layer(
-                    rx,
-                    ry,
-                    crate::sim::movement::locomotor::MovementLayer::Ground,
-                )
-            });
+            let neighbor_id = resolve_reservation_real_cell(self.resolved_terrain.as_ref(), x, y)
+                .and_then(|(rx, ry)| {
+                    self.substrate.occupancy.first_building_on_layer(
+                        rx,
+                        ry,
+                        crate::sim::movement::locomotor::MovementLayer::Ground,
+                    )
+                });
             if let Some(neighbor_id) = neighbor_id
                 && neighbor_id != stable_id
             {
@@ -2335,6 +2333,13 @@ impl Simulation {
             return;
         };
 
+        // gamemd-derived: the House pointer-expiry handler reached by this
+        // synchronous broadcast stable-removes a BuildConst Building while it
+        // is still alive, marked, and resolvable. Keeping the House mutation
+        // at this callback boundary also covers direct UnInit/destruction;
+        // Conceal's already-limbo return never reaches it.
+        self.remove_build_const_from_owner(expired_id);
+
         // `BulletClass::PointerExpired @ 0x004684E0` performs the packed
         // `MapClass::Get_CellClass @ 0x005657A0` lookup only for a matching
         // target. Its result pointer is stored at Bullet+0x10C: an allocated
@@ -2409,12 +2414,9 @@ impl Simulation {
                     system.done_spawning = true;
                 }
             } else if is_projectile {
-                let target_matches = self
-                    .projectiles
-                    .get(listener_id)
-                    .is_some_and(|projectile| {
-                        projectile.target == ProjectileTarget::Entity(expired_id)
-                    });
+                let target_matches = self.projectiles.get(listener_id).is_some_and(|projectile| {
+                    projectile.target == ProjectileTarget::Entity(expired_id)
+                });
                 let projectile_replacement_target = if !target_matches
                     || expired_is_high_flying
                     || expired_target_cell.is_none()
@@ -2469,9 +2471,7 @@ impl Simulation {
                     .waves
                     .pointer_expired(listener_id, expired_id)
                     .expect("Wave listener disappeared during expiry callback");
-                if owner_cleared
-                    && self.active_wave_links.get(&expired_id) == Some(&listener_id)
-                {
+                if owner_cleared && self.active_wave_links.get(&expired_id) == Some(&listener_id) {
                     // TechnoClass keeps the Wave link through the dying/deferred
                     // interval. Once the exact owner pointer expires, retaining
                     // this Rust projection would serialize a link whose Wave
