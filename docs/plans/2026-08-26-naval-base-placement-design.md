@@ -58,6 +58,11 @@ use only this helper; non-naval objects remain on the currently open ordinary pa
 separate mechanism is parity-closed. Failure emits no placement command and leaves the ready
 object queued, matching the existing deferred placement contract.
 
+Active retail always has MapClass, path, resolved CellClass terrain, map-size, and playfield
+authority. If a headless/compatibility caller lacks any input required for the exact FNPC
+projection or CellClass-center Z, naval selection returns failure; it must not use FNPC's
+no-terrain compatibility projection or invent a flat/104-lepton CellClass surface.
+
 ## Exact shipyard selector
 
 Scan the resolved `[General] Shipyard=` IDs in authored source order. For each candidate Building
