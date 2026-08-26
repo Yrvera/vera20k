@@ -2138,6 +2138,9 @@ fn stamp_building_cell_profile(
         ge.build_const_eligible = obj.build_const_eligible;
         ge.base_plan_type_index = obj.base_plan_type_index;
         ge.base_plan_is_defense = obj.is_base_defense;
+        // Projection of native BuildingType+0x408 after
+        // UnitTypeClass__FindOrAllocate @ 0x007480D0 has resolved
+        // `none`/`<none>` to a null pointer.
         ge.base_plan_has_undeploy_target = obj.undeploys_into.is_some();
     }
 }
