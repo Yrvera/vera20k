@@ -2236,6 +2236,10 @@ pub struct RuleSet {
     /// Uppercase type ID → handle. Uppercase keys give O(1) case-insensitive
     /// resolution, matching the engine's case-insensitive find-or-allocate.
     object_index: HashMap<String, TypeHandle>,
+    /// Per-native-registry identity authority. Unlike the broad lookup above,
+    /// this retains distinct types when malformed/custom rules list the same
+    /// ID in more than one category.
+    object_category_index: HashMap<(ObjectCategory, String), TypeHandle>,
     /// All weapons indexed by ID (e.g., "105mm" → WeaponType).
     weapons: HashMap<String, WeaponType>,
     /// All warheads indexed by ID (e.g., "AP" → WarheadType).
@@ -2392,6 +2396,8 @@ impl RuleSet {
     pub fn from_ini(ini: &IniFile) -> Result<Self, RulesError> {
         let mut object_list: Vec<ObjectType> = Vec::new();
         let mut object_index: HashMap<String, TypeHandle> = HashMap::new();
+        let mut object_category_index: HashMap<(ObjectCategory, String), TypeHandle> =
+            HashMap::new();
         let mut infantry_ids: Vec<String> = Vec::new();
         let mut vehicle_ids: Vec<String> = Vec::new();
         let mut aircraft_ids: Vec<String> = Vec::new();
@@ -2448,23 +2454,36 @@ impl RuleSet {
                         obj.base_reservation_spacing = Some(ai_base_spacing);
                     }
                     let key = id.to_ascii_uppercase();
-                    // Find-or-allocate: a name differing only by case reuses its
-                    // slot (last definition wins), matching the engine's single
-                    // type per name. Surface any merge so a malformed INI is visible.
-                    match object_index.get(&key) {
-                        Some(&TypeHandle(idx)) => {
+                    let category_key = (category, key.clone());
+                    // Find-or-allocate is per native type registry. A duplicate
+                    // within one registry reuses its slot; the same ID in a
+                    // different registry remains a distinct native type.
+                    let handle = match object_category_index.get(&category_key).copied() {
+                        Some(TypeHandle(idx)) => {
                             log::warn!(
-                                "Object '{}' merges onto an existing case-duplicate type",
-                                id
+                                "Object '{}' merges onto an existing case-duplicate {:?} type",
+                                id,
+                                category,
                             );
                             object_list[idx as usize] = obj;
+                            TypeHandle(idx)
                         }
                         None => {
                             let handle = TypeHandle(object_list.len() as u32);
                             object_list.push(obj);
-                            object_index.insert(key, handle);
+                            object_category_index.insert(category_key, handle);
+                            handle
                         }
+                    };
+                    if object_index.get(&key).is_some_and(|prior| *prior != handle) {
+                        log::warn!(
+                            "Object '{}' is registered in multiple native type categories",
+                            id
+                        );
                     }
+                    // Preserve the pre-existing broad lookup's later-registry
+                    // winner for callers that do not own a category order.
+                    object_index.insert(key, handle);
                 } else {
                     log::trace!(
                         "Object '{}' listed in [{}] but has no section",
@@ -2790,6 +2809,7 @@ impl RuleSet {
         let mut rules = RuleSet {
             object_list,
             object_index,
+            object_category_index,
             weapons,
             warheads,
             projectiles,
@@ -2879,6 +2899,24 @@ impl RuleSet {
     /// Look up a game object by ID (case-insensitive, engine parity).
     pub fn object(&self, id: &str) -> Option<&ObjectType> {
         self.type_handle(id).map(|h| self.object_by_handle(h))
+    }
+
+    /// Resolve a TaskForce member through the exact native family order used
+    /// by `gamemd.exe 0x004C4EF0`: Infantry, Unit, then Aircraft. BuildingType
+    /// is never searched.
+    pub(crate) fn task_force_member_object(&self, id: &str) -> Option<&ObjectType> {
+        let key = id.to_ascii_uppercase();
+        [
+            ObjectCategory::Infantry,
+            ObjectCategory::Vehicle,
+            ObjectCategory::Aircraft,
+        ]
+        .into_iter()
+        .find_map(|category| {
+            self.object_category_index
+                .get(&(category, key.clone()))
+                .map(|handle| self.object_by_handle(*handle))
+        })
     }
 
     /// First registered BuildingType whose merged ART `ToOverlay=` resolves to

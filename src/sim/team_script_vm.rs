@@ -1519,10 +1519,11 @@ mod tests {
         use crate::rules::ini_parser::IniFile;
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
-            "[InfantryTypes]\n0=E1\n\
+            "[InfantryTypes]\n0=E1\n1=DUP\n\
              [VehicleTypes]\n0=TANK\n1=BOAT\n2=ODDTRANSPORT\n\
-             [BuildingTypes]\n0=BLD\n\
+             [BuildingTypes]\n0=BLD\n1=DUP\n\
              [E1]\nStrength=100\nMovementZone=Infantry\n\
+             [DUP]\nStrength=100\nTechLevel=6\nMovementZone=Infantry\n\
              [TANK]\nStrength=100\nMovementZone=Normal\n\
              [BOAT]\nStrength=100\nMovementZone=Water\nNaval=yes\nPassengers=0\n\
              [ODDTRANSPORT]\nStrength=100\nMovementZone=Amphibious\nNaval=yes\nPassengers=-3\n\
@@ -1530,7 +1531,7 @@ mod tests {
         ))
         .expect("zone derivation rules");
         let fixed = IniFile::from_str(
-            "[TeamTypes]\n0=EMPTY\n1=COUNTS\n2=PURE_NAVAL\n3=TRANSPORT\n4=BASE\n5=INVALID\n6=BUILDING\n\
+            "[TeamTypes]\n0=EMPTY\n1=COUNTS\n2=PURE_NAVAL\n3=TRANSPORT\n4=BASE\n5=INVALID\n6=BUILDING\n7=DUPLICATE\n\
              [EMPTY]\nScript=S\nTaskForce=EMPTY_TF\n\
              [COUNTS]\nScript=S\nTaskForce=COUNTS_TF\n\
              [PURE_NAVAL]\nScript=S\nTaskForce=NAV_TF\n\
@@ -1538,14 +1539,16 @@ mod tests {
              [BASE]\nScript=S\nTaskForce=TRANSPORT_TF\nIsBaseDefense=yes\n\
              [INVALID]\nScript=S\nTaskForce=INVALID_TF\n\
              [BUILDING]\nScript=S\nTaskForce=BUILDING_TF\n\
+             [DUPLICATE]\nScript=S\nTaskForce=DUP_TF\n\
              [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
-             [TaskForces]\n0=EMPTY_TF\n1=COUNTS_TF\n2=NAV_TF\n3=TRANSPORT_TF\n4=INVALID_TF\n5=BUILDING_TF\n\
+             [TaskForces]\n0=EMPTY_TF\n1=COUNTS_TF\n2=NAV_TF\n3=TRANSPORT_TF\n4=INVALID_TF\n5=BUILDING_TF\n6=DUP_TF\n\
              [EMPTY_TF]\nGroup=-1\n\
              [COUNTS_TF]\n0=0,E1\n1=-7,TANK\n\
              [NAV_TF]\n0=1,BOAT\n\
              [TRANSPORT_TF]\n0=1,ODDTRANSPORT\n\
              [INVALID_TF]\n0=1,TANK\n1=1,BOAT\n2=1,E1\n\
-             [BUILDING_TF]\n0=1,BLD\n",
+             [BUILDING_TF]\n0=1,BLD\n\
+             [DUP_TF]\n0=1,DUP\n",
         );
         let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
         let mut interner = StringInterner::new();
@@ -1614,6 +1617,26 @@ mod tests {
                 .unwrap()
                 .entries
                 .is_empty()
+        );
+
+        assert_eq!(
+            rules.object("DUP").unwrap().category,
+            crate::rules::object_type::ObjectCategory::Building,
+            "the broad lookup preserves its later-registry winner"
+        );
+        assert_eq!(
+            rules.task_force_member_object("DUP").unwrap().category,
+            crate::rules::object_type::ObjectCategory::Infantry,
+            "TaskForce resolution stops on the first native family"
+        );
+        let duplicate = definition("DUPLICATE");
+        assert_eq!(duplicate.combined_movement_zone, MovementZone::Infantry);
+        assert_eq!(
+            vm.task_force(interner.get("DUP_TF").unwrap())
+                .unwrap()
+                .entries
+                .len(),
+            1
         );
     }
 

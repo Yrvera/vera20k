@@ -52,11 +52,11 @@ Movement row `9` is `Fly` in the retail 13-row passability matrix. The derivatio
 
 `TaskForceClass::ReadINI @ 0x006E8420` reads up to six numbered entries. Each positive-length value is parsed as `"%d,%s"` by `0x004C4EF0`, which returns the signed count and resolved type pointer. Resolution order is:
 
-1. `0x00523C90` over the vector at `0x00A8E34C` — `AircraftTypeClass`;
+1. `0x00523C90` over the vector at `0x00A8E34C` — `InfantryTypeClass`;
 2. `0x00747370` over the vector at `0x00A83CE4` — `UnitTypeClass`;
-3. `0x0041CAA0` over the vector at `0x00A8B21C` — `InfantryTypeClass`.
+3. `0x0041CAA0` over the vector at `0x00A8B21C` — `AircraftTypeClass`.
 
-There is no BuildingType lookup. At `0x006E8496..0x006E84C1`, the parser writes the count and pointer at the current compact index, then increments `TaskForce+0x9C` only when the pointer is non-null. A later valid entry overwrites an unresolved slot, so the final array contains only successfully resolved Aircraft, Unit, or Infantry entries in authored order.
+There is no BuildingType lookup. At `0x006E8496..0x006E84C1`, the parser writes the count and pointer at the current compact index, then increments `TaskForce+0x9C` only when the pointer is non-null. A later valid entry overwrites an unresolved slot, so the final array contains only successfully resolved Infantry, Unit, or Aircraft entries in authored order. The order remains observable for custom rules that register the same case-insensitive ID in more than one native type family.
 
 Consequences for parity:
 
@@ -139,6 +139,7 @@ Observed stock facts:
 - 66 unique member type IDs, all with rules sections and explicit valid `MovementZone` values;
 - no zero or negative member counts; maximum count 20;
 - no TeamType references an empty TaskForce;
+- no type ID is shared across the stock Infantry, Vehicle, Aircraft, or Building registries;
 - eight naval member types: `DEST`, `AEGIS`, `CARRIER`, `SUB`, `DRED`, `HYD`, `SQD`, `BSUB`;
 - none of those eight has nonzero `Passengers`;
 - seven TeamTypes contain a naval member and twelve are `IsBaseDefense`; the sets do not overlap;
@@ -192,7 +193,7 @@ Current Rust evidence inspected for this report:
 Required implementation sequence:
 
 1. preserve signed `Passengers` parsing;
-2. restrict TaskForce member resolution to Aircraft, Unit/vehicle, or Infantry and keep unresolved members diagnostic;
+2. resolve TaskForce members in native Infantry, Unit/vehicle, Aircraft order, preserve category-distinct duplicate IDs, and keep unresolved members diagnostic;
 3. implement the exact matrix selection rule, including strict tie handling and explicit active-binary `Invalid` absorption;
 4. retain combined row, enforcement, and crossing-required fields on every TeamType definition;
 5. after all final registries and triggers are resolved, derive every TeamType in source order from its compact resolved TaskForce;
@@ -242,7 +243,7 @@ Not investigated or claimed by this report:
 | OQ03 | What happens for null/empty TaskForces? | null is invalid/dereferenced; empty count preserves defaults before base-defense override. |
 | OQ04 | Do authored member counts participate? | no; only compact resolved type pointers participate. |
 | OQ05 | What do `+0xCCE/+0x5E0/+0x5B4` mean? | `Naval`, signed `Passengers`, and `MovementZone`. |
-| OQ06 | Which member categories resolve? | Aircraft, Unit, Infantry, in that order; not Building. |
+| OQ06 | Which member categories resolve? | Infantry, Unit, Aircraft, in that order; not Building. |
 | OQ07 | What flags do naval members set? | zero passengers disables enforcement; signed nonzero sets crossing-required. |
 | OQ08 | What exactly does `0x005889F0` do? | exhaustive 13-candidate matrix selection described in section 6. |
 | OQ09 | How do invalid and `-1` behave? | no bounds guard; `-1` is absorbing in this binary; consumer becomes map-memory-dependent. |
