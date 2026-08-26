@@ -320,6 +320,7 @@ pub(crate) struct TriggerInputs<'a> {
     pub triggers: &'a TriggerMap,
     pub events: &'a EventMap,
     pub actions: &'a ActionMap,
+    pub waypoints: &'a std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
     /// Bound match rules used by action callbacks that share ordinary Techno
     /// runtime calculations (not reparsed or substituted by trigger data).
     pub rules: Option<&'a RuleSet>,
@@ -3592,10 +3593,11 @@ impl Simulation {
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
+        waypoints: &std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
         rules: Option<&RuleSet>,
     ) -> Vec<TriggerEffect> {
         let mut rt = std::mem::take(&mut self.trigger_runtime);
-        let effects = rt.advance_at_frame(
+        let effects = rt.advance_at_frame_with_waypoints(
             self.session.binary_frame,
             graph,
             triggers,
@@ -3603,6 +3605,7 @@ impl Simulation {
             actions,
             Some(self),
             rules,
+            waypoints,
         );
         self.trigger_runtime = rt;
         effects
@@ -3829,6 +3832,7 @@ impl Simulation {
             inputs.triggers,
             inputs.events,
             inputs.actions,
+            inputs.waypoints,
             inputs.rules,
         );
         self.trigger_effects.extend(effects);
