@@ -302,6 +302,14 @@ pub(crate) enum LifecycleTestEvent {
     WaveDamageReceiverSelected {
         wave_id: u64,
         target_id: u64,
+        scenario_rng_state: u64,
+    },
+    /// The FireAt transaction has committed every receiver/effect owned by
+    /// this shot. Wave registration happens at this boundary, but the new
+    /// Logic tail must not dispatch until all later pre-existing callbacks.
+    CombatFireEffectsCommitted {
+        attacker_id: u64,
+        scenario_rng_state: u64,
     },
     UninitAliveCleared {
         stable_id: u64,
@@ -2001,6 +2009,7 @@ impl Simulation {
                 .map(|(&stable_id, _)| stable_id),
         );
         listeners.extend(self.projectiles.iter().map(|(&stable_id, _)| stable_id));
+        listeners.extend(self.waves.iter().map(|(&stable_id, _)| stable_id));
         listeners.sort_unstable();
         debug_assert!(
             listeners.windows(2).all(|pair| pair[0] != pair[1]),
@@ -2338,7 +2347,8 @@ impl Simulation {
             let is_anim = self.substrate.anims.contains_key(listener_id);
             let is_particle = self.substrate.particle_systems.contains_key(listener_id);
             let is_projectile = self.projectiles.get(listener_id).is_some();
-            if !is_entity && !is_anim && !is_particle && !is_projectile {
+            let is_wave = self.waves.get(listener_id).is_some();
+            if !is_entity && !is_anim && !is_particle && !is_projectile && !is_wave {
                 continue;
             }
 
@@ -2453,6 +2463,20 @@ impl Simulation {
                             target,
                         },
                     );
+                }
+            } else if is_wave {
+                let (owner_cleared, _) = self
+                    .waves
+                    .pointer_expired(listener_id, expired_id)
+                    .expect("Wave listener disappeared during expiry callback");
+                if owner_cleared
+                    && self.active_wave_links.get(&expired_id) == Some(&listener_id)
+                {
+                    // TechnoClass keeps the Wave link through the dying/deferred
+                    // interval. Once the exact owner pointer expires, retaining
+                    // this Rust projection would serialize a link whose Wave
+                    // owner is now null.
+                    self.active_wave_links.remove(&expired_id);
                 }
             }
         }
@@ -2588,6 +2612,12 @@ impl Simulation {
         }
         let projectile = self.projectiles.remove(stable_id);
         let wave = self.waves.remove(stable_id);
+        if let Some(wave) = wave.as_ref()
+            && let Some(owner_id) = wave.owner_id
+            && self.active_wave_links.get(&owner_id) == Some(&stable_id)
+        {
+            self.active_wave_links.remove(&owner_id);
+        }
         if let Some(system) = particle_system.as_ref()
             && let Some(owner_id) = system.owner_entity
             && let Some(owner) = self.substrate.entities.get_mut(owner_id)

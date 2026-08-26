@@ -77,6 +77,7 @@ fn resolve_once(
         false,
         77,
         67,
+        false,
         &mut rng,
         Some(sounds),
         &mut hooks,

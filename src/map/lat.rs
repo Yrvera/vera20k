@@ -242,32 +242,37 @@ fn apply_lat_cell(
 ) -> u32 {
     let x = i32::from(cells[cell_index].rx);
     let y = i32::from(cells[cell_index].ry);
-    let mut changes = 0;
+    let cardinal = CARDINAL_OFFSETS.map(|(dx, dy)| neighbor_tile(cells, by_coord, x + dx, y + dy));
+    let old_tile = cells[cell_index].tile_index;
+    let new_tile = lat_fixed_tile(old_tile, cardinal, lat_config);
+    cells[cell_index].tile_index = new_tile;
+    u32::from(old_tile != new_tile)
+}
+
+/// Runtime form of the LAT half for one CellClass. Native changes only the tile
+/// identity here; the owning caller decides whether/when RecalcAttributes runs.
+pub(crate) fn lat_fixed_tile(
+    mut tile: i32,
+    cardinal_tiles: [i32; 4],
+    lat_config: &LatConfig,
+) -> i32 {
     for ground in &lat_config.grounds {
-        if !ground.is_enabled() || !ground.contains(cells[cell_index].tile_index) {
+        if !ground.is_enabled() || !ground.contains(tile) {
             continue;
         }
-
         let mut mask = 0u8;
-        for (bit, (dx, dy)) in CARDINAL_OFFSETS.iter().copied().enumerate() {
-            let neighbor = neighbor_tile(cells, by_coord, x + dx, y + dy);
+        for (bit, neighbor) in cardinal_tiles.into_iter().enumerate() {
             if !ground.contains(neighbor) && !ground.exempts(neighbor) {
                 mask |= 1u8 << bit;
             }
         }
-
-        let new_tile = if mask == 0 {
+        tile = if mask == 0 {
             ground.base_tile
         } else {
             ground.lat_base + i32::from(mask)
         };
-        if cells[cell_index].tile_index != new_tile {
-            changes += 1;
-        }
-        cells[cell_index].tile_index = new_tile;
-        // Native changes tile identity only; preserve sub_tile.
     }
-    changes
+    tile
 }
 
 fn ramp_range_contains(tile: i32, base: i32, last_offset: i32) -> bool {

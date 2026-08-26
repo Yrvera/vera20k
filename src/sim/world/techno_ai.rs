@@ -44,6 +44,72 @@ pub(crate) struct ObjectAiCtx<'a> {
 use crate::sim::production::StepOutcome;
 
 impl Simulation {
+    pub(crate) fn clear_active_wave_link(&mut self, wave_id: u64) {
+        self.active_wave_links
+            .retain(|_, linked_wave_id| *linked_wave_id != wave_id);
+    }
+
+    pub(crate) fn wave_update_context(
+        &self,
+        wave_id: u64,
+    ) -> crate::sim::wave::WaveUpdateContext {
+        use crate::sim::combat::TargetKind;
+        use crate::sim::projectile::ProjectileCoord;
+
+        let Some(wave) = self.waves.get(wave_id) else {
+            return crate::sim::wave::WaveUpdateContext {
+                owner_position: None,
+                owner_current_target: None,
+                target_position: None,
+            };
+        };
+        // WaveClass keeps raw owner/target pointers through the represented
+        // dying interval. Only PointerExpired makes either identity null.
+        let owner = wave
+            .owner_id
+            .and_then(|owner_id| self.substrate.entities.get(owner_id));
+        let owner_position = owner.map(|entity| {
+            ProjectileCoord::new(
+                i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+                crate::sim::combat::object_world_z_leptons(
+                    entity,
+                    self.resolved_terrain.as_ref(),
+                ),
+            )
+        });
+        let owner_current_target = owner
+            .and_then(|entity| entity.attack_target.as_ref())
+            .map(|attack| attack.target);
+        let target_position = match wave.target_ref {
+            Some(TargetKind::Entity(target_id)) => self
+                .substrate
+                .entities
+                .get(target_id)
+                .map(|entity| {
+                    ProjectileCoord::new(
+                        i32::from(entity.position.rx) * 256
+                            + entity.position.sub_x.to_num::<i32>(),
+                        i32::from(entity.position.ry) * 256
+                            + entity.position.sub_y.to_num::<i32>(),
+                        crate::sim::combat::object_world_z_leptons(
+                            entity,
+                            self.resolved_terrain.as_ref(),
+                        ),
+                    )
+                }),
+            Some(TargetKind::Cell(rx, ry)) => Some(self.wave_cell_target_position(rx, ry)),
+            None => None,
+        };
+        crate::sim::wave::WaveUpdateContext {
+            owner_position,
+            owner_current_target,
+            target_position,
+        }
+    }
+}
+
+impl Simulation {
     /// Object-AI stage: the authoritative per-object Mission host.
     ///
     /// Walks the live LogicVector order via `for_each_live_object` — the same
@@ -221,10 +287,17 @@ impl Simulation {
             return true;
         }
         if self.waves.get(id).is_some() {
-            let (request, alive) = self
+            let context = self.wave_update_context(id);
+            let terrain = self.resolved_terrain.as_ref();
+            let (request, result) = self
                 .waves
-                .advance_one(id)
+                .advance_one(id, context, terrain)
                 .expect("wave remained present for its Logic slot");
+            // Fade-terminal UnInit dispatches exact pointer expiry before the
+            // stale AI-20 cell vector is damaged on AI-21.
+            if result.uninitialized {
+                self.clear_active_wave_link(id);
+            }
             if let Some(request) = request {
                 if let Some(rules) = rules {
                     self.commit_logic_wave_damage_request(rules, ctx.overlay_registry, &request);
@@ -234,7 +307,7 @@ impl Simulation {
                     self.pending_wave_damage_requests.push(request);
                 }
             }
-            if !alive {
+            if !result.alive {
                 let retired = self.retire_non_entity_object(id);
                 debug_assert!(retired);
             }

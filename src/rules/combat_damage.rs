@@ -27,6 +27,9 @@ pub struct CombatDamageDefaults {
     /// Signed post-Verses cap used by ApplyWarheadDamage. The executable's
     /// constructor default is 1000; stock rulesmd.ini overrides it to 10000.
     pub max_damage: i32,
+    /// Signed, unclamped destroyable-cliff chance compared against one
+    /// Scenario RandomRanged(0,99) draw. Native constructor default is 100.
+    pub collapse_chance: i32,
     /// Global `DeathWeapon=` used only when a dying type has neither an
     /// explicit death weapon nor a live current-weapon fallback.
     pub death_weapon: Option<String>,
@@ -55,6 +58,7 @@ impl CombatDamageDefaults {
     pub fn from_ini_section(section: &IniSection) -> Self {
         Self {
             max_damage: section.get_i32("MaxDamage").unwrap_or(1000),
+            collapse_chance: section.get_i32("CollapseChance").unwrap_or(100),
             death_weapon: read_name(section, "DeathWeapon"),
             default_large_grey_smoke_system: read_name(section, "DefaultLargeGreySmokeSystem"),
             default_small_grey_smoke_system: read_name(section, "DefaultSmallGreySmokeSystem"),
@@ -73,6 +77,7 @@ impl Default for CombatDamageDefaults {
     fn default() -> Self {
         Self {
             max_damage: 1000,
+            collapse_chance: 100,
             death_weapon: None,
             default_large_grey_smoke_system: None,
             default_small_grey_smoke_system: None,

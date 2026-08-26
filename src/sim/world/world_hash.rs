@@ -348,6 +348,8 @@ impl Simulation {
             // schema tag and the value authority introduced at snapshot v90.
             b"real-cell-bridge-flags-v2".hash(&mut hasher);
             self.real_cell_bridge_flags_0x1180.hash(&mut hasher);
+            b"dynamic-terrain-cells-v1".hash(&mut hasher);
+            self.dynamic_terrain_cells.hash(&mut hasher);
         }
         self.hash_overlay_grid(&mut hasher);
         self.hash_smudge_grid(&mut hasher);
@@ -474,17 +476,15 @@ impl Simulation {
     }
 
     fn hash_waves(&self, hasher: &mut impl Hasher) {
+        self.active_wave_links.len().hash(hasher);
+        for (&owner_id, &wave_id) in &self.active_wave_links {
+            owner_id.hash(hasher);
+            wave_id.hash(hasher);
+        }
         self.waves.len().hash(hasher);
         for (&id, wave) in self.waves.iter() {
             id.hash(hasher);
-            wave.id.hash(hasher);
-            wave.wave_type.hash(hasher);
-            wave.source.hash(hasher);
-            wave.target.hash(hasher);
-            wave.lifetime.hash(hasher);
-            wave.intensity.hash(hasher);
-            wave.recorded_cells.hash(hasher);
-            wave.damage_payload.hash(hasher);
+            wave.hash(hasher);
         }
     }
 

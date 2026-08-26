@@ -302,7 +302,9 @@ use crate::sim::world::Simulation;
 // resolved TechnoType identity rather than an ambiguous interned name alone.
 // Bumped 101 -> 102: retain AITrigger token 6's category-distinct resolved
 // TechnoType identity rather than an ambiguous interned name alone.
-const SNAPSHOT_VERSION: u32 = 102;
+// Bumped 102 -> 103: WaveClass persists live ownership/fade/CellClass identity,
+// and destroyable-cliff replacement persists exact changed CellClass values.
+const SNAPSHOT_VERSION: u32 = 103;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -490,6 +492,8 @@ pub enum SnapshotRestoreError {
     MapAuthorityCellStorageMismatch { expected: usize, found: usize },
     #[error("snapshot real-cell bridge flags do not match restored CellClass allocation")]
     RealCellBridgeFlagAuthorityMismatch,
+    #[error("snapshot dynamic terrain cell ({rx},{ry}) is absent from restored CellClass allocation")]
+    DynamicTerrainCellMissing { rx: u16, ry: u16 },
 }
 
 /// Derived facts produced by the transactional map-authority restore seam.
@@ -1258,6 +1262,49 @@ fn restore_object_references(
         }
     }
 
+    let wave_ids = sim.waves.iter().map(|(&id, _)| id).collect::<BTreeSet<_>>();
+    for (&wave_id, wave) in sim.waves.iter() {
+        if let Some(owner_id) = wave.owner_id {
+            require_resolved_reference(
+                entity_ids.contains(&owner_id),
+                "WaveStore",
+                wave_id,
+                "owner_id",
+                "EntityStore",
+                owner_id,
+            )?;
+        }
+        if let Some(TargetKind::Entity(target_id)) = wave.target_ref {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "WaveStore",
+                wave_id,
+                "target_ref",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+    }
+    for (&owner_id, &wave_id) in &sim.active_wave_links {
+        require_resolved_reference(
+            entity_ids.contains(&owner_id),
+            "ActiveWaveLinks",
+            owner_id,
+            "owner",
+            "EntityStore",
+            owner_id,
+        )?;
+        require_resolved_reference(
+            wave_ids.contains(&wave_id)
+                && sim.waves.get(wave_id).and_then(|wave| wave.owner_id) == Some(owner_id),
+            "ActiveWaveLinks",
+            owner_id,
+            "wave",
+            "WaveStore",
+            wave_id,
+        )?;
+    }
+
     for &object_id in &sim.substrate.pending_delete {
         require_resolved_reference(
             identities.contains_key(&object_id),
@@ -1547,6 +1594,20 @@ impl Simulation {
                 terrain_width,
                 terrain_height,
             });
+        }
+
+        // Reproject runtime isometric replacements onto the pristine
+        // app-supplied map before overlay, bridge, and zone reconstruction.
+        {
+            let terrain = self
+                .resolved_terrain
+                .as_mut()
+                .expect("validated terrain cache");
+            for (&(rx, ry), state) in &self.dynamic_terrain_cells {
+                if !terrain.apply_dynamic_cell_state(rx, ry, state) {
+                    return Err(SnapshotRestoreError::DynamicTerrainCellMissing { rx, ry });
+                }
+            }
         }
 
         // Native CellClass::Load restores allocated real-cell flag words as
@@ -2642,10 +2703,11 @@ mod tests {
     /// verification proved that token is required but discarded; 99 -> 100
     /// adds the three post-load TeamType zone-derivation fields; 100 -> 101
     /// adds category-distinct resolved TaskForce member identities; 101 -> 102
-    /// adds category-distinct resolved AITrigger token-6 identities.
+    /// adds category-distinct resolved AITrigger token-6 identities; 102 -> 103
+    /// adds WaveClass state and destroyable-cliff replacement CellClass values.
     #[test]
-    fn phase3_team_ai_registry_snapshot_version_is_102() {
-        assert_eq!(super::SNAPSHOT_VERSION, 102);
+    fn phase3_team_ai_and_wave_snapshot_version_is_103() {
+        assert_eq!(super::SNAPSHOT_VERSION, 103);
     }
 
     #[test]
@@ -2883,6 +2945,143 @@ mod tests {
             (true, true, true, -12, 1800)
         );
         assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn wave_active_inactive_dummy_links_roundtrip_with_identical_hash() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::components::Health;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::projectile::ProjectileCoord;
+        use crate::sim::wave::{Wave, WaveRecordedCell, WaveUpdateContext};
+        use crate::util::native_x87::NativeF64Bits;
+
+        let mut sim = Simulation::new();
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("DLPH");
+        let mut owner_ids = Vec::new();
+        for ordinal in 1..=3 {
+            let stable_id = sim.allocate_stable_id();
+            owner_ids.push(stable_id);
+            let mut entity = GameEntity::new_at_frame_zero_for_test(
+                stable_id,
+                ordinal,
+                2,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 200,
+                    max: 200,
+                },
+                type_ref,
+                EntityCategory::Unit,
+                0,
+                5,
+                false,
+            );
+            entity.in_logic_vector = true;
+            sim.substrate.entities.insert(entity);
+            sim.substrate
+                .logic
+                .try_push(stable_id)
+                .expect("owner Logic registration");
+        }
+
+        let active_id = sim.allocate_stable_id();
+        let active_target = crate::sim::combat::TargetKind::Cell(8, 2);
+        let active_source = ProjectileCoord::new(256, 512, 0);
+        let active_endpoint = ProjectileCoord::new(2048, 512, 0);
+        let mut active = Wave::new_owned(
+            0,
+            owner_ids[0],
+            active_target,
+            active_source,
+            active_endpoint,
+        );
+        assert!(!active.initialize(
+            WaveUpdateContext {
+                owner_position: Some(active_source),
+                owner_current_target: Some(active_target),
+                target_position: Some(active_endpoint),
+            },
+            None,
+        ));
+        let constructor_direction = active.direction_octant;
+        let moved_endpoint = ProjectileCoord::new(0, 512, 0);
+        let _ = active.advance(
+            WaveUpdateContext {
+                owner_position: Some(active_source),
+                owner_current_target: Some(active_target),
+                target_position: Some(moved_endpoint),
+            },
+            None,
+        );
+        assert_eq!(
+            active.direction_octant, constructor_direction,
+            "live geometry refresh retains constructor-only +0x1CC"
+        );
+        let moved_edges = active.edge_geometry;
+        sim.admit_wave(active_id, active);
+        sim.active_wave_links.insert(owner_ids[0], active_id);
+
+        let inactive_id = sim.allocate_stable_id();
+        let mut inactive = Wave::new_owned(
+            0,
+            owner_ids[1],
+            crate::sim::combat::TargetKind::Cell(9, 2),
+            ProjectileCoord::new(512, 512, 0),
+            ProjectileCoord::new(2304, 512, 50),
+        );
+        inactive.active_geometry = false;
+        inactive.decaying = true;
+        inactive.fade_in = NativeF64Bits::from_bits(0x3fe0_0000_0000_0000);
+        inactive.fade_out = NativeF64Bits::from_bits(0x3fc9_9999_a000_0000);
+        inactive.direction_octant = 6;
+        inactive.replace_recorded_cells(vec![WaveRecordedCell::real(7, 2)]);
+        sim.admit_wave(inactive_id, inactive);
+        sim.active_wave_links.insert(owner_ids[1], inactive_id);
+
+        let dummy_id = sim.allocate_stable_id();
+        let mut dummy = Wave::new_owned(
+            0,
+            owner_ids[2],
+            crate::sim::combat::TargetKind::Cell(10, 2),
+            ProjectileCoord::new(768, 512, 0),
+            ProjectileCoord::new(2560, 512, 50),
+        );
+        dummy.active_geometry = false;
+        dummy.decaying = true;
+        dummy.direction_octant = 2;
+        dummy.replace_recorded_cells(vec![WaveRecordedCell::shared_dummy()]);
+        sim.admit_wave(dummy_id, dummy);
+        sim.active_wave_links.insert(owner_ids[2], dummy_id);
+
+        let expected_hash = sim.state_hash();
+        let bytes = GameSnapshot::save(&sim, 0, 0, "wave-state.map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("Wave snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("Wave identities restore structurally");
+
+        assert_eq!(restored.state_hash(), expected_hash);
+        assert_eq!(restored.active_wave_links, sim.active_wave_links);
+        assert_eq!(restored.waves.get(active_id), sim.waves.get(active_id));
+        assert_eq!(
+            restored.waves.get(active_id).unwrap().direction_octant,
+            constructor_direction
+        );
+        assert_eq!(
+            restored.waves.get(active_id).unwrap().edge_geometry,
+            moved_edges
+        );
+        assert_eq!(restored.waves.get(inactive_id), sim.waves.get(inactive_id));
+        assert_eq!(restored.waves.get(dummy_id), sim.waves.get(dummy_id));
+        assert_eq!(
+            restored.waves.get(dummy_id).unwrap().recorded_cells,
+            vec![WaveRecordedCell::shared_dummy()],
+        );
     }
 
     #[test]

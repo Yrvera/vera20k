@@ -2602,6 +2602,403 @@ fn combat_test_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("combat test rules should parse")
 }
 
+fn sonic_wave_test_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=DLPH\n1=TARGET\n\n\
+         [DLPH]\nStrength=200\nArmor=light\nSpeed=8\nPrimary=SonicZap\nElitePrimary=SonicZapE\n\n\
+         [TARGET]\nStrength=100\nArmor=wood\n\n\
+         [SonicZap]\nDamage=4\nAmbientDamage=10\nROF=20\nRange=6\nWarhead=SonicWH\nIsSonic=yes\n\n\
+         [SonicZapE]\nDamage=8\nAmbientDamage=15\nROF=20\nRange=6\nWarhead=SonicWH\nIsSonic=yes\n\n\
+         [SonicWH]\nWood=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+    ))
+    .expect("Sonic Wave fixture")
+}
+
+fn sonic_tail_order_test_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=DLPH\n1=LATER\n2=TARGET\n\n\
+         [DLPH]\nStrength=200\nArmor=light\nSpeed=8\nSight=8\nPrimary=SonicZap\n\n\
+         [LATER]\nStrength=200\nArmor=light\nSpeed=8\nSight=8\nPrimary=LaterGun\n\n\
+         [TARGET]\nStrength=100\nArmor=none\nSpeed=1\n\n\
+         [SonicZap]\nDamage=4\nAmbientDamage=10\nROF=20\nRange=6\nWarhead=SonicWH\nIsSonic=yes\n\n\
+         [LaterGun]\nDamage=7\nROF=20\nRange=6\nWarhead=LaterWH\n\n\
+         [SonicWH]\nWood=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n\n\
+         [LaterWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+    ))
+    .expect("Sonic Logic-tail ordering fixture")
+}
+
+fn sonic_fire_event(
+    sim: &mut Simulation,
+    attacker_id: u64,
+    target_id: u64,
+) -> SimFireEvent {
+    SimFireEvent {
+        attacker_id,
+        attacker_type_ref: sim.interner.intern("DLPH"),
+        weapon_slot: crate::sim::combat::combat_weapon::WeaponSlot::Primary,
+        weapon_id: sim.interner.intern("SonicZap"),
+        facing: 0,
+        veterancy: 0,
+        origin_snapshot: FireOriginSnapshot {
+            rx: 0,
+            ry: 0,
+            sub_x: SimFixed::from_num(0),
+            sub_y: SimFixed::from_num(0),
+            z: 0,
+            facing: 0,
+            category: EntityCategory::Unit,
+            burst_index: 0,
+        },
+        target: crate::sim::combat::TargetKind::Entity(target_id),
+        report_sound_id: None,
+        garrison_muzzle_index: None,
+        occupant_anim: None,
+    }
+}
+
+#[test]
+fn sonic_constructor_dead_pointer_link_lives_until_deferred_delete_at_239() {
+    let rules = sonic_wave_test_rules();
+    let mut sim = Simulation::new();
+    let firer_id = sim.allocate_stable_id();
+    let target_id = sim.allocate_stable_id();
+    let owner = sim.interner.intern("Americans");
+    let firer_type = sim.interner.intern("DLPH");
+    let target_type = sim.interner.intern("TARGET");
+    let mut firer = GameEntity::test_default(firer_id, "DLPH", "Americans", 0, 0);
+    firer.owner = owner;
+    firer.type_ref = firer_type;
+    firer.position.sub_x = SimFixed::from_num(0);
+    firer.position.sub_y = SimFixed::from_num(0);
+    let mut target = GameEntity::test_default(target_id, "TARGET", "Russians", 0, 0);
+    target.type_ref = target_type;
+    target.position.sub_x = SimFixed::from_num(239);
+    target.position.sub_y = SimFixed::from_num(0);
+    sim.substrate.entities.insert(firer);
+    sim.substrate.entities.insert(target);
+    let event = sonic_fire_event(&mut sim, firer_id, target_id);
+
+    sim.create_wave_from_fire_event(&rules, None, &event);
+
+    let wave_id = *sim
+        .active_wave_links
+        .get(&firer_id)
+        .expect("dead pointer stored");
+    assert!(sim.waves.get(wave_id).is_some());
+    assert!(!sim.waves.get(wave_id).unwrap().in_logic_vector);
+    assert_eq!(sim.substrate.pending_delete, vec![wave_id]);
+
+    sim.process_pending_delete();
+    assert!(!sim.active_wave_links.contains_key(&firer_id));
+    assert!(sim.waves.get(wave_id).is_none());
+}
+
+#[test]
+fn sonic_constructor_at_240_registers_then_runs_at_same_pass_tail() {
+    let rules = sonic_wave_test_rules();
+    let mut sim = Simulation::new();
+    let firer_id = sim.allocate_stable_id();
+    let target_id = sim.allocate_stable_id();
+    let owner = sim.interner.intern("Americans");
+    let firer_type = sim.interner.intern("DLPH");
+    let target_type = sim.interner.intern("TARGET");
+    let mut firer = GameEntity::test_default(firer_id, "DLPH", "Americans", 0, 0);
+    firer.owner = owner;
+    firer.type_ref = firer_type;
+    firer.position.sub_x = SimFixed::from_num(0);
+    firer.position.sub_y = SimFixed::from_num(0);
+    let mut target = GameEntity::test_default(target_id, "TARGET", "Russians", 0, 0);
+    target.type_ref = target_type;
+    target.position.sub_x = SimFixed::from_num(240);
+    target.position.sub_y = SimFixed::from_num(0);
+    sim.substrate.entities.insert(firer);
+    sim.substrate.entities.insert(target);
+    let event = sonic_fire_event(&mut sim, firer_id, target_id);
+
+    sim.create_wave_from_fire_event(&rules, None, &event);
+
+    let wave_id = *sim
+        .active_wave_links
+        .get(&firer_id)
+        .expect("live owner link");
+    let wave = sim.waves.get(wave_id).expect("registered Wave");
+    assert!(wave.in_logic_vector);
+    assert_eq!(wave.lifetime, 100, "FireAt only registers the Logic tail");
+
+    sim.visit_combat_appended_wave_tail(&BTreeSet::new(), &rules, None);
+
+    let wave = sim.waves.get(wave_id).expect("Wave survives first tail AI");
+    assert_eq!(wave.lifetime, 99, "first AI belongs to the firing pass");
+    assert_eq!(
+        wave.target.z, 50,
+        "type-0 uses the live target-side Sonic Z adjustment"
+    );
+    assert!(sim.substrate.pending_delete.is_empty());
+}
+
+#[test]
+fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh() {
+    let rules = sonic_wave_test_rules();
+    let mut sim = Simulation::new();
+    let terrain = ResolvedTerrainGrid::from_cells(0, 0, Vec::new());
+    terrain.test_set_dummy_cell_level_slope(2, 0);
+    let process_dummy = terrain.shared_cell_dummy();
+    process_dummy.set_bridge_flags_0x1180(crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL);
+    sim.install_resolved_terrain_for_new_map(terrain);
+    assert!(
+        process_dummy.same_identity(&sim.effective_shared_cell_dummy()),
+        "the Wave lookup must retain the map's process-global dummy identity",
+    );
+
+    let firer_id = sim.allocate_stable_id();
+    let owner = sim.interner.intern("Americans");
+    let firer_type = sim.interner.intern("DLPH");
+    let mut firer = GameEntity::test_default(firer_id, "DLPH", "Americans", 0, 0);
+    firer.owner = owner;
+    firer.type_ref = firer_type;
+    firer.position.sub_x = SimFixed::from_num(0);
+    firer.position.sub_y = SimFixed::from_num(0);
+    firer.attack_target = Some(AttackTarget::for_cell(u16::MAX, 7));
+    sim.substrate.entities.insert(firer);
+
+    let mut event = sonic_fire_event(&mut sim, firer_id, u64::MAX);
+    event.target = crate::sim::combat::TargetKind::Cell(u16::MAX, 7);
+    sim.create_wave_from_fire_event(&rules, None, &event);
+
+    let wave_id = *sim
+        .active_wave_links
+        .get(&firer_id)
+        .expect("off-map Cell target produces a live Wave");
+    let wave = sim.waves.get(wave_id).expect("registered Wave");
+    assert_eq!(
+        wave.target,
+        crate::sim::projectile::ProjectileCoord::new(-128, 1_920, 646),
+        "CellClass ground 2*90 plus structural +416 and Sonic +50",
+    );
+    assert_eq!(process_dummy.snapshot().coord, (-1, 7));
+
+    process_dummy.stamp_coord(-9, -9);
+    let context = sim.wave_update_context(wave_id);
+    assert_eq!(process_dummy.snapshot().coord, (-1, 7));
+    assert_eq!(
+        context.target_position,
+        Some(crate::sim::projectile::ProjectileCoord::new(
+            -128, 1_920, 596,
+        )),
+        "every live refresh re-enters GetCellClass then GetTargetCoords",
+    );
+    assert_eq!(process_dummy.snapshot().level, 2);
+    assert_eq!(
+        process_dummy.snapshot().bridge_flags_0x1180,
+        crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL,
+        "coordinate restamps preserve the dummy's live non-coordinate fields",
+    );
+
+    sim.visit_combat_appended_wave_tail(&BTreeSet::new(), &rules, None);
+    let wave = sim.waves.get(wave_id).expect("Wave survives first live AI");
+    assert_eq!(wave.lifetime, 99);
+    assert_eq!(wave.target.z, 646);
+    assert_eq!(
+        process_dummy.snapshot().coord,
+        (0, 6),
+        "UpdateCells keeps the shared identity but leaves the final miss restamp live",
+    );
+}
+
+#[test]
+fn sonic_fire_registers_immediately_but_later_techno_fires_before_wave_tail_ai() {
+    let rules = sonic_tail_order_test_rules();
+    let mut sim = Simulation::with_seed(0x5EED_760F);
+    sim.input_delay_ticks = 0;
+    let terrain = ResolvedTerrainGrid::from_cells(
+        8,
+        3,
+        (0..3)
+            .flat_map(|ry| (0..8).map(move |rx| bridgehead_base_cell(rx, ry)))
+            .collect(),
+    );
+    sim.install_resolved_terrain_for_new_map(terrain);
+    let heights = empty_heights();
+    let dolphin_id = sim
+        .spawn_object("DLPH", "Americans", 0, 0, 64, &rules, &heights)
+        .expect("Dolphin placed first in Logic order");
+    let later_id = sim
+        .spawn_object("LATER", "Americans", 0, 2, 64, &rules, &heights)
+        .expect("later shooter placed after Dolphin");
+    let sonic_endpoint_id = sim
+        .spawn_object("TARGET", "Russians", 6, 0, 0, &rules, &heights)
+        .expect("Sonic endpoint");
+    let wave_receiver_id = sim
+        .spawn_object("TARGET", "Russians", 5, 0, 0, &rules, &heights)
+        .expect("cell-list Wave receiver");
+    let later_target_id = sim
+        .spawn_object("TARGET", "Russians", 2, 2, 0, &rules, &heights)
+        .expect("later shooter's target");
+    assert!(crate::sim::combat::issue_attack_command(
+        &mut sim.substrate.entities,
+        dolphin_id,
+        sonic_endpoint_id,
+        Some(&rules),
+        &sim.interner,
+    ));
+    assert!(crate::sim::combat::issue_attack_command(
+        &mut sim.substrate.entities,
+        later_id,
+        later_target_id,
+        Some(&rules),
+        &sim.interner,
+    ));
+    sim.clear_lifecycle_test_events_for_test();
+
+    let path = PathGrid::test_all_passable(8, 3);
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&path), None, 67);
+
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(later_target_id)
+            .expect("later target survives")
+            .health
+            .current,
+        93,
+        "the later pre-existing Techno completed its FireAt effects",
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(wave_receiver_id)
+            .expect("Wave receiver survives")
+            .health
+            .current,
+        90,
+        "the appended Wave still damages its first recorded cell this frame",
+    );
+    let wave_id = *sim
+        .active_wave_links
+        .get(&dolphin_id)
+        .expect("Dolphin retains the live Wave link");
+    assert_eq!(
+        sim.waves.get(wave_id).expect("Wave remains live").lifetime,
+        99,
+        "the new Logic tail owns its first AI in the firing pass",
+    );
+
+    let events = sim.lifecycle_test_events_for_test();
+    let dolphin_boundary = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            LifecycleTestEvent::CombatFireEffectsCommitted {
+                attacker_id,
+                scenario_rng_state,
+            } if *attacker_id == dolphin_id => Some((index, *scenario_rng_state)),
+            _ => None,
+        })
+        .expect("Dolphin FireAt boundary traced");
+    let later_boundary = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            LifecycleTestEvent::CombatFireEffectsCommitted {
+                attacker_id,
+                scenario_rng_state,
+            } if *attacker_id == later_id => Some((index, *scenario_rng_state)),
+            _ => None,
+        })
+        .expect("later FireAt boundary traced");
+    let wave_receiver = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            LifecycleTestEvent::WaveDamageReceiverSelected {
+                wave_id: selected_wave,
+                target_id,
+                scenario_rng_state,
+            } if *selected_wave == wave_id && *target_id == wave_receiver_id => {
+                Some((index, *scenario_rng_state))
+            }
+            _ => None,
+        })
+        .expect("Wave receiver boundary traced");
+    assert!(dolphin_boundary.0 < later_boundary.0);
+    assert!(
+        later_boundary.0 < wave_receiver.0,
+        "later FireAt/effects must finish before the appended Wave receiver walk",
+    );
+    assert_ne!(
+        dolphin_boundary.1, later_boundary.1,
+        "the later FireAt consumed its own ROF RNG before the Wave",
+    );
+    assert_eq!(
+        later_boundary.1, wave_receiver.1,
+        "the Wave receiver begins from the RNG state left by the later Techno",
+    );
+}
+
+#[test]
+fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
+    let rules = sonic_wave_test_rules();
+    let mut sim = Simulation::with_seed(0x5EED_6240);
+    sim.input_delay_ticks = 0;
+    let mut cells = (0..8)
+        .map(|rx| bridgehead_base_cell(rx, 0))
+        .collect::<Vec<_>>();
+    for cell in &mut cells {
+        cell.level = 2;
+        cell.template_height = 2;
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = true;
+        cell.bridge_deck_level = 6;
+        cell.bridge_facts.raw_flags |= crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+    }
+    sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(8, 1, cells));
+    let heights = empty_heights();
+    let dolphin_id = sim
+        .spawn_object("DLPH", "Americans", 0, 0, 64, &rules, &heights)
+        .expect("bridge Dolphin");
+    let receiver_id = sim
+        .spawn_object("TARGET", "Russians", 5, 0, 0, &rules, &heights)
+        .expect("bridge receiver");
+    for id in [dolphin_id, receiver_id] {
+        sim.remove_entity_occupancy(id);
+        sim.substrate.entities.get_mut(id).expect("live entity").on_bridge = true;
+        sim.add_entity_occupancy(id);
+    }
+    assert!(crate::sim::combat::issue_attack_cell_command(
+        &mut sim.substrate.entities,
+        dolphin_id,
+        6,
+        0,
+        Some(&rules),
+        &sim.interner,
+    ));
+
+    let path = PathGrid::test_all_passable(8, 1);
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&path), None, 67);
+
+    let wave_id = *sim
+        .active_wave_links
+        .get(&dolphin_id)
+        .expect("cell FireAt registered its Wave");
+    let wave = sim.waves.get(wave_id).expect("same-frame Wave survives");
+    assert_eq!(wave.lifetime, 99, "the appended tail ran in the firing pass");
+    assert_eq!(
+        wave.target.z, 646,
+        "level 2 CellClass target is 2*90 + structural 416 + Sonic 50",
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(receiver_id)
+            .expect("bridge receiver survives")
+            .health
+            .current,
+        90,
+        "Wave Z 646 meets the level-2 equality threshold 624 and walks AltObject",
+    );
+}
+
 fn short_game_defeat_test_rules() -> RuleSet {
     let ini = IniFile::from_str(
         "[General]\nBaseUnit=AMCV,SMCV,PCV\n\n\

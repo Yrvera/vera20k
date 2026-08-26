@@ -1062,6 +1062,12 @@ pub(crate) fn load_map_initial_with_assets(
     // `[Tubes]` are valid in ordinary .map/.mpr/.mmx content, not just .SED
     // random maps.  OnceLock keeps repeated map loads read-only and cheap.
     crate::map::rmg::trig::install_from_dir(&ra2_dir);
+    if !crate::map::retail_trig::wave_tables_available() {
+        anyhow::bail!(
+            "{} does not provide the verified gamemd sine/Acos tables required by stock Sonic Wave simulation",
+            ra2_dir.join("gamemd.exe").display()
+        );
+    }
 
     // Check RA2_QUICKPLAY env var: if it names a .map/.mpr file, load that directly.
     // UI-selected map name/path (requested_map) takes precedence.

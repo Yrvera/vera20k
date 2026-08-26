@@ -117,6 +117,20 @@ impl SmudgeGrid {
         cleared
     }
 
+    /// Raw CellClass Mark(1) writer: clear only this cell's native smudge slot
+    /// and data byte, without expanding to the owning Rust footprint.
+    pub(crate) fn clear_cell_slot(&mut self, rx: u16, ry: u16) -> bool {
+        let Some(index) = self.index_of(rx, ry) else {
+            return false;
+        };
+        if self.cells[index] == SmudgeCell::default() {
+            return false;
+        }
+        self.cells[index] = SmudgeCell::default();
+        self.dirty_cells.push((rx, ry));
+        true
+    }
+
     pub fn iter_occupied(&self) -> impl Iterator<Item = (u16, u16, &SmudgeCell)> {
         self.cells.iter().enumerate().filter_map(move |(idx, c)| {
             if c.type_id.is_some() {

@@ -131,7 +131,7 @@ pub struct BridgeOracleAnchor {
     pub direction: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 /// Canonical ramp direction from TS++ TIBSUN_DEFINES.H (slope types 1-4).
 /// These are the four basic full-edge ramps where two adjacent corners are raised.
 ///
@@ -150,7 +150,7 @@ pub enum RampDirection {
 /// bridge SHP body frames directly from these labels; rendering follows the
 /// runtime bridge state-byte family (`Axis::NS => 0..=8`, `Axis::EW => 9..=17`).
 /// Low bridges have no height offset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BridgeDirection {
     /// BRIDGE1, BRIDGEB1 — EW direction. Height offset = CellHeight + 1 = 16px.
     EastWest,
@@ -160,7 +160,7 @@ pub enum BridgeDirection {
     Low,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeLayer {
     pub overlay_id: u8,
     pub overlay_name: String,
@@ -556,6 +556,199 @@ impl CellClassBridgeFlagState {
     }
 }
 
+/// Serialized behavior authority for a CellClass whose isometric tile was
+/// replaced after map construction. The live ResolvedTerrainGrid is derived
+/// and skipped by Simulation snapshots, so collapse projects these exact
+/// fields into Simulation and reapplies them after map reconstruction.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DynamicTerrainCellState {
+    pub final_tile_index: i32,
+    pub final_sub_tile: u8,
+    pub is_wood_bridge_repair_tile: bool,
+    pub level: u8,
+    pub filled_clear: bool,
+    pub tileset_index: Option<u16>,
+    pub land_type: u8,
+    pub yr_cell_land_type: u8,
+    pub slope_type: u8,
+    pub template_height: u8,
+    pub height_in_pixels: i8,
+    pub render_offset_x: i32,
+    pub render_offset_y: i32,
+    pub terrain_class: TerrainClass,
+    pub speed_costs: SpeedCostProfile,
+    pub is_water: bool,
+    pub is_cliff_like: bool,
+    pub is_rough: bool,
+    pub is_road: bool,
+    pub accepts_smudge: bool,
+    pub allows_tiberium: bool,
+    pub variant: u8,
+    pub has_ramp: bool,
+    pub canonical_ramp: Option<RampDirection>,
+    pub ground_walk_blocked: bool,
+    pub overlay_blocks: bool,
+    pub overlay_zone_type: Option<u8>,
+    pub zone_type: u8,
+    pub base_ground_walk_blocked: bool,
+    pub base_build_blocked: bool,
+    pub base_land_type: u8,
+    pub base_yr_cell_land_type: u8,
+    pub base_terrain_class: TerrainClass,
+    pub base_speed_costs: SpeedCostProfile,
+    pub build_blocked: bool,
+    pub has_bridge_deck: bool,
+    pub bridge_walkable: bool,
+    pub bridge_transition: bool,
+    pub bridge_deck_level: u8,
+    pub bridge_layer: Option<BridgeLayer>,
+    pub bridge_facts: BridgeCellFacts,
+    pub radar_left: [u8; 3],
+    pub radar_right: [u8; 3],
+    pub has_damaged_data: bool,
+    pub bridgehead_anchor_class_at_load:
+        Option<crate::map::bridge_facts::BridgeheadAnchorClass>,
+}
+
+impl DynamicTerrainCellState {
+    pub(crate) fn capture(cell: &ResolvedTerrainCell) -> Self {
+        Self {
+            final_tile_index: cell.final_tile_index,
+            final_sub_tile: cell.final_sub_tile,
+            is_wood_bridge_repair_tile: cell.is_wood_bridge_repair_tile,
+            level: cell.level,
+            filled_clear: cell.filled_clear,
+            tileset_index: cell.tileset_index,
+            land_type: cell.land_type,
+            yr_cell_land_type: cell.yr_cell_land_type,
+            slope_type: cell.slope_type,
+            template_height: cell.template_height,
+            height_in_pixels: cell.height_in_pixels,
+            render_offset_x: cell.render_offset_x,
+            render_offset_y: cell.render_offset_y,
+            terrain_class: cell.terrain_class,
+            speed_costs: cell.speed_costs,
+            is_water: cell.is_water,
+            is_cliff_like: cell.is_cliff_like,
+            is_rough: cell.is_rough,
+            is_road: cell.is_road,
+            accepts_smudge: cell.accepts_smudge,
+            allows_tiberium: cell.allows_tiberium,
+            variant: cell.variant,
+            has_ramp: cell.has_ramp,
+            canonical_ramp: cell.canonical_ramp,
+            ground_walk_blocked: cell.ground_walk_blocked,
+            overlay_blocks: cell.overlay_blocks,
+            overlay_zone_type: cell.overlay_zone_type,
+            zone_type: cell.zone_type,
+            base_ground_walk_blocked: cell.base_ground_walk_blocked,
+            base_build_blocked: cell.base_build_blocked,
+            base_land_type: cell.base_land_type,
+            base_yr_cell_land_type: cell.base_yr_cell_land_type,
+            base_terrain_class: cell.base_terrain_class,
+            base_speed_costs: cell.base_speed_costs,
+            build_blocked: cell.build_blocked,
+            has_bridge_deck: cell.has_bridge_deck,
+            bridge_walkable: cell.bridge_walkable,
+            bridge_transition: cell.bridge_transition,
+            bridge_deck_level: cell.bridge_deck_level,
+            bridge_layer: cell.bridge_layer.clone(),
+            bridge_facts: cell.bridge_facts,
+            radar_left: cell.radar_left,
+            radar_right: cell.radar_right,
+            has_damaged_data: cell.has_damaged_data,
+            bridgehead_anchor_class_at_load: cell.bridgehead_anchor_class_at_load,
+        }
+    }
+
+    pub(crate) fn apply(&self, cell: &mut ResolvedTerrainCell) {
+        cell.final_tile_index = self.final_tile_index;
+        cell.final_sub_tile = self.final_sub_tile;
+        cell.is_wood_bridge_repair_tile = self.is_wood_bridge_repair_tile;
+        cell.level = self.level;
+        cell.filled_clear = self.filled_clear;
+        cell.tileset_index = self.tileset_index;
+        cell.land_type = self.land_type;
+        cell.yr_cell_land_type = self.yr_cell_land_type;
+        cell.slope_type = self.slope_type;
+        cell.template_height = self.template_height;
+        cell.height_in_pixels = self.height_in_pixels;
+        cell.render_offset_x = self.render_offset_x;
+        cell.render_offset_y = self.render_offset_y;
+        cell.terrain_class = self.terrain_class;
+        cell.speed_costs = self.speed_costs;
+        cell.is_water = self.is_water;
+        cell.is_cliff_like = self.is_cliff_like;
+        cell.is_rough = self.is_rough;
+        cell.is_road = self.is_road;
+        cell.accepts_smudge = self.accepts_smudge;
+        cell.allows_tiberium = self.allows_tiberium;
+        cell.variant = self.variant;
+        cell.has_ramp = self.has_ramp;
+        cell.canonical_ramp = self.canonical_ramp;
+        cell.ground_walk_blocked = self.ground_walk_blocked;
+        cell.overlay_blocks = self.overlay_blocks;
+        cell.overlay_zone_type = self.overlay_zone_type;
+        cell.zone_type = self.zone_type;
+        cell.base_ground_walk_blocked = self.base_ground_walk_blocked;
+        cell.base_build_blocked = self.base_build_blocked;
+        cell.base_land_type = self.base_land_type;
+        cell.base_yr_cell_land_type = self.base_yr_cell_land_type;
+        cell.base_terrain_class = self.base_terrain_class;
+        cell.base_speed_costs = self.base_speed_costs;
+        cell.build_blocked = self.build_blocked;
+        cell.has_bridge_deck = self.has_bridge_deck;
+        cell.bridge_walkable = self.bridge_walkable;
+        cell.bridge_transition = self.bridge_transition;
+        cell.bridge_deck_level = self.bridge_deck_level;
+        cell.bridge_layer = self.bridge_layer.clone();
+        cell.bridge_facts = self.bridge_facts;
+        cell.radar_left = self.radar_left;
+        cell.radar_right = self.radar_right;
+        cell.has_damaged_data = self.has_damaged_data;
+        cell.bridgehead_anchor_class_at_load = self.bridgehead_anchor_class_at_load;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DynamicTilePrototype {
+    metadata: TileMetadata,
+    accepts_smudge: bool,
+    allows_tiberium: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SparseTileTemplate {
+    tile_id: u16,
+    width: u8,
+    height: u8,
+    entries: Vec<Option<DynamicTilePrototype>>,
+}
+
+#[derive(Debug, Clone)]
+struct DestroyableCliffCatalog {
+    destroyable_start: u16,
+    old: [SparseTileTemplate; 2],
+    replacements: [SparseTileTemplate; 4],
+    lat_config: lat::LatConfig,
+    slope_config: lat::SlopeFixupConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DestroyableCliffFamily {
+    A,
+    B,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DestroyableCliffMutation {
+    pub family: DestroyableCliffFamily,
+    pub origin: (i16, i16),
+    pub original_footprint: Vec<(u16, u16)>,
+    pub animation_cells: Vec<(i16, i16)>,
+    pub changed_cells: Vec<(u16, u16)>,
+}
+
 /// Send-safe identity handle for MapClass's process-global fallback `CellClass`.
 ///
 /// Active YR owns one object at `0x00ABDC50`. `MapClass::Get_CellClass` at
@@ -827,6 +1020,9 @@ pub struct ResolvedTerrainGrid {
     /// Terrain animations the load resolved, in the native anti-diagonal cell
     /// order so a spawner reproduces the engine's animation creation order.
     tile_animations: Vec<TerrainTileAnimation>,
+    /// Immutable active-theater sparse TMP authority used only by the two
+    /// verified destroyable-cliff callers.
+    destroyable_cliff_catalog: Option<DestroyableCliffCatalog>,
 }
 
 impl ResolvedTerrainGrid {
@@ -859,6 +1055,7 @@ impl ResolvedTerrainGrid {
             bridge_set_start: None,
             wood_bridge_set_start: None,
             tile_animations: Vec::new(),
+            destroyable_cliff_catalog: None,
         }
     }
 
@@ -1137,6 +1334,318 @@ impl ResolvedTerrainGrid {
         self.cells.get_mut(idx)
     }
 
+    pub(crate) fn apply_dynamic_cell_state(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        state: &DynamicTerrainCellState,
+    ) -> bool {
+        let Some(index) = self.index(rx, ry) else {
+            return false;
+        };
+        state.apply(&mut self.cells[index]);
+        self.radar_color_valid[index] = true;
+        self.damaged_radar_metadata[index] = None;
+        true
+    }
+
+    pub(crate) fn is_destroyable_cliff(&self, rx: u16, ry: u16) -> bool {
+        let Some(catalog) = self.destroyable_cliff_catalog.as_ref() else {
+            return false;
+        };
+        self.cell(rx, ry).is_some_and(|cell| {
+            cell.final_tile_index == i32::from(catalog.destroyable_start)
+                || cell.final_tile_index == i32::from(catalog.destroyable_start) + 1
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_install_destroyable_cliff_catalog(&mut self, destroyable_start: u16) {
+        fn prototype(template_height: u8, slope_type: u8) -> DynamicTilePrototype {
+            DynamicTilePrototype {
+                metadata: TileMetadata {
+                    tileset_index: Some(1),
+                    land_type: LandType::Clear.as_index(),
+                    yr_cell_land_type: LandType::Clear.as_index(),
+                    slope_type,
+                    template_height,
+                    terrain_class: TerrainClass::Clear,
+                    radar_left: [slope_type, 1, 2],
+                    radar_right: [slope_type, 3, 4],
+                    ..TileMetadata::default()
+                },
+                accepts_smudge: true,
+                allows_tiberium: false,
+            }
+        }
+        fn template(
+            tile_id: u16,
+            width: u8,
+            height: u8,
+            template_height: u8,
+            slope_type: u8,
+            holes: &[usize],
+        ) -> SparseTileTemplate {
+            let mut entries = vec![
+                Some(prototype(template_height, slope_type));
+                usize::from(width) * usize::from(height)
+            ];
+            for &index in holes {
+                entries[index] = None;
+            }
+            SparseTileTemplate {
+                tile_id,
+                width,
+                height,
+                entries,
+            }
+        }
+        self.destroyable_cliff_catalog = Some(DestroyableCliffCatalog {
+            destroyable_start,
+            old: [
+                template(destroyable_start, 6, 4, 1, 0, &[0, 5, 18, 23]),
+                template(destroyable_start + 1, 4, 6, 1, 0, &[0, 3, 20, 23]),
+            ],
+            replacements: [
+                template(destroyable_start + 100, 3, 4, 1, 1, &[0, 9]),
+                template(destroyable_start + 101, 3, 4, 1, 2, &[2, 11]),
+                template(destroyable_start + 102, 4, 3, 1, 3, &[8, 11]),
+                template(destroyable_start + 103, 4, 3, 1, 4, &[0, 3]),
+            ],
+            lat_config: lat::LatConfig {
+                grounds: Vec::new(),
+            },
+            slope_config: lat::SlopeFixupConfig {
+                ramp_base: -1,
+                ramp_smooth: -1,
+            },
+        });
+    }
+
+    /// gamemd-derived: `MapClass::CollapseDestroyableCliff @ 0x00581140`
+    /// terrain half. The world owner surrounds this with zones, detach/dirty,
+    /// and AnimClass construction so all non-grid authorities remain ordered.
+    pub(crate) fn collapse_destroyable_cliff_terrain(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        mut clear_replacement_cell: impl FnMut(u16, u16),
+    ) -> Option<DestroyableCliffMutation> {
+        let catalog = self.destroyable_cliff_catalog.clone()?;
+        let selected = self.cell(rx, ry)?;
+        let family = match selected.final_tile_index {
+            tile if tile == i32::from(catalog.destroyable_start) => DestroyableCliffFamily::A,
+            tile if tile == i32::from(catalog.destroyable_start) + 1 => {
+                DestroyableCliffFamily::B
+            }
+            _ => return None,
+        };
+        let old = &catalog.old[match family {
+            DestroyableCliffFamily::A => 0,
+            DestroyableCliffFamily::B => 1,
+        }];
+        let sub_tile = selected.final_sub_tile;
+        let (sub_x, sub_y) = match family {
+            DestroyableCliffFamily::A => (sub_tile % 6, sub_tile / 6),
+            DestroyableCliffFamily::B => (sub_tile & 3, sub_tile >> 2),
+        };
+        let origin = (
+            (rx as i16).wrapping_sub(i16::from(sub_x)),
+            (ry as i16).wrapping_sub(i16::from(sub_y)),
+        );
+
+        let coord_for = |x: u8, y: u8| -> Option<(u16, u16)> {
+            let x = origin.0.wrapping_add(i16::from(x));
+            let y = origin.1.wrapping_add(i16::from(y));
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                return None;
+            };
+            Some((x, y))
+        };
+        let mut original_footprint = Vec::new();
+        for y in 0..old.height {
+            for x in 0..old.width {
+                let index = usize::from(y) * usize::from(old.width) + usize::from(x);
+                let Some(prototype) = old.entries.get(index).and_then(Option::as_ref) else {
+                    continue;
+                };
+                let Some(coord) = coord_for(x, y) else {
+                    continue;
+                };
+                if !self
+                    .cell(coord.0, coord.1)
+                    .is_some_and(|cell| !cell.outside_playfield)
+                {
+                    continue;
+                }
+                original_footprint.push(coord);
+                if let Some(cell) = self.cell_mut(coord.0, coord.1)
+                    && cell.final_tile_index == i32::from(old.tile_id)
+                    && usize::from(cell.final_sub_tile) == index
+                {
+                    cell.final_tile_index = 0xFFFF;
+                    cell.final_sub_tile = 0;
+                    cell.level = (cell.level as i8)
+                        .wrapping_sub(prototype.metadata.template_height as i8)
+                        as u8;
+                }
+            }
+        }
+
+        let stamps: [(usize, (i16, i16)); 2] = match family {
+            DestroyableCliffFamily::A => [(0, origin), (1, (origin.0.wrapping_add(3), origin.1))],
+            DestroyableCliffFamily::B => [(3, origin), (2, (origin.0, origin.1.wrapping_add(3)))],
+        };
+        let mut changed_cells = Vec::new();
+        for (template_index, anchor) in stamps {
+            let template = &catalog.replacements[template_index];
+            for y in 0..template.height {
+                for x in 0..template.width {
+                    let index = usize::from(y) * usize::from(template.width) + usize::from(x);
+                    let Some(prototype) = template.entries.get(index).and_then(Option::as_ref)
+                    else {
+                        continue;
+                    };
+                    let x = anchor.0.wrapping_add(i16::from(x));
+                    let y = anchor.1.wrapping_add(i16::from(y));
+                    let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                        continue;
+                    };
+                    if !self
+                        .cell(x, y)
+                        .is_some_and(|cell| !cell.outside_playfield)
+                    {
+                        continue;
+                    }
+                    let cell_index = self.index(x, y).expect("validated real cell");
+                    clear_replacement_cell(x, y);
+                    stamp_dynamic_tile_identity(
+                        &mut self.cells[cell_index],
+                        template.tile_id,
+                        index as u8,
+                        prototype,
+                    );
+                    self.apply_runtime_lat_slope(x as i16, y as i16, &catalog, &mut changed_cells);
+                    for (dx, dy) in [(0i16, -1i16), (1, 0), (0, 1), (-1, 0)] {
+                        self.apply_runtime_lat_slope(
+                            (x as i16).wrapping_add(dx),
+                            (y as i16).wrapping_add(dy),
+                            &catalog,
+                            &mut changed_cells,
+                        );
+                    }
+                    recalc_dynamic_tile_attributes(&mut self.cells[cell_index], prototype);
+                    self.radar_color_valid[cell_index] = true;
+                    self.damaged_radar_metadata[cell_index] = None;
+                    if !changed_cells.contains(&(x, y)) {
+                        changed_cells.push((x, y));
+                    }
+                }
+            }
+        }
+
+        let (anim_width, anim_height) = match family {
+            DestroyableCliffFamily::A => (5u8, 3u8),
+            DestroyableCliffFamily::B => (3u8, 5u8),
+        };
+        let mut animation_cells = Vec::with_capacity(15);
+        for y in 0..anim_height {
+            for x in 0..anim_width {
+                let x = origin.0.wrapping_add(i16::from(x));
+                let y = origin.1.wrapping_add(i16::from(y));
+                animation_cells.push((x, y));
+            }
+        }
+        Some(DestroyableCliffMutation {
+            family,
+            origin,
+            original_footprint,
+            animation_cells,
+            changed_cells,
+        })
+    }
+
+    fn apply_runtime_lat_slope(
+        &mut self,
+        x: i16,
+        y: i16,
+        catalog: &DestroyableCliffCatalog,
+        changed_cells: &mut Vec<(u16, u16)>,
+    ) {
+        let (Ok(rx), Ok(ry)) = (u16::try_from(x), u16::try_from(y)) else {
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(x), i32::from(y));
+            return;
+        };
+        let Some(index) = self.index(rx, ry) else {
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(x), i32::from(y));
+            return;
+        };
+        if self.native_allocated.as_ref().is_some_and(|allocated| {
+            !allocated.get(index).copied().unwrap_or(false)
+        }) || self.cells[index].outside_playfield
+        {
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(x), i32::from(y));
+            return;
+        }
+        let cardinal_coords = [
+            (x, y.wrapping_sub(1)),
+            (x.wrapping_add(1), y),
+            (x, y.wrapping_add(1)),
+            (x.wrapping_sub(1), y),
+        ];
+        let cardinal_tiles = cardinal_coords.map(|(nx, ny)| {
+            u16::try_from(nx)
+                .ok()
+                .zip(u16::try_from(ny).ok())
+                .and_then(|(nx, ny)| self.cell(nx, ny))
+                .map_or(0, |cell| match cell.final_tile_index {
+                    tile if tile < 0 || tile == 0xFFFF => 0,
+                    tile => tile,
+                })
+        });
+        let cardinal_slopes = cardinal_coords.map(|(nx, ny)| {
+            u16::try_from(nx)
+                .ok()
+                .zip(u16::try_from(ny).ok())
+                .and_then(|(nx, ny)| self.cell(nx, ny))
+                .map_or(0, |cell| cell.slope_type)
+        });
+        let old_tile = self.cells[index].final_tile_index;
+        let lat_tile = lat::lat_fixed_tile(old_tile, cardinal_tiles, &catalog.lat_config);
+        let new_tile = lat::slope_fixed_tile(
+            lat_tile,
+            self.cells[index].slope_type,
+            cardinal_slopes,
+            catalog.slope_config,
+        );
+        if new_tile != old_tile {
+            self.cells[index].final_tile_index = new_tile;
+            if !changed_cells.contains(&(rx, ry)) {
+                changed_cells.push((rx, ry));
+            }
+        }
+    }
+
+    /// CellClass lookup used by the collapse animation producer. Invalid
+    /// signed coordinates resolve through the one shared dummy; the caller
+    /// still retains the signed coordinate for the world X/Y calculation.
+    pub(crate) fn collapse_animation_level(&self, x: i16, y: i16) -> i8 {
+        let cell = u16::try_from(x)
+            .ok()
+            .zip(u16::try_from(y).ok())
+            .and_then(|(x, y)| self.cell(x, y));
+        if let Some(cell) = cell {
+            cell.level as i8
+        } else {
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(x), i32::from(y));
+            self.dummy_cell_level_slope().0
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &ResolvedTerrainCell> {
         self.cells.iter().enumerate().filter_map(|(index, cell)| {
             self.native_allocated
@@ -1404,6 +1913,7 @@ impl ResolvedTerrainGrid {
                         .map(|bounds| bounds.start)
                 }),
                 tile_animations: Vec::new(),
+                destroyable_cliff_catalog: None,
             };
         }
 
@@ -2171,6 +2681,11 @@ impl ResolvedTerrainGrid {
                     .map(|bounds| bounds.start)
             }),
             tile_animations,
+            destroyable_cliff_catalog: build_destroyable_cliff_catalog(
+                theater_data,
+                asset_manager,
+                terrain_rules,
+            ),
         }
     }
 
@@ -2602,6 +3117,143 @@ fn retained_damaged_radar_metadata(
         right: damaged.radar_right,
         valid: damaged.subtile_entry_valid == Some(true),
     })
+}
+
+fn build_destroyable_cliff_catalog(
+    theater_data: Option<&TheaterData>,
+    asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+    terrain_rules: Option<&TerrainRules>,
+) -> Option<DestroyableCliffCatalog> {
+    let td = theater_data?;
+    let assets = asset_manager?;
+    let destroyable_start = td.cliff_ranges.destroyable_cliffs?;
+    let slope_start = td
+        .slope_set_pieces
+        .and_then(|set| td.lookup.bounds().get(usize::from(set)))?
+        .start;
+    let mut warned_unknown_land_types = HashSet::new();
+    let mut load_template = |tile_id: u16| -> Option<SparseTileTemplate> {
+        let filename = td.lookup.filename(i32::from(tile_id))?;
+        let bytes = assets.get(filename)?;
+        let tmp = TmpFile::from_bytes(&bytes).ok()?;
+        let width = u8::try_from(tmp.template_width).ok()?;
+        let height = u8::try_from(tmp.template_height).ok()?;
+        let entries = tmp
+            .tiles
+            .iter()
+            .enumerate()
+            .map(|(sub_tile, entry)| {
+                entry.as_ref()?;
+                let sub_tile = u8::try_from(sub_tile).ok()?;
+                Some(DynamicTilePrototype {
+                    metadata: load_tile_metadata(
+                        Some(td),
+                        Some(assets),
+                        terrain_rules,
+                        TileKey {
+                            tile_id,
+                            sub_tile,
+                            variant: 0,
+                        },
+                        &mut warned_unknown_land_types,
+                    ),
+                    accepts_smudge: td.lookup.is_morphable(tile_id),
+                    allows_tiberium: td.lookup.allows_tiberium(tile_id),
+                })
+            })
+            .collect();
+        Some(SparseTileTemplate {
+            tile_id,
+            width,
+            height,
+            entries,
+        })
+    };
+    Some(DestroyableCliffCatalog {
+        destroyable_start,
+        old: [
+            load_template(destroyable_start)?,
+            load_template(destroyable_start.checked_add(1)?)?,
+        ],
+        replacements: [
+            load_template(slope_start)?,
+            load_template(slope_start.checked_add(1)?)?,
+            load_template(slope_start.checked_add(2)?)?,
+            load_template(slope_start.checked_add(3)?)?,
+        ],
+        lat_config: lat::parse_lat_config(&td.ini_data, &td.lookup),
+        slope_config: lat::SlopeFixupConfig {
+            ramp_base: td.rmg_tiles.ramp_base.map_or(-1, i32::from),
+            ramp_smooth: td.rmg_tiles.ramp_smooth.map_or(-1, i32::from),
+        },
+    })
+}
+
+fn stamp_dynamic_tile_identity(
+    cell: &mut ResolvedTerrainCell,
+    tile_id: u16,
+    sub_tile: u8,
+    prototype: &DynamicTilePrototype,
+) {
+    cell.final_tile_index = i32::from(tile_id);
+    cell.final_sub_tile = sub_tile;
+    cell.is_wood_bridge_repair_tile = false;
+    cell.slope_type = prototype.metadata.slope_type;
+    cell.level = (cell.level as i8)
+        .wrapping_add(prototype.metadata.template_height as i8) as u8;
+    cell.overlay_blocks = false;
+    cell.overlay_zone_type = None;
+}
+
+fn recalc_dynamic_tile_attributes(
+    cell: &mut ResolvedTerrainCell,
+    prototype: &DynamicTilePrototype,
+) {
+    let metadata = &prototype.metadata;
+    cell.filled_clear = false;
+    cell.tileset_index = metadata.tileset_index;
+    cell.land_type = metadata.land_type;
+    cell.yr_cell_land_type = metadata.yr_cell_land_type;
+    cell.template_height = metadata.template_height;
+    cell.height_in_pixels = metadata.height_in_pixels;
+    cell.render_offset_x = metadata.render_offset_x;
+    cell.render_offset_y = metadata.render_offset_y;
+    cell.terrain_class = metadata.terrain_class;
+    cell.speed_costs = metadata.speed_costs;
+    cell.is_water = metadata.is_water;
+    cell.is_cliff_like = metadata.is_cliff_like;
+    cell.is_rough = metadata.is_rough;
+    cell.is_road = metadata.is_road;
+    cell.accepts_smudge = prototype.accepts_smudge;
+    cell.allows_tiberium = prototype.allows_tiberium;
+    cell.variant = 0;
+    cell.has_ramp = metadata.has_ramp;
+    cell.canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
+    cell.base_ground_walk_blocked = metadata.ground_blocked;
+    cell.base_build_blocked = metadata.build_blocked;
+    cell.base_land_type = metadata.land_type;
+    cell.base_yr_cell_land_type = metadata.yr_cell_land_type;
+    cell.base_terrain_class = metadata.terrain_class;
+    cell.base_speed_costs = metadata.speed_costs;
+    cell.ground_walk_blocked = metadata.ground_blocked || cell.terrain_object_blocks;
+    cell.build_blocked = metadata.build_blocked || cell.terrain_object_blocks;
+    cell.zone_type = recalc_zone_type(
+        cell.outside_playfield,
+        None,
+        cell.land_type,
+        cell.speed_costs.wheel,
+        cell.terrain_object_occupation,
+    );
+    cell.has_bridge_deck = false;
+    cell.bridge_walkable = false;
+    cell.bridge_transition = false;
+    cell.bridge_deck_level = cell.level;
+    cell.bridge_layer = None;
+    cell.bridge_facts = BridgeCellFacts::default();
+    cell.radar_left = metadata.radar_left;
+    cell.radar_right = metadata.radar_right;
+    cell.has_damaged_data = metadata.has_damaged_data;
+    cell.bridgehead_anchor_class_at_load = None;
 }
 
 fn load_tile_metadata(
@@ -6263,6 +6915,130 @@ Tile03ZAdjust=-10
                 !cliff_back_normal_reclass_applies(land.as_index()),
                 "{land:?} must keep its own land type behind a cliff"
             );
+        }
+    }
+
+    #[test]
+    fn destroyable_cliff_a_collapses_old_sparse_footprint_then_stamps_two_halves() {
+        let mut cells = Vec::new();
+        for ry in 0..4 {
+            for rx in 0..6 {
+                let mut cell = make_test_cell(rx, ry);
+                let sub_tile = (ry * 6 + rx) as u8;
+                if ![0, 5, 18, 23].contains(&usize::from(sub_tile)) {
+                    cell.final_tile_index = 100;
+                    cell.final_sub_tile = sub_tile;
+                }
+                cell.level = 1;
+                cells.push(cell);
+            }
+        }
+        let mut grid = ResolvedTerrainGrid::from_cells(6, 4, cells);
+        grid.test_install_destroyable_cliff_catalog(100);
+
+        let mutation = grid
+            .collapse_destroyable_cliff_terrain(4, 1, |_, _| {})
+            .expect("family-A destroyable cliff");
+
+        assert_eq!(mutation.family, DestroyableCliffFamily::A);
+        assert_eq!(mutation.origin, (0, 0));
+        assert_eq!(mutation.original_footprint.len(), 20);
+        assert_eq!(
+            mutation.animation_cells,
+            (0..3)
+                .flat_map(|ry| (0..5).map(move |rx| (rx, ry)))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(mutation.changed_cells.len(), 20);
+        for ry in 0..4 {
+            for rx in 0..6 {
+                let cell = grid.cell(rx, ry).unwrap();
+                if [(0, 0), (5, 0), (0, 3), (5, 3)].contains(&(rx, ry)) {
+                    assert_eq!(cell.final_tile_index, 0, "sparse holes stay untouched");
+                    continue;
+                }
+                let (tile, sub_tile, slope) = if rx < 3 {
+                    (200, ry * 3 + rx, 1)
+                } else {
+                    (201, ry * 3 + (rx - 3), 2)
+                };
+                assert_eq!(cell.final_tile_index, tile);
+                assert_eq!(u16::from(cell.final_sub_tile), sub_tile);
+                assert_eq!(cell.slope_type, slope);
+                assert_eq!(cell.level, 1, "old height subtracts before replacement add");
+                assert!(!cell.has_bridge_deck);
+                assert_eq!(cell.bridge_facts, BridgeCellFacts::default());
+            }
+        }
+    }
+
+    #[test]
+    fn destroyable_cliff_origin_recovery_accepts_every_present_a_and_b_subtile() {
+        for (family, tile, width, height, holes) in [
+            (DestroyableCliffFamily::A, 100, 6u16, 4u16, &[0usize, 5, 18, 23][..]),
+            (DestroyableCliffFamily::B, 101, 4u16, 6u16, &[0usize, 3, 20, 23][..]),
+        ] {
+            for selected_subtile in 0..usize::from(width * height) {
+                if holes.contains(&selected_subtile) {
+                    continue;
+                }
+                let mut cells = Vec::new();
+                for ry in 0..height {
+                    for rx in 0..width {
+                        let mut cell = make_test_cell(rx, ry);
+                        let sub_tile = usize::from(ry * width + rx);
+                        if !holes.contains(&sub_tile) {
+                            cell.final_tile_index = tile;
+                            cell.final_sub_tile = sub_tile as u8;
+                        }
+                        cell.level = 1;
+                        cells.push(cell);
+                    }
+                }
+                let mut grid = ResolvedTerrainGrid::from_cells(width, height, cells);
+                grid.test_install_destroyable_cliff_catalog(100);
+                let selected = (
+                    (selected_subtile % usize::from(width)) as u16,
+                    (selected_subtile / usize::from(width)) as u16,
+                );
+
+                let mutation = grid
+                    .collapse_destroyable_cliff_terrain(selected.0, selected.1, |_, _| {})
+                    .expect("present sparse subtile selects its family");
+
+                assert_eq!(mutation.family, family);
+                assert_eq!(mutation.origin, (0, 0));
+                assert_eq!(mutation.original_footprint.len(), 20);
+                assert_eq!(mutation.changed_cells.len(), 20);
+                for ry in 0..height {
+                    for rx in 0..width {
+                        let index = usize::from(ry * width + rx);
+                        let cell = grid.cell(rx, ry).unwrap();
+                        if holes.contains(&index) {
+                            assert_eq!(cell.final_tile_index, 0, "sparse hole {index}");
+                            continue;
+                        }
+                        let (expected_tile, expected_subtile, expected_slope) = match family {
+                            DestroyableCliffFamily::A if rx < 3 => {
+                                (200, usize::from(ry * 3 + rx), 1)
+                            }
+                            DestroyableCliffFamily::A => {
+                                (201, usize::from(ry * 3 + (rx - 3)), 2)
+                            }
+                            DestroyableCliffFamily::B if ry < 3 => {
+                                (203, usize::from(ry * 4 + rx), 4)
+                            }
+                            DestroyableCliffFamily::B => {
+                                (202, usize::from((ry - 3) * 4 + rx), 3)
+                            }
+                        };
+                        assert_eq!(cell.final_tile_index, expected_tile);
+                        assert_eq!(usize::from(cell.final_sub_tile), expected_subtile);
+                        assert_eq!(cell.slope_type, expected_slope);
+                        assert_eq!(cell.level, 1);
+                    }
+                }
+            }
         }
     }
 }

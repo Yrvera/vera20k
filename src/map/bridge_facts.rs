@@ -46,7 +46,9 @@ impl BridgeFlags {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
 pub enum BridgeStampFamily {
     #[default]
     None,
@@ -54,7 +56,7 @@ pub enum BridgeStampFamily {
     Nwse,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BridgeStampSlot {
     Anchor,
     Forward1,
@@ -166,7 +168,7 @@ const fn packed_i32(cell: (i16, i16)) -> (i32, i32) {
     (cell.0 as i32, cell.1 as i32)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeAnchorRelation {
     pub anchor: (u16, u16),
     pub slot: BridgeStampSlot,
@@ -174,7 +176,7 @@ pub struct BridgeAnchorRelation {
     pub direction: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BridgeRampKind {
     TopRight,
     TopLeft,
@@ -182,14 +184,16 @@ pub enum BridgeRampKind {
     Middle2,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeRampTile {
     pub kind: BridgeRampKind,
     pub relative_tile_index: u16,
     pub height_byte: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
 pub struct BridgeCellFacts {
     pub raw_flags: u32,
     pub state_byte: u8,
@@ -667,4 +671,3 @@ pub enum BridgeheadAnchorClass {
     Damaged,
     AboutToFall,
 }
-
