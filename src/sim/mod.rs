@@ -23,6 +23,7 @@
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod anim_class;
 pub(crate) mod base_plan;
+pub(crate) mod base_plan_generation;
 pub mod capture_manager;
 pub mod cloak_disguise;
 pub mod command;
@@ -130,6 +131,7 @@ pub mod trigger_runtime;
 
 // --- AI, replay, selection, debug ---
 pub mod ai;
+pub(crate) mod ai_buildable;
 pub(crate) mod naval_base_placement;
 pub mod debug_event_log;
 pub mod runtime;
