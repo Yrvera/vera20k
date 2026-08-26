@@ -2406,7 +2406,7 @@ impl Simulation {
             self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
         }
         self.sound_events = sound_events;
-        self.merge_receiver_anger_state(&houses);
+        self.merge_receiver_house_state(&houses);
         self.absorb_noncombat_damage_effects(
             rules,
             overlay_registry,
