@@ -491,7 +491,12 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC5B2_3DFA_C256_6948;
 // AIMD/TeamType/TaskForce, and typed AITrigger authority to the current hash.
 // Both historical probes and all three final RNG fingerprints remain exact,
 // and tick-for-tick record/replay equality passes, proving composition-only.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x0407_5297_2B7A_F360;
+// Re-baselined 2026-08-26 for snapshot/hash schema v103: the empty
+// `active_wave_links` map and empty persisted destroyable-cliff mutation map
+// now join the current hash. Both historical probes, all three final RNG
+// fingerprints, and tick-for-tick record/replay equality remain exact, proving
+// this measured shift is composition-only.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB90E_9180_E783_1032;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

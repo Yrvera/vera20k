@@ -300,7 +300,12 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
 // AIMD/TeamType/TaskForce, and typed AITrigger authority to the current hash.
 // Both historical probes remain byte-identical; this 16-tick fixture creates
 // no Teams or AI registries, so the shift is current-schema composition only.
-const SLICE6_BASELINE_HASH: u64 = 0xDD7D_7757_3ACD_3A22;
+// Re-baselined 2026-08-26 for snapshot/hash schema v103: the empty
+// `active_wave_links` map and empty persisted destroyable-cliff mutation map
+// now join the current hash. Both historical probes remain byte-identical;
+// this fixture creates no Wave or cliff mutation, so the measured shift is
+// current-schema composition only.
+const SLICE6_BASELINE_HASH: u64 = 0xA623_FD5A_9571_E3AD;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

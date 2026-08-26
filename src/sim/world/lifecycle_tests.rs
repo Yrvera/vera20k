@@ -3526,6 +3526,8 @@ fn gsi_05_02_mixed_fixture() -> (Simulation, [u64; 6]) {
 
     let entity_id = sim.allocate_stable_id();
     insert_entity(&mut sim, entity_id, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(entity_id).unwrap().attack_target =
+        Some(AttackTarget::for_cell(1, 0));
     sim.register_live_object(entity_id);
 
     let anim_id = sim.allocate_stable_id();
@@ -3559,8 +3561,10 @@ fn gsi_05_02_mixed_fixture() -> (Simulation, [u64; 6]) {
     let wave_id = sim.allocate_stable_id();
     sim.admit_wave(
         wave_id,
-        Wave::new(
+        Wave::new_owned(
             3,
+            entity_id,
+            TargetKind::Cell(1, 0),
             ProjectileCoord::new(0, 0, 0),
             ProjectileCoord::new(256, 0, 0),
         ),
