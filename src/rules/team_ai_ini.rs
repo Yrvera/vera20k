@@ -212,6 +212,8 @@ pub struct TeamAiIniRegistry {
     pub diagnostics: Vec<TeamAiIniDiagnostic>,
     pub fixed_counts: TeamAiRegistryCounts,
     fixed_definitions: FixedTeamAiDefinitions,
+    team_type_read_transactions: Vec<TeamTypeIni>,
+    fixed_team_type_read_count: usize,
     game_mode_nonzero: bool,
 }
 
@@ -233,6 +235,7 @@ impl TeamAiIniRegistry {
         registry.read_team_types(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
         registry.fixed_counts.team_types = registry.team_types.len();
         registry.fixed_definitions.team_types = registry.team_types.clone();
+        registry.fixed_team_type_read_count = registry.team_type_read_transactions.len();
         registry.read_team_types(scenario, TeamAiDefinitionSource::Scenario);
 
         registry.read_scripts(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
@@ -277,6 +280,10 @@ impl TeamAiIniRegistry {
             diagnostics: Vec::new(),
             fixed_counts: self.fixed_counts,
             fixed_definitions: self.fixed_definitions.clone(),
+            team_type_read_transactions: self.team_type_read_transactions
+                [..self.fixed_team_type_read_count]
+                .to_vec(),
+            fixed_team_type_read_count: self.fixed_team_type_read_count,
             game_mode_nonzero: self.game_mode_nonzero,
         }
     }
@@ -286,15 +293,12 @@ impl TeamAiIniRegistry {
     }
 
     /// TeamTypes are read from fixed AIMD and then from the map before either
-    /// referenced registry is populated. Keep both read passes available to
-    /// resolution: a map re-read may change the final TeamType attachments,
-    /// but it does not remove placeholders allocated by the fixed pass.
+    /// referenced registry is populated. Keep every successful read in that
+    /// source's encounter order and with the current-field state at that read:
+    /// the merged identity vector cannot reconstruct a map pass that lists a
+    /// new identity before an override of an existing one.
     pub(crate) fn team_type_read_sequence(&self) -> impl Iterator<Item = &TeamTypeIni> {
-        self.fixed_definitions.team_types.iter().chain(
-            self.team_types
-                .iter()
-                .filter(|entry| entry.source == TeamAiDefinitionSource::Scenario),
-        )
+        self.team_type_read_transactions.iter()
     }
 
     fn read_team_types(&mut self, ini: &IniFile, source: TeamAiDefinitionSource) {
@@ -313,8 +317,9 @@ impl TeamAiIniRegistry {
                 continue;
             };
             let identity = canonical_identity(id);
-            if let Some(position) = index.get(&identity).copied() {
+            let position = if let Some(position) = index.get(&identity).copied() {
                 self.team_types[position].overlay(section, source);
+                position
             } else {
                 let mut definition = TeamTypeIni {
                     id: id.to_string(),
@@ -322,9 +327,13 @@ impl TeamAiIniRegistry {
                     source,
                 };
                 definition.overlay(section, source);
-                index.insert(identity, self.team_types.len());
+                let position = self.team_types.len();
+                index.insert(identity, position);
                 self.team_types.push(definition);
-            }
+                position
+            };
+            self.team_type_read_transactions
+                .push(self.team_types[position].clone());
         }
     }
 
@@ -734,9 +743,9 @@ mod tests {
             eighteen_tokens("Fixed", "FIRST")
         ));
         let map = IniFile::from_str(&format!(
-            "[TeamTypes]\n0=first\n1=THIRD\n\
-             [first]\nPriority=20\n\
+            "[TeamTypes]\n0=THIRD\n1=first\n\
              [THIRD]\nPriority=9\nScript=S1\nTaskForce=T1\n\
+             [first]\nPriority=20\n\
              [ScriptTypes]\n0=S1\n1=S2\n[S1]\n4=49,0\n[S2]\n0=2,0\n\
              [TaskForces]\n0=T1\n1=T2\n[T1]\n0=2,E1\n6=9,IGNORED\n[T2]\n0=1,E2\n\
              [AITriggerTypes]\nA={}\nB={}\n[AITriggerTypesEnable]\nA=no\nB=yes\n",
@@ -753,6 +762,22 @@ mod tests {
                 .map(|entry| entry.id.to_ascii_uppercase())
                 .collect::<Vec<_>>(),
             ["FIRST", "SECOND", "THIRD"]
+        );
+        assert_eq!(
+            loaded
+                .team_type_read_sequence()
+                .map(|entry| entry.id.to_ascii_uppercase())
+                .collect::<Vec<_>>(),
+            ["FIRST", "SECOND", "THIRD", "FIRST"],
+            "the map read pass keeps source order even when merged identity order differs"
+        );
+        assert_eq!(
+            loaded
+                .team_type_read_sequence()
+                .map(|entry| entry.read_int("Priority", 7))
+                .collect::<Vec<_>>(),
+            [5, 7, 9, 20],
+            "each replay transaction retains the current-field state at that read"
         );
         assert_eq!(loaded.team_types[0].read_int("Priority", 7), 20);
         assert!(loaded.team_types[0].read_bool("Autocreate", false));

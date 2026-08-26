@@ -1864,12 +1864,12 @@ mod tests {
              [TaskForces]\n0=BASE_TF\n[BASE_TF]\n0=1,E1\n",
         );
         let map = IniFile::from_str(
-            "[TeamTypes]\n0=BASE\n1=MAP_EARLIER\n\
-             [BASE]\nScript=LATER_SCRIPT\nTaskForce=LATER_TF\n\
+            "[TeamTypes]\n0=MAP_EARLIER\n1=BASE\n\
              [MAP_EARLIER]\nScript=EARLIER_SCRIPT\nTaskForce=EARLIER_TF\n\
-             [ScriptTypes]\n0=EARLIER_SCRIPT\n1=LATER_SCRIPT\n\
+             [BASE]\nScript=LATER_SCRIPT\nTaskForce=LATER_TF\n\
+             [ScriptTypes]\n0=LATER_SCRIPT\n1=EARLIER_SCRIPT\n\
              [EARLIER_SCRIPT]\n0=11,1\n[LATER_SCRIPT]\n0=22,2\n\
-             [TaskForces]\n0=EARLIER_TF\n1=LATER_TF\n\
+             [TaskForces]\n0=LATER_TF\n1=EARLIER_TF\n\
              [EARLIER_TF]\n0=1,E1\n[LATER_TF]\n0=2,E1\n",
         );
         let registry = TeamAiIniRegistry::from_sources(&fixed, &map, true);
@@ -1882,16 +1882,16 @@ mod tests {
                 .iter()
                 .map(|id| interner.resolve(*id))
                 .collect::<Vec<_>>(),
-            ["BASE_SCRIPT", "LATER_SCRIPT", "EARLIER_SCRIPT"],
-            "TeamType first-reference order must survive reversed ScriptTypes list order"
+            ["BASE_SCRIPT", "EARLIER_SCRIPT", "LATER_SCRIPT"],
+            "fixed then map TeamType source order owns placeholders even when final identity and ScriptTypes orders differ"
         );
         assert_eq!(
             vm.task_force_order()
                 .iter()
                 .map(|id| interner.resolve(*id))
                 .collect::<Vec<_>>(),
-            ["BASE_TF", "LATER_TF", "EARLIER_TF"],
-            "TeamType first-reference order must survive reversed TaskForces list order"
+            ["BASE_TF", "EARLIER_TF", "LATER_TF"],
+            "fixed then map TeamType source order owns placeholders even when final identity and TaskForces orders differ"
         );
 
         let later = vm.team_types[&interner.get("BASE").unwrap()];
