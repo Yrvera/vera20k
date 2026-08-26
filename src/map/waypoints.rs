@@ -72,17 +72,13 @@ pub fn parse_waypoints(ini: &IniFile) -> HashMap<u32, Waypoint> {
     };
 
     let mut waypoints: HashMap<u32, Waypoint> = HashMap::new();
-    for key in section.keys() {
-        let Ok(index) = key.parse::<u32>() else {
-            continue;
-        };
-        if index >= WAYPOINT_SLOT_COUNT {
-            continue;
-        }
+    for index in 0..WAYPOINT_SLOT_COUNT {
+        let key = index.to_string();
         // ScenarioClass__Read_Waypoints @ 0x0068BDC0 calls
-        // CCINIClass__ReadInt with default zero. Reuse the shared native
-        // integer reader for `$FF`/`FFh`, leading atoi, and i32 wrapping.
-        let coords = section.get_i32(key).unwrap_or(0);
+        // CCINIClass__ReadInt with each generated canonical decimal key and
+        // default zero. Reuse the shared native integer reader for `$FF`/`FFh`,
+        // leading atoi, and i32 wrapping.
+        let coords = section.get_i32(&key).unwrap_or(0);
         // Zero is the reader's "no waypoint here" value, not the origin cell.
         if coords == 0 {
             continue;
@@ -220,6 +216,34 @@ mod tests {
         assert!(
             !waypoints.contains_key(&20),
             "invalid hex reads the zero default"
+        );
+    }
+
+    #[test]
+    fn waypoint_reader_ignores_noncanonical_numeric_key_aliases() {
+        let ini = IniFile::from_str(
+            "[Waypoints]\n\
+             1=300033\n\
+             001=100011\n\
+             +1=200022\n\
+             002=400044\n\
+             +3=500055\n",
+        );
+        let waypoints = parse_waypoints(&ini);
+
+        assert_eq!(
+            waypoints,
+            [(
+                1,
+                Waypoint {
+                    index: 1,
+                    rx: 33,
+                    ry: 300,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            "only the generated exact key `1` may own slot 1; padded/plus aliases remain unread"
         );
     }
 
