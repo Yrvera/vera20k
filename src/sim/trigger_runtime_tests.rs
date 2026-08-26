@@ -1937,6 +1937,33 @@ fn action_137_rejects_only_exact_packed_zero_cell() {
 }
 
 #[test]
+fn action_137_writes_signed_waypoint_halves_as_raw_nonzero_cell() {
+    let rules = waypoint_action_rules();
+    let mut sim = Simulation::new();
+    let house =
+        register_waypoint_action_house(&mut sim, "SignedWaypointHouse", Some("Americans"), (9, 9));
+    let waypoints = crate::map::waypoints::parse_waypoints(
+        &crate::rules::ini_parser::IniFile::from_str("[Waypoints]\n15=-1001\n"),
+    );
+
+    run_waypoint_action(
+        137,
+        Some("P"),
+        Some("Americans"),
+        &mut sim,
+        &waypoints,
+        Some(&rules),
+    );
+
+    assert_eq!(
+        sim.houses[&house].alternate_base_center,
+        (u16::MAX, u16::MAX),
+        "signed -1 quotient/remainder halves are nonzero and must be written"
+    );
+    assert_eq!(sim.houses[&house].base_center, Some((40, 50)));
+}
+
+#[test]
 fn action_137_invalid_resolution_and_waypoints_do_not_mutate_either_base_cell() {
     fn assert_no_write(
         trigger_country: Option<&str>,
