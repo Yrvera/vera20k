@@ -263,8 +263,8 @@ fn parse_scenario_base_plan(
                 .and_then(|rules| rules.building_type_index(type_token))
                 .unwrap_or(-1)
         };
-        let x = crate::rules::ini_value::atoi_lenient(tokens.next().unwrap_or(""));
-        let y = crate::rules::ini_value::atoi_lenient(tokens.next().unwrap_or(""));
+        let x = atoi_scenario_base_plan_coordinate(tokens.next().unwrap_or(""));
+        let y = atoi_scenario_base_plan_coordinate(tokens.next().unwrap_or(""));
         nodes.push(ScenarioBasePlanNode {
             type_or_control,
             packed_cell: pack_scenario_base_plan_cell(x, y),
@@ -278,6 +278,17 @@ fn parse_scenario_base_plan(
         percent_built,
         nodes,
     }
+}
+
+/// Coordinate-token projection through the CRT `atoi @ 0x007C9B72` reached
+/// by native BasePlan loading. CRT `atoi` skips only its ASCII whitespace set
+/// before inspecting the optional sign and leading decimal digits.
+fn atoi_scenario_base_plan_coordinate(value: &str) -> i32 {
+    let leading_whitespace = value
+        .bytes()
+        .take_while(|byte| matches!(*byte, b'\t'..=b'\r' | b' '))
+        .count();
+    crate::rules::ini_value::atoi_lenient(&value[leading_whitespace..])
 }
 
 #[cfg(test)]
@@ -438,5 +449,35 @@ mod tests {
         assert_eq!(plan.nodes[2].packed_cell, 32_768u32 | (32_766u32 << 16));
         assert!(plan.nodes.iter().all(|node| !node.filled));
         assert!(plan.nodes.iter().all(|node| node.retry_count == 0));
+    }
+
+    #[test]
+    fn gsi_04_05_scenario_base_plan_coordinates_use_crt_atoi_whitespace() {
+        let rules = base_plan_rules();
+        let ini = IniFile::from_str(
+            "[Houses]\n0=AIHouse\n\
+             [AIHouse]\nNodeCount=3\n\
+             000=GAPOWR, 10, -11\n\
+             001=GACNST,\t+12,\t-13\n\
+             002=GAPOWR, 32768, -32770\n",
+        );
+        let roster = parse_house_roster(&ini, &test_schemes(), Some(&rules));
+        let plan = &roster.houses[0].base_plan;
+
+        assert_eq!(plan.nodes[0].packed_cell, 10u32 | (65_525u32 << 16));
+        assert_eq!(plan.nodes[1].packed_cell, 12u32 | (65_523u32 << 16));
+        assert_eq!(plan.nodes[2].packed_cell, 32_768u32 | (32_766u32 << 16));
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .map(|node| node.type_or_control)
+                .collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
+
+        assert_eq!(
+            atoi_scenario_base_plan_coordinate(" \t\n\u{000b}\u{000c}\r-14tail"),
+            -14
+        );
     }
 }
