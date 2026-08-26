@@ -112,9 +112,11 @@ mod real_cell_bridge_hash_schema_tests {
     fn gsi_04_01_real_cell_bridge_authority_is_current_schema_only() {
         let baseline = Simulation::new();
         let mut different_authority = Simulation::new();
-        different_authority.install_resolved_terrain_for_new_map(
-            ResolvedTerrainGrid::from_cells(0, 1, Vec::new()),
-        );
+        different_authority.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(
+            0,
+            1,
+            Vec::new(),
+        ));
 
         assert_ne!(
             baseline.state_hash(),
@@ -252,7 +254,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true,
-            true,
+            true, true,
         )
     }
 
@@ -264,7 +266,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false,
+            false, false,
         )
     }
 
@@ -276,7 +278,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false,
+            false, false,
         )
     }
 
@@ -295,6 +297,7 @@ impl Simulation {
         include_base_defense_response_v97: bool,
         include_techno_constructor_v104: bool,
         include_alternate_base_center_v105: bool,
+        include_naval_build_const_v106: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -342,6 +345,7 @@ impl Simulation {
             &mut hasher,
             include_base_defense_response_v97,
             include_alternate_base_center_v105,
+            include_naval_build_const_v106,
         );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -395,6 +399,7 @@ impl Simulation {
             include_sensor_deposit_v88,
             include_base_defense_response_v97,
             include_techno_constructor_v104,
+            include_naval_build_const_v106,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -498,8 +503,6 @@ impl Simulation {
         }
     }
 
-
-
     /// Hash all particle systems in stable-id order (BTreeMap iteration).
     /// Each system contributes its type, position, lifetime, and ordered particle list.
     fn hash_particle_systems(&self, hasher: &mut impl Hasher) {
@@ -546,6 +549,7 @@ impl Simulation {
         hasher: &mut impl Hasher,
         include_base_defense_response_v97: bool,
         include_alternate_base_center_v105: bool,
+        include_naval_build_const_v106: bool,
     ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
@@ -601,6 +605,12 @@ impl Simulation {
             }
             if include_alternate_base_center_v105 {
                 house.alternate_base_center.hash(hasher);
+            }
+            if include_naval_build_const_v106 {
+                house.build_const_order.len().hash(hasher);
+                for stable_id in &house.build_const_order {
+                    stable_id.hash(hasher);
+                }
             }
             house.base_reservation.hash(hasher);
             house.waypoint_edge.hash(hasher);
@@ -935,6 +945,7 @@ impl Simulation {
         include_sensor_deposit_v88: bool,
         include_base_defense_response_v97: bool,
         include_techno_constructor_v104: bool,
+        include_naval_build_const_v106: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -1015,9 +1026,7 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.body_frame_counter.hash(hasher);
-            if include_entity_animation_v44
-                && let Some(animation) = entity.animation.as_ref()
-            {
+            if include_entity_animation_v44 && let Some(animation) = entity.animation.as_ref() {
                 b"entity-animation-v1".hash(hasher);
                 animation.sequence.hash(hasher);
                 animation.frame_index.hash(hasher);
@@ -1051,6 +1060,9 @@ impl Simulation {
             entity.building_hidden_occupancy.hash(hasher);
             entity.base_reservation_spacing.hash(hasher);
             entity.determines_waypoint_edge.hash(hasher);
+            if include_naval_build_const_v106 {
+                entity.build_const_eligible.hash(hasher);
+            }
             entity.veterancy.hash(hasher);
             // The raw accumulator is authoritative — `veterancy` is only its
             // rank projection, so two objects one kill apart inside the same
@@ -2386,11 +2398,7 @@ mod rally_hash_tests {
         let baseline_hash = baseline.state_hash();
 
         let (mut mode, owner) = fixture();
-        mode.houses
-            .get_mut(&owner)
-            .unwrap()
-            .strategy_emergency
-            .mode = 4;
+        mode.houses.get_mut(&owner).unwrap().strategy_emergency.mode = 4;
         assert_ne!(baseline_hash, mode.state_hash(), "mode is hashed");
 
         let (mut bias, owner) = fixture();
@@ -2431,13 +2439,7 @@ mod rally_hash_tests {
     #[test]
     fn gsi_04_05_techno_base_defense_state_changes_world_hash() {
         let mut baseline = Simulation::new();
-        let entity = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "E1",
-            "Computer1",
-            3,
-            4,
-        );
+        let entity = crate::sim::game_entity::GameEntity::test_default(1, "E1", "Computer1", 3, 4);
         baseline.substrate.entities.insert(entity.clone());
         let baseline_hash = baseline.state_hash();
 

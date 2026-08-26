@@ -89,9 +89,7 @@ fn default_foundation() -> String {
 /// Persistent TechnoClass state used by the active House base-defence
 /// responder. The two admission bytes are constructor-true; archive/cooldown
 /// writes occur only after a responder assignment or strict budget overshoot.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BaseDefenseResponseState {
     pub(crate) recruitable_a: bool,
     pub(crate) recruitable_b: bool,
@@ -384,6 +382,11 @@ pub struct GameEntity {
     /// True only when the parsed type has `Factory=BuildingType`.
     #[serde(default)]
     pub determines_waypoint_edge: bool,
+    /// Immutable resolved membership in `[General] BuildConst=`. Lifecycle
+    /// authority copies this from BuildingType so rule-less Limbo and owner
+    /// transfer paths can maintain native acquisition order exactly.
+    #[serde(default)]
+    pub build_const_eligible: bool,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
     ///
     /// A projection of [`Self::veterancy_raw`], refreshed wherever the raw
@@ -1078,6 +1081,7 @@ impl GameEntity {
                 .then(crate::rules::object_type::BuildingHiddenOccupancyProfile::default),
             base_reservation_spacing: None,
             determines_waypoint_edge: false,
+            build_const_eligible: false,
             veterancy,
             veterancy_raw: crate::sim::combat::veterancy::raw_for_rank(veterancy),
             veterancy_rank_cache: veterancy_rank_cache_default(),

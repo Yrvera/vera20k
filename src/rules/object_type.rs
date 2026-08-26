@@ -39,16 +39,7 @@ use crate::util::fixed_math::{SimFixed, sim_from_f32};
 /// which game behaviors apply (e.g., only buildings have power, only
 /// infantry can garrison).
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub enum ObjectCategory {
     Infantry,
@@ -270,6 +261,9 @@ pub struct ObjectType {
     /// Countries explicitly forbidden from building this (ForbiddenHouses= in rules.ini).
     /// Inverse of Owner — if the player's country is in this list, they cannot build.
     pub forbidden_houses: Vec<String>,
+    /// Signed `TechnoTypeClass+0x6D0` side filter used only by native AI base
+    /// planning selectors. The constructor seed is `-1` (all sides).
+    pub ai_base_planning_side: i32,
     /// Whether this type may appear in multiplayer starting-unit generation.
     pub allowed_to_start_in_multiplayer: bool,
     /// Building prerequisites required before this can be built.
@@ -665,6 +659,9 @@ pub struct ObjectType {
     pub deploy_facing: u8,
     /// Whether this building is a construction yard. Enables ConYard-only MCV repack gates.
     pub construction_yard: bool,
+    /// Immutable membership in the resolved `[General] BuildConst=` BuildingType
+    /// pointer vector. `RuleSet` stamps this after all type registries exist.
+    pub build_const_eligible: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.
     /// Default: false for all types. Parsed from `Crushable=` in rules.ini.
@@ -1236,6 +1233,10 @@ impl ObjectType {
             owner,
             required_houses,
             forbidden_houses,
+            // gamemd-derived: `TechnoTypeClass__Constructor @ 0x00710FF0`
+            // seeds +0x6D0 to -1; `TechnoTypeClass::ReadINI` around 0x007149FB
+            // applies the signed `AIBasePlanningSide=` override.
+            ai_base_planning_side: section.get_i32("AIBasePlanningSide").unwrap_or(-1),
             allowed_to_start_in_multiplayer: section
                 .get_bool("AllowedToStartInMultiplayer")
                 .unwrap_or(true),
@@ -1480,6 +1481,7 @@ impl ObjectType {
                 .map(|v| (v.clamp(0, 7) as u8) << 5)
                 .unwrap_or(0x80),
             construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
+            build_const_eligible: false,
             factory: section.get("Factory").and_then(FactoryType::from_ini),
             weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),
@@ -1674,9 +1676,7 @@ impl ObjectType {
             cloakable: section.get_bool("Cloakable").unwrap_or(false),
             cloaking_speed: section.get_i32("CloakingSpeed").unwrap_or(1),
             cloak_stop: section.get_bool("CloakStop").unwrap_or(false),
-            cloak_radius_in_cells: section
-                .get_i32("CloakRadiusInCells")
-                .unwrap_or(20) as i8,
+            cloak_radius_in_cells: section.get_i32("CloakRadiusInCells").unwrap_or(20) as i8,
             cloak_generator: section.get_bool("CloakGenerator").unwrap_or(false),
         }
     }
@@ -2625,16 +2625,10 @@ mod tests {
             "[A]\nInsignificant=yes\nRadarVisible=no\n\
              [B]\nInsignificant=no\nRadarVisible=yes\n",
         );
-        let a = ObjectType::from_ini_section(
-            "A",
-            ini.section("A").unwrap(),
-            ObjectCategory::Vehicle,
-        );
-        let b = ObjectType::from_ini_section(
-            "B",
-            ini.section("B").unwrap(),
-            ObjectCategory::Vehicle,
-        );
+        let a =
+            ObjectType::from_ini_section("A", ini.section("A").unwrap(), ObjectCategory::Vehicle);
+        let b =
+            ObjectType::from_ini_section("B", ini.section("B").unwrap(), ObjectCategory::Vehicle);
         assert!(a.insignificant);
         assert!(!a.radar_visible);
         assert!(!b.insignificant);
@@ -2937,12 +2931,7 @@ mod tests {
              [RANKED]\nVeteranAbilities=CLOAK\nEliteAbilities=STRONGER,CLOAK\n\
              [DEFAULTS]\nFixtureOnly=yes\n",
         );
-        for (id, speed, sight) in [
-            ("DLPH", 1, 8),
-            ("SUB", 1, 7),
-            ("SQD", 5, 8),
-            ("BSUB", 1, 8),
-        ] {
+        for (id, speed, sight) in [("DLPH", 1, 8), ("SUB", 1, 7), ("SQD", 5, 8), ("BSUB", 1, 8)] {
             let object = ObjectType::from_ini_section(
                 id,
                 ini.section(id).expect("stock-shaped cloak section"),

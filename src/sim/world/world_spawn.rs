@@ -2114,6 +2114,7 @@ fn stamp_building_cell_profile(
         ge.building_hidden_occupancy = Some(obj.hidden_occupancy);
         ge.base_reservation_spacing = obj.base_reservation_spacing;
         ge.determines_waypoint_edge = obj.factory == Some(FactoryType::BuildingType);
+        ge.build_const_eligible = obj.build_const_eligible;
     }
 }
 
