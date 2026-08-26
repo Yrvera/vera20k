@@ -29,7 +29,9 @@ For a ready BuildingType whose native naval byte at `+0xCCE` is nonzero:
    independently for width and height. Use the first result's foundation width plus two and the
    second result's foundation height plus two. Do not reuse generic build-option eligibility.
 2. Choose `HouseState.alternate_base_center` unless its packed value is exactly `(0,0)`;
-   otherwise use `HouseState.base_center`. Packed `(0,0)` is the sole invalid sentinel.
+   otherwise use `HouseState.base_center`. Rust's absent `Option` representation of the native
+   primary field maps to its constructor bits `(0,0)` rather than short-circuiting before the
+   MapClass/FNPC call. Packed `(0,0)` is the sole invalid sentinel.
 3. Invoke `find_nearby_passable_cell` with the literal native query:
    - `SpeedType::Float` (`5`);
    - required zone disabled (`-1`);
