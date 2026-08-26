@@ -94,7 +94,7 @@ Important caller exclusions and alternatives:
 | `Rules+0x87C`, `+0x89C`, `+0x8A0`, `+0x8A4`, `+0x8A8` | `WallTower`, `GDIPowerPlant`, `NodRegularPower`, `NodAdvancedPower`, `ThirdPowerPlant` type pointers | absent as exact planner inputs |
 | `House+0x53A4/+0x53A8`, `+0x160B4`, `+0x2A4/+0x2AC`, `+0x577B` | cached power output/drain, signed AI cost tolerance, power-blackout timer state, and the positive-output-deploying-building latch used by the power splice | Rust has authoritative power totals and blackout duration state, but no exact BasePlan splice, cost-tolerance field, or native deploying-building latch |
 
-The `House+0x50/+0x54/+0x60` DynamicVector is the owned construction-yard list, not an anonymous object vector. `BuildingClass::Unlimbo` inserts a building when its type matches `Rules+0x8B0/+0x8BC`, the `[General] BuildConst=` list. The naval branch below reads the first pointer from this list.
+The `House+0x50/+0x54/+0x60` DynamicVector is the owned construction-yard list, not an anonymous object vector. `BuildingClass::Unlimbo` inserts a building when its type matches `Rules+0x8B0/+0x8BC`, the `[AI] BuildConst=` list. `RulesClass__ReadAI @ 0x00672AE0` binds it at `0x00672B14..0x00672C01` (key push `0x00672B23`, BuildingType resolver call `0x00672B6A`); there is no `[General]` fallback. The naval branch below reads the first pointer from this list.
 
 ### 3.1 Primary and trigger-set alternate base cells
 
@@ -1319,7 +1319,7 @@ Older documents naming `Rules+0xE0C` `MaxBaseDistance` are also superseded for t
 | `RulesClass` constructor `0x00666972`; `RulesClass::ReadGeneral @ 0x0067026C..0x00670286`; Building exit `0x00445237..0x004452C5`; both retail rules files | signed maximum-placement-failure default/key, active retail value three, post-increment strict threshold, campaign gate, and ordered node eviction | HIGH |
 | live decompile/assembly `HouseClass__FirstBuildableFromArray @ 0x005051E0`; naval callsites `0x00506103/0x00506128`; retail GAYARD/NAYARD/YAYARD rules and art blocks | exact forward selector gates, no generic production filters, stock side outcomes, and `6x6` footprints | HIGH |
 | naval pushes `0x0050616D..0x00506193`; live decompile/assembly `Find_Nearby_Passable_Cell @ 0x0056DC20` and projection `0x006D6410`; Rust `find_nearby_cell.rs` and `bridge_facts.rs` | literal query matrix, frame-modulo selection, reachable four-level bridge projection, and precise shared-helper delta | HIGH |
-| `RulesClass::ReadGeneral` live string xrefs for Shipyard/BuildConst/AINavalYardAdjacency | exact naval INI bindings | HIGH |
+| `RulesClass::ReadGeneral` live string xrefs for Shipyard/AINavalYardAdjacency; `RulesClass__ReadAI @ 0x00672AE0`, BuildConst block `0x00672B14..0x00672C01` | exact naval INI bindings | HIGH |
 | retail `rulesmd.ini` and `rules.ini` searches | active/inactive stock-data gates | HIGH |
 | direct Rust inspection of `src/sim/ai.rs`, `house_state.rs`, `object_type.rs`, `ruleset.rs` | current ownership and missing state/fields | HIGH |
 
