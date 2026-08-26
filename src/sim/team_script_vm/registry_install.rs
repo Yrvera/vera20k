@@ -1,6 +1,6 @@
 //! Scenario-boundary resolution for ordered Team AI definitions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::rules::ruleset::RuleSet;
 use crate::rules::team_ai_ini::{AiTriggerOwnerIni, TeamAiDefinitionSource, TeamAiIniRegistry};
@@ -47,74 +47,37 @@ impl TeamScriptVm {
     ) -> (Self, Vec<TeamAiInstallDiagnostic>) {
         let mut vm = Self::default();
         let mut diagnostics = Vec::new();
+        let mut authored_scripts = BTreeSet::new();
+        let mut authored_task_forces = BTreeSet::new();
+        let mut pending_attachments = Vec::new();
 
-        // Native registry passes establish identities before runtime selection.
-        // Preserve their source order independently from keyed lookup order.
-        for id in registry
-            .team_types
-            .iter()
-            .map(|entry| entry.id.as_str())
-            .chain(registry.scripts.iter().map(|entry| entry.id.as_str()))
-            .chain(registry.task_forces.iter().map(|entry| entry.id.as_str()))
-            .chain(registry.ai_triggers.iter().map(|entry| entry.id.as_str()))
-        {
-            interner.intern(id);
-        }
-
-        for script in &registry.scripts {
-            let id = interner.intern(&script.id);
-            vm.register_script(TeamScriptDefinition {
-                id,
-                actions: script
-                    .actions
-                    .iter()
-                    .map(|action| TeamScriptAction {
-                        action_id: action.action_id,
-                        argument: action.argument,
-                    })
-                    .collect(),
-                source: script.source,
-            });
-        }
-
-        for task_force in &registry.task_forces {
-            let id = interner.intern(&task_force.id);
-            let entries = task_force
-                .entries
-                .iter()
-                .filter_map(|entry| {
-                    if rules.object(&entry.member_type).is_none() {
-                        diagnostics.push(TeamAiInstallDiagnostic::UnknownTaskForceMember {
-                            task_force_id: task_force.id.clone(),
-                            member_type: entry.member_type.clone(),
-                            source: task_force.source,
-                        });
-                        return None;
-                    }
-                    Some(TeamTaskForceEntry {
-                        member_type: interner.intern(&entry.member_type),
-                        count: entry.count,
-                    })
-                })
-                .collect();
-            vm.register_task_force(TeamTaskForceDefinition {
-                id,
-                group: task_force.group,
-                entries,
-                source: task_force.source,
-            });
-        }
-
-        for team_type in &registry.team_types {
+        // TeamTypeClass::ReadINI runs before the explicit ScriptTypes and
+        // TaskForces passes. Its find-or-allocate helpers create referenced
+        // identities immediately; the later passes fill those same objects.
+        // Consequently first-reference order, not list order, owns the prefix
+        // of each native registry.
+        for team_type in registry.team_type_read_sequence() {
             let id = interner.intern(&team_type.id);
             let script_name = team_type.get("Script").unwrap_or("<none>");
-            let (script_id, script_was_exact) = definition_id(
+            let (script_id, script_name_was_valid) = find_or_allocate_definition(
                 script_name,
-                &vm.scripts,
-                &vm.script_order,
+                &mut vm.scripts,
+                &mut vm.script_order,
                 interner,
+                |id| TeamScriptDefinition {
+                    id,
+                    actions: Vec::new(),
+                    source: team_type.source,
+                },
             );
-            if !script_was_exact {
+            if script_name_was_valid {
+                pending_attachments.push(PendingTeamTypeAttachment::Script {
+                    team_type_id: team_type.id.clone(),
+                    definition_id: script_id.expect("valid Script identity was allocated"),
+                    definition_name: script_name.to_string(),
+                    source: team_type.source,
+                });
+            } else {
                 diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeScript {
                     team_type_id: team_type.id.clone(),
                     script_id: script_name.to_string(),
@@ -122,14 +85,28 @@ impl TeamScriptVm {
                 });
             }
             let script_id = script_id.unwrap_or(InternedId::from_index(0));
+
             let task_force_name = team_type.get("TaskForce").unwrap_or("<none>");
-            let (task_force_id, task_force_was_exact) = definition_id(
+            let (task_force_id, task_force_name_was_valid) = find_or_allocate_definition(
                 task_force_name,
-                &vm.task_forces,
-                &vm.task_force_order,
+                &mut vm.task_forces,
+                &mut vm.task_force_order,
                 interner,
+                |id| TeamTaskForceDefinition {
+                    id,
+                    group: -1,
+                    entries: Vec::new(),
+                    source: team_type.source,
+                },
             );
-            if !task_force_was_exact {
+            if task_force_name_was_valid {
+                pending_attachments.push(PendingTeamTypeAttachment::TaskForce {
+                    team_type_id: team_type.id.clone(),
+                    definition_id: task_force_id.expect("valid TaskForce identity was allocated"),
+                    definition_name: task_force_name.to_string(),
+                    source: team_type.source,
+                });
+            } else {
                 diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
                     team_type_id: team_type.id.clone(),
                     task_force_id: task_force_name.to_string(),
@@ -156,6 +133,82 @@ impl TeamScriptVm {
                     source: team_type.source,
                 },
             );
+        }
+
+        for script in &registry.scripts {
+            let id = interner.intern(&script.id);
+            authored_scripts.insert(id);
+            vm.register_script(TeamScriptDefinition {
+                id,
+                actions: script
+                    .actions
+                    .iter()
+                    .map(|action| TeamScriptAction {
+                        action_id: action.action_id,
+                        argument: action.argument,
+                    })
+                    .collect(),
+                source: script.source,
+            });
+        }
+
+        for task_force in &registry.task_forces {
+            let id = interner.intern(&task_force.id);
+            authored_task_forces.insert(id);
+            let entries = task_force
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    if rules.object(&entry.member_type).is_none() {
+                        diagnostics.push(TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                            task_force_id: task_force.id.clone(),
+                            member_type: entry.member_type.clone(),
+                            source: task_force.source,
+                        });
+                        return None;
+                    }
+                    Some(TeamTaskForceEntry {
+                        member_type: interner.intern(&entry.member_type),
+                        count: entry.count,
+                    })
+                })
+                .collect();
+            vm.register_task_force(TeamTaskForceDefinition {
+                id,
+                group: task_force.group,
+                entries,
+                source: task_force.source,
+            });
+        }
+
+        for attachment in pending_attachments {
+            match attachment {
+                PendingTeamTypeAttachment::Script {
+                    team_type_id,
+                    definition_id,
+                    definition_name,
+                    source,
+                } if !authored_scripts.contains(&definition_id) => {
+                    diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeScript {
+                        team_type_id,
+                        script_id: definition_name,
+                        source,
+                    });
+                }
+                PendingTeamTypeAttachment::TaskForce {
+                    team_type_id,
+                    definition_id,
+                    definition_name,
+                    source,
+                } if !authored_task_forces.contains(&definition_id) => {
+                    diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
+                        team_type_id,
+                        task_force_id: definition_name,
+                        source,
+                    });
+                }
+                _ => {}
+            }
         }
 
         for trigger in &registry.ai_triggers {
@@ -251,16 +304,38 @@ impl TeamScriptVm {
     }
 }
 
-fn definition_id<T>(
+enum PendingTeamTypeAttachment {
+    Script {
+        team_type_id: String,
+        definition_id: InternedId,
+        definition_name: String,
+        source: TeamAiDefinitionSource,
+    },
+    TaskForce {
+        team_type_id: String,
+        definition_id: InternedId,
+        definition_name: String,
+        source: TeamAiDefinitionSource,
+    },
+}
+
+fn find_or_allocate_definition<T>(
     requested: &str,
-    definitions: &BTreeMap<InternedId, T>,
-    order: &[InternedId],
-    interner: &StringInterner,
+    definitions: &mut BTreeMap<InternedId, T>,
+    order: &mut Vec<InternedId>,
+    interner: &mut StringInterner,
+    placeholder: impl FnOnce(InternedId) -> T,
 ) -> (Option<InternedId>, bool) {
-    let exact = interner
-        .get(requested)
-        .filter(|id| definitions.contains_key(id));
-    (exact.or_else(|| order.first().copied()), exact.is_some())
+    if requested.is_empty() || requested == "<none>" || requested == "none" {
+        return (order.first().copied(), false);
+    }
+
+    let id = interner.intern(requested);
+    if !definitions.contains_key(&id) {
+        order.push(id);
+        definitions.insert(id, placeholder(id));
+    }
+    (Some(id), true)
 }
 
 fn resolve_trigger_team_type(

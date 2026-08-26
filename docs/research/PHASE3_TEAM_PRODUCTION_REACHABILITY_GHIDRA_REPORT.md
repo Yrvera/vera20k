@@ -124,7 +124,7 @@ Constructor `0x006F06E0` establishes load-bearing defaults including:
 
 Other parsed booleans include `Loadable`, `Full`, `Annoyance`, `GuardSlower`, `Prebuild`, `Reinforce`, `Whiner`, `Suicide`, `Droppod`, `UseTransportOrigin`, and `OnTransOnly`, plus owner, MindControlDecision, Tag, and transport data. They are not silently discarded by native even where this corridor does not yet consume them.
 
-Missing TaskForce or Script identifiers fall back to the first corresponding global registry object. If the relevant registry is empty, TeamType load fails. A Rust loader must reproduce or explicitly refuse this behavior; resolving missing references to an invented empty definition is wrong.
+`TeamTypeClass::ReadINI` resolves a valid Script identity through the call at `0x006F14A3 -> 0x00691C00` and a valid TaskForce identity through `0x006F14DC -> 0x006E85F0`. Both helpers find or allocate the requested identity immediately. Because the TeamType pass precedes the explicit ScriptTypes and TaskForces passes, those later readers fill the same placeholder objects in place; first TeamType-reference order therefore owns the registry prefix. First-object fallback applies only when no valid identity resolves. A valid identity absent from its later list remains an empty native placeholder rather than attaching the first authored ScriptType or TaskForce.
 
 ### 4.4 AITriggerType
 
@@ -319,9 +319,9 @@ Implement this first and validate it independently:
 3. parse in native per-registry order: TeamTypes, ScriptTypes, TaskForces, AITriggerTypes, fixed first then map for each registry;
 4. preserve list order and identifier reuse; map sections replace/re-read an existing identifier and may append new identifiers;
 5. implement ScriptType 0..49 compacting, TaskForce 0..5 resolved entries and signed counts/Group, TeamType native defaults plus all corridor fields, and lossless 18-token AITrigger DTO storage;
-6. resolve TeamType Script/TaskForce pointers after reproducing native availability/fallback behavior; never invent empty targets;
+6. resolve TeamType Script/TaskForce pointers during the TeamType pass with the native find-or-allocate helpers, preserve first-reference order, and fill those placeholders in place during the later registry passes;
 7. install the parsed definitions into Simulation so a normal map load no longer leaves the Team registry definitions empty;
-8. include source-order, map-override, missing-reference fallback/refusal, compaction, six-entry cap, and stock-corpus count tests.
+8. include first-reference order, map re-read and later placeholder fill, unfilled-reference refusal, compaction, six-entry cap, and stock-corpus count tests.
 
 Acceptance evidence for Stage A:
 

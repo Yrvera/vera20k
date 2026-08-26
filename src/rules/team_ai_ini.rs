@@ -277,6 +277,18 @@ impl TeamAiIniRegistry {
         }
     }
 
+    /// TeamTypes are read from fixed AIMD and then from the map before either
+    /// referenced registry is populated. Keep both read passes available to
+    /// resolution: a map re-read may change the final TeamType attachments,
+    /// but it does not remove placeholders allocated by the fixed pass.
+    pub(crate) fn team_type_read_sequence(&self) -> impl Iterator<Item = &TeamTypeIni> {
+        self.fixed_definitions.team_types.iter().chain(
+            self.team_types
+                .iter()
+                .filter(|entry| entry.source == TeamAiDefinitionSource::Scenario),
+        )
+    }
+
     fn read_team_types(&mut self, ini: &IniFile, source: TeamAiDefinitionSource) {
         let Some(list) = ini.section("TeamTypes") else {
             return;

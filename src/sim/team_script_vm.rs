@@ -1464,7 +1464,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_05_aimd_install_applies_native_reference_fallback_and_omits_unknown_members() {
+    fn gsi_04_05_aimd_install_retains_unfilled_reference_placeholders_and_omits_unknown_members() {
         use crate::rules::ini_parser::IniFile;
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
@@ -1508,8 +1508,30 @@ mod tests {
                 .all(TeamAiInstallDiagnostic::is_fixed_source_refusal)
         );
         let team_type = &vm.team_types[&interner.get("TT").unwrap()];
-        assert_eq!(team_type.script_id, interner.get("FIRST_SCRIPT").unwrap());
-        assert_eq!(team_type.task_force_id, interner.get("FIRST_TF").unwrap());
+        assert_eq!(team_type.script_id, interner.get("MISSING_SCRIPT").unwrap());
+        assert_eq!(team_type.task_force_id, interner.get("MISSING_TF").unwrap());
+        assert!(
+            vm.scripts[&team_type.script_id].actions.is_empty(),
+            "a valid unlisted Script remains the native empty placeholder"
+        );
+        assert!(
+            vm.task_forces[&team_type.task_force_id].entries.is_empty(),
+            "a valid unlisted TaskForce remains the native empty placeholder"
+        );
+        assert_eq!(
+            vm.script_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["MISSING_SCRIPT", "FIRST_SCRIPT"]
+        );
+        assert_eq!(
+            vm.task_force_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["MISSING_TF", "FIRST_TF", "PARTIAL_TF"]
+        );
         assert_eq!(
             vm.task_forces[&interner.get("PARTIAL_TF").unwrap()]
                 .entries
@@ -1518,6 +1540,58 @@ mod tests {
             "unresolved TechnoTypes do not increment the native TaskForce entry count"
         );
         assert!(vm.teams.is_empty());
+    }
+
+    #[test]
+    fn gsi_04_05_aimd_install_fills_placeholders_without_reordering_first_references() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+        ))
+        .expect("minimal rules");
+        let fixed = IniFile::from_str(
+            "[TeamTypes]\n0=BASE\n[BASE]\nScript=BASE_SCRIPT\nTaskForce=BASE_TF\n\
+             [ScriptTypes]\n0=BASE_SCRIPT\n[BASE_SCRIPT]\n0=2,0\n\
+             [TaskForces]\n0=BASE_TF\n[BASE_TF]\n0=1,E1\n",
+        );
+        let map = IniFile::from_str(
+            "[TeamTypes]\n0=BASE\n1=MAP_EARLIER\n\
+             [BASE]\nScript=LATER_SCRIPT\nTaskForce=LATER_TF\n\
+             [MAP_EARLIER]\nScript=EARLIER_SCRIPT\nTaskForce=EARLIER_TF\n\
+             [ScriptTypes]\n0=EARLIER_SCRIPT\n1=LATER_SCRIPT\n\
+             [EARLIER_SCRIPT]\n0=11,1\n[LATER_SCRIPT]\n0=22,2\n\
+             [TaskForces]\n0=EARLIER_TF\n1=LATER_TF\n\
+             [EARLIER_TF]\n0=1,E1\n[LATER_TF]\n0=2,E1\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &map, true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            vm.script_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["BASE_SCRIPT", "LATER_SCRIPT", "EARLIER_SCRIPT"],
+            "TeamType first-reference order must survive reversed ScriptTypes list order"
+        );
+        assert_eq!(
+            vm.task_force_order()
+                .iter()
+                .map(|id| interner.resolve(*id))
+                .collect::<Vec<_>>(),
+            ["BASE_TF", "LATER_TF", "EARLIER_TF"],
+            "TeamType first-reference order must survive reversed TaskForces list order"
+        );
+
+        let later = vm.team_types[&interner.get("BASE").unwrap()];
+        assert_eq!(later.script_id, interner.get("LATER_SCRIPT").unwrap());
+        assert_eq!(later.task_force_id, interner.get("LATER_TF").unwrap());
+        assert_eq!(vm.scripts[&later.script_id].actions[0].action_id, 22);
+        assert_eq!(vm.task_forces[&later.task_force_id].entries[0].count, 2);
+        assert_eq!(vm.registry_counts(), (3, 3, 2, 0));
     }
 
     #[test]

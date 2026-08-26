@@ -49,7 +49,7 @@ Add a pure `rules::team_ai_ini` registry loader that produces ordered, unresolve
 
 This follows existing architecture: `rules/` parses data, Simulation owns deterministic resolved state, and app loading coordinates immutable asset inputs. It deliberately deviates from the current test-only “call three registration methods manually” pattern because a production registry has source ordering, overlay, diagnostics, and a fourth AITriggerType registry that individual registrations cannot safely express.
 
-The parser uses ordered `Vec` storage plus uppercase identity-to-index maps. On a later-source duplicate, it re-reads/replaces the record at the existing index. On a new identity, it appends. The resolved VM mirrors the order explicitly while retaining keyed lookup for current Team operations.
+The parser uses ordered `Vec` storage plus uppercase identity-to-index maps. On a later-source duplicate, it re-reads/replaces the record at the existing index. On a new identity, it appends. It also retains the fixed TeamType read pass so resolution can replay fixed references before map re-reads; changing a TeamType attachment in the map does not erase the earlier placeholder or its registry position. The resolved VM mirrors the order explicitly while retaining keyed lookup for current Team operations.
 
 Before each map pass mutates the live record, the parser also captures an immutable copy of that registry's fixed-AIMD definitions. The RuleSet-aware install boundary resolves this fixed view with a cloned interner, then resolves the final overlaid registry with the production interner. Fixed-origin diagnostics survive even when a same-identity map replacement repairs the final record or a partial TeamType overlay relabels inherited fields as scenario-origin; equivalent final diagnostics are deduplicated. This validation view is transient and does not change the snapshot schema.
 
@@ -70,7 +70,7 @@ Adversarial question: what could cause expensive later rework? Throwing away loa
 - `MILESTONE-BLOCKING` — ScriptType reads keys `0..49` and compacts gaps. A sparse map script cannot preserve numeric holes. [GHIDRA `0x006918A0`]
 - `MILESTONE-BLOCKING` — TaskForce reads at most six rows, stores signed count before exact resolved type, and does not count unresolved types. [GHIDRA `0x006E8420`]
 - `COMPOUNDING` — TeamType defaults and later map reads use current-field semantics; resetting a duplicate TeamType to constructor defaults would erase fixed AIMD values that the map omitted. [GHIDRA `0x006F06E0`, `0x006F1090`]
-- `COMPOUNDING` — missing Script/TaskForce attachment uses the first registry definition where native availability permits; inventing an empty definition changes later Team lifecycle. Preserve unresolved identity and emit a deterministic diagnostic where the exact fallback cannot be satisfied. [GHIDRA `0x006F1090`]
+- `COMPOUNDING` — TeamType Script/TaskForce lookup finds or allocates every valid requested identity immediately. Later ScriptTypes/TaskForces passes fill those placeholders in place, so first-reference order owns the registry prefix; a still-unlisted valid identity remains an empty placeholder. First-object fallback is limited to inputs for which no valid identity resolves. [GHIDRA `0x006F14A3 -> 0x00691C00`, `0x006F14DC -> 0x006E85F0`]
 - `COMPOUNDING` — AITriggerType is keyed by record ID, not listed by numeric values; all 165 stock records have 18 tokens. Token 12 and semantic labels for 11–14 remain unknown, so all tokens must survive losslessly. `[AITriggerTypesEnable]` false disables only in game mode zero; every listed key enables in skirmish/MP. [GHIDRA `0x0041F2E0`, raw body `0x0041F580`; ini: `aimd.ini [AITriggerTypes]`]
 - `COMPOUNDING` — the three difficulty weights are native parsed scalars, but Stage A does not consume them for RNG. Preserve their source token text and proven typed values without drawing RNG. [GHIDRA `0x0041F580`, `0x006F0AB0`]
 - `MILESTONE-BLOCKING` — 132 TaskForces, 88 ScriptTypes, 163 TeamTypes, 165 AITriggerTypes, 12 base-defense TeamTypes, and the documented priority distribution are the retail corpus acceptance oracle. [ini: `aimd.ini`; doc §7]
@@ -105,7 +105,7 @@ Extend the VM with explicit ordered identities for ScriptType, TaskForce, TeamTy
 - a full production install starts from empty definition registries and leaves live Teams empty;
 - Script/TaskForce/TeamType identities and referenced TechnoTypes are interned in deterministic registry/record order;
 - TaskForce entries whose TechnoType is absent from RuleSet are omitted and diagnosed;
-- TeamType Script/TaskForce references resolve after all four parse passes; proven native first-entry fallback is applied only when the referenced registry is nonempty.
+- TeamType Script/TaskForce references find or allocate placeholders during the TeamType pass; later ScriptTypes/TaskForces records fill those same keyed definitions without changing first-reference order.
 
 The current live-Team BTreeMap and creation-order ID allocation remain unchanged in Stage A.
 
@@ -153,8 +153,8 @@ The future House selector will read the resolved AITrigger order; it will not pa
 - fixed `aimd.ini` absent, empty in any of the four required registries, or containing a refused definition: fail the normal app scenario load with a descriptive error before installing the registry;
 - a missing or malformed scenario definition: omit the refused map addition and retain a source-tagged diagnostic without invalidating the clean fixed registry;
 - malformed ScriptType action: omit that action exactly where native parse proof supports omission and diagnose it;
-- unresolved fixed-AIMD TaskForce TechnoType or TeamType/AITrigger reference: retain a source-tagged install diagnostic and abort production installation rather than admitting a partial fixed registry;
-- the same unresolved scenario reference: apply the proven first-definition fallback or row omission for that reference, retain a source-tagged diagnostic, and keep the clean fixed registry plus valid map overlays installed;
+- unresolved fixed-AIMD TaskForce TechnoType, unfilled TeamType attachment, or AITrigger reference: retain a source-tagged install diagnostic and abort production installation rather than admitting a partial fixed registry;
+- the same unresolved scenario reference: retain the native empty Script/TaskForce placeholder or omit the unresolved TaskForce member/AITrigger reference as appropriate, retain a source-tagged diagnostic, and keep the clean fixed registry plus valid map overlays installed;
 - malformed AITrigger token count: omit and diagnose;
 - duplicate map identity: update in place; never warn as a duplicate because this is authored override behavior.
 
@@ -165,7 +165,7 @@ Diagnostics are deterministic data returned/logged at load, not sim-tick side ef
 Focused `--lib` tests only during this slice:
 
 1. parser unit tests for ScriptType compaction/50 cap, TaskForce six cap and unresolved omission, TeamType current-field override, AITrigger 18-token enforcement, duplicate in-place update, and new-ID append;
-2. VM install tests for source-order interning, definition lookup, first-entry reference fallback, no live Team creation, and serde round trip;
+2. VM install tests for first-reference placeholder ordering, later in-place fill under reversed list order, retained unfilled placeholders, no live Team creation, and serde round trip;
 3. stock-corpus oracle test asserting `132/88/163/165`, 12 base-defense TeamTypes, 163 `Autocreate=yes`, and exact priority distribution;
 4. loading-boundary tests for the required active-YR AIMD sections plus Simulation installation without direct `register_*` calls;
 5. re-run the existing focused `team_script_vm`, `gsi_04_05_`, snapshot, and base-defense response tests to prove earlier fixes remain green.
