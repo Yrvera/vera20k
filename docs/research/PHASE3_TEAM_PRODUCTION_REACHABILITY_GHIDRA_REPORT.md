@@ -325,7 +325,7 @@ Implement this first and validate it independently:
 5. implement ScriptType 0..49 compacting, TaskForce 0..5 resolved entries and signed counts/Group, TeamType native defaults plus all corridor fields, and lossless 18-token AITrigger DTO storage;
 6. resolve TeamType Script/TaskForce pointers during the TeamType pass with the native find-or-allocate helpers, preserve first-reference order, and fill those placeholders in place during the later registry passes;
 7. install the parsed definitions into Simulation so a normal map load no longer leaves the Team registry definitions empty;
-8. include first-reference order, map re-read and later placeholder fill, unfilled-reference refusal, compaction, six-entry cap, and stock-corpus count tests.
+8. include first-reference order, map re-read and later placeholder fill, valid unfilled-reference persistence, empty-registry sentinel refusal, compaction, six-entry cap, and stock-corpus count tests.
 
 Acceptance evidence for Stage A:
 

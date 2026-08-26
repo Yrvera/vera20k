@@ -155,8 +155,8 @@ The future House selector will read the resolved AITrigger order; it will not pa
 - fixed `aimd.ini` absent, empty in any of the four required registries, or containing a refused definition: fail the normal app scenario load with a descriptive error before installing the registry;
 - a missing or malformed scenario definition: omit the refused map addition and retain a source-tagged diagnostic without invalidating the clean fixed registry;
 - malformed ScriptType action: omit that action exactly where native parse proof supports omission and diagnose it;
-- unresolved fixed-AIMD TaskForce TechnoType, unfilled TeamType attachment, or AITrigger reference: retain a source-tagged install diagnostic and abort production installation rather than admitting a partial fixed registry;
-- the same unresolved scenario reference: retain the native empty Script/TaskForce placeholder or omit the unresolved TaskForce member/AITrigger reference as appropriate, retain a source-tagged diagnostic, and keep the clean fixed registry plus valid map overlays installed;
+- unresolved fixed-AIMD TaskForce TechnoType or AITrigger reference: retain a source-tagged install diagnostic and abort production installation rather than admitting a partial fixed registry; a valid unlisted TeamType Script/TaskForce identity is instead a native empty placeholder and is not a refusal;
+- the same unresolved scenario reference: omit the unresolved TaskForce member/AITrigger reference as appropriate, retain a source-tagged diagnostic, and keep the clean fixed registry plus valid map overlays installed; a `none`/`<none>` TeamType attachment fails only while its target registry is empty, while every valid unlisted identity remains an undiagnosed placeholder;
 - malformed AITrigger token count: omit and diagnose;
 - duplicate map identity: update in place; never warn as a duplicate because this is authored override behavior.
 

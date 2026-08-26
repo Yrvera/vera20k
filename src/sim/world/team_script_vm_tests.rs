@@ -263,11 +263,6 @@ fn production_install_refuses_fixed_resolution_loss_masked_by_same_identity_map_
                 member_type: "GHOST".to_string(),
                 source: TeamAiDefinitionSource::FixedAimd,
             },
-            TeamAiInstallDiagnostic::MissingTeamTypeScript {
-                team_type_id: "TT".to_string(),
-                script_id: "MISSING_SCRIPT".to_string(),
-                source: TeamAiDefinitionSource::FixedAimd,
-            },
             TeamAiInstallDiagnostic::UnknownAiTriggerObject {
                 trigger_id: "A".to_string(),
                 object_type: "GHOST".to_string(),

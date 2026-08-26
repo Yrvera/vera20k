@@ -1,6 +1,6 @@
 //! Scenario-boundary resolution for ordered Team AI definitions.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::ruleset::RuleSet;
@@ -50,9 +50,6 @@ impl TeamScriptVm {
     ) -> (Self, Vec<TeamAiInstallDiagnostic>) {
         let mut vm = Self::default();
         let mut diagnostics = Vec::new();
-        let mut authored_scripts = BTreeSet::new();
-        let mut authored_task_forces = BTreeSet::new();
-        let mut pending_attachments = Vec::new();
 
         // TeamTypeClass::ReadINI runs before the explicit ScriptTypes and
         // TaskForces passes. Its find-or-allocate helpers create referenced
@@ -74,15 +71,7 @@ impl TeamScriptVm {
                 },
             );
             let script_id = match script_resolution {
-                DefinitionResolution::Exact(definition_id) => {
-                    pending_attachments.push(PendingTeamTypeAttachment::Script {
-                        team_type_id: team_type.id.clone(),
-                        definition_id,
-                        definition_name: script_name.to_string(),
-                        source: team_type.source,
-                    });
-                    definition_id
-                }
+                DefinitionResolution::Exact(definition_id) => definition_id,
                 DefinitionResolution::FirstFallback(definition_id) => definition_id,
                 DefinitionResolution::Unavailable => {
                     diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeScript {
@@ -108,15 +97,7 @@ impl TeamScriptVm {
                 },
             );
             let task_force_id = match task_force_resolution {
-                DefinitionResolution::Exact(definition_id) => {
-                    pending_attachments.push(PendingTeamTypeAttachment::TaskForce {
-                        team_type_id: team_type.id.clone(),
-                        definition_id,
-                        definition_name: task_force_name.to_string(),
-                        source: team_type.source,
-                    });
-                    definition_id
-                }
+                DefinitionResolution::Exact(definition_id) => definition_id,
                 DefinitionResolution::FirstFallback(definition_id) => definition_id,
                 DefinitionResolution::Unavailable => {
                     diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
@@ -153,7 +134,6 @@ impl TeamScriptVm {
 
         for script in &registry.scripts {
             let id = interner.intern(&script.id);
-            authored_scripts.insert(id);
             vm.register_script(TeamScriptDefinition {
                 id,
                 actions: script
@@ -170,7 +150,6 @@ impl TeamScriptVm {
 
         for task_force in &registry.task_forces {
             let id = interner.intern(&task_force.id);
-            authored_task_forces.insert(id);
             let entries = task_force
                 .entries
                 .iter()
@@ -199,36 +178,6 @@ impl TeamScriptVm {
                 entries,
                 source: task_force.source,
             });
-        }
-
-        for attachment in pending_attachments {
-            match attachment {
-                PendingTeamTypeAttachment::Script {
-                    team_type_id,
-                    definition_id,
-                    definition_name,
-                    source,
-                } if !authored_scripts.contains(&definition_id) => {
-                    diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeScript {
-                        team_type_id,
-                        script_id: definition_name,
-                        source,
-                    });
-                }
-                PendingTeamTypeAttachment::TaskForce {
-                    team_type_id,
-                    definition_id,
-                    definition_name,
-                    source,
-                } if !authored_task_forces.contains(&definition_id) => {
-                    diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
-                        team_type_id,
-                        task_force_id: definition_name,
-                        source,
-                    });
-                }
-                _ => {}
-            }
         }
 
         for trigger in &registry.ai_triggers {
@@ -342,21 +291,6 @@ impl TeamScriptVm {
     pub(crate) fn team_type(&self, id: InternedId) -> Option<&TeamTypeDefinition> {
         self.team_types.get(&id)
     }
-}
-
-enum PendingTeamTypeAttachment {
-    Script {
-        team_type_id: String,
-        definition_id: InternedId,
-        definition_name: String,
-        source: TeamAiDefinitionSource,
-    },
-    TaskForce {
-        team_type_id: String,
-        definition_id: InternedId,
-        definition_name: String,
-        source: TeamAiDefinitionSource,
-    },
 }
 
 enum DefinitionResolution {

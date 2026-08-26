@@ -1772,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_05_aimd_install_retains_unfilled_reference_placeholders_and_omits_unknown_members() {
+    fn gsi_04_05_aimd_install_retains_unfilled_reference_placeholders_without_diagnostics() {
         use crate::rules::ini_parser::IniFile;
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
@@ -1782,39 +1782,14 @@ mod tests {
         let fixed = IniFile::from_str(
             "[TeamTypes]\n0=TT\n[TT]\nScript=MISSING_SCRIPT\nTaskForce=MISSING_TF\n\
              [ScriptTypes]\n0=FIRST_SCRIPT\n[FIRST_SCRIPT]\n0=2,0\n\
-             [TaskForces]\n0=FIRST_TF\n1=PARTIAL_TF\n\
-             [FIRST_TF]\n0=1,E1\n[PARTIAL_TF]\n0=1,E1\n1=2,GHOST\n",
+             [TaskForces]\n0=FIRST_TF\n[FIRST_TF]\n0=1,E1\n",
         );
         let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
         let mut interner = StringInterner::new();
         let (vm, diagnostics) =
             TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
 
-        assert_eq!(
-            diagnostics,
-            vec![
-                TeamAiInstallDiagnostic::UnknownTaskForceMember {
-                    task_force_id: "PARTIAL_TF".to_string(),
-                    member_type: "GHOST".to_string(),
-                    source: TeamAiDefinitionSource::FixedAimd,
-                },
-                TeamAiInstallDiagnostic::MissingTeamTypeScript {
-                    team_type_id: "TT".to_string(),
-                    script_id: "MISSING_SCRIPT".to_string(),
-                    source: TeamAiDefinitionSource::FixedAimd,
-                },
-                TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
-                    team_type_id: "TT".to_string(),
-                    task_force_id: "MISSING_TF".to_string(),
-                    source: TeamAiDefinitionSource::FixedAimd,
-                },
-            ]
-        );
-        assert!(
-            diagnostics
-                .iter()
-                .all(TeamAiInstallDiagnostic::is_fixed_source_refusal)
-        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let team_type = &vm.team_types[&interner.get("TT").unwrap()];
         assert_eq!(team_type.script_id, interner.get("MISSING_SCRIPT").unwrap());
         assert_eq!(team_type.task_force_id, interner.get("MISSING_TF").unwrap());
@@ -1838,7 +1813,33 @@ mod tests {
                 .iter()
                 .map(|id| interner.resolve(*id))
                 .collect::<Vec<_>>(),
-            ["MISSING_TF", "FIRST_TF", "PARTIAL_TF"]
+            ["MISSING_TF", "FIRST_TF"]
+        );
+        assert!(vm.teams.is_empty());
+    }
+
+    #[test]
+    fn gsi_04_05_task_force_admission_omits_unknown_members() {
+        use crate::rules::ini_parser::IniFile;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+        ))
+        .expect("minimal rules");
+        let fixed = IniFile::from_str(
+            "[TaskForces]\n0=PARTIAL_TF\n[PARTIAL_TF]\n0=1,E1\n1=2,GHOST\n",
+        );
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) = TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+
+        assert_eq!(
+            diagnostics,
+            [TeamAiInstallDiagnostic::UnknownTaskForceMember {
+                task_force_id: "PARTIAL_TF".to_string(),
+                member_type: "GHOST".to_string(),
+                source: TeamAiDefinitionSource::FixedAimd,
+            }]
         );
         assert_eq!(
             vm.task_forces[&interner.get("PARTIAL_TF").unwrap()]
@@ -1847,7 +1848,6 @@ mod tests {
             1,
             "unresolved TechnoTypes do not increment the native TaskForce entry count"
         );
-        assert!(vm.teams.is_empty());
     }
 
     #[test]
