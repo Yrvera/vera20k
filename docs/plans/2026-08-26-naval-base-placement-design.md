@@ -65,8 +65,9 @@ no-terrain compatibility projection or invent a flat/104-lepton CellClass surfac
 
 ## Exact shipyard selector
 
-Scan the resolved `[General] Shipyard=` IDs in authored source order. For each candidate Building
-type, apply only these gates, in order:
+Scan the resolved `[General] Shipyard=` IDs in authored source order. Resolve each entry through
+the category-specific BuildingType registry, not the broad cross-category name winner. For each
+candidate Building type, apply only these gates, in order:
 
 1. Resolve the House's canonical country index. Resolve every candidate `Owner=` token through
    the native source-order HouseType `Name=`-alias-then-registry-ID lookup, build the native
@@ -108,7 +109,8 @@ Extend `RuleSet` with the exact source-ordered lists and scalar:
 - signed `[General] AINavalYardAdjacency=` with constructor default `20`.
 
 Extend `ObjectType` with signed `AIBasePlanningSide=`, default `-1`. After all object registries
-are built, resolve the `BuildConst` list case-insensitively and stamp an immutable
+are built, resolve the `BuildConst` list case-insensitively through the BuildingType registry and
+stamp an immutable
 `build_const_eligible` flag on matching Building types. Copy that flag to each constructed
 `GameEntity`, just as the lifecycle authority already copies Rules-derived cell/scoring facts.
 The immutable flag is serialized and state-hashed with the entity because rule-less lifecycle
