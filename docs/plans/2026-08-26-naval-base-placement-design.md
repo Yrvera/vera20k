@@ -73,9 +73,11 @@ candidate Building type, apply only these gates, in order:
 
 1. Resolve the House's canonical country index. Resolve every candidate `Owner=` token through
    the native source-order HouseType `Name=`-alias-then-registry-ID lookup, build the native
-   32-bit mask using `index & 31`, and require the House bit. An absent/represented-empty Owner
-   list retains the current ObjectType convention for native default all-bits-set; unknown list
-   tokens contribute no bit.
+   32-bit mask using `index & 31`, and require the House bit. `TechnoTypeClass` construction at
+   `0x00711193` initializes the Owner mask to zero, and reader block
+   `0x007149E1..0x007149F5` preserves that current zero as the missing-key default. Therefore an
+   absent or represented-empty `Owner=` list rejects the candidate; an explicit resolved matching
+   House bit is required. Unknown list tokens contribute no bit.
 2. Treat an absent/represented-empty `RequiredHouses=` list as native mask `-1` and accept it;
    otherwise resolve the same way and require the House country/type bit.
 3. Treat an absent/represented-empty `ForbiddenHouses=` list as native mask `-1`/no exclusions;
@@ -90,10 +92,11 @@ candidate Building type, apply only these gates, in order:
 8. Otherwise resolve the primary registered SuperWeaponType and accept only when its
    `DisableableFromShell` is false. Missing registered type fails safely; active retail has none.
 
-The active retail lists are explicit and contain fewer than 32 registered countries. The current
-`ObjectType` vectors do not distinguish a missing key from a deliberately empty custom key; that
-malformed/custom spelling is not present in retail and remains represented as the native default,
-rather than adding unrelated parser-shape state solely to emulate a native crash/zero-mask edge.
+The active retail shipyard `Owner=` lists are explicit and contain fewer than 32 registered
+countries. The current `ObjectType` vectors do not distinguish a missing key from a deliberately
+empty custom key, but both forms exactly map to the native zero Owner mask and reject. This Owner
+default is independent of `RequiredHouses=` and `ForbiddenHouses=`, whose separately verified
+absent/represented-empty defaults remain mask `-1` as described above.
 
 Do not test TechLevel, lower-bound TechLevel, prerequisites, factory presence, BuildLimit, cost,
 credits, stolen tech, production category, AIBuildThis, or runtime superweapon instance state.
