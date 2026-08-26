@@ -105,7 +105,6 @@ pub struct TeamAiTriggerDefinition {
     pub enabled: bool,
     pub primary_team_type: Option<InternedId>,
     pub owner: Option<TeamAiTriggerOwner>,
-    pub authored_threshold: i32,
     pub threshold: i32,
     pub condition: i32,
     pub object_type: Option<InternedId>,
@@ -1311,7 +1310,7 @@ mod tests {
         use crate::rules::ini_parser::IniFile;
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
-            "[Countries]\n0=British\n[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+            "[Countries]\n0=British\n[InfantryTypes]\n0=E1\n[E1]\nStrength=100\nTechLevel=1\n",
         ))
         .expect("minimal rules");
         let comparison = "0100000003000000000000000000000000000000000000000000000000000000";
@@ -1392,8 +1391,8 @@ mod tests {
             trigger.owner,
             Some(TeamAiTriggerOwner::Country(CountryIdx(0)))
         );
-        assert_eq!(trigger.authored_threshold, 2);
-        assert_eq!(trigger.threshold, 2);
+        assert_eq!(trigger.tokens[3], "2");
+        assert_eq!(trigger.threshold, 1);
         assert_eq!(trigger.condition, 4);
         assert_eq!(trigger.object_type, interner.get("E1"));
         assert_eq!(&trigger.comparison_mask[..5], &[1, 0, 0, 0, 3]);
@@ -1435,22 +1434,31 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_05_ai_trigger_threshold_is_raised_to_each_referenced_task_force_total() {
+    fn gsi_04_05_ai_trigger_threshold_folds_member_tech_levels_in_slot_order() {
         use crate::rules::ini_parser::IniFile;
 
         let rules = RuleSet::from_ini(&IniFile::from_str(
-            "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+            "[InfantryTypes]\n0=E1\n1=GGI\n2=HIGH\n3=HIDDEN\n\
+             [E1]\nStrength=100\nTechLevel=1\n\
+             [GGI]\nStrength=100\nTechLevel=5\n\
+             [HIGH]\nStrength=100\nTechLevel=12\n\
+             [HIDDEN]\nStrength=100\nTechLevel=-1\n",
         ))
         .expect("minimal rules");
         let comparison = "00".repeat(32);
         let fixed = IniFile::from_str(&format!(
-            "[TeamTypes]\n0=PRIMARY\n1=SECONDARY\n\
-             [PRIMARY]\nScript=S\nTaskForce=SMALL\n\
-             [SECONDARY]\nScript=S\nTaskForce=LARGE\n\
+            "[TeamTypes]\n0=PRIMARY\n1=DOWN\n2=UP\n\
+             [PRIMARY]\nScript=S\nTaskForce=PRIMARY_TF\n\
+             [DOWN]\nScript=S\nTaskForce=DOWN_TF\n\
+             [UP]\nScript=S\nTaskForce=UP_TF\n\
              [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
-             [TaskForces]\n0=SMALL\n1=LARGE\n\
-             [SMALL]\n0=2,E1\n[LARGE]\n0=3,E1\n1=2,E1\n\
-             [AITriggerTypes]\nAT=Threshold,PRIMARY,<all>,3,0,<none>,{comparison},1,1,1,1,0,1,0,SECONDARY,1,1,1\n"
+             [TaskForces]\n0=PRIMARY_TF\n1=DOWN_TF\n2=UP_TF\n\
+             [PRIMARY_TF]\n0=99,E1\n1=77,GGI\n\
+             [DOWN_TF]\n0=1,HIGH\n1=1,HIDDEN\n\
+             [UP_TF]\n0=1,HIDDEN\n1=1,HIGH\n\
+             [AITriggerTypes]\n\
+             AT=Threshold down,PRIMARY,<all>,99,0,<none>,{comparison},1,1,1,1,0,1,0,DOWN,1,1,1\n\
+             AT2=Threshold up,UP,<all>,99,0,<none>,{comparison},1,1,1,1,0,1,0,<none>,1,1,1\n"
         ));
         let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), true);
         let mut interner = StringInterner::new();
@@ -1459,8 +1467,31 @@ mod tests {
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let trigger = vm.ai_trigger(interner.get("AT").unwrap()).unwrap();
-        assert_eq!(trigger.authored_threshold, 3);
-        assert_eq!(trigger.threshold, 5);
+        assert_eq!(trigger.tokens[3], "99");
+        assert_eq!(
+            trigger.threshold, 11,
+            "a later -1 TechLevel replaces even a prior 12 with 11 in nonzero game modes"
+        );
+        assert_eq!(
+            vm.ai_trigger(interner.get("AT2").unwrap())
+                .unwrap()
+                .threshold,
+            12,
+            "slot order remains load-bearing because a later 12 raises the -1 sentinel's 11"
+        );
+
+        let registry = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), false);
+        let mut interner = StringInterner::new();
+        let (vm, diagnostics) =
+            TeamScriptVm::from_ini_registry(&registry, &mut interner, &rules);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            vm.ai_trigger(interner.get("AT").unwrap())
+                .unwrap()
+                .threshold,
+            12,
+            "TechLevel=-1 is ignored when g_GameMode is zero"
+        );
     }
 
     #[test]
@@ -1603,10 +1634,18 @@ mod tests {
             .expect("set VERA20K_RETAIL_AIMD to extracted retail aimd.ini");
         let rules_path = std::env::var_os("VERA20K_RETAIL_RULESMD")
             .expect("set VERA20K_RETAIL_RULESMD to extracted retail rulesmd.ini");
-        let aimd = IniFile::from_bytes(&std::fs::read(aimd_path).expect("read aimd.ini"))
-            .expect("parse aimd.ini");
-        let rules_ini = IniFile::from_bytes(&std::fs::read(rules_path).expect("read rulesmd.ini"))
-            .expect("parse rulesmd.ini");
+        let aimd_bytes = std::fs::read(aimd_path).expect("read aimd.ini");
+        let rules_bytes = std::fs::read(rules_path).expect("read rulesmd.ini");
+        assert_eq!(
+            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(&aimd_bytes),
+            "5df41eaec00a78d0760ef5eecdf27d65ae1cd537309c7eac973318266986f89d"
+        );
+        assert_eq!(
+            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(&rules_bytes),
+            "3d341ef8a13a4b5ab24af2eef48ac94931ac2bb87d950fe3330a07e2d25672ef"
+        );
+        let aimd = IniFile::from_bytes(&aimd_bytes).expect("parse aimd.ini");
+        let rules_ini = IniFile::from_bytes(&rules_bytes).expect("parse rulesmd.ini");
         let rules = RuleSet::from_ini(&rules_ini).expect("load retail rules");
         let registry = TeamAiIniRegistry::from_sources(&aimd, &IniFile::from_str(""), true);
         let mut interner = StringInterner::new();
@@ -1655,7 +1694,7 @@ mod tests {
             .expect("resolved stock Allied Anti-Nuke trigger");
         assert_eq!(anti_nuke.display_name, "Allied Anti-Nuke 1");
         assert_eq!(anti_nuke.owner, Some(TeamAiTriggerOwner::All));
-        assert_eq!(anti_nuke.authored_threshold, 9);
+        assert_eq!(anti_nuke.tokens[3], "9");
         assert_eq!(anti_nuke.threshold, 9);
         assert_eq!(anti_nuke.condition, 0);
         assert_eq!(anti_nuke.object_type, interner.get("NAMISL"));
@@ -1673,5 +1712,66 @@ mod tests {
         assert!(!anti_nuke.storage_flag_d1);
         assert_eq!(anti_nuke.difficulty_enabled, [false, true, true]);
         assert!(vm.teams.is_empty());
+
+        let threshold_rows = vm
+            .ai_trigger_order()
+            .iter()
+            .map(|id| {
+                let trigger = vm.ai_trigger(*id).expect("ordered AITrigger");
+                format!("{}\t{}\n", interner.resolve(*id), trigger.threshold)
+            })
+            .collect::<String>();
+        assert_eq!(threshold_rows.lines().count(), 165);
+        assert_eq!(
+            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(
+                threshold_rows.as_bytes()
+            ),
+            "76096bc2d9592ff4c1054c23a38660e74c3860afbc2882db5c6dcc2074da8aad",
+            "every game-mode-nonzero retail AITrigger threshold must match the native oracle"
+        );
+
+        let zero_mode_registry =
+            TeamAiIniRegistry::from_sources(&aimd, &IniFile::from_str(""), false);
+        let mut zero_mode_interner = StringInterner::new();
+        let (zero_mode_vm, zero_mode_diagnostics) = TeamScriptVm::from_ini_registry(
+            &zero_mode_registry,
+            &mut zero_mode_interner,
+            &rules,
+        );
+        assert!(zero_mode_diagnostics.is_empty(), "{zero_mode_diagnostics:?}");
+        let zero_mode_rows = zero_mode_vm
+            .ai_trigger_order()
+            .iter()
+            .map(|id| {
+                let trigger = zero_mode_vm.ai_trigger(*id).expect("ordered AITrigger");
+                format!(
+                    "{}\t{}\n",
+                    zero_mode_interner.resolve(*id),
+                    trigger.threshold
+                )
+            })
+            .collect::<String>();
+        assert_eq!(zero_mode_rows.lines().count(), 165);
+        assert_eq!(
+            crate::app::diagnostics::tactical_capture::integrity::sha256_hex(
+                zero_mode_rows.as_bytes()
+            ),
+            "3253b17c65d2006bf542c38a811ec68ef2847e588dc1f21165e7070af5d5e1f7",
+            "every game-mode-zero retail AITrigger threshold must match the native oracle"
+        );
+        let mode_sensitive = "0C8C51BC-G";
+        assert_eq!(
+            zero_mode_vm
+                .ai_trigger(zero_mode_interner.get(mode_sensitive).unwrap())
+                .unwrap()
+                .threshold,
+            5
+        );
+        assert_eq!(
+            vm.ai_trigger(interner.get(mode_sensitive).unwrap())
+                .unwrap()
+                .threshold,
+            11
+        );
     }
 }

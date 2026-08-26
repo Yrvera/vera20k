@@ -294,7 +294,9 @@ use crate::sim::world::Simulation;
 // defaults cannot safely decode the shorter v96 record.
 // Bumped 97 -> 98: resolved AITriggerType records now persist every proven
 // typed raw-reader field in addition to their lossless 18-token source record.
-const SNAPSHOT_VERSION: u32 = 98;
+// Bumped 98 -> 99: remove the falsely retained AITrigger token-4 scalar;
+// native requires that token but discards it before deriving `+0xB0`.
+const SNAPSHOT_VERSION: u32 = 99;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2629,10 +2631,12 @@ mod tests {
     /// response latches/timer state; 95 -> 96 adds the ordered AIMD/map static
     /// registries retained by TeamScriptVm; 96 -> 97 adds resolved ScriptType
     /// and TaskForce source provenance; 97 -> 98 adds the resolved typed
-    /// AITrigger owner/object/scalar/mask/weight/difficulty payload.
+    /// AITrigger owner/object/scalar/mask/weight/difficulty payload; 98 -> 99
+    /// removes the falsely retained AITrigger token-4 scalar after binary
+    /// verification proved that token is required but discarded.
     #[test]
-    fn phase3_team_ai_registry_snapshot_version_is_98() {
-        assert_eq!(super::SNAPSHOT_VERSION, 98);
+    fn phase3_team_ai_registry_snapshot_version_is_99() {
+        assert_eq!(super::SNAPSHOT_VERSION, 99);
     }
 
     #[test]
@@ -2707,7 +2711,6 @@ mod tests {
                 owner: Some(crate::sim::team_script_vm::TeamAiTriggerOwner::Country(
                     crate::rules::ruleset::CountryIdx(4),
                 )),
-                authored_threshold: -3,
                 threshold: 7,
                 condition: 6,
                 object_type: Some(member_type),
@@ -2748,7 +2751,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v98 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v99 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
@@ -2827,7 +2830,6 @@ mod tests {
                 crate::rules::ruleset::CountryIdx(4)
             ))
         );
-        assert_eq!(restored_trigger.authored_threshold, -3);
         assert_eq!(restored_trigger.threshold, 7);
         assert_eq!(restored_trigger.condition, 6);
         assert_eq!(restored_trigger.object_type, Some(member_type));

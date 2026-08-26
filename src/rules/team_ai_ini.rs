@@ -123,7 +123,6 @@ pub struct AiTriggerTypeIni {
     pub display_name: String,
     pub primary_team_type: Option<String>,
     pub owner: AiTriggerOwnerIni,
-    pub authored_threshold: i32,
     pub condition: i32,
     pub object_type: Option<String>,
     pub comparison_mask: [u8; 32],
@@ -213,6 +212,7 @@ pub struct TeamAiIniRegistry {
     pub diagnostics: Vec<TeamAiIniDiagnostic>,
     pub fixed_counts: TeamAiRegistryCounts,
     fixed_definitions: FixedTeamAiDefinitions,
+    game_mode_nonzero: bool,
 }
 
 impl TeamAiIniRegistry {
@@ -225,7 +225,10 @@ impl TeamAiIniRegistry {
         scenario: &IniFile,
         game_mode_nonzero: bool,
     ) -> Self {
-        let mut registry = Self::default();
+        let mut registry = Self {
+            game_mode_nonzero,
+            ..Self::default()
+        };
 
         registry.read_team_types(fixed_aimd, TeamAiDefinitionSource::FixedAimd);
         registry.fixed_counts.team_types = registry.team_types.len();
@@ -274,7 +277,12 @@ impl TeamAiIniRegistry {
             diagnostics: Vec::new(),
             fixed_counts: self.fixed_counts,
             fixed_definitions: self.fixed_definitions.clone(),
+            game_mode_nonzero: self.game_mode_nonzero,
         }
+    }
+
+    pub(crate) fn game_mode_nonzero(&self) -> bool {
+        self.game_mode_nonzero
     }
 
     /// TeamTypes are read from fixed AIMD and then from the map before either
@@ -474,7 +482,6 @@ impl TeamAiIniRegistry {
                 } else {
                     AiTriggerOwnerIni::Country(tokens[2].clone())
                 },
-                authored_threshold: atoi_lenient(&tokens[3]),
                 condition: atoi_lenient(&tokens[4]),
                 object_type: optional_reference(&tokens[5]),
                 comparison_mask,
@@ -759,7 +766,7 @@ mod tests {
         assert_eq!(trigger.display_name, "Map override");
         assert_eq!(trigger.primary_team_type.as_deref(), Some("FIRST"));
         assert_eq!(trigger.owner, AiTriggerOwnerIni::All);
-        assert_eq!(trigger.authored_threshold, 2);
+        assert_eq!(trigger.tokens[3], "2");
         assert_eq!(trigger.condition, 4);
         assert_eq!(trigger.object_type, None);
         assert_eq!(trigger.comparison_mask, [0; 32]);
@@ -917,7 +924,7 @@ mod tests {
         assert_eq!(anti_nuke.display_name, "Allied Anti-Nuke 1");
         assert_eq!(anti_nuke.primary_team_type.as_deref(), Some("08DA125C-G"));
         assert_eq!(anti_nuke.owner, AiTriggerOwnerIni::All);
-        assert_eq!(anti_nuke.authored_threshold, 9);
+        assert_eq!(anti_nuke.tokens[3], "9");
         assert_eq!(anti_nuke.condition, 0);
         assert_eq!(anti_nuke.object_type.as_deref(), Some("NAMISL"));
         assert_eq!(&anti_nuke.comparison_mask[..5], &[1, 0, 0, 0, 3]);

@@ -231,12 +231,24 @@ impl TeamScriptVm {
             );
             let owner = resolve_trigger_owner(trigger, rules, &mut diagnostics);
             let object_type = resolve_trigger_object(trigger, rules, interner, &mut diagnostics);
-            let primary_total = trigger_task_force_total(&vm, primary_team_type);
-            let secondary_total = trigger_task_force_total(&vm, secondary_team_type);
-            let threshold = [primary_total, secondary_total]
+            let primary_tech_level = trigger_task_force_tech_level(
+                &vm,
+                primary_team_type,
+                interner,
+                rules,
+                registry.game_mode_nonzero(),
+            );
+            let secondary_tech_level = trigger_task_force_tech_level(
+                &vm,
+                secondary_team_type,
+                interner,
+                rules,
+                registry.game_mode_nonzero(),
+            );
+            let threshold = [primary_tech_level, secondary_tech_level]
                 .into_iter()
                 .flatten()
-                .fold(trigger.authored_threshold, i32::max);
+                .fold(0_i32, i32::max);
             vm.register_ai_trigger(TeamAiTriggerDefinition {
                 id,
                 tokens: trigger.tokens.clone(),
@@ -244,7 +256,6 @@ impl TeamScriptVm {
                 enabled: trigger.enabled,
                 primary_team_type,
                 owner,
-                authored_threshold: trigger.authored_threshold,
                 threshold,
                 condition: trigger.condition,
                 object_type,
@@ -399,7 +410,15 @@ fn resolve_trigger_object(
     None
 }
 
-fn trigger_task_force_total(vm: &TeamScriptVm, team_type_id: Option<InternedId>) -> Option<i32> {
+// gamemd.exe 0x006E8780: ordered member TechLevel fold used by the
+// AITriggerType post-read calls at 0x0041FA5C..0x0041FADD.
+fn trigger_task_force_tech_level(
+    vm: &TeamScriptVm,
+    team_type_id: Option<InternedId>,
+    interner: &StringInterner,
+    rules: &RuleSet,
+    game_mode_nonzero: bool,
+) -> Option<i32> {
     team_type_id
         .and_then(|id| vm.team_types.get(&id))
         .and_then(|team_type| vm.task_forces.get(&team_type.task_force_id))
@@ -407,7 +426,17 @@ fn trigger_task_force_total(vm: &TeamScriptVm, team_type_id: Option<InternedId>)
             task_force
                 .entries
                 .iter()
-                .fold(0_i32, |total, entry| total.wrapping_add(entry.count))
+                .filter_map(|entry| rules.object(interner.resolve(entry.member_type)))
+                .fold(0_i32, |current, member_type| {
+                    let tech_level = member_type.tech_level;
+                    if tech_level > current {
+                        tech_level
+                    } else if tech_level == -1 && game_mode_nonzero {
+                        11
+                    } else {
+                        current
+                    }
+                })
         })
 }
 

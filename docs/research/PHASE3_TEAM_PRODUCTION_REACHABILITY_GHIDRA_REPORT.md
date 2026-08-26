@@ -137,7 +137,7 @@ All 165 stock AIMD records contain exactly 18 comma tokens. The loader consumes 
 | 1 | display name copied to `+0x64` |
 | 2 | primary TeamType pointer at `+0xDC` |
 | 3 | owner mode at `+0xA0`; named-country index at `+0xA8`, `<all>` uses mode `2` |
-| 4 | signed threshold at `+0xB0`, later raised to at least the primary/secondary TaskForce total |
+| 4 | required token, but its value is discarded; `+0xB0` is explicitly zeroed before primary/secondary TaskForce TechLevel folds from `0x006E8780` |
 | 5 | condition enum at `+0x98` |
 | 6 | optional Building/Unit/Infantry/Aircraft type pointer at `+0xD8` |
 | 7 | 32-byte comparison/mask payload at `+0xE4..+0x103` |
@@ -150,6 +150,10 @@ All 165 stock AIMD records contain exactly 18 comma tokens. The loader consumes 
 | 16–18 | three difficulty booleans at `+0xD2`, `+0xD3`, `+0xD4` |
 
 The semantic names of tokens 11–14 are intentionally not guessed. Their storage and use sites must be named from a complete consumer trace before implementation.
+
+The token-4 parser call at `0x0041F712` checks only that the token exists; `0x0041F728` writes zero to `+0xB0` without converting the token. For each referenced TeamType, `0x0041FA5C..0x0041FADD` calls `0x006E8780` on its TaskForce and keeps the larger fold result. `0x006E8780` starts at zero and walks compact TaskForce member slots in order. A member TechLevel above the accumulator replaces it. Otherwise the accumulator is retained, except that a member TechLevel of `-1` replaces it with `11` when `g_GameMode != 0`. That exception is order-sensitive: a `12` followed by `-1` yields `11`, while `-1` followed by `12` yields `12`. TaskForce member counts do not participate.
+
+The retail threshold oracle uses AIMD SHA-256 `5df41eaec00a78d0760ef5eecdf27d65ae1cd537309c7eac973318266986f89d` and rulesmd SHA-256 `3d341ef8a13a4b5ab24af2eef48ac94931ac2bb87d950fe3330a07e2d25672ef`. In `[AITriggerTypes]` encounter order, UTF-8 rows formatted as `ID<TAB>threshold<LF>` hash to `3253b17c65d2006bf542c38a811ec68ef2847e588dc1f21165e7070af5d5e1f7` when `g_GameMode == 0` and `76096bc2d9592ff4c1054c23a38660e74c3860afbc2882db5c6dcc2074da8aad` otherwise. The only mode-sensitive stock row is `0C8C51BC-G` (`5` versus `11`). An oracle parser must honor native INI comment handling for the active headers `[CCOMAND] ;...`, `[YURI] ;...`, and `[DISK];...`; treating those sections as absent corrupts 16 threshold rows.
 
 The fixed AIMD pass enables fixed records through `+0xA4`. On the map pass, `[AITriggerTypesEnable]` is keyed by AITriggerType identifier. `CCINIClass::ReadBool(..., default=false)` is read for each listed key: false clears `+0xA4` only when `g_GameMode == 0`; in nonzero game modes every listed key is enabled even when authored false. Constructor `0x0041E350` initializes the three weights to `1.0`, the three difficulty bytes true, and enabled false before the loading pass changes them (`FUN_0041F2E0`, decompiled complete body).
 
