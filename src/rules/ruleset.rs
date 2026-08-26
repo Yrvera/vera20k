@@ -288,6 +288,9 @@ pub struct GeneralRules {
     /// `[General] ComputerBaseDefenseResponse=`. The active House responder
     /// forms its signed/wrapping budget as `attacker Cost * this value`.
     pub computer_base_defense_response: i32,
+    /// Signed `[General] MaximumBuildingPlacementFailures=`. The Building-exit
+    /// retry writer compares strictly after incrementing; negative mods remain literal.
+    pub maximum_building_placement_failures: i32,
     /// `[General] BaseDefenseDelay=` in minutes. A strict responder-budget
     /// overshoot arms the attacker cooldown for `ftol(value * 900)` frames.
     pub base_defense_delay_minutes: f64,
@@ -920,6 +923,7 @@ impl Default for GeneralRules {
             veteran_cap: VETERAN_CAP_DEFAULT,
             difficulty_armor: [1.0; 3],
             computer_base_defense_response: 3,
+            maximum_building_placement_failures: 5,
             base_defense_delay_minutes: 0.25,
             suspend_priority: 20,
             suspend_delay_minutes: 2.0,
@@ -1562,6 +1566,9 @@ impl GeneralRules {
             computer_base_defense_response: general
                 .get_i32("ComputerBaseDefenseResponse")
                 .unwrap_or(defaults.computer_base_defense_response),
+            maximum_building_placement_failures: general
+                .get_i32("MaximumBuildingPlacementFailures")
+                .unwrap_or(defaults.maximum_building_placement_failures),
             base_defense_delay_minutes: general
                 .read_double("BaseDefenseDelay", defaults.base_defense_delay_minutes),
             suspend_priority: general
@@ -2238,6 +2245,8 @@ pub struct RuleSet {
     /// this retains distinct types when malformed/custom rules list the same
     /// ID in more than one category.
     object_category_index: HashMap<(ObjectCategory, String), TypeHandle>,
+    /// Case-insensitive native BuildingType registry identity to its ordered index.
+    building_type_indices: HashMap<String, i32>,
     /// All weapons indexed by ID (e.g., "105mm" → WeaponType).
     weapons: HashMap<String, WeaponType>,
     /// All warheads indexed by ID (e.g., "AP" → WarheadType).
@@ -2452,6 +2461,7 @@ impl RuleSet {
         let mut object_index: HashMap<String, TypeHandle> = HashMap::new();
         let mut object_category_index: HashMap<(ObjectCategory, String), TypeHandle> =
             HashMap::new();
+        let mut building_type_indices: HashMap<String, i32> = HashMap::new();
         let mut infantry_ids: Vec<String> = Vec::new();
         let mut vehicle_ids: Vec<String> = Vec::new();
         let mut aircraft_ids: Vec<String> = Vec::new();
@@ -2530,9 +2540,20 @@ impl RuleSet {
             let ids: Vec<String> = parse_registry(ini, registry_name);
             log::info!("Registry [{}]: {} entries", registry_name, ids.len());
 
-            for id in &ids {
+            for (registry_index, id) in ids.iter().enumerate() {
+                if category == ObjectCategory::Building {
+                    building_type_indices
+                        .entry(id.to_ascii_uppercase())
+                        .or_insert(registry_index as i32);
+                }
                 if let Some(section) = ini.section(id) {
                     let mut obj: ObjectType = ObjectType::from_ini_section(id, section, category);
+                    if category == ObjectCategory::Building {
+                        obj.base_plan_type_index = building_type_indices
+                            .get(&id.to_ascii_uppercase())
+                            .copied()
+                            .expect("BuildingType index was registered above");
+                    }
                     if obj.base_reservation_writer_eligible() {
                         obj.base_reservation_spacing = Some(ai_base_spacing);
                     }
@@ -2911,6 +2932,7 @@ impl RuleSet {
             object_list,
             object_index,
             object_category_index,
+            building_type_indices,
             weapons,
             warheads,
             projectiles,
@@ -3017,6 +3039,14 @@ impl RuleSet {
         self.object_category_index
             .get(&(category, id.to_ascii_uppercase()))
             .map(|handle| self.object_by_handle(*handle))
+    }
+
+    /// Resolve one scenario BasePlan token through the native BuildingType
+    /// registry only, returning its ordered registry index.
+    pub(crate) fn building_type_index(&self, id: &str) -> Option<i32> {
+        self.building_type_indices
+            .get(&id.to_ascii_uppercase())
+            .copied()
     }
 
     /// Resolve a TaskForce member through the exact native family order used
@@ -4407,6 +4437,37 @@ CellSpread=0
         assert_eq!(parsed.base_defense_delay_minutes, 0.125_f32 as f64);
         assert_eq!(parsed.suspend_priority, -2);
         assert_eq!(parsed.suspend_delay_minutes, 1.5_f32 as f64);
+    }
+
+    #[test]
+    fn gsi_04_05_base_plan_rules_preserve_signed_retry_limit_and_building_identity() {
+        assert_eq!(
+            GeneralRules::default().maximum_building_placement_failures,
+            5
+        );
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nMaximumBuildingPlacementFailures=-4\n\
+             [BuildingTypes]\n0=GAPOWR\n1=GACNST\n\
+             [GAPOWR]\nStrength=750\nIsBaseDefense=yes\n\
+             [GACNST]\nStrength=1000\nUndeploysInto=AMCV\n",
+        ))
+        .expect("base-plan rules");
+
+        assert_eq!(rules.general.maximum_building_placement_failures, -4);
+        assert_eq!(rules.building_type_index("gapowr"), Some(0));
+        assert_eq!(rules.building_type_index("GACNST"), Some(1));
+        let defense = rules
+            .object_in_category(ObjectCategory::Building, "GAPOWR")
+            .unwrap();
+        assert_eq!(defense.base_plan_type_index, 0);
+        assert!(defense.is_base_defense);
+        assert!(
+            rules
+                .object_in_category(ObjectCategory::Building, "GACNST")
+                .unwrap()
+                .undeploys_into
+                .is_some()
+        );
     }
 
     #[test]

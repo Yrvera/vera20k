@@ -664,6 +664,11 @@ pub struct ObjectType {
     /// `0x00672B14..0x00672C01`). `RuleSet` stamps this after all type
     /// registries exist.
     pub build_const_eligible: bool,
+    /// Native BuildingType registry index used by ordered House BasePlan nodes.
+    /// Non-building types retain `-1`.
+    pub base_plan_type_index: i32,
+    /// BuildingType `IsBaseDefense=` immutable lifecycle input.
+    pub is_base_defense: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.
     /// Default: false for all types. Parsed from `Crushable=` in rules.ini.
@@ -1484,6 +1489,8 @@ impl ObjectType {
                 .unwrap_or(0x80),
             construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
             build_const_eligible: false,
+            base_plan_type_index: -1,
+            is_base_defense: section.get_bool("IsBaseDefense").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
             weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),

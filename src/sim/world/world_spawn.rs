@@ -2136,6 +2136,9 @@ fn stamp_building_cell_profile(
         ge.base_reservation_spacing = obj.base_reservation_spacing;
         ge.determines_waypoint_edge = obj.factory == Some(FactoryType::BuildingType);
         ge.build_const_eligible = obj.build_const_eligible;
+        ge.base_plan_type_index = obj.base_plan_type_index;
+        ge.base_plan_is_defense = obj.is_base_defense;
+        ge.base_plan_has_undeploy_target = obj.undeploys_into.is_some();
     }
 }
 

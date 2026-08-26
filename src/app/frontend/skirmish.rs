@@ -639,6 +639,7 @@ mod tests {
                     player_control: None,
                     iq: None,
                     allies: Vec::new(),
+                    base_plan: Default::default(),
                 },
                 HouseDefinition {
                     name: "Americans".to_string(),
@@ -648,6 +649,7 @@ mod tests {
                     player_control: Some(true),
                     iq: None,
                     allies: Vec::new(),
+                    base_plan: Default::default(),
                 },
             ],
         }
@@ -1712,6 +1714,7 @@ mod tests {
                 player_control: Some(true),
                 iq: None,
                 allies: Vec::new(),
+                base_plan: Default::default(),
             }],
         };
 

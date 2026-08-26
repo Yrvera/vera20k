@@ -753,6 +753,7 @@ impl Simulation {
                 self.session.binary_frame,
             );
         }
+        self.fill_base_plan_from_successful_building_unlimbo(stable_id);
         if !self
             .substrate
             .entities
@@ -779,6 +780,69 @@ impl Simulation {
             false
         };
         RevealOutcome::Revealed { logic_registered }
+    }
+
+    /// `BuildingClass::Unlimbo @ 0x00440580` successful-plan satisfaction.
+    fn fill_base_plan_from_successful_building_unlimbo(&mut self, stable_id: u64) {
+        let Some((owner, type_index, packed_cell, has_undeploy_target)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
+                (entity.category == EntityCategory::Structure && entity.base_plan_type_index >= 0)
+                    .then_some((
+                        entity.owner,
+                        entity.base_plan_type_index,
+                        crate::sim::base_plan::pack_base_plan_cell(
+                            i32::from(entity.position.rx),
+                            i32::from(entity.position.ry),
+                        ),
+                        entity.base_plan_has_undeploy_target,
+                    ))
+            })
+        else {
+            return;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return;
+        };
+        if house.event_dispatch_eligible() {
+            return;
+        }
+        house
+            .base_plan
+            .fill_successful_building(type_index, packed_cell, has_undeploy_target);
+    }
+
+    /// `BuildingClass::Limbo @ 0x00443C60` BasePlan invalidation, before the
+    /// common Techno/Object concealment path. VERA has no map-editor runtime;
+    /// every call to this lifecycle seam is therefore outside editor mode.
+    fn invalidate_base_plan_from_building_limbo(&mut self, stable_id: u64) {
+        let Some((owner, type_index, packed_cell, is_base_defense, in_limbo)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
+                (entity.category == EntityCategory::Structure && entity.base_plan_type_index >= 0)
+                    .then_some((
+                        entity.owner,
+                        entity.base_plan_type_index,
+                        crate::sim::base_plan::pack_base_plan_cell(
+                            i32::from(entity.position.rx),
+                            i32::from(entity.position.ry),
+                        ),
+                        entity.base_plan_is_defense,
+                        entity.lifecycle.in_limbo,
+                    ))
+            })
+        else {
+            return;
+        };
+        if in_limbo {
+            return;
+        }
+        if let Some(house) = self.houses.get_mut(&owner) {
+            house.base_plan.invalidate_limbo_building(
+                type_index,
+                packed_cell,
+                is_base_defense,
+                self.session.game_mode_nonzero,
+            );
+        }
     }
 
     /// Refresh the owning house's navigation edge from a live, map-committed
@@ -1799,6 +1863,9 @@ impl Simulation {
         if !self.substrate.entities.contains(stable_id) {
             return ConcealOutcome::MissingOrDead;
         }
+        // BuildingClass owns this pass before the common TechnoClass Limbo can
+        // clear committed type/cell facts or broadcast another expiry callback.
+        self.invalidate_base_plan_from_building_limbo(stable_id);
         // FootClass::Limbo @ 0x004DB260 and BuildingClass::Limbo @
         // 0x00445880 remove the exact deposited footprint before conceal.
         if let Some(rules) = context.rules() {
@@ -2748,5 +2815,110 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn flush_pending_delete(&mut self) {
         self.process_pending_delete();
+    }
+}
+
+#[cfg(test)]
+mod base_plan_lifecycle_tests {
+    use std::collections::BTreeMap;
+
+    use crate::map::entities::EntityCategory;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::base_plan::{BasePlanNode, pack_base_plan_cell};
+    use crate::sim::house_state::HouseState;
+    use crate::sim::scenario_bootstrap::initialize_map_roster_houses;
+    use crate::sim::world::Simulation;
+
+    fn rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nMaximumBuildingPlacementFailures=3\n\
+             [BuildingTypes]\n0=GAPOWR\n1=GACNST\n\
+             [GAPOWR]\nStrength=750\nIsBaseDefense=yes\n\
+             [GACNST]\nStrength=1000\nUndeploysInto=AMCV\n",
+        ))
+        .expect("base-plan lifecycle rules")
+    }
+
+    #[test]
+    fn gsi_04_05_scenario_plan_precedes_unlimbo_and_human_unlimbo_is_excluded() {
+        let rules = rules();
+        let scenario = IniFile::from_str(
+            "[Houses]\n0=Computer1\n\
+             [Computer1]\nPercentBuilt=44\nNodeCount=1\n000=GACNST,10,11\n",
+        );
+        let roster =
+            crate::map::houses::parse_house_roster(&scenario, &rules.color_schemes, Some(&rules));
+        let mut sim = Simulation::new();
+        initialize_map_roster_houses(&mut sim, &roster, Some(&rules));
+        let ai = sim.interner.get("Computer1").unwrap();
+        assert_eq!(sim.houses[&ai].base_plan.percent_built, 44);
+        assert!(!sim.houses[&ai].base_plan.nodes[0].filled);
+
+        let building = sim
+            .spawn_object("GACNST", "Computer1", 10, 11, 0, &rules, &BTreeMap::new())
+            .expect("scenario building");
+        assert!(sim.houses[&ai].base_plan.nodes[0].filled);
+        assert_eq!(sim.houses[&ai].base_plan.nodes[0].retry_count, 0);
+        let entity = sim.entities().get(building).unwrap();
+        assert_eq!(entity.category, EntityCategory::Structure);
+        assert_eq!(entity.base_plan_type_index, 1);
+        assert!(!entity.base_plan_is_defense);
+        assert!(entity.base_plan_has_undeploy_target);
+
+        let human = sim.interner.intern("Human1");
+        let mut human_house = HouseState::new(human, 0, None, true, 0, 10);
+        human_house.base_plan.nodes.push(BasePlanNode {
+            type_or_control: 0,
+            packed_cell: pack_base_plan_cell(20, 21),
+            filled: false,
+            retry_count: 7,
+        });
+        sim.houses.insert(human, human_house);
+        sim.session.house_order.push(human);
+        sim.spawn_object("GAPOWR", "Human1", 20, 21, 0, &rules, &BTreeMap::new())
+            .expect("human building");
+        assert!(!sim.houses[&human].base_plan.nodes[0].filled);
+        assert_eq!(sim.houses[&human].base_plan.nodes[0].retry_count, 7);
+    }
+
+    #[test]
+    fn gsi_04_05_building_limbo_runs_base_plan_invalidation_before_conceal() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        sim.session.game_mode_nonzero = true;
+        let owner = sim.interner.intern("Computer1");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, false, 0, 10));
+        let building = sim
+            .spawn_object("GAPOWR", "Computer1", 30, 31, 0, &rules, &BTreeMap::new())
+            .expect("defense building");
+        let cell = pack_base_plan_cell(30, 31);
+        sim.houses.get_mut(&owner).unwrap().base_plan.nodes = vec![
+            BasePlanNode {
+                type_or_control: 0,
+                packed_cell: cell,
+                filled: true,
+                retry_count: 8,
+            },
+            BasePlanNode {
+                type_or_control: 1,
+                packed_cell: cell,
+                filled: false,
+                retry_count: -2,
+            },
+        ];
+
+        assert_eq!(sim.techno_limbo(building), super::ConcealOutcome::Concealed);
+        let plan = &sim.houses[&owner].base_plan;
+        assert_eq!(plan.nodes[0].type_or_control, -1);
+        assert_eq!(plan.nodes[0].packed_cell, 0);
+        assert!(plan.nodes[0].filled);
+        assert_eq!(plan.nodes[0].retry_count, 8);
+        assert_eq!(plan.nodes[1].type_or_control, 1);
+        assert_eq!(plan.nodes[1].packed_cell, 0);
+        assert!(!plan.nodes[1].filled);
+        assert_eq!(plan.nodes[1].retry_count, -2);
+        assert!(sim.entities().get(building).unwrap().lifecycle.in_limbo);
     }
 }
