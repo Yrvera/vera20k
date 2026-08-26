@@ -781,10 +781,11 @@ impl Simulation {
         else {
             return;
         };
+        let game_mode_nonzero = self.session.game_mode_nonzero;
         let Some(house) = self.houses.get_mut(&owner) else {
             return;
         };
-        if house.event_dispatch_eligible() {
+        if house.is_controlled_by_human(game_mode_nonzero) {
             return;
         }
         house
@@ -2861,6 +2862,70 @@ mod base_plan_lifecycle_tests {
             .expect("human building");
         assert!(!sim.houses[&human].base_plan.nodes[0].filled);
         assert_eq!(sim.houses[&human].base_plan.nodes[0].retry_count, 7);
+    }
+
+    #[test]
+    fn gsi_04_05_unlimbo_human_control_gate_is_mode_sensitive() {
+        fn player_control_only_house(
+            sim: &mut Simulation,
+            owner_name: &str,
+            packed_cell: u32,
+        ) -> crate::sim::intern::InternedId {
+            let owner = sim.interner.intern(owner_name);
+            let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+            house.player_control = true;
+            house.base_plan.nodes.push(BasePlanNode {
+                type_or_control: 0,
+                packed_cell,
+                filled: false,
+                retry_count: 6,
+            });
+            sim.houses.insert(owner, house);
+            sim.session.house_order.push(owner);
+            owner
+        }
+
+        let rules = rules();
+        let mut nonzero = Simulation::new();
+        nonzero.session.game_mode_nonzero = true;
+        let nonzero_owner =
+            player_control_only_house(&mut nonzero, "SkirmishSlot", pack_base_plan_cell(40, 41));
+        nonzero
+            .spawn_object(
+                "GAPOWR",
+                "SkirmishSlot",
+                40,
+                41,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
+            .expect("nonzero-mode Building");
+        assert!(nonzero.houses[&nonzero_owner].base_plan.nodes[0].filled);
+        assert_eq!(
+            nonzero.houses[&nonzero_owner].base_plan.nodes[0].retry_count,
+            0
+        );
+
+        let mut campaign = Simulation::new();
+        let campaign_owner =
+            player_control_only_house(&mut campaign, "CampaignPlayer", pack_base_plan_cell(50, 51));
+        campaign
+            .spawn_object(
+                "GAPOWR",
+                "CampaignPlayer",
+                50,
+                51,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
+            .expect("campaign Building");
+        assert!(!campaign.houses[&campaign_owner].base_plan.nodes[0].filled);
+        assert_eq!(
+            campaign.houses[&campaign_owner].base_plan.nodes[0].retry_count,
+            6
+        );
     }
 
     #[test]
