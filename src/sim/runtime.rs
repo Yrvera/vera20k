@@ -39,6 +39,8 @@ pub struct SimResources {
     pub triggers: crate::map::triggers::TriggerMap,
     pub events: crate::map::events::EventMap,
     pub actions: crate::map::actions::ActionMap,
+    /// Complete immutable scenario waypoint table used by trigger actions.
+    pub waypoints: std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
 }
 
 impl SimResources {
@@ -57,6 +59,7 @@ impl SimResources {
             triggers: Default::default(),
             events: Default::default(),
             actions: Default::default(),
+            waypoints: Default::default(),
         }
     }
 }
@@ -217,6 +220,7 @@ impl SimRuntime {
                 triggers: &self.resources.triggers,
                 events: &self.resources.events,
                 actions: &self.resources.actions,
+                waypoints: &self.resources.waypoints,
                 rules: Some(&self.resources.rules),
             }),
         )
@@ -252,6 +256,23 @@ mod tests {
     fn runtime_always_uses_bound_navigation_and_resources() {
         let mut resources = SimResources::empty();
         resources.height_map.insert((3, 4), 7);
+        resources.waypoints.insert(
+            0,
+            crate::map::waypoints::Waypoint {
+                index: 0,
+                rx: 93,
+                ry: 106,
+            },
+        );
+        resources.waypoints.insert(
+            701,
+            crate::map::waypoints::Waypoint {
+                index: 701,
+                rx: 122,
+                ry: 135,
+            },
+        );
+        let expected_waypoints = resources.waypoints.clone();
         let original = SimRuntime {
             simulation: Simulation::new(),
             resources,
@@ -263,11 +284,13 @@ mod tests {
             Some(&7),
             "restore must carry the match resources, never rebind empty"
         );
+        assert_eq!(rebound.resources.waypoints, expected_waypoints);
 
         // Without a surviving runtime (fixture-only path) the rebind is
         // explicitly empty rather than partially bound.
         let fresh = SimRuntime::rebind_restored(None, Simulation::new());
         assert!(fresh.resources.height_map.is_empty());
+        assert!(fresh.resources.waypoints.is_empty());
     }
 
     #[test]

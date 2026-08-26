@@ -252,6 +252,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true,
+            true,
         )
     }
 
@@ -263,6 +264,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
+            false,
         )
     }
 
@@ -274,6 +276,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
+            false,
         )
     }
 
@@ -291,6 +294,7 @@ impl Simulation {
         include_real_cell_bridge_flags_v90: bool,
         include_base_defense_response_v97: bool,
         include_techno_constructor_v104: bool,
+        include_alternate_base_center_v105: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -334,7 +338,11 @@ impl Simulation {
         self.substrate.fold_base_reservations(&mut hasher);
 
         self.session.fold_game_options(&mut hasher);
-        self.hash_houses(&mut hasher, include_base_defense_response_v97);
+        self.hash_houses(
+            &mut hasher,
+            include_base_defense_response_v97,
+            include_alternate_base_center_v105,
+        );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
         }
@@ -533,7 +541,12 @@ impl Simulation {
     }
 
     /// Hash per-player house state (BTreeMap = deterministic order).
-    fn hash_houses(&self, hasher: &mut impl Hasher, include_base_defense_response_v97: bool) {
+    fn hash_houses(
+        &self,
+        hasher: &mut impl Hasher,
+        include_base_defense_response_v97: bool,
+        include_alternate_base_center_v105: bool,
+    ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
             house.credits.hash(hasher);
@@ -585,6 +598,9 @@ impl Simulation {
                 ry.hash(hasher);
             } else {
                 0u8.hash(hasher);
+            }
+            if include_alternate_base_center_v105 {
+                house.alternate_base_center.hash(hasher);
             }
             house.base_reservation.hash(hasher);
             house.waypoint_edge.hash(hasher);
@@ -2307,6 +2323,29 @@ mod rally_hash_tests {
         sim_b.houses.insert(owner_b, hard_house);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn alternate_base_center_changes_state_hash_without_changing_primary_center() {
+        use crate::sim::house_state::HouseState;
+
+        let mut baseline = Simulation::new();
+        let mut changed = Simulation::new();
+        let owner = baseline.interner.intern("Computer1");
+        let changed_owner = changed.interner.intern("Computer1");
+        assert_eq!(owner, changed_owner);
+        let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+        house.base_center = Some((41, 52));
+        let mut changed_house = house.clone();
+        changed_house.alternate_base_center = (93, 106);
+        baseline.houses.insert(owner, house);
+        changed.houses.insert(changed_owner, changed_house);
+
+        assert_ne!(baseline.state_hash(), changed.state_hash());
+        assert_eq!(
+            baseline.houses[&owner].base_center,
+            changed.houses[&owner].base_center
+        );
     }
 
     #[test]
