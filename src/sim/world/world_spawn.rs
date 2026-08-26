@@ -1030,7 +1030,8 @@ impl Simulation {
         if let Some((country_name, side_index, difficulty, tech_level, _)) = recalc_context {
             // The new Building's committed north-west anchor is the native
             // `+0x9C/+0xA0` source. This bounded write order is load-bearing:
-            // primary center, optional Recalc, node zero, BasePlan center.
+            // primary center, optional Recalc, node zero, BasePlan center,
+            // then the three independent House AI activation latches.
             let house = self
                 .houses
                 .get_mut(&owner_id)
@@ -1054,6 +1055,7 @@ impl Simulation {
                 node_zero.packed_cell = pack_base_plan_cell(i32::from(rx), i32::from(ry));
             }
             house.base_plan_center = (rx, ry);
+            house.enable_ai_deploy_latches();
         }
 
         true

@@ -254,7 +254,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true,
+            true, true,
         )
     }
 
@@ -266,7 +266,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false,
+            false, false, false, false,
         )
     }
 
@@ -278,7 +278,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false,
+            false, false, false, false,
         )
     }
 
@@ -287,7 +287,16 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false,
+            false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v108 House deploy-latch fold.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_house_deploy_latches_v108(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, false,
         )
     }
 
@@ -308,6 +317,7 @@ impl Simulation {
         include_naval_build_const_v105: bool,
         include_base_plan_v106: bool,
         include_base_plan_center_v107: bool,
+        include_house_deploy_latches_v108: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -358,6 +368,7 @@ impl Simulation {
             include_naval_build_const_v105,
             include_base_plan_v106,
             include_base_plan_center_v107,
+            include_house_deploy_latches_v108,
         );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -564,6 +575,7 @@ impl Simulation {
         include_naval_build_const_v105: bool,
         include_base_plan_v106: bool,
         include_base_plan_center_v107: bool,
+        include_house_deploy_latches_v108: bool,
     ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
@@ -587,6 +599,14 @@ impl Simulation {
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
             house.current_iq.hash(hasher);
+            if include_house_deploy_latches_v108 {
+                // gamemd-derived: raw House CRC `0x00502D60..0x0050303F`
+                // directly folds Production at `0x00502E58` and
+                // AITriggersActive at `0x00502E74`. Its exhaustive field census
+                // finds no direct AutoBaseBuilding (`House+0x1F3`) feed.
+                house.ai_activation.production.hash(hasher);
+                house.ai_activation.ai_triggers_active.hash(hasher);
+            }
             if include_base_defense_response_v97 {
                 house.strategy_emergency.hash(hasher);
             } else {
@@ -2495,6 +2515,50 @@ mod rally_hash_tests {
         assert_eq!(
             baseline.state_hash_without_base_plan_center_v107(),
             changed.state_hash_without_base_plan_center_v107()
+        );
+    }
+
+    #[test]
+    fn house_ai_activation_hash_matches_native_direct_crc_fields_only() {
+        use crate::sim::house_state::{HouseAiActivationLatches, HouseState};
+
+        fn fixture(latches: HouseAiActivationLatches) -> Simulation {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Computer1");
+            let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+            house.ai_activation = latches;
+            sim.houses.insert(owner, house);
+            sim
+        }
+
+        let baseline = fixture(HouseAiActivationLatches::default());
+        let production = fixture(HouseAiActivationLatches {
+            production: true,
+            ..HouseAiActivationLatches::default()
+        });
+        let ai_triggers = fixture(HouseAiActivationLatches {
+            ai_triggers_active: true,
+            ..HouseAiActivationLatches::default()
+        });
+        let auto_base = fixture(HouseAiActivationLatches {
+            auto_base_building: true,
+            ..HouseAiActivationLatches::default()
+        });
+
+        assert_ne!(baseline.state_hash(), production.state_hash());
+        assert_ne!(baseline.state_hash(), ai_triggers.state_hash());
+        assert_eq!(baseline.state_hash(), auto_base.state_hash());
+        assert_eq!(
+            baseline.state_hash_without_house_deploy_latches_v108(),
+            production.state_hash_without_house_deploy_latches_v108()
+        );
+        assert_eq!(
+            baseline.state_hash_without_house_deploy_latches_v108(),
+            ai_triggers.state_hash_without_house_deploy_latches_v108()
+        );
+        assert_eq!(
+            baseline.state_hash_without_house_deploy_latches_v108(),
+            auto_base.state_hash_without_house_deploy_latches_v108()
         );
     }
 
