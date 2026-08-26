@@ -2961,7 +2961,10 @@ mod tests {
         assert_eq!(sim.state_hash(), ordered_hash);
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "naval-build-const", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 108);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.houses[&owner].build_const_order, vec![9, 3]);
@@ -3024,8 +3027,11 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "base-plan", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 108);
-        let restored = GameSnapshot::load(&bytes).expect("v108 snapshot").sim;
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         assert_eq!(restored.houses[&owner].base_plan.percent_built, -17);
         assert_eq!(restored.houses[&owner].base_plan.nodes.len(), 2);
         assert_eq!(restored.houses[&owner].base_plan.nodes[0].retry_count, -8);
