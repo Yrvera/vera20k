@@ -31,11 +31,13 @@ ordinary placement selector.
   cell is the zero invalid sentinel; otherwise it writes only `House+0x5494`. Action 138 returns
   without mutation for a null House; otherwise it restores packed zero through `FUN_0050DFF0`.
 - `ScenarioClass__Read_Waypoints @ 0x0068BDC0` owns exactly 702 entries, indices `0..=701`.
-  Each key is read through `CCINIClass__ReadInt(..., default 0)`, including native `$FF`/`FFh`,
-  leading-decimal `atoi`, junk-to-zero, and `i32` wrapping behavior. Missing/zero entries contain
-  the same packed-zero invalid cell; nonzero entries use signed `i32 / 1000` and `i32 % 1000`, then
-  store the quotient and remainder as raw wrapped 16-bit halves. Negative nonzero values are
-  therefore retained cells, not parse failures or zero.
+  The loop generates each canonical decimal key string (`"0"` through `"701"`) and reads that exact
+  key through `CCINIClass__ReadInt(..., default 0)`; authored aliases such as `001=` or `+1=` are
+  never queried. Values retain native `$FF`/`FFh`, leading-decimal `atoi`, junk-to-zero, and `i32`
+  wrapping behavior. Missing/zero entries contain the same packed-zero invalid cell; nonzero
+  entries use signed `i32 / 1000` and `i32 % 1000`, then store the quotient and remainder as raw
+  wrapped 16-bit halves. Negative nonzero values are therefore retained cells, not parse failures
+  or zero.
 - `HouseClass` construction initializes `+0x5494` to packed `(0,0)`. The exhaustive retail census
   found action 137 in `all01umd.map` (`P -> (93,106)`), `all03umd.map`
   (`NZ -> (122,135)`), and `all07smd.map` (`AA -> (105,194)`), and no action 138 in the scanned
@@ -57,9 +59,11 @@ The `House+0x5750` base-plan center and all of its writers remain a separately r
    it must not fall through as an uncounted action whose kind is the count field.
 2. Keep the complete parsed waypoint table in `SimResources`. It is immutable map input, just like
    trigger definitions, and survives an in-scenario load through `SimRuntime::rebind_restored`.
-   Read each source value through the existing `IniSection::get_i32` native integer authority with
-   zero default, skip exact zero, and cast the signed quotient/remainder to `u16` without clamping.
-   It must not be duplicated into mutable `Simulation` state merely to serve one trigger action.
+   Generate the canonical decimal key for every index, read it through the existing
+   `IniSection::get_i32` native integer authority with zero default, skip exact zero, and cast the
+   signed quotient/remainder to `u16` without clamping. Never enumerate and reinterpret authored
+   key spellings. The table must not be duplicated into mutable `Simulation` state merely to serve
+   one trigger action.
 3. Borrow that table through `TriggerInputs` into `TriggerRuntime::advance_at_frame` and action
    dispatch. Camera actions emit the already materialized `ActionEntry` index. Action 137 resolves
    that same reader-owned index to a valid map waypoint before it mutates a House; runtime dispatch
@@ -102,8 +106,9 @@ The `House+0x5750` base-plan center and all of its writers remain a separately r
   `<none>` resolution (including duplicate-alias order), missing rules/owner/country/House, invalid
   token, absent/exact-`(0,0)` waypoint, and a same-name/wrong-country House. `(0,y)` and `(x,0)`
   remain valid. Parser vectors cover negative quotient/remainder wrapping plus native hex,
-  leading-decimal, junk-default, and `i32` wrapping forms; an end-to-end negative nonzero waypoint
-  must write its raw wrapped halves through 137.
+  leading-decimal, junk-default, and `i32` wrapping forms, and reject padded/plus-sign key aliases
+  even when they collide with a canonical key; an end-to-end negative nonzero waypoint must write
+  its raw wrapped halves through 137.
   No exclusion may mutate either base cell.
 - Replay the three retail fixtures `P`, `NZ`, and `AA` to their exact cells.
 - Action 138 clears only the matching House's alternate cell and is a no-op for a null resolution.
