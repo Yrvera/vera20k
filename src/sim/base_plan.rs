@@ -37,7 +37,8 @@ pub(crate) const fn unpack_base_plan_cell(packed: u32) -> (i16, i16) {
 }
 
 impl BasePlanState {
-    /// Fold the exact fields consumed by `BaseClass::CalculateChecksum`.
+    /// Fold the exact fields consumed by `FUN_0042F180 @ 0x0042F180`
+    /// (`BaseClass::CalculateChecksum`).
     ///
     /// PercentBuilt, filled latches, and retry counters are intentionally not
     /// part of this native compatibility helper. Rust's authoritative world
@@ -53,6 +54,11 @@ impl BasePlanState {
     }
 
     /// Apply successful non-human Building Unlimbo satisfaction.
+    ///
+    /// Native `FUN_0042F260 @ 0x0042F260` scans exact type/cell first, then
+    /// the undeploy fallback at `0x0042F2DE..0x0042F31F`; the selected node's
+    /// filled/retry writes are `0x0042F321..0x0042F325`. Its active caller is
+    /// `BuildingClass::Unlimbo @ 0x00440580`, `0x0044159D..0x004415B3`.
     pub(crate) fn fill_successful_building(
         &mut self,
         building_type_index: i32,
@@ -77,6 +83,9 @@ impl BasePlanState {
     }
 
     /// Apply the BuildingClass Limbo BasePlan invalidation pass.
+    ///
+    /// Native authority is `FUN_0050A490 @ 0x0050A490`, called by
+    /// `BuildingClass__Limbo @ 0x00445880` before `TechnoClass__Limbo`.
     pub(crate) fn invalidate_limbo_building(
         &mut self,
         building_type_index: i32,
@@ -102,6 +111,9 @@ impl BasePlanState {
     }
 
     /// Clear every cached site equal to one failed ordinary coordinate.
+    ///
+    /// Native `BuildingClass__ExitObject_Main @ 0x00443C60` performs this
+    /// ordinary-node clear at `0x0044552D..0x004455A2`.
     pub(crate) fn clear_failed_site(&mut self, packed_cell: u32) -> usize {
         let mut cleared = 0;
         for node in &mut self.nodes {
@@ -115,8 +127,10 @@ impl BasePlanState {
 
     /// Apply the normalized Building-exit result to one referenced node.
     ///
-    /// Only final result `1` increments. The increment precedes the signed,
-    /// strict threshold test; `Vec::remove` preserves native tail order.
+    /// `FUN_0042F380 @ 0x0042F380` increments the signed retry field first; the
+    /// `BuildingClass__ExitObject_Main` result block at
+    /// `0x00445237..0x004452C3` then applies the mode/strict-threshold gates
+    /// and ordered shift-left removal. `Vec::remove` preserves that tail order.
     pub(crate) fn apply_normalized_placement_result(
         &mut self,
         node_index: usize,
