@@ -57,14 +57,15 @@ const WAYPOINT_SLOT_COUNT: u32 = 0x2BE;
 ///
 /// The scenario reader applies this unconditionally — there is no
 /// `NewINIFormat` branch and no legacy 128-column packing on this path.
-const WAYPOINT_COORD_FACTOR: u32 = 1000;
+const WAYPOINT_COORD_FACTOR: i32 = 1000;
 
 /// Parse `[Waypoints]` into a waypoint index -> cell mapping.
 ///
 /// Mirrors the scenario waypoint reader: it walks the fixed slot range
 /// `0..701`, reads each key as an integer defaulting to zero, treats zero as
 /// "unset" rather than as cell `(0, 0)`, and unpacks every other value as
-/// `rx = value % 1000` / `ry = value / 1000`.
+/// signed `rx = value % 1000` / `ry = value / 1000`, then stores both results
+/// as their raw wrapped 16-bit halves.
 pub fn parse_waypoints(ini: &IniFile) -> HashMap<u32, Waypoint> {
     let Some(section) = ini.section("Waypoints") else {
         return HashMap::new();
@@ -78,12 +79,10 @@ pub fn parse_waypoints(ini: &IniFile) -> HashMap<u32, Waypoint> {
         if index >= WAYPOINT_SLOT_COUNT {
             continue;
         }
-        let Some(raw_value) = section.get(key) else {
-            continue;
-        };
-        let Ok(coords) = raw_value.trim().parse::<u32>() else {
-            continue;
-        };
+        // ScenarioClass__Read_Waypoints @ 0x0068BDC0 calls
+        // CCINIClass__ReadInt with default zero. Reuse the shared native
+        // integer reader for `$FF`/`FFh`, leading atoi, and i32 wrapping.
+        let coords = section.get_i32(key).unwrap_or(0);
         // Zero is the reader's "no waypoint here" value, not the origin cell.
         if coords == 0 {
             continue;
@@ -169,6 +168,59 @@ mod tests {
             "value 0 is the reader's unset marker"
         );
         assert_eq!(waypoints.len(), 1);
+    }
+
+    #[test]
+    fn signed_waypoint_values_wrap_quotient_and_remainder_into_raw_u16_halves() {
+        let ini = IniFile::from_str(
+            "[Waypoints]\n\
+             15=$FFFFFFFF\n\
+             16=FFFFFC17h\n\
+             17=-2000junk\n\
+             18=4294967295\n\
+             19=junk\n\
+             20=$junk\n",
+        );
+        let waypoints = parse_waypoints(&ini);
+
+        assert_eq!(
+            waypoints.get(&15),
+            Some(&Waypoint {
+                index: 15,
+                rx: u16::MAX,
+                ry: 0,
+            })
+        );
+        assert_eq!(
+            waypoints.get(&16),
+            Some(&Waypoint {
+                index: 16,
+                rx: u16::MAX,
+                ry: u16::MAX,
+            })
+        );
+        assert_eq!(
+            waypoints.get(&17),
+            Some(&Waypoint {
+                index: 17,
+                rx: 0,
+                ry: u16::MAX - 1,
+            })
+        );
+        assert_eq!(
+            waypoints.get(&18),
+            Some(&Waypoint {
+                index: 18,
+                rx: u16::MAX,
+                ry: 0,
+            }),
+            "native decimal atoi wraps through i32"
+        );
+        assert!(!waypoints.contains_key(&19), "junk reads the zero default");
+        assert!(
+            !waypoints.contains_key(&20),
+            "invalid hex reads the zero default"
+        );
     }
 
     #[test]
