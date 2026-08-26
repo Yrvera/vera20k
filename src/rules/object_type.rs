@@ -264,6 +264,9 @@ pub struct ObjectType {
     /// Signed `TechnoTypeClass+0x6D0` side filter used only by native AI base
     /// planning selectors. The constructor seed is `-1` (all sides).
     pub ai_base_planning_side: i32,
+    /// Native `BuildingTypeClass+0x1705` AI plan-generation eligibility bit.
+    /// The BuildingType constructor clears it and `AIBuildThis=` may set it.
+    pub ai_build_this: bool,
     /// Whether this type may appear in multiplayer starting-unit generation.
     pub allowed_to_start_in_multiplayer: bool,
     /// Building prerequisites required before this can be built.
@@ -1250,6 +1253,10 @@ impl ObjectType {
             // seeds +0x6D0 to -1; `TechnoTypeClass::ReadINI` around 0x007149FB
             // applies the signed `AIBasePlanningSide=` override.
             ai_base_planning_side: section.get_i32("AIBasePlanningSide").unwrap_or(-1),
+            // gamemd-derived: `BuildingTypeClass__Constructor` clears
+            // `AIBuildThis` at 0x0045E21F; `BuildingTypeClass__ReadINI`
+            // 0x00460FE2..0x00460FF6 binds `AIBuildThis=`.
+            ai_build_this: section.get_bool("AIBuildThis").unwrap_or(false),
             allowed_to_start_in_multiplayer: section
                 .get_bool("AllowedToStartInMultiplayer")
                 .unwrap_or(true),
@@ -2186,6 +2193,19 @@ mod tests {
         );
         assert!(!default_obj.construction_yard);
         assert_eq!(default_obj.deploy_facing, 0x80);
+    }
+
+    #[test]
+    fn ai_build_this_defaults_false_and_reads_native_boolean() {
+        let ini = IniFile::from_str(
+            "[DEFAULT]\nFixtureOnly=1\n[YES]\nAIBuildThis=yes\n[NO]\nAIBuildThis=no\n",
+        );
+        let parse = |id| {
+            ObjectType::from_ini_section(id, ini.section(id).unwrap(), ObjectCategory::Building)
+        };
+        assert!(!parse("DEFAULT").ai_build_this);
+        assert!(parse("YES").ai_build_this);
+        assert!(!parse("NO").ai_build_this);
     }
 
     #[test]
