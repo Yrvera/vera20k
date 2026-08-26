@@ -365,6 +365,12 @@ impl HouseState {
         self.is_human || self.player_control
     }
 
+    /// Native `HouseClass::IsControlledByHuman @ 0x0050B730` result consumed
+    /// by successful Building Unlimbo BasePlan satisfaction.
+    pub(crate) const fn is_controlled_by_human(&self, game_mode_nonzero: bool) -> bool {
+        self.is_human || (!game_mode_nonzero && self.player_control)
+    }
+
     /// Accept a victory and arm its deterministic grace interval.
     ///
     /// gamemd provenance: HouseClass::Flag_To_Win @ `0x004FC9E0` accepts only
