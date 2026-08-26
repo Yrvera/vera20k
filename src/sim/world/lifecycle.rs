@@ -2764,6 +2764,7 @@ mod base_plan_lifecycle_tests {
 
     use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::object_type::ObjectCategory as RulesObjectCategory;
     use crate::rules::ruleset::RuleSet;
     use crate::sim::base_plan::{BasePlanNode, pack_base_plan_cell};
     use crate::sim::house_state::HouseState;
@@ -2884,6 +2885,103 @@ mod base_plan_lifecycle_tests {
             campaign.houses[&campaign_owner].base_plan.nodes[0].retry_count,
             6
         );
+    }
+
+    #[test]
+    fn gsi_04_05_undeploys_into_resolution_controls_base_plan_fallback() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=AMCV\n\
+             [BuildingTypes]\n0=NONEYARD\n1=ANGLEYARD\n2=REALYARD\n\
+             [AMCV]\nStrength=1000\n\
+             [NONEYARD]\nStrength=1000\nUndeploysInto=NoNe\n\
+             [ANGLEYARD]\nStrength=1000\nUndeploysInto=<nOnE>\n\
+             [REALYARD]\nStrength=1000\nUndeploysInto=amcv\n",
+        ))
+        .expect("UndeploysInto resolution rules");
+
+        assert!(rules.object("NONEYARD").unwrap().undeploys_into.is_none());
+        assert!(rules.object("ANGLEYARD").unwrap().undeploys_into.is_none());
+        let resolved = rules
+            .object("REALYARD")
+            .unwrap()
+            .undeploys_into
+            .as_deref()
+            .expect("real UnitType identity remains resolved");
+        assert!(
+            rules
+                .object_in_category(RulesObjectCategory::Vehicle, resolved)
+                .is_some()
+        );
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+        house.base_plan.nodes = vec![
+            BasePlanNode {
+                type_or_control: 0,
+                packed_cell: pack_base_plan_cell(70, 71),
+                filled: false,
+                retry_count: 4,
+            },
+            BasePlanNode {
+                type_or_control: 1,
+                packed_cell: pack_base_plan_cell(80, 81),
+                filled: false,
+                retry_count: 5,
+            },
+            BasePlanNode {
+                type_or_control: 2,
+                packed_cell: pack_base_plan_cell(90, 91),
+                filled: false,
+                retry_count: 6,
+            },
+        ];
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+
+        let none = sim
+            .spawn_object("NONEYARD", "Computer1", 10, 11, 0, &rules, &BTreeMap::new())
+            .expect("none-sentinel Building");
+        let angle = sim
+            .spawn_object(
+                "ANGLEYARD",
+                "Computer1",
+                12,
+                13,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
+            .expect("angle-sentinel Building");
+        let real = sim
+            .spawn_object("REALYARD", "Computer1", 14, 15, 0, &rules, &BTreeMap::new())
+            .expect("resolved-undeploy Building");
+
+        assert!(
+            !sim.entities()
+                .get(none)
+                .unwrap()
+                .base_plan_has_undeploy_target
+        );
+        assert!(
+            !sim.entities()
+                .get(angle)
+                .unwrap()
+                .base_plan_has_undeploy_target
+        );
+        assert!(
+            sim.entities()
+                .get(real)
+                .unwrap()
+                .base_plan_has_undeploy_target
+        );
+        let plan = &sim.houses[&owner].base_plan.nodes;
+        assert!(!plan[0].filled, "none sentinel must not enable fallback");
+        assert_eq!(plan[0].retry_count, 4);
+        assert!(!plan[1].filled, "<none> sentinel must not enable fallback");
+        assert_eq!(plan[1].retry_count, 5);
+        assert!(plan[2].filled, "resolved UnitType enables fallback");
+        assert_eq!(plan[2].retry_count, 0);
     }
 
     #[test]
