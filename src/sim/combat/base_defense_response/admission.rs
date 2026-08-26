@@ -244,9 +244,6 @@ pub(crate) fn responder_peek_fire_error(
         return ResponderPeekFireError::Illegal;
     }
 
-    if candidate.railgun_system_id.is_some() && weapon.is_railgun {
-        return ResponderPeekFireError::Busy;
-    }
     if candidate
         .cloak
         .as_ref()
