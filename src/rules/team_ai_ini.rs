@@ -325,6 +325,13 @@ impl TeamAiIniRegistry {
                 };
                 let member_type = member_type.trim();
                 if member_type.is_empty() || !valid_identity(member_type) {
+                    self.diagnostics
+                        .push(TeamAiIniDiagnostic::MalformedTaskForceEntry {
+                            task_force_id: id.to_string(),
+                            key,
+                            value: value.to_string(),
+                            source,
+                        });
                     continue;
                 }
                 entries.push(TaskForceEntryIni {
@@ -647,6 +654,26 @@ mod tests {
                 source: TeamAiDefinitionSource::FixedAimd,
             }]
         );
+    }
+
+    #[test]
+    fn sentinel_task_force_member_is_a_source_tagged_refusal() {
+        let fixed = IniFile::from_str(
+            "[TaskForces]\n0=BAD_FORCE\n[BAD_FORCE]\n0=1,<none>\n",
+        );
+        let loaded = TeamAiIniRegistry::from_sources(&fixed, &IniFile::from_str(""), false);
+
+        assert!(loaded.task_forces[0].entries.is_empty());
+        assert_eq!(
+            loaded.diagnostics,
+            vec![TeamAiIniDiagnostic::MalformedTaskForceEntry {
+                task_force_id: "BAD_FORCE".to_string(),
+                key: 0,
+                value: "1,<none>".to_string(),
+                source: TeamAiDefinitionSource::FixedAimd,
+            }]
+        );
+        assert!(!loaded.fixed_source_is_complete());
     }
 
     #[test]

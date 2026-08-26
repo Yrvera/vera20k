@@ -288,10 +288,11 @@ use crate::sim::world::Simulation;
 // recruitment/archive/base-response cooldown state.
 // Bumped 94 -> 95: add TeamType priority/base-defence metadata and TeamClass
 // response latches/timer state.
-// Bumped 95 -> 96: TeamScriptVm now persists the ordered AIMD/map ScriptType,
-// TaskForce, TeamType, and AITriggerType registries. Bincode encodes structs
-// positionally, so serde defaults cannot safely decode the shorter v95 record.
-const SNAPSHOT_VERSION: u32 = 96;
+// Bumped 95 -> 96: TeamScriptVm persists the ordered AIMD/map registries.
+// Bumped 96 -> 97: resolved ScriptType and TaskForce records now persist their
+// fixed-AIMD/scenario provenance. Bincode encodes structs positionally, so serde
+// defaults cannot safely decode the shorter v96 record.
+const SNAPSHOT_VERSION: u32 = 97;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2624,10 +2625,11 @@ mod tests {
     /// index plus persistent Techno recruitment/archive/base-response state;
     /// 94 -> 95 adds TeamType priority/base-defence metadata and TeamClass
     /// response latches/timer state; 95 -> 96 adds the ordered AIMD/map static
-    /// registries retained by TeamScriptVm.
+    /// registries retained by TeamScriptVm; 96 -> 97 adds resolved ScriptType
+    /// and TaskForce source provenance.
     #[test]
-    fn phase3_team_ai_registry_snapshot_version_is_96() {
-        assert_eq!(super::SNAPSHOT_VERSION, 96);
+    fn phase3_team_ai_registry_snapshot_version_is_97() {
+        assert_eq!(super::SNAPSHOT_VERSION, 97);
     }
 
     #[test]
@@ -2664,6 +2666,7 @@ mod tests {
         sim.team_script_vm.register_script(
             crate::sim::team_script_vm::TeamScriptDefinition {
                 id: script_id,
+                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
                 actions: vec![crate::sim::team_script_vm::TeamScriptAction {
                     action_id: 2,
                     argument: 0,
@@ -2673,6 +2676,7 @@ mod tests {
         sim.team_script_vm.register_task_force(
             crate::sim::team_script_vm::TeamTaskForceDefinition {
                 id: task_force_id,
+                source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
                 group: 7,
                 entries: vec![crate::sim::team_script_vm::TeamTaskForceEntry {
                     member_type,
@@ -2712,7 +2716,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("v96 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("v97 snapshot").sim;
         let emergency = &restored.houses[&owner].strategy_emergency;
         assert_eq!(emergency.mode(), 4);
         assert!(emergency.all_to_hunt_bias());
@@ -2747,12 +2751,30 @@ mod tests {
             restored.team_script_vm.task_force_order(),
             &[task_force_id]
         );
+        let restored_script = restored
+            .team_script_vm
+            .script(script_id)
+            .expect("persisted ScriptType");
         assert_eq!(
-            restored
-                .team_script_vm
-                .task_force(task_force_id)
-                .unwrap()
-                .group,
+            restored_script.source,
+            crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd
+        );
+        assert_eq!(restored_script.actions.len(), 1);
+        assert_eq!(restored_script.actions[0].action_id, 2);
+        assert_eq!(restored_script.actions[0].argument, 0);
+        let restored_task_force = restored
+            .team_script_vm
+            .task_force(task_force_id)
+            .expect("persisted TaskForce");
+        assert_eq!(
+            restored_task_force.source,
+            crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd
+        );
+        assert_eq!(restored_task_force.entries.len(), 1);
+        assert_eq!(restored_task_force.entries[0].member_type, member_type);
+        assert_eq!(restored_task_force.entries[0].count, 1);
+        assert_eq!(
+            restored_task_force.group,
             7
         );
         assert_eq!(

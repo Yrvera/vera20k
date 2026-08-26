@@ -30,6 +30,7 @@ pub struct TeamScriptAction {
 pub struct TeamScriptDefinition {
     pub id: InternedId,
     pub actions: Vec<TeamScriptAction>,
+    pub source: TeamAiDefinitionSource,
 }
 
 /// One TaskForce requirement. `member_type` is a resolved TechnoType identity.
@@ -46,6 +47,7 @@ pub struct TeamTaskForceDefinition {
     /// Signed TaskForce `Group=` fallback consumed by Team recruitment.
     pub group: i32,
     pub entries: Vec<TeamTaskForceEntry>,
+    pub source: TeamAiDefinitionSource,
 }
 
 /// The resolved ScriptType and TaskForce attachments carried by a TeamType.
@@ -100,19 +102,38 @@ pub enum TeamAiInstallDiagnostic {
     UnknownTaskForceMember {
         task_force_id: String,
         member_type: String,
+        source: TeamAiDefinitionSource,
     },
     MissingTeamTypeScript {
         team_type_id: String,
         script_id: String,
+        source: TeamAiDefinitionSource,
     },
     MissingTeamTypeTaskForce {
         team_type_id: String,
         task_force_id: String,
+        source: TeamAiDefinitionSource,
     },
     MissingAiTriggerTeamType {
         trigger_id: String,
         team_type_id: String,
+        source: TeamAiDefinitionSource,
     },
+}
+
+impl TeamAiInstallDiagnostic {
+    pub(crate) fn source(&self) -> TeamAiDefinitionSource {
+        match self {
+            Self::UnknownTaskForceMember { source, .. }
+            | Self::MissingTeamTypeScript { source, .. }
+            | Self::MissingTeamTypeTaskForce { source, .. }
+            | Self::MissingAiTriggerTeamType { source, .. } => *source,
+        }
+    }
+
+    pub(crate) fn is_fixed_source_refusal(&self) -> bool {
+        self.source() == TeamAiDefinitionSource::FixedAimd
+    }
 }
 
 /// A candidate member passed to TeamType/TaskForce admission.
@@ -780,6 +801,7 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(6, 2), action(2, 0)],
         });
         let team = vm.create_team(owner, script, vec![], None, 0);
@@ -800,6 +822,7 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(5, 2), action(43, 0)],
         });
         let team = vm.create_team(owner, script, vec![], None, 0);
@@ -821,6 +844,7 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(19, 0), action(2, 0)],
         });
         let team = vm.create_team(owner, script, vec![9, 3, 7], None, 0);
@@ -846,6 +870,7 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(49, 0)],
         });
         let team = vm.create_team(owner, script, vec![], None, 0);
@@ -869,10 +894,12 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: supported,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(0, 0)],
         });
         vm.register_script(TeamScriptDefinition {
             id: out_of_range,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(65, 0)],
         });
         let first = vm.create_team(owner, supported, vec![], None, 0);
@@ -900,10 +927,12 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(2, 0)],
         });
         vm.register_task_force(TeamTaskForceDefinition {
             id: task_force,
+            source: TeamAiDefinitionSource::FixedAimd,
             group: -1,
             entries: vec![
                 TeamTaskForceEntry {
@@ -967,11 +996,13 @@ mod tests {
             if !vm.scripts.contains_key(&script) {
                 vm.register_script(TeamScriptDefinition {
                     id: script,
+                    source: TeamAiDefinitionSource::FixedAimd,
                     actions: vec![action(2, 0)],
                 });
             }
             vm.register_task_force(TeamTaskForceDefinition {
                 id: task_force,
+                source: TeamAiDefinitionSource::FixedAimd,
                 group: -1,
                 entries: vec![TeamTaskForceEntry {
                     member_type,
@@ -1046,6 +1077,7 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(2, 0)],
         });
 
@@ -1067,10 +1099,12 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(24, 0), action(2, 0)],
         });
         vm.register_task_force(TeamTaskForceDefinition {
             id: task_force,
+            source: TeamAiDefinitionSource::FixedAimd,
             group: -1,
             entries: vec![],
         });
@@ -1121,10 +1155,12 @@ mod tests {
         let mut vm = TeamScriptVm::default();
         vm.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(24, 0)],
         });
         vm.register_task_force(TeamTaskForceDefinition {
             id: task_force,
+            source: TeamAiDefinitionSource::FixedAimd,
             group: -1,
             entries: vec![TeamTaskForceEntry {
                 member_type,
@@ -1197,6 +1233,7 @@ mod tests {
         let mut first = TeamScriptVm::default();
         first.register_script(TeamScriptDefinition {
             id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
             actions: vec![action(2, 0)],
         });
         let team = first.create_team(owner, script, vec![], None, 0);
@@ -1296,6 +1333,14 @@ mod tests {
             "map TaskForce re-read must preserve its signed Group in the resolved registry"
         );
         assert_eq!(vm.scripts[&interner.get("S1").unwrap()].actions[0].action_id, -1);
+        assert_eq!(
+            vm.scripts[&interner.get("S1").unwrap()].source,
+            TeamAiDefinitionSource::FixedAimd
+        );
+        assert_eq!(
+            vm.task_forces[&interner.get("TF1").unwrap()].source,
+            TeamAiDefinitionSource::Scenario
+        );
 
         let encoded = serde_json::to_string(&vm).unwrap();
         let restored: TeamScriptVm = serde_json::from_str(&encoded).unwrap();
@@ -1303,6 +1348,17 @@ mod tests {
         assert_eq!(restored.team_type_order(), vm.team_type_order());
         assert_eq!(restored.ai_trigger_order(), vm.ai_trigger_order());
         assert_eq!(restored.task_force(interner.get("TF1").unwrap()).unwrap().group, 9);
+        assert_eq!(
+            restored.scripts[&interner.get("S1").unwrap()].source,
+            TeamAiDefinitionSource::FixedAimd
+        );
+        assert_eq!(
+            restored
+                .task_force(interner.get("TF1").unwrap())
+                .unwrap()
+                .source,
+            TeamAiDefinitionSource::Scenario
+        );
     }
 
     #[test]
@@ -1330,16 +1386,24 @@ mod tests {
                 TeamAiInstallDiagnostic::UnknownTaskForceMember {
                     task_force_id: "PARTIAL_TF".to_string(),
                     member_type: "GHOST".to_string(),
+                    source: TeamAiDefinitionSource::FixedAimd,
                 },
                 TeamAiInstallDiagnostic::MissingTeamTypeScript {
                     team_type_id: "TT".to_string(),
                     script_id: "MISSING_SCRIPT".to_string(),
+                    source: TeamAiDefinitionSource::FixedAimd,
                 },
                 TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
                     team_type_id: "TT".to_string(),
                     task_force_id: "MISSING_TF".to_string(),
+                    source: TeamAiDefinitionSource::FixedAimd,
                 },
             ]
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(TeamAiInstallDiagnostic::is_fixed_source_refusal)
         );
         let team_type = &vm.team_types[&interner.get("TT").unwrap()];
         assert_eq!(team_type.script_id, interner.get("FIRST_SCRIPT").unwrap());

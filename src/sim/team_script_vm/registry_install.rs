@@ -49,6 +49,7 @@ impl TeamScriptVm {
                         argument: action.argument,
                     })
                     .collect(),
+                source: script.source,
             });
         }
 
@@ -62,6 +63,7 @@ impl TeamScriptVm {
                         diagnostics.push(TeamAiInstallDiagnostic::UnknownTaskForceMember {
                             task_force_id: task_force.id.clone(),
                             member_type: entry.member_type.clone(),
+                            source: task_force.source,
                         });
                         return None;
                     }
@@ -75,6 +77,7 @@ impl TeamScriptVm {
                 id,
                 group: task_force.group,
                 entries,
+                source: task_force.source,
             });
         }
 
@@ -91,6 +94,7 @@ impl TeamScriptVm {
                 diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeScript {
                     team_type_id: team_type.id.clone(),
                     script_id: script_name.to_string(),
+                    source: team_type.source,
                 });
             }
             let script_id = script_id.unwrap_or(InternedId::from_index(0));
@@ -105,6 +109,7 @@ impl TeamScriptVm {
                 diagnostics.push(TeamAiInstallDiagnostic::MissingTeamTypeTaskForce {
                     team_type_id: team_type.id.clone(),
                     task_force_id: task_force_name.to_string(),
+                    source: team_type.source,
                 });
             }
             let task_force_id = task_force_id.unwrap_or(InternedId::from_index(0));
@@ -137,6 +142,7 @@ impl TeamScriptVm {
                 &vm.team_types,
                 interner,
                 &mut diagnostics,
+                trigger.source,
             );
             let secondary_team_type = resolve_trigger_team_type(
                 &trigger.id,
@@ -144,6 +150,7 @@ impl TeamScriptVm {
                 &vm.team_types,
                 interner,
                 &mut diagnostics,
+                trigger.source,
             );
             vm.ai_trigger_order.push(id);
             vm.ai_triggers.insert(
@@ -177,6 +184,10 @@ impl TeamScriptVm {
 
     pub(crate) fn script_order(&self) -> &[InternedId] {
         &self.script_order
+    }
+
+    pub(crate) fn script(&self, id: InternedId) -> Option<&TeamScriptDefinition> {
+        self.scripts.get(&id)
     }
 
     pub(crate) fn task_force_order(&self) -> &[InternedId] {
@@ -214,6 +225,7 @@ fn resolve_trigger_team_type(
     definitions: &BTreeMap<InternedId, TeamTypeDefinition>,
     interner: &StringInterner,
     diagnostics: &mut Vec<TeamAiInstallDiagnostic>,
+    source: crate::rules::team_ai_ini::TeamAiDefinitionSource,
 ) -> Option<InternedId> {
     if requested.is_empty() || requested.starts_with('<') {
         return None;
@@ -225,6 +237,7 @@ fn resolve_trigger_team_type(
         diagnostics.push(TeamAiInstallDiagnostic::MissingAiTriggerTeamType {
             trigger_id: trigger_id.to_string(),
             team_type_id: requested.to_string(),
+            source,
         });
     }
     resolved

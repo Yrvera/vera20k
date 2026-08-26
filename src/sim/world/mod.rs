@@ -5371,7 +5371,11 @@ impl Simulation {
         rules: &RuleSet,
     ) -> Vec<crate::sim::team_script_vm::TeamAiInstallDiagnostic> {
         let (vm, diagnostics) = TeamScriptVm::from_ini_registry(registry, &mut self.interner, rules);
-        self.team_script_vm = vm;
+        if !diagnostics.iter().any(
+            crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal,
+        ) {
+            self.team_script_vm = vm;
+        }
         diagnostics
     }
 

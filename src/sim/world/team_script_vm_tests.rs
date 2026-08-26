@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
-use crate::rules::team_ai_ini::TeamAiIniRegistry;
+use crate::rules::team_ai_ini::{TeamAiDefinitionSource, TeamAiIniRegistry};
 use crate::sim::snapshot::GameSnapshot;
-use crate::sim::team_script_vm::{TeamScriptAction, TeamScriptDefinition};
+use crate::sim::team_script_vm::{
+    TeamAiInstallDiagnostic, TeamScriptAction, TeamScriptDefinition,
+};
 
 use super::{MasterFrameTestRung, Simulation};
 
@@ -20,6 +22,7 @@ fn install_wait_then_advance_fixture(sim: &mut Simulation, members: Vec<u64>) ->
     let opening = sim.interner.intern("TEAM_OPENING");
     sim.team_script_vm.register_script(TeamScriptDefinition {
         id: opening,
+        source: TeamAiDefinitionSource::FixedAimd,
         actions: vec![action(24, 0)],
     });
     let team = sim.team_script_vm.create_team(
@@ -110,5 +113,75 @@ fn production_install_boundary_resolves_aimd_without_creating_a_team() {
     assert!(
         sim.team_script_vm.team(1).is_none(),
         "definition installation must not allocate a live TeamClass"
+    );
+}
+
+#[test]
+fn production_install_refuses_fixed_resolution_loss_but_keeps_scenario_omissions() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\n",
+    ))
+    .expect("minimal rules");
+    let fixed_with_unknown = IniFile::from_str(
+        "[TeamTypes]\n0=TT\n[TT]\nScript=S\nTaskForce=F\n\
+         [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
+         [TaskForces]\n0=F\n[F]\n0=1,GHOST\n\
+         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,00,40,10,40,1,0,1,0,<none>,1,1,1\n",
+    );
+    let fixed_registry =
+        TeamAiIniRegistry::from_sources(&fixed_with_unknown, &IniFile::from_str(""), true);
+    assert!(fixed_registry.fixed_source_is_complete());
+
+    let mut fixed_sim = Simulation::new();
+    fixed_sim.intern_rule_type_ids(&rules);
+    fixed_sim.resolve_type_handles(&rules);
+    let fixed_diagnostics = fixed_sim.install_team_ai_registry(&fixed_registry, &rules);
+
+    assert_eq!(
+        fixed_diagnostics,
+        vec![TeamAiInstallDiagnostic::UnknownTaskForceMember {
+            task_force_id: "F".to_string(),
+            member_type: "GHOST".to_string(),
+            source: TeamAiDefinitionSource::FixedAimd,
+        }]
+    );
+    assert!(fixed_diagnostics[0].is_fixed_source_refusal());
+    assert_eq!(
+        fixed_sim.team_script_vm.registry_counts(),
+        (0, 0, 0, 0),
+        "a fixed-origin resolution refusal must not install a partial registry"
+    );
+
+    let clean_fixed = IniFile::from_str(
+        "[TeamTypes]\n0=TT\n[TT]\nScript=S\nTaskForce=F\n\
+         [ScriptTypes]\n0=S\n[S]\n0=2,0\n\
+         [TaskForces]\n0=F\n[F]\n0=1,E1\n\
+         [AITriggerTypes]\nA=Trigger,TT,<all>,2,4,<none>,00,40,10,40,1,0,1,0,<none>,1,1,1\n",
+    );
+    let scenario = IniFile::from_str(
+        "[TaskForces]\n0=MAP_F\n[MAP_F]\n0=1,GHOST\n",
+    );
+    let scenario_registry = TeamAiIniRegistry::from_sources(&clean_fixed, &scenario, true);
+    assert!(scenario_registry.fixed_source_is_complete());
+
+    let mut scenario_sim = Simulation::new();
+    scenario_sim.intern_rule_type_ids(&rules);
+    scenario_sim.resolve_type_handles(&rules);
+    let scenario_diagnostics =
+        scenario_sim.install_team_ai_registry(&scenario_registry, &rules);
+
+    assert_eq!(
+        scenario_diagnostics,
+        vec![TeamAiInstallDiagnostic::UnknownTaskForceMember {
+            task_force_id: "MAP_F".to_string(),
+            member_type: "GHOST".to_string(),
+            source: TeamAiDefinitionSource::Scenario,
+        }]
+    );
+    assert!(!scenario_diagnostics[0].is_fixed_source_refusal());
+    assert_eq!(
+        scenario_sim.team_script_vm.registry_counts(),
+        (2, 1, 1, 1),
+        "scenario-origin omissions remain diagnosed, nonfatal overlays"
     );
 }

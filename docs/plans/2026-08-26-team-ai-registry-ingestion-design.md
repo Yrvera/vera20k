@@ -36,7 +36,7 @@ Expected touchpoints:
 Risks and mitigations:
 
 - **Order loss:** BTreeMap key order is not native registry order. Store explicit order vectors and use lookup maps only for identity resolution.
-- **Snapshot migration:** bincode encodes structs positionally, so new serialized VM fields cannot safely default from a shorter record. Bump `SNAPSHOT_VERSION` 98 → 99; v98 snapshots are rejected cleanly, and v99 saves carry the complete resolved registry.
+- **Snapshot migration:** bincode encodes structs positionally, so new serialized VM fields cannot safely default from a shorter record. The initial registry payload bumped `SNAPSHOT_VERSION` 98 → 99; retaining resolved ScriptType/TaskForce provenance bumps 99 → 100. Older bytes are rejected cleanly, and v100 saves carry the complete resolved registry.
 - **Hash drift:** native Team CRC excludes static type registries. Keep `TeamScriptVm::hash_state` restricted to live Teams, matching the existing verified contract. Static definitions are analogous to RuleSet: deterministic match inputs, not per-frame CRC payload.
 - **Interner drift:** install exactly once, after the existing rule-type pre-intern step and before gameplay. Intern each registry in native source order. Do not use HashMap iteration as an ID source.
 - **Wrong source composition:** never merge AIMD into Rules layers. Parse fixed AIMD and map as separate passes.
@@ -151,8 +151,8 @@ The future House selector will read the resolved AITrigger order; it will not pa
 - fixed `aimd.ini` absent, empty in any of the four required registries, or containing a refused definition: fail the normal app scenario load with a descriptive error before installing the registry;
 - a missing or malformed scenario definition: omit the refused map addition and retain a source-tagged diagnostic without invalidating the clean fixed registry;
 - malformed ScriptType action: omit that action exactly where native parse proof supports omission and diagnose it;
-- unresolved TaskForce TechnoType: omit the row and do not increment resolved entry count;
-- missing TeamType Script/TaskForce: use the first resolved definition only where nonempty; otherwise keep the identity/refusal diagnostic and do not invent a definition;
+- unresolved fixed-AIMD TaskForce TechnoType or TeamType/AITrigger reference: retain a source-tagged install diagnostic and abort production installation rather than admitting a partial fixed registry;
+- the same unresolved scenario reference: apply the proven first-definition fallback or row omission for that reference, retain a source-tagged diagnostic, and keep the clean fixed registry plus valid map overlays installed;
 - malformed AITrigger token count: omit and diagnose;
 - duplicate map identity: update in place; never warn as a duplicate because this is authored override behavior.
 
@@ -174,7 +174,7 @@ Before every Cargo command, check `cargo`/`rustc`; every command carries `--lib`
 
 All native registry order is represented by vectors. Identity lookup maps must be BTreeMap or otherwise excluded from iteration authority. The parser consumes source order only from `IniSection::keys/get_values`, never HashMap entry order. Installation happens before the first gameplay tick and consumes no RNG.
 
-Resolved definitions and order vectors serialize with `TeamScriptVm`. Because bincode cannot safely default a shorter positional struct, this slice bumps `SNAPSHOT_VERSION` 98 → 99 and rejects older bytes at the envelope boundary. The custom Team CRC remains unchanged because the verified native CRC includes live Team/Script instance state, not the source registry. Tests must prove save/restore retains counts, order, IDs, and definitions.
+Resolved definitions and order vectors serialize with `TeamScriptVm`. Because bincode cannot safely default a shorter positional struct, the initial registry payload bumped `SNAPSHOT_VERSION` 98 → 99 and the added resolved ScriptType/TaskForce provenance bumps 99 → 100; older bytes are rejected at the envelope boundary. The custom Team CRC remains unchanged because the verified native CRC includes live Team/Script instance state, not the source registry. Tests must prove save/restore retains counts, order, IDs, and definitions.
 
 ## Architectural Decisions
 

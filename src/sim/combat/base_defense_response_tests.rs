@@ -5,6 +5,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainCell;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+use crate::rules::team_ai_ini::TeamAiDefinitionSource;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::test_interner;
 use crate::sim::pathfinding::PathGrid;
@@ -137,6 +138,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
     let mut teams = TeamScriptVm::default();
     teams.register_script(TeamScriptDefinition {
         id: script_id,
+        source: TeamAiDefinitionSource::FixedAimd,
         actions: vec![TeamScriptAction {
             action_id: 2,
             argument: 0,
@@ -144,6 +146,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
     });
     teams.register_task_force(TeamTaskForceDefinition {
         id: task_force_id,
+        source: TeamAiDefinitionSource::FixedAimd,
         group: -1,
         entries: vec![TeamTaskForceEntry {
             member_type,

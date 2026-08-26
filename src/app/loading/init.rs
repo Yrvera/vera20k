@@ -1716,7 +1716,15 @@ pub(crate) fn load_map_from_initial(
         // warhead handles combat compares during the bridge-damage path;
         // resolution must happen before any combat tick.
         sim.resolve_type_handles(ruleset);
-        for diagnostic in sim.install_team_ai_registry(&team_ai_registry, ruleset) {
+        let diagnostics = sim.install_team_ai_registry(&team_ai_registry, ruleset);
+        if diagnostics.iter().any(
+            crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal,
+        ) {
+            anyhow::bail!(
+                "active YR aimd.ini failed RuleSet resolution: diagnostics={diagnostics:?}"
+            );
+        }
+        for diagnostic in diagnostics {
             log::warn!("Team AI install diagnostic: {diagnostic:?}");
         }
     }
