@@ -807,7 +807,7 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
 }
 
 #[test]
-fn base_plan_recalc_deploy_nonempty_plan_only_reanchors_node_zero() {
+fn base_plan_recalc_deploy_countryless_nonempty_plan_only_reanchors_node_zero() {
     let rules = make_recalc_mcv_rules("");
     let mut sim = Simulation::new();
     add_house(&mut sim, "Americans", false);
@@ -815,7 +815,9 @@ fn base_plan_recalc_deploy_nonempty_plan_only_reanchors_node_zero() {
     sim.scenario_rng = crate::sim::rng::SimRng::new(0x1357_2468);
     let rng_before = sim.scenario_rng.state();
     let owner = sim.interner.get("Americans").unwrap();
-    sim.houses.get_mut(&owner).unwrap().base_plan.nodes = vec![BasePlanNode {
+    let house = sim.houses.get_mut(&owner).unwrap();
+    house.country = None;
+    house.base_plan.nodes = vec![BasePlanNode {
         type_or_control: 4,
         packed_cell: 0xAABB_CCDD,
         filled: true,
@@ -848,6 +850,37 @@ fn base_plan_recalc_deploy_nonempty_plan_only_reanchors_node_zero() {
     assert_eq!(sim.scenario_rng.state(), rng_before);
     sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(mcv).is_none());
+}
+
+#[test]
+fn base_plan_recalc_deploy_countryless_empty_plan_fails_before_removal() {
+    let rules = make_recalc_mcv_rules("0,0,0");
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    sim.session.game_mode_nonzero = true;
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x2468_1357);
+    let rng_before = sim.scenario_rng.state();
+    let owner = sim.interner.get("Americans").unwrap();
+    sim.houses.get_mut(&owner).unwrap().country = None;
+    let height_map = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
+        .expect("spawn MCV");
+
+    assert!(!sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+
+    assert!(!sim.substrate.entities.get(mcv).unwrap().dying);
+    let house = &sim.houses[&owner];
+    assert_eq!(house.base_center, None);
+    assert_eq!(house.base_plan_center, (0, 0));
+    assert!(house.base_plan.nodes.is_empty());
+    assert_eq!(sim.scenario_rng.state(), rng_before);
 }
 
 #[test]
