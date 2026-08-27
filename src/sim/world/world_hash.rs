@@ -161,7 +161,29 @@ mod playfield_authority_hash_tests {
 #[cfg(test)]
 mod shared_dummy_bridge_hash_tests {
     use super::Simulation;
+    use glam::IVec3;
+
     use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::particles::spark::SparkMotionStep;
+    use crate::sim::particles::spark_world::{SparkCollisionWorld, slope_matrix};
+    use crate::util::native_x87::NativeF32Bits;
+
+    fn spark_motion_at(x: i32, y: i32, z: i32) -> SparkMotionStep {
+        SparkMotionStep {
+            old_coords: IVec3::new(x, y, z),
+            candidate_coords: IVec3::new(x, y, z),
+            candidate_f32: [
+                NativeF32Bits::from_bits((x as f32).to_bits()),
+                NativeF32Bits::from_bits((y as f32).to_bits()),
+                NativeF32Bits::from_bits((z as f32).to_bits()),
+            ],
+            persistent_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
+            probe_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
+        }
+    }
 
     #[test]
     fn gsi_04_01_hashes_dummy_bridge_bits_without_retained_projectile() {
@@ -186,12 +208,33 @@ mod shared_dummy_bridge_hash_tests {
 
     #[test]
     fn gsi_04_03_hashes_dummy_level_slope_without_retained_projectile() {
-        let sim = Simulation::new();
+        let mut sim = Simulation::new();
+        sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(
+            0,
+            0,
+            Vec::new(),
+        ));
         let dummy = sim.effective_shared_cell_dummy();
+        let terrain_dummy = sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .shared_cell_dummy();
+        assert!(
+            dummy.same_identity(&terrain_dummy),
+            "the hash authority must be the dummy bound into production terrain"
+        );
+        let rules = RuleSet::from_ini(&IniFile::from_str("")).unwrap();
         let clear_hash = sim.state_hash();
         let v111_clear_hash = sim.state_hash_without_spark_dummy_level_slope_v112();
 
         dummy.set_level_slope(-3, 0);
+        let level_facts = SparkCollisionWorld::new(&sim, &rules)
+            .unwrap()
+            .query(spark_motion_at(320, 192, 300))
+            .unwrap();
+        assert_eq!(level_facts.ground_z, -311);
+        assert!(level_facts.slope_matrix.is_none());
         let level_only_hash = sim.state_hash();
         assert_ne!(
             clear_hash, level_only_hash,
@@ -207,6 +250,12 @@ mod shared_dummy_bridge_hash_tests {
         assert_eq!(clear_hash, sim.state_hash());
 
         dummy.set_level_slope(0, 9);
+        let slope_facts = SparkCollisionWorld::new(&sim, &rules)
+            .unwrap()
+            .query(spark_motion_at(320, 192, -100))
+            .unwrap();
+        assert_eq!(slope_facts.ground_z, 104);
+        assert_eq!(slope_facts.slope_matrix, Some(slope_matrix(9).unwrap()));
         let slope_only_hash = sim.state_hash();
         assert_ne!(
             clear_hash, slope_only_hash,
