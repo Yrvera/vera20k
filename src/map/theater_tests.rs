@@ -335,6 +335,21 @@ fn gsi_04_02_last_tiles_safe_domains_and_native_string_defaults() {
             maximum: 65_535,
         })
     ));
+
+    let absent = IniFile::from_str("[TileSet65535]\nTilesInSet=0\n");
+    assert!(
+        read_tileset_row(&absent, 65_536)
+            .expect("absent row retains the native -1 terminator")
+            .is_none()
+    );
+    let nonterminating = IniFile::from_str("[TileSet65536]\nTilesInSet=0\n");
+    assert!(matches!(
+        read_tileset_row(&nonterminating, 65_536),
+        Err(crate::map::map_file::MapError::TilesetOrdinalOverflow {
+            ordinal: 65_536,
+            maximum: 65_535,
+        })
+    ));
 }
 
 #[test]

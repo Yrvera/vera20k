@@ -495,6 +495,23 @@ fn checked_tileset_ordinal(ordinal: u32) -> Result<u16, MapError> {
     })
 }
 
+fn read_tileset_row<'a>(
+    ini: &'a IniFile,
+    ordinal: u32,
+) -> Result<Option<(&'a IniSection, i32)>, MapError> {
+    let section_name = format!("TileSet{ordinal:04}");
+    let section = ini.section(&section_name);
+    let tiles_in_set = section.map_or(-1, |section| section.read_int("TilesInSet", -1));
+    if tiles_in_set == -1 {
+        return Ok(None);
+    }
+    checked_tileset_ordinal(ordinal)?;
+    Ok(Some((
+        section.expect("nonterminating TilesInSet requires a section"),
+        tiles_in_set,
+    )))
+}
+
 /// Parse a theater INI file into a TilesetLookup.
 ///
 /// Iterates [TileSet0000], [TileSet0001], ... sections in order.
@@ -520,14 +537,9 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
     // exact signed -1 sentinel. `%04d` is a minimum width, not a 10,000-row cap.
     let mut idx = 0u32;
     loop {
-        let _ordinal = checked_tileset_ordinal(idx)?;
-        let section_name: String = format!("TileSet{:04}", idx);
-        let section = ini.section(&section_name);
-        let tiles_in_set = section.map_or(-1, |section| section.read_int("TilesInSet", -1));
-        if tiles_in_set == -1 {
+        let Some((section, tiles_in_set)) = read_tileset_row(&ini, idx)? else {
             break;
-        }
-        let section: &IniSection = section.expect("nonterminating TilesInSet requires a section");
+        };
 
         let filename: &str = section.get("FileName").unwrap_or("");
         let set_name: &str = section.get("SetName").unwrap_or("No Name");
