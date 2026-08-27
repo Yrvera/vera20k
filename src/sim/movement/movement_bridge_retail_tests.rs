@@ -2031,6 +2031,1246 @@ fn infantry_crosses_hills_high_bridge_at_deck_height() {
     drive_across_high_bridge("Hills.mmx", "E1", true);
 }
 
+// ---------------------------------------------------------------------------
+// UNDER an intact high span — matrix rows T1-13 / T1-14 / T1-15.
+//
+// VERA models a bridge as terrain on the *same cell* as the ground beneath it.
+// There is no separate "under" cell: a mover is on the deck when `on_bridge` is
+// set and it carries `ground + 4`, and under the span when it occupies the same
+// cell with `on_bridge` clear at `ground`. So an "under" order is an ordinary
+// ground-plane move whose route crosses the structural band sideways, i.e.
+// along the river the span bridges rather than along the span.
+//
+// The geometry below is derived, never assumed: the drive line found by
+// `find_high_bridge_span` is one lane of a wider structural band, and the
+// transect walks perpendicular to it to find where the band ends and open
+// valley floor resumes.
+// ---------------------------------------------------------------------------
+
+/// A perpendicular cut through the structural band at one deck cell: the route
+/// a mover would take to pass *under* the span rather than along it.
+#[derive(Debug, Clone)]
+struct UnderSpanTransect {
+    /// The drive-line deck cell the cut passes through.
+    through: (u16, u16),
+    /// Unit step across the band (90° from the span's own travel step).
+    perp: (i32, i32),
+    /// Every consecutive structural cell on the cut, in `perp` travel order.
+    band: Vec<(u16, u16)>,
+    /// Start of the under-span order: the first non-structural cell on the
+    /// `-perp` side that still sits at the deck's own terrain level, backed off
+    /// by `UNDER_APPROACH_MARGIN` so the mover takes a real run at the band.
+    under_a: Option<(u16, u16)>,
+    /// Same on the `+perp` side; the under-span order's destination.
+    under_b: Option<(u16, u16)>,
+    /// Terrain level under the span — the height an under-span mover must hold.
+    deck_terrain_level: u8,
+}
+
+/// How far past the structural band the under-span order's endpoints sit. One
+/// cell would leave the mover starting adjacent to the band, where the A*
+/// blocked-goal tail (`core.rs`, "walk as close as you can") can end a run
+/// before it proves anything.
+const UNDER_APPROACH_MARGIN: i32 = 2;
+
+/// Walk perpendicular to the span at `through` and record the structural band
+/// plus the valley-floor cells either side of it.
+fn build_under_span_transect(
+    grid: &PathGrid,
+    span: &HighBridgeSpan,
+    through: (u16, u16),
+) -> UnderSpanTransect {
+    // The span travels along `span.step`; the cut is the 90° rotation of it.
+    let perp = (span.step.1, span.step.0);
+    let level = span.deck_terrain_level;
+
+    let mut band = vec![through];
+    // Extend backwards along `-perp` first so `band` reads in `perp` order.
+    let mut back = Vec::new();
+    let mut cursor = through;
+    loop {
+        let Some(next) = offset(cursor, (-perp.0, -perp.1)) else {
+            break;
+        };
+        match grid.cell(next.0, next.1) {
+            Some(cell) if cell.bridge_structural => {
+                back.push(next);
+                cursor = next;
+            }
+            _ => break,
+        }
+    }
+    let band_start = cursor;
+    back.reverse();
+    back.extend(band.drain(..));
+    band = back;
+    let mut cursor = through;
+    loop {
+        let Some(next) = offset(cursor, perp) else {
+            break;
+        };
+        match grid.cell(next.0, next.1) {
+            Some(cell) if cell.bridge_structural => {
+                band.push(next);
+                cursor = next;
+            }
+            _ => break,
+        }
+    }
+    let band_end = cursor;
+
+    // The order's endpoints: `UNDER_APPROACH_MARGIN` cells beyond each end of
+    // the band, accepted only when they are off the band, on the path grid, and
+    // still at the deck's own terrain level — anything higher is the river bank,
+    // not the space under the span.
+    let endpoint = |from: (u16, u16), dir: (i32, i32)| -> Option<(u16, u16)> {
+        let cell = offset(
+            from,
+            (dir.0 * UNDER_APPROACH_MARGIN, dir.1 * UNDER_APPROACH_MARGIN),
+        )?;
+        let facts = grid.cell(cell.0, cell.1)?;
+        (!facts.bridge_structural && facts.ground_level == level).then_some(cell)
+    };
+
+    UnderSpanTransect {
+        through,
+        perp,
+        band,
+        under_a: endpoint(band_start, (-perp.0, -perp.1)),
+        under_b: endpoint(band_end, perp),
+        deck_terrain_level: level,
+    }
+}
+
+/// Everything the passability instruments say about one cell, ground plane
+/// first. Printed for every cell of a transect so the geometry section of the
+/// report is a measurement rather than a summary.
+#[allow(clippy::too_many_arguments)]
+fn print_under_cell_row(
+    label: &str,
+    cell: (u16, u16),
+    grid: &PathGrid,
+    terrain: &ResolvedTerrainGrid,
+    costs: &std::collections::BTreeMap<
+        crate::rules::locomotor_type::SpeedType,
+        crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
+    >,
+    zones: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
+) {
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::sim::movement::locomotor::MovementLayer;
+
+    let Some(pc) = grid.cell(cell.0, cell.1) else {
+        println!("  {label} {cell:?}: NOT IN PATH GRID");
+        return;
+    };
+    let Some(rt) = terrain.cell(cell.0, cell.1) else {
+        println!("  {label} {cell:?}: NOT IN RESOLVED TERRAIN");
+        return;
+    };
+    let cost = |st: SpeedType| costs.get(&st).map_or(255, |g| g.cost_at(cell.0, cell.1));
+    let zone_of = |mz: MovementZone| {
+        zones
+            .and_then(|z| z.map_for(mz))
+            .map(|m| {
+                (
+                    m.zone_at(cell.0, cell.1, MovementLayer::Ground),
+                    m.zone_at(cell.0, cell.1, MovementLayer::Bridge),
+                )
+            })
+            .map_or_else(|| "-/-".to_string(), |(g, b)| format!("{g}/{b}"))
+    };
+    println!(
+        "  {label} {cell:?}: struct={} bwalk={} trans={} g_lvl={} deck_lvl={} gwalk={} \
+         || under: water={} cliff={} gwblk={} base_gwblk={} land={} base_land={} yr_land={} \
+         zone_type={} || cost Foot={} Track={} Wheel={} Amph={} Hover={} \
+         || zone(G/B) Normal={} AmphDest={} Infantry={}",
+        pc.bridge_structural,
+        pc.bridge_walkable,
+        pc.transition,
+        pc.ground_level,
+        pc.bridge_deck_level,
+        pc.ground_walkable,
+        rt.is_water,
+        rt.is_cliff_like,
+        rt.ground_walk_blocked,
+        rt.base_ground_walk_blocked,
+        rt.land_type,
+        rt.base_land_type,
+        rt.yr_cell_land_type,
+        rt.zone_type,
+        cost(SpeedType::Foot),
+        cost(SpeedType::Track),
+        cost(SpeedType::Wheel),
+        cost(SpeedType::Amphibious),
+        cost(SpeedType::Hover),
+        zone_of(MovementZone::Normal),
+        zone_of(MovementZone::AmphibiousDestroyer),
+        zone_of(MovementZone::Infantry),
+    );
+}
+
+/// Measurement only — matrix rows T1-13/14/15, step 1.
+///
+/// Evidence gap 1 was "measured" on 2026-08-28 by adding `ground_walkable` to
+/// `print_inventory`, which reported 17/17 on BayOPigs and 22/22 on Hills. That
+/// number is **not** a statement about the riverbed:
+/// `PathGrid::from_resolved_terrain_with_bridges` (`sim/pathfinding/core.rs`)
+/// hardcodes `ground_walkable = true` for any intact structural bridge cell,
+/// with the comment "Intact bridge deck → walkable (overrides underlying
+/// terrain)". `TerrainCostGrid::from_resolved_terrain` (`terrain_cost.rs`) does
+/// the same, returning `COST_NORMAL` for every SpeedType on an elevated bridge
+/// cell. Both flags therefore describe the deck, not the ground under it, on
+/// every fixture — which is why this test prints the *underlying* terrain fields
+/// those two overrides mask, and prints them for the valley floor either side of
+/// the structural band as well.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn retail_under_high_span_geometry() {
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::pathfinding::{AStarOptions, astar_search};
+
+    let Some(retail) = retail_dir() else {
+        eprintln!("SKIPPED: no retail root (set RA2_DIR or provide config.toml)");
+        return;
+    };
+    for map_file in ["BayOPigs.mmx", "Hills.mmx"] {
+        println!("\n===== {map_file} =====");
+        let scenario = match headless_scenario::load(&retail, map_file, SEED) {
+            Ok(scenario) => scenario,
+            Err(error) => {
+                println!("{map_file}: load failed: {error}");
+                continue;
+            }
+        };
+        let sim = scenario.sim();
+        let grid = sim.path_grid().expect("navigation published");
+        let terrain = sim
+            .resolved_terrain
+            .as_ref()
+            .expect("headless load keeps resolved terrain");
+        let Some(span) = find_high_bridge_span(grid) else {
+            println!("{map_file}: no usable high span");
+            continue;
+        };
+        println!(
+            "drive line {:?} -> {:?}, {} deck cell(s), deck terrain level {}, approach level {}, \
+             step {:?}",
+            span.approach_a,
+            span.approach_b,
+            span.deck.len(),
+            span.deck_terrain_level,
+            span.approach_level,
+            span.step,
+        );
+
+        // Structural footprint, whole-map. The drive line is one lane of it.
+        let structural: Vec<(u16, u16)> = (0..grid.height())
+            .flat_map(|y| (0..grid.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| grid.cell(*x, *y).is_some_and(|c| c.bridge_structural))
+            .collect();
+        println!(
+            "{} structural cell(s) on the map; the discovered drive line accounts for {}",
+            structural.len(),
+            span.deck.len()
+        );
+
+        // Three cuts: the two ends of the span and its middle, so a report can
+        // say whether the band width is uniform.
+        let picks = [
+            span.deck[0],
+            span.deck[span.deck.len() / 2],
+            *span.deck.last().expect("non-empty span"),
+        ];
+        for through in picks {
+            let cut = build_under_span_transect(grid, &span, through);
+            println!(
+                "\ntransect through {:?} (perp {:?}): band {} cell(s) {:?} .. {:?}; \
+                 under_a={:?} under_b={:?}",
+                cut.through,
+                cut.perp,
+                cut.band.len(),
+                cut.band.first(),
+                cut.band.last(),
+                cut.under_a,
+                cut.under_b,
+            );
+            let mut cells: Vec<(&str, (u16, u16))> = Vec::new();
+            for k in 1..=(UNDER_APPROACH_MARGIN + 2) {
+                if let Some(c) = offset(
+                    *cut.band.first().expect("non-empty band"),
+                    (-cut.perp.0 * k, -cut.perp.1 * k),
+                ) {
+                    cells.push(("side", c));
+                }
+            }
+            cells.reverse();
+            for c in &cut.band {
+                cells.push(("BAND", *c));
+            }
+            for k in 1..=(UNDER_APPROACH_MARGIN + 2) {
+                if let Some(c) = offset(
+                    *cut.band.last().expect("non-empty band"),
+                    (cut.perp.0 * k, cut.perp.1 * k),
+                ) {
+                    cells.push(("side", c));
+                }
+            }
+            for (label, c) in &cells {
+                print_under_cell_row(
+                    label,
+                    *c,
+                    grid,
+                    terrain,
+                    &sim.terrain_costs,
+                    sim.zone_grid.as_ref(),
+                );
+            }
+
+            // Which plane of each cell each mover may actually enter. This is
+            // the production predicate (`is_cell_passable_for_category_on_layer`
+            // → `evaluate_can_enter_cell`), not a flag read, and it is what
+            // decides whether an under-span position exists at all.
+            println!("  cell-entry admission by layer (G=Ground plane / B=deck plane):");
+            for (label, c) in &cells {
+                let mut per_mover = Vec::new();
+                for (mover, zone, speed, infantry) in [
+                    (
+                        "MTNK",
+                        MovementZone::Normal,
+                        crate::rules::locomotor_type::SpeedType::Track,
+                        false,
+                    ),
+                    (
+                        "E1",
+                        MovementZone::Infantry,
+                        crate::rules::locomotor_type::SpeedType::Foot,
+                        true,
+                    ),
+                    (
+                        "ROBO",
+                        MovementZone::AmphibiousDestroyer,
+                        crate::rules::locomotor_type::SpeedType::Hover,
+                        false,
+                    ),
+                ] {
+                    let costs = sim.terrain_costs.get(&speed);
+                    let probe = |layer| {
+                        crate::sim::pathfinding::is_cell_passable_for_category_on_layer(
+                            grid,
+                            c.0,
+                            c.1,
+                            layer,
+                            Some(zone),
+                            None,
+                            sim.resolved_terrain.as_ref(),
+                            costs,
+                            false,
+                            crate::sim::pathfinding::cell_entry::TerrainEntryMode::AStarNeighbor,
+                            infantry,
+                        )
+                    };
+                    per_mover.push(format!(
+                        "{mover} G={} B={}",
+                        probe(MovementLayer::Ground),
+                        probe(MovementLayer::Bridge),
+                    ));
+                }
+                println!("    {label} {c:?}: {}", per_mover.join(" | "));
+            }
+
+            // Ground-plane connectivity across the band, without any of the
+            // production gates: does a layered search starting on Ground even
+            // produce a route, and on which layer does it cross the band?
+            if let (Some(a), Some(b)) = (cut.under_a, cut.under_b) {
+                for (label, zone, speed) in [
+                    (
+                        "MTNK/Normal/Track",
+                        MovementZone::Normal,
+                        crate::rules::locomotor_type::SpeedType::Track,
+                    ),
+                    (
+                        "E1/Infantry/Foot",
+                        MovementZone::Infantry,
+                        crate::rules::locomotor_type::SpeedType::Foot,
+                    ),
+                    (
+                        "ROBO/AmphDest/Hover",
+                        MovementZone::AmphibiousDestroyer,
+                        crate::rules::locomotor_type::SpeedType::Hover,
+                    ),
+                ] {
+                    let options = AStarOptions {
+                        terrain_costs: sim.terrain_costs.get(&speed),
+                        movement_zone: Some(zone),
+                        resolved_terrain: sim.resolved_terrain.as_ref(),
+                        ..Default::default()
+                    };
+                    match astar_search(grid, a, MovementLayer::Ground, b, &options) {
+                        Some(steps) => {
+                            // Any structural cell, not just this transect's four:
+                            // the band runs the whole length of the span, so a
+                            // route that travels along it sideways touches
+                            // structural cells at other span positions.
+                            let structural_steps = steps
+                                .iter()
+                                .filter(|s| {
+                                    grid.cell(s.rx, s.ry).is_some_and(|c| c.bridge_structural)
+                                })
+                                .map(|s| ((s.rx, s.ry), s.layer))
+                                .collect::<Vec<_>>();
+                            println!(
+                                "  ground-plane A* [{label}] {a:?} -> {b:?}: {} step(s); \
+                                 {} on structural cells: {structural_steps:?}",
+                                steps.len(),
+                                structural_steps.len(),
+                            );
+                            println!(
+                                "    route: {:?}",
+                                steps
+                                    .iter()
+                                    .map(|s| (
+                                        (s.rx, s.ry),
+                                        match s.layer {
+                                            MovementLayer::Bridge => 'B',
+                                            _ => 'g',
+                                        }
+                                    ))
+                                    .collect::<Vec<_>>()
+                            );
+                        }
+                        None => println!("  ground-plane A* [{label}] {a:?} -> {b:?}: NO PATH"),
+                    }
+                }
+            } else {
+                println!(
+                    "  no valley-floor endpoints either side of the band; no under order is expressible here"
+                );
+            }
+        }
+    }
+}
+
+/// One recorded under-span run.
+struct UnderSpanRun {
+    span: HighBridgeSpan,
+    cut: UnderSpanTransect,
+    start_cell: (u16, u16),
+    order_accepted: bool,
+    rows: Vec<TickRow>,
+}
+
+impl UnderSpanRun {
+    /// Frames on a stamped bridge cell at deck height — the mover went *over*.
+    fn deck_frames(&self) -> Vec<&TickRow> {
+        self.rows
+            .iter()
+            .filter(|row| row.structural && row.on_bridge)
+            .collect()
+    }
+
+    /// Frames on a stamped bridge cell with `on_bridge` clear — the mover is
+    /// standing on the ground plane of a cell a span passes over, which is what
+    /// "under the span" means in VERA's same-cell bridge model.
+    fn under_frames(&self) -> Vec<&TickRow> {
+        self.rows
+            .iter()
+            .filter(|row| row.structural && !row.on_bridge)
+            .collect()
+    }
+}
+
+/// The under-span invariant: `ObjectClass::GetHeight` @ `0x005F5F30` with
+/// OnBridge clear, plus the two other places the deck term is stored.
+///
+/// A mover under a span occupies the same cell as the deck above it, so the only
+/// thing separating the two states is this triple: no `on_bridge` flag, no
+/// `BridgeOccupancy` entry, and `position.z` at the cell's own ground level
+/// rather than `ground + 4`. All three are asserted, because any one alone would
+/// pass an implementation that got the other two wrong.
+fn assert_under_span_invariant(frames: &[&TickRow]) {
+    for row in frames {
+        assert!(
+            !row.on_bridge,
+            "under-span frame on {:?} carries on_bridge: {row:?}",
+            row.cell
+        );
+        assert_eq!(
+            row.occupancy_deck, None,
+            "under-span frame on {:?} produced a BridgeOccupancy entry: {row:?}",
+            row.cell
+        );
+        assert_eq!(
+            i16::from(row.z as i8),
+            i16::from(row.terrain_level as i8),
+            "under-span frame on {:?} is not at the cell's own ground level: {row:?}",
+            row.cell
+        );
+        assert_ne!(
+            i16::from(row.z as i8),
+            i16::from(row.terrain_level as i8) + BRIDGE_DECK_LEVEL_DELTA,
+            "under-span frame on {:?} sits at deck height: {row:?}",
+            row.cell
+        );
+    }
+}
+
+/// Record every committed frame until the mover reaches `goal`, goes idle, or
+/// `MAX_TICKS` elapses. Shared by the under-span drivers.
+fn record_until(
+    scenario: &mut crate::headless_scenario::HeadlessScenario,
+    entity_id: u64,
+    goal: (u16, u16),
+) -> Vec<TickRow> {
+    let mut rows: Vec<TickRow> = Vec::new();
+    let mut idle_frames = 0u32;
+    for _ in 0..MAX_TICKS {
+        scenario.tick();
+        let sim = scenario.sim();
+        let Some(entity) = sim.entities().get(entity_id) else {
+            panic!("the mover vanished mid-run");
+        };
+        let cell = (entity.position.rx, entity.position.ry);
+        let Some(facts) = sim
+            .path_grid()
+            .and_then(|grid| grid.cell(cell.0, cell.1))
+            .copied()
+        else {
+            panic!("the mover left the path grid at {cell:?}");
+        };
+        let loco_layer = entity.movement_layer_or_ground();
+        rows.push(TickRow {
+            tick: sim.session.tick,
+            cell,
+            z: entity.position.z,
+            on_bridge: entity.on_bridge,
+            occupancy_deck: entity.bridge_occupancy.map(|occ| occ.deck_level),
+            terrain_level: facts.ground_level,
+            structural: facts.bridge_structural,
+            bridge_walkable: facts.bridge_walkable,
+            low_tube: facts.low_bridge_tube_cell,
+            stored_deck_level: facts.bridge_deck_level,
+            loco_layer,
+            prefix_z: facts.effective_cell_z_for_layer(loco_layer),
+        });
+        if entity.movement_target.is_none() {
+            idle_frames += 1;
+            if idle_frames >= 30 {
+                break;
+            }
+        } else {
+            idle_frames = 0;
+        }
+        if cell == goal {
+            break;
+        }
+    }
+    rows
+}
+
+/// Spawn `unit_type` on the valley floor beside a high span and order it, with
+/// an ordinary undisabled `Command::Move`, to the matching cell on the other
+/// side — a route whose straight line passes beneath the deck.
+///
+/// Returns `None` when the mover cannot be placed on the valley floor at all,
+/// which is itself the answer for that locomotor on that fixture.
+fn order_under_high_span(map_file: &str, unit_type: &str) -> Option<UnderSpanRun> {
+    let retail = retail_dir()?;
+    let _ = env_logger::builder()
+        .is_test(false)
+        .filter_level(log::LevelFilter::Warn)
+        .try_init();
+
+    let mut scenario = match headless_scenario::load(&retail, map_file, SEED) {
+        Ok(scenario) => scenario,
+        Err(error) => panic!("load {map_file}: {error}"),
+    };
+
+    let (span, cut) = {
+        let grid = scenario.sim().path_grid().expect("navigation published");
+        let span = find_high_bridge_span(grid)
+            .unwrap_or_else(|| panic!("{map_file} exposes no high-bridge span"));
+        let through = span.deck[span.deck.len() / 2];
+        let cut = build_under_span_transect(grid, &span, through);
+        (span, cut)
+    };
+    println!(
+        "{map_file}: span {:?}..{:?} (terrain level {}), band {:?}..{:?}, under_a={:?} under_b={:?}",
+        span.deck.first(),
+        span.deck.last(),
+        cut.deck_terrain_level,
+        cut.band.first(),
+        cut.band.last(),
+        cut.under_a,
+        cut.under_b,
+    );
+    let (Some(under_a), Some(under_b)) = (cut.under_a, cut.under_b) else {
+        println!(
+            "{map_file}: no valley-floor cell at terrain level {} on both sides of the band; \
+             an under-span order is not expressible on this geometry",
+            cut.deck_terrain_level
+        );
+        return None;
+    };
+
+    let owner_name = prepare_commanding_house(&mut scenario);
+    let mut entity_id = None;
+    let mut start_cell = under_a;
+    for candidate in [
+        under_a,
+        offset(under_a, (-cut.perp.0, -cut.perp.1)).unwrap_or(under_a),
+    ] {
+        let SimRuntime {
+            simulation,
+            resources,
+        } = &mut scenario.runtime;
+        if let Some(id) = simulation.spawn_object(
+            unit_type,
+            &owner_name,
+            candidate.0,
+            candidate.1,
+            0,
+            &resources.rules,
+            &resources.height_map,
+        ) {
+            entity_id = Some(id);
+            start_cell = candidate;
+            break;
+        }
+    }
+    let Some(entity_id) = entity_id else {
+        println!(
+            "{map_file}: a {unit_type} cannot be placed on the valley floor at {under_a:?}; \
+             this locomotor cannot reach the underside of this span at all"
+        );
+        return None;
+    };
+    {
+        let SimRuntime {
+            simulation,
+            resources,
+        } = &mut scenario.runtime;
+        simulation.resolve_type_handles(&resources.rules);
+    }
+    {
+        let entity = scenario
+            .sim()
+            .entities()
+            .get(entity_id)
+            .expect("spawned mover present");
+        println!(
+            "spawned {unit_type} id={entity_id} at {start_cell:?} z={} on_bridge={}",
+            entity.position.z, entity.on_bridge
+        );
+    }
+
+    // Same order entry as the crossing drivers: a `Command::Move` envelope
+    // through the ordinary tick lane, nothing disabled.
+    let owner_id = scenario
+        .sim()
+        .interner
+        .get(&owner_name)
+        .expect("owner interned");
+    let execute_tick = scenario.sim().session.tick + 1;
+    scenario.runtime.advance_frame(
+        &[CommandEnvelope::new(
+            owner_id,
+            execute_tick,
+            Command::Move {
+                entity_id,
+                target_rx: under_b.0,
+                target_ry: under_b.1,
+                queue: false,
+                group_id: None,
+            },
+        )],
+        SIM_TICK_MS,
+        TickLane::Ordinary,
+    );
+    let path = scenario
+        .sim()
+        .entities()
+        .get(entity_id)
+        .and_then(|entity| entity.movement_target.as_ref())
+        .map(|target| target.path.len());
+    println!("ordinary Command::Move {start_cell:?} -> {under_b:?}: path={path:?}");
+    if path.is_none() {
+        diagnose_rejected_order(
+            &mut scenario,
+            &owner_name,
+            entity_id,
+            start_cell,
+            under_a,
+            under_b,
+            &cut.band,
+        );
+    }
+
+    let rows = if path.is_some() {
+        record_until(&mut scenario, entity_id, under_b)
+    } else {
+        Vec::new()
+    };
+    print_tick_table(&rows);
+    Some(UnderSpanRun {
+        span,
+        cut,
+        start_cell,
+        order_accepted: path.is_some(),
+        rows,
+    })
+}
+
+/// Report an under-span run and hold it to whichever outcome it produced.
+///
+/// The assertion set is deliberately two-sided. If a run ever *does* put the
+/// mover on the ground plane of a stamped cell, the under-span invariant is
+/// checked on those frames — a positive result must still be correct, not just
+/// present. The characterization below only fires when it does not.
+fn judge_under_span_run(run: &UnderSpanRun, unit_type: &str, map_file: &str) {
+    let under = run.under_frames();
+    let deck = run.deck_frames();
+    // A positive result is checked before it is counted.
+    assert_under_span_invariant(&under);
+    let visited: std::collections::BTreeSet<(u16, u16)> =
+        run.rows.iter().map(|row| row.cell).collect();
+    println!(
+        "\n{map_file}/{unit_type}: span {:?}..{:?} at terrain level {}, band {} cell(s) wide; \
+         {} frame(s) from {:?}; {} under-span frame(s), {} deck frame(s); \
+         visited {} distinct cell(s), last {:?}",
+        run.span.deck.first(),
+        run.span.deck.last(),
+        run.span.deck_terrain_level,
+        run.cut.band.len(),
+        run.rows.len(),
+        run.start_cell,
+        under.len(),
+        deck.len(),
+        visited.len(),
+        run.rows.last().map(|row| row.cell),
+    );
+    if !under.is_empty() {
+        println!(
+            "UNDER-SPAN OBSERVED on {:?}",
+            under
+                .iter()
+                .map(|row| row.cell)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+    }
+    // Every frame, under or over, still obeys the native height model.
+    let violations: Vec<&TickRow> = run
+        .rows
+        .iter()
+        .filter(|row| !row.holds_invariant())
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "position.z left the native model on {} frame(s); first: {:?}",
+        violations.len(),
+        violations.first(),
+    );
+}
+
+/// Matrix row T1-13 — Drive **under** an intact high span, `Hills.mmx`.
+///
+/// **Characterization, not desired behaviour.** It pins that an ordinary
+/// undisabled `Command::Move` from one side of the span's footprint to the
+/// other is **refused outright**: no path is produced and the mover never gets
+/// an order. It will go red the day under-span routing lands, and must then be
+/// rewritten into a positive under-span run.
+///
+/// Measured on `Hills.mmx`, order `(87,71)` → `(87,78)`, valley floor at terrain
+/// level 2 with the deck at 6:
+///
+/// * The terrain under the span is **ordinary passable land**, not a chasm:
+///   `is_water=false`, `is_cliff_like=false`, `ground_walk_blocked=false`,
+///   `zone_type=0`, `Track` cost 100, and Normal ground zone **2** — the same
+///   zone as `(87,71)` and `(87,78)` either side. So this row is not excluded
+///   by geometry.
+/// * The structural band is **four** cells wide (`y = 73..76`) at every span
+///   position, not the one-cell drive line the ledger names.
+/// * The straight 8-node ground-plane route exists and is found by the flat A*,
+///   by the layered A*, and by `find_move_path` with the zone grid, the terrain
+///   cost grid, resolved terrain, playfield bounds and entity blocks all
+///   supplied. It is lost by exactly one input: dropping
+///   `blocker_neighbor_counts` from the production argument set restores it
+///   (`find_move_path[production] -> None`,
+///   `find_move_path[production - neighbors] -> Some(8)`), and that flag is
+///   what selects the hierarchy branch of `find_layered_path_zoned_marker`
+///   (`sim/pathfinding/zone_search.rs`).
+/// * Two things fire on that branch, and both are real.
+///   (b) The hierarchy branch is the only one that forwards `movement_zone`
+///   into the cell-entry predicate, and with a speed type present
+///   `evaluate_shared_cell_leaf` (`sim/pathfinding/cell_entry.rs`) stops
+///   short-circuiting and reaches `evaluate_is_clear_to_move`'s
+///   `has_bridge && !is_bridge → LevelMismatch` (`sim/cell_rect.rs`,
+///   `CellClass::CheckCellPassability` @ `0x004834A0`). **(b) alone is
+///   sufficient:** `retail_under_high_span_geometry` runs a bare `astar_search`
+///   with terrain costs, resolved terrain and `movement_zone` supplied and *no*
+///   hierarchy gate at all, and it already abandons the 8-node straight route
+///   for a 92-step detour that climbs the east bridgehead, drives the span's
+///   `y = 76` lane on the Bridge layer and comes back round.
+///   (a) The hierarchy gate then removes even that detour — production returns
+///   no path at all. Its deck exemption in `core.rs`
+///   (`!neighbor_is_bridge_deck`) is keyed on the mover already carrying deck
+///   height, so an under-span step never receives it. The ablation cannot
+///   isolate (a) on its own, because dropping `blocker_neighbor_counts` also
+///   drops the `movement_zone` forwarding that causes (b).
+/// * Ordering *to* a cell under the span is separately impossible:
+///   `astar_search` resolves the goal height of any bridge-passable goal cell to
+///   `bridge_deck_level`, so a Move naming a stamped cell always aims at the
+///   deck. `deck_and_ground_under_one_high_bridge_cell_are_separate_occupancy_planes`
+///   shows that arm working as designed.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn tank_ordered_under_hills_high_bridge_is_currently_refused() {
+    let Some(run) = order_under_high_span("Hills.mmx", "MTNK") else {
+        return;
+    };
+    judge_under_span_run(&run, "MTNK", "Hills.mmx");
+    assert!(
+        !run.order_accepted,
+        "the ordinary Move under the span was accepted — T1-13 can now be settled from a real \
+         order and this characterization must be rewritten"
+    );
+    assert!(
+        run.under_frames().is_empty(),
+        "frames were recorded under the span despite the order being refused"
+    );
+}
+
+/// Matrix row T1-14 — Walk under an intact high span, `Hills.mmx`.
+///
+/// Same characterization and the same measured cause as T1-13. Infantry is not
+/// a duplicate of Drive here: the band-lane admission probe is run separately
+/// for `MovementZone::Infantry` with the infantry sub-cell view of terrain
+/// occupation switched on (see `retail_under_high_span_geometry`), and the whole
+/// order path is re-run for an `E1`, whose planner entry, cell-entry predicate
+/// and sub-cell reservation arm are all distinct from a vehicle's.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn infantry_ordered_under_hills_high_bridge_is_currently_refused() {
+    let Some(run) = order_under_high_span("Hills.mmx", "E1") else {
+        return;
+    };
+    judge_under_span_run(&run, "E1", "Hills.mmx");
+    assert!(
+        !run.order_accepted,
+        "the ordinary Move under the span was accepted — T1-14 can now be settled from a real \
+         order"
+    );
+    assert!(run.under_frames().is_empty());
+}
+
+/// Matrix row T1-15 — Hover under an intact high span, `BayOPigs.mmx`.
+///
+/// `ROBO` is `AmphibiousDestroyer`, so the riverbed either side of this span is
+/// water it can swim; this is the one fixture/locomotor pair where the valley
+/// floor beside a water-backed span is reachable at all. Measured on the
+/// `x = 111` span at `y = 143`:
+///
+/// * The riverbed beside the band **is** passable to it — `(106..109, 143)` and
+///   `(114..117, 143)` are water at terrain level 1, `Hover` cost 100, ground
+///   zone 2, and the cell-entry probe returns Ground=true for `ROBO` on every
+///   one. It returns Ground=false for `MTNK` and `E1` there, which is why
+///   T1-13/T1-14 have no BayOPigs arm — see
+///   `tank_cannot_reach_the_riverbed_beside_bay_of_pigs_high_bridge`.
+/// * **This corrects a recorded VERIFIED claim.** The reachability diagnosis's
+///   residual R5 says an under-span route is "impossible on Bay of Pigs, whose
+///   riverbed is zone 0". The riverbed is zone_type 4 (Water) and its Normal
+///   ground zone is 0, but its `AmphibiousDestroyer` ground zone is 2 — a real,
+///   connected zone. Zone 0 is a per-`MovementZone` answer, not a property of
+///   the cell.
+/// * The band is again four cells wide, `x = 110..113`, and the ordinary Move
+///   across it is refused for the same reason as Hills.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn hover_tank_ordered_under_bay_of_pigs_high_bridge_is_currently_refused() {
+    let Some(run) = order_under_high_span("BayOPigs.mmx", "ROBO") else {
+        return;
+    };
+    judge_under_span_run(&run, "ROBO", "BayOPigs.mmx");
+    assert!(
+        !run.order_accepted,
+        "the ordinary Move under the span was accepted — T1-15 can now be settled from a real \
+         order"
+    );
+    assert!(run.under_frames().is_empty());
+}
+
+/// Isolates half of why the under-span order is refused, so the diagnosis in
+/// T1-13's doc comment names a mechanism rather than a suspicion.
+///
+/// The same cell, the same layer, the same grid: supplying a `MovementZone`
+/// (hence a speed type) flips ground-plane admission on the one band lane whose
+/// `bridge_transition` flag is clear. With no speed type,
+/// `evaluate_shared_cell_leaf` (`sim/pathfinding/cell_entry.rs`) returns Clear
+/// on `land_passable` alone; with one, it falls through to
+/// `evaluate_is_clear_to_move` (`sim/cell_rect.rs`), whose
+/// `has_bridge && !is_bridge → LevelMismatch` arm refuses the ground plane of
+/// any cell carrying the `0x100` stamp.
+///
+/// The three `bridge_transition` lanes of the same band never reach that arm,
+/// because the transition short-circuit above it returns first. So VERA's answer
+/// to "may a mover stand on the ground under a span" is currently decided by a
+/// flag that has nothing to do with the question, and differs across the four
+/// lanes of one bridge.
+///
+/// **Characterization.** Whether gamemd refuses a ground-plane entry on a
+/// stamped cell at all is UNCHECKED — no Ghidra read was made for this slice.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn ground_entry_under_a_high_span_depends_on_whether_a_speed_type_is_supplied() {
+    let Some(retail) = retail_dir() else {
+        eprintln!("SKIPPED: no retail root (set RA2_DIR or provide config.toml)");
+        return;
+    };
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::pathfinding::cell_entry::TerrainEntryMode;
+
+    let scenario = headless_scenario::load(&retail, "Hills.mmx", SEED).expect("Hills.mmx loads");
+    let sim = scenario.sim();
+    let grid = sim.path_grid().expect("navigation published");
+    let span = find_high_bridge_span(grid).expect("Hills exposes a high span");
+    let cut = build_under_span_transect(grid, &span, span.deck[span.deck.len() / 2]);
+    let costs = sim.terrain_costs.get(&SpeedType::Track);
+    let probe = |cell: (u16, u16), zone: Option<MovementZone>| {
+        crate::sim::pathfinding::is_cell_passable_for_category_on_layer(
+            grid,
+            cell.0,
+            cell.1,
+            MovementLayer::Ground,
+            zone,
+            None,
+            sim.resolved_terrain.as_ref(),
+            costs,
+            false,
+            TerrainEntryMode::AStarNeighbor,
+            false,
+        )
+    };
+    let mut sealed = Vec::new();
+    let mut open = Vec::new();
+    for cell in &cut.band {
+        let facts = grid.cell(cell.0, cell.1).expect("band cell in the grid");
+        let with_zone = probe(*cell, Some(MovementZone::Normal));
+        let without_zone = probe(*cell, None);
+        println!(
+            "band {cell:?} transition={} : Ground entry with MovementZone::Normal = {with_zone}, \
+             with no movement zone = {without_zone}",
+            facts.transition,
+        );
+        assert!(
+            without_zone,
+            "band cell {cell:?} refuses ground entry even with no speed type; the mechanism this \
+             test isolates is not the one acting"
+        );
+        if with_zone {
+            open.push((*cell, facts.transition));
+        } else {
+            sealed.push((*cell, facts.transition));
+        }
+    }
+    println!("open lanes {open:?}; sealed lanes {sealed:?}");
+    assert!(
+        !sealed.is_empty(),
+        "every band lane admits ground entry with a speed type supplied; the seal this test pins \
+         is gone and T1-13's diagnosis must be re-derived"
+    );
+    assert!(
+        sealed.iter().all(|(_, transition)| !*transition),
+        "a bridge_transition lane was sealed: {sealed:?}. The characterized rule is that the \
+         transition short-circuit is the only reason any lane is open"
+    );
+    assert!(
+        open.iter().all(|(_, transition)| *transition),
+        "a non-transition lane admitted ground entry: {open:?}"
+    );
+}
+
+/// The T1-13 arm on `BayOPigs.mmx`: an `MTNK` cannot be placed on, or ordered
+/// along, the riverbed beside this span at all.
+///
+/// Kept separate from the Hills arm because it answers a different question. On
+/// Hills the terrain under and beside the span is ordinary land and only the
+/// bridge stamp stops the mover; here the riverbed is water with `Track` cost 0,
+/// so a Drive mover is excluded by terrain before the bridge is reached. Both
+/// are NOT-APPLICABLE for the row, for different reasons, and the distinction is
+/// what stops a later reader concluding that water is why under-span movement
+/// never works.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn tank_cannot_reach_the_riverbed_beside_bay_of_pigs_high_bridge() {
+    let Some(retail) = retail_dir() else {
+        eprintln!("SKIPPED: no retail root (set RA2_DIR or provide config.toml)");
+        return;
+    };
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::pathfinding::cell_entry::TerrainEntryMode;
+
+    let scenario =
+        headless_scenario::load(&retail, "BayOPigs.mmx", SEED).expect("BayOPigs.mmx loads");
+    let sim = scenario.sim();
+    let grid = sim.path_grid().expect("navigation published");
+    let span = find_high_bridge_span(grid).expect("BayOPigs exposes a high span");
+    let cut = build_under_span_transect(grid, &span, span.deck[span.deck.len() / 2]);
+    let (under_a, under_b) = (
+        cut.under_a.expect("west riverbed cell"),
+        cut.under_b.expect("east riverbed cell"),
+    );
+    let track = sim.terrain_costs.get(&SpeedType::Track);
+    for cell in [under_a, under_b] {
+        let admitted = crate::sim::pathfinding::is_cell_passable_for_category_on_layer(
+            grid,
+            cell.0,
+            cell.1,
+            MovementLayer::Ground,
+            Some(MovementZone::Normal),
+            None,
+            sim.resolved_terrain.as_ref(),
+            track,
+            false,
+            TerrainEntryMode::AStarNeighbor,
+            false,
+        );
+        let rt = sim
+            .resolved_terrain
+            .as_ref()
+            .and_then(|t| t.cell(cell.0, cell.1))
+            .expect("riverbed cell resolved");
+        println!(
+            "riverbed {cell:?}: Track cost {} is_water={} zone_type={} -> Ground entry {admitted}",
+            track.map_or(255, |g| g.cost_at(cell.0, cell.1)),
+            rt.is_water,
+            rt.zone_type,
+        );
+        assert!(
+            !admitted,
+            "the riverbed at {cell:?} admits a Normal/Track mover on the ground plane; \
+             T1-13 now has a BayOPigs arm and this test must be replaced by a real run"
+        );
+    }
+}
+
+/// Questions 2 and 3 together: what the under-span state actually looks like,
+/// and whether the deck and the ground under it can be occupied at once.
+///
+/// The ordinary-order tests above show no *order* can put a mover beneath a
+/// span. This one puts one there directly and then drives it out with an
+/// ordinary undisabled `Command::Move`, which is the only way currently
+/// available to observe the state at all.
+///
+/// **What it rides on, stated rather than hidden:** the mover reaches the
+/// under-span position through `spawn_object`, which the ledger records as
+/// KNOWN-BROKEN (`N-01`: no bridge-deck term, so a spawn on a stamped cell
+/// lands at the riverbed height). That defect is exactly what makes the
+/// observation possible, so this test **cannot** settle T1-13/14/15 under the
+/// program's rule 2 — the order is ordinary but the starting position is not
+/// something a player can produce. It is recorded because it answers the two
+/// sub-questions the rows ask, and because it pins the layered-occupancy
+/// behaviour that nothing else in the tree exercises.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn deck_and_ground_under_one_high_bridge_cell_are_separate_occupancy_planes() {
+    let Some(retail) = retail_dir() else {
+        eprintln!("SKIPPED: no retail root (set RA2_DIR or provide config.toml)");
+        return;
+    };
+    let _ = env_logger::builder()
+        .is_test(false)
+        .filter_level(log::LevelFilter::Warn)
+        .try_init();
+
+    let mut scenario =
+        headless_scenario::load(&retail, "Hills.mmx", SEED).expect("Hills.mmx loads");
+    let (span, cut) = {
+        let grid = scenario.sim().path_grid().expect("navigation published");
+        let span = find_high_bridge_span(grid).expect("Hills exposes a high span");
+        let through = span.deck[span.deck.len() / 2];
+        let cut = build_under_span_transect(grid, &span, through);
+        (span, cut)
+    };
+    // The drive line cell the deck mover will stop on, and the same cell's
+    // ground plane for the under mover.
+    let shared = cut.through;
+    let exit = cut.under_b.expect("south valley cell");
+    println!(
+        "shared cell {shared:?} (terrain level {}, deck level {}); deck mover enters from {:?}, \
+         under mover leaves to {exit:?}",
+        cut.deck_terrain_level,
+        cut.deck_terrain_level + BRIDGE_DECK_LEVEL_DELTA as u8,
+        span.approach_a,
+    );
+
+    let owner_name = prepare_commanding_house(&mut scenario);
+
+    // 1. Deck mover: ordinary Move from the west approach to the mid-span cell.
+    //    `astar_search` resolves a bridge-passable goal to `bridge_deck_level`,
+    //    so this is the order that parks a unit on the deck.
+    let deck_id = {
+        let SimRuntime {
+            simulation,
+            resources,
+        } = &mut scenario.runtime;
+        simulation
+            .spawn_object(
+                "MTNK",
+                &owner_name,
+                span.approach_a.0,
+                span.approach_a.1,
+                0,
+                &resources.rules,
+                &resources.height_map,
+            )
+            .expect("MTNK placed on the west approach")
+    };
+    {
+        let SimRuntime {
+            simulation,
+            resources,
+        } = &mut scenario.runtime;
+        simulation.resolve_type_handles(&resources.rules);
+    }
+    assert!(
+        issue_ordinary_move(&mut scenario, &owner_name, deck_id, shared),
+        "the ordinary Move onto the deck was refused"
+    );
+    let deck_rows = record_until(&mut scenario, deck_id, shared);
+    let deck_last = *deck_rows.last().expect("deck mover recorded frames");
+    println!(
+        "deck mover finished at {:?} z={} on_bridge={} occ={:?}",
+        deck_last.cell, deck_last.z, deck_last.on_bridge, deck_last.occupancy_deck
+    );
+    assert_eq!(
+        deck_last.cell, shared,
+        "the deck mover did not reach the shared cell"
+    );
+    assert!(deck_last.on_bridge, "the deck mover is not on the deck");
+    assert_eq!(
+        i16::from(deck_last.z as i8),
+        i16::from(deck_last.terrain_level as i8) + BRIDGE_DECK_LEVEL_DELTA,
+        "the deck mover is not at deck height: {deck_last:?}"
+    );
+
+    // 2. Under mover: placed on the ground plane of the same cell.
+    let under_id = {
+        let SimRuntime {
+            simulation,
+            resources,
+        } = &mut scenario.runtime;
+        simulation.spawn_object(
+            "MTNK",
+            &owner_name,
+            shared.0,
+            shared.1,
+            0,
+            &resources.rules,
+            &resources.height_map,
+        )
+    };
+    let Some(under_id) = under_id else {
+        println!(
+            "a second MTNK could NOT be placed on {shared:?} while the deck above it is \
+             occupied — the two planes are not independently occupiable through spawn"
+        );
+        return;
+    };
+    let (under_z, under_on_bridge, under_occ) = {
+        let entity = scenario
+            .sim()
+            .entities()
+            .get(under_id)
+            .expect("under mover present");
+        (
+            entity.position.z,
+            entity.on_bridge,
+            entity.bridge_occupancy.map(|occ| occ.deck_level),
+        )
+    };
+    println!(
+        "under mover placed on {shared:?}: z={under_z} on_bridge={under_on_bridge} occ={under_occ:?}"
+    );
+
+    // Both entities exist, on one cell, at two heights.
+    let deck_still = scenario
+        .sim()
+        .entities()
+        .get(deck_id)
+        .expect("deck mover still present");
+    assert_eq!(
+        (deck_still.position.rx, deck_still.position.ry),
+        shared,
+        "placing a mover under the deck displaced the mover on it"
+    );
+    assert!(
+        deck_still.on_bridge,
+        "placing a mover under the deck cleared the deck mover's on_bridge flag"
+    );
+    assert_eq!(
+        i16::from(under_z as i8),
+        i16::from(cut.deck_terrain_level as i8),
+        "the under mover is not at the cell's own ground level"
+    );
+    assert!(!under_on_bridge, "the under mover carries on_bridge");
+    assert_eq!(under_occ, None, "the under mover holds a BridgeOccupancy");
+    assert_ne!(
+        under_z, deck_still.position.z,
+        "the two movers share one height on one cell"
+    );
+
+    // 3. Drive the under mover out with an ordinary undisabled order and hold
+    //    every stamped frame to the under-span invariant.
+    assert!(
+        issue_ordinary_move(&mut scenario, &owner_name, under_id, exit),
+        "the ordinary Move out from under the span was refused"
+    );
+    let rows = record_until(&mut scenario, under_id, exit);
+    print_tick_table(&rows);
+    let under_frames: Vec<&TickRow> = rows.iter().filter(|row| row.structural).collect();
+    println!(
+        "{} frame(s) leaving the underside, {} of them on a stamped cell; last {:?}",
+        rows.len(),
+        under_frames.len(),
+        rows.last().map(|row| row.cell),
+    );
+    assert!(
+        !under_frames.is_empty(),
+        "the under mover never occupied a stamped cell, so nothing about the under-span state \
+         was observed"
+    );
+    assert_under_span_invariant(&under_frames);
+    let violations: Vec<&TickRow> = rows.iter().filter(|row| !row.holds_invariant()).collect();
+    assert!(
+        violations.is_empty(),
+        "position.z left the native model on {} frame(s); first: {:?}",
+        violations.len(),
+        violations.first(),
+    );
+
+    // The deck mover is untouched by all of it.
+    let deck_end = scenario
+        .sim()
+        .entities()
+        .get(deck_id)
+        .expect("deck mover survived the under mover's drive");
+    println!(
+        "deck mover after the under drive: cell ({},{}) z={} on_bridge={}",
+        deck_end.position.rx, deck_end.position.ry, deck_end.position.z, deck_end.on_bridge
+    );
+    assert_eq!(
+        (deck_end.position.rx, deck_end.position.ry),
+        shared,
+        "the deck mover moved while a unit drove out from underneath it"
+    );
+    assert!(
+        deck_end.on_bridge,
+        "the deck mover lost on_bridge while a unit drove out from underneath it"
+    );
+}
+
 /// Inventory only: which stock maps expose a high-bridge span at all, and what
 /// the deck/approach levels are. Diagnostic — it asserts nothing about movement.
 #[test]
