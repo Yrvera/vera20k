@@ -596,7 +596,7 @@ Every current production use of the wrong helper is:
 | `src/sim/naval_base_placement.rs:174` | candidate Cell center distance point | candidate Z uses 90 instead of 104 |
 | `src/sim/projectile.rs:241` | allocated real `CellClass::GetTargetCoords` | ground uses 90; conditional +416 is correct |
 | `src/sim/projectile.rs:284` | shared dummy `CellClass::GetTargetCoords` | dummy ground uses 90; conditional +416 is correct |
-| `src/sim/production/production_spawn.rs:637` | spawn Cell center ground | ground uses 90 instead of 104 |
+| `src/sim/production/production_spawn.rs:637` | spawn Cell center evaluation | evaluator uses 90 instead of 104, but the current helper discards center Z and returns only the X/Y-derived Cell; the correction preserves output coordinates while removing the false domain and retaining the unsupported-slope gate |
 
 Tests and prose that encode the same false values occur in:
 
@@ -700,7 +700,8 @@ At minimum:
 - dummy level `0xFF`, flat returns -103 and retains requested packed coordinate;
 - Spark level-2 flat ground is 208, bridge plane 624, ascending snap 604; level-0 plane remains 416;
 - Particle constructor clamps input `Z <= ground` to the 104-based ground;
-- radar click, naval-base distance, production spawn, projectile real target, and projectile dummy target all share the 104 evaluator;
+- radar click, naval-base distance, production's intermediate Cell-center evaluation, projectile real target, and projectile dummy target all share the 104 evaluator;
+- production's current X/Y-only returned spawn Cell remains unchanged because its intermediate center Z is discarded;
 - Sonic target composed over level-2 structural cell is `208 + 416 + 50 = 674`;
 - changing structural bridge state changes only the +416 selection, never the ground scalar;
 - focused tests prove no production identifier or assertion still describes Cell terrain as 90 leptons.
@@ -721,7 +722,7 @@ Severity is high whenever nonzero elevation participates:
 
 - radar clicks and action targets on raised terrain;
 - projectile/cell target coordinates and Sonic/wave endpoints on raised or bridged cells;
-- production/unlimbo spawn coordinates on raised cells;
+- production's intermediate Cell-center evaluation on raised cells (the current Rust helper discards that Z before returning its X/Y-only spawn Cell, so this scalar correction alone does not move the unit);
 - naval-base first-yard 3D distance checks near elevation changes;
 - any test/snapshot derived from those values.
 
@@ -737,11 +738,27 @@ Flat level-0 maps hide the scalar regression because both domains return zero th
 - replace slope-table `L=90` and slopes 17..20 contribution 45 with `L=104` and contribution 52;
 - replace Spark plane `G+360` and ascending `G+340` with `G+416` and `G+396`;
 - delete the claim that VXL 104 and Cell ground 90 are different numeric domains; retain only that their globals/initializers are independently owned.
+- replace its stale claim that Rust has no mutable shared dummy: the substrate now exists in `cell_rect`, while Spark's adapter still returns typed unavailable/off-array errors instead of routing through it.
+
+`docs/research/PARTICLE_SPARK_COLLISION_AND_PIXEL_COMPOSITOR_GHIDRA_REPORT.md`:
+
+- mark its HIGH-confidence 90/360/340 conclusions superseded by this live runtime capture, or correct every affected table, trace, questions-log entry, and Rust handoff to 104/416/396;
+- retain its independently verified float integration, collision inequalities, RNG, and compositor findings.
+
+`docs/research/PHASE3_NAVAL_BASE_PLACEMENT_LIFECYCLE_GHIDRA_REPORT.md`:
+
+- replace the claim that 104-lepton Cell ground is wrong with the verified 104 evaluator;
+- replace its `cellclass_ground_height_leptons` Rust handoff with the common `ground_height_leptons` authority.
 
 `docs/plans/2026-07-18-spark-native-float-and-point-compositor-design.md`:
 
 - replace candidate ground `level*90` with the verified 104-lepton Cell evaluator;
 - replace structural plane `G+360` / ascending commit `G+340` with `G+416` / `G+396`.
+
+`docs/plans/2026-07-18-spark-live-collision-adapter-and-owner-design.md`:
+
+- replace its retained `G+360` / ascending `G+340` adapter contract with the verified `G+416` / `G+396` composition;
+- state explicitly that the existing Spark ground evaluator already uses the correct 104 scalar while shared-dummy routing remains open.
 
 `docs/plans/2026-08-26-naval-base-placement-design.md` and any plans/tests copied from it:
 
