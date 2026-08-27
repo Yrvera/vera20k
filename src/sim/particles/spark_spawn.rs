@@ -307,6 +307,25 @@ fn construct_spark_particle(
     particle_type_id: crate::rules::particle_type::ParticleTypeId,
     system_coords: IVec3,
 ) -> Result<Particle, SparkSpawnError> {
+    construct_spark_particle_with_ground(
+        sim,
+        particle_type,
+        particle_type_id,
+        system_coords,
+        |sim, x, y| Ok(super::spark_world::constructor_ground_height(sim, x, y)?),
+    )
+}
+
+fn construct_spark_particle_with_ground<F>(
+    sim: &mut Simulation,
+    particle_type: &ParticleType,
+    particle_type_id: crate::rules::particle_type::ParticleTypeId,
+    system_coords: IVec3,
+    mut ground_height: F,
+) -> Result<Particle, SparkSpawnError>
+where
+    F: FnMut(&Simulation, i32, i32) -> Result<Option<i32>, SparkSpawnError>,
+{
     // `if (ptype+0x314 == 4) |Next() % 10| else |Next() % MaxEC|`, then
     // `+ MaxEC`. Spark is not behaviour 4, so it always takes the MaxEC arm.
     let base = (particle_type.max_ec as u32).max(1);
@@ -321,7 +340,7 @@ fn construct_spark_particle(
     // — no resolved terrain — is treated as "no floor". Native always has a
     // map, so that branch remains a fixture-only compatibility policy.
     let coords = floor_constructor_coords_with(system_coords, |x, y| {
-        super::spark_world::constructor_ground_height(sim, x, y)
+        ground_height(sim, x, y)
     })?;
 
     // The colour seed. Native reads the list only when it has entries, and
@@ -570,6 +589,50 @@ mod tests {
         .unwrap();
         assert_eq!(calls, vec![(7, 9)]);
         assert_eq!(untouched.z, 105);
+    }
+
+    #[test]
+    fn gsi_04_03_constructor_rng_brackets_ground_with_active_start_color_draw() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nFixtureOnly=1\n\
+             [Particles]\n1=Spark\n\
+             [Spark]\nBehavesLike=Spark\nMaxEC=500\n\
+             ColorList=255,255,255,0,0,0\n\
+             StartColor1=255,128,0\nStartColor2=128,64,32\n",
+        ))
+        .unwrap();
+        let particle_type_id = crate::rules::particle_type::ParticleTypeId(0);
+        let particle_type = rules.particle_type(particle_type_id).clone();
+        assert_eq!(particle_type.color_list.len(), 2);
+        assert_ne!(particle_type.start_color_1, [0, 0, 0]);
+        let mut sim = Simulation::with_seed(900);
+        let mut expected = SimRng::new(900);
+        expected.next_raw_abs_modulo(particle_type.max_ec as u32);
+        let after_lifetime = expected.logical_view();
+        let mut ground_calls = 0;
+
+        let particle = construct_spark_particle_with_ground(
+            &mut sim,
+            &particle_type,
+            particle_type_id,
+            IVec3::new(7, 9, 100),
+            |sim, x, y| {
+                ground_calls += 1;
+                assert_eq!((x, y), (7, 9));
+                assert_eq!(
+                    sim.rng_views().scenario,
+                    after_lifetime,
+                    "lifetime is consumed before either ground lookup and color is not"
+                );
+                Ok(Some(if ground_calls == 1 { 104 } else { 208 }))
+            },
+        )
+        .unwrap();
+
+        expected.next_range_u32_inclusive(0, MAX_RANDOM_RANGED_SAMPLE);
+        assert_eq!(ground_calls, 2);
+        assert_eq!(particle.coords.z, 208);
+        assert_eq!(sim.rng_views().scenario, expected.logical_view());
     }
 
     #[test]
