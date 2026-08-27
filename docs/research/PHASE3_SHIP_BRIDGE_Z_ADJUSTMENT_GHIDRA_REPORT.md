@@ -1497,3 +1497,218 @@ behavioral unknown remains inside the investigated Mechanisms A/B scope.
   `FootClass__Find_Nearby_Passable_Cell @ 0x0056DC20`.
 - Current Rust: `src/rules/ruleset.rs` native condition doubles and
   `src/sim/anim_class.rs` constructor/first-visit ordering.
+
+## 20. Sinking continuation correction: live Unit AI, pitch, and audio edge
+
+Section 20 supersedes any earlier design inference that positive-health
+sinking suppresses the complete Unit AI, firing, radar visibility, or cell
+occupation. The state freezes only locomotor Process; the live Unit continues
+ordinary AI around its exact descent continuation.
+
+### 20.1 The first cull descent is same-visit, but pitch/audio start next visit
+
+`UnitClass__AI @ 0x007360C0` calls `FootClass__AI @ 0x004DA530` at
+`0x00736479..0x0073647B`. The victim Foot tail follows victim `+0x694` to the
+attacker manager and calls its update at `0x004DAEE1..0x004DAEF3`. An SQD cull
+there writes victim `+0x3CD=1 @ 0x00629C69`. Control returns to the same
+UnitClass AI, which tests `+0x3CD @ 0x007364A1` and immediately performs the
+first `z-5` descent and, on a matching global frame, wake attempt. There is no
+victim reschedule.
+
+Techno rocking at `0x006FA224..0x006FA244` and the Foot sinking-audio edge at
+`0x004DABC7..0x004DACD7` have already run before that tail. Therefore a flag
+newly set by culling has this exact schedule:
+
+- first descent/wake opportunity: the same victim visit;
+- first sinking pitch step: the next victim visit;
+- first VoiceSinking/SinkingSound edge: the next victim visit.
+
+If the flag was already set before Unit AI entry, all three occur in that visit.
+
+### 20.2 Sinking skips only locomotor Process
+
+Foot AI calls `TechnoClass__AI_Update @ 0x006F9E50` before its sinking gate.
+That update increments the AI counter and dispatches the current Mission; it has
+no `+0x3CD` gate. `CMP byte [Foot+0x3CD],0; JNZ 0x004DAA01` at
+`0x004DA81A..0x004DA820` skips the locomotor vslot `+0x40` call only. Fog/reveal,
+movement/sinking audio handling, piggyback/transport/team work, and the Foot tail
+remain active.
+
+After surviving descent, Unit AI rejoins at `0x007365BB`, checks alive, calls
+`UnitClass__Fire_At_Target @ 0x00736DF0`, updates facing, performs the later
+water/landing death check, harvest brain, reload/ammo, weapon/timer/locomotor
+queries, and later guard/repair/mission corrections through `0x0073697B`.
+`Fire_At_Target` has no sinking test and can reach the weapon fire vslot.
+
+Every descent uses the ordinary marked coordinate setter. When marked, it
+temporarily unmarks/removes the Unit, writes XYZ, and marks/re-adds its cell
+occupation. A survivor ends the call on-map in its normal cell/display/radar
+machinery. Sinking adds no radar-hide or permanent occupation-clear flag.
+Permanent removal begins only at altitude strictly below `-400`.
+
+### 20.3 Exact forward-pitch arithmetic
+
+Techno RockingUpdate enters its sinking branch only when its normal virtual
+admission passes. At `0x0070B5AE..0x0070B63C` it reads forward angle
+`Unit+0x32C` as binary32, forms its absolute value, and compares against raw
+binary32 `0x3F490FDB` (`0.7853981852531433`). Equality and any larger magnitude
+return unchanged. Otherwise it derives
+
+```text
+phase = ((((FacingCurrent >> 12) + 1) >> 1) & 7)
+```
+
+and adds binary64 `0x3F847AE147AE147B` (`0.01`) for phases 1..5 or subtracts it
+for phases 0, 6, and 7. The active PC53/chop x87 mode rounds the add/subtract to
+53 significant bits and `FSTP m32real` rounds again to binary32 toward zero.
+The threshold is checked before adjustment, so one step may overshoot; the next
+visit freezes it. There is no clamp. Sinking writes only forward angle `+0x32C`;
+sideways angle `+0x328` and both velocities `+0x330/+0x334` remain unchanged.
+NaN follows the arithmetic branch and stays NaN; active retail produces finite
+angles, so corrupt/NaN restored state is outside this stock mechanism.
+
+### 20.4 Exact sinking-audio edge and corrected fields
+
+The sinking flag's prior-state latch is Foot `+0x3CE`. On a change, Foot AI
+performs:
+
+```text
+if sinking != previous:
+    if sinking:
+        if Type.VoiceSinking != -1:
+            PlayAt(VoiceSinking, current XYZ, no persistent handle)
+        sound = Type.SinkingSound
+        if sound == -1: sound = Rules.SinkingSound
+        if sound != -1:
+            PlayAt(sound, current XYZ, Foot sound handle +0x544)
+    else if move_sound_active(+0x53C) == 0:
+        Release(Foot sound handle +0x544)
+    previous = sinking
+```
+
+The verified fields are `TechnoType+0x548 SinkingSound` and
+`TechnoType+0x554 VoiceSinking`; earlier `+0x544/+0x550` prose was one dword
+early. Both construct as `-1`. Rules fallback `+0x208 SinkingSound` also
+constructs as `-1`. Parsing missing or invalid names preserves that value.
+Retail resolves the global and naval overrides to `GenLargeWaterDie`; stock
+VoiceSinking is absent. Voice runs before the handled sink sound. The latch is
+updated even when audio is disabled, inaudible, absent, or allocation fails.
+Neither sound path consumes scenario RNG or changes gameplay branching.
+
+Persist `+0x3CE` for audiovisual load parity or a loaded already-sinking Unit
+replays the start sound. Persist/hash forward-angle bits because they are
+simulation/render state. Do not serialize/hash the raw audio handle or local
+audio-pool identity; it depends on listener/audio-device state and has no
+gameplay consumer.
+
+### 20.5 Closure verdict and sources
+
+The positive-health Unit continuation now has no behavioral unknown: scheduler
+position, first-visit timing, locomotor-only suppression, later AI/fire,
+visibility/occupation, pitch, audio edge, wake, removal and persisted logical
+state are all established. Exact radar pixel drawing is not a sink-owned
+mechanism because native performs no sink-specific radar mutation before final
+removal.
+
+- Live read-only Ghidra MCP, active `gamemd.exe`:
+  `LogicClass::PerTickUpdate @ 0x0055AFB0`,
+  `UnitClass__AI @ 0x007360C0`, `FootClass__AI @ 0x004DA530`,
+  `TechnoClass__AI_Update @ 0x006F9E50`,
+  `TechnoClass__RockingUpdate @ 0x0070B570`,
+  `UnitClass__Fire_At_Target @ 0x00736DF0`, marked-coordinate setter
+  `0x004DB810`, `ObjectClass__Mark @ 0x005F5850`, and TechnoType
+  construction/parsing at `0x00710CED..0x00710F13` and
+  `0x00712FB0..0x007130A5`.
+- Retail data: General and naval `SinkingSound=GenLargeWaterDie`; absent stock
+  VoiceSinking.
+
+## 21. Pointer-expiry correction: bespoke remove/re-place, not Detach
+
+Section 21 supersedes Section 17.10's compressed “damage-timer/placement release
+path” wording. `ParasiteClass__PointerExpired @ 0x0062A260` does not call normal
+`Detach @ 0x0062A4A0`; it has separate owner, victim, and animation branches
+with materially different placement, cleanup, and timer behavior.
+
+### 21.1 Owner, inactive-victim, and animation expiry
+
+- Expired pointer equals manager owner `+0x24`: clear `+0x24` and return. No
+  link, victim, timer, visual, or latch mutation occurs.
+- Expired pointer equals manager victim `+0x28` while scenario-active byte
+  `0x00A8ED5C` is zero: clear only manager `+0x28` and return. This is teardown/
+  transition protection, not active gameplay.
+- Expired pointer equals manager animation `+0x44`: clear `+0x44`, set listener
+  latch byte `+0x54=1`, and return. No Detach/link/timer mutation occurs.
+
+The scenario byte is set at scenario start and cleared by victory, defeat and
+battle teardown paths.
+
+### 21.2 Active victim expiry chooses removal by timer and attacker IC state
+
+When victim expiry occurs while the scenario is active, the handler evaluates
+the manager damage timer with signed native remaining arithmetic. Only a
+strictly positive remainder reaches attacker vslot `+0x160`. That receiver is
+manager owner `+0x24`, not the victim. The Unit binding is
+`TechnoClass__IsIronCurtainActive @ 0x0041BF40`.
+
+```text
+positive damage-timer remainder && !attacker.IsIronCurtainActive -> REMOVE
+nonpositive/expired remainder || attacker.IsIronCurtainActive    -> REPLACE
+```
+
+The timer is stock-reachable when a third-party source deals raw damage
+strictly above SQD `SuppressionThreshold=250`; duration is
+`2*damage-250`. SQD's own grapple source is excluded. Retail SQD is Organic,
+so legal Iron Curtain application lethally damages it before arming the IC
+timer. Thus ordinary active retail simplifies to positive suppression timer ->
+remove, otherwise -> re-place. The IC-true branch remains required for exact
+restored/binary state.
+
+Removal order at `0x0062A2CC..0x0062A2E9` is victim backlink clear, manager
+victim clear, then attacker UnInit. It does not zero attacker health first and
+does not reset timers, visual, FSM, or listener latch.
+
+### 21.3 Active victim re-placement is not normal Naval Detach placement
+
+Re-placement calls helper `0x0062AC30`, increments placement guard global
+`0x00A8E7AC`, rejects NullCoord, derives Unlimbo facing from victim current
+facing as `(((Current >> 7)+1)>>1)&0xFF`, and calls attacker Unit Unlimbo.
+
+For Naval attacker, `CanPlaceAtTarget` rejects null/high-flying victim or a
+Building in the victim's current cell. On acceptance, the helper chooses the
+victim current cell center, copies bridge state, and adjusts deck Z. Only when
+that placement predicate rejects does it choose one simple adjacent cell from
+`(((Current>>12)+1)>>1)&7`; it performs no multi-cell nearby search. Unit
+Unlimbo is the final cell-entry gate.
+
+Successful order is:
+
+1. decrement placement guard;
+2. human special-selection clear/select when applicable;
+3. team/member reattachment helper when non-null;
+4. when TarCom is unset, clear archive target, assigned target and destination;
+5. EnterIdle;
+6. UpdateReveal;
+7. fog-border update at attacker coordinate with `Sight-3, Sight+3, 0`;
+8. clear manager victim last.
+
+Failure decrements the guard, writes attacker health zero, calls UnInit, then
+clears manager victim. The expiring victim backlink is not explicitly cleared
+in either re-placement result because that victim is already expiring.
+
+Unlike normal Detach, victim-expiry success does not arm `3*ROF`, reset FSM,
+destroy/unregister SQDG, zero victim rocking/timer, or use the rotated
+adjacent-plus-frame-indexed nearby placement path. Treating this callback as a
+DetachReason would be wrong; it needs a dedicated expiry transaction.
+
+### 21.4 Closure verdict and sources
+
+All stock-active pointer-expiry branches are now exact. Unknown helper/global
+semantic names do not affect behavior: every argument, predicate, mutation and
+ordering edge is established.
+
+- Live read-only Ghidra MCP, active `gamemd.exe`:
+  Parasite vtable `0x007EF890`, `ParasiteClass__PointerExpired @ 0x0062A260`,
+  `TechnoClass__IsIronCurtainActive @ 0x0041BF40`, placement helper
+  `0x0062AC30`, normal `WarpAttachClass__Detach @ 0x0062A4A0`,
+  `UnitClass__Unlimbo @ 0x00737BA0`, and scenario-active global
+  `0x00A8ED5C` writers.
