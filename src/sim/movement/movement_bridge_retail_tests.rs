@@ -1114,6 +1114,28 @@ fn hover_tank_crosses_hills_high_bridge_at_deck_height() {
     drive_across_high_bridge("Hills.mmx", "ROBO", true);
 }
 
+/// Matrix rows T1-06, T1-07 and T1-08 — Walk onto, along and off an intact high
+/// span. Infantry had never been driven across a bridge anywhere in this
+/// project: the harness had only ever moved `MTNK` and `ROBO`, so the native
+/// twin `WalkLocomotionClass::ProcessMovement` `0x0075C154`-`0x0075C199` was
+/// unexercised on the Rust side.
+///
+/// Walk is not a collapse of the Drive rows. Infantry take a sub-cell
+/// reservation arm no vehicle touches, and it is the one Walk-specific bridge
+/// code path — so a Drive crossing says nothing about whether an `E1` can hold
+/// a sub-cell slot on a deck.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn infantry_crosses_bay_of_pigs_high_bridge_at_deck_height() {
+    drive_across_high_bridge("BayOPigs.mmx", "E1", true);
+}
+
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn infantry_crosses_hills_high_bridge_at_deck_height() {
+    drive_across_high_bridge("Hills.mmx", "E1", true);
+}
+
 /// Inventory only: which stock maps expose a high-bridge span at all, and what
 /// the deck/approach levels are. Diagnostic — it asserts nothing about movement.
 #[test]
