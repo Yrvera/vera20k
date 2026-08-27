@@ -1,7 +1,13 @@
 # Phase 3 Spark shared-dummy routing design
 
-**Status:** implemented in `4c71b488`; review repairs `72bf8e15`, `96779c16`,
-and `0054549e`; critic 4 P1 prose repair active, not yet parity-pass certified
+**Status:** implemented in `4c71b488`; critic 6 ledger repair complete; awaiting
+fresh critic 7; not yet parity-pass certified
+
+**Completion ledger:** validation repairs `72bf8e15`, `96779c16`, and
+`0054549e`; critic 4 authoritative-prose repair `439059f1`; critic 5 source-
+provenance repair `c5cd916f`. Critic 5 also recorded the lower-priority stale
+status prose; critic 6 rechecked the prior fixes and found only that remaining
+ledger issue. This update closes the ledger finding but does not declare PASS.
 
 **Phase/GSI ownership hypothesis:** Phase 3 / GSI-04.03, behavior-3 Spark
 height/collision lookup routing. The general overlay writer lifecycle remains

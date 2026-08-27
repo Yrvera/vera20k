@@ -4,17 +4,23 @@ Date: 2026-08-27
 Scope: GSI-04.03, behavior-3 `Spark` only
 Binary: active retail Yuri's Revenge `gamemd.exe` in live Ghidra (`/gamemd.exe`)
 Method: exhaustive-slice re-investigation; live decompile plus assembly, active retail INI, current Rust read
-Status: **VERIFIED native contract; Rust implemented; critic 4 P1 prose repair active; not yet parity-pass certified**
+Status: **VERIFIED native contract; Rust implemented; critic 6 ledger repair complete; awaiting fresh critic 7; not yet parity-pass certified**
 
 ## Post-implementation addendum
 
-Production shared-dummy routing landed in `4c71b488`; critic-driven validation
-and provenance repairs landed in `72bf8e15`, `96779c16`, and `0054549e`. The
-pre-fix Rust summary in the verdict, the disparity inventory in section 9, and
-the prescriptive handoff in section 10 are retained as historical implementation
-provenance. They describe the baseline before `4c71b488`, not active behavior.
-The native evidence and acceptance contract remain authoritative while the
-fresh-critic loop is active; this addendum does not declare parity pass.
+Production shared-dummy routing landed in `4c71b488`. Critic-driven validation
+repairs landed in `72bf8e15`, `96779c16`, and `0054549e`; the critic 4 stale
+authoritative-prose repair landed in `439059f1`; and the critic 5 nearby source-
+provenance repair landed in `c5cd916f`. Critic 5 had identified that provenance
+gap plus lower-priority stale status prose. After the provenance repair, critic
+6 found only that remaining status-ledger issue; this update closes it. The
+mechanism now awaits a fresh critic 7 and is **not** declared parity PASS here.
+
+The pre-fix Rust summary in the verdict, the disparity inventory in section 9,
+and the prescriptive handoff in section 10 are retained as historical
+implementation provenance. They describe the baseline before `4c71b488`, not
+active behavior. The native evidence and acceptance contract remain
+authoritative throughout the fresh-critic loop.
 
 ## Question and stop condition
 
@@ -436,7 +442,7 @@ gsi_04_03_spark_shared_dummy_query_order_and_miss_continuation
 | Dummy object-list contamination | Excluded for supported active lifecycle |
 | Overlay/flags persistence | Closed: constructor defaults, active fallback writers, no per-lookup reset |
 | Save/load lifecycle | Closed: not an allocated serialized cell; reconstructed at Resize |
-| Rust mismatch and handoff | Implemented in `4c71b488`, with review repairs `72bf8e15`, `96779c16`, and `0054549e`; row remains open pending critic pass |
+| Rust mismatch and handoff | Implemented in `4c71b488`; validation repairs `72bf8e15`, `96779c16`, `0054549e`; authoritative-prose repair `439059f1`; source-provenance repair `c5cd916f`; critic 6 ledger repair complete; awaiting fresh critic 7 before PASS |
 
 No load-bearing Spark/dummy mechanism remains approximate in this report.
 
