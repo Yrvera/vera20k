@@ -8,7 +8,9 @@
 //! helpers are `CDTimerClass::Start @ 0x0046B640` and `Remaining @ 0x004B4D70`.
 
 use crate::map::entities::EntityCategory;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::movement::locomotion::LocomotorRuntimePayload;
 use crate::sim::movement::locomotor::MovementLayer;
 
 /// Defined, persistent state owned by one active or stashed Drive/Ship
@@ -63,16 +65,16 @@ impl SlopeTransitionState {
         self.transition_total = 3;
     }
 
-    pub(crate) fn remaining(&self, binary_frame: u32) -> u8 {
+    pub(crate) fn remaining(&self, binary_frame: u32) -> i32 {
         if self.transition_total == 0 {
             return 0;
         }
         if self.start_frame == -1 {
-            return self.transition_total;
+            return i32::from(self.transition_total);
         }
         let elapsed = (binary_frame as i32).wrapping_sub(self.start_frame);
         if elapsed < i32::from(self.transition_total) {
-            self.transition_total.wrapping_sub(elapsed as u8)
+            i32::from(self.transition_total).wrapping_sub(elapsed)
         } else {
             0
         }
@@ -83,7 +85,7 @@ impl SlopeTransitionState {
         if self.transition_total == 0 || remaining == 0 {
             return SlopeRenderPhase::Stable(self.current_slope);
         }
-        let phase_num = i32::from(self.transition_total) - i32::from(remaining);
+        let phase_num = i32::from(self.transition_total).wrapping_sub(remaining);
         if phase_num >= i32::from(self.transition_total) {
             SlopeRenderPhase::Stable(self.current_slope)
         } else {
@@ -164,6 +166,34 @@ pub(crate) fn sample_process_entry(
     }
 }
 
+/// Exact provenance carried by a future caller of the dormant Tunnel
+/// piggyback restoration seam. A boolean cannot distinguish the active-
+/// Tunnel path from Teleport, Tube, or generic piggyback restoration.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlopeRestoreSource {
+    ActiveTunnel,
+    Teleport,
+    LowBridgeTube,
+    GenericPiggyback,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TunnelDriveRestoreFacts {
+    pub(crate) source: SlopeRestoreSource,
+    pub(crate) prior_active_kind: LocomotorKind,
+    pub(crate) prior_layer: MovementLayer,
+    pub(crate) restored_stashed_kind: LocomotorKind,
+}
+
+fn is_exact_tunnel_drive_restore(facts: TunnelDriveRestoreFacts) -> bool {
+    facts.source == SlopeRestoreSource::ActiveTunnel
+        && facts.prior_active_kind == LocomotorKind::Tunnel
+        && facts.prior_layer == MovementLayer::Ground
+        && facts.restored_stashed_kind == LocomotorKind::Drive
+}
+
 /// `TechnoClass::Set_Destination @ 0x00741970` has one extra force-slope call
 /// at `0x00742BE3`, confined to ground-layer Tunnel/piggyback restoration.
 /// Rust has no active stock Tunnel caller; keeping this predicate explicit
@@ -171,16 +201,22 @@ pub(crate) fn sample_process_entry(
 #[allow(dead_code)]
 pub(crate) fn snap_after_tunnel_piggyback_restore(
     entity: &mut GameEntity,
-    restored_from_active_tunnel: bool,
+    facts: TunnelDriveRestoreFacts,
     sampled_slope: u8,
     binary_frame: u32,
 ) {
-    if !restored_from_active_tunnel
-        || entity.locomotor.as_ref().map(|l| l.layer) != Some(MovementLayer::Ground)
-    {
+    if !is_exact_tunnel_drive_restore(facts) || !foot_equivalent(entity.category) {
         return;
     }
-    snap_after_successful_unlimbo(entity, sampled_slope, binary_frame);
+    let Some(locomotor) = entity.locomotor.as_mut() else {
+        return;
+    };
+    if locomotor.active_kind() != LocomotorKind::Drive {
+        return;
+    }
+    if let LocomotorRuntimePayload::Drive(state) = &mut locomotor.runtime_payload {
+        state.snap(sampled_slope, binary_frame);
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +242,16 @@ mod tests {
                 from_slope: 4,
                 to_slope: 9,
                 phase_num: -1,
+                phase_den: 3,
+            }
+        );
+        assert_eq!(state.remaining(0xffff_feff), 260);
+        assert_eq!(
+            state.render_phase(0xffff_feff),
+            SlopeRenderPhase::Transition {
+                from_slope: 4,
+                to_slope: 9,
+                phase_num: -257,
                 phase_den: 3,
             }
         );
@@ -363,29 +409,87 @@ mod tests {
 
     #[test]
     fn only_ground_tunnel_piggyback_restore_uses_the_extra_force_slope_gate() {
-        let mut entity = entity_with(EntityCategory::Unit, LocomotorKind::Drive);
-        super::snap_after_tunnel_piggyback_restore(&mut entity, false, 9, 30);
-        assert_eq!(
-            super::state_for_entity(&entity).unwrap().hash_fields(),
-            (0, 0, 0, 0),
-            "ordinary, Tube, and Teleport restore callers do not satisfy the Tunnel gate"
-        );
+        use super::{SlopeRestoreSource, TunnelDriveRestoreFacts};
+        use crate::sim::movement::locomotor::MovementLayer;
 
-        entity.locomotor.as_mut().unwrap().layer =
-            crate::sim::movement::locomotor::MovementLayer::Air;
-        super::snap_after_tunnel_piggyback_restore(&mut entity, true, 9, 30);
-        assert_eq!(
-            super::state_for_entity(&entity).unwrap().hash_fields(),
-            (0, 0, 0, 0),
-            "the native extra call is ground-layer-only"
-        );
+        let exact = TunnelDriveRestoreFacts {
+            source: SlopeRestoreSource::ActiveTunnel,
+            prior_active_kind: LocomotorKind::Tunnel,
+            prior_layer: MovementLayer::Ground,
+            restored_stashed_kind: LocomotorKind::Drive,
+        };
+        let cases = [
+            (exact, LocomotorKind::Drive, true, "exact Tunnel restore"),
+            (
+                TunnelDriveRestoreFacts {
+                    source: SlopeRestoreSource::Teleport,
+                    ..exact
+                },
+                LocomotorKind::Drive,
+                false,
+                "Teleport restore",
+            ),
+            (
+                TunnelDriveRestoreFacts {
+                    source: SlopeRestoreSource::LowBridgeTube,
+                    ..exact
+                },
+                LocomotorKind::Drive,
+                false,
+                "Tube restore",
+            ),
+            (
+                TunnelDriveRestoreFacts {
+                    source: SlopeRestoreSource::GenericPiggyback,
+                    ..exact
+                },
+                LocomotorKind::Drive,
+                false,
+                "generic restore",
+            ),
+            (
+                TunnelDriveRestoreFacts {
+                    prior_active_kind: LocomotorKind::Teleport,
+                    ..exact
+                },
+                LocomotorKind::Drive,
+                false,
+                "non-Tunnel prior locomotor",
+            ),
+            (
+                TunnelDriveRestoreFacts {
+                    prior_layer: MovementLayer::Air,
+                    ..exact
+                },
+                LocomotorKind::Drive,
+                false,
+                "non-ground prior Tunnel",
+            ),
+            (
+                TunnelDriveRestoreFacts {
+                    restored_stashed_kind: LocomotorKind::Ship,
+                    ..exact
+                },
+                LocomotorKind::Ship,
+                false,
+                "restored Ship",
+            ),
+            (
+                exact,
+                LocomotorKind::Ship,
+                false,
+                "facts claim Drive but now-active payload is Ship",
+            ),
+        ];
 
-        entity.locomotor.as_mut().unwrap().layer =
-            crate::sim::movement::locomotor::MovementLayer::Ground;
-        super::snap_after_tunnel_piggyback_restore(&mut entity, true, 9, 30);
-        assert_eq!(
-            super::state_for_entity(&entity).unwrap().hash_fields(),
-            (9, 9, 30, 0)
-        );
+        for (facts, now_active_kind, should_snap, label) in cases {
+            let mut entity = entity_with(EntityCategory::Unit, now_active_kind);
+            super::snap_after_tunnel_piggyback_restore(&mut entity, facts, 9, 30);
+            assert_eq!(
+                super::state_for_entity(&entity).unwrap().hash_fields(),
+                if should_snap { (9, 9, 30, 0) } else { (0, 0, 0, 0) },
+                "{label}"
+            );
+        }
     }
 }

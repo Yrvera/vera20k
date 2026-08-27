@@ -2753,11 +2753,11 @@ mod tests {
         let mut locomotor = LocomotorState::for_test_kind_at_frame(LocomotorKind::Drive, 40);
         let drive = locomotor.active_slope_transition_mut().unwrap();
         drive.snap(2, 40);
-        drive.sample_process_entry(7, 50);
+        drive.sample_process_entry(7, 49);
         assert!(locomotor.begin_piggyback(LocomotorKind::Ship, MovementLayer::Ground, 50));
         let ship = locomotor.active_slope_transition_mut().unwrap();
         ship.snap(4, 40);
-        ship.sample_process_entry(9, 50);
+        ship.sample_process_entry(9, 49);
         entity.locomotor = Some(locomotor);
         sim.substrate.entities.insert(entity);
 
@@ -2783,24 +2783,14 @@ mod tests {
         assert_eq!(restored.state_hash(), before_hash);
         assert_eq!(restored.scenario_rng.logical_state(), before_rng);
         assert_eq!(
-            loaded.active_slope_transition().unwrap().render_phase(51),
-            crate::sim::movement::slope_transition::SlopeRenderPhase::Transition {
-                from_slope: 4,
-                to_slope: 9,
-                phase_num: 1,
-                phase_den: 3,
-            }
+            loaded.active_slope_transition().unwrap().hash_fields(),
+            (4, 9, 49, 3),
+            "the saved active timer starts two committed frames before session frame 51"
         );
         assert!(matches!(
             loaded.piggyback.as_deref().map(|runtime| &runtime.payload),
             Some(LocomotorRuntimePayload::Drive(state))
-                if matches!(state.render_phase(51),
-                    crate::sim::movement::slope_transition::SlopeRenderPhase::Transition {
-                        from_slope: 2,
-                        to_slope: 7,
-                        phase_num: 1,
-                        phase_den: 3,
-                    })
+                if state.hash_fields() == (2, 7, 49, 3)
         ));
 
         let mut live_cell = clear_terrain_cell(0, 0);
@@ -2819,7 +2809,7 @@ mod tests {
                 .active_slope_transition()
                 .unwrap()
                 .hash_fields(),
-            (4, 9, 50, 3),
+            (4, 9, 49, 3),
             "load/rebuild trusts the saved cache instead of resampling live terrain"
         );
 
