@@ -4881,6 +4881,7 @@ fn sharp_turn_preserves_path_node_count() {
         (SIM_ZERO, SIM_ZERO),
         None,
         0,
+        false,
     );
 
     assert!(
@@ -4935,6 +4936,7 @@ fn off_octant_hull_turns_before_any_curve_is_selected() {
         (SIM_ZERO, SIM_ZERO),
         None,
         0,
+        false,
     );
 
     assert!(
