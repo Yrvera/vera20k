@@ -4,15 +4,15 @@ Date: 2026-08-27
 Scope: GSI-04.03, behavior-3 `Spark` only
 Binary: active retail Yuri's Revenge `gamemd.exe` in live Ghidra (`/gamemd.exe`)
 Method: exhaustive-slice re-investigation; live decompile plus assembly, active retail INI, current Rust read
-Status: **VERIFIED native contract; Rust implemented; critic round remains OPEN**
+Status: **VERIFIED native contract; Rust implemented; critic 4 P1 prose repair active; not yet parity-pass certified**
 
 ## Post-implementation addendum
 
-Production shared-dummy routing landed in `4c71b488`; the first critic-driven
-validation and stale-prose repair landed in `72bf8e15`. The pre-fix Rust summary
-in the verdict, the disparity inventory in section 9, and the prescriptive
-handoff in section 10 are retained as historical implementation provenance.
-They describe the baseline before `4c71b488`, not the active Rust behavior.
+Production shared-dummy routing landed in `4c71b488`; critic-driven validation
+and provenance repairs landed in `72bf8e15`, `96779c16`, and `0054549e`. The
+pre-fix Rust summary in the verdict, the disparity inventory in section 9, and
+the prescriptive handoff in section 10 are retained as historical implementation
+provenance. They describe the baseline before `4c71b488`, not active behavior.
 The native evidence and acceptance contract remain authoritative while the
 fresh-critic loop is active; this addendum does not declare parity pass.
 
@@ -261,8 +261,8 @@ The normal collision formula then runs against those facts:
 Collision sets the deletion flag and commits the collision coordinate before
 the one per-tick color draw. No collision commits the candidate. In both cases
 the color draw and lifetime decrement still occur. Therefore converting a miss
-to a Rust error is synchronization-visible: current Rust preserves only the
-already-written persistent Z velocity, then returns before coordinate commit,
+to a Rust error is synchronization-visible. Pre-fix Rust preserved only the
+already-written persistent Z velocity, then returned before coordinate commit,
 delete, color RNG, and lifetime.
 
 ## 7. Reachability and exclusions
@@ -436,7 +436,7 @@ gsi_04_03_spark_shared_dummy_query_order_and_miss_continuation
 | Dummy object-list contamination | Excluded for supported active lifecycle |
 | Overlay/flags persistence | Closed: constructor defaults, active fallback writers, no per-lookup reset |
 | Save/load lifecycle | Closed: not an allocated serialized cell; reconstructed at Resize |
-| Rust mismatch and handoff | Implemented in `4c71b488`, with validation repair `72bf8e15`; row remains open pending critic pass |
+| Rust mismatch and handoff | Implemented in `4c71b488`, with review repairs `72bf8e15`, `96779c16`, and `0054549e`; row remains open pending critic pass |
 
 No load-bearing Spark/dummy mechanism remains approximate in this report.
 
