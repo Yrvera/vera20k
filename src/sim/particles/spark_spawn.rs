@@ -54,6 +54,8 @@ pub(crate) enum SparkSpawnError {
     NonSparkParticle(String),
     #[error("spark spawn x87 evaluation failed: {0}")]
     X87(#[from] NativeX87Error),
+    #[error(transparent)]
+    World(#[from] super::spark_world::SparkWorldError),
 }
 
 /// Run one tick of `AI_Spark`'s spawn half against `sys`.
@@ -158,13 +160,8 @@ pub(super) fn spark_spawn_pass(
                 // `DynamicVector` growth (`0x00630250`), so a Spark system can
                 // exceed `ParticleCap`. `WeldingSys` (cap 15, 20 spawn frames)
                 // relies on that.
-                let particle = construct_spark_particle(
-                    sim,
-                    rules,
-                    &particle_type,
-                    particle_type_id,
-                    system_coords,
-                )?;
+                let particle =
+                    construct_spark_particle(sim, &particle_type, particle_type_id, system_coords)?;
                 sys.particles.push(particle);
                 let particle = sys
                     .particles
@@ -306,7 +303,6 @@ pub(super) fn spark_spawn_pass(
 /// fault on, and `saturating_add` replaces native's 16-bit `ADD AX` wrap.
 fn construct_spark_particle(
     sim: &mut Simulation,
-    rules: &RuleSet,
     particle_type: &ParticleType,
     particle_type_id: crate::rules::particle_type::ParticleTypeId,
     system_coords: IVec3,
@@ -317,24 +313,16 @@ fn construct_spark_particle(
     let lifetime_extra = sim.particle_rng().next_raw_abs_modulo(base) as i16;
     let lifetime_remaining = (particle_type.max_ec as i16).saturating_add(lifetime_extra);
 
-    // `CellClass::GetGroundHeight` floor: `if (nZ <= ground) nZ = ground`.
+    // `CellClass::GetGroundHeight` floor: native queries once for the compare,
+    // then repeats the same lookup only when `nZ <= ground` and assigns that
+    // second result. Both calls route misses through the shared dummy.
     //
     // VERA-internal, gamemd equivalent UNCHECKED: a world that cannot be built
-    // — no resolved terrain or overlay grid — is treated as "no floor" rather
-    // than faulting. Native always has a map, so `GetGroundHeight` cannot fail
-    // there; the swallow is unreachable in production and exists so a fixture
-    // without terrain still exercises the spawn arithmetic.
-    let ground_z = super::spark_world::SparkCollisionWorld::new(sim, rules)
-        .ok()
-        .and_then(|world| world.ground_height_at(system_coords.x, system_coords.y));
-    let coords = IVec3::new(
-        system_coords.x,
-        system_coords.y,
-        match ground_z {
-            Some(ground) if system_coords.z <= ground => ground,
-            _ => system_coords.z,
-        },
-    );
+    // — no resolved terrain — is treated as "no floor". Native always has a
+    // map, so that branch remains a fixture-only compatibility policy.
+    let coords = floor_constructor_coords_with(system_coords, |x, y| {
+        super::spark_world::constructor_ground_height(sim, x, y)
+    })?;
 
     // The colour seed. Native reads the list only when it has entries, and
     // takes the interpolated arm only when at least one of the six
@@ -390,6 +378,22 @@ fn construct_spark_particle(
         prev_delta: [SIM_ZERO; 3],
         state_advance_counter: 0,
     })
+}
+
+fn floor_constructor_coords_with<E, F>(
+    system_coords: IVec3,
+    mut ground_height: F,
+) -> Result<IVec3, E>
+where
+    F: FnMut(i32, i32) -> Result<Option<i32>, E>,
+{
+    let first_ground = ground_height(system_coords.x, system_coords.y)?;
+    let z = if first_ground.is_some_and(|ground| system_coords.z <= ground) {
+        ground_height(system_coords.x, system_coords.y)?.unwrap_or(system_coords.z)
+    } else {
+        system_coords.z
+    };
+    Ok(IVec3::new(system_coords.x, system_coords.y, z))
 }
 
 /// `FUN_00661020(start1, start2, t)` — per-channel linear blend on the scaled
@@ -534,7 +538,6 @@ mod tests {
         for (input_z, expected_z) in [(207, 208), (208, 208), (209, 209)] {
             let particle = construct_spark_particle(
                 &mut sim,
-                &rules,
                 &particle_type,
                 particle_type_id,
                 IVec3::new(128, 128, input_z),
@@ -542,6 +545,63 @@ mod tests {
             .expect("finite stock-shaped Spark construction");
             assert_eq!(particle.coords.z, expected_z, "input Z {input_z}");
         }
+    }
+
+    #[test]
+    fn gsi_04_03_constructor_ground_query_is_conditional_and_repeated() {
+        let mut calls = Vec::new();
+        let mut samples = [Some(104), Some(208)].into_iter();
+        let floored = floor_constructor_coords_with(IVec3::new(7, 9, 100), |x, y| {
+            calls.push((x, y));
+            Ok::<_, ()>(samples.next().unwrap())
+        })
+        .unwrap();
+        assert_eq!(calls, vec![(7, 9), (7, 9)]);
+        assert_eq!(
+            floored.z, 208,
+            "the conditional second lookup owns the assigned floor"
+        );
+
+        calls.clear();
+        let untouched = floor_constructor_coords_with(IVec3::new(7, 9, 105), |x, y| {
+            calls.push((x, y));
+            Ok::<_, ()>(Some(104))
+        })
+        .unwrap();
+        assert_eq!(calls, vec![(7, 9)]);
+        assert_eq!(untouched.z, 105);
+    }
+
+    #[test]
+    fn gsi_04_03_constructor_miss_uses_live_dummy_without_overlay_grid() {
+        let rules = spark_rules(1, 2, "1");
+        let particle_type_id = crate::rules::particle_type::ParticleTypeId(0);
+        let particle_type = rules.particle_type(particle_type_id).clone();
+        let mut sim = super::super::spark_world::tests::one_cell_sim(
+            super::super::spark_world::tests::terrain_cell(0, 0),
+        );
+        sim.overlay_grid = None;
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        terrain.test_set_dummy_cell_level_slope(2, 0);
+
+        let particle = construct_spark_particle(
+            &mut sim,
+            &particle_type,
+            particle_type_id,
+            IVec3::new(256, 0, 0),
+        )
+        .unwrap();
+
+        assert_eq!(particle.coords.z, 208);
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .shared_cell_dummy()
+                .snapshot()
+                .coord,
+            (1, 0)
+        );
     }
 
     #[test]
