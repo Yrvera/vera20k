@@ -1,5 +1,13 @@
 # Phase 3 AITrigger Selector Design
 
+**Status: BLOCKED — prerequisites below are not yet authoritative in Rust.**
+
+This document is a mechanism specification, not current authorization to
+build. A fresh design review on 2026-08-27 proved that four inputs described
+below as selector facts do not yet have native-equivalent producers. The
+selector must not be implemented until those prerequisites land and a new
+read-only design critic confirms the complete contract is builder-ready.
+
 ## Goal
 
 Implement the active Yuri's Revenge House AITrigger selector, its empty-Team output boundary, and adaptive trigger feedback exactly enough to make later live recruitment consume the same deterministic decisions as retail, without touching Railgun, LaserDraw, Sonic Wave, destroyable cliffs, or TS-legacy behavior.
@@ -51,7 +59,41 @@ Use a pure `team_ai_selector` mechanism with explicit immutable facts assembled 
 
 This is preferred over putting the selector directly in `world/mod.rs` because it keeps eligibility and weighted arithmetic independently testable and prevents a large world-owner function from silently choosing alternate order authorities. It is preferred over extending `sim::ai::tick_ai` because the latter owns a different Rust AI model, scheduler contract, command path, and RNG consumption.
 
-The coherent slice includes all state and lifecycle consequences of one selector invocation: cadence, gates, counts/caps, eligibility, weighted output, cancellation, `Autocreate`, separate `Max` rechecks, empty construction, and adaptive feedback on every Team destruction. It does not approximate recruitment. Selector-created empty Teams carry an explicit pending-recruitment state and cannot execute ScriptType actions. Stage C will replace that narrow inert gate with the verified per-slot recruitment pipeline.
+The eventual coherent slice includes all state and lifecycle consequences of one selector invocation: cadence, gates, counts/caps, eligibility, weighted output, cancellation, `Autocreate`, separate `Max` rechecks, empty construction, and adaptive feedback on every Team destruction. It does not approximate recruitment. Selector-created empty Teams carry an explicit pending-recruitment state and cannot execute ScriptType actions. Stage C will replace that narrow inert gate with the verified per-slot recruitment pipeline.
+
+## Builder-readiness prerequisites
+
+The selector design remains blocked until all of these are implemented and
+critic-passed as their own evidence-bounded mechanisms:
+
+1. **Designated-enemy authority.** Native passes `House+0x5600` into
+   eligibility. Rust's `enemy_house` currently has damage feedback only;
+   ordinary nonzero-mode AI-hate acquisition, ordered anger-node update and
+   decay, and defeated-enemy cleanup are absent. A null target rejects every
+   fixed retail condition row, so this is a stock-skirmish prerequisite rather
+   than an optional selector detail. It must run at its verified House Strategy
+   cadence and order; setup-time seeding or a nearest-enemy fallback is not
+   admissible.
+2. **Wallet authority.** Condition 4 reads
+   `ftol(StorageClass::GetTotalValue(four slots) * HouseType.IncomeMult +
+   Balance)`. The consolidated Rust credit total is not evidence-equivalent.
+   Four-slot storage lifecycle, Balance, IncomeMult, and the exact per-slot and
+   final x87 conversion order must exist before condition 4 is implemented.
+3. **Owned-count and Building-order authority.** The four category-distinct
+   per-type count tables and the House-owned Building append/stable-remove
+   vector need explicit state, capture/Limbo/re-entry/destruction chokepoints,
+   snapshot/hash rules, and lifecycle-transition tests. Stable entity-ID order
+   is not a substitute for native House-owned order.
+4. **Shared trigger action operand/result authority.** Actions 74/75 require
+   exact `TActionClass+0x90` materialization, `FUN_006E45E0` contextual House
+   resolution, and boolean action success propagation. Action 76 is distinct:
+   it writes its signed operand to the House already passed to
+   `TriggerAction__Execute` and does not call the shared resolver. See
+   `PHASE3_TRIGGER_ACTION13_SHARED_HOUSE_RESOLVER_GHIDRA_REPORT.md` for the
+   common resolver gate.
+
+The prerequisites may be completed in separate short-lived slices, but the
+selector may consume none of them through a temporary approximation.
 
 ## Player-Experience Detail Ledger
 
@@ -101,27 +143,29 @@ Each House owns:
 - whether the first House-order stagger has been seeded;
 - maintained base-defense Team count.
 
-The scenario loader applies per-House `RatioAITriggerTeam`. Scenario state owns `IgnoreGlobalAITriggers`. Action dispatch writes 74/75/76 directly to the target House state, and successful MCV deploy writes the active latch after the entity transition succeeds. House creation/difficulty application arms the timer only when the rules vector exists, using deterministic House registry order rather than an unordered owner key.
+The scenario loader applies per-House `RatioAITriggerTeam`. Scenario state owns `IgnoreGlobalAITriggers` and a persisted campaign-scenario difficulty distinct from lobby `GameOptions.ai_difficulty`, including the verified reversed game-mode-zero mapping. Action dispatch uses the shared contextual resolver for actions 74/75, while action 76 writes the signed operand to the House already passed to action execution; all three propagate native boolean success. Successful MCV deploy writes the active latch after the entity transition succeeds. House creation/difficulty application arms the timer only when the rules vector is present with the required retail arity, using deterministic House registry order rather than an unordered owner key.
 
 #### Dynamic AITrigger state
 
 Split immutable definition data from mutable runtime data without losing registry order. Each installed trigger stores current, minimum, and maximum native-double bits plus signed successes and attempts. Initial current/min/max values come from the verified three source weight tokens. The selector walks `ai_trigger_order`; no map key or weight sort becomes an alternative authority.
 
-`team_ai_selector` owns pure functions for:
+`team_ai_selector` eventually owns pure functions for:
 
 - ratio/latch/admission and timer-expiry outcomes;
 - cap prepass and eviction-candidate selection;
 - complete eligibility using explicit facts;
 - x87 truncation, priority tier, wrapping total/cumulative, and unsigned winner comparison;
 - primary/secondary output and cancellation;
-- adaptive success/failure calculations and clamps;
+- adaptive success/failure calculations and clamps, expressed as an exact
+  sequence of `NativeF32Bits`/`NativeF64Bits` and `X87Chop53` operations rather
+  than host `f64` shorthand;
 - native CRC projection in registry order.
 
 It does not read INI, intern strings, query global Simulation state, or issue generic AI commands.
 
 #### Selector facts adapter
 
-The late-House coordinator assembles one immutable `TeamAiSelectorFacts` view for the acting House:
+After the prerequisite owners exist, the late-House coordinator assembles one immutable `TeamAiSelectorFacts` view for the acting House:
 
 - acting, target, and first-Civilian House facts;
 - scenario mode, scenario difficulty, ignore-global flag, and current frame;
@@ -131,7 +175,8 @@ The late-House coordinator assembles one immutable `TeamAiSelectorFacts` view fo
 - exact non-bridge base-zone relation results for the TeamType movement rows;
 - acting-House owned Buildings in authoritative order with family, power, mission, owner mask, naval, and primary identity;
 - acting-House superweapon instances in explicit native-preserving order;
-- available-wallet input using the already authoritative economy storage and balance values.
+- available-wallet input produced by the exact four-slot storage,
+  HouseType-IncomeMult, Balance, and x87-rounding owner.
 
 The adapter may call narrow subsystem queries, but it must not widen exact selector predicates into generic `can_reach`, generic “has factory,” aggregate credits, or type-keyed superweapon existence.
 
@@ -145,7 +190,13 @@ All Team removals route through one `destroy_team` transaction. It first fans su
 
 ### Interfaces / Contracts
 
-- `select_for_house(facts, rules, rng) -> SelectorOutcome` consumes the ratio draw first and the weighted draw only under the verified conditions. Its outcome carries zero, one, or two ordered TeamType IDs plus an optional eviction Team ID and the timer-reset instruction.
+- Cap handling is a two-phase transaction. Phase one decides at most one
+  eviction. The coordinator synchronously destroys it, applies adaptive
+  feedback, and removes it; then it rebuilds selector facts. Only phase two
+  performs eligibility, consumes the conditional weighted draw, and returns
+  zero, one, or two ordered TeamType IDs plus the timer-reset instruction.
+  Eviction and selection may not be returned as one deferred outcome.
+- `select_for_house(facts, rules, rng) -> SelectorOutcome` consumes the ratio draw first and the weighted draw only under the verified conditions after any eviction transaction has completed.
 - `TeamScriptVm` provides ordered, immutable trigger/Team projections to the selector and applies the returned mutation transaction in the same House update call. Applying an outcome revalidates each output's `Max` immediately before construction.
 - The facts adapter returns exact booleans/counts already resolved by their owning subsystem. The pure selector never reaches back into Simulation and never guesses missing facts.
 - Optional selector vectors are a load/runtime admission fact. Missing custom-data vectors disable selector arming with a diagnostic; they do not become zeros or retail defaults.
@@ -166,10 +217,15 @@ All Team removals route through one `destroy_team` transaction. It first fans su
 
 ### Error Handling
 
-- Missing required retail selector keys fail the retail corpus acceptance test. Missing custom-map/rules vectors remain explicit absence, emit one stable diagnostic, and leave the affected House timer unarmed.
+- Missing required retail selector keys fail the retail corpus acceptance test.
+  The native vector reader preserves partial one- and two-element vectors and
+  direct consumers can index them unsafely. For custom/malformed input Rust may
+  reject a partial vector at the loader boundary as an explicit safety
+  exclusion, but must not describe that rejection as native runtime parity.
+  A wholly missing key remains explicit empty native storage.
 - An unresolved TeamType, ScriptType, or TaskForce at construction returns the existing deterministic refusal shape; fixed-AIMD unresolved references remain installation refusals under the Stage-A contract.
 - A missing exact fact required by an active eligibility branch rejects that trigger and records a test/debug diagnostic; it never falls back to a broader approximation.
-- Malformed custom negative totals retain the verified signed/wrapping selector arithmetic while host-side tests bound the call. The design does not intentionally emulate the native RNG helper's nontermination for spans at least `0x80000000`.
+- Malformed custom negative totals retain the verified signed/wrapping selector arithmetic while host-side tests bound the call. The design does not intentionally emulate the native RNG helper's nontermination for spans at least `0x80000000`. Superweapon readiness with zero recharge follows the native IEEE/x87 comparison-false result rather than invoking the current checked-division error path.
 - All ordinary lifecycle paths use checked identity lookup but native signed comparisons/wrapping increments where behavior requires them.
 
 ### Testing Strategy
@@ -222,4 +278,7 @@ This would complete more of the player loop, but recruitment has its own per-slo
 
 **What could cause expensive later rework?** Treating key-sorted maps as native Building/superweapon order, scanning objects instead of maintaining per-type lifecycle counts, sharing generic-AI RNG/state, or losing exact trigger numeric state would force redesign. The explicit facts adapter and order authorities prevent those choices. The pending-recruitment flag is deliberately narrow and has a named Stage-C removal path.
 
-**Decision:** approved autonomously under the active Phase 3 goal. Proceed to proportional implementation of this selector slice, then give a fresh reviewer the requirement, native report, diff, and literal focused-test output. Any unverified or approximate selector behavior keeps this mechanism open.
+**Decision:** blocked by the builder-readiness prerequisites above. Do not
+implement the selector from this document until each prerequisite is
+critic-passed and a fresh read-only design review returns PASS. Any unverified
+or approximate selector behavior keeps this mechanism open.
