@@ -33,6 +33,36 @@ fn hash_projectile_target(
     }
 }
 
+/// Fold the versioned direct House CRC fields around CurrentIQ.
+///
+/// gamemd-derived: raw House CRC `0x00502D60..0x0050303F` folds Production at
+/// `0x00502E58`, AutocreateAllowed at `0x00502E66`, AITriggersActive at
+/// `0x00502E74`, and CurrentIQ at `0x00502E90`; exhaustive census finds no
+/// direct AutoBaseBuilding (`House+0x1F3`) feed. Schema v108 retains its
+/// committed CurrentIQ-before-two-latches stream, while v109 uses native order.
+fn hash_house_ai_activation_fields(
+    house: &crate::sim::house_state::HouseState,
+    include_house_deploy_latches_v108: bool,
+    include_house_update_activation_v109: bool,
+    hasher: &mut impl Hasher,
+) {
+    if !include_house_update_activation_v109 {
+        house.current_iq.hash(hasher);
+    }
+    if include_house_deploy_latches_v108 {
+        house.ai_activation.production.hash(hasher);
+    }
+    if include_house_update_activation_v109 {
+        house.ai_activation.autocreate_allowed.hash(hasher);
+    }
+    if include_house_deploy_latches_v108 {
+        house.ai_activation.ai_triggers_active.hash(hasher);
+    }
+    if include_house_update_activation_v109 {
+        house.current_iq.hash(hasher);
+    }
+}
+
 #[cfg(test)]
 mod playfield_authority_hash_tests {
     use super::Simulation;
@@ -254,7 +284,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true,
+            true, true, true,
         )
     }
 
@@ -266,7 +296,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false,
+            false, false, false, false, false,
         )
     }
 
@@ -278,7 +308,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false,
+            false, false, false, false, false,
         )
     }
 
@@ -287,7 +317,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false,
+            false, false, false,
         )
     }
 
@@ -296,7 +326,17 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v108(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false,
+            true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v109 House-update activation
+    /// fold. It reconstructs the committed v108 CurrentIQ/latch order.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_house_update_activation_v109(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, false,
         )
     }
 
@@ -318,6 +358,7 @@ impl Simulation {
         include_base_plan_v106: bool,
         include_base_plan_center_v107: bool,
         include_house_deploy_latches_v108: bool,
+        include_house_update_activation_v109: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -369,6 +410,7 @@ impl Simulation {
             include_base_plan_v106,
             include_base_plan_center_v107,
             include_house_deploy_latches_v108,
+            include_house_update_activation_v109,
         );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -576,6 +618,7 @@ impl Simulation {
         include_base_plan_v106: bool,
         include_base_plan_center_v107: bool,
         include_house_deploy_latches_v108: bool,
+        include_house_update_activation_v109: bool,
     ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
@@ -598,15 +641,12 @@ impl Simulation {
             house.owned_building_count.hash(hasher);
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
-            house.current_iq.hash(hasher);
-            if include_house_deploy_latches_v108 {
-                // gamemd-derived: raw House CRC `0x00502D60..0x0050303F`
-                // directly folds Production at `0x00502E58` and
-                // AITriggersActive at `0x00502E74`. Its exhaustive field census
-                // finds no direct AutoBaseBuilding (`House+0x1F3`) feed.
-                house.ai_activation.production.hash(hasher);
-                house.ai_activation.ai_triggers_active.hash(hasher);
-            }
+            hash_house_ai_activation_fields(
+                house,
+                include_house_deploy_latches_v108,
+                include_house_update_activation_v109,
+                hasher,
+            );
             if include_base_defense_response_v97 {
                 house.strategy_emergency.hash(hasher);
             } else {
@@ -2269,7 +2309,7 @@ mod mission_authority_hash_tests {
 
 #[cfg(test)]
 mod rally_hash_tests {
-    use super::Simulation;
+    use super::{Simulation, hash_house_ai_activation_fields};
     use crate::sim::components::{DriveCoord, DriveLocomotionRuntime};
     use crate::sim::game_entity::GameEntity;
 
@@ -2534,23 +2574,52 @@ mod rally_hash_tests {
         let baseline = fixture(HouseAiActivationLatches::default());
         let production = fixture(HouseAiActivationLatches {
             production: true,
-            ..HouseAiActivationLatches::default()
+            autocreate_allowed: false,
+            ai_triggers_active: false,
+            auto_base_building: false,
+        });
+        let autocreate = fixture(HouseAiActivationLatches {
+            production: false,
+            autocreate_allowed: true,
+            ai_triggers_active: false,
+            auto_base_building: false,
         });
         let ai_triggers = fixture(HouseAiActivationLatches {
+            production: false,
+            autocreate_allowed: false,
             ai_triggers_active: true,
-            ..HouseAiActivationLatches::default()
+            auto_base_building: false,
         });
         let auto_base = fixture(HouseAiActivationLatches {
+            production: false,
+            autocreate_allowed: false,
+            ai_triggers_active: false,
             auto_base_building: true,
-            ..HouseAiActivationLatches::default()
         });
 
         assert_ne!(baseline.state_hash(), production.state_hash());
+        assert_ne!(baseline.state_hash(), autocreate.state_hash());
         assert_ne!(baseline.state_hash(), ai_triggers.state_hash());
         assert_eq!(baseline.state_hash(), auto_base.state_hash());
+        assert_ne!(
+            baseline.state_hash_without_house_update_activation_v109(),
+            production.state_hash_without_house_update_activation_v109()
+        );
+        assert_eq!(
+            baseline.state_hash_without_house_update_activation_v109(),
+            autocreate.state_hash_without_house_update_activation_v109()
+        );
+        assert_ne!(
+            baseline.state_hash_without_house_update_activation_v109(),
+            ai_triggers.state_hash_without_house_update_activation_v109()
+        );
         assert_eq!(
             baseline.state_hash_without_house_deploy_latches_v108(),
             production.state_hash_without_house_deploy_latches_v108()
+        );
+        assert_eq!(
+            baseline.state_hash_without_house_deploy_latches_v108(),
+            autocreate.state_hash_without_house_deploy_latches_v108()
         );
         assert_eq!(
             baseline.state_hash_without_house_deploy_latches_v108(),
@@ -2560,6 +2629,61 @@ mod rally_hash_tests {
             baseline.state_hash_without_house_deploy_latches_v108(),
             auto_base.state_hash_without_house_deploy_latches_v108()
         );
+    }
+
+    #[test]
+    fn house_ai_activation_hash_field_order_preserves_v109_and_v108_streams() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        use crate::sim::house_state::{HouseAiActivationLatches, HouseState};
+
+        for (current_iq, production, autocreate_allowed, ai_triggers_active) in [
+            (0x1357_2468, true, false, false),
+            (-0x0246_1357, false, true, false),
+            (0x1020_3040, false, false, true),
+        ] {
+            let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+            house.current_iq = current_iq;
+            house.ai_activation = HouseAiActivationLatches {
+                production,
+                autocreate_allowed,
+                ai_triggers_active,
+                auto_base_building: true,
+            };
+
+            let mut actual_v109 = DefaultHasher::new();
+            hash_house_ai_activation_fields(&house, true, true, &mut actual_v109);
+            let mut manual_v109 = DefaultHasher::new();
+            house.ai_activation.production.hash(&mut manual_v109);
+            house
+                .ai_activation
+                .autocreate_allowed
+                .hash(&mut manual_v109);
+            house
+                .ai_activation
+                .ai_triggers_active
+                .hash(&mut manual_v109);
+            house.current_iq.hash(&mut manual_v109);
+            assert_eq!(actual_v109.finish(), manual_v109.finish());
+
+            let mut actual_v108 = DefaultHasher::new();
+            hash_house_ai_activation_fields(&house, true, false, &mut actual_v108);
+            let mut manual_v108 = DefaultHasher::new();
+            house.current_iq.hash(&mut manual_v108);
+            house.ai_activation.production.hash(&mut manual_v108);
+            house
+                .ai_activation
+                .ai_triggers_active
+                .hash(&mut manual_v108);
+            assert_eq!(actual_v108.finish(), manual_v108.finish());
+
+            let mut actual_pre_v108 = DefaultHasher::new();
+            hash_house_ai_activation_fields(&house, false, false, &mut actual_pre_v108);
+            let mut manual_pre_v108 = DefaultHasher::new();
+            house.current_iq.hash(&mut manual_pre_v108);
+            assert_eq!(actual_pre_v108.finish(), manual_pre_v108.finish());
+        }
     }
 
     #[test]
