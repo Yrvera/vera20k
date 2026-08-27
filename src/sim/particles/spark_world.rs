@@ -763,6 +763,87 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn gsi_04_03_candidate_dummy_ignores_old_real_contact_contents() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n1=Solid\n[Solid]\nFoundation=2x2\n",
+        ))
+        .unwrap();
+        let mut sim = one_cell_sim(terrain_cell(0, 0));
+        add_building(&mut sim, 1, "Solid");
+        sim.overlay_grid.as_mut().unwrap().cell_mut(0, 0).overlay_id = Some(0x02);
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let motion = motion_between(IVec3::new(0, 0, 100), IVec3::new(256, 0, 100));
+        let (facts, transcript) = world.query_with_transcript(motion).unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 256, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+                (SparkCellSelectionRole::Cell, 0, 0),
+            ]
+        );
+        assert!(!facts.accepted_building);
+        assert_eq!(facts.wall_overlay_id, None);
+        assert!(facts.slope_matrix.is_none());
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (1, 0));
+    }
+
+    #[test]
+    fn gsi_04_03_candidate_real_keeps_wall_after_old_dummy_restamp() {
+        let mut sim = one_cell_sim(terrain_cell(0, 0));
+        sim.overlay_grid.as_mut().unwrap().cell_mut(0, 0).overlay_id = Some(0x02);
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let motion = motion_between(IVec3::new(256, 0, 100), IVec3::new(0, 0, 100));
+        let (facts, transcript) = world.query_with_transcript(motion).unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 0, 0),
+                (SparkCellSelectionRole::Cell, 0, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+                (SparkCellSelectionRole::Slope, 0, 0),
+            ]
+        );
+        assert!(!facts.accepted_building);
+        assert_eq!(facts.wall_overlay_id, Some(0x02));
+        assert!(facts.slope_matrix.is_some());
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (1, 0));
+    }
+
+    #[test]
+    fn gsi_04_03_candidate_real_keeps_building_after_old_dummy_restamp() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n1=Solid\n[Solid]\nFoundation=2x2\n",
+        ))
+        .unwrap();
+        let mut sim = one_cell_sim(terrain_cell(0, 0));
+        add_building(&mut sim, 1, "Solid");
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let motion = motion_between(IVec3::new(256, 0, 100), IVec3::new(0, 0, 100));
+        let (facts, transcript) = world.query_with_transcript(motion).unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 0, 0),
+                (SparkCellSelectionRole::Cell, 0, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+                (SparkCellSelectionRole::Slope, 0, 0),
+            ]
+        );
+        assert!(facts.accepted_building);
+        assert_eq!(facts.wall_overlay_id, None);
+        assert!(facts.slope_matrix.is_some());
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (1, 0));
+    }
+
+    #[test]
     fn gsi_04_03_dummy_structural_no_crossing_skips_old_and_slope_selection() {
         let mut sim = one_cell_sim(terrain_cell(0, 0));
         sim.overlay_grid = None;
@@ -852,6 +933,58 @@ pub(super) mod tests {
             facts.wall_overlay_id, None,
             "accepted building suppresses wall read"
         );
+        assert!(facts.slope_matrix.is_some());
+    }
+
+    #[test]
+    fn gsi_04_03_bridge_crossing_skips_contact_dependencies_and_selects_slope() {
+        let mut cell = terrain_cell(0, 0);
+        cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        let mut sim = one_cell_sim(cell);
+        sim.occupancy_mut().add(
+            0,
+            0,
+            999,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        sim.overlay_grid = None;
+        let mut bridge = BridgeRuntimeState::default();
+        bridge.test_seed_cell(
+            0,
+            0,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 4,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0x18,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            },
+        );
+        sim.bridge_state = Some(bridge);
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let motion = motion_between(IVec3::new(0, 0, 500), IVec3::new(0, 0, 100));
+        let (facts, transcript) = world.query_with_transcript(motion).unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 0, 0),
+                (SparkCellSelectionRole::Cell, 0, 0),
+                (SparkCellSelectionRole::Slope, 0, 0),
+            ]
+        );
+        assert!(facts.candidate_has_structural_bridge);
+        assert!(!facts.accepted_building);
+        assert_eq!(facts.wall_overlay_id, None);
         assert!(facts.slope_matrix.is_some());
     }
 
