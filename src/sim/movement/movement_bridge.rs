@@ -14,6 +14,7 @@
 //!
 //! See docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md.
 
+use super::movement_occupancy::BRIDGE_DECK_LEVEL_DELTA;
 use crate::sim::components::{BridgeOccupancy, Position};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::PathGrid;
@@ -28,9 +29,15 @@ use crate::util::fixed_math::SimFixed;
 /// independently to match the original behavior exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BridgeTransition {
-    /// Unit just entered the bridge body deck. Set on_bridge=true, position.z=deck_level.
+    /// Unit just entered the bridge body deck. Sets on_bridge=true.
+    ///
+    /// `deck_level` is the predicate's own reading of the destination cell and is
+    /// NOT the height the mover receives — Z is recomputed from the terrain level
+    /// plus the post-transition flag, per `FootClass::Set_Height_On_Bridge`
+    /// 0x005F5FA0. The two agree on well-formed data and are allowed to disagree
+    /// on malformed data, where the native model wins.
     Enter { deck_level: u8 },
-    /// Unit just exited the bridge structure. Set on_bridge=false, position.z=dst.ground_level.
+    /// Unit just exited the bridge structure. Sets on_bridge=false.
     Exit,
     /// No layer-state change at this transition.
     NoChange,
@@ -231,7 +238,7 @@ pub(super) fn resolve_cell_transition_bridge_state(
     path_grid: Option<&PathGrid>,
     src: (u16, u16),
     dst: (u16, u16),
-    next_layer: MovementLayer,
+    on_bridge_before: bool,
 ) -> BridgeStateUpdate {
     let Some(grid) = path_grid else {
         return BridgeStateUpdate::Unchanged;
@@ -241,22 +248,41 @@ pub(super) fn resolve_cell_transition_bridge_state(
         return BridgeStateUpdate::Unchanged;
     };
 
-    match compute_bridge_transition(src_cell, dst_cell) {
-        BridgeTransition::Enter { deck_level } => {
-            position.z = deck_level;
-            position.exact_z_leptons = None;
-            BridgeStateUpdate::Set(deck_level)
-        }
-        BridgeTransition::Exit => {
-            position.z = dst_cell.ground_level;
-            position.exact_z_leptons = None;
-            BridgeStateUpdate::Clear
-        }
-        BridgeTransition::NoChange => {
-            position.z = dst_cell.effective_cell_z_for_layer(next_layer);
-            position.exact_z_leptons = None;
-            BridgeStateUpdate::Unchanged
-        }
+    // The predicate owns the flag; the height function owns Z. Keeping them
+    // separate is the native split, and it is why Z is recomputed here from the
+    // post-transition flag rather than carried out of the transition arm.
+    let transition = compute_bridge_transition(src_cell, dst_cell);
+    let update = match transition {
+        BridgeTransition::Enter { .. } => BridgeStateUpdate::Set(0),
+        BridgeTransition::Exit => BridgeStateUpdate::Clear,
+        BridgeTransition::NoChange => BridgeStateUpdate::Unchanged,
+    };
+    let on_bridge_after = projected_on_bridge(on_bridge_before, update);
+
+    // `FootClass::Set_Height_On_Bridge` 0x005F5FA0:
+    //   Location.Z = CellClass::GetGroundHeight(own cell) + arg
+    //                + (OnBridge ? g_nFootOnBridgeDeckOffsetLeptons : 0)
+    // The ground term (`CellClass::ComputeGroundHeightAtCoord` 0x0047B3A0) reads
+    // the destination cell's own signed terrain level and consults no bridge
+    // field; the deck term is gated on the object's `+0x8C` OnBridge byte and
+    // nothing else. There is no stored per-cell deck height in the native model
+    // and therefore no value that can be absent, so this must not consult the A*
+    // layer or any cell-side walkability permission — both are VERA inventions
+    // that silently substituted ground level for the deck.
+    let z = (dst_cell.signed_level()
+        + if on_bridge_after {
+            BRIDGE_DECK_LEVEL_DELTA
+        } else {
+            0
+        }) as u8;
+    position.z = z;
+    position.exact_z_leptons = None;
+
+    // Carry the same number into BridgeOccupancy so the deck height has one
+    // source rather than two independently-derived ones.
+    match update {
+        BridgeStateUpdate::Set(_) => BridgeStateUpdate::Set(z),
+        other => other,
     }
 }
 
@@ -275,7 +301,8 @@ pub(super) fn resolve_cell_transition_bridge_state_oracle(
     bridge_occupancy_before: Option<BridgeOccupancy>,
     tick: u64,
 ) -> (BridgeStateUpdate, BridgeRuntimeOracleTick) {
-    let update = resolve_cell_transition_bridge_state(position, path_grid, src, dst, next_layer);
+    let update =
+        resolve_cell_transition_bridge_state(position, path_grid, src, dst, on_bridge_before);
     let on_bridge_after = projected_on_bridge(on_bridge_before, update);
     let bridge_occupancy_after = match update {
         BridgeStateUpdate::Set(deck_level) => Some(BridgeOccupancy { deck_level }),
@@ -548,6 +575,190 @@ mod tests {
         g
     }
 
+    // ------------------------------------------------------------------------
+    // Full-span drive: the mover's height must follow the native model at every
+    // step, not only at the two boundary crossings.
+    //
+    // `FootClass::Set_Height_On_Bridge` 0x005F5FA0 recomputes
+    //   Location.Z = GroundHeight(own cell) + (OnBridge ? 4 levels : 0)
+    // with no stored per-cell deck height and no second gate. These tests walk a
+    // real multi-cell span because a two-cell fixture is satisfied by the Enter
+    // arm alone and proves nothing about the deck-to-deck steps in between,
+    // which are where a tank actually spends the crossing.
+    // ------------------------------------------------------------------------
+
+    const SPAN_Y: u16 = 5;
+    const RAMP_LEVEL: u8 = 5;
+    const RIVERBED_LEVEL: u8 = 1;
+    const ENTRY_RAMP_X: u16 = 1;
+    const EXIT_RAMP_X: u16 = 10;
+
+    /// Entry ramp at level 5, eight deck cells over a riverbed at level 1, exit
+    /// ramp at level 5. The Enter predicate needs `dst == src - 4`, so 1 == 5-4.
+    ///
+    /// The ramps are built with the decoupled setter because they must be
+    /// transition cells that are NOT structural: the Exit arm fires on
+    /// `src structural && !dst structural`, so a structural exit ramp would leave
+    /// the mover flagged on-bridge after it had driven off the span.
+    /// `set_cell_for_test` ties `bridge_structural` to `bridge_walkable` and
+    /// cannot express that.
+    fn full_span_grid() -> PathGrid {
+        let mut g = PathGrid::new(16, 16);
+        for ramp_x in [ENTRY_RAMP_X, EXIT_RAMP_X] {
+            g.set_bridge_cell_decoupled_for_test(
+                ramp_x, SPAN_Y, RAMP_LEVEL,
+                false, // ramps are transition cells, not structural deck
+                true, RAMP_LEVEL, true,
+            );
+        }
+        for x in (ENTRY_RAMP_X + 1)..EXIT_RAMP_X {
+            g.set_cell_for_test(x, SPAN_Y, RIVERBED_LEVEL, true, false);
+        }
+        g
+    }
+
+    /// The native invariant, from the inverse function `ObjectClass::GetHeight`
+    /// 0x005F5F30: a mover's Z is always its own cell's terrain level plus the
+    /// deck delta exactly when its OnBridge byte is set.
+    fn assert_native_height(grid: &PathGrid, pos: &Position, on_bridge: bool, step: &str) {
+        let cell = grid.cell(pos.rx, pos.ry).expect("cell in bounds");
+        let expected = (cell.signed_level()
+            + if on_bridge {
+                BRIDGE_DECK_LEVEL_DELTA
+            } else {
+                0
+            }) as u8;
+        assert_eq!(
+            pos.z,
+            expected,
+            "{step}: z must be terrain({}) + {} when on_bridge={on_bridge}",
+            cell.signed_level(),
+            if on_bridge {
+                BRIDGE_DECK_LEVEL_DELTA
+            } else {
+                0
+            }
+        );
+    }
+
+    /// Drive west-to-east across the span, asserting the invariant after every
+    /// single cell step. Returns the per-cell `(z, on_bridge)` trace.
+    fn drive_span(grid: &PathGrid) -> Vec<(u8, bool)> {
+        let mut pos = pos_at(ENTRY_RAMP_X, SPAN_Y, RAMP_LEVEL);
+        let mut on_bridge = false;
+        let mut trace = Vec::new();
+        for x in ENTRY_RAMP_X..EXIT_RAMP_X {
+            let src = (x, SPAN_Y);
+            let dst = (x + 1, SPAN_Y);
+            let update =
+                resolve_cell_transition_bridge_state(&mut pos, Some(grid), src, dst, on_bridge);
+            on_bridge = projected_on_bridge(on_bridge, update);
+            pos.rx = dst.0;
+            pos.ry = dst.1;
+            assert_native_height(grid, &pos, on_bridge, &format!("step {x}->{}", x + 1));
+            if let BridgeStateUpdate::Set(deck_level) = update {
+                assert_eq!(
+                    deck_level, pos.z,
+                    "BridgeOccupancy.deck_level must be the same number as position.z"
+                );
+            }
+            trace.push((pos.z, on_bridge));
+        }
+        trace
+    }
+
+    #[test]
+    fn tank_drives_full_span_and_never_leaves_the_deck() {
+        let grid = full_span_grid();
+        let trace = drive_span(&grid);
+
+        // Nine steps: onto the deck, seven deck-to-deck, then off onto the ramp.
+        assert_eq!(trace.len(), 9);
+        let deck_z = RIVERBED_LEVEL + BRIDGE_DECK_LEVEL_DELTA as u8;
+        for (i, &(z, on_bridge)) in trace[..trace.len() - 1].iter().enumerate() {
+            assert!(on_bridge, "deck step {i} must keep on_bridge set");
+            assert_eq!(
+                z, deck_z,
+                "deck step {i} must stay at deck height, not drop to the riverbed"
+            );
+        }
+        let (final_z, final_on_bridge) = trace[trace.len() - 1];
+        assert!(!final_on_bridge, "leaving the span must clear on_bridge");
+        assert_eq!(final_z, RAMP_LEVEL, "the exit ramp is solid ground at 5");
+    }
+
+    #[test]
+    fn mid_span_height_survives_a_cell_whose_walkable_permission_is_off() {
+        // Regression for the drop this fix removes: the height used to come from
+        // an Option gated on `bridge_walkable`, so a structural deck cell whose
+        // permission bit was clear substituted ground level and dropped the tank
+        // into the riverbed mid-crossing. gamemd has no such input.
+        let mut grid = full_span_grid();
+        grid.set_bridge_cell_decoupled_for_test(
+            5,
+            SPAN_Y,
+            RIVERBED_LEVEL,
+            true,  // structural: still part of the span
+            false, // walkable permission clear
+            0,     // and its stored deck level is unusable
+            false,
+        );
+
+        let trace = drive_span(&grid);
+        let deck_z = RIVERBED_LEVEL + BRIDGE_DECK_LEVEL_DELTA as u8;
+        for (i, &(z, on_bridge)) in trace[..trace.len() - 1].iter().enumerate() {
+            assert!(on_bridge, "deck step {i} must keep on_bridge set");
+            assert_eq!(
+                z, deck_z,
+                "deck step {i} must not follow the permission bit"
+            );
+        }
+    }
+
+    #[test]
+    fn entry_height_ignores_a_bogus_stored_deck_level() {
+        // The Enter arm used to publish the cell's stored deck value verbatim.
+        // Native recomputes from terrain, so a wrong stored value cannot move a
+        // mover.
+        let mut grid = full_span_grid();
+        grid.set_bridge_cell_decoupled_for_test(
+            ENTRY_RAMP_X + 1,
+            SPAN_Y,
+            RIVERBED_LEVEL,
+            true,
+            true,
+            99, // nonsense stored deck level
+            false,
+        );
+
+        let mut pos = pos_at(ENTRY_RAMP_X, SPAN_Y, RAMP_LEVEL);
+        let update = resolve_cell_transition_bridge_state(
+            &mut pos,
+            Some(&grid),
+            (ENTRY_RAMP_X, SPAN_Y),
+            (ENTRY_RAMP_X + 1, SPAN_Y),
+            false,
+        );
+        assert!(matches!(update, BridgeStateUpdate::Set(_)));
+        assert_eq!(
+            pos.z,
+            RIVERBED_LEVEL + BRIDGE_DECK_LEVEL_DELTA as u8,
+            "entry height is terrain + 4, never the stored deck field"
+        );
+    }
+
+    #[test]
+    fn ordinary_ground_movement_is_unaffected_by_the_bridge_height_model() {
+        // The same code path runs for every non-bridge step in the game, so it
+        // must leave plain ground movement exactly where it was.
+        let grid = make_grid_with_cells(&[(2, 2, 7, false, false), (3, 2, 7, false, false)]);
+        let mut pos = pos_at(2, 2, 7);
+        let update =
+            resolve_cell_transition_bridge_state(&mut pos, Some(&grid), (2, 2), (3, 2), false);
+        assert_eq!(update, BridgeStateUpdate::Unchanged);
+        assert_eq!(pos.z, 7, "ground movement keeps the terrain level");
+    }
+
     fn pos_at(rx: u16, ry: u16, z: u8) -> Position {
         Position {
             rx,
@@ -564,13 +775,7 @@ mod tests {
     #[test]
     fn resolver_fallback_when_path_grid_none() {
         let mut p = pos_at(5, 5, 10);
-        let update = resolve_cell_transition_bridge_state(
-            &mut p,
-            None,
-            (5, 5),
-            (6, 5),
-            MovementLayer::Ground,
-        );
+        let update = resolve_cell_transition_bridge_state(&mut p, None, (5, 5), (6, 5), false);
         assert_eq!(update, BridgeStateUpdate::Unchanged);
         assert_eq!(p.z, 10, "position.z must be untouched on Unchanged");
     }
@@ -580,13 +785,8 @@ mod tests {
         let g = make_grid_with_cells(&[]);
         let mut p = pos_at(0, 0, 10);
         // src in bounds, dst out of bounds:
-        let update = resolve_cell_transition_bridge_state(
-            &mut p,
-            Some(&g),
-            (0, 0),
-            (999, 999),
-            MovementLayer::Ground,
-        );
+        let update =
+            resolve_cell_transition_bridge_state(&mut p, Some(&g), (0, 0), (999, 999), false);
         assert_eq!(update, BridgeStateUpdate::Unchanged);
         assert_eq!(p.z, 10);
     }
@@ -599,15 +799,12 @@ mod tests {
             (6, 5, 0, true, false), // body
         ]);
         let mut p = pos_at(6, 5, 4);
-        let update = resolve_cell_transition_bridge_state(
-            &mut p,
-            Some(&g),
-            (5, 5),
-            (6, 5),
-            MovementLayer::Bridge,
-        );
+        let update = resolve_cell_transition_bridge_state(&mut p, Some(&g), (5, 5), (6, 5), false);
         assert_eq!(update, BridgeStateUpdate::Set(4));
-        assert_eq!(p.z, 4, "position.z must equal deck_level on Enter");
+        assert_eq!(
+            p.z, 4,
+            "Enter height is the destination terrain level (0) plus the deck delta"
+        );
     }
 
     #[test]
@@ -639,50 +836,34 @@ mod tests {
         // src=body at h=0 bridge_walkable, dst=ground at h=0 NOT bridge_walkable
         let g = make_grid_with_cells(&[(5, 5, 0, true, false), (6, 5, 0, false, false)]);
         let mut p = pos_at(6, 5, 4);
-        let update = resolve_cell_transition_bridge_state(
-            &mut p,
-            Some(&g),
-            (5, 5),
-            (6, 5),
-            MovementLayer::Ground,
-        );
+        let update = resolve_cell_transition_bridge_state(&mut p, Some(&g), (5, 5), (6, 5), true);
         assert_eq!(update, BridgeStateUpdate::Clear);
         assert_eq!(p.z, 0, "position.z must equal dst.ground_level on Exit");
     }
 
     #[test]
-    fn resolver_no_change_with_next_layer_bridge_uses_deck() {
-        // Body-to-body. NoChange. next_layer=Bridge → position.z = dst.bridge_deck_level (4).
+    fn resolver_no_change_on_deck_keeps_deck_height_from_the_mover_flag() {
+        // Body-to-body. NoChange. The mover is already on the deck, so its height
+        // stays terrain + delta. This is the mid-span step the old layer-driven
+        // code got wrong: it re-derived Z from the A* layer, and a planner that
+        // said Ground dropped the tank into the riverbed halfway across.
         let g = make_grid_with_cells(&[(5, 5, 0, true, false), (6, 5, 0, true, false)]);
-        let mut p = pos_at(6, 5, 0);
-        let update = resolve_cell_transition_bridge_state(
-            &mut p,
-            Some(&g),
-            (5, 5),
-            (6, 5),
-            MovementLayer::Bridge,
-        );
+        let mut p = pos_at(6, 5, 4);
+        let update = resolve_cell_transition_bridge_state(&mut p, Some(&g), (5, 5), (6, 5), true);
         assert_eq!(update, BridgeStateUpdate::Unchanged);
-        assert_eq!(
-            p.z, 4,
-            "NoChange with next_layer=Bridge must use bridge_deck_level"
-        );
+        assert_eq!(p.z, 4, "a mover on the deck stays at terrain + 4");
     }
 
     #[test]
-    fn resolver_no_change_with_next_layer_ground_uses_ground() {
-        // Ground-to-ground. NoChange. next_layer=Ground → position.z = dst.ground_level (0).
-        let g = make_grid_with_cells(&[(5, 5, 0, false, false), (6, 5, 0, false, false)]);
+    fn resolver_no_change_under_a_span_keeps_ground_height() {
+        // The same two deck cells, but the mover is NOT on the bridge — it is
+        // driving underneath. Same cells, same call, opposite answer, decided
+        // solely by the mover's own flag exactly as gamemd decides it.
+        let g = make_grid_with_cells(&[(5, 5, 0, true, false), (6, 5, 0, true, false)]);
         let mut p = pos_at(6, 5, 0);
-        let update = resolve_cell_transition_bridge_state(
-            &mut p,
-            Some(&g),
-            (5, 5),
-            (6, 5),
-            MovementLayer::Ground,
-        );
+        let update = resolve_cell_transition_bridge_state(&mut p, Some(&g), (5, 5), (6, 5), false);
         assert_eq!(update, BridgeStateUpdate::Unchanged);
-        assert_eq!(p.z, 0);
+        assert_eq!(p.z, 0, "a mover under the span stays on the terrain");
     }
 
     // ------------------------------------------------------------------------

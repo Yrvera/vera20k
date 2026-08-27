@@ -36,7 +36,16 @@ use super::{
 pub(super) type LiveBuildingEntrySkipMap = BTreeMap<(u16, u16), BTreeSet<u64>>;
 
 const RUNTIME_CAN_ENTER_ARG5: i32 = 1;
-const BRIDGE_DECK_LEVEL_DELTA: i16 = 4;
+/// Deck height above the cell's own terrain, in level indices.
+///
+/// `FootClass::Set_Height_On_Bridge` @ `0x005F5FA0` adds
+/// `g_nFootOnBridgeDeckOffsetLeptons` `[0x00AC13BC]` to its height argument when
+/// and only when the object's `+0x8C` OnBridge byte is set. That global is a
+/// one-shot initializer computing `4 * LevelStep` at `0x005F3860`
+/// (`LEA ECX,[EAX*4]` @ `0x005F3866`), so in level-index space the delta is 4.
+/// `movement_bridge` shares this constant so the height model has exactly one
+/// definition.
+pub(super) const BRIDGE_DECK_LEVEL_DELTA: i16 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeferredCellCheck {

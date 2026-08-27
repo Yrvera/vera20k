@@ -113,7 +113,6 @@ const MAX_SEARCH_NODES: u32 = 65_527;
 /// This limits lookahead and makes units adapt to obstacles discovered en route.
 pub const MAX_PATH_SEGMENT_STEPS: usize = 24;
 
-
 /// Code-2 (friendly moving) cost multipliers. Matches gamemd.exe
 /// AStar_compute_edge_cost (0x00429830). See `compute_code2_multiplier`.
 const CODE2_MULT_CLEARING: i32 = 1; // chain clears within 10 hops → baseline
@@ -2416,6 +2415,45 @@ impl PathGrid {
                 ground_walkable: true,
                 bridge_walkable,
                 bridge_structural: bridge_walkable,
+                bridge_marker_0x80: false,
+                transition,
+                ground_level,
+                bridge_deck_level,
+                slope_type: 0,
+                tube_index: None,
+                low_bridge_tube_cell: false,
+            };
+        }
+    }
+
+    /// Set a bridge cell with `bridge_structural`, `bridge_walkable` and
+    /// `bridge_deck_level` chosen independently.
+    ///
+    /// `set_cell_for_test` derives `bridge_structural` from `bridge_walkable` and
+    /// `bridge_deck_level` from `ground_level`, so it cannot express a cell that
+    /// is structurally part of a span while its walkability permission or its
+    /// stored deck value says otherwise. gamemd has no such coupling — the deck
+    /// height there is terrain plus a constant gated only on the mover's own
+    /// OnBridge byte (`FootClass::Set_Height_On_Bridge` 0x005F5FA0) — so tests
+    /// need to be able to build the decoupled state to prove the mover's height
+    /// is immune to it.
+    #[cfg(test)]
+    pub fn set_bridge_cell_decoupled_for_test(
+        &mut self,
+        x: u16,
+        y: u16,
+        ground_level: u8,
+        bridge_structural: bool,
+        bridge_walkable: bool,
+        bridge_deck_level: u8,
+        transition: bool,
+    ) {
+        if x < self.width && y < self.height {
+            let idx = y as usize * self.width as usize + x as usize;
+            self.cells[idx] = PathCell {
+                ground_walkable: true,
+                bridge_walkable,
+                bridge_structural,
                 bridge_marker_0x80: false,
                 transition,
                 ground_level,
