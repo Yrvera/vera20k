@@ -220,18 +220,38 @@ fn print_inventory(grid: &PathGrid, span: &HighBridgeSpan) {
         span.approach_level,
         span.step,
     );
+    // `ground_walkable` is the one that settles matrix evidence gap 1: whether
+    // the terrain *under* a high span is passable anywhere in the corpus. Three
+    // rows (T1-13/14/15, "under" for each locomotor) are demotion-pending on it —
+    // if no retail map has walkable ground beneath a deck, there is nothing to
+    // drive under and those rows are NOT-APPLICABLE rather than untested.
+    let mut walkable_under = 0usize;
     for cell in &span.deck {
         let facts = grid.cell(cell.0, cell.1).expect("deck cell in bounds");
+        if facts.ground_walkable {
+            walkable_under += 1;
+        }
         println!(
-            "  deck {:?}: ground_level={} bridge_deck_level={} structural={} walkable={} transition={}",
+            "  deck {:?}: ground_level={} bridge_deck_level={} structural={} walkable={} transition={} ground_walkable={}",
             cell,
             facts.ground_level,
             facts.bridge_deck_level,
             facts.bridge_structural,
             facts.bridge_walkable,
             facts.transition,
+            facts.ground_walkable,
         );
     }
+    println!(
+        "  UNDER-SPAN: {}/{} deck cells report ground_walkable — {}",
+        walkable_under,
+        span.deck.len(),
+        if walkable_under == 0 {
+            "nothing can drive beneath this span"
+        } else {
+            "an under-span route exists here (matrix gap 1 fixture)"
+        }
+    );
 }
 
 /// The per-frame observation table both crossing drivers print.
