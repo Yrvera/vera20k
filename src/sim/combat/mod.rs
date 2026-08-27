@@ -72,6 +72,7 @@ use crate::rules::warhead_type::WarheadType;
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
+use crate::sim::house_strategy::update_anger_nodes;
 use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
@@ -2950,68 +2951,6 @@ fn receiver_type_value(target: &GameEntity, object: &ObjectType, rules: &RuleSet
     rules.building_actual_cost(object)
 }
 
-/// Exact active subset of HouseClass::UpdateAngerNodes @ 0x00504790.
-///
-/// Native stores one node for every other HouseClass in global creation order.
-/// Rust keeps touched scores keyed by identity, but scans `house_order` for the
-/// strict-greater winner so equal scores preserve the same earlier house.
-fn update_receiver_anger_nodes(
-    houses: &mut BTreeMap<InternedId, HouseState>,
-    house_order: &[InternedId],
-    alliances: &HouseAllianceMap,
-    interner: &StringInterner,
-    victim_owner: InternedId,
-    source_owner: InternedId,
-    delta: i32,
-) {
-    let source_is_registered = source_owner != victim_owner
-        && house_order.iter().any(|&owner| owner == source_owner)
-        && houses.contains_key(&source_owner);
-    if source_is_registered && let Some(victim) = houses.get_mut(&victim_owner) {
-        // Native pre-creates every other-house node. In the sparse Rust form,
-        // an absent key therefore already means native score zero: a zero
-        // update must not materialize new serialized/hashed state. Once a key
-        // exists it remains represented even when its score is zero.
-        if delta != 0 || victim.grudge_scores.contains_key(&source_owner) {
-            let score = victim.grudge_scores.entry(source_owner).or_insert(0);
-            *score = score.wrapping_add(delta);
-        }
-    }
-
-    let Some(victim) = houses.get(&victim_owner) else {
-        return;
-    };
-    let mut best_score = 0;
-    let mut best_house = None;
-    for &candidate_id in house_order {
-        if candidate_id == victim_owner {
-            continue;
-        }
-        let Some(candidate) = houses.get(&candidate_id) else {
-            continue;
-        };
-        let score = victim
-            .grudge_scores
-            .get(&candidate_id)
-            .copied()
-            .unwrap_or(0);
-        if score > best_score
-            && !candidate.is_defeated
-            && !crate::map::houses::is_allied_with(
-                alliances,
-                interner.resolve(victim_owner),
-                interner.resolve(candidate_id),
-            )
-        {
-            best_score = score;
-            best_house = Some(candidate_id);
-        }
-    }
-    if let Some(victim) = houses.get_mut(&victim_owner) {
-        victim.enemy_house = best_house;
-    }
-}
-
 fn has_active_area_invulnerability(entity: &GameEntity, current_tick: u64) -> bool {
     // Every GameEntity is a TechnoClass-derived object, so the native
     // AbstractFlags +0x14 bit-0 identity test is inherent in this store. The
@@ -3679,7 +3618,7 @@ fn commit_damage_events_with_isolation(
         }
         if let Some((victim_owner, source_owner, final_damage, strength, cost)) = threat_feedback {
             let delta = receiver_anger_delta(final_damage, strength, cost);
-            update_receiver_anger_nodes(
+            update_anger_nodes(
                 houses,
                 house_order,
                 alliances,

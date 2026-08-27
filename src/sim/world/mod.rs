@@ -73,6 +73,7 @@ use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
+use crate::sim::house_strategy;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
@@ -344,7 +345,8 @@ pub(crate) enum MasterFrameTestRung {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HouseAiActivationOrderTestEvent {
     ProductionCompleted,
-    HouseActivation,
+    HouseAngerDecay(InternedId),
+    HouseActivation(InternedId),
     DefeatProcessed,
     AiGenerated,
 }
@@ -731,6 +733,10 @@ pub struct Simulation {
     #[cfg(test)]
     #[serde(skip)]
     house_ai_activation_order_test_trace: Vec<HouseAiActivationOrderTestEvent>,
+    /// One-shot fixture hook proving that the House loop reloads live length.
+    #[cfg(test)]
+    #[serde(skip)]
+    house_update_append_after_test: Option<(InternedId, InternedId)>,
     /// Sound events produced during the current tick and moved into the owned
     /// app-frame output batch.
     #[serde(skip)]
@@ -2982,6 +2988,8 @@ impl Simulation {
             master_frame_test_trace: Vec::new(),
             #[cfg(test)]
             house_ai_activation_order_test_trace: Vec::new(),
+            #[cfg(test)]
+            house_update_append_after_test: None,
             sound_events: Vec::new(),
             fire_events: Vec::new(),
             invulnerability_impact_effects: Vec::new(),
@@ -3935,6 +3943,17 @@ impl Simulation {
     #[cfg(test)]
     fn trace_house_ai_activation_order(&mut self, event: HouseAiActivationOrderTestEvent) {
         self.house_ai_activation_order_test_trace.push(event);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_house_order_after_for_test(
+        &mut self,
+        after_owner: InternedId,
+        appended_owner: InternedId,
+    ) {
+        debug_assert!(self.houses.contains_key(&appended_owner));
+        debug_assert!(!self.session.house_order.contains(&appended_owner));
+        self.house_update_append_after_test = Some((after_owner, appended_owner));
     }
 
     /// Returns true if the given house name is human-controlled.
@@ -5335,28 +5354,58 @@ impl Simulation {
         self.apply_active_vision_structures(&effects);
     }
 
-    /// Visit the live House registry for the early AI-activation transition.
+    /// Visit the live House registry for the early House-update mechanisms.
     ///
     /// gamemd-derived: `LogicClass__PerTickUpdate @ 0x0055AFB0`, House loop
     /// `0x0055B68D..0x0055B6B1`, walks the House array forward, skips nulls,
     /// and reloads the live count after every `HouseClass__Update @ 0x004F8440`
-    /// call. The bounded Rust transition is the verified update block
-    /// `0x004F8564..0x004F85B7`.
-    fn update_house_ai_activation_latches(&mut self, rules: &RuleSet) {
+    /// call. The bounded Rust mechanisms are anger decay before the verified
+    /// AI-activation block `0x004F8564..0x004F85B7`.
+    fn update_houses_anger_and_activation(&mut self, rules: Option<&RuleSet>) {
+        let current_frame = self.session.binary_frame as i32;
         let game_mode_nonzero = self.session.game_mode_nonzero;
-        let iq_production = rules.general.iq_production;
+        let iq_production = rules.map(|rules| rules.general.iq_production);
         let mut index = 0;
         while index < self.session.house_order.len() {
             let owner = self.session.house_order[index];
+            let represented = self.houses.contains_key(&owner);
             if let Some(house) = self.houses.get_mut(&owner) {
-                house.update_ai_activation(game_mode_nonzero, iq_production);
+                house_strategy::decay_anger_scores(
+                    house,
+                    &self.session.house_order,
+                    current_frame,
+                );
+            }
+            if represented {
+                #[cfg(test)]
+                self.trace_house_ai_activation_order(
+                    HouseAiActivationOrderTestEvent::HouseAngerDecay(owner),
+                );
+                if let Some(iq_production) = iq_production {
+                    self.houses
+                        .get_mut(&owner)
+                        .expect("represented House remains registered during its update")
+                        .update_ai_activation(game_mode_nonzero, iq_production);
+                    #[cfg(test)]
+                    self.trace_house_ai_activation_order(
+                        HouseAiActivationOrderTestEvent::HouseActivation(owner),
+                    );
+                }
+
+                #[cfg(test)]
+                if self
+                    .house_update_append_after_test
+                    .is_some_and(|(after_owner, _)| after_owner == owner)
+                {
+                    let (_, appended_owner) = self
+                        .house_update_append_after_test
+                        .take()
+                        .expect("append injection was just matched");
+                    self.session.house_order.push(appended_owner);
+                }
             }
             index += 1;
         }
-        #[cfg(test)]
-        self.trace_house_ai_activation_order(
-            HouseAiActivationOrderTestEvent::HouseActivation,
-        );
     }
 
     fn refresh_fog(
@@ -6068,11 +6117,12 @@ impl Simulation {
         self.trace_master_frame_rung(MasterFrameTestRung::Houses);
         if let Some(rules) = rules {
             self.reconcile_active_vision_structures(rules);
-            // Factory/production work has already completed in Phase 7. This
-            // early House update follows vision reconciliation and precedes
-            // both defeat processing and strategic AI command generation.
-            self.update_house_ai_activation_latches(rules);
         }
+        // Factory/production work has already completed in Phase 7. This early
+        // House update follows optional vision reconciliation and precedes both
+        // defeat processing and strategic AI command generation. Native anger
+        // decay is unconditional; only the activation substep needs RuleSet.
+        self.update_houses_anger_and_activation(rules);
         // --- Phase 8: Defeat detection (runs BEFORE AI) ---
         // gamemd evaluates each house's defeat before its AI manage/produce step,
         // so a house that lost its last building/unit this tick can issue NO AI
