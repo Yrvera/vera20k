@@ -27,6 +27,8 @@ use std::path::PathBuf;
 
 use super::movement_occupancy::BRIDGE_DECK_LEVEL_DELTA;
 use crate::headless_scenario::{self, SIM_TICK_MS};
+use crate::map::resolved_terrain::{BridgeDirection, ResolvedTerrainGrid};
+use crate::rules::locomotor_type::MovementZone;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::house_state::HouseState;
 use crate::sim::pathfinding::PathGrid;
@@ -165,6 +167,11 @@ struct TickRow {
     terrain_level: u8,
     structural: bool,
     bridge_walkable: bool,
+    /// `PathCell::low_bridge_tube_cell` — the `TubeClass` low-span marker
+    /// (`tube_index` present **and** final CellClass LandType 10). Recorded on
+    /// both drivers so a high-span run states the two markers are disjoint
+    /// rather than leaving it assumed.
+    low_tube: bool,
     stored_deck_level: u8,
     /// The mover's live A* layer — the input the pre-fix height path keyed off.
     loco_layer: crate::sim::movement::locomotor::MovementLayer,
@@ -227,16 +234,99 @@ fn print_inventory(grid: &PathGrid, span: &HighBridgeSpan) {
     }
 }
 
+/// The per-frame observation table both crossing drivers print.
+fn print_tick_table(rows: &[TickRow]) {
+    println!(
+        "\ntick  cell        z  on_bridge  occ_deck  terrain  deck?  walkable  lowtube  stored_deck  layer   prefix_z  expect_z  ok"
+    );
+    for row in rows {
+        println!(
+            "{:5} ({:3},{:3}) {:3}  {:9}  {:8}  {:7}  {:5}  {:8}  {:7}  {:11}  {:6}  {:8}  {:8}  {}",
+            row.tick,
+            row.cell.0,
+            row.cell.1,
+            row.z,
+            row.on_bridge,
+            row.occupancy_deck
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.terrain_level,
+            row.structural,
+            row.bridge_walkable,
+            row.low_tube,
+            row.stored_deck_level,
+            format!("{:?}", row.loco_layer),
+            row.prefix_z,
+            row.expected_z(),
+            if row.holds_invariant() { "ok" } else { "FAIL" },
+        );
+    }
+}
+
+/// Give the loaded scenario a commandable house and return its name.
+///
+/// A headless load is a spectatorless map load, so the roster may be empty; the
+/// mover needs an owner whose name the order path can match. Every house is made
+/// passive for the run: the defeat scan would otherwise resolve the match on the
+/// first frame and stop committing ticks.
+fn prepare_commanding_house(scenario: &mut crate::headless_scenario::HeadlessScenario) -> String {
+    let sim = &mut scenario.runtime.simulation;
+    let existing: Vec<String> = sim
+        .houses
+        .keys()
+        .map(|id| sim.interner.resolve(*id).to_string())
+        .collect();
+    println!("map roster houses: {existing:?}");
+    let name = existing
+        .iter()
+        .find(|name| !name.eq_ignore_ascii_case("Neutral") && !name.eq_ignore_ascii_case("Special"))
+        .cloned()
+        .unwrap_or_else(|| {
+            let name = "Americans".to_string();
+            let id = sim.interner.intern(&name);
+            sim.houses
+                .insert(id, HouseState::new(id, 0, None, true, 10_000, 10));
+            name
+        });
+    for house in sim.houses.values_mut() {
+        house.multiplay_passive = true;
+    }
+    let id = sim.interner.get(&name).expect("owner interned");
+    if sim.session.house_order.is_empty() {
+        sim.session.house_order = vec![id];
+    }
+    name
+}
+
 /// Report why the order never became a `MovementTarget`, so a harness failure is
 /// distinguishable from a height defect.
+///
+/// Takes the span geometry as loose cells rather than a `HighBridgeSpan` so the
+/// low-span driver gets the same diagnosis — a refusal is exactly as plausible
+/// there, and it has never been measured.
 fn diagnose_rejected_order(
     scenario: &mut crate::headless_scenario::HeadlessScenario,
     owner_name: &str,
     entity_id: u64,
     start_cell: (u16, u16),
-    span: &HighBridgeSpan,
+    approach_a: (u16, u16),
+    approach_b: (u16, u16),
+    deck: &[(u16, u16)],
 ) {
     use crate::sim::pathfinding::{AStarOptions, astar_search, find_path};
+
+    /// Borrowed view so the ablation body below reads identically for a high
+    /// span (`HighBridgeSpan`) and a low one (`LowBridgeSpan`).
+    struct SpanView<'a> {
+        approach_a: (u16, u16),
+        approach_b: (u16, u16),
+        deck: &'a [(u16, u16)],
+    }
+    let span = SpanView {
+        approach_a,
+        approach_b,
+        deck,
+    };
 
     let grid = scenario
         .sim()
@@ -692,40 +782,7 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
         span.deck.len()
     );
 
-    // House setup. A headless load is a spectatorless map load, so the roster
-    // may be empty; the tank needs an owner whose name the order path can match.
-    // Every house is made passive for the run: the defeat scan would otherwise
-    // resolve the match on the first frame and stop committing ticks.
-    let owner_name = {
-        let sim = &mut scenario.runtime.simulation;
-        let existing: Vec<String> = sim
-            .houses
-            .keys()
-            .map(|id| sim.interner.resolve(*id).to_string())
-            .collect();
-        println!("map roster houses: {existing:?}");
-        let name = existing
-            .iter()
-            .find(|name| {
-                !name.eq_ignore_ascii_case("Neutral") && !name.eq_ignore_ascii_case("Special")
-            })
-            .cloned()
-            .unwrap_or_else(|| {
-                let name = "Americans".to_string();
-                let id = sim.interner.intern(&name);
-                sim.houses
-                    .insert(id, HouseState::new(id, 0, None, true, 10_000, 10));
-                name
-            });
-        for house in sim.houses.values_mut() {
-            house.multiplay_passive = true;
-        }
-        let id = sim.interner.get(&name).expect("owner interned");
-        if sim.session.house_order.is_empty() {
-            sim.session.house_order = vec![id];
-        }
-        name
-    };
+    let owner_name = prepare_commanding_house(&mut scenario);
     println!("commanding house: {owner_name}");
 
     // Spawn on the near approach; fall back one cell further back if that cell
@@ -822,7 +879,15 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
             // (cf91caa3): an ordinary, undisabled `Command::Move` is the only
             // route a player has, so it must succeed here or the run fails. A
             // harness that can route around a regression is not a ratchet.
-            diagnose_rejected_order(&mut scenario, &owner_name, entity_id, start_cell, &span);
+            diagnose_rejected_order(
+                &mut scenario,
+                &owner_name,
+                entity_id,
+                start_cell,
+                span.approach_a,
+                span.approach_b,
+                &span.deck,
+            );
             panic!(
                 "the ordinary Command::Move to {:?} was REFUSED — a player cannot cross this \
                  span at all. See the diagnosis above; the bridge-deck exemption from the \
@@ -860,6 +925,7 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
             terrain_level: facts.ground_level,
             structural: facts.bridge_structural,
             bridge_walkable: facts.bridge_walkable,
+            low_tube: facts.low_bridge_tube_cell,
             stored_deck_level: facts.bridge_deck_level,
             loco_layer,
             prefix_z: facts.effective_cell_z_for_layer(loco_layer),
@@ -877,30 +943,7 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
         }
     }
 
-    println!(
-        "\ntick  cell        z  on_bridge  occ_deck  terrain  deck?  walkable  stored_deck  layer   prefix_z  expect_z  ok"
-    );
-    for row in &rows {
-        println!(
-            "{:5} ({:3},{:3}) {:3}  {:9}  {:8}  {:7}  {:5}  {:8}  {:11}  {:6}  {:8}  {:8}  {}",
-            row.tick,
-            row.cell.0,
-            row.cell.1,
-            row.z,
-            row.on_bridge,
-            row.occupancy_deck
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            row.terrain_level,
-            row.structural,
-            row.bridge_walkable,
-            row.stored_deck_level,
-            format!("{:?}", row.loco_layer),
-            row.prefix_z,
-            row.expected_z(),
-            if row.holds_invariant() { "ok" } else { "FAIL" },
-        );
-    }
+    print_tick_table(&rows);
 
     let last = rows.last().copied().expect("at least one frame observed");
     println!(
@@ -1067,6 +1110,838 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
     println!(
         "frames on a deck cell whose live A* layer was Ground (the C1 trigger): {ground_layer_on_deck}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Low (`TubeClass`) spans — matrix rows T1-09 / T1-10 / T1-11.
+//
+// A low span is NOT a high span with different numbers, and it is also not the
+// `TubeClass` thing the matrix calls it. Both halves of that are measured by
+// `retail_low_bridge_inventory`, whose output is the sole basis for the
+// invariant asserted here.
+//
+// What a low deck cell actually carries, on all four loose low-span fixtures
+// (Lostlake, Shrapnel, Killer, EB3):
+//
+//   has_bridge_deck = true        bridge_deck_level == ground_level  (no +4)
+//   bridge_structural = false     bridge_walkable   = false
+//   transition        = false     ground_walkable   = true
+//   zone_type = 0 (Ground)        LandType  = 1 (Road)   is_water = false
+//   tube_index = None             low_bridge_tube_cell = false
+//
+// The first line is the whole geometry: `resolve_overlay`
+// (`map/resolved_terrain.rs`) routes every bridge overlay id that is not
+// 24/25/237/238 to `BridgeDirection::Low` and gives it `deck_level = level`,
+// and `high_bridge_stamp_for_overlay` (`map/bridge_facts.rs`) returns `None`
+// for those ids, so no `0x100` structural stamp is ever written and no Bridge
+// A* plane exists over a low span. Both approach cells sit at the deck's own
+// level on every fixture, so there is no height event at either end — which is
+// why the ledger collapses low onto/along/off into one row.
+//
+// The last line is the surprise and it is recorded, not worked around: the
+// `TubeClass` marker is absent from the entire measured corpus. It is gated on
+// `yr_cell_land_type == YR_CELL_LAND_TUNNEL` (10), but a low-bridge overlay
+// rewrites the cell's Land to Road (1), and `build_auto_low_bridge_tubes`
+// matches *iso-tile* ids, not overlays. So `tube_movement.rs` and
+// `PathCell::low_bridge_tube_cell` are not on the stock low-bridge crossing
+// path at all. Whether gamemd tubes these cells is UNCHECKED — settling it
+// needs the binary, not this harness.
+// ---------------------------------------------------------------------------
+
+/// One intact low-bridge span discovered from live map facts.
+#[derive(Debug, Clone)]
+struct LowBridgeSpan {
+    /// Off-deck cell the drive starts on, one step before the first deck cell.
+    approach_a: (u16, u16),
+    /// Off-deck cell on the far side, one step past the last deck cell.
+    approach_b: (u16, u16),
+    /// Every low-deck cell between them, in travel order.
+    deck: Vec<(u16, u16)>,
+    /// The subset of `deck` whose **pre-overlay** terrain is Water — the cells a
+    /// mover could not occupy at all if the bridge overlay were removed.
+    ///
+    /// This is what makes a low-span run a bridge crossing rather than a walk
+    /// across flat ground. A low deck is a plain ground cell in every field the
+    /// mover reads, so without this the whole test would pass on any straight
+    /// stretch of road and would settle nothing.
+    water_gap: Vec<(u16, u16)>,
+    approach_a_level: u8,
+    approach_b_level: u8,
+    step: (i32, i32),
+}
+
+/// A low deck cell, taken from the map's own overlay classification.
+///
+/// `resolve_overlay` (`map/resolved_terrain.rs`) maps overlay ids 24/237 to
+/// `EastWest`, 25/238 to `NorthSouth` and **every other bridge overlay id** to
+/// `Low`, then gives the low ones `deck_level = level` with no `+4`. That is the
+/// authoritative low-vs-high split at load, so the span finder reads it rather
+/// than guessing from heights — which for a low span are identical to the
+/// surrounding terrain and would discriminate nothing.
+fn is_low_deck_cell(terrain: &ResolvedTerrainGrid, cell: (u16, u16)) -> bool {
+    terrain.cell(cell.0, cell.1).is_some_and(|c| {
+        c.bridge_layer
+            .as_ref()
+            .is_some_and(|layer| layer.direction == BridgeDirection::Low)
+    })
+}
+
+/// A low deck cell whose **pre-overlay** terrain is Water: a cell that exists as
+/// standing room only because the bridge overlay is there.
+fn is_water_backed_low_deck(terrain: &ResolvedTerrainGrid, cell: (u16, u16)) -> bool {
+    is_low_deck_cell(terrain, cell)
+        && terrain.cell(cell.0, cell.1).is_some_and(|c| {
+            c.base_land_type == crate::rules::terrain_rules::LandType::Water.as_index()
+        })
+}
+
+/// Longest straight run of low-deck cells entered and left through ordinary
+/// ground-walkable, non-deck cells.
+///
+/// Deliberately imposes **no** height relation between deck and approach: the
+/// high finder demands `approach == deck_terrain + 4` because that is the
+/// geometry its predicate fires on, and assuming any analogue here would be
+/// assuming the answer. The observed levels are carried on the span and printed.
+/// The span the crossing drivers use: longest, ties broken by the lowest first
+/// deck cell so the choice is stable across runs and across maps.
+///
+/// On `Lostlake.mmx` this resolves to `(39,117)..(51,117)` with approaches
+/// `(38,117)` and `(52,117)` — the exact fixture the frozen ledger names for
+/// T1-09/10/11, confirmed by `retail_low_bridge_inventory` rather than adopted
+/// on trust. Nine other 13-cell runs on that map tie on length.
+fn find_low_bridge_span(terrain: &ResolvedTerrainGrid, grid: &PathGrid) -> Option<LowBridgeSpan> {
+    find_low_bridge_spans(terrain, grid).into_iter().next()
+}
+
+/// Every maximal straight low run on the map, deduplicated so a run and its
+/// mirror image count once. Used by the inventory: the frozen ledger names one
+/// fixture per map, and the only way to check that claim is to enumerate.
+fn find_low_bridge_spans(terrain: &ResolvedTerrainGrid, grid: &PathGrid) -> Vec<LowBridgeSpan> {
+    let mut seen: std::collections::BTreeSet<((u16, u16), (u16, u16))> =
+        std::collections::BTreeSet::new();
+    let mut spans = Vec::new();
+    for span in enumerate_low_bridge_spans(terrain, grid) {
+        let first = span.deck[0];
+        let last = *span.deck.last().expect("non-empty run");
+        let key = (first.min(last), first.max(last));
+        if seen.insert(key) {
+            spans.push(span);
+        }
+    }
+    spans.sort_by_key(|span| (std::cmp::Reverse(span.deck.len()), span.deck[0]));
+    spans
+}
+
+fn enumerate_low_bridge_spans(
+    terrain: &ResolvedTerrainGrid,
+    grid: &PathGrid,
+) -> Vec<LowBridgeSpan> {
+    let mut found = Vec::new();
+    for y in 0..terrain.height() {
+        for x in 0..terrain.width() {
+            if !is_low_deck_cell(terrain, (x, y)) {
+                continue;
+            }
+            for step in STEPS {
+                let back = (-step.0, -step.1);
+                let Some(approach_a) = offset((x, y), back) else {
+                    continue;
+                };
+                if is_low_deck_cell(terrain, approach_a) {
+                    continue;
+                }
+                let Some(cell_a) = grid.cell(approach_a.0, approach_a.1) else {
+                    continue;
+                };
+                if !cell_a.ground_walkable {
+                    continue;
+                }
+                let mut deck = vec![(x, y)];
+                let mut cursor = (x, y);
+                loop {
+                    let Some(next) = offset(cursor, step) else {
+                        break;
+                    };
+                    if !is_low_deck_cell(terrain, next) {
+                        break;
+                    }
+                    deck.push(next);
+                    cursor = next;
+                }
+                let Some(approach_b) = offset(cursor, step) else {
+                    continue;
+                };
+                if is_low_deck_cell(terrain, approach_b) {
+                    continue;
+                }
+                let Some(cell_b) = grid.cell(approach_b.0, approach_b.1) else {
+                    continue;
+                };
+                if !cell_b.ground_walkable {
+                    continue;
+                }
+                let water_gap = deck
+                    .iter()
+                    .copied()
+                    .filter(|cell| is_water_backed_low_deck(terrain, *cell))
+                    .collect();
+                let candidate = LowBridgeSpan {
+                    approach_a,
+                    approach_b,
+                    deck,
+                    water_gap,
+                    approach_a_level: cell_a.ground_level,
+                    approach_b_level: cell_b.ground_level,
+                    step,
+                };
+                found.push(candidate);
+            }
+        }
+    }
+    found
+}
+
+fn print_low_inventory(terrain: &ResolvedTerrainGrid, grid: &PathGrid, span: &LowBridgeSpan) {
+    println!(
+        "span: approach_a {:?} (level {}) -> {} low deck cell(s) -> approach_b {:?} (level {}), \
+         step {:?}; {} of the deck cells sit on pre-overlay Water: {:?}",
+        span.approach_a,
+        span.approach_a_level,
+        span.deck.len(),
+        span.approach_b,
+        span.approach_b_level,
+        span.step,
+        span.water_gap.len(),
+        span.water_gap,
+    );
+    let mut cells: Vec<(u16, u16)> = vec![span.approach_a];
+    cells.extend(span.deck.iter().copied());
+    cells.push(span.approach_b);
+    for cell in cells {
+        let Some(rt) = terrain.cell(cell.0, cell.1) else {
+            println!("  {cell:?}: NOT IN RESOLVED TERRAIN");
+            continue;
+        };
+        let Some(pc) = grid.cell(cell.0, cell.1) else {
+            println!("  {cell:?}: NOT IN PATH GRID");
+            continue;
+        };
+        let role = if is_low_deck_cell(terrain, cell) {
+            "deck"
+        } else {
+            "appr"
+        };
+        println!(
+            "  {role} {cell:?}: overlay={:?} lvl={} rt_deck_lvl={} rt_has_deck={} rt_bridge_walkable={} \
+             tube={:?} tube_src={:?} yr_land={} land={} base_land={} base_blocked={} water={} zone={} \
+             | path: gw={} bw={} struct={} trans={} lowtube={} g_lvl={} deck_lvl={}",
+            rt.bridge_layer.as_ref().map(|b| b.overlay_id),
+            rt.level,
+            rt.bridge_deck_level,
+            rt.has_bridge_deck,
+            rt.bridge_walkable,
+            rt.tube_index.map(|t| t.0),
+            rt.tube_index
+                .and_then(|t| terrain.tube(t))
+                .map(|t| t.source),
+            rt.yr_cell_land_type,
+            rt.land_type,
+            rt.base_land_type,
+            rt.base_ground_walk_blocked,
+            rt.is_water,
+            rt.zone_type,
+            pc.ground_walkable,
+            pc.bridge_walkable,
+            pc.bridge_structural,
+            pc.transition,
+            pc.low_bridge_tube_cell,
+            pc.ground_level,
+            pc.bridge_deck_level,
+        );
+    }
+}
+
+/// The low-span per-frame invariant, applied to every recorded frame.
+///
+/// **Measured, not assumed** — see the block comment above for the cell facts
+/// `retail_low_bridge_inventory` printed, and note in particular that both
+/// approaches sit at the deck's own level on every fixture. There is no height
+/// event anywhere on a low span; the crossing *is* the ground plane.
+///
+/// So the correct invariant is the degenerate case of
+/// `ObjectClass::GetHeight @ 0x005F5F30` with OnBridge clear:
+///
+/// ```text
+/// position.z == GroundHeight(own cell)   and   OnBridge == false
+/// ```
+///
+/// The `OnBridge == false` half is load-bearing, not decoration: were a low deck
+/// to set it, `Set_Height_On_Bridge` would add four levels of nothing and float
+/// the mover over a flat span. Asserting only "z == ground" would pass a
+/// hypothetical implementation that sets `on_bridge` and then re-derives z from
+/// it, so both halves are checked, plus the absence of a `BridgeOccupancy`
+/// entry, which is the third place the deck term is stored.
+fn assert_low_span_invariant(rows: &[TickRow], deck_frames: &[&TickRow]) {
+    let violations: Vec<&TickRow> = rows.iter().filter(|row| !row.holds_invariant()).collect();
+    assert!(
+        violations.is_empty(),
+        "position.z left the native model on {} frame(s); first: {:?} (expected z {}, got {})",
+        violations.len(),
+        violations[0],
+        violations[0].expected_z(),
+        violations[0].z,
+    );
+    for row in deck_frames {
+        assert!(
+            !row.on_bridge,
+            "a LOW deck cell {:?} set on_bridge; there is no deck plane over a low span, so \
+             Set_Height_On_Bridge would lift the mover four levels above flat ground: {row:?}",
+            row.cell
+        );
+        assert!(
+            !row.structural,
+            "a low deck cell {:?} reported bridge_structural; the low overlays get no \
+             SetBridgeDirection stamp: {row:?}",
+            row.cell
+        );
+        assert_eq!(
+            i16::from(row.z as i8),
+            i16::from(row.terrain_level as i8),
+            "the mover is not at ground height on low deck cell {:?}: {row:?}",
+            row.cell
+        );
+        assert_eq!(
+            row.occupancy_deck, None,
+            "a low deck cell {:?} produced a BridgeOccupancy entry: {row:?}",
+            row.cell
+        );
+        assert_eq!(
+            row.stored_deck_level, row.terrain_level,
+            "the stored per-cell deck level on low cell {:?} is not the ground level: {row:?}",
+            row.cell
+        );
+    }
+}
+
+/// Load a retail map, spawn `unit_type` on one approach of the longest intact
+/// low span, order it to the far approach with an ordinary undisabled
+/// `Command::Move`, and record `position.z` after every committed frame.
+///
+/// Same contract as `drive_across_high_bridge` — a refused order panics after a
+/// diagnosis rather than being re-issued through a widened search — with the low
+/// invariant of `assert_low_span_invariant` in place of the deck-height one.
+fn drive_across_low_bridge(map_file: &str, unit_type: &str) {
+    let Some(retail) = retail_dir() else {
+        eprintln!("SKIPPED: no retail root (set RA2_DIR or provide config.toml)");
+        return;
+    };
+    let _ = env_logger::builder()
+        .is_test(false)
+        .filter_level(log::LevelFilter::Warn)
+        .try_init();
+
+    let mut scenario = match headless_scenario::load(&retail, map_file, SEED) {
+        Ok(scenario) => scenario,
+        Err(error) => panic!("load {map_file}: {error}"),
+    };
+    println!(
+        "loaded {map_file} ({}x{}, theater {})",
+        scenario.sim().session.map_width,
+        scenario.sim().session.map_height,
+        scenario.map.header.theater,
+    );
+
+    let span = {
+        let sim = scenario.sim();
+        let terrain = sim
+            .resolved_terrain
+            .as_ref()
+            .expect("headless load keeps resolved terrain");
+        let grid = sim.path_grid().expect("headless load publishes navigation");
+        let Some(span) = find_low_bridge_span(terrain, grid) else {
+            panic!("{map_file} exposes no low-bridge span");
+        };
+        print_low_inventory(terrain, grid, &span);
+        span
+    };
+    assert!(
+        span.deck.len() >= 3,
+        "a two-cell span proves nothing about mid-span behaviour; found {} deck cell(s)",
+        span.deck.len()
+    );
+
+    let owner_name = prepare_commanding_house(&mut scenario);
+    println!("commanding house: {owner_name}");
+
+    let start_candidates = [
+        span.approach_a,
+        offset(span.approach_a, (-span.step.0, -span.step.1)).unwrap_or(span.approach_a),
+    ];
+    let mut entity_id = None;
+    let mut start_cell = span.approach_a;
+    for candidate in start_candidates {
+        let SimRuntime {
+            simulation,
+            resources,
+        } = &mut scenario.runtime;
+        if let Some(id) = simulation.spawn_object(
+            unit_type,
+            &owner_name,
+            candidate.0,
+            candidate.1,
+            0,
+            &resources.rules,
+            &resources.height_map,
+        ) {
+            entity_id = Some(id);
+            start_cell = candidate;
+            break;
+        }
+    }
+    let entity_id = entity_id.unwrap_or_else(|| {
+        panic!("could not place a {unit_type} on either approach cell {start_candidates:?}")
+    });
+    {
+        let SimRuntime {
+            simulation,
+            resources,
+        } = &mut scenario.runtime;
+        simulation.resolve_type_handles(&resources.rules);
+    }
+    let movement_zone = {
+        let entity = scenario
+            .sim()
+            .entities()
+            .get(entity_id)
+            .expect("spawned mover present");
+        let zone = entity
+            .locomotor
+            .as_ref()
+            .map(|loco| loco.movement_zone)
+            .expect("spawned mover has a locomotor");
+        println!(
+            "spawned {unit_type} id={entity_id} at {start_cell:?} z={} on_bridge={} zone={zone:?}",
+            entity.position.z, entity.on_bridge
+        );
+        zone
+    };
+    // Whether the river under the span is an obstacle to *this* mover. A
+    // Robot Tank is `AmphibiousDestroyer` and crosses open water unaided, so for
+    // it the water gap cannot be used as proof that the bridge was needed.
+    let water_is_an_obstacle = !matches!(
+        movement_zone,
+        MovementZone::Amphibious
+            | MovementZone::AmphibiousCrusher
+            | MovementZone::AmphibiousDestroyer
+            | MovementZone::Water
+            | MovementZone::WaterBeach
+    );
+
+    let owner_id = scenario
+        .sim()
+        .interner
+        .get(&owner_name)
+        .expect("owner interned");
+    let execute_tick = scenario.sim().session.tick + 1;
+    let order = CommandEnvelope::new(
+        owner_id,
+        execute_tick,
+        Command::Move {
+            entity_id,
+            target_rx: span.approach_b.0,
+            target_ry: span.approach_b.1,
+            queue: false,
+            group_id: None,
+        },
+    );
+    scenario
+        .runtime
+        .advance_frame(&[order], SIM_TICK_MS, TickLane::Ordinary);
+
+    match scenario
+        .sim()
+        .entities()
+        .get(entity_id)
+        .and_then(|entity| entity.movement_target.as_ref())
+        .map(|target| target.path.clone())
+    {
+        Some(path) => println!(
+            "move order accepted: {} node(s) {:?} -> {:?}",
+            path.len(),
+            path.first(),
+            path.last()
+        ),
+        None => {
+            diagnose_rejected_order(
+                &mut scenario,
+                &owner_name,
+                entity_id,
+                start_cell,
+                span.approach_a,
+                span.approach_b,
+                &span.deck,
+            );
+            panic!(
+                "the ordinary Command::Move to {:?} was REFUSED — a player cannot cross this low \
+                 span at all. See the diagnosis above.",
+                span.approach_b
+            );
+        }
+    }
+
+    let mut rows: Vec<TickRow> = Vec::new();
+    let mut idle_frames = 0u32;
+    for _ in 0..MAX_TICKS {
+        scenario.tick();
+        let sim = scenario.sim();
+        let Some(entity) = sim.entities().get(entity_id) else {
+            panic!("the mover vanished mid-crossing");
+        };
+        let cell = (entity.position.rx, entity.position.ry);
+        let facts = sim
+            .path_grid()
+            .and_then(|grid| grid.cell(cell.0, cell.1))
+            .copied();
+        let Some(facts) = facts else {
+            panic!("the mover left the path grid at {cell:?}");
+        };
+        let loco_layer = entity.movement_layer_or_ground();
+        rows.push(TickRow {
+            tick: sim.session.tick,
+            cell,
+            z: entity.position.z,
+            on_bridge: entity.on_bridge,
+            occupancy_deck: entity.bridge_occupancy.map(|occ| occ.deck_level),
+            terrain_level: facts.ground_level,
+            structural: facts.bridge_structural,
+            bridge_walkable: facts.bridge_walkable,
+            low_tube: facts.low_bridge_tube_cell,
+            stored_deck_level: facts.bridge_deck_level,
+            loco_layer,
+            prefix_z: facts.effective_cell_z_for_layer(loco_layer),
+        });
+        if entity.movement_target.is_none() {
+            idle_frames += 1;
+            if idle_frames >= 30 {
+                break;
+            }
+        } else {
+            idle_frames = 0;
+        }
+        if cell == span.approach_b {
+            break;
+        }
+    }
+
+    print_tick_table(&rows);
+    let last = rows.last().copied().expect("at least one frame observed");
+    println!(
+        "\n{} frame(s) recorded, last cell {:?} (target {:?})",
+        rows.len(),
+        last.cell,
+        span.approach_b
+    );
+
+    let terrain = scenario
+        .sim()
+        .resolved_terrain
+        .as_ref()
+        .expect("headless load keeps resolved terrain");
+
+    // 1. The drive must actually have used the span.
+    //
+    // Deck membership is "the mover's cell is a low deck cell", not "the cell is
+    // in the discovered single-file run". MEASURED reason: a low span is often
+    // several lanes wide — Killer's is three, columns 92/93/94 — and A* is free
+    // to change lane mid-crossing between equal-cost parallel deck cells. The
+    // Hover mover does exactly that on Killer, leaving the discovered lane at
+    // y=136 and rejoining it at y=144. That is ordinary tie-breaking, not a
+    // defect, but a single-lane membership test calls it a failed crossing.
+    let deck_frames: Vec<&TickRow> = rows
+        .iter()
+        .filter(|row| is_low_deck_cell(terrain, row.cell))
+        .collect();
+    assert!(
+        !deck_frames.is_empty(),
+        "the {unit_type} never stood on a low deck cell — it did not cross the span, so this run \
+         says nothing about low-span movement. Cells visited: {:?}",
+        rows.iter().map(|row| row.cell).collect::<Vec<_>>()
+    );
+    let visited_deck: std::collections::BTreeSet<(u16, u16)> =
+        deck_frames.iter().map(|row| row.cell).collect();
+    println!(
+        "stood on {} low deck cell(s) ({} of the {} in the discovered lane): {:?}",
+        visited_deck.len(),
+        visited_deck
+            .iter()
+            .filter(|cell| span.deck.contains(cell))
+            .count(),
+        span.deck.len(),
+        visited_deck
+    );
+
+    // 1b. It was a *bridge* crossing. A low deck reads as a plain ground cell in
+    //     every field the mover consults, so reaching the far approach proves
+    //     nothing on its own — the same run would pass on a straight stretch of
+    //     road. What makes it a crossing is that the middle of the span is water
+    //     under the overlay, and the mover was over all of it.
+    //
+    //     Coverage is measured along the travel axis rather than cell by cell,
+    //     which is what makes it lane-agnostic: for every position along the
+    //     river the span bridges, the mover must have stood on *some*
+    //     water-backed deck cell at that position.
+    assert!(
+        !span.water_gap.is_empty(),
+        "this span has no pre-overlay water under it, so crossing it says nothing about \
+         bridges; deck {:?}",
+        span.deck
+    );
+    let axis = |cell: (u16, u16)| if span.step.0 != 0 { cell.0 } else { cell.1 };
+    let gap_axis: std::collections::BTreeSet<u16> =
+        span.water_gap.iter().copied().map(axis).collect();
+    let covered_axis: std::collections::BTreeSet<u16> = visited_deck
+        .iter()
+        .copied()
+        .filter(|cell| is_water_backed_low_deck(terrain, *cell))
+        .map(axis)
+        .collect();
+    if water_is_an_obstacle {
+        let uncovered: Vec<u16> = gap_axis.difference(&covered_axis).copied().collect();
+        assert!(
+            uncovered.is_empty(),
+            "the mover was never over the river at {uncovered:?} along the travel axis; the span \
+             bridges water at {gap_axis:?} and the mover only covered {covered_axis:?}"
+        );
+        println!(
+            "spanned the whole {}-wide water gap at axis positions {gap_axis:?}",
+            gap_axis.len()
+        );
+    } else {
+        // MEASURED, and it is a real weakening of this row rather than a
+        // convenience: on `Killer.mmx` the `ROBO` leaves the deck at y=136 and
+        // hovers the river directly to y=143 before rejoining, because
+        // `AmphibiousDestroyer` treats the water as passable and the two routes
+        // cost near enough the same. On `Lostlake.mmx` the same unit stays on
+        // all 13 deck cells. Neither is a defect; both mean the water gap
+        // cannot certify that an amphibious mover *needed* the bridge.
+        //
+        // What is still asserted is that it used the bridge over open water
+        // somewhere, which rules out a run that bypassed the span entirely.
+        assert!(
+            !covered_axis.is_empty(),
+            "the {unit_type} ({movement_zone:?}) never stood on a water-backed deck cell, so it \
+             did not use the span at all; the span bridges water at {gap_axis:?}"
+        );
+        println!(
+            "NOTE: {unit_type} is {movement_zone:?} and crosses open water unaided, so full \
+             water-gap coverage is NOT required of it. Covered {} of the {} axis positions: \
+             {covered_axis:?}",
+            covered_axis.len(),
+            gap_axis.len(),
+        );
+    }
+
+    // 2/3. The measured low-span invariant.
+    assert_low_span_invariant(&rows, &deck_frames);
+
+    // 4. Mid-span, not just the two end cells. The matrix collapses low
+    //    onto/along/off into one row precisely because there is no height event
+    //    at either end, so a run that only clipped the ends would settle nothing.
+    let mid_span: Vec<&TickRow> = deck_frames
+        .iter()
+        .filter(|row| row.cell != span.deck[0] && row.cell != *span.deck.last().unwrap())
+        .copied()
+        .collect();
+    assert!(
+        !mid_span.is_empty(),
+        "the mover only ever touched the span's end cells; mid-span behaviour is the row"
+    );
+    println!("{} mid-span frame(s) all at ground height", mid_span.len());
+
+    // 5. The crossing finished. Entering the span and holding height on it is not
+    //    the same as getting across.
+    assert_eq!(
+        last.cell,
+        span.approach_b,
+        "the mover never reached the far approach {:?}; it stopped at {:?} after {} frame(s)",
+        span.approach_b,
+        last.cell,
+        rows.len()
+    );
+
+    let tube_frames = rows.iter().filter(|row| row.low_tube).count();
+    println!(
+        "frames on a cell carrying the TubeClass low-bridge marker: {tube_frames} of {}",
+        rows.len()
+    );
+}
+
+/// Matrix row T1-09 — Drive along an intact low span, on the exact fixture the
+/// ledger names: `Lostlake.mmx` `(39,117)..(51,117)`, ordered `(38,117)` →
+/// `(52,117)`. No low span had been crossed by any locomotor anywhere in this
+/// project; low spans are on ~32 % of stock maps.
+///
+/// Stands for the collapsed onto/along/off set — a low deck sits at the
+/// surrounding terrain level (measured: both approaches share the deck's level
+/// on all four fixtures), so there is no height event at either end and one
+/// crossing exercises all three relations.
+///
+/// It does **not** stand for the wood/concrete pair the way the ledger assumed.
+/// That collapse was justified by both materials sharing the `TubeClass`
+/// movement path; the inventory shows neither of them reaches it. What they do
+/// share is the ordinary ground plane, which is a stronger reason for the same
+/// collapse — but it is a different reason, and only the wood fixture is loose.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn tank_crosses_lostlake_low_bridge_at_ground_height() {
+    drive_across_low_bridge("Lostlake.mmx", "MTNK");
+}
+
+/// Matrix row T1-10 — Walk along the same span.
+///
+/// Still separate from T1-09, but **not for the reason the ledger gives.** The
+/// row cites the `EntityCategory::{Unit, Infantry}` gate in
+/// `begin_path_tube_step` (`tube_movement.rs`) as infantry's own arm; the
+/// inventory shows no stock low-bridge cell carries a tube index, so that gate
+/// is never reached on any of these maps and cannot be what separates the rows.
+///
+/// What does separate them is the same thing that separated T1-06 from T1-03:
+/// infantry take a sub-cell reservation arm no vehicle touches, and drive the
+/// Walk locomotion twin rather than the drive track. Neither had ever been run
+/// over a low deck.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn infantry_crosses_lostlake_low_bridge_at_ground_height() {
+    drive_across_low_bridge("Lostlake.mmx", "E1");
+}
+
+/// Matrix row T1-11 — Hover along the same span.
+///
+/// The ledger notes `tube_movement.rs` gates on category and layer, never on
+/// locomotor kind — which the inventory makes moot, since a stock low span never
+/// enters that file. The row stands on the part that was always the real point:
+/// the planner, the crossing loop and the height commit all sit upstream, and
+/// T1-01 showed Hover taking a different planner branch from Drive on a high
+/// span and stalling indefinitely for it. "Hover is the same as Drive here" is
+/// exactly the kind of assumption this row exists to measure.
+///
+/// **This row is weaker than T1-09 and T1-10, on purpose.** `ROBO` is
+/// `AmphibiousDestroyer`, so the river the span bridges is not an obstacle to
+/// it, and the water-gap coverage check that certifies the Drive and Walk rows
+/// cannot certify this one. Measured: on `Lostlake.mmx` it stays on all 13 deck
+/// cells and covers the whole 7-cell gap; on `Killer.mmx` it leaves the deck at
+/// y=136 and hovers open water to y=143 before rejoining, covering 6 of 14. Both
+/// are legitimate. What this row therefore settles is that an ordinary Move
+/// across a low span is accepted, that the mover holds ground height with no
+/// `on_bridge` and no `BridgeOccupancy` on every deck cell it does use, and that
+/// it arrives — not that it needed the bridge.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn hover_tank_crosses_lostlake_low_bridge_at_ground_height() {
+    drive_across_low_bridge("Lostlake.mmx", "ROBO");
+}
+
+// The second low-span geometry, for the same reason the high rows carry two
+// maps. `Lostlake.mmx`'s fixture runs east-west across a 13-cell span with a
+// 7-cell water gap and Road approaches; `Killer.mmx` runs north-south across 22
+// cells with a 14-cell water gap and Rough approaches. A row settled on one axis
+// and one approach LandType is settled on one map, not on low spans.
+
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn tank_crosses_killer_low_bridge_at_ground_height() {
+    drive_across_low_bridge("Killer.mmx", "MTNK");
+}
+
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn infantry_crosses_killer_low_bridge_at_ground_height() {
+    drive_across_low_bridge("Killer.mmx", "E1");
+}
+
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn hover_tank_crosses_killer_low_bridge_at_ground_height() {
+    drive_across_low_bridge("Killer.mmx", "ROBO");
+}
+
+/// Inventory only: where the stock maps put low spans and what facts those cells
+/// carry. Diagnostic — it asserts nothing about movement, and exists because the
+/// low-span invariant had to be measured before it could be written down.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn retail_low_bridge_inventory() {
+    let Some(retail) = retail_dir() else {
+        eprintln!("SKIPPED: no retail root (set RA2_DIR or provide config.toml)");
+        return;
+    };
+    for map_file in [
+        "Lostlake.mmx",
+        "Shrapnel.mmx",
+        "Killer.mmx",
+        "EB3.mmx",
+        "Dustbowl.mmx",
+        "Bermuda.mmx",
+        "BayOPigs.mmx",
+        "Hills.mmx",
+    ] {
+        println!("\n===== {map_file} =====");
+        match headless_scenario::load(&retail, map_file, SEED) {
+            Ok(scenario) => {
+                let sim = scenario.sim();
+                let terrain = sim
+                    .resolved_terrain
+                    .as_ref()
+                    .expect("headless load keeps resolved terrain");
+                let grid = sim.path_grid().expect("navigation published");
+                let all: Vec<(u16, u16)> = (0..terrain.height())
+                    .flat_map(|y| (0..terrain.width()).map(move |x| (x, y)))
+                    .collect();
+                let low = all
+                    .iter()
+                    .filter(|c| is_low_deck_cell(terrain, **c))
+                    .count();
+                let structural = all
+                    .iter()
+                    .filter(|(x, y)| grid.cell(*x, *y).is_some_and(|c| c.bridge_structural))
+                    .count();
+                let tube_marked = all
+                    .iter()
+                    .filter(|(x, y)| grid.cell(*x, *y).is_some_and(|c| c.low_bridge_tube_cell))
+                    .count();
+                let tube_indexed = all
+                    .iter()
+                    .filter(|(x, y)| terrain.cell(*x, *y).is_some_and(|c| c.tube_index.is_some()))
+                    .count();
+                println!(
+                    "{}x{}: {low} low-deck cell(s), {structural} structural high cell(s), \
+                     {tube_marked} low_bridge_tube_cell, {tube_indexed} with a tube index",
+                    terrain.width(),
+                    terrain.height(),
+                );
+                let spans = find_low_bridge_spans(terrain, grid);
+                println!("{} crossable low run(s), longest first:", spans.len());
+                for span in &spans {
+                    println!(
+                        "  {:?} .. {:?} ({} cells, step {:?}) approaches {:?} lvl {} / {:?} lvl {}",
+                        span.deck[0],
+                        span.deck.last().expect("non-empty"),
+                        span.deck.len(),
+                        span.step,
+                        span.approach_a,
+                        span.approach_a_level,
+                        span.approach_b,
+                        span.approach_b_level,
+                    );
+                }
+                match spans.first() {
+                    Some(span) => print_low_inventory(terrain, grid, span),
+                    None => println!("no usable low span"),
+                }
+            }
+            Err(error) => println!("{map_file}: load failed: {error}"),
+        }
+    }
 }
 
 #[test]
