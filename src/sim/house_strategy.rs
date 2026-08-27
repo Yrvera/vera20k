@@ -190,10 +190,14 @@ mod tests {
         let allied = interner.intern("ALLIED");
         let defeated = interner.intern("DEFEATED");
         let missing = interner.intern("MISSING");
-        let first = interner.intern("FIRST");
         let second = interner.intern("SECOND");
+        let first = interner.intern("FIRST");
         let unregistered = interner.intern("UNREGISTERED");
         let house_order = [owner, allied, defeated, missing, first, second];
+        assert!(
+            second < first,
+            "fixture intern order must oppose the equal-score House order"
+        );
         let mut defeated_house = house(defeated, 2);
         defeated_house.is_defeated = true;
         let mut houses = BTreeMap::from([
@@ -224,6 +228,24 @@ mod tests {
             0,
         );
         assert_eq!(houses[&owner].enemy_house, Some(first));
+
+        houses.get_mut(&owner).unwrap().enemy_house = None;
+        let missing_score = houses[&owner].grudge_scores[&missing];
+        update_anger_nodes(
+            &mut houses,
+            &house_order,
+            &alliances,
+            &interner,
+            owner,
+            missing,
+            5,
+        );
+        assert_eq!(houses[&owner].grudge_scores[&missing], missing_score);
+        assert_eq!(
+            houses[&owner].enemy_house,
+            Some(first),
+            "a rejected in-order null peer still triggers the full ordered rescan"
+        );
 
         houses
             .get_mut(&owner)
