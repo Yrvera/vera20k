@@ -695,6 +695,25 @@ impl Simulation {
             }
             return RevealOutcome::Failed(RevealFailure::MarkFailed);
         }
+        // FootClass::Unlimbo @ 0x004D7170 dispatches active Drive/Ship
+        // Force_Slope at 0x004D71A9 only after TechnoClass placement succeeds.
+        // This precedes display/Logic exposure and must not run on either
+        // failed placement path above.
+        let reveal_slope = self.substrate.entities.get(stable_id).and_then(|entity| {
+            self.resolved_terrain
+                .as_ref()?
+                .cell(entity.position.rx, entity.position.ry)
+                .map(|cell| cell.slope_type)
+        });
+        if let Some(sampled_slope) = reveal_slope
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+        {
+            crate::sim::movement::slope_transition::snap_after_successful_unlimbo(
+                entity,
+                sampled_slope,
+                self.session.binary_frame,
+            );
+        }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id)
             && entity.spotlight_capable
             && entity.category == crate::map::entities::EntityCategory::Structure

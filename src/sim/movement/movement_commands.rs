@@ -131,6 +131,7 @@ pub fn set_destination_for_teleporter_entity(
     is_teleporter: bool,
     destination_has_building: bool,
     playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+    binary_frame: u32,
 ) -> bool {
     let Some(entity) = entities.get(entity_id) else {
         return false;
@@ -172,7 +173,7 @@ pub fn set_destination_for_teleporter_entity(
         if let Some(entity) = entities.get_mut(entity_id)
             && let Some(ref mut loco) = entity.locomotor
         {
-            loco.begin_drive_piggyback_for_teleporter();
+            loco.begin_drive_piggyback_for_teleporter(binary_frame);
         }
         return issue_move_command_with_layered(
             entities,

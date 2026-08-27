@@ -151,7 +151,7 @@ const CORNER_TILT_RAD: f32 = 0.385_882_7;
 pub struct VxlSlopeBlend {
     pub from_slope: u8,
     pub to_slope: u8,
-    pub phase_num: u8,
+    pub phase_num: i32,
     pub phase_den: u8,
 }
 
@@ -406,8 +406,8 @@ fn compute_slope_rotation(slope_type: u8) -> Mat4 {
 
 fn compute_slope_blend_rotation(blend: VxlSlopeBlend) -> Mat4 {
     let den = blend.phase_den.max(1) as f32;
-    let t = (blend.phase_num as f32 / den).clamp(0.0, 1.0);
-    if t <= 0.0 || blend.from_slope == blend.to_slope {
+    let t = blend.phase_num as f32 / den;
+    if blend.from_slope == blend.to_slope {
         return compute_slope_rotation(blend.from_slope);
     }
     if t >= 1.0 {
@@ -1326,6 +1326,22 @@ mod tests {
         let sample = Vec3::new(0.25, 0.75, 1.0);
         assert!((mid.transform_point3(sample) - from.transform_point3(sample)).length() > 0.001);
         assert!((mid.transform_point3(sample) - to.transform_point3(sample)).length() > 0.001);
+    }
+
+    #[test]
+    fn drive_ship_slope_negative_one_third_extrapolates_without_lower_clamp() {
+        let negative = compute_slope_blend_rotation(VxlSlopeBlend {
+            from_slope: 4,
+            to_slope: 8,
+            phase_num: -1,
+            phase_den: 3,
+        });
+        let from = compute_slope_rotation(4);
+        let sample = Vec3::new(0.25, 0.75, 1.0);
+        assert!(
+            (negative.transform_point3(sample) - from.transform_point3(sample)).length() > 0.001,
+            "native signed -1/3 phase must reach SLERP instead of clamping to the source"
+        );
     }
 
     #[test]

@@ -180,6 +180,7 @@ pub fn issue_teleport_command(
     target: (u16, u16),
     rules: &GeneralRules,
     is_harvester: bool,
+    binary_frame: u32,
 ) -> bool {
     {
         let Some(entity) = entities.get_mut(entity_id) else {
@@ -196,6 +197,7 @@ pub fn issue_teleport_command(
                 loco.begin_piggyback(
                     crate::rules::locomotor_type::LocomotorKind::Teleport,
                     crate::sim::movement::locomotor::MovementLayer::Ground,
+                    binary_frame,
                 );
             }
         }
@@ -775,7 +777,8 @@ mod tests {
             1,
             (20, 20),
             &rules,
-            false
+            false,
+            0
         ));
         let entity = entities.get(1).expect("should exist");
         let ts = entity
@@ -828,7 +831,8 @@ mod tests {
             1,
             (8, 9),
             &rules,
-            true
+            true,
+            0
         ));
 
         let warp_out_type = crate::sim::intern::test_intern("WARPOUT");
@@ -878,7 +882,8 @@ mod tests {
             1,
             (20, 20),
             &rules,
-            false
+            false,
+            0
         ));
 
         let warp_out_type = crate::sim::intern::test_intern("WARPOUT");
@@ -977,7 +982,7 @@ mod tests {
     fn test_teleport_with_piggyback_restores_drive() {
         let mut entities = EntityStore::new();
         let obj = make_drive_obj();
-        let loco = LocomotorState::from_object_type(&obj, 1500);
+        let loco = LocomotorState::from_object_type(&obj, 1500, 0);
         let mut e = GameEntity::test_default(1, "CMIN", "Americans", 5, 5);
         e.locomotor = Some(loco);
         entities.insert(e);
@@ -991,7 +996,8 @@ mod tests {
             1,
             (20, 20),
             &rules,
-            false
+            false,
+            0
         ));
         // Should have overridden to Teleport.
         let entity = entities.get(1).expect("should exist");
@@ -1016,7 +1022,7 @@ mod tests {
     fn teleporter_empty_destination_starts_teleport_without_drive_override() {
         let mut entities = EntityStore::new();
         let obj = make_teleport_harvester_obj();
-        let loco = LocomotorState::from_object_type(&obj, 1500);
+        let loco = LocomotorState::from_object_type(&obj, 1500, 0);
         let mut e = GameEntity::test_default(1, "CMIN", "Americans", 5, 5);
         e.locomotor = Some(loco);
         entities.insert(e);
@@ -1040,6 +1046,7 @@ mod tests {
             true,
             false,
             None,
+            0,
         ));
 
         let entity = entities.get(1).expect("entity");
@@ -1055,7 +1062,7 @@ mod tests {
     fn teleporter_building_destination_activates_drive_piggyback() {
         let mut entities = EntityStore::new();
         let obj = make_teleport_harvester_obj();
-        let loco = LocomotorState::from_object_type(&obj, 1500);
+        let loco = LocomotorState::from_object_type(&obj, 1500, 0);
         let mut e = GameEntity::test_default(1, "CMIN", "Americans", 5, 5);
         e.locomotor = Some(loco);
         entities.insert(e);
@@ -1080,6 +1087,7 @@ mod tests {
             true,
             true,
             None,
+            0,
         ));
 
         let entity = entities.get(1).expect("entity");
@@ -1157,7 +1165,8 @@ mod tests {
             1,
             (90, 90),
             &rules,
-            true
+            true,
+            0
         ));
         let ts = entities
             .get(1)
@@ -1175,7 +1184,7 @@ mod tests {
     fn test_harvester_relocate_cleans_up_in_one_tick() {
         let mut entities = EntityStore::new();
         let obj = make_drive_obj();
-        let loco = LocomotorState::from_object_type(&obj, 1500);
+        let loco = LocomotorState::from_object_type(&obj, 1500, 0);
         let mut e = GameEntity::test_default(1, "CMIN", "Americans", 5, 5);
         e.locomotor = Some(loco);
         entities.insert(e);
@@ -1186,7 +1195,8 @@ mod tests {
             1,
             (20, 20),
             &rules,
-            true
+            true,
+            0
         ));
         // Override applied at issue time.
         let entity = entities.get(1).expect("should exist");
@@ -1221,7 +1231,8 @@ mod tests {
             1,
             (20, 20),
             &rules,
-            false
+            false,
+            0
         ));
         let initial_ticks = entities
             .get(1)
@@ -1258,6 +1269,7 @@ mod tests {
             (20, 20),
             &default_rules(),
             false,
+            0,
         ));
         let outcomes =
             tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);

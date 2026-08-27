@@ -5445,7 +5445,9 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
         veh.regular_crusher = obj.crusher;
         veh.omni_crusher = obj.omni_crusher;
         veh.locomotor =
-            Some(crate::sim::movement::locomotor::LocomotorState::from_object_type(obj, 0));
+            Some(crate::sim::movement::locomotor::LocomotorState::from_object_type(
+                obj, 0, 0,
+            ));
         veh.health = Health {
             current: 300,
             max: 300,

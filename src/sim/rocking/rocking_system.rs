@@ -1,11 +1,10 @@
-//! Per-tick spring-damper + slope-transition advance.
+//! Per-tick body-rocking spring-damper advance.
 //!
 //! All angles and angular velocities are in radians, stored as `SimFixed`
 //! (I16F16, ~1.5e-5 precision). Constants here are extracted from the
 //! reference engine; do not change without binary verification.
 
 use crate::map::entities::EntityCategory;
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::RockingState;
 use crate::sim::entity_store::EntityStore;
@@ -40,9 +39,6 @@ pub const SNAP_BACK_RATE: SimFixed = SimFixed::lit("0.005");
 
 /// Per-axis velocity cap applied at impulse-receive time (rad/tick).
 pub const IMPULSE_VEL_CAP: SimFixed = SimFixed::lit("0.05");
-
-/// Slope-transition duration in sim ticks (hard-coded constant).
-pub const SLOPE_TRANSITION_TICKS: u8 = 3;
 
 /// Saturation cap on rocker impulse force from area-damage (clamped to 4.0
 /// before the per-axis velocity gate). Bounds defended both at the source
@@ -153,40 +149,18 @@ pub(crate) fn advance_ship_rocking(rocking: &mut RockingState, type_supports_shi
     }
 }
 
-/// Update the slope-transition state for one entity.
-///
-/// If `cell_slope` differs from the tracked `curr_slope`, start (or
-/// restart) a fresh 3-tick transition: the old `curr_slope` becomes the
-/// new `prev_slope`, and the counter resets to `SLOPE_TRANSITION_TICKS`.
-/// Otherwise, decrement the counter (saturating at 0).
-///
-/// The render side reads `prev_slope`/`curr_slope`/`transition_ticks_remaining`
-/// to SLERP between the two slope matrices.
-pub(crate) fn update_slope_transition(rocking: &mut RockingState, cell_slope: u8) {
-    if cell_slope != rocking.curr_slope {
-        rocking.prev_slope = rocking.curr_slope;
-        rocking.curr_slope = cell_slope;
-        rocking.transition_ticks_remaining = SLOPE_TRANSITION_TICKS;
-    } else if rocking.transition_ticks_remaining > 0 {
-        rocking.transition_ticks_remaining -= 1;
-    }
-}
-
 /// Advance every entity's `RockingState` by one sim tick.
 ///
 /// Order per entity:
-///   1. Read `cell.slope_type` at the entity's current position; aircraft are
-///      forced to slope_type=0 [L23]. Update slope-transition tracking.
-///   2. If `is_ship_rocking`: integrate without damping (`advance_ship_rocking`).
-///   3. Else: spring-damper on each axis (`advance_axis`). The forwards-axis
+///   1. If `is_ship_rocking`: integrate without damping (`advance_ship_rocking`).
+///   2. Else: spring-damper on each axis (`advance_axis`). The forwards-axis
 ///      ±π/10 override during vehicle-vs-building crush [L8] is DEFERRED until
 ///      building-crushing lands; both axes use ±π/4 uniformly.
-///   4. Wide-amplitude self-destruct check [L30]: if either body angle now
+///   3. Wide-amplitude self-destruct check [L30]: if either body angle now
 ///      exceeds ±π, fire `hook`. Mirrors the end-of-RockingUpdate damage call
 ///      in the reference engine.
 pub fn tick(
     entities: &mut EntityStore,
-    terrain: &ResolvedTerrainGrid,
     rules: &RuleSet,
     self_destruct_hook: &mut dyn SelfDestructHook,
 ) {
@@ -200,28 +174,14 @@ pub fn tick(
         }
 
         // Read whole-entity properties before borrowing rocking mutably.
-        let raw_slope = terrain
-            .cell(entity.position.rx, entity.position.ry)
-            .map(|c| c.slope_type)
-            .unwrap_or(0);
-        // Aircraft skip slope tilting [L23]. Clamp to the 0..=20 range the
-        // slope-transition tracker expects (slope_type values 17..=20 are
-        // unpopulated but still legal).
-        let cell_slope = if entity.category == EntityCategory::Aircraft {
-            0
-        } else {
-            raw_slope.min(20)
-        };
         let is_moving = entity_is_moving(entity);
         let supports_ship_rock = entity_type_supports_ship_rocking(entity);
         let fallback = rules.general.fallback_coefficient;
 
-        // 1–3: mutate the rocking state. The &mut borrow is scoped to this
-        // block so step 4 can take a fresh &mut GameEntity for the hook.
+        // 1–2: mutate the rocking state. The &mut borrow is scoped to this
+        // block so step 3 can take a fresh &mut GameEntity for the hook.
         {
             let rocking = entity.rocking.as_mut().unwrap();
-            update_slope_transition(rocking, cell_slope);
-
             if rocking.is_ship_rocking {
                 advance_ship_rocking(rocking, supports_ship_rock);
             } else {
@@ -245,7 +205,7 @@ pub fn tick(
             }
         }
 
-        // 4: wide-amplitude self-destruct check [L30].
+        // 3: wide-amplitude self-destruct check [L30].
         crate::sim::rocking::self_destruct::check_and_fire(entity, self_destruct_hook);
     }
 }

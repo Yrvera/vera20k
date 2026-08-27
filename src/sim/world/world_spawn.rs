@@ -201,7 +201,11 @@ impl Simulation {
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 if obj.speed > 0 {
                     let flight_level = rules.map_or(1500, |r| r.general.flight_level);
-                    let mut loco = LocomotorState::from_object_type(obj, flight_level);
+                    let mut loco = LocomotorState::from_object_type(
+                        obj,
+                        flight_level,
+                        self.session.binary_frame,
+                    );
                     if bridge_spawn.is_some() {
                         loco.layer = MovementLayer::Bridge;
                     }
@@ -445,6 +449,7 @@ impl Simulation {
             ge.locomotor = Some(LocomotorState::from_object_type(
                 obj,
                 rules.general.flight_level,
+                self.session.binary_frame,
             ));
             if ge.locomotor.as_ref().is_some_and(|locomotor| {
                 locomotor.kind == crate::rules::locomotor_type::LocomotorKind::Ship
@@ -607,6 +612,7 @@ impl Simulation {
             ge.locomotor = Some(LocomotorState::from_object_type(
                 obj,
                 rules.general.flight_level,
+                self.session.binary_frame,
             ));
             if ge.locomotor.as_ref().is_some_and(|locomotor| {
                 locomotor.kind == crate::rules::locomotor_type::LocomotorKind::Ship

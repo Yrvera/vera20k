@@ -317,7 +317,9 @@ use crate::sim::world::Simulation;
 // latches co-enabled by successful qualifying base-unit deployment.
 // Bumped 108 -> 109: persist House AutocreateAllowed beside the three deploy
 // latches in native conceptual byte order.
-const SNAPSHOT_VERSION: u32 = 109;
+// Bumped 109 -> 110: persist active and stashed Drive/Ship locomotor slope
+// cache/global-frame timer state; the positional payload enum changed shape.
+const SNAPSHOT_VERSION: u32 = 110;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2725,14 +2727,149 @@ mod tests {
     /// 105 -> 106 adds ordered BasePlan state and immutable BuildingType facts;
     /// 106 -> 107 adds the distinct BaseClass plan center; 107 -> 108 adds
     /// the three independent House deploy latches; 108 -> 109 adds House
-    /// AutocreateAllowed and the complete House-update activation state.
+    /// AutocreateAllowed and the complete House-update activation state;
+    /// 109 -> 110 adds active/stashed Drive/Ship slope-transition state.
     #[test]
-    fn phase3_house_ai_activation_snapshot_version_is_109() {
-        assert_eq!(super::SNAPSHOT_VERSION, 109);
+    fn phase3_drive_ship_slope_snapshot_version_is_110() {
+        assert_eq!(super::SNAPSHOT_VERSION, 110);
     }
 
     #[test]
-    fn house_ai_activation_all_combinations_roundtrip_v109() {
+    fn drive_ship_active_and_stashed_slope_phase_roundtrip_without_resample_or_rng() {
+        use crate::map::entities::EntityCategory;
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::movement::locomotion::LocomotorRuntimePayload;
+        use crate::sim::movement::locomotor::LocomotorState;
+
+        // Full snapshot load restarts Scenario RNG from Seed0. Start on that
+        // canonical cursor so the slope-only round trip can prove no draw.
+        let mut sim = Simulation::with_seed(0);
+        sim.session.binary_frame = 51;
+        let mut entity = GameEntity::test_default(1, "SLOPE", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("SLOPE");
+        entity.category = EntityCategory::Unit;
+        let mut locomotor = LocomotorState::for_test_kind_at_frame(LocomotorKind::Drive, 40);
+        let drive = locomotor.active_slope_transition_mut().unwrap();
+        drive.snap(2, 40);
+        drive.sample_process_entry(7, 50);
+        assert!(locomotor.begin_piggyback(LocomotorKind::Ship, MovementLayer::Ground, 50));
+        let ship = locomotor.active_slope_transition_mut().unwrap();
+        ship.snap(4, 40);
+        ship.sample_process_entry(9, 50);
+        entity.locomotor = Some(locomotor);
+        sim.substrate.entities.insert(entity);
+
+        let before_hash = sim.state_hash();
+        let before_rng = sim.scenario_rng.logical_state();
+        let before = sim.substrate.entities.get(1).unwrap().locomotor.as_ref().unwrap();
+        let active_before = before.runtime_payload.clone();
+        let stashed_before = before.piggyback.clone();
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "Drive Ship slope", 3);
+        let mut restored = GameSnapshot::load(&bytes).expect("current v110 slope snapshot").sim;
+        let loaded = restored
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap();
+        assert_eq!(loaded.runtime_payload, active_before);
+        assert_eq!(loaded.piggyback, stashed_before);
+        assert_eq!(restored.session.binary_frame, 51);
+        assert_eq!(restored.state_hash(), before_hash);
+        assert_eq!(restored.scenario_rng.logical_state(), before_rng);
+        assert_eq!(
+            loaded.active_slope_transition().unwrap().render_phase(51),
+            crate::sim::movement::slope_transition::SlopeRenderPhase::Transition {
+                from_slope: 4,
+                to_slope: 9,
+                phase_num: 1,
+                phase_den: 3,
+            }
+        );
+        assert!(matches!(
+            loaded.piggyback.as_deref().map(|runtime| &runtime.payload),
+            Some(LocomotorRuntimePayload::Drive(state))
+                if matches!(state.render_phase(51),
+                    crate::sim::movement::slope_transition::SlopeRenderPhase::Transition {
+                        from_slope: 2,
+                        to_slope: 7,
+                        phase_num: 1,
+                        phase_den: 3,
+                    })
+        ));
+
+        let mut live_cell = clear_terrain_cell(0, 0);
+        live_cell.slope_type = 12;
+        let live_terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![live_cell]);
+        restored.resolved_terrain = Some(live_terrain.clone());
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .active_slope_transition()
+                .unwrap()
+                .hash_fields(),
+            (4, 9, 50, 3),
+            "load/rebuild trusts the saved cache instead of resampling live terrain"
+        );
+
+        let mut sound_events = Vec::new();
+        let mut lifecycle_requests = Vec::new();
+        crate::sim::movement::tick_movement_with_grids(
+            &mut restored.substrate.entities,
+            Some(&[1]),
+            None,
+            &Default::default(),
+            &Default::default(),
+            &mut restored.substrate.occupancy,
+            &mut restored.substrate.cell_occupation,
+            &mut restored.substrate.raw_cell_occupation,
+            &mut restored.substrate.next_occupancy_enter_order,
+            &mut restored.scenario_rng,
+            52,
+            52,
+            None,
+            Some(&live_terrain),
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            crate::util::fixed_math::SIM_ZERO,
+            9,
+            60,
+            &mut restored.interner,
+            None,
+            &mut sound_events,
+            &mut lifecycle_requests,
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .active_slope_transition()
+                .unwrap()
+                .hash_fields(),
+            (9, 12, 52, 3),
+            "only the next eligible Process restarts against live terrain"
+        );
+        assert_eq!(restored.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn house_ai_activation_all_combinations_roundtrip_current() {
         use crate::sim::house_state::{HouseAiActivationLatches, HouseState};
 
         for bits in 0u8..16 {
@@ -2755,7 +2892,7 @@ mod tests {
                 GameSnapshot::read_header(&bytes).unwrap().version,
                 super::SNAPSHOT_VERSION
             );
-            let restored = GameSnapshot::load(&bytes).expect("current v109 snapshot").sim;
+            let restored = GameSnapshot::load(&bytes).expect("current v110 snapshot").sim;
             assert_eq!(restored.houses[&owner].ai_activation, latches);
         }
     }
@@ -2942,7 +3079,7 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("current v109 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes).expect("current v110 snapshot").sim;
         assert_eq!(restored.houses[&owner].base_plan.percent_built, -17);
         assert_eq!(restored.houses[&owner].base_plan.nodes.len(), 2);
         assert_eq!(restored.houses[&owner].base_plan.nodes[0].retry_count, -8);

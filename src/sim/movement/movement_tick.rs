@@ -1584,6 +1584,33 @@ fn tick_movement_with_grids_scoped(
         })
         .collect();
 
+    // DriveLocomotionClass::Process @ 0x004B0500 samples CellClass+0x11C at
+    // 0x004B050B..0x004B0557 before its first track/movement branch;
+    // ShipLocomotionClass::Process @ 0x0069FC10 does the same at
+    // 0x0069FC1B..0x0069FC67. Entry-active Tube owns the whole object turn and
+    // is the only exclusion here. Stationary eligible objects still Process.
+    if let Some(terrain) = resolved_terrain {
+        for &entity_id in entity_order {
+            if tube_active_at_start.contains(&entity_id) {
+                continue;
+            }
+            let sampled_slope = entities.get(entity_id).and_then(|entity| {
+                terrain
+                    .cell(entity.position.rx, entity.position.ry)
+                    .map(|cell| cell.slope_type)
+            });
+            if let Some(sampled_slope) = sampled_slope
+                && let Some(entity) = entities.get_mut(entity_id)
+            {
+                super::slope_transition::sample_process_entry(
+                    entity,
+                    sampled_slope,
+                    native_frame,
+                );
+            }
+        }
+    }
+
     let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
         drive_locomotion::drive_entity_nav_targets(entities)
             .into_iter()

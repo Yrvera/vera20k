@@ -614,6 +614,7 @@ impl Simulation {
                         (*target_rx, *target_ry),
                         general_rules.unwrap_or(&default_general),
                         false,
+                        self.session.binary_frame,
                     )
                 } else if info.loco_layer == MovementLayer::Air {
                     // Jumpjet infantry walk fallback: ≤3 cells + !HoverAttack → ground walk.
@@ -1041,6 +1042,7 @@ impl Simulation {
                         (*target_rx, *target_ry),
                         general_rules_ref,
                         false,
+                        self.session.binary_frame,
                     )
                 } else if info.loco_layer == MovementLayer::Air {
                     // Air units fly in straight lines.
@@ -2726,6 +2728,7 @@ mod tests {
         entity.locomotor = Some(LocomotorState::from_object_type(
             obj,
             rules.general.flight_level,
+            sim.session.binary_frame,
         ));
         entity.regular_crusher = obj.crusher;
         entity.drive_accelerates = obj.accelerates;

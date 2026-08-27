@@ -1434,6 +1434,7 @@ mod tests {
             let mut locomotor = crate::sim::movement::locomotor::LocomotorState::from_object_type(
                 rules.object(type_id).unwrap(),
                 rules.general.flight_level,
+                0,
             );
             locomotor.layer = MovementLayer::Air;
             locomotor.altitude = SimFixed::from_num(altitude);
@@ -1914,6 +1915,7 @@ mod tests {
                     crate::sim::movement::locomotor::LocomotorState::from_object_type(
                         rules.object("AIRBOMB").unwrap(),
                         rules.general.flight_level,
+                        0,
                     );
                 air_locomotor.layer = MovementLayer::Air;
                 air_locomotor.altitude = SimFixed::from_num(1);
@@ -3374,6 +3376,7 @@ mod tests {
                 crate::sim::movement::locomotor::LocomotorState::from_object_type(
                     rules.object("E1").expect("E1 type"),
                     rules.general.flight_level,
+                    0,
                 ),
             );
             victim.mission.apply_test_fixture(MissionTestFixture {
@@ -3653,6 +3656,7 @@ mod tests {
         let mut air_locomotor = crate::sim::movement::locomotor::LocomotorState::from_object_type(
             rules.object("AIR").expect("air type"),
             rules.general.flight_level,
+            0,
         );
         air_locomotor.layer = MovementLayer::Air;
         air_locomotor.altitude = SimFixed::from_num(1);

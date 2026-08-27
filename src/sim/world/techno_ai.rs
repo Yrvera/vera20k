@@ -4916,7 +4916,7 @@ mod tests {
             .locomotor
             .as_mut()
             .unwrap()
-            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground);
+            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground, 0);
         assert_ordinary_drive_host_error(
             &piggyback,
             &control,

@@ -33,6 +33,7 @@ use crate::util::fixed_math::SimFixed;
 use super::super::drop_pod_movement::DropPodState;
 use super::super::locomotor::{AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer};
 use super::super::rocket_movement::RocketState;
+use super::super::slope_transition::SlopeTransitionState;
 use super::super::teleport_movement::TeleportState;
 use super::super::tunnel_movement::TunnelState;
 
@@ -74,7 +75,7 @@ pub struct LocomotorCommonRuntime {
 /// byte when a complete locomotor is suspended or loaded.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LocomotorRuntimePayload {
-    Drive,
+    Drive(SlopeTransitionState),
     Walk,
     Teleport(Option<TeleportState>),
     Tunnel(Option<TunnelState>),
@@ -82,16 +83,18 @@ pub enum LocomotorRuntimePayload {
     DropPod(Option<DropPodState>),
     Hover,
     Mech,
-    Ship,
+    Ship(SlopeTransitionState),
     Fly,
     Jumpjet,
     Parachute,
 }
 
 impl LocomotorRuntimePayload {
-    pub(crate) fn for_kind(kind: LocomotorKind) -> Self {
+    pub(crate) fn for_kind(kind: LocomotorKind, binary_frame: u32) -> Self {
         match kind {
-            LocomotorKind::Drive => Self::Drive,
+            LocomotorKind::Drive => {
+                Self::Drive(SlopeTransitionState::at_binary_frame(binary_frame))
+            }
             LocomotorKind::Walk => Self::Walk,
             LocomotorKind::Teleport => Self::Teleport(None),
             LocomotorKind::Tunnel => Self::Tunnel(None),
@@ -99,17 +102,13 @@ impl LocomotorRuntimePayload {
             LocomotorKind::DropPod => Self::DropPod(None),
             LocomotorKind::Hover => Self::Hover,
             LocomotorKind::Mech => Self::Mech,
-            LocomotorKind::Ship => Self::Ship,
+            LocomotorKind::Ship => {
+                Self::Ship(SlopeTransitionState::at_binary_frame(binary_frame))
+            }
             LocomotorKind::Fly => Self::Fly,
             LocomotorKind::Jumpjet => Self::Jumpjet,
             LocomotorKind::Parachute => Self::Parachute,
         }
-    }
-}
-
-impl Default for LocomotorRuntimePayload {
-    fn default() -> Self {
-        Self::Drive
     }
 }
 
@@ -187,13 +186,14 @@ impl LocomotorRuntime {
         state: &LocomotorState,
         kind: LocomotorKind,
         layer: MovementLayer,
+        binary_frame: u32,
     ) -> Self {
         let mut runtime = Self::capture(state);
         runtime.kind = kind;
         runtime.layer = layer;
         runtime.common.phase = GroundMovePhase::Idle;
         runtime.common.air_phase = AirMovePhase::Landed;
-        runtime.payload = LocomotorRuntimePayload::for_kind(kind);
+        runtime.payload = LocomotorRuntimePayload::for_kind(kind, binary_frame);
         runtime
     }
 
@@ -299,8 +299,9 @@ pub fn begin(
     state: &mut LocomotorState,
     kind: LocomotorKind,
     layer: MovementLayer,
+    binary_frame: u32,
 ) -> BeginOutcome {
-    let incoming = LocomotorRuntime::replacement_from(state, kind, layer);
+    let incoming = LocomotorRuntime::replacement_from(state, kind, layer, binary_frame);
     begin_with_runtime(state, Some(incoming))
 }
 
@@ -424,12 +425,22 @@ mod tests {
         let before = state.clone();
 
         assert_eq!(
-            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground),
+            begin(
+                &mut state,
+                LocomotorKind::Drive,
+                MovementLayer::Ground,
+                0,
+            ),
             BeginOutcome::Installed
         );
         let nested_before = state.clone();
         assert_eq!(
-            begin(&mut state, LocomotorKind::Ship, MovementLayer::Ground),
+            begin(
+                &mut state,
+                LocomotorKind::Ship,
+                MovementLayer::Ground,
+                0,
+            ),
             BeginOutcome::RefusedNested
         );
         assert_eq!(state.piggyback, nested_before.piggyback);
@@ -444,7 +455,12 @@ mod tests {
         let installed = state.slot;
 
         assert_eq!(
-            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground),
+            begin(
+                &mut state,
+                LocomotorKind::Drive,
+                MovementLayer::Ground,
+                0,
+            ),
             BeginOutcome::Installed
         );
         assert_eq!(state.kind, LocomotorKind::Drive);
@@ -470,10 +486,18 @@ mod tests {
         }));
 
         assert_eq!(
-            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground),
+            begin(
+                &mut state,
+                LocomotorKind::Drive,
+                MovementLayer::Ground,
+                0,
+            ),
             BeginOutcome::Installed
         );
-        assert_eq!(state.runtime_payload, LocomotorRuntimePayload::Drive);
+        assert_eq!(
+            state.runtime_payload,
+            LocomotorRuntimePayload::for_kind(LocomotorKind::Drive, 0)
+        );
         assert_eq!(
             state.piggyback.as_deref().map(|runtime| &runtime.payload),
             Some(&LocomotorRuntimePayload::Tunnel(Some(TunnelState {
@@ -497,7 +521,12 @@ mod tests {
             phase: TunnelPhase::Digging,
         }));
         assert_eq!(
-            begin(&mut state, LocomotorKind::DropPod, MovementLayer::Air),
+            begin(
+                &mut state,
+                LocomotorKind::DropPod,
+                MovementLayer::Air,
+                0,
+            ),
             BeginOutcome::Installed
         );
         state.runtime_payload = LocomotorRuntimePayload::DropPod(None);
@@ -524,7 +553,12 @@ mod tests {
         let mut output = None;
         assert_eq!(end_into(&mut state, Some(&mut output)), EndOutcome::Empty);
 
-        begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground);
+        begin(
+            &mut state,
+            LocomotorKind::Drive,
+            MovementLayer::Ground,
+            0,
+        );
         assert_eq!(
             end_into(&mut state, Some(&mut output)),
             EndOutcome::Restored
@@ -540,7 +574,12 @@ mod tests {
     #[test]
     fn ordinary_and_special_end_gates_are_distinct() {
         let mut state = teleporter();
-        begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground);
+        begin(
+            &mut state,
+            LocomotorKind::Drive,
+            MovementLayer::Ground,
+            0,
+        );
         let ready = EndGateContext {
             owner_moving: false,
             owner_teleporting: false,
@@ -580,7 +619,12 @@ mod tests {
     fn serialized_presence_matches_the_single_suspended_runtime() {
         let mut state = teleporter();
         assert_eq!(serialized_presence(&state), 0);
-        begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground);
+        begin(
+            &mut state,
+            LocomotorKind::Drive,
+            MovementLayer::Ground,
+            0,
+        );
         assert_eq!(serialized_presence(&state), 1);
     }
 }

@@ -256,6 +256,327 @@ fn gsi_04_05_tick_production_movement(
     );
 }
 
+fn drive_ship_slope_process_tick(
+    sim: &mut Simulation,
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    native_frame: u32,
+) {
+    let live_order = [1];
+    let mut sound_events = Vec::new();
+    let mut lifecycle_requests = Vec::new();
+    tick_movement_with_grids(
+        &mut sim.substrate.entities,
+        Some(&live_order),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &mut sim.substrate.occupancy,
+        &mut sim.substrate.cell_occupation,
+        &mut sim.substrate.raw_cell_occupation,
+        &mut sim.substrate.next_occupancy_enter_order,
+        &mut sim.scenario_rng,
+        u64::from(native_frame),
+        native_frame,
+        None,
+        Some(terrain),
+        None,
+        &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+        SIM_ZERO,
+        9,
+        60,
+        &mut sim.interner,
+        None,
+        &mut sound_events,
+        &mut lifecycle_requests,
+    );
+}
+
+fn slope_cell(rx: u16, slope_type: u8) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    slope_cell_at(rx, 0, slope_type)
+}
+
+fn slope_cell_at(
+    rx: u16,
+    ry: u16,
+    slope_type: u8,
+) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    crate::map::resolved_terrain::ResolvedTerrainCell {
+        slope_type,
+        ..drive_speed_test_cell(rx, ry, Default::default())
+    }
+}
+
+#[test]
+fn drive_ship_slope_process_samples_stationary_retargets_and_keeps_rng() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        2,
+        1,
+        vec![slope_cell(0, 5), slope_cell(1, 11)],
+    );
+    for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+        let mut sim = Simulation::with_seed(0x51_0f_e);
+        let mut entity = GameEntity::test_default(1, "SLOPE", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("SLOPE");
+        entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(kind, 2));
+        entity
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .active_slope_transition_mut()
+            .unwrap()
+            .snap(2, 2);
+        sim.substrate.entities.insert(entity);
+        let rng_before = sim.scenario_rng.logical_state();
+
+        drive_ship_slope_process_tick(&mut sim, &terrain, 10);
+        let first = crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap(),
+        )
+        .unwrap()
+        .hash_fields();
+        assert_eq!(first, (2, 5, 10, 3));
+        drive_ship_slope_process_tick(&mut sim, &terrain, 11);
+        assert_eq!(
+            crate::sim::movement::slope_transition::state_for_entity(
+                sim.substrate.entities.get(1).unwrap()
+            )
+            .unwrap()
+            .hash_fields(),
+            first,
+            "equal stationary Process is a complete no-write"
+        );
+
+        sim.substrate.entities.get_mut(1).unwrap().position.rx = 1;
+        drive_ship_slope_process_tick(&mut sim, &terrain, 12);
+        assert_eq!(
+            crate::sim::movement::slope_transition::state_for_entity(
+                sim.substrate.entities.get(1).unwrap()
+            )
+            .unwrap()
+            .hash_fields(),
+            (5, 11, 12, 3),
+            "mid-transition retarget starts from the prior target slope"
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+}
+
+#[test]
+fn drive_slope_boundary_is_detected_on_process_after_ordinary_crossing() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        2,
+        1,
+        vec![slope_cell(0, 3), slope_cell(1, 8)],
+    );
+    let mut sim = Simulation::with_seed(3);
+    let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+    entity.owner = sim.intern("Americans");
+    entity.type_ref = sim.intern("DRIVE");
+    entity.facing = 64;
+    entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+        LocomotorKind::Drive,
+        0,
+    ));
+    entity
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .active_slope_transition_mut()
+        .unwrap()
+        .snap(3, 0);
+    entity.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+        target_speed_fraction: SIM_ONE,
+        current_speed_fraction: SIM_ONE,
+        ..Default::default()
+    });
+    entity.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(15_360),
+        current_speed: SimFixed::from_num(15_360),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((1, 0)),
+        ..Default::default()
+    });
+    sim.substrate.entities.insert(entity);
+
+    let crossing_frame = (20..80)
+        .find(|frame| {
+            drive_ship_slope_process_tick(&mut sim, &terrain, *frame);
+            sim.substrate.entities.get(1).unwrap().position.rx == 1
+        })
+        .expect("ordinary movement crosses into the adjacent cell");
+    assert_eq!(sim.substrate.entities.get(1).unwrap().position.rx, 1);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (3, 3, 0, 0),
+        "the crossing frame has already sampled the old containing cell"
+    );
+    drive_ship_slope_process_tick(&mut sim, &terrain, crossing_frame + 1);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (3, 8, (crossing_frame + 1) as i32, 3)
+    );
+}
+
+#[test]
+fn drive_slope_boundary_is_detected_on_process_after_forced_track_crossing() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        1,
+        2,
+        vec![slope_cell_at(0, 0, 4), slope_cell_at(0, 1, 10)],
+    );
+    let mut sim = Simulation::with_seed(4);
+    let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+    entity.owner = sim.intern("Americans");
+    entity.type_ref = sim.intern("DRIVE");
+    entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+        LocomotorKind::Drive,
+        0,
+    ));
+    entity.drive_locomotion = Some(Default::default());
+    sim.substrate.entities.insert(entity);
+    assert!(matches!(
+        sim.reveal(1),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .active_slope_transition_mut()
+        .unwrap()
+        .snap(4, 0);
+    let forced = drive_track::begin_forced_turn_track(
+        0x47,
+        0,
+        256,
+        SimFixed::from_num(128),
+        false,
+    )
+    .expect("retail southbound force track");
+    {
+        let (entities, cell_occupation) = (
+            &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        assert!(install_forced_drive_track(
+            entities.get_mut(1).unwrap(),
+            cell_occupation,
+            forced,
+        ));
+    }
+
+    let crossing_frame = (40..120)
+        .find(|frame| {
+            drive_ship_slope_process_tick(&mut sim, &terrain, *frame);
+            sim.substrate.entities.get(1).unwrap().position.ry == 1
+        })
+        .expect("forced track crosses into the adjacent cell");
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (4, 4, 0, 0),
+        "the crossing frame samples before the forced track advances"
+    );
+    drive_ship_slope_process_tick(&mut sim, &terrain, crossing_frame + 1);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (4, 10, (crossing_frame + 1) as i32, 3)
+    );
+}
+
+#[test]
+fn drive_ship_slope_process_uses_foot_class_boundary_not_object_speed_or_art() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        1,
+        1,
+        vec![slope_cell(0, 12)],
+    );
+    for (category, kind, expected) in [
+        (EntityCategory::Unit, LocomotorKind::Drive, 12),
+        (EntityCategory::Unit, LocomotorKind::Ship, 12),
+        (EntityCategory::Infantry, LocomotorKind::Drive, 12),
+        (EntityCategory::Aircraft, LocomotorKind::Ship, 12),
+        (EntityCategory::Structure, LocomotorKind::Drive, 0),
+    ] {
+        let mut sim = Simulation::new();
+        let mut entity = GameEntity::test_default(1, "MODDED", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("MODDED");
+        entity.category = category;
+        entity.locomotor = Some(LocomotorState::for_test_kind(kind));
+        sim.substrate.entities.insert(entity);
+
+        drive_ship_slope_process_tick(&mut sim, &terrain, 7);
+        let state = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap()
+            .active_slope_transition()
+            .unwrap();
+        assert_eq!(state.hash_fields().1, expected, "{category:?} {kind:?}");
+    }
+}
+
+#[test]
+fn entry_active_tube_excludes_drive_slope_process_for_the_whole_turn() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        1,
+        1,
+        vec![slope_cell(0, 9)],
+    );
+    let mut sim = Simulation::new();
+    let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+    entity.owner = sim.intern("Americans");
+    entity.type_ref = sim.intern("DRIVE");
+    entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    entity.low_bridge_tube_state = Some(
+        crate::sim::movement::tube_movement::LowBridgeTubeMovementState {
+            tube_id: crate::map::tube_facts::TubeId(0),
+            cursor: 0,
+            target: DriveCoord::cell(0, 0, 0),
+        },
+    );
+    sim.substrate.entities.insert(entity);
+
+    drive_ship_slope_process_tick(&mut sim, &terrain, 30);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (0, 0, 0, 0)
+    );
+}
+
 #[test]
 fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
     let mut sim = Simulation::new();
@@ -3294,6 +3615,7 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
         piggyback: None,
         runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
             LocomotorKind::Drive,
+            0,
         ),
         layer: MovementLayer::Ground,
         phase: GroundMovePhase::Idle,
@@ -4013,6 +4335,7 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
         piggyback: None,
         runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
             LocomotorKind::Drive,
+            0,
         ),
         layer,
         phase: GroundMovePhase::Idle,

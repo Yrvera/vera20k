@@ -151,6 +151,7 @@ mod tests {
             piggyback: None,
             runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
                 LocomotorKind::Walk,
+                0,
             ),
             layer: MovementLayer::Ground,
             phase: GroundMovePhase::Idle,
