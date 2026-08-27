@@ -184,6 +184,8 @@ fn resolve_collision_decision(
     motion: SparkMotionStep,
     facts: SparkCollisionFacts,
 ) -> Result<SparkCollisionDecision, SparkKernelError> {
+    // gamemd-derived: behavior-3 ParticleClass AI @ 0x0062C6E0 owns these
+    // bridge, ground, building, wall, commit-Z, and slope-reflection decisions.
     let ground_z = facts.ground_z;
     let ground_exact = X87Chop53::load_i32(ground_z);
     let bridge_plane = ground_z.wrapping_add(STRUCTURAL_BRIDGE_HEIGHT);
@@ -516,6 +518,9 @@ pub fn tick_particle_with_facts(
 /// The persistent velocity write intentionally happens before any live-world
 /// query. A genuinely corrupt or unsupported world dependency must retain that
 /// write while consuming no RNG and leaving coordinates/lifetime untouched.
+///
+/// gamemd-derived: behavior-3 ParticleClass AI @ 0x0062C6E0 stores persistent
+/// Z velocity and computes the candidate before querying live CellClass facts.
 pub fn begin_particle_tick(
     particle: &mut Particle,
     gravity: NativeF32Bits,
@@ -535,6 +540,9 @@ pub fn begin_particle_tick(
 
 /// Resolve and commit owned collision facts, then consume color RNG and lifetime
 /// in the verified order.
+///
+/// gamemd-derived: behavior-3 ParticleClass AI @ 0x0062C6E0 commits collision
+/// state before the color draw and final lifetime decrement.
 pub fn finish_particle_tick(
     particle: &mut Particle,
     motion: SparkMotionStep,
