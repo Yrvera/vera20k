@@ -168,12 +168,13 @@ is not production simulation code.
 - World-lepton to cell conversion divides by 256 with signed truncation toward
   zero. Invalid cells use native dummy-cell semantics.
   [doc: same §Cell and ground semantics]
-- Candidate ground uses candidate-cell level times 90 plus its slope-table
+- Candidate ground uses the verified common 104-lepton Cell evaluator plus its slope-table
   contribution. Cell axes are not isometric screen axes.
   [doc: same §Coordinate and numeric-frame diagram]
 - Structural crossing checks the old or candidate cell live bit 0x100. The
-  plane is G+360; descending and ascending equality sides differ; ascending
-  commits G+340.
+  plane is G+416; descending and ascending equality sides differ; ascending
+  commits G+396. These corrected numeric values come from
+  `PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`.
   [doc: same §Collision decision table]
 - Near-ground clamping is strict: G-100 is not clamped. Building/wall contact
   is exactly [G,G+150).

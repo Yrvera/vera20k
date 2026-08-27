@@ -30,14 +30,9 @@ fn clamp_native_radar_click_cell(
 ) -> (i16, i16) {
     let horizontal_cells = tactical_size.0 / 60;
     let horizontal_half = horizontal_cells.wrapping_add(2) / 2;
-    let difference_limit = map_size
-        .0
-        .wrapping_sub(horizontal_half)
-        .wrapping_sub(1);
+    let difference_limit = map_size.0.wrapping_sub(horizontal_half).wrapping_sub(1);
     let vertical_cells = tactical_size.1 / 60;
-    let minimum_sum = vertical_cells
-        .wrapping_add(map_size.0)
-        .wrapping_add(1);
+    let minimum_sum = vertical_cells.wrapping_add(map_size.0).wrapping_add(1);
     let maximum_sum = map_size
         .1
         .wrapping_mul(2)
@@ -55,9 +50,7 @@ fn clamp_native_radar_click_cell(
 
     let x_minus_y = i32::from(x).wrapping_sub(i32::from(y));
     if x_minus_y > difference_limit.wrapping_sub(1) {
-        let delta = x_minus_y
-            .wrapping_sub(difference_limit)
-            .wrapping_add(1) as i16;
+        let delta = x_minus_y.wrapping_sub(difference_limit).wrapping_add(1) as i16;
         y = y.wrapping_add(delta);
         x = x.wrapping_sub(delta);
     }
@@ -125,15 +118,13 @@ fn native_camera_target_from_signed(
     // `CellClass::Get_Center_Coords @ 0x00480A30` reads the cell object's
     // signed packed coordinate, forms X/Y at subcell (128,128), and asks
     // `0x0047B3A0` for ground Z. It does not add bridge-deck height.
-    let x = i32::from(cell.rx as i16).wrapping_mul(256).wrapping_add(128);
-    let y = i32::from(cell.ry as i16).wrapping_mul(256).wrapping_add(128);
-    let z = crate::util::lepton::cellclass_ground_height_leptons(
-        cell.level,
-        cell.slope_type,
-        x,
-        y,
-    )
-    .ok()?;
+    let x = i32::from(cell.rx as i16)
+        .wrapping_mul(256)
+        .wrapping_add(128);
+    let y = i32::from(cell.ry as i16)
+        .wrapping_mul(256)
+        .wrapping_add(128);
+    let z = crate::util::lepton::ground_height_leptons(cell.level, cell.slope_type, x, y).ok()?;
     Some(NativeRadarCameraTarget {
         cell: (cell.rx, cell.ry),
         world_leptons: (x, y, z),
@@ -181,7 +172,11 @@ impl MinimapRenderer {
                 NativeRadarScreenGeometry::new(surface, [rect_x, rect_y, rect_w, rect_h])
                     .content_rect()
             })
-            .or_else(|| self.playfield_bounds.is_none().then_some([rect_x, rect_y, rect_w, rect_h]))
+            .or_else(|| {
+                self.playfield_bounds
+                    .is_none()
+                    .then_some([rect_x, rect_y, rect_w, rect_h])
+            })
     }
 
     /// `RadarClass::GetObjectAtRadarPixel @ 0x00656750`: screen to generated
@@ -326,22 +321,20 @@ mod tests {
             foundation,
             radar_scale: 1.0,
             discovery_observed: true,
-            visibility: RadarRegistrationVisibilityFacts::Mobile(
-                RadarMobileVisibilityFacts {
-                    type_invisible: false,
-                    sinking: false,
-                    object_alive: true,
-                    in_limbo: false,
-                    owner_is_human_player: false,
-                    fresh_in_playfield: true,
-                    shrouded: false,
-                    cloak_state: 0,
-                    has_sensor: false,
-                    allied_with_current_player: false,
-                    height_leptons: 0,
-                    veteran_radar_invisible: false,
-                },
-            ),
+            visibility: RadarRegistrationVisibilityFacts::Mobile(RadarMobileVisibilityFacts {
+                type_invisible: false,
+                sinking: false,
+                object_alive: true,
+                in_limbo: false,
+                owner_is_human_player: false,
+                fresh_in_playfield: true,
+                shrouded: false,
+                cloak_state: 0,
+                has_sensor: false,
+                allied_with_current_player: false,
+                height_leptons: 0,
+                veteran_radar_invisible: false,
+            }),
             local_front: false,
         }
     }
@@ -418,14 +411,38 @@ mod tests {
     fn native_click_clamp_preserves_signed_words_and_strict_branch_equality() {
         let map = (100, 100);
         let tactical = (632, 570);
-        assert_eq!(clamp_native_radar_click_cell((50, 143), map, tactical), (50, 143));
-        assert_eq!(clamp_native_radar_click_cell((50, 144), map, tactical), (51, 143));
-        assert_eq!(clamp_native_radar_click_cell((142, 50), map, tactical), (142, 50));
-        assert_eq!(clamp_native_radar_click_cell((143, 50), map, tactical), (142, 51));
-        assert_eq!(clamp_native_radar_click_cell((55, 55), map, tactical), (55, 55));
-        assert_eq!(clamp_native_radar_click_cell((54, 55), map, tactical), (55, 56));
-        assert_eq!(clamp_native_radar_click_cell((145, 145), map, tactical), (145, 145));
-        assert_eq!(clamp_native_radar_click_cell((145, 146), map, tactical), (144, 145));
+        assert_eq!(
+            clamp_native_radar_click_cell((50, 143), map, tactical),
+            (50, 143)
+        );
+        assert_eq!(
+            clamp_native_radar_click_cell((50, 144), map, tactical),
+            (51, 143)
+        );
+        assert_eq!(
+            clamp_native_radar_click_cell((142, 50), map, tactical),
+            (142, 50)
+        );
+        assert_eq!(
+            clamp_native_radar_click_cell((143, 50), map, tactical),
+            (142, 51)
+        );
+        assert_eq!(
+            clamp_native_radar_click_cell((55, 55), map, tactical),
+            (55, 55)
+        );
+        assert_eq!(
+            clamp_native_radar_click_cell((54, 55), map, tactical),
+            (55, 56)
+        );
+        assert_eq!(
+            clamp_native_radar_click_cell((145, 145), map, tactical),
+            (145, 145)
+        );
+        assert_eq!(
+            clamp_native_radar_click_cell((145, 146), map, tactical),
+            (144, 145)
+        );
     }
 
     #[test]
@@ -433,29 +450,27 @@ mod tests {
         let surface = NativeRadarSurfaceGeometry::from_raw_rect(30, 20, 300, 180).unwrap();
         let signed = signed_tracker_or_inverse_cell(surface, (0, 0), None);
         assert_eq!(signed, (-4, 25));
-        assert_eq!(clamp_native_radar_click_cell(signed, (100, 100), (632, 570)), (85, 114));
+        assert_eq!(
+            clamp_native_radar_click_cell(signed, (100, 100), (632, 570)),
+            (85, 114)
+        );
     }
 
     #[test]
     fn native_click_target_samples_all_active_slopes_at_cell_center() {
         let mut terrain = click_terrain(64, 64);
         let expected_contributions = [
-            0, 45, 45, 45, 45, 0, 0, 0, 0, 90, 90, 90, 90, 90, 90, 90, 90, 45, 45,
-            45, 45,
+            0, 52, 52, 52, 52, 0, 0, 0, 0, 104, 104, 104, 104, 104, 104, 104, 104, 52, 52, 52, 52,
         ];
         for (slope, contribution) in expected_contributions.into_iter().enumerate() {
             let cell = terrain.cell_mut(55, 55).unwrap();
             cell.level = 2;
             cell.slope_type = slope as u8;
-            let target = native_camera_target_from_signed(
-                (55, 55),
-                (100, 100),
-                (632, 570),
-                &terrain,
-            )
-            .unwrap();
+            let target =
+                native_camera_target_from_signed((55, 55), (100, 100), (632, 570), &terrain)
+                    .unwrap();
             assert_eq!(target.cell, (55, 55));
-            assert_eq!(target.world_leptons, (14_208, 14_208, 180 + contribution));
+            assert_eq!(target.world_leptons, (14_208, 14_208, 208 + contribution));
         }
     }
 
@@ -468,34 +483,23 @@ mod tests {
         cell.has_bridge_deck = true;
         cell.bridge_walkable = true;
         cell.bridge_deck_level = 7;
-        let target = native_camera_target_from_signed(
+        let target =
+            native_camera_target_from_signed((63, 63), (100, 100), (632, 570), &terrain).unwrap();
+        assert_eq!(
+            target.cell,
             (63, 63),
-            (100, 100),
-            (632, 570),
-            &terrain,
-        )
-        .unwrap();
-        assert_eq!(target.cell, (63, 63), "last real grid cell remains available");
-        assert_eq!(target.world_leptons, (16_256, 16_256, 315));
+            "last real grid cell remains available"
+        );
+        assert_eq!(target.world_leptons, (16_256, 16_256, 364));
 
         assert_eq!(
-            native_camera_target_from_signed(
-                (64, 64),
-                (100, 100),
-                (632, 570),
-                &terrain,
-            ),
+            native_camera_target_from_signed((64, 64), (100, 100), (632, 570), &terrain,),
             None,
-            "Rust has no exact shared-dummy substrate, so invalid lookup cannot flatten to Z=0",
+            "this caller still fails closed instead of routing through the existing shared dummy",
         );
         terrain.test_set_native_allocated_cells(&[]);
         assert_eq!(
-            native_camera_target_from_signed(
-                (63, 63),
-                (100, 100),
-                (632, 570),
-                &terrain,
-            ),
+            native_camera_target_from_signed((63, 63), (100, 100), (632, 570), &terrain,),
             None,
             "a Size-diamond hole is not a rectangular/level-zero fallback",
         );
@@ -512,44 +516,31 @@ mod tests {
         ));
         let tracker_signed = tracker_object_signed_cell(&tracker, &entities, (40, 60)).unwrap();
         assert_eq!(tracker_signed, (55, 55));
-        let tracker_target = native_camera_target_from_signed(
-            tracker_signed,
-            (100, 100),
-            (632, 570),
-            &terrain,
-        );
-        let empty_target = native_camera_target_from_signed(
-            (55, 55),
-            (100, 100),
-            (632, 570),
-            &terrain,
-        );
+        let tracker_target =
+            native_camera_target_from_signed(tracker_signed, (100, 100), (632, 570), &terrain);
+        let empty_target =
+            native_camera_target_from_signed((55, 55), (100, 100), (632, 570), &terrain);
         assert_eq!(tracker_target, empty_target);
     }
 
     #[test]
     fn native_click_cellclass_xyz_uses_the_full_6d6070_camera_projection() {
-        // Cell (55,55), Level=2, slope 1 at center: 180 base + 45 slope.
+        // Cell (55,55), Level=2, slope 1 at center: 208 base + 52 slope.
         // Get_Center_Coords 0x00480A30 passes this complete XYZ to 0x006D6070;
         // the latter projects/AdjustForZ before writing current and desired to
         // one identical immediate top-left (represented by Rust's one point).
-        let world = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 225);
-        assert_eq!(world, (0.0, 1_648.0));
-        let camera = crate::app::input::camera::tactical_camera_top_left(
-            world,
-            856.0,
-            736.0,
-            1.0,
-        );
-        assert_eq!(camera, (-428.0, 1_280.0));
-        assert_eq!(
-            ((world.0 - camera.0), (world.1 - camera.1)),
-            (428.0, 368.0),
-        );
+        let world = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 260);
+        assert_eq!(world, (0.0, 1_643.0));
+        let camera = crate::app::input::camera::tactical_camera_top_left(world, 856.0, 736.0, 1.0);
+        assert_eq!(camera, (-428.0, 1_275.0));
+        assert_eq!(((world.0 - camera.0), (world.1 - camera.1)), (428.0, 368.0),);
 
-        let level_only = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 180);
-        assert_eq!(level_only, (0.0, 1_654.0));
-        assert_ne!(world, level_only, "the slope contribution cannot be reconstructed from Level");
+        let level_only = crate::util::lepton::absolute_leptons_to_screen(14_208, 14_208, 208);
+        assert_eq!(level_only, (0.0, 1_650.0));
+        assert_ne!(
+            world, level_only,
+            "the slope contribution cannot be reconstructed from Level"
+        );
     }
 
     #[test]
@@ -560,7 +551,10 @@ mod tests {
         assert_eq!(pixel, (0, 0));
         let signed = signed_tracker_or_inverse_cell(surface, pixel, None);
         assert_eq!(signed, (-4, 25));
-        assert_eq!(clamp_native_radar_click_cell(signed, (100, 100), (632, 570)), (85, 114));
+        assert_eq!(
+            clamp_native_radar_click_cell(signed, (100, 100), (632, 570)),
+            (85, 114)
+        );
     }
 
     #[test]
@@ -630,16 +624,17 @@ mod tests {
         let mut tracker = RetainedRadarTracker::default();
         tracker.update_object(tracker_update(1, None), false);
         tracker.update_object(tracker_update(2, Some((4, 3))), false);
-        assert_eq!(tracker.object_at_pixel(40, 60), Some(2), "native reverse bucket scan");
+        assert_eq!(
+            tracker.object_at_pixel(40, 60),
+            Some(2),
+            "native reverse bucket scan"
+        );
 
         let mut entities = crate::sim::entity_store::EntityStore::new();
-        let mobile = crate::sim::game_entity::GameEntity::test_default(
-            1, "MTNK", "Enemy", 60, 60,
-        );
+        let mobile = crate::sim::game_entity::GameEntity::test_default(1, "MTNK", "Enemy", 60, 60);
         entities.insert(mobile);
-        let mut building = crate::sim::game_entity::GameEntity::test_default(
-            2, "BLDG", "Enemy", 60, 60,
-        );
+        let mut building =
+            crate::sim::game_entity::GameEntity::test_default(2, "BLDG", "Enemy", 60, 60);
         building.category = crate::map::entities::EntityCategory::Structure;
         building.foundation = "4x3".to_string();
         building.position.sub_x = crate::util::fixed_math::SimFixed::from_num(200);
@@ -647,7 +642,11 @@ mod tests {
         entities.insert(building);
 
         let signed = tracker_object_signed_cell(&tracker, &entities, (40, 60));
-        assert_eq!(signed, Some((62, 61)), "4x3 foundation centre truncates after subcell");
+        assert_eq!(
+            signed,
+            Some((62, 61)),
+            "4x3 foundation centre truncates after subcell"
+        );
         assert_eq!(
             native_camera_cell_from_signed(signed.unwrap(), (100, 100), (632, 570)),
             (62, 61),

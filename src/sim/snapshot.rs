@@ -308,7 +308,10 @@ use crate::sim::world::Simulation;
 // word, and authored structure-upgrade Technos persist their parent/slot link.
 // Bumped 104 -> 105: persist active and stashed Drive/Ship locomotor slope
 // cache/global-frame timer state; the positional payload enum changed shape.
-const SNAPSHOT_VERSION: u32 = 105;
+// Bumped 105 -> 106: active-retail Cell ground is one 104-lepton numeric
+// authority rather than the false 90-lepton duplicate. Shape is unchanged,
+// but retained Cell targets/world state would resume with different Z results.
+const SNAPSHOT_VERSION: u32 = 106;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2711,10 +2714,12 @@ mod tests {
     /// adds WaveClass state and destroyable-cliff replacement CellClass values;
     /// 103 -> 104 adds the persistent Techno constructor word and authored
     /// structure-upgrade parent/slot identity; 104 -> 105 adds active/stashed
-    /// Drive/Ship slope-transition state.
+    /// Drive/Ship slope-transition state; 105 -> 106 rejects saves that would
+    /// resume under the corrected one-authority 104-lepton Cell ground formula
+    /// despite unchanged wire shape.
     #[test]
-    fn phase3_drive_ship_slope_snapshot_version_is_105() {
-        assert_eq!(super::SNAPSHOT_VERSION, 105);
+    fn phase3_cell_ground_104_snapshot_version_is_106() {
+        assert_eq!(super::SNAPSHOT_VERSION, 106);
     }
 
     #[test]
@@ -2759,7 +2764,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "Drive Ship slope", 3);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("current v105 slope snapshot")
+            .expect("current v106 slope snapshot")
             .sim;
         let loaded = restored
             .substrate
@@ -5290,7 +5295,7 @@ mod tests {
                 1,
             );
             let cell = pristine_load_template.cell(1, 1).unwrap();
-            crate::util::lepton::cellclass_ground_height_leptons(
+            crate::util::lepton::ground_height_leptons(
                 cell.level,
                 cell.slope_type,
                 target.x,
@@ -5425,7 +5430,7 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(Some(restored_terrain), 1, 1).z,
             expected_ground_z,
-            "restored raw 0x100 clear removes +416 while retaining the 90-lepton ground kernel"
+            "restored raw 0x100 clear removes +416 while retaining the 104-lepton ground kernel"
         );
         assert_eq!(
             restored.state_hash(),
@@ -5481,7 +5486,7 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(restored.resolved_terrain.as_ref(), 1, 1,).z,
             expected_ground_z,
-            "accepted Resize keeps the restored real CellClass on the 90-lepton ground surface"
+            "accepted Resize keeps the restored real CellClass on the 104-lepton ground surface"
         );
         assert_eq!(
             restored.real_cell_bridge_flags_0x1180,
