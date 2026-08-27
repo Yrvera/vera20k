@@ -1,9 +1,15 @@
 # Phase 3 Map/Spatial Closure Handoff
 
-**Stopped:** 2026-08-27, at user request  
-**Worktree:** `C:\Users\enok\Documents\ra2-rust-game-phase3-map-spatial-close`  
-**Branch:** `feature/phase3-map-spatial-close`  
-**HEAD:** `18280d5e docs(map): normalize Ship bridge Z report`  
+**Stopped:** 2026-08-27, at user request
+
+**Worktree:** `C:\Users\enok\Documents\ra2-rust-game-phase3-map-spatial-close`
+
+**Branch:** `feature/phase3-map-spatial-close`
+
+**Documentation checkpoint:** `546dcd86 docs(map): hand off open Ship bridge Z design`
+
+**Pre-handoff research HEAD:** `18280d5e docs(map): normalize Ship bridge Z report`
+
 **Publish state:** local only; no push or PR authority was granted
 
 ## Completed slice
