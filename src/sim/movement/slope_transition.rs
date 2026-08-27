@@ -13,6 +13,10 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotion::LocomotorRuntimePayload;
 use crate::sim::movement::locomotor::MovementLayer;
 
+/// Literal Drive/Ship slope interpolation duration installed by both native
+/// `Process` implementations.
+pub(crate) const SLOPE_TRANSITION_FRAMES: u8 = 3;
+
 /// Defined, persistent state owned by one active or stashed Drive/Ship
 /// locomotor. The native unused timer dword is deliberately not represented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -62,7 +66,7 @@ impl SlopeTransitionState {
         self.previous_slope = self.current_slope;
         self.current_slope = sampled_slope;
         self.start_frame = binary_frame as i32;
-        self.transition_total = 3;
+        self.transition_total = SLOPE_TRANSITION_FRAMES;
     }
 
     pub(crate) fn remaining(&self, binary_frame: u32) -> i32 {
@@ -230,11 +234,12 @@ mod tests {
 
     #[test]
     fn slope_timer_preserves_signed_minus_one_and_negative_phase() {
+        assert_eq!(super::SLOPE_TRANSITION_FRAMES, 3);
         let mut state = SlopeTransitionState::at_binary_frame(0);
         state.previous_slope = 4;
         state.current_slope = 9;
         state.start_frame = 0;
-        state.transition_total = 3;
+        state.transition_total = super::SLOPE_TRANSITION_FRAMES;
 
         assert_eq!(
             state.render_phase(u32::MAX),
@@ -242,7 +247,7 @@ mod tests {
                 from_slope: 4,
                 to_slope: 9,
                 phase_num: -1,
-                phase_den: 3,
+                phase_den: super::SLOPE_TRANSITION_FRAMES,
             }
         );
         assert_eq!(state.remaining(0xffff_feff), 260);
@@ -252,7 +257,7 @@ mod tests {
                 from_slope: 4,
                 to_slope: 9,
                 phase_num: -257,
-                phase_den: 3,
+                phase_den: super::SLOPE_TRANSITION_FRAMES,
             }
         );
 
@@ -290,7 +295,7 @@ mod tests {
                 from_slope: 2,
                 to_slope: 7,
                 phase_num: 0,
-                phase_den: 3,
+                phase_den: super::SLOPE_TRANSITION_FRAMES,
             }
         );
         assert_eq!(state.remaining(11), 2);
@@ -305,7 +310,7 @@ mod tests {
                 from_slope: 7,
                 to_slope: 12,
                 phase_num: 0,
-                phase_den: 3,
+                phase_den: super::SLOPE_TRANSITION_FRAMES,
             }
         );
     }

@@ -499,7 +499,8 @@ pub struct GameEntity {
     pub air_spatial_enter_order: u64,
 
     // --- Optional subsystem components ---
-    /// Locomotor state — present on movable entities (speed > 0 in rules.ini).
+    /// Locomotor state — present on moving types and on zero-speed Foot
+    /// Drive/Ship types whose native class-local payload still exists.
     pub locomotor: Option<LocomotorState>,
     /// Active movement path — present when unit is moving along an A* path.
     pub movement_target: Option<MovementTarget>,
