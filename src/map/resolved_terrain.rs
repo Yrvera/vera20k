@@ -4409,9 +4409,9 @@ mod tests {
         map.header.width = 3;
         map.header.height = 2;
         map.iso_map_pack_lookups = vec![crate::map::map_file::IsoMapPackLookup {
-            raw_x: -510,
+            raw_x: -509,
             raw_y: 3,
-            canonical: Some((2, 2)),
+            canonical: Some((3, 2)),
         }];
 
         let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
@@ -4502,7 +4502,9 @@ mod tests {
             8
         );
 
-        let manual = make_map(pack.cells.clone(), Vec::new(), Vec::new());
+        let mut manual = make_map(pack.cells.clone(), Vec::new(), Vec::new());
+        manual.header.width = 3;
+        manual.header.height = 2;
         let selector_free_manual =
             ResolvedTerrainGrid::build(&manual, Some(&theater), None, None, None, false, 0);
         assert_eq!(
@@ -4526,6 +4528,28 @@ mod tests {
         cache.complete_theater_registry_load(Some(5), None);
         let mut forbidden_main = || panic!("compatibility fixture has no variants");
         let mut fill = |_low, _high| 0;
+        let production_manual = {
+            let mut selector = cache.begin_load(&mut forbidden_main);
+            ResolvedTerrainGrid::build_with_variant_selector(
+                &manual,
+                Some(&theater),
+                None,
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut fill,
+                &mut selector,
+            )
+        };
+        assert_eq!(
+            production_manual
+                .cell(2, 2)
+                .expect("production manual actual-ID cell")
+                .source_tile_index,
+            5
+        );
         let production_pack = {
             let mut selector = cache.begin_load(&mut forbidden_main);
             ResolvedTerrainGrid::build_with_variant_selector(
