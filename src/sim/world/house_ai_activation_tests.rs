@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Simulation, TickLane};
+use super::{HouseAiActivationOrderTestEvent, Simulation, TickLane};
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::house_state::{HouseDifficulty, HouseState};
@@ -76,21 +76,28 @@ fn house_ai_activation_forward_house_order_reaches_computer_and_passive_houses()
 }
 
 #[test]
-fn house_ai_activation_runs_before_same_frame_defeat_processing() {
+fn house_ai_activation_full_frame_order_is_production_then_activation_defeat_and_ai() {
     let rules = activation_rules(5);
     let mut sim = Simulation::new();
     sim.session.game_mode_nonzero = true;
     sim.session.tick = 1;
     let owner = insert_house(&mut sim, "Computer1", false, 5);
     sim.session.house_order.push(owner);
+    sim.ai_players
+        .push(crate::sim::ai::AiPlayerState::new(owner));
 
     advance(&mut sim, Some(&rules), TickLane::Ordinary);
 
-    let house = &sim.houses[&owner];
-    assert!(house.ai_activation.production);
-    assert!(house.ai_activation.autocreate_allowed);
-    assert!(house.ai_activation.auto_base_building);
-    assert!(house.is_defeated, "the later defeat pass still ran this frame");
+    assert_eq!(
+        sim.take_house_ai_activation_order_test_trace(),
+        vec![
+            HouseAiActivationOrderTestEvent::ProductionCompleted,
+            HouseAiActivationOrderTestEvent::HouseActivation,
+            HouseAiActivationOrderTestEvent::DefeatProcessed,
+            HouseAiActivationOrderTestEvent::AiGenerated,
+        ],
+        "moving activation across production, defeat, or actual tick_ai dispatch must fail"
+    );
 }
 
 #[test]
