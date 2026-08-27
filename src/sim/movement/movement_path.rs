@@ -65,21 +65,44 @@ const NEAREST_REACHABLE_SEARCH_RADIUS: u16 = 10;
 /// the zero-size grid sentinel below. `FootClass::Find_Path` @ `0x004D3920`
 /// gates on `vtable+0x2CC`, not on locomotor kind.
 ///
-/// The whitelist is `Drive | Walk | Mech`, so it also excludes **Hover** — a
-/// ground mover with no state machine of its own. Stock YR gives the Hover
-/// CLSID to `[LCRF]`, `[ROBO]`, `[SAPC]` and `[YHVR]`: the Robot Tank and all
-/// three amphibious transports. Those four never reach the layered path
-/// builder, and because `is_bridge_only_goal` is only consulted on the
-/// non-layered branch, the two gates compose: a Hover mover not already on a
-/// bridge has a bridge-deck click dropped outright.
+/// **Hover was added 2026-08-27 (matrix row T1-01).** The exclusion was the
+/// whole of that defect: a Hover mover never reached the layered builder, so
+/// `build_flat_fallback_layers` stamped `Ground` on every node of its path
+/// including the deck ones, and the crossing loop's terrain test then read the
+/// deck cell's raw ground-walkability — the riverbed under the span — and
+/// refused. The order was never dropped, so a Robot Tank ordered across a high
+/// bridge accelerated into the abutment and was snapped back to cell centre
+/// about thirteen times a second, indefinitely. The bridge legality check
+/// itself passed every time; it was never consulted about the right plane.
+/// Measured on BayOPigs.mmx: seven refusals, every one `layer_walkable`, zero
+/// `bridge_traversal`.
 ///
-/// Trigger: any path build by one of those four types, and any bridge-deck
-/// click by one of them. Player effect: a Robot Tank or an amphibious
-/// transport refuses an order retail accepts. Frequency: the layered exclusion
-/// is every path build for those units; the order-drop needs a high bridge, so
-/// a few times a match on maps that have one. Downstream risk: adding Hover
-/// here puts it through the layered builder, which is the bridge-parity
-/// boundary recorded at the top of this module.
+/// Stock YR gives the Hover CLSID to `[LCRF]`, `[ROBO]`, `[SAPC]` and `[YHVR]`
+/// — the Robot Tank and all three amphibious transports. (`ROBO` also carries
+/// `TooBigToFitUnderBridge=true`, but that flag gates nothing in movement:
+/// `merge_path_blocks` above records it as draw-pipeline-only, its parameter is
+/// unused, and `Can_Enter_Cell` never reads it. It is not why a Robot Tank
+/// could not use a span, and it did not stop one driving under one either.)
+///
+/// **Why the exclusion was indefensible on the binary's own terms.** The native
+/// analogue of this predicate is the `vtable+0x2CC` gate inside
+/// `FootClass::Find_Path` @ `0x004D3920`, cited above — a *per-class* virtual.
+/// All four Hover types and every whitelisted Drive vehicle are `[VehicleTypes]`
+/// (verified in `ini/rulesmd.ini`), so they are the same `UnitClass` and resolve
+/// `+0x2CC` to the same slot value. The native gate therefore cannot separate a
+/// Robot Tank from a Grizzly, and this one did.
+///
+/// The `Can_Enter_Cell` / `CheckBridgeTraversal` / `ILocomotion+0x1C` addresses
+/// reported alongside that finding are **UNCHECKED here** — corroboration that
+/// the downstream legality path is locomotor-agnostic, not the gate itself, and
+/// not re-read at this callsite. Do not cite them as if they resolved
+/// `+0x2CC`.
+///
+/// The remaining `Drive | Walk | Mech | Hover` list stays VERA-internal. Ship,
+/// Fly and Teleport are excluded because admitting them is a separate question
+/// with its own blast radius, not because the binary excludes them. `Mech` is a
+/// dead arm: its CLSID is deliberately absent from `INSTALLED_CLSID_KIND_TABLE`
+/// (`locomotor_type.rs`), so no stock type can reach it.
 pub(super) fn supports_layered_bridge_pathing(
     loco: &LocomotorState,
     grid: &PathGrid,
@@ -90,7 +113,7 @@ pub(super) fn supports_layered_bridge_pathing(
     }
     matches!(
         loco.kind,
-        LocomotorKind::Drive | LocomotorKind::Walk | LocomotorKind::Mech
+        LocomotorKind::Drive | LocomotorKind::Walk | LocomotorKind::Mech | LocomotorKind::Hover
     ) || on_bridge
 }
 
