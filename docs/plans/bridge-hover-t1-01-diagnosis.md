@@ -72,31 +72,44 @@ not on the table below.
 | destination Z onto the deck | `HoverLocomotionClass::Set_Destination` @ `0x00514D90` raises `dest.Z += 4 levels` when the destination cell has flag `0x100` | **unconditional**, no `OnBridge` precondition, no height precondition — same shape as Drive's @ `0x004AFD40` |
 | terrain row | `LandType × SpeedType` speed table inside `Can_Enter_Cell` | Hover is nonzero on every row a deck reports; only `Rock` and `Wall` are 0% (`ini/rulesmd.ini` `[GroundTypes]`) |
 
-The only real Hover/Drive asymmetry in the binary is *when* the `OnBridge` byte flips (Hover
-on altitude reaching deck height, `0x00514944`; Drive on a cell-level delta,
-`0x004B1830`) — that is a lift-timing difference, not an admission gate. VERIFIED (gamemd
-lane).
+Across the stages sampled above, the only Hover/Drive asymmetry the lane reported is *when* the
+`OnBridge` byte flips (Hover on altitude reaching deck height, `0x00514944`; Drive on a
+cell-level delta, `0x004B1830`) — a lift-timing difference, not an admission gate.
+**UNCHECKED** — lane-reported, not re-derived here, and scoped to those stages: this is not a
+claim that no other asymmetry exists in the binary.
 
 **VERA's model, same path:**
 
 | stage | VERA | effect on Hover |
 |---|---|---|
-| planner branch selection | `supports_layered_bridge_pathing`, `src/sim/movement/movement_path.rs:83-95` — `matches!(kind, Drive \| Walk \| Mech) \|\| on_bridge` | Hover excluded → flat branch, `movement_path.rs:468-523` |
+| planner branch selection | `supports_layered_bridge_pathing` — **as it was before the fix**, `matches!(kind, Drive \| Walk \| Mech) \|\| on_bridge` | Hover excluded → flat branch. **Historical: `3687cc94` admits Hover, so this row describes the defect, not current behaviour.** |
 | layer array | `build_flat_fallback_layers`, `movement_path.rs:539-558` — `vec![Ground; path.len()]` when `start_layer != Bridge` | all 19 nodes `Ground`, deck included (measured, `repro.md` §3) |
 | runtime layer | `can_enter_layer_context`, `src/sim/pathfinding/core.rs:683-702` — copies `terrain_layer` **verbatim** from the planned layer, re-deriving only `occupancy_bits_layer` | `terrain_layer: Ground` while `object_list_layer`/`occupancy_bits_layer` are correctly `Bridge` (measured) |
 | the refusal | `movement_step.rs:1986` on the Ground arm at `:1934-1968` → `cell_entry.rs:397-419` → `evaluate_shared_cell_leaf` bridgehead early return, `cell_entry.rs:442-453` → `HardBlocked` | `grid_ok = PathGrid::is_walkable` = raw `ground_walkable` = the riverbed = **false** |
 
-**Did VERA invent a gate the binary lacks? Yes — one, and its own provenance comment already
-says so.** `movement_path.rs:64-82` reads: *"**VERA-internal, gamemd equivalent UNCHECKED**:
-the locomotor whitelist... `FootClass::Find_Path` @ `0x004D3920` gates on `vtable+0x2CC`,
-not on locomotor kind"*, and it names the four affected stock units. The Ghidra lane
-independently confirms there is no locomotor-keyed branch on the native path. This is a
-`sim/` gate gamemd does not have, and ENGINE.md forbids it. VERIFIED.
+**Did VERA invent a gate with no native counterpart? Yes — one, and its own provenance comment
+already said so before this investigation started.** `supports_layered_bridge_pathing` selects a
+pathing *plane* by locomotor kind.
+
+What is **VERIFIED** about that, by direct reads recorded in the `movement_path.rs` provenance
+block (not by this document, and not by any lane): the one native gate `Find_Path` consults is
+`vtable+0x2CC` → `FootClass::CanReachDestination` @ `0x004D3810`, a MovementZone reachability
+abort carrying no locomotor term. Scoped exactly that far — **at that gate** nothing selects a
+plane by locomotor kind.
+
+What is **NOT** claimed, and was wrongly claimed here before 2026-08-27: that there is no
+locomotor-keyed branch anywhere on the native path. That was a whole-path negative resting on a
+lane report which is not in the repository (matrix evidence gap 10), so it is unauditable as
+well as unscoped. It has been withdrawn, not merely restated.
+
+The fix does not need the stronger claim. It **deletes** a VERA-only restriction, and a deletion
+needs the absence of a verified native gate demanding it — not affirmative proof that no such
+gate exists anywhere. Its positive evidence is the two production crossings.
 
 A second, milder invention rides along: `is_bridge_only_goal` (`movement_path.rs:101-121`),
 whose comment states outright *"**VERA-internal, gamemd has no equivalent**"*. It is
-consulted only on the flat branch (`movement_path.rs:468`), so today it applies to Hover and
-not to Drive. It is **not** what fires here — the goal `(111,152)` is an ordinary approach
+consulted only on the flat branch, so **before `3687cc94`** it applied to Hover and not to
+Drive; since the fix it sees neither. It is **not** what fires here — the goal `(111,152)` is an ordinary approach
 cell, and the order was accepted (VERIFIED, measured) — but it is the same class of defect
 on the same line of code.
 
@@ -236,8 +249,13 @@ Tank **and all three faction amphibious transports** onto the layered path build
 `zone_mz`. The three transports carry `MovementZone=Amphibious` (VERIFIED, `ini/rulesmd.ini`),
 which is not a water-mover zone in VERA (`src/rules/locomotor_type.rs:332-333` — only
 `Water | WaterBeach`), so they stay on the land branches; but their zone grid spans water,
-so the corridor the zoned layered search picks can differ from today's. **Any amphibious
-water-crossing test is in scope for this change and must be run.** UNCHECKED.
+so the corridor the zoned layered search picks can differ from today's. An amphibious
+water-crossing test is in scope for this change and was **not** run — no test in the tree drives
+`LCRF`, `SAPC` or `YHVR`. **Disposition (2026-08-27): deliberately deferred**, recorded as
+residual `R-T101a` against T1-01 in `bridge-movement-matrix.md` with its trigger, effect and
+frequency. This paragraph originally said it "must be run"; it was not, and calling that a
+deferral in the ledger while leaving "must be run" here would let the row read as complete from
+one document and blocked from the other. UNCHECKED, and owned by R-T101a.
 
 **Committed goldens — predicted not to move, must still be run.**
 `src/sim/world/bridge_parity_harness_tests.rs` pins `BRIDGE_HARNESS_FINAL_HASH`
@@ -268,8 +286,12 @@ gamemd flips Hover's `OnBridge` on *altitude reaching deck height*
 (`0x00514944`: `!OnBridge && (cell->Flags & 0x100) && GetHeight() >= 4 levels`), where Drive
 and Walk flip on a cell-level delta (`0x004B1830`, `0x0075C179`). VERA uses the
 cell-level-delta rule for every mover (`movement_bridge.rs:208`:
-`dst_h == src_h.wrapping_sub(4) && dst.has_structural_bridge()`). VERIFIED (gamemd lane) /
-VERIFIED (VERA code). Trigger: every hover deck entry. Player effect: the flip can land a
+`dst_h == src_h.wrapping_sub(4) && dst.has_structural_bridge()`). Status split, corrected
+2026-08-27: the VERA half is **VERIFIED** (the code is in the tree and readable); the gamemd
+half — the two native predicates and their addresses — is **UNCHECKED**, reported by an
+investigation lane whose report is not in the repository (matrix evidence gap 10) and never
+re-derived here. Settling this residual means reading `0x00514944` and `0x004B1830` directly,
+not re-reading this line. Trigger: every hover deck entry. Player effect: the flip can land a
 frame or two off retail relative to the lift ramp — the sprite mounts the deck at a slightly
 different moment. Frequency: every hover bridge crossing, so a handful of times a match on a
 bridge map. Whether it is visible at all is **UNCHECKED** and needs a frame comparison, not

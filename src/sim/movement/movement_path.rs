@@ -84,11 +84,20 @@ const NEAREST_REACHABLE_SEARCH_RADIUS: u16 = 10;
 /// unused, and `Can_Enter_Cell` never reads it. It is not why a Robot Tank
 /// could not use a span, and it did not stop one driving under one either.)
 ///
-/// **What the one native gate on this path actually does.** VERIFIED end to end
-/// 2026-08-27, each link read rather than inferred:
+/// **What the one native gate on this path actually does.** VERIFIED 2026-08-27
+/// by direct reads, with one stated premise rather than a read:
+///   - *Premise (not a Ghidra read):* the movers this predicate admits are all
+///     `[VehicleTypes]` — `ROBO`, `LCRF`, `SAPC`, `YHVR` alongside `MTNK`,
+///     checked in `ini/rulesmd.ini` — hence `UnitClass` instances. That is what
+///     makes the vtable read below the same slot the `CALL [EDX + 0x2CC]`
+///     dispatches through for them: the read is at a fixed vtable, the call is
+///     through the mover's own. Named because reading an offset is not the same
+///     as proving a slot, and conflating the two has produced a wrong label in
+///     this project before.
 ///   - `UnitClass`'s vtable is `0x007F5C70` — installed by
 ///     `UnitClass::Constructor` @ `0x0073543A`, and by its destructor and
-///     `Load`.
+///     `Load`. Identity rests on that existing Ghidra label; **UNCHECKED**
+///     against RTTI/COL, which is the reliable route here.
 ///   - `0x007F5C70 + 0x2CC` = `0x007F5F3C`, which holds `0x004D3810`. Slot read
 ///     directly; not inferred from a callee offset, which is the trap that has
 ///     produced a wrong label in this project before.
