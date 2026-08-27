@@ -204,6 +204,13 @@ fn locomotor_render_slope_state(
     })
 }
 
+/// Presentation follows the just-committed simulation frame. Drive/Ship
+/// `Draw_Matrix` therefore observes the last frame whose Process entry has
+/// completed, including the unsigned wrap at the initial committed frame.
+const fn display_binary_frame_for_committed_session(committed_binary_frame: u32) -> u32 {
+    committed_binary_frame.wrapping_sub(1)
+}
+
 /// Depth key for one voxel body, from the screen row it was drawn at.
 ///
 /// Two corrections sit between the drawn row and the key: the entity's own
@@ -255,7 +262,8 @@ pub(crate) fn build_unit_instances(
     let z = state.match_state.input.zoom_level;
     // Presentation runs after the just-completed simulation frame; snapshot
     // the one binary frame used by every Drive/Ship Draw_Matrix in this pass.
-    let display_binary_frame = sim.session.binary_frame.wrapping_sub(1);
+    let display_binary_frame =
+        display_binary_frame_for_committed_session(sim.session.binary_frame);
     let (cam_x, cam_y, sw, sh) = (
         state.match_state.input.camera_x,
         state.match_state.input.camera_y,
@@ -937,6 +945,7 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::InternedId;
     use crate::sim::movement::locomotor::LocomotorState;
+    use crate::sim::snapshot::GameSnapshot;
     use crate::sim::spawn_manager::{
         SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
     };
@@ -961,6 +970,8 @@ mod tests {
         slope.snap(3, 39);
         slope.sample_process_entry(8, 40);
         sim.substrate.entities.insert(entity);
+
+        assert_eq!(display_binary_frame_for_committed_session(0), u32::MAX);
 
         for (committed_binary_frame, expected) in [
             (
@@ -991,7 +1002,9 @@ mod tests {
         ] {
             sim.session.binary_frame = committed_binary_frame;
             let before_hash = sim.state_hash();
-            let display_binary_frame = sim.session.binary_frame.wrapping_sub(1);
+            let display_binary_frame =
+                display_binary_frame_for_committed_session(sim.session.binary_frame);
+            assert_eq!(display_binary_frame, committed_binary_frame.wrapping_sub(1));
             let entity = sim.substrate.entities.get(1).unwrap();
             assert_eq!(
                 locomotor_render_slope_state(entity, display_binary_frame),
@@ -1002,8 +1015,53 @@ mod tests {
                 Some(expected),
                 "repeated presentation extraction for one committed frame is stable"
             );
+            assert_eq!(
+                display_binary_frame_for_committed_session(sim.session.binary_frame),
+                display_binary_frame,
+                "a paused presentation pass retains the same committed-frame selector"
+            );
             assert_eq!(sim.state_hash(), before_hash, "presentation is read-only");
         }
+    }
+
+    #[test]
+    fn drive_ship_slope_snapshot_uses_production_display_frame_selector() {
+        let mut sim = Simulation::with_seed(0);
+        sim.session.binary_frame = 51;
+        let mut entity = GameEntity::test_default(1, "SHIP", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("SHIP");
+        entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+            LocomotorKind::Ship,
+            40,
+        ));
+        let slope = entity
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .active_slope_transition_mut()
+            .unwrap();
+        slope.snap(4, 40);
+        slope.sample_process_entry(9, 49);
+        sim.substrate.entities.insert(entity);
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "slope display selector", 3);
+        let restored = GameSnapshot::load(&bytes).expect("current slope snapshot").sim;
+        let display_binary_frame =
+            display_binary_frame_for_committed_session(restored.session.binary_frame);
+        assert_eq!(display_binary_frame, 50);
+        assert_eq!(
+            locomotor_render_slope_state(
+                restored.substrate.entities.get(1).unwrap(),
+                display_binary_frame,
+            ),
+            Some(UnitRenderSlopeState::Transition {
+                from_slope: 4,
+                to_slope: 9,
+                phase_num: 1,
+            }),
+            "session frame 51 presents processed frame 50, one third through a timer started at 49"
+        );
     }
 
     fn spawn_manager(states: &[SpawnSlotState]) -> SpawnManagerState {
