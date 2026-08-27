@@ -27,7 +27,7 @@ pub struct TransitionUnitSpriteKey {
     pub frame: u32,
     pub from_slope: u8,
     pub to_slope: u8,
-    pub phase_num: u8,
+    pub phase_num: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -207,7 +207,7 @@ impl VxlSlopeTransitionCache {
 mod tests {
     use super::*;
 
-    fn key(from_slope: u8, to_slope: u8, phase_num: u8) -> TransitionUnitSpriteKey {
+    fn key(from_slope: u8, to_slope: u8, phase_num: i32) -> TransitionUnitSpriteKey {
         TransitionUnitSpriteKey {
             type_id: "CMIN".to_string(),
             facing: 64,

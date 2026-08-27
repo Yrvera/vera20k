@@ -6784,18 +6784,14 @@ impl Simulation {
         // separate from the weapon-damage wall path. No-op when no crusher sits
         // on a wall, so it is hash-neutral for every non-crush scenario.
         self.apply_wall_crush_on_driveover(rules, overlay_registry);
-        // --- Phase 2.5: Body rocking + slope-transition advance ---
-        // DEPENDS ON: all movement above (slope_type lookups must see the
-        //   latest entity positions); rules.general.fallback_coefficient for
-        //   the moving-vehicle decay scale.
-        // PRODUCES: per-entity RockingState (angles, velocities, slope blend
-        //   state) consumed by the renderer to compose the body matrix.
-        // Aircraft skip slope tilting; infantry skip ship rocking. Wide-amplitude
-        // self-destruct uses NoopSelfDestruct until combat-side damage lands
-        // (Task 19); swap in a real hook then.
-        if let (Some(rules), Some(terrain)) = (rules, self.resolved_terrain.as_ref()) {
+        // --- Phase 2.5: body rocking ---
+        // Drive/Ship slope sampling now belongs to locomotor Process entry,
+        // before movement. Body rocking keeps its established post-movement
+        // order, rules/terrain gate, and fallback-coefficient input
+        // independently.
+        if let (Some(rules), Some(_terrain)) = (rules, self.resolved_terrain.as_ref()) {
             let mut hook = crate::sim::rocking::self_destruct::NoopSelfDestruct;
-            crate::sim::rocking::tick(&mut self.substrate.entities, terrain, rules, &mut hook);
+            crate::sim::rocking::tick(&mut self.substrate.entities, rules, &mut hook);
         }
 
         // Aircraft mission state machines — between movement and combat.

@@ -178,49 +178,6 @@ fn ship_rocking_no_clamp_when_type_doesnt_support() {
 }
 
 #[test]
-fn slope_change_starts_three_tick_transition() {
-    let mut r = RockingState::default();
-    r.curr_slope = 0;
-    update_slope_transition(&mut r, 5);
-    assert_eq!(r.prev_slope, 0);
-    assert_eq!(r.curr_slope, 5);
-    assert_eq!(r.transition_ticks_remaining, SLOPE_TRANSITION_TICKS);
-}
-
-#[test]
-fn slope_unchanged_decrements_counter() {
-    let mut r = RockingState::default();
-    r.curr_slope = 5;
-    r.transition_ticks_remaining = 3;
-    update_slope_transition(&mut r, 5);
-    assert_eq!(r.transition_ticks_remaining, 2);
-    update_slope_transition(&mut r, 5);
-    assert_eq!(r.transition_ticks_remaining, 1);
-    update_slope_transition(&mut r, 5);
-    assert_eq!(r.transition_ticks_remaining, 0);
-}
-
-#[test]
-fn slope_counter_saturates_at_zero() {
-    let mut r = RockingState::default();
-    r.curr_slope = 5;
-    r.transition_ticks_remaining = 0;
-    update_slope_transition(&mut r, 5);
-    assert_eq!(r.transition_ticks_remaining, 0);
-}
-
-#[test]
-fn slope_change_mid_transition_resets_to_three() {
-    let mut r = RockingState::default();
-    r.curr_slope = 5;
-    r.transition_ticks_remaining = 1;
-    update_slope_transition(&mut r, 7);
-    assert_eq!(r.prev_slope, 5);
-    assert_eq!(r.curr_slope, 7);
-    assert_eq!(r.transition_ticks_remaining, SLOPE_TRANSITION_TICKS);
-}
-
-#[test]
 fn impulse_caps_at_005_per_axis() {
     let mut r = RockingState::default();
     apply_rocker_impulse(
@@ -598,12 +555,11 @@ fn integration_impulse_decays_to_neutral_over_60_ticks() {
     assert!(
         r.is_neutral(),
         "rocking should have decayed to neutral after 60 ticks; \
-         angles=({:?},{:?}) vels=({:?},{:?}) transition_remaining={}",
+         angles=({:?},{:?}) vels=({:?},{:?})",
         r.angle_sideways,
         r.angle_forwards,
         r.vel_sideways,
         r.vel_forwards,
-        r.transition_ticks_remaining,
     );
 }
 

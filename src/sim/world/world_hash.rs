@@ -33,6 +33,62 @@ fn hash_projectile_target(
     }
 }
 
+#[cfg(test)]
+mod drive_ship_slope_hash_tests {
+    use super::Simulation;
+    use crate::map::entities::EntityCategory;
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotion::LocomotorRuntimePayload;
+    use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+    use crate::sim::movement::slope_transition::SlopeTransitionState;
+
+    fn hash_with_state(kind: LocomotorKind, stashed: bool, state: SlopeTransitionState) -> u64 {
+        let mut sim = Simulation::new();
+        let mut entity = GameEntity::test_default(1, "SLOPE", "Americans", 2, 2);
+        entity.category = EntityCategory::Unit;
+        let mut locomotor = LocomotorState::for_test_kind(kind);
+        locomotor.runtime_payload = match kind {
+            LocomotorKind::Drive => LocomotorRuntimePayload::Drive(state),
+            LocomotorKind::Ship => LocomotorRuntimePayload::Ship(state),
+            _ => unreachable!(),
+        };
+        if stashed {
+            assert!(locomotor.begin_piggyback(
+                LocomotorKind::Teleport,
+                MovementLayer::Ground,
+                90,
+            ));
+        }
+        entity.locomotor = Some(locomotor);
+        sim.substrate.entities.insert(entity);
+        sim.state_hash()
+    }
+
+    #[test]
+    fn every_active_and_stashed_drive_ship_slope_field_changes_current_hash() {
+        let base = SlopeTransitionState::from_fields_for_test(1, 2, 30, 3);
+        let variants = [
+            SlopeTransitionState::from_fields_for_test(9, 2, 30, 3),
+            SlopeTransitionState::from_fields_for_test(1, 9, 30, 3),
+            SlopeTransitionState::from_fields_for_test(1, 2, -1, 3),
+            SlopeTransitionState::from_fields_for_test(1, 2, 30, 0),
+        ];
+        for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+            for stashed in [false, true] {
+                let baseline = hash_with_state(kind, stashed, base);
+                for variant in variants {
+                    assert_ne!(
+                        baseline,
+                        hash_with_state(kind, stashed, variant),
+                        "kind={kind:?} stashed={stashed} must hash every slope field"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Fold the versioned direct House CRC fields around CurrentIQ.
 ///
 /// gamemd-derived: raw House CRC `0x00502D60..0x0050303F` folds Production at
@@ -1528,8 +1584,9 @@ impl Simulation {
                 0u8.hash(hasher);
             }
 
-            // Body rocking + slope-transition state. I16F16 doesn't implement
-            // Hash directly; .to_bits() gives the underlying i32.
+            // Body rocking state. I16F16 doesn't implement Hash directly;
+            // .to_bits() gives the underlying i32. Drive/Ship slope state is
+            // hashed with its active/stashed locomotor payload below.
             if let Some(ref r) = entity.rocking {
                 1u8.hash(hasher);
                 r.angle_sideways.to_bits().hash(hasher);
@@ -1537,9 +1594,6 @@ impl Simulation {
                 r.vel_sideways.to_bits().hash(hasher);
                 r.vel_forwards.to_bits().hash(hasher);
                 r.is_ship_rocking.hash(hasher);
-                r.prev_slope.hash(hasher);
-                r.curr_slope.hash(hasher);
-                r.transition_ticks_remaining.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
@@ -1643,7 +1697,10 @@ fn hash_locomotor_payload(
 ) {
     use crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload;
     match payload {
-        LocomotorRuntimePayload::Drive => 0u8.hash(hasher),
+        LocomotorRuntimePayload::Drive(state) => {
+            0u8.hash(hasher);
+            hash_slope_transition_state(state, hasher);
+        }
         LocomotorRuntimePayload::Walk => 1u8.hash(hasher),
         LocomotorRuntimePayload::Teleport(state) => {
             2u8.hash(hasher);
@@ -1663,11 +1720,28 @@ fn hash_locomotor_payload(
         }
         LocomotorRuntimePayload::Hover => 6u8.hash(hasher),
         LocomotorRuntimePayload::Mech => 7u8.hash(hasher),
-        LocomotorRuntimePayload::Ship => 8u8.hash(hasher),
+        LocomotorRuntimePayload::Ship(state) => {
+            8u8.hash(hasher);
+            hash_slope_transition_state(state, hasher);
+        }
         LocomotorRuntimePayload::Fly => 9u8.hash(hasher),
         LocomotorRuntimePayload::Jumpjet => 10u8.hash(hasher),
         LocomotorRuntimePayload::Parachute => 11u8.hash(hasher),
     }
+}
+
+fn hash_slope_transition_state(
+    state: &crate::sim::movement::slope_transition::SlopeTransitionState,
+    hasher: &mut impl Hasher,
+) {
+    // Native Drive/Ship raw-block persistence includes these defined fields;
+    // Load does not resample (`Save` 0x004AF800/0x0069EF10, shared raw writer
+    // 0x0055AA60). Hash every defined field for active and stash.
+    let (previous_slope, current_slope, start_frame, transition_total) = state.hash_fields();
+    previous_slope.hash(hasher);
+    current_slope.hash(hasher);
+    start_frame.hash(hasher);
+    transition_total.hash(hasher);
 }
 
 /// TeleportLocomotionClass::Process @ 0x007192f0 owns this complete, named

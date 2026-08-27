@@ -93,7 +93,7 @@ enum UnitRenderSlopeState {
     Transition {
         from_slope: u8,
         to_slope: u8,
-        phase_num: u8,
+        phase_num: i32,
     },
 }
 
@@ -143,17 +143,17 @@ fn terrain_slope_for_render(state: &AppState, rx: u16, ry: u16) -> u8 {
         .unwrap_or(0)
 }
 
-pub(crate) fn slope_transition_phase_num(remaining: u8) -> Option<u8> {
-    match remaining {
-        1..=3 => Some(3 - remaining),
-        _ => None,
-    }
-}
-
 fn unit_render_slope_state(
     state: &AppState,
     entity: &crate::sim::game_entity::GameEntity,
+    display_binary_frame: u32,
 ) -> UnitRenderSlopeState {
+    // Drive/Ship Draw_Matrix reads the locomotor-owned cache even when the
+    // cached slope is zero. Terrain is only a compatibility fallback for
+    // locomotor classes excluded from the native override pair.
+    if let Some(slope_state) = locomotor_render_slope_state(entity, display_binary_frame) {
+        return slope_state;
+    }
     if entity.category == EntityCategory::Aircraft {
         return UnitRenderSlopeState::Stable(0);
     }
@@ -166,29 +166,42 @@ fn unit_render_slope_state(
         return UnitRenderSlopeState::Stable(0);
     }
 
-    let terrain_slope = terrain_slope_for_render(state, entity.position.rx, entity.position.ry);
-    let Some(rocking) = entity.rocking.as_ref() else {
-        return UnitRenderSlopeState::Stable(terrain_slope);
-    };
+    UnitRenderSlopeState::Stable(terrain_slope_for_render(
+        state,
+        entity.position.rx,
+        entity.position.ry,
+    ))
+}
 
-    if let Some(phase_num) = slope_transition_phase_num(rocking.transition_ticks_remaining) {
-        let from_slope = clamp_slope_for_render(rocking.prev_slope);
-        let to_slope = clamp_slope_for_render(rocking.curr_slope);
-        if from_slope != to_slope {
-            return UnitRenderSlopeState::Transition {
+fn locomotor_render_slope_state(
+    entity: &crate::sim::game_entity::GameEntity,
+    display_binary_frame: u32,
+) -> Option<UnitRenderSlopeState> {
+    crate::sim::movement::slope_transition::state_for_entity(entity).map(|slope_state| {
+        match slope_state.render_phase(display_binary_frame) {
+            crate::sim::movement::slope_transition::SlopeRenderPhase::Stable(slope) => {
+                UnitRenderSlopeState::Stable(clamp_slope_for_render(slope))
+            }
+            crate::sim::movement::slope_transition::SlopeRenderPhase::Transition {
                 from_slope,
                 to_slope,
                 phase_num,
-            };
+                ..
+            } => {
+                let from_slope = clamp_slope_for_render(from_slope);
+                let to_slope = clamp_slope_for_render(to_slope);
+                if from_slope == to_slope {
+                    UnitRenderSlopeState::Stable(to_slope)
+                } else {
+                    UnitRenderSlopeState::Transition {
+                        from_slope,
+                        to_slope,
+                        phase_num,
+                    }
+                }
+            }
         }
-    }
-
-    let stable_slope = clamp_slope_for_render(rocking.curr_slope);
-    if stable_slope == 0 && terrain_slope != 0 {
-        UnitRenderSlopeState::Stable(terrain_slope)
-    } else {
-        UnitRenderSlopeState::Stable(stable_slope)
-    }
+    })
 }
 
 /// Depth key for one voxel body, from the screen row it was drawn at.
@@ -240,6 +253,9 @@ pub(crate) fn build_unit_instances(
         _ => return,
     };
     let z = state.match_state.input.zoom_level;
+    // Presentation runs after the just-completed simulation frame; snapshot
+    // the one binary frame used by every Drive/Ship Draw_Matrix in this pass.
+    let display_binary_frame = sim.session.binary_frame.wrapping_sub(1);
     let (cam_x, cam_y, sw, sh) = (
         state.match_state.input.camera_x,
         state.match_state.input.camera_y,
@@ -322,7 +338,7 @@ pub(crate) fn build_unit_instances(
         // Render slope comes from the locomotor's cached previous/current
         // slope during gamemd's 3-frame transition, then falls back to the
         // stable terrain slope path.
-        let slope_state = unit_render_slope_state(state, entity);
+        let slope_state = unit_render_slope_state(state, entity, display_binary_frame);
         let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
         let interp_z = pos.z;
         if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 120.0) {
@@ -917,10 +933,78 @@ pub(super) fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::InternedId;
+    use crate::sim::movement::locomotor::LocomotorState;
     use crate::sim::spawn_manager::{
         SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
     };
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn drive_ship_slope_unit_extraction_uses_last_processed_frame_without_mutation() {
+        let mut sim = Simulation::new();
+        let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("DRIVE");
+        entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+            LocomotorKind::Drive,
+            39,
+        ));
+        let slope = entity
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .active_slope_transition_mut()
+            .unwrap();
+        slope.snap(3, 39);
+        slope.sample_process_entry(8, 40);
+        sim.substrate.entities.insert(entity);
+
+        for (committed_binary_frame, expected) in [
+            (
+                41,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 3,
+                    to_slope: 8,
+                    phase_num: 0,
+                },
+            ),
+            (
+                42,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 3,
+                    to_slope: 8,
+                    phase_num: 1,
+                },
+            ),
+            (
+                43,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 3,
+                    to_slope: 8,
+                    phase_num: 2,
+                },
+            ),
+            (44, UnitRenderSlopeState::Stable(8)),
+        ] {
+            sim.session.binary_frame = committed_binary_frame;
+            let before_hash = sim.state_hash();
+            let display_binary_frame = sim.session.binary_frame.wrapping_sub(1);
+            let entity = sim.substrate.entities.get(1).unwrap();
+            assert_eq!(
+                locomotor_render_slope_state(entity, display_binary_frame),
+                Some(expected)
+            );
+            assert_eq!(
+                locomotor_render_slope_state(entity, display_binary_frame),
+                Some(expected),
+                "repeated presentation extraction for one committed frame is stable"
+            );
+            assert_eq!(sim.state_hash(), before_hash, "presentation is read-only");
+        }
+    }
 
     fn spawn_manager(states: &[SpawnSlotState]) -> SpawnManagerState {
         SpawnManagerState {
@@ -1035,20 +1119,6 @@ mod tests {
             assert!((actual - expected).abs() < 0.0001);
         }
         assert_ne!(unit, aircraft);
-    }
-
-    #[test]
-    fn drive_vxl_slope_transition_phase_counts_three_visible_frames() {
-        assert_eq!(slope_transition_phase_num(3), Some(0));
-        assert_eq!(slope_transition_phase_num(2), Some(1));
-        assert_eq!(slope_transition_phase_num(1), Some(2));
-        assert_eq!(slope_transition_phase_num(0), None);
-    }
-
-    #[test]
-    fn drive_vxl_slope_transition_rejects_out_of_range_remaining() {
-        assert_eq!(slope_transition_phase_num(4), None);
-        assert_eq!(slope_transition_phase_num(u8::MAX), None);
     }
 
     #[test]

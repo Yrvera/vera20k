@@ -1069,11 +1069,11 @@ pub struct C4PlantState {
     pub target_building_id: u64,
 }
 
-/// Body rocking and slope-transition state for voxel-bodied units.
+/// Body rocking state for voxel-bodied units.
 ///
-/// Tracks both the spring-damped roll/pitch angles (driven by weapon impacts
-/// and EMP wobble) and the 3-tick quaternion-SLERP slope transition when the
-/// unit moves to a cell with a different slope_type.
+/// Tracks spring-damped roll/pitch angles driven by weapon impacts and EMP
+/// wobble. Drive/Ship slope interpolation is locomotor-owned state and is
+/// intentionally independent from this optional component.
 ///
 /// Optional component on `GameEntity` — present on vehicles, ships, and
 /// voxel-bodied buildings; `None` for infantry, aircraft, SHP-bodied
@@ -1090,12 +1090,6 @@ pub struct RockingState {
     pub vel_forwards: SimFixed,
     /// If true, integrate without damping (EMP wobble, naval continuous rocking).
     pub is_ship_rocking: bool,
-    /// Slope_type before the current transition (== curr_slope when no transition).
-    pub prev_slope: u8,
-    /// Current cell's slope_type.
-    pub curr_slope: u8,
-    /// Counts down from 3 to 0. Nonzero ⇒ render-time SLERP between prev and curr.
-    pub transition_ticks_remaining: u8,
 }
 
 impl RockingState {
@@ -1103,11 +1097,9 @@ impl RockingState {
     /// renders via the static atlas path.
     pub const DEADBAND: SimFixed = SimFixed::lit("0.00002");
 
-    /// Returns true when the unit can render via the static atlas path
-    /// (no active rocking, no in-progress slope transition).
+    /// Returns true when the body-rocking transform is neutral.
     pub fn is_neutral(&self) -> bool {
         !self.is_ship_rocking
-            && self.transition_ticks_remaining == 0
             && self.angle_sideways.abs() <= Self::DEADBAND
             && self.angle_forwards.abs() <= Self::DEADBAND
     }
@@ -1317,13 +1309,6 @@ mod tests {
         // DEADBAND is 2e-5; SIM_EPSILON is ~1.5e-5 — exactly one delta below.
         r.angle_sideways = SimFixed::DELTA;
         assert!(r.is_neutral());
-    }
-
-    #[test]
-    fn rocking_transition_is_not_neutral() {
-        let mut r = RockingState::default();
-        r.transition_ticks_remaining = 1;
-        assert!(!r.is_neutral());
     }
 
     #[test]
