@@ -325,3 +325,376 @@ Read-only worker: no annotation was applied.
 - Retail maps: configured retail root `C:/Users/enok/Documents/Command and Conquer Red Alert II`; bounded archive and loose-map scans listed in Section 4.
 - Current Rust: `src/sim/movement/movement_bridge.rs`, `src/sim/movement/movement_tick.rs`, `src/sim/pathfinding/core.rs`, `src/sim/map/bridge_topology.rs`, relevant movement/world bridge tests.
 - Prior-doc audit: `docs/research/ADDRESS_MAP.md`, `docs/research/ZBUFFER_DEPTH_SYSTEM.md`, `docs/research/BRIDGE_TRAVERSAL_STATE_GHIDRA_REPORT.md`, `docs/research/SHIP_LOCOMOTION_CLASS_GHIDRA_REPORT.md`, `docs/research/BRIDGE_BSS_RUNTIME_CONSTANT_SWEEP_GHIDRA_REPORT.md`, `docs/research/bridges/04-locomotion-height-tubes/BRIDGE_LOCOMOTOR_DRIVE_SHIP_GHIDRA_REPORT.md`, `docs/research/bridges/00-system-models/BRIDGE_REMAINING_GAPS_FOLLOWUP_GHIDRA_REPORT.md`, `docs/research/UNIT_0X6C8_CONVOY_LINK_LIFECYCLE_RESWARM_20260528.md`.
+
+## 12. Design-Review Repair Addendum (2026-08-27)
+
+This addendum resolves the first design critic's load-bearing questions. It does not claim implementation or parity `PASS`; the GSI row remains open until implementation, validation, fresh criticism, and the phase-wide reverse audit complete.
+
+### 12.1 Exact coordinate-to-cell semantics and destination authority
+
+Live `MapClass__Get_CellClass_At_Coord @ 0x00565730` converts each signed coordinate component as:
+
+```text
+biased = coord + ((coord >> 31) & 0xFF)
+cell   = biased >> 8
+```
+
+This is signed division by 256 truncated toward zero. It is not Euclidean/floor division: `-1..=-255` map to cell 0, `-256` maps to -1, `255` maps to 0, and `256` maps to 1. It then forms `cell_y * 0x200 + cell_x`; an invalid linear index/capacity/pointer returns the shared dummy cell.
+
+The ordinary Ship reader copies the immediate destination triple from the Ship locomotor before this lookup. Therefore current Rust's exact authority for the structural destination cell is `ShipLocomotionRuntime.destination.x/y`, not `MovementTarget.final_goal` or `path.last()`. `final_goal`, then `path.last()`, may retain the existing neutral 2D fallback only when no active Ship destination exists. If an active destination exists but maps outside the valid Rust `PathGrid`, the defensive result is also neutral 2D; a stale final goal must not substitute a different structural cell.
+
+### 12.2 Exact native 3D distance helper and discriminator
+
+The Ship caller uses `CoordStruct__Distance3D @ 0x0041C380`. Current Rust already ports that routine as `util::native_x87::distance_3d_leptons` (`src/util/native_x87.rs`): wrapping signed dword deltas, x87-style square/sum, f32 `Sqrt_Approx`, and `Math__ftol` truncation. An exact integer square root is not equivalent.
+
+The decisive regression is:
+
+```text
+distance_3d_leptons([0, 0, 0], [129, 0, 0]) == 128
+SlowdownDistance = 129
+128 < 129 -> brake
+```
+
+An exact integer square root would return 129 and fail the native strict comparison. The structural example remains planar 100 plus signed Z 416 -> native 3D result 427; with slowdown 500, `427 < 500` brakes.
+
+### 12.3 Exact current/destination world Z reconstruction
+
+The current representation's canonical object-Z precedence is demonstrated by `src/sim/combat/mod.rs::object_world_z_leptons`:
+
+1. `Position.exact_z_leptons`, when present, is already absolute and wins.
+2. Otherwise exact world X/Y are `rx * 256 + sub_x.to_num::<i32>()` and `ry * 256 + sub_y.to_num::<i32>()`.
+3. `ground_height_leptons(cell.level, cell.slope_type, world_x, world_y)` supplies the signed sloped terrain surface. The helper sign-extends `level as i8`; for `Level=0xFF`, slope 0, the native-compatible result is -103 leptons because the signed `/ 256` conversion truncates toward zero.
+4. Add the 416-lepton deck height only when the existing owner `on_bridge` authority is true. A flat-water Ship under a high bridge remains `on_bridge=false` at the water/ground Z.
+
+`Position.z * 104` is only the existing mapless fallback and treats the byte as unsigned. It cannot be the exact valid-gameplay authority for signed levels, slopes, or layer state. The destination's ground Z is reconstructed at its exact stored X/Y from the destination `PathCell.ground_level` and `slope_type`; add 416 only for `PathCell::has_structural_bridge()`. The stored destination Z is not the braking target-Z authority because the native reader recomputes ground Z and the structural offset.
+
+### 12.4 Production map-authority availability and defensive contract
+
+Valid production gameplay publishes both required projections:
+
+- `Scenario::post_map` calls `Simulation::rebuild_dynamic_navigation`; that routine requires `resolved_terrain` and constructs/publishes `PathGrid::from_resolved_terrain_with_bridges`.
+- `Simulation::advance_app_frame` pins `path_grid_snapshot()` and passes it through the frame/movement pipeline while `resolved_terrain` remains simulation-owned.
+- Headless launch rejects `!navigation_published` and `sim.path_grid().is_none()`.
+- Snapshot map-authority restoration rejects missing `ResolvedTerrainGrid` and rebuild failure.
+
+The app loader logs rather than panics on an initial publication failure, and test-only movement wrappers can pass absent grids. Accordingly, missing terrain, missing `PathGrid`, or an out-of-grid active destination is a VERA-internal defensive state: preserve the existing neutral 2D distance and apply no structural Z term. Tests must pin this behavior. It is not evidence that stock gameplay lacks destination/path-grid authority.
+
+### 12.5 Complete `Set_Destination` guard mapping
+
+`ShipLocomotionClass::Set_Destination @ 0x0069F450` checks these owner predicates, in this exact order, before installing the destination:
+
+| Order | Native dispatch/body | Native authority | Current Rust authority | Required bounded delta |
+|---:|---|---|---|---|
+| 1 | owner vtable `+0x37C` -> `UnitClass__IsCrashing @ 0x00746C90` | `Unit+0x6D8 != -1` or `TechnoClass__IsUnderEMP` | `GameEntity.dying` is the current ordinary stock naval sinking/death command gate | Preserve `dying`. Retail EMP is TS-legacy dormant (`EMPLockRemaining` has no active writer), so no active-stock EMP field is required; mod-enabled EMP remains outside this stock row. |
+| 2 | owner vtable `+0x380` -> timer predicate `0x004DE770` | `(current_frame - timer_start@+0x6A0) < timer_duration@+0x6A8`; repository protocol docs identify the ordinary use as `IsInRearmTimer` | `attack_target.cooldown_ticks > 0` is the existing ordinary rearm authority | Add this predicate to movement destination admission. |
+| 3 | owner vtable `+0x1D4` -> `TechnoClass__IsWarpingOut @ 0x0070C5B0` | byte `Techno+0x270` | `teleport_state.warp_out_active()`; `TeleportPhase::Relocate` | Add this predicate to movement destination admission. |
+| 4 | owner vtable `+0x1D8` -> `TechnoClass__IsBeingWarped @ 0x0070C5C0` | byte `Techno+0x271` | `teleport_state.warp_in_active()`; `ChronoDelay` with `being_warped_ticks > 0` | Add this predicate to movement destination admission. |
+
+`movement_commands::can_accept_destination` already gates `dying` and is called by all three public destination-install paths in that module, but it lacks the existing rearm and teleport predicates. Internal arrival/replay calls consume previously admitted navigation rather than install an unrelated player retarget. The retail EMP corpus has only disabled `[EMPuls]`/`EMEffect=yes` content and no live `EMPLockRemaining` writer, so `IsUnderEMP` is evidence-excluded for active stock. No new state field is required for the four stock mappings.
+
+The old setter-guard prose is stale in several documents. `SHIP_LOCOMOTION_CLASS_GHIDRA_REPORT.md` and `BRIDGE_LOCOMOTOR_DRIVE_SHIP_GHIDRA_REPORT.md` misname `+0x37C/+0x380` as warp predicates; `BRIDGE_LOCOMOTOR_WALK_DROPPOD_TELEPORT_GHIDRA_REPORT.md` also misnames `+0x380`; `FOOTCLASS_VTABLE_COMPLETE.md` calls `0x004DE770` `IsInGarrison`. These claims must be corrected to the four-body mapping above.
+
+### 12.6 Exhaustive locomotor `Force_Track` caller result
+
+`ShipLocomotionClass::Force_Track @ 0x006A0310` writes the supplied signed selector. A selector `>= 0x40` bypasses the active braking reader's signed `< 0x40` gate, so every locomotor-shaped call through vtable slot `+0x70` was recounted.
+
+| Call site | Enclosing use | Selector |
+|---|---|---:|
+| `0x004591AF` | bunker/link installer `0x00458E50` | `0x43..0x46` |
+| `0x0045943B` | `BuildingClass::UndockUnit` | `0x47` |
+| `0x00459760` | `BuildingClass::ReleaseDockedHarvester` | `0x47` |
+| `0x007101B3` | `TechnoClass::PerformDeploy` | `-1` |
+| `0x006CCAA2` | `SuperClass::Launch` | `-1` |
+| `0x0062AB24` | `FUN_0062A980` | `-1` |
+
+All three positive-selector paths require the reciprocal building/unit pointer at `+0x2E4`. A live instruction write census found the only nonzero stores to that pointer at `0x00459301` and `0x0045930F`, inside the bunker installer; other writers only clear it. Retail `rulesmd.ini` has exactly one `Bunker=yes` type, `[NATBNK]`, a land Tank Bunker. Every stock Ship-CLSID type is a naval/water mover, so no valid stock Ship can acquire this link or a selector `>=0x40`. The similarly named shipyard undock functions do not establish `+0x2E4`; they merely consume a pre-existing link.
+
+Therefore the stock Ship implementation needs no forced-track selector field or bypass gate. A modded/invalid Ship linked to a bunker is an explicit mod-support residual. The three `-1` calls remain signed `<0x40` and do not bypass braking.
+
+The independent `Passive` gate is also stock-zero: the Ship type constructor default is false, all 13 stock Ship-CLSID sections are effectively false, and no inspected retail INI/map override assigns `Passive`. No stock field/gate is required.
+
+### 12.7 Snapshot/hash consequence
+
+No destination-Z cache, global, selector, or guard-state field is added; the existing destination, cooldown, dying, teleport, terrain, and bridge facts are already serialized/hashed where applicable. Payload layout and world-hash membership therefore remain unchanged. Repository compatibility policy still requires a behavior-epoch bump from snapshot version 112 to 113 and rejection of version 112. Scenario hashes may change because movement behavior changes, but the hash algorithm and membership list do not.
+
+### 12.8 Repaired implementation handoff
+
+- Put the pure Ship-only distance evaluation beside `ship_process_target_speed_fraction` / `update_ship_speed_fraction` in `drive_locomotion.rs`.
+- Require `ShipLocomotionRuntime.destination` for structural lookup. Convert its signed X/Y to checked `u16` cells with native truncation-toward-zero semantics; use `PathCell::has_structural_bridge()` and that cell's signed ground/slope facts.
+- Derive current world Z from `exact_z_leptons`, else resolved current terrain/slope plus 416 only for existing `on_bridge`; never infer valid-world Z from unsigned `Position.z` alone.
+- Feed current/destination signed `[i32; 3]` coordinates to `util::native_x87::distance_3d_leptons`; keep the existing strict `< SlowdownDistance` owner unchanged.
+- With no active destination, missing map facts, or an invalid active destination cell, retain deterministic neutral 2D behavior and no structural term. Never borrow a structural cell from `final_goal` while an active destination disagrees.
+- Add rearm, warp-out, and warp-in predicates to `movement_commands::can_accept_destination`; preserve its ordinary `dying` gate. Add no new component state.
+- Remove both generic `MovementZone=Water`/current-bridge duplicates so non-Ship water movers retain neutral 2D behavior.
+- Bump snapshot version to 113, reject version 112, and leave payload/hash membership unchanged.
+
+Required discriminators include destination-versus-current cell, immediate destination versus disagreeing final goal, active destination with `final_goal=None`, structural versus merely walkable, 100/427/500, `[0,0,0]` to `[129,0,0]` returning 128 with slowdown 129, retarget/cancel, all four setter guards, signed `Level=0xFF -> -103`, exact-Z precedence, slopes, `on_bridge`, missing-grid defense, non-Ship water ownership, and unchanged Drive/flat-under-bridge state.
+
+### Addendum sources
+
+- Live Ghidra MCP, active `gamemd.exe`: `MapClass__Get_CellClass_At_Coord @ 0x00565730`, `CoordStruct__Distance3D @ 0x0041C380`, `ShipLocomotionClass::Set_Destination @ 0x0069F450`, `ShipLocomotionClass::Force_Track @ 0x006A0310`, `UnitClass__IsCrashing @ 0x00746C90`, timer predicate `0x004DE770`, `TechnoClass__IsWarpingOut @ 0x0070C5B0`, `TechnoClass__IsBeingWarped @ 0x0070C5C0`, and the six call sites in Section 12.6.
+- Retail data: `ini/rulesmd.ini` Ship sections, `[NATBNK]`, and disabled `[EMPuls]`; configured retail INI/map corpus scanned for `Passive` and stock Ship overrides. Dormancy cross-check: `docs/research/combat/systems/emp.md`.
+- Current Rust: `src/util/native_x87.rs`, `src/util/lepton.rs`, `src/sim/components.rs`, `src/sim/combat/mod.rs`, `src/sim/movement/movement_commands.rs`, `src/sim/movement/teleport_movement.rs`, `src/sim/pathfinding/core.rs`, `src/sim/scenario_post_map.rs`, `src/sim/world/mod.rs`, `src/sim/snapshot.rs`, and `src/headless_scenario.rs`.
+
+## 13. Design-Critic-2 Repair Addendum (2026-08-27)
+
+This addendum supersedes the Section 12 handoff wherever the two differ. It closes the critic's three bounded evidence gaps: rejection ordering, fixed-point range, and the setter's stored Z. It still does not claim implementation or parity `PASS`.
+
+### 13.1 Rejection is a Ship-only transaction boundary
+
+Live `ShipLocomotionClass::Set_Destination @ 0x0069F450` calls all four owner predicates before its first destination write at `0x0069F489`. A rejected call therefore preserves the old immediate destination exactly. The setter also does not change the owner mission, order, attack target, NavCom, committed head, path, or speed state.
+
+The current Rust placement is not equivalent if the extra predicates are merely added to `movement_commands::can_accept_destination`. That helper applies to every locomotor, and production `Command::Move`, `Command::AttackMove`, and `Command::RepairAtDepot` clear or replace mission/order/attack/dock state before `issue_move_command_with_layered` reaches it. In particular, clearing `attack_target` destroys the only current ordinary-rearm authority, `attack_target.cooldown_ticks`, before a late test can observe it.
+
+The current caller census is:
+
+| Rust entry/caller family | Can reach recognized Ship? | Mutation ordering result |
+|---|---|---|
+| `issue_move_command` | yes; forwards to layered entry | layered entry must preflight before path or state work |
+| `issue_move_command_with_layered` | yes; player Move/AttackMove/repair, persistent orders, pursuit, scatter, production exit, and internal miner callers converge here | preflight at function entry protects direct/AI/internal calls; high-level commands which already mutate require an earlier identical check |
+| `set_destination_for_teleporter_entity` | stock active Ship and active Teleport are mutually exclusive, but its fallback can call layered movement | run the same recognized-Ship-only preflight before piggyback/teleport mutation; non-Ship behavior is unchanged |
+| `issue_direct_move` | generic entry; blocker scatter does not statically exclude a vehicle Ship | run preflight before its same-cell return and before `MovementTarget`/facing writes; this function is not currently a NavCom/Ship-destination writer |
+| `navcom::set_destination_internal_cell` | yes only from the successful layered commit; its other production callers are explicitly Drive-only pending-arrival/queue paths | repeat the pure preflight before NavCom or Ship-runtime writes as defense in depth; return rejection without partial owner mutation |
+| `Command::{Move, AttackMove, RepairAtDepot}` | yes without contradictory type predicates | call preflight before mission teardown/queueing and before attack/order/dock clears |
+| `EnterTransport`, `PlantC4`, `CaptureBuilding`, `EnterBunker` movement branches | stock Ship excluded by passenger/C4/Engineer/Bunkerable rules | still place the cheap recognized-Ship-only preflight before their first side effect, so invalid/modded class combinations cannot bypass the setter contract |
+| persistent AttackMove resume and combat pursuit | yes | they do not clear the attack/order before their layered call; entry preflight is early enough |
+| miner/refinery, infantry damage scatter, passenger/garrison, and sell-ejection direct callers | no stock Ship by harvester/infantry/passenger role | entry preflight remains the defensive control; their existing non-Ship ordering is not changed |
+
+The smallest fitting authority is one pure predicate owned beside the Ship setter adapter, callable read-only from `world_commands` and every movement entry. It first recognizes `LocomotorKind::Ship`; non-Ship returns admitted immediately. Only recognized Ship evaluates, in native order, `dying`, active `attack_target.cooldown_ticks`, `teleport_state.warp_out_active()`, and `teleport_state.warp_in_active()`. Existing generic `can_accept_destination` keeps its existing dying/build/unload policy and does not gain Ship rearm/warp semantics.
+
+A command-level rejection must preserve at least mission state and timer, `order_intent`, the full attack target/cooldown/provenance, `movement_target`, owner NavCom/aux/queue, Ship destination/head/path/speed, facing target, dock/C4/capture/passenger/bunker state, and cell occupation. A Walk locomotor with the same positive weapon cooldown is the required control: it remains admitted under the old non-Ship policy and may be retasked normally.
+
+### 13.2 Native distance remains `i32`; conversion is comparison-preserving
+
+Native retains the `Math__ftol` result as a nonnegative signed whole-lepton `i32` and compares it directly with signed integer `SlowdownDistance` using strict `JL`. Rust's `distance_3d_leptons` already returns that `i32`; converting it eagerly with `SimFixed::from_num` is unsafe because `SimFixed = I16F16` represents only `-32768 .. 32767.9999847412109375`.
+
+The exact Rust boundary adapter is:
+
+- keep `distance_3d_leptons`' result as `i32` through the Ship helper;
+- for `0..=32767`, convert the integer exactly to `SimFixed`;
+- for `32768..=i32::MAX`, use `SimFixed::MAX`;
+- do not wrap, panic, use a fallible unchecked conversion, or clamp the slowdown threshold.
+
+This preserves the strict comparison for every nonnegative representable Rust slowdown `s`. When `d <= 32767`, integer conversion is exact, so `fixed(d) < s` is identical. When `d >= 32768`, native `d < s` is false because every representable `s` is less than 32768, and the saturated expression `SimFixed::MAX < s` is also false because `s <= SimFixed::MAX`. Fractional thresholds are covered by the same proof. Equality remains non-braking.
+
+Required range tests pin 32767 as exact, 32768 as `SimFixed::MAX`, both against `SimFixed::MAX`, and a long-map 3D result above 32768. The long-map case must complete deterministically without panic or signed/fixed-point wrap. The 129 -> 128 and 100/427/500 discriminators remain required.
+
+### 13.3 Stored destination Z is active state, not disposable derivation
+
+The live setter stores the full incoming signed triple and then, for any non-null target whose X/Y/Z resolves to a structural cell, adds 416 to the stored Z. It does not replace incoming Z with cell ground. Consequently the caller and setter have separate responsibilities:
+
+- a cell destination caller supplies the exact cell-center coordinate, including the exact signed/slope ground Z at that X/Y; the Ship setter adapter then adds 416 iff the resolved cell has native structural bit `0x100`;
+- an entity/object destination caller supplies that target's incoming exact object coordinate Z; the Ship setter preserves it and applies the same structural-cell addition. It must not flatten an entity target to cell ground.
+
+The native stored-coordinate census is:
+
+| Consumer | Address | Stored-Z effect |
+|---|---:|---|
+| immediate `Destination` getter | `0x0069F3A0` | returns stored X/Y/Z verbatim |
+| `Is_Moving` | `0x0069F290` | any non-NullCoord component, including Z, keeps the destination non-null |
+| main `Process` | `0x0069FC10` | exact owner/destination arrival comparison reads all three components; later destination refresh calls slot 17 again |
+| `Process_Drive_Track` braking | `0x006A05F0`, early block | copies stored X/Y/Z, uses X/Y to find the cell, then deliberately recomputes braking target Z as ground plus conditional 416 |
+| `Process_Drive_Track` terminal arrival | `0x006A05F0`, terminal block | resolves NavCom only for target X/Y cell equality, then compares the **owner's current coordinate Z** (owner vtable `+0x4C`) to stored destination Z with `abs(delta) < 2 * g_ShipHeightStep` before clearing it |
+| `Stop_Moving` | `0x0069F510` | clears all three components to Ship NullCoord |
+| Ship IPersistStream load/save | load `0x0069EE90`, save `0x0069EF10` | common `0x0055AAC0/0x0055AA60` reads/writes the class's raw virtual size (`0x006A42A0` returns `0x70`), so the stored triple is inside persisted class state |
+
+Thus recomputing target Z only for braking does not make the stored Z optional.
+
+Current Rust has one load-bearing mismatch: `navcom::target_cell_coord` is shared by Drive and Ship and stores a coarse level number (`level` or `bridge_deck_level`) in `DriveCoord.z`, not signed world leptons. `DriveCoord` and `ShipLocomotionRuntime` already derive `Serialize`, `Deserialize`, `Eq`, and `Hash`; `snapshot.rs` already round-trips Ship destination, and `world_hash.rs` hashes the whole runtime. `ready_producer` consumes destination presence/X/Y and intentionally ignores Z. Stop/cancel already clears `destination` through `ship_stop_moving`.
+
+The bounded repair must split construction without changing Drive:
+
+1. Keep current Drive `target_cell_coord` semantics byte-for-byte.
+2. For a successful Ship cell target, construct X/Y as the existing cell center (`rx * 256 + 128`, `ry * 256 + 128`). From the same `ResolvedTerrainCell`, evaluate `ground_height_leptons(cell.level, cell.slope_type, x, y)`, retaining signed `level as i8` and slope arithmetic; then add immutable 416 only when `cell.bridge_facts.has_structural_bridge()` is true. This is the MapClass-side structural authority; the braking read continues to use the corresponding `PathCell::has_structural_bridge()` projection.
+3. If a Ship setter adapter is passed an already-exact entity/object `DriveCoord`, preserve its incoming Z and only add the structural 416. Current production has no Ship entity-target installer: `resolve_entity_nav_target_drive_coord` refreshes only `DriveLocomotionRuntime::head_to`; leave that Drive path unchanged rather than inventing entity pursuit scope. Unit-test the setter adapter's incoming-Z rule so a later native-shaped caller cannot flatten it.
+4. A valid production cell install has `ResolvedTerrainGrid`. For the existing test/internal optional-terrain seam, use deterministic incoming/fallback Z 0 and no structural adjustment; do not panic or fabricate a bridge. This is VERA-internal defense, not stock behavior.
+
+Retarget must replace the entire stored triple only after admission; a rejected retarget leaves the previous triple and every owner field unchanged. Null/cancel clears it. Snapshot round-trip must retain a nonzero adjusted Z, and changing only destination Z must change the existing world hash without changing hash membership.
+
+### 13.4 Snapshot consequence, corrected
+
+There is still no new payload field and no hash-membership change, but successful Ship cell destinations now write a different value into the existing serialized/hashed `DriveCoord.z`. The behavior epoch remains 113 and version 112 is rejected. Tests must cover both the version gate and nonzero destination-Z round-trip/hash sensitivity.
+
+### 13.5 Superseding implementation handoff
+
+- Add a pure recognized-Ship admission predicate beside `navcom`'s Ship setter. Call it from all movement issue entries and repeat it inside `set_destination_internal_cell`; call it in each high-level movement command before mission/order/attack/dock/radio mutation. Leave Walk and all other locomotors' rearm behavior unchanged.
+- Split Ship cell-coordinate construction from Drive in `navcom.rs`. Store exact signed ground/slope leptons plus structural 416 for Ship; retain incoming exact Z plus structural 416 for the setter adapter's entity-coordinate form. Do not change Drive destination/head semantics.
+- Keep the Ship braking helper's native distance as `i32`. Convert only at the existing `SimFixed` speed-update boundary using exact-through-32767/saturate-from-32768 semantics, then retain strict `<`.
+- Continue recomputing braking target Z from destination X/Y, terrain, and structural bridge state; do not read stored Z as the braking ground authority.
+- Bump snapshot version 112 -> 113, reject 112, keep payload/hash membership unchanged, and test the changed existing destination-Z value.
+
+Required new critic-2 discriminators are command rejection with complete old-state preservation, Move and AttackMove pre-mutation order, direct/AI/internal entry rejection, Walk-with-rearm acceptance, exact Ship stored Z on flat/signed/slope/structural cells, Drive stored-Z control, entity incoming-Z preservation, getter/retarget/cancel, snapshot/hash, 32767/32768, and long-map distance. All prior discriminators remain in force.
+
+### Addendum-2 sources
+
+- Live Ghidra MCP, active `gamemd.exe`: `ShipLocomotionClass::Set_Destination @ 0x0069F450`, `Destination @ 0x0069F3A0`, `Is_Moving @ 0x0069F290`, `Process @ 0x0069FC10`, `Process_Drive_Track @ 0x006A05F0`, `Stop_Moving @ 0x0069F510`, Ship load/save bodies `0x0069EE90/0x0069EF10`, common raw persistence `0x0055AAC0/0x0055AA60`, and virtual size return `0x006A42A0`.
+- Current Rust caller/consumer census: `src/sim/movement/{movement_commands,navcom,movement_tick,drive_locomotion}.rs`, `src/sim/world/{world_commands,world_orders,world_hash}.rs`, `src/sim/{components,snapshot}.rs`, and the direct/layered callers found under `src/sim/{combat,miner,passenger,production,movement}`.
+
+## 14. Design-Critic-3 Repair Addendum (2026-08-27)
+
+This addendum supersedes Sections 12 and 13 wherever they differ. In particular, it corrects the earlier identification of owner vtable `+0x380`, closes stock `UnitClass::Scatter` as a Ship destination installer, and makes the stored-Z terminal consumer implementation-relevant. It does not claim implementation or parity `PASS`.
+
+### 14.1 Stock Ship scatter reaches the exact setter
+
+Live `UnitClass::Scatter @ 0x00743A50` is the active scatter override for category `Unit`, which includes every stock naval unit using Ship locomotion. In both destination-producing branches it resolves a valid `CellClass*` and ends with owner vtable call `+0x480`; `TechnoClass::Set_Destination @ 0x00741970` / `FootClass::Set_Destination_Internal @ 0x004D94B0` resolves the target coordinate and calls the active locomotor's `Move_To`/setter slot `+0x44`. For a recognized Ship that final call is `ShipLocomotionClass::Set_Destination @ 0x0069F450`. The null-threat branch uses `Find_Nearby_Passable_Cell`; the directional branch checks playfield membership and `Can_Enter_Cell` before the same setter dispatch. A rejected Ship setter changes neither the prior locomotor destination nor the owner mission/NavCom.
+
+Current Rust `bump_crush::scatter_blocker` does not exclude Ship. Its vehicle branch accepts a category-`Unit` blocker, selects an adjacent `PathGrid::is_walkable` and unoccupied cell, then calls generic `movement_commands::issue_direct_move`. That direct entry currently writes only `MovementTarget` and facing. It does **not** install owner NavCom or `ShipLocomotionRuntime.destination`, so a stock Ship scattered by a blocked mover can travel with a stale prior Ship destination or with none. The active callers are `movement_tick`, the three `movement_occupancy` paths, `tube_movement`, and `docking/bunker_install`; their production hosts already possess `ResolvedTerrainGrid` directly or through `Simulation`, so terrain can be threaded without inventing an authority. The other direct callers (infantry damage, miners, passengers, sell ejection, building entry) are stock non-Ship controls but must pass the same optional terrain argument.
+
+The repair boundary is transactional. For a recognized Ship, `issue_direct_move` must first read-only preflight, validate the target cell in resolved terrain, compute the complete exact setter coordinate, and construct the complete direct `MovementTarget`. Only then may one mutable commit replace owner NavCom, Ship destination, movement target, and facing. Guard, out-of-grid, missing-terrain, or unsupported-slope failure returns false without changing stale prior navigation/destination/movement/facing; a first install and a replacement both use the exact same commit. Non-Ship direct callers retain their present behavior.
+
+### 14.2 Stored Z controls terminal clear and retry
+
+The relevant terminal block in `ShipLocomotionClass::Process_Drive_Track @ 0x006A05F0` runs after the committed head is nulled and the selector/cursor are reset. Its exact predicate/order is:
+
+1. Require non-null owner `NavCom @ +0x5A4`.
+2. Resolve `NavCom->vtable+0x4C` and convert its signed X/Y to cells with `(coord + ((coord >> 31) & 0xFF)) >> 8`.
+3. Resolve the owner's current cell through owner vtable `+0x1B8` and require both cells equal.
+4. Resolve the **owner's current world coordinate** through owner vtable `+0x4C`; this is not a second NavCom coordinate read.
+5. Form signed wrapping `delta = owner.Z - Ship.destination.Z`, native absolute value `(delta ^ (delta >> 31)) - (delta >> 31)`, and require strict signed `< g_ShipHeightStep * 2`. Live `g_ShipHeightStep=104`, so the threshold is 208 and equality fails.
+6. Only on that conjunction clear the stored destination triple and the committed-head triple. On failure the head/selector are already retired, but the immediate destination and owner NavCom remain; the next `Process @ 0x0069FC10` no-track path re-resolves NavCom and calls Ship setter slot `+0x44` before rebuilding movement.
+
+For an ordinary nonstructural cell target, incoming and stored Z agree and the terminal delta is normally zero. For a stock Ship under a flat structural bridge, owner `OnBridge=false` leaves owner Z at water/ground while the setter stored `ground+416`; the delta is 416, so the strict `<208` predicate fails and native retains/retries the destination. For an on-deck owner whose current Z agrees with the adjusted destination, it can pass. This relationship is active and is why stored Z cannot be replaced by an unconditionally derived braking-only value.
+
+Current Rust `navcom::finish_drive_navigation` unconditionally calls the Ship null path at every terminal movement, clears NavCom/destination/queue, and therefore erases the active 208-lepton distinction. The existing `navigation.pending_arrival_clear` process-entry retry path already rebuilds a path for a surviving cell NavCom, but its ownership/comments and helpers are Drive-only. The smallest repair generalizes that existing deferred seam to Drive/Ship: terminal Ship completion always retires head/path execution; it clears owner navigation only when the exact cell-plus-owner-Z predicate passes, otherwise preserves NavCom and stored destination and schedules the existing next-tick path rebuild. Current production installs only `NavTargetRef::Cell` for Ship; `Entity/Object/Building` variants have no production Ship installer. A non-cell defensive value therefore cannot prove arrival and must preserve/retry rather than fabricate a coordinate.
+
+### 14.3 `+0x380` is not the ordinary weapon ROF timer
+
+The earlier addenda inherited a stale name and wrongly mapped owner vtable `+0x380 -> 0x004DE770` to `attack_target.cooldown_ticks`. Live evidence separates two owner timers:
+
+| Timer | Exact native fields/writers | Relevance to Ship setter |
+|---|---|---|
+| ordinary weapon ROF/rearm | Techno `+0x2EC` start and `+0x2F4` duration; written by `TechnoClassFireAtSpawnsBullet @ 0x006FE940` and read by the fire-error pipeline | **not read** by `0x004DE770` or Ship setter |
+| post-warp/post-detach idle delay | Foot/Techno `+0x6A0` start and `+0x6A8` delay; read by `0x004DE770` as `remaining != 0` | exact setter guard 2 |
+
+The complete direct-offset instruction census finds owner `+0x6A8` initialized to zero in `FootClass::Constructor @ 0x004D3402`, read by `0x004DE770`, and no ordinary-fire writer. The active indirect writer is `WarpAttachClass::Detach @ 0x0062A4A0`: on full detach it writes its **owner** (`WarpAttachClass+0x24`) `+0x6A0=current frame` and `+0x6A8=3 * value at the selected locomotor/weapon record +0xB0`; early/common cleanup writes the attached target's `+0x6A8=0`. `WarpAttachClass+0x24` is the warping/attacking owner and `+0x28` is its attached target, proven by constructor/use census and the existing WarpAttach report.
+
+A valid object has one active locomotor identity. All stock Ship entries use the Ship CLSID, while an owner that reaches WarpAttach relocation/detach is the teleport/warp owner. No stock Ship type has a temporal/parasite WarpAttach owner path, and the attached Ship target is explicitly cleared to zero. Therefore guard 2 is evidence-excluded for stock recognized Ships. It must **not** reject a normally firing/rearming Ship, and this Phase-3 slice must not promote target-owned `AttackTarget.cooldown_ticks` into a new owner field merely to feed this setter. The known general combat mismatch remains real: Rust stores ordinary cooldown in `AttackTarget`, so target clear/death or a fresh command loses it even though native `+0x2EC/+0x2F4` is owner state. That belongs to combat-cadence closure, not this bridge-Z mechanism, because the native Ship setter never reads that timer. Retarget-in-place already preserves the Rust value; target-clear-to-Move loses it but must still be admitted here.
+
+Required controls are consequently: a normally rearming Ship can retarget into pursuit and can accept a Move after target clear; a Walk rearm control remains unchanged; a synthetic positive post-warp-delay predicate fixture may reject only if the project later represents that exact owner field, but no new field is required for active stock closure. Stale documents naming `0x004DE770` `IsInRearmTimer`, `IsFiring`, or `IsInGarrison` must be corrected to the literal post-warp/post-detach remaining-delay predicate and its stock-Ship exclusion.
+
+### 14.4 Fixed boundary correction
+
+The comparison-preserving adapter remains exact-through-32767 and saturation-from-32768, but the earlier acceptance wording was wrong:
+
+- distance 32767 converts exactly; against slowdown exactly 32767, equality is false;
+- against any representable slowdown **greater than** 32767 (for example `SimFixed::MAX`), `32767 < slowdown` is true;
+- distance 32768 saturates to `SimFixed::MAX`; against `SimFixed::MAX`, equality is false, matching native because no representable Rust slowdown exceeds 32768;
+- a long-map distance above 32768 also saturates without panic/wrap and cannot satisfy the strict comparison.
+
+### 14.5 Invalid target geometry rejects before mutation
+
+Valid production paths do not need a fallback: layered movement resolves an in-grid goal before setter commit; Unit scatter checks playfield/passability; direct scatter selects an adjacent in-grid `PathGrid` cell; post-map production publishes matching `ResolvedTerrainGrid`/`PathGrid`; and retail TMP slope indices are within the 21 records supported by `ground_height_leptons`. Missing terrain, an out-of-grid target, or a slope outside `0..=20` is therefore a test/internal or corrupt-data seam.
+
+Native `MapClass::Get_CellClass` has a dummy-cell facility, but this investigation found no evidence that the Ship setter's successful production callers intentionally install an invalid/dummy cell or that Rust should translate an unsupported slope to zero. The safe parity boundary is rejection: a recognized Ship cell install must return false before power, mission/order, NavCom, destination, path, movement, facing, or occupation mutation. The tick helper remains total for a pre-existing corrupt/restored invalid destination, but it must not invent bridge structure or clear the destination as arrived.
+
+### 14.6 Superseding Rust handoff and tests
+
+- Remove ordinary `attack_target.cooldown_ticks` from the recognized-Ship setter predicate. Preserve guard order among the stock-represented predicates: `dying`, evidence-excluded post-warp delay, warp-out, warp-in.
+- Extend `issue_direct_move` with resolved-terrain authority. On recognized-Ship success, atomically install exact owner NavCom and exact Ship cell destination before/with movement; thread terrain through every direct caller and through every `scatter_blocker` caller. Add stale-prior, no-prior, flat, slope, and structural scatter tests.
+- Generalize the terminal deferred-repath seam to Ship. Use NavCom only for target X/Y cell equality and use exact owner current world Z versus stored destination Z for strict `<208`; clear on pass, preserve/repath on failure. Add nonstructural delta 0, 207 pass, 208 fail, structural-under-bridge 416 fail, on-deck match pass, missing/non-cell NavCom preserve, and save/load continuation tests.
+- Reject recognized-Ship missing-terrain, out-of-grid, and unsupported-slope installs transactionally. Do not retain the Section 13 zero-Z successful fallback.
+- Correct the fixed boundary tests exactly as Section 14.4 states.
+- Snapshot epoch remains 113/reject-112. No new active-stock timer field is added. Existing corrected `ShipLocomotionRuntime.destination.z` and generalized pending-repath state are already serialized/hashed; tests must prove structural destination and pending retry round-trip/hash behavior.
+
+### Addendum-3 sources
+
+- Live Ghidra MCP, active `gamemd.exe`: `UnitClass::Scatter @ 0x00743A50`, `TechnoClass::Set_Destination @ 0x00741970`, `FootClass::Set_Destination_Internal @ 0x004D94B0`, Ship `Set_Destination @ 0x0069F450`, `Process @ 0x0069FC10`, `Process_Drive_Track @ 0x006A05F0`, timer predicate `0x004DE770`, `FootClass::Constructor @ 0x004D31E0` (`0x004D3402` store), `WarpAttachClass::Detach @ 0x0062A4A0`, and `TechnoClassFireAtSpawnsBullet @ 0x006FE940`.
+- Retail and class evidence: all stock naval entries use Ship locomotion; no stock Ship type is a WarpAttach/temporal owner; retail map/TMP slope and post-map grid publication evidence already cited above.
+- Current Rust: `src/sim/movement/{bump_crush,movement_commands,movement_tick,movement_occupancy,tube_movement,navcom,teleport_movement}.rs`, `src/sim/docking/bunker_install.rs`, `src/sim/combat/mod.rs`, direct callers under miner/passenger/production/world, `src/sim/game_entity.rs`, `src/sim/snapshot.rs`, and `src/sim/world/world_hash.rs`.
+
+## 15. Exact Active Parasite Prerequisite (critic-4 repair, 2026-08-27)
+
+This section supersedes Sections 12.5, 12.7-12.8, 13.1, 14.3/14.6, and the former Section 15 wherever they describe owner vtable `+0x380`, `Foot+0x6A0/+0x6A8`, `0x006297F0`, or the stock writer schedule. The earlier detonation-time mapping was not an acceptable approximation: native permits a Ship destination install between attachment and the first timer write.
+
+### 15.1 Timer predicate and corrected function identity
+
+The predicate at `0x004DE770` reads signed `Foot+0x6A0` (start) and `Foot+0x6A8` (duration). `start == -1` returns false without treating `duration` as a paused remainder. Otherwise it performs signed/wrapping `elapsed = g_CurrentFrameCounter - start`; it returns true exactly when `elapsed < duration` and `duration - elapsed != 0`. Constructor store `0x004D3402` initializes duration to zero. This timer is not Techno's ordinary weapon cadence at `+0x2EC/+0x2F4` and is not locomotor speed.
+
+`WarpAttachClass::UpdateAttack @ 0x00629FD0` first rejects a null manager victim. It then reads the manager owner type. When both `TechnoType+0xCCE Naval` and `TechnoType+0xD97 Organic` are true, it calls `0x006297F0` and returns before the generic attack-timer/ROF writer at `0x0062A074..0x0062A0A7`. `TechnoTypeClass::ReadINI @ 0x00715024..0x0071503F`, anchored by the literal `Organic`, proves `+0xD97`; retail `[SQD]` sets both flags. Therefore stock Giant Squid always uses `0x006297F0`.
+
+The current Ghidra name `TemporalClass__AI` at `0x006297F0` is stale. Its body reads `WarpAttachClass+0x24` owner and `+0x28` victim, uses the owner's slot-0 weapon, plays the `SQDG*` grapple state machine, applies victim damage, and calls `WarpAttachClass::Detach`. It is the Naval+Organic Parasite/Giant-Squid update, not the Chrono Legionnaire weapon manager. The true chrono-erase manager is Techno `+0x274` and uses `TemporalClass::CanWarpTarget @ 0x0071AE50`, `TemporalClass::InitiateWarp @ 0x0071AF20`, and update body `0x0071A760`; none writes or clears `Foot+0x6A8`. No chrono-erase detonation-time timer write belongs in this mechanism.
+
+### 15.2 Exact stock attach admission
+
+`TechnoClass::Init_Managers @ 0x006F3F40` allocates a 0x58-byte `WarpAttachClass` at non-building owner `+0x69C` only when that owner's rookie primary weapon resolves to a warhead with `WarheadType+0x159 Parasite`. Retail SQD qualifies through both `SquidGrab` and its elite counterpart using `ParasitePlus`.
+
+`BulletClass::DetonateAtCoord @ 0x004690B0`, branch `0x004693D3..0x0046941E`, requires `Parasite=yes`, a non-null source at `Bullet+0xB0`, and an object-class target from `Bullet+0x10C` (`AbstractFlags & 4`). Null, cell, and dummy-cell targets become null. It calls the source's manager `WarpAttachClass::Attach @ 0x0062A980`; the detonation body neither writes the victim timer nor receives an attach-success return.
+
+`WarpAttachClass::CanAttach @ 0x0062A8E0` admits exactly when all of these are true:
+
+1. victim is non-null;
+2. victim `InLimbo @ +0x81` is false;
+3. victim native-alive byte `+0x90` is nonzero;
+4. victim health `+0x6C` is nonzero;
+5. victim `+0x694` has no existing Parasite attacker;
+6. victim type `+0xD38 Parasiteable` is true;
+7. victim `+0x2E4` has no installed/contained-building reciprocal link;
+8. only when the attacker type is Naval: victim cell from vslot `+0x1BC` exists and `CellClass::IsWaterSetTile @ 0x00485060` returns true.
+
+There is no alliance, owner, mission, `ImmuneToPoison`, or ordinary Verses gate in `CanAttach`/`Attach`. `ImmuneToPoison @ TechnoType+0xD3B` is read by `TechnoClass::ReceiveDamage` only for a `Poison` warhead; `ParasitePlus` is not Poison. `UnitTypeClass::Constructor @ 0x007470D0`, store `0x00747297`, defaults `Parasiteable` true. Retail explicitly disables it on `DNOA`, `DNOB`, `DRON`, `SQD`, `SMIN`, and `ZEP` and explicitly enables it on `CAOS`.
+
+On admission failure, `Attach` restores/reveals or removes the launched attacker through its nearby-cell fallback and installs no link or victim timer. On success it calls the attacker locomotor slot `+0x70` with selector `-1` and victim coordinates, then writes both directions: `victim+0x694 = attacker` and `manager+0x28 = victim`. It still does not arm `+0x6A8`.
+
+Retail `[SQD]` has `Naval=yes`, `Organic=yes`, Ship locomotion, `Primary=SquidGrab`, `ElitePrimary=SquidGrabE`, and `NavalTargeting=3`. The retail enum defines 3 as organic-secondary, so ordinary non-organic water Units take the ParasitePlus primary while organic Dolphin/Squid targets take `SquidPunch` instead. Two Squids whose projectiles reach one legal victim in the same window are a stock-active discriminator: the first attaches; the second fails the now-non-null `victim+0x694` gate and must not refresh or replace anything.
+
+### 15.3 Exact first write, refresh order, and stock timer value
+
+At the head of every `0x006297F0` call, before its animation-state switch, the manager resolves the owner's current slot-0 weapon and its warhead. If the victim cell pointer is null **or** `IsWaterSetTile` is true, instructions `0x006298A4..0x006298AD` write victim start=current frame and duration=`WarheadType+0x170 Paralyzes`. If the cell exists and is not a water-set tile, `0x0062985F` calls `Detach` instead. `WarheadTypeClass::ReadINI @ 0x0075D3A0` reads `Paralyzes=` as a signed dword. Retail `ParasitePlus` is the only nonzero stock assignment and supplies 32767.
+
+The SQD write is **not** ROF-gated. It runs on every victim-driven update before the state switch. The generic non-Naval+Organic branch of `UpdateAttack` has a separate `WeaponType+0xB0 ROF` manager timer, but SQD returned before that code. Retail even comments that `SquidGrab ROF=99` is ignored. For an attached stock Ship, `+0x6A0` is re-anchored to the current frame and `+0x6A8` is refreshed to 32767 on every qualifying victim Foot-AI tail.
+
+`LogicClass::PerTickUpdate @ 0x0055AFB0` walks the live LogicVector forward and rereads the vector/count after each callback. The pre-existing victim precedes its later-created projectile in ordinary stock naval combat. `FootClass::AI @ 0x004DA530` runs mission work, destination setters, locomotor Process, idle scatter, and transport-entry work before its tail `0x004DAEE1..0x004DAEF3` follows victim `+0x694` to attacker `+0x69C` and invokes `UpdateAttack`. Thus a projectile that attaches after the victim's frame-N visit first writes on the victim's frame-N+1 tail. A Ship `Set_Destination` can occur in that interval and must see the timer inactive. Any Rust write at detonation is an observable false positive.
+
+The state-4 culling path inside `0x006297F0` can detach and kill a red victim, or a yellow victim when the attacker is elite, when the warhead has `Culling=yes`; invalid state and lost-water paths also detach. Full grapple damage, animation, and culling are outside this GSI slice, but any later implementation of those producers must enter the same exact detach transaction before destroying the link.
+
+### 15.4 Detach clear and caller reachability
+
+`WarpAttachClass::Detach @ 0x0062A4A0` has two cleanup tails (`0x0062A862..0x0062A892` and `0x0062A89B..0x0062A8D1`). Both set victim rocking `+0x328=0`, write victim start=current frame/duration=0, clear victim `+0x694`, and clear manager `+0x28`. Naval SQD takes the remove/die-attached branch and skips the non-naval placement block whose owner-side delay is `3 * primary WeaponType.ROF`; a Ship victim never receives that `3*ROF` value.
+
+The complete direct caller set and bounded stock-Ship relationship is:
+
+| Caller | Exact detach admission relevant to an attached Ship | Boundary |
+|---|---|---|
+| Naval+Organic update `0x006297F0` | victim has left water; invalid grapple state; or `Culling=yes` reaches its red / elite-yellow terminal | water loss and lifecycle death are required; damage/culling production remains outside this slice until its upstream effect exists |
+| `FootClass::ReceiveDamage @ 0x004D7330` | attached victim and Sonic warhead (`Warhead+0x14B`); separately, attached victim and negative incoming damage | wire the existing damage receiver before downstream damage/heal mutation |
+| `TechnoClass::Receive_Radio @ 0x006F4AB0`, radio `0x1C` | a paid repair step is accepted and the repaired object has an attacker at `+0x694` | wire the active service-depot/naval-yard repair mutation |
+| body `0x004DEAE4` (current `StartFidget` name is stale) | non-Organic target with an actual attachment before applying the invulnerability effect; Organic takes the damage branch and does not reach detach | wire the existing Iron Curtain application seam; do not clear from target identity alone |
+| `SuperClass::Launch @ 0x006CC390`, Chronosphere case | an iterated source-area object has an actual attacker link, that attacker is Naval, and its manager exists; manager delay is set to 500 before detach | Chronosphere launch is currently unsupported in Rust, so the detach call becomes required with that upstream implementation, not an invented standalone clear |
+| `TechnoClass::PerformDeploy @ 0x00710000` | its incoming target has an attacker link, that attacker has a manager, and attacker type is Naval; the call occurs only after Bullet's full IsLocomotor source/target/type/invulnerability/damage-threshold admission | an exact special-effect preflight may call detach; a resolved entity alone may not |
+| Teleport locomotor state machine `0x007192F0` (the `0x00719400` symbol is a stale mid-function split) | warping owner has an actual attacker link | no stock recognized Ship owns Teleport locomotion; the Chronosphere case above is the stock Ship release |
+| `UnitClass::PerCellProcess @ 0x00739EC0` | grinder/building-entry consumption finds an actual attacker link before deleting the entering Unit | stock recognized Ships cannot enter the land Grinder route; central pointer-expiry cleanup remains required |
+
+`TechnoClass::Receive_Radio` is a repair-radio caller, not evidence for a generic transport clear. True chrono-erase `InitiateWarp` is not a Detach caller and must not clear this timer. Every row requires the actual two-way attachment; no resolved projectile target or broad superweapon target is sufficient authority.
+
+### 15.5 Current Rust mismatch and exact prerequisite boundary
+
+Current Rust already parses `WarheadType.parasite`, selects `SpecialDetonationAction::Parasite`, carries `ProjectileDetonation.source_id` plus `ProjectileTarget::Entity`, and then returns at an explicit unsupported special tail. It parses `ObjectType.naval` and owns exact `ObjectLifecycle::{in_limbo,object_alive}`, health, installed `BunkerLink`, resolved terrain `is_water`, stable IDs, deterministic live-object order, and central pointer-expiry/uninit. It does **not** parse `Paralyzes`, Warhead `Sonic`, `Organic`, or `Parasiteable`; retain a manager-presence fact; hold attacker/victim links; perform `CanAttach`; run a victim Foot-AI-tail update; or own the signed destination-delay timer. `AttackTarget.cooldown_ticks` is unrelated.
+
+The smallest exact prerequisite is a bounded persistent attachment subset, not a full Parasite combat port:
+
+- parse signed `WarheadType.paralyzes`, Warhead `Sonic`, and `ObjectType.organic`; parse `ObjectType.parasiteable` for the bounded recognized-Ship UnitType path with the live UnitType default true. Non-Ship Parasite admission remains on the explicit unsupported path rather than inventing other registry defaults;
+- create per-attacker manager state at object initialization exactly when the non-building rookie primary warhead is Parasite; the state contains only `victim_id: Option<u64>` for this slice;
+- add victim `parasite_attacker_id: Option<u64>` and owner `foot_destination_delay: CdTimer`, initialized raw inactive (`start=-1`, duration=0);
+- at the Parasite special detonation branch, require a recognized Ship victim, the source entity and its manager, and `ProjectileTarget::Entity`; evaluate every Section 15.2 gate read-only, then install both links transactionally; do not arm the timer. Non-Ship targets remain explicitly unsupported in this GSI slice;
+- after each victim's mission/destination and locomotor work, at the existing per-object Foot-AI tail seam, validate reciprocal links and resolve the attacker's live slot-0 weapon/warhead from current type and veterancy. For Naval+Organic attacker plus missing cell or water-set cell, write `CdTimer::started(current_frame, paralyzes)` every visit; for a known non-water cell, detach;
+- centralize `detach_parasite(attacker_id, victim_id, current_frame)` so it validates the reciprocal pair, clears both links, and writes victim raw start=current/duration=0. Call it from every currently reachable release seam in Section 15.4 and from pointer expiry/uninit of either endpoint. Grinder and grapple-damage producers stay explicit while their upstream effects are absent;
+- keep attack animations, periodic damage, culling damage, attacker placement/removal, and generic Terror Drone manager cadence explicit residuals. They are excluded only while their upstream producers remain unsupported; they may not bypass link cleanup once implemented.
+
+Snapshot version remains 113/reject-112, but the payload and hash membership now change. Serialize and hash manager presence/victim ID, victim attacker ID, and raw timer start/duration in stable entity order. Load validation rejects one-sided, self, missing-endpoint, wrong-manager, and duplicate-victim links rather than silently repairing them. The prior claim that version 113 had no new payload is superseded.
+
+### 15.6 Required discriminators
+
+- Detonation frame: a legal SQD hit installs reciprocal links with timer still `start=-1,duration=0`; a Ship destination request in that interval is admitted. The next victim tail writes 32767 after locomotion, and every later qualifying tail re-anchors it.
+- Admission failures (null source, non-entity target, limbo/dead/health-zero victim, existing attacker, `Parasiteable=no`, installed bunker, Naval attacker on missing/non-water cell) preserve both entities and timer byte-for-byte.
+- Two-Squid race: first attach wins; second fails without timer restart or link replacement.
+- Water loss, Sonic damage, negative heal, accepted repair-radio heal, non-Organic Iron Curtain, and endpoint uninit clear one exact reciprocal link and write victim duration zero. Organic invulnerability target, unattached targets, true chrono-erase, and a merely resolved IsLocomotor target do not clear.
+- `start=-1,duration>0` remains false for the Ship setter predicate; start=current/duration=32767 is true; exact expiry is false.
+- v113 round-trips manager-without-victim and active reciprocal attachment/timer states; v112 rejects; changing either link or either raw timer dword changes the world hash; malformed reciprocal snapshots reject.
+
+The GSI row and design remain **OPEN** on two stock-active upstream release dependencies: Chronosphere source-area admission and IsLocomotor's full pre-`PerformDeploy` admission. A broad superweapon/locomotor target clear is forbidden; those exact upstream surfaces must be promoted before closure. The row also remains open until this prerequisite and the already-specified Ship destination/braking/arrival work are implemented, tested, and freshly criticized. This section does not claim full Giant Squid/Terror Drone combat parity.
+
+### Addendum-4 sources
+
+- Live Ghidra MCP, active `gamemd.exe`: `BulletClass::DetonateAtCoord @ 0x004690B0`; `TechnoClass::Init_Managers @ 0x006F3F40`; `WarpAttachClass::{CanAttach @ 0x0062A8E0, Attach @ 0x0062A980, UpdateAttack @ 0x00629FD0, Detach @ 0x0062A4A0}`; Naval+Organic update `0x006297F0`; `FootClass::AI @ 0x004DA530`; timer predicate `0x004DE770`; `FootClass::ReceiveDamage @ 0x004D7330`; `TechnoClass::Receive_Radio @ 0x006F4AB0`; invulnerability body `0x004DEAE4`; `SuperClass::Launch @ 0x006CC390`; `TechnoClass::PerformDeploy @ 0x00710000`; Teleport state machine `0x007192F0`; `UnitClass::PerCellProcess @ 0x00739EC0`; true chrono-erase manager `0x0071A760`, `0x0071AE50`, `0x0071AF20`.
+- Retail `ini/rulesmd.ini`: `[SQD]`, `[SquidGrab]`, `[SquidGrabE]`, `[SquidPunch]`, `[ParasitePlus]`, explicit `Parasiteable=` overrides, and `NavalTargeting` enum comments.
+- Current Rust: `src/rules/{object_type,warhead_type}.rs`; `src/sim/{projectile,game_entity,timer}.rs`; `src/sim/combat/{mod,combat_targeting}.rs`; `src/sim/world/{mod,lifecycle,world_hash}.rs`; `src/sim/{snapshot,docking/building_dock,superweapon/iron_curtain}.rs`; resolved terrain and live-object scheduler code cited above.
