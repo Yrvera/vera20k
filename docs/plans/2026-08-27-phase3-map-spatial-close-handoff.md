@@ -1,12 +1,12 @@
 # Phase 3 Map/Spatial Closure Handoff
 
-**Stopped:** 2026-08-27, at user request
+**Checkpoint:** 2026-08-27, after fresh Ship design critic 7
 
 **Worktree:** `C:\Users\enok\Documents\ra2-rust-game-phase3-map-spatial-close`
 
 **Branch:** `feature/phase3-map-spatial-close`
 
-**HEAD before this handoff update:** `49e8aa06 docs(map): finalize Phase 3 handoff`
+**HEAD before this handoff update:** `84e106e2 docs(map): correct Ship timer design contract`
 
 **Publish state:** local only; no push or PR authority was granted
 
@@ -29,17 +29,18 @@ The current mechanism is GSI-04.03 ShipLocomotion bridge-Z destination, braking,
 - `docs/research/PHASE3_SHIP_BRIDGE_Z_ADJUSTMENT_GHIDRA_REPORT.md`
 - `docs/plans/2026-08-27-phase3-ship-bridge-z-adjustment-design.md`
 
-They are included in branch history through `49e8aa06`. No Rust implementation for this mechanism has started. The design remains `REVISED / OPEN` and is not implementation-ready.
+They are included in branch history through `84e106e2`. No Rust implementation for this mechanism has started. The design remains `OPEN` and is not implementation-ready.
 
-Fresh read-only critic 5 completed with `BLOCK`. Its largest finding is that the report/design misstate `TimerStruct::IsActive @ 0x004DE770`: live disassembly shows `start == -1` skips the elapsed-time calculation and returns `duration != 0`. Thus `(-1, positive duration)` is active. Current Rust `CdTimer::remaining` already has the matching sentinel behavior, but the research transcript, formula, design prose, and acceptance test are wrong. This finding has not been repaired or independently reverified by the parent.
+Critic 5's timer-sentinel finding is closed. Live evidence and the authoritative report were corrected in `37571c99`; the design was corrected in `84e106e2`. The exact predicate is `CdTimer::remaining(frame) != 0`: `start == -1` returns `duration != 0`. Native `FootClass::Constructor` also stores raw `(current frame,0)`, not `(-1,0)`. Fresh evidence critic 6 returned `PASS`, confirming all 16 scoped claims.
 
-Critic 5 also kept the row open for:
+Fresh full-design critic 7 returned `BLOCK`. Its single largest finding is that the proposed bounded reciprocal-link/timer subset omits the ordinary stock Naval+Organic Giant Squid combat/lifecycle core. Every successful stock `SquidGrab`/`SquidGrabE` can reach native state 0–4 update, attacker limbo/lifecycle, periodic rookie/elite damage, `Culling=yes` kill behavior, and Naval detach removal/death. A link-plus-continuously-refreshed-timer approximation would leave wrong health, attacker existence, detach timing, future combat, and persistence.
 
-- omitted stock Giant Squid damage, culling, detach, and Naval attacker removal/death behavior;
+Critic 7 also kept the row open for:
+
 - an unsupported extra `dying` gate in the proposed exact `CanAttach` contract;
 - stock-active Chronosphere source-area selection, attachment release, manager timer, and later warp ownership;
 - stock-active IsLocomotor admission and `PerformDeploy` release;
-- stale design prose claiming the timer is the only new state.
+- stale/incomplete state and snapshot claims that omit the full SQD manager/state-machine and Chronosphere timer state.
 
 The critic rechecked the core bridge-Z requirements without finding a new gap: transactional command/internal/direct/scatter entry, separate Ship/Drive Z, structural destination authority, native 3D distance and fixed saturation, strict terminal cell-plus-stored-Z retry, geometry rejection without mutation, cancel/getter behavior, and destination/retry save/hash coverage.
 
@@ -53,10 +54,10 @@ Preserve the three unrelated pre-existing untracked reports; this task did not c
 - `docs/research/PHASE3_MAIN_TICK_MODAL_SCHEDULER_SEAM_GHIDRA_REPORT.md`
 - `docs/research/PHASE3_UNIT_DEPLOY_HOUSE_FLAGS_GHIDRA_REPORT.md`
 
-At stop, the branch was 69 commits ahead of `origin/main` before this handoff update. No merge, rebase, or cherry-pick is in progress. All three delegated agents are completed. The process check returned no `cargo` or `rustc` processes, so this worktree owns no running build.
+Before this handoff update, the branch was 72 commits ahead of `origin/main`. No merge, rebase, or cherry-pick is in progress. All delegated critics are completed. The process check returned no `cargo` or `rustc` processes, so this worktree owns no running build.
 
 No Cargo validation was run after the recorded Spark tests because the subsequent work was research/design only.
 
 ## Exact next safe action
 
-Resume in this same branch/worktree and reconcile actual git/worktree/process state first. Independently verify `0x004DE770` in the active `gamemd.exe`, then correct only the timer-sentinel finding in the existing Ship research report and design, run `git diff --check`, and commit that coherent documentation repair. Submit the revised requirement, native evidence, diff, and output to a genuinely fresh read-only critic that rechecks prior fixes. Continue one-largest-finding-at-a-time with a new critic per repair. Do not start the Ship Rust builder until the design has no open prerequisites and receives a zero-finding PASS. Reserve the single full `cargo test -p vera20k --lib` for final Phase 3 closure.
+Resume in this same branch/worktree and reconcile actual git/worktree/process state first. Use an exhaustive-slice re-investigation to extend the existing Ship report with the complete active Naval+Organic SQD core rooted at `0x006297F0`, including `LimboLaunch`, manager timers/state, every state 0–4 branch and ordering, rookie/elite damage, culling thresholds/kill path, attacker lifecycle, and Naval detach removal/death. Prove retail activation and every evidence-backed exclusion; do not write Rust during that research pass. Then revise the design/state/snapshot/test contract and submit the whole design plus all prior findings to genuinely fresh critic 8. Continue one-largest-finding-at-a-time with a new critic per repair. Do not start the Ship Rust builder until the design has no open prerequisites and receives a zero-finding PASS. Reserve the single full `cargo test -p vera20k --lib` for final Phase 3 closure.

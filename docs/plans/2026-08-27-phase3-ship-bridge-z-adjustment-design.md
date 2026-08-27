@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-27
 
-**Status:** REVISED / OPEN — critic 5 returned `BLOCK`; its timer-sentinel finding was corrected in research commit `37571c99` and passed fresh evidence critic 6. Awaiting fresh full-design critic 7. Stock-active Chronosphere and IsLocomotor release integration remains a named prerequisite blocker; no implementation-readiness or parity `PASS` is claimed.
+**Status:** BLOCKED BY DESIGN CRITIC 7 / OPEN — the timer-sentinel repair remains certified, but the proposed bounded attachment subset omits the ordinary stock Naval+Organic Giant Squid combat/lifecycle core. Exact state 0–4 update, damage/culling, attacker limbo/removal, Naval detach death, and their manager state must be exhaustively researched and promoted before fresh critic 8. Chronosphere and IsLocomotor also remain named stock-active prerequisites; no implementation-readiness or parity `PASS` is claimed.
 
 **Scope:** Phase 3 GSI-04.03, the stock Ship locomotor destination, bridge-Z braking distance, destination-delay guard, and terminal stored-Z consumer.
 
@@ -422,4 +422,4 @@ This is the smallest architecture-aware fit that makes the stock guard's attach/
 
 ## Review Gate
 
-This revision is **OPEN** and does not claim implementation readiness or `PASS`. Fresh read-only critic 7 must receive the requirement, live native evidence, retail data, current Rust state, the complete diff through the timer repair, critic-5 findings, critic-6 timer PASS, and every earlier finding. It must recheck the corrected sentinel and native `(current frame,0)` construction plus all prior fixes. The row cannot close until the exact stock-active Chronosphere and IsLocomotor release admissions are promoted or implemented and then reviewed with the attachment, Ship destination, braking, scatter, arrival, snapshot, and hash work. Any incorrect admission, writer ordering, detach caller, transactional caller, invalid-geometry mutation, terminal clear mismatch, snapshot/hash omission, or prior-regression keeps the design and GSI row open.
+This revision is **OPEN** and does not claim implementation readiness or `PASS`. Fresh read-only critic 7 returned `BLOCK`: its largest finding is that the design's bounded reciprocal-link/timer subset omits the ordinary active Naval+Organic Giant Squid state 0–4 combat/lifecycle core, including damage, culling, attacker limbo/removal, Naval detach death, and required persistent manager state. The next repair must first establish that entire active core from live native evidence and retail data, revise the ownership/state/test contract without approximation, and then go to genuinely fresh critic 8 with every prior finding and fix. Chronosphere and IsLocomotor remain independently open. Any incorrect admission, writer ordering, damage/culling branch, detach/removal caller, transactional caller, invalid-geometry mutation, terminal clear mismatch, snapshot/hash omission, or prior-regression keeps the design and GSI row open.
