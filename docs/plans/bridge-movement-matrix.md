@@ -122,9 +122,9 @@ Rows are ordered by expected player-visibility × frequency within the tier.
 | T1-10 | Walk | low intact | along | move | UNCHECKED | Lostlake.mmx y=117 x=39..51 | OI-07 | **VERIFIED-OK for the crossing 2026-08-28; the row's own stated arm turned out unreachable.** `E1` crossed both maps, 13/13 and 22/22 deck cells, full water-gap coverage, invariant clean over 373 and 587 frames. But this row existed because `tube_movement.rs` gates on category `Unit \| Infantry` — and that file is not on the stock low-bridge path at all (gap 12), so the arm was neither exercised nor exercisable. Infantry is still separate from T1-09 for a different reason: the **sub-cell reservation plane**, which remains unasserted here exactly as at T1-07 and T1-08. |
 | T1-11 | Hover | low intact | along | move | UNCHECKED | Lostlake.mmx y=117 x=39..51 | — | **VERIFIED-OK 2026-08-28, and deliberately weaker than T1-09/T1-10.** `ROBO` is `AmphibiousDestroyer`, so the river is not an obstacle to it and the water gap cannot prove it *needed* the bridge. Measured: on Lostlake it stays on all 13 deck cells and covers all 7 gap positions; on **Killer it leaves the deck at (93,136), hovers open water to (93,143), and rejoins at (93,144)** — legitimate amphibious routing, with the invariant holding on the water frames too. So this row settles order-accepted, ground height with no `on_bridge`/`BridgeOccupancy` on every deck cell it used, and arrival — **not** that the span was required. The test asserts that weaker requirement explicitly for amphibious movers rather than pretending to the stronger one. Two earlier rationales died before this: the "fails on high spans" asymmetry (T1-01 fixed it) and the `tube_movement.rs` layer gate (gap 12 — that file is not on this path). |
 | T1-12 | Hover | high intact | off | move | **VERIFIED-OK** | BayOPigs.mmx `(111,135)`→`(111,134)`; Hills.mmx | OI-06 closed | **Settled by T1-01's own crossings, 2026-08-27.** This row read "unreachable until T1-01 clears" — it has cleared. Both Hover crossings run approach-to-approach, so the mover leaves the deck as part of the assertion set, and `drive_across_high_bridge` now pins arrival at the far approach: a mover that entered the span and failed to leave it fails the test. Off-deck is therefore observed, not inferred. |
-| T1-13 | Drive | high intact | under | move | UNCHECKED · **demotion-pending** | Hills.mmx, ground plane at `(76,74)…(97,74)`, terrain level 2, LOOSE | OI-14 (=R5) | Add `facts.ground_walkable` to `print_inventory` (`movement_bridge_retail_tests.rs:196-228`) and re-run `retail_high_bridge_inventory`. If the field is true under Hills' span, order an `MTNK` along the ground plane beneath it and see whether it drives under an intact deck. **If the field is false, T1-13/14/15 demote to Tier 3** — see §7 gap 1. |
-| T1-14 | Walk | high intact | under | move | UNCHECKED · **demotion-pending** | Hills.mmx ground under y=74 (land); BayOPigs.mmx x=111 (water) for the amphibious sub-case | OI-14 | Same print, then an `E1` under Hills' span. Stands for the amphibious arm too — `GHOST`/`TANY`/`YURIPR` are `SpeedType=Amphibious`, so they can be under BayOPigs' span on water while ordinary infantry cannot. |
-| T1-15 | Hover | high intact | under | move | UNCHECKED · **demotion-pending** | BayOPigs.mmx x=111 water riverbed under the span | OI-14, OI-06 closed | Order a `ROBO` (AmphibiousDestroyer) along the riverbed under the span. **Rationale rewritten 2026-08-27:** this row used to be framed as deciding "whether L1 is a nuisance or the reason ROBO never reached the deck, because the flat-branch planner routes it under the span". T1-01 settled that — the cause was the Ground-plane terrain test, the flat branch no longer sees Hover, and under-routing was never observed. What remains is the genuine question: can an amphibious mover legitimately travel the riverbed beneath an intact span, and does it hold ground height while doing so? That is unexercised for every locomotor and depends on evidence gap 1 (whether any retail map has passable ground under a high span). |
+| T1-13 | Drive | high intact | under | move | UNCHECKED — **demotion cleared** (gap 1 measured 2026-08-28) | Hills.mmx, ground plane at `(76,74)…(97,74)`, terrain level 2, LOOSE | OI-14 (=R5) | Add `facts.ground_walkable` to `print_inventory` (`movement_bridge_retail_tests.rs:196-228`) and re-run `retail_high_bridge_inventory`. If the field is true under Hills' span, order an `MTNK` along the ground plane beneath it and see whether it drives under an intact deck. **If the field is false, T1-13/14/15 demote to Tier 3** — see §7 gap 1. |
+| T1-14 | Walk | high intact | under | move | UNCHECKED — **demotion cleared** (gap 1 measured 2026-08-28) | Hills.mmx ground under y=74 (land); BayOPigs.mmx x=111 (water) for the amphibious sub-case | OI-14 | Same print, then an `E1` under Hills' span. Stands for the amphibious arm too — `GHOST`/`TANY`/`YURIPR` are `SpeedType=Amphibious`, so they can be under BayOPigs' span on water while ordinary infantry cannot. |
+| T1-15 | Hover | high intact | under | move | UNCHECKED — **demotion cleared** (gap 1 measured 2026-08-28) | BayOPigs.mmx x=111 water riverbed under the span | OI-14, OI-06 closed | Order a `ROBO` (AmphibiousDestroyer) along the riverbed under the span. **Rationale rewritten 2026-08-27:** this row used to be framed as deciding "whether L1 is a nuisance or the reason ROBO never reached the deck, because the flat-branch planner routes it under the span". T1-01 settled that — the cause was the Ground-plane terrain test, the flat branch no longer sees Hover, and under-routing was never observed. What remains is the genuine question: can an amphibious mover legitimately travel the riverbed beneath an intact span, and does it hold ground height while doing so? That is unexercised for every locomotor and depends on evidence gap 1 (whether any retail map has passable ground under a high span). |
 
 ### Tier 2 — ramps, damaged spans, and non-player order sources
 
@@ -246,9 +246,25 @@ What **no lane has established.** These are the program's blind spots, not its b
    22-cell span carry ore elsewhere on the same map, and the method's two controls (BayOPigs and
    Grinder, both known-water riverbeds) correctly returned zero. But this is terrain-template
    identity, not an engine land-type read. The settling action is one line: add
-   `facts.ground_walkable` to `print_inventory` (`movement_bridge_retail_tests.rs:196-228`) and
-   re-run `retail_high_bridge_inventory`. **T1-13, T1-14, T1-15 and T3-07 all hang on this**, and
-   demote to Tier 3 if it comes back false.
+   `facts.ground_walkable` to `print_inventory` and re-run. **T1-13, T1-14, T1-15 and T3-07 all
+   hang on this**, and demote to Tier 3 if it comes back false.
+
+   **MEASURED 2026-08-28 — and it came back the opposite way from the prediction.** Every deck
+   cell on both high-bridge fixtures reports `ground_walkable`: **17/17 on BayOPigs.mmx, 22/22 on
+   Hills.mmx.** The prediction that Bay of Pigs' riverbed is impassable water — recorded as
+   VERIFIED in the reachability diagnosis's residual R5, which said an under-span route is
+   "impossible on Bay of Pigs, whose riverbed is zone 0" — is not what the path grid reports.
+
+   **Do not over-read this.** VERA models a bridge as terrain on the *same cell* as the ground
+   beneath it, so `ground_walkable` on a deck cell is ambiguous between "the riverbed under the
+   span is passable" and "the deck itself is passable on the ground plane". The number refutes
+   the demotion case; it does **not** establish that an under-span route exists. Those are
+   different claims and only the first is measured.
+
+   So T1-13/14/15 are **no longer demotion-pending** — they cannot be closed as NOT-APPLICABLE
+   on "there is nothing to drive under". The decisive check is now an ordered move *to* a cell
+   beneath a span, observing where the mover goes and at what height — not another flag read. A
+   flag read is what produced the wrong prediction in the first place.
 2. **Whether the corridor-gate defect generalises beyond Bay of Pigs.** OI-30 is a **PREDICTION,
    never measured.** The repro established Bay of Pigs only, two bridges; the reachability
    diagnosis says so in its own §7/§9. The gate runs on every path build so the generalisation is
