@@ -210,18 +210,20 @@ impl BaseReservationState {
     }
 }
 
-/// Independent persistent House latches co-enabled by successful AI base-unit
-/// deployment. Their other native writers and consumers remain separate
-/// mechanisms.
+/// Independent persistent House AI-activation latches. Successful AI base-unit
+/// deployment co-enables three of them; House update owns the separate
+/// AutocreateAllowed writer and its three-store activation transaction.
 ///
 /// gamemd-derived: `HouseClass__Constructor` clears the corresponding bytes at
-/// `0x004F56F1`, `0x004F570A`, and `0x004F5710`; `HouseClass__Save @
-/// 0x00504080` and `HouseClass__Load @ 0x00503040` persist the raw House block.
+/// `0x004F56F1`, `0x004F56F7`, `0x004F570A`, and `0x004F5710`;
+/// `HouseClass__Save @ 0x00504080` and `HouseClass__Load @ 0x00503040`
+/// persist the raw House block.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
 )]
 pub struct HouseAiActivationLatches {
     pub production: bool,
+    pub autocreate_allowed: bool,
     pub ai_triggers_active: bool,
     pub auto_base_building: bool,
 }
@@ -379,8 +381,9 @@ pub struct HouseState {
     /// Snapshot/hash authority for the Strategy emergency-state block.
     #[serde(default)]
     pub strategy_emergency: HouseStrategyEmergencyState,
-    /// Native House bytes `+0x1EE`, `+0x1F2`, and `+0x1F3`. All three persist,
-    /// while only Production and AITriggersActive directly enter House CRC.
+    /// Native House bytes `+0x1EE`, `+0x1EF`, `+0x1F2`, and `+0x1F3`. All four
+    /// persist, while Production, AutocreateAllowed, and AITriggersActive
+    /// directly enter House CRC.
     #[serde(default)]
     pub ai_activation: HouseAiActivationLatches,
 }
@@ -391,8 +394,10 @@ impl HouseState {
         self.is_human || self.player_control
     }
 
-    /// Native `HouseClass::IsControlledByHuman @ 0x0050B730` result consumed
-    /// by successful Building Unlimbo BasePlan satisfaction.
+    /// Native mode-aware House-control predicate shared by successful Building
+    /// Unlimbo BasePlan satisfaction and the early House-update activation.
+    /// `HouseClass::IsControlledByHuman @ 0x0050B730` supplies the former;
+    /// `HouseClass__Update @ 0x004F8440` inlines the same branch shape.
     pub(crate) const fn is_controlled_by_human(&self, game_mode_nonzero: bool) -> bool {
         self.is_human || (!game_mode_nonzero && self.player_control)
     }
@@ -406,6 +411,28 @@ impl HouseState {
         self.ai_activation.production = true;
         self.ai_activation.ai_triggers_active = true;
         self.ai_activation.auto_base_building = true;
+    }
+
+    /// Run the early `HouseClass__Update` AI-activation transition.
+    ///
+    /// gamemd-derived: `HouseClass__Update @ 0x004F8440`, block
+    /// `0x004F8564..0x004F85B7`, rejects the mode-aware controlled House,
+    /// accepts any nonzero AutoBaseBuilding or signed `CurrentIQ >=
+    /// Rules+0x143C`, then writes AutoBaseBuilding, Production, and
+    /// AutocreateAllowed in that order without touching AITriggersActive.
+    pub(crate) fn update_ai_activation(
+        &mut self,
+        game_mode_nonzero: bool,
+        iq_production: i32,
+    ) {
+        if self.is_controlled_by_human(game_mode_nonzero)
+            || (!self.ai_activation.auto_base_building && self.current_iq < iq_production)
+        {
+            return;
+        }
+        self.ai_activation.auto_base_building = true;
+        self.ai_activation.production = true;
+        self.ai_activation.autocreate_allowed = true;
     }
 
     /// Accept a victory and arm its deterministic grace interval.
@@ -724,15 +751,17 @@ pub(crate) fn determine_waypoint_edge(anchor: (u16, u16), bounds: PlayfieldBound
 
 #[cfg(test)]
 mod ai_activation_latch_tests {
-    use super::{HouseAiActivationLatches, HouseState};
+    use super::{HouseAiActivationLatches, HouseDifficulty, HouseState};
 
     #[test]
     fn house_ai_activation_latches_default_false() {
         let house = HouseState::new(Default::default(), 0, None, false, 0, 10);
         assert_eq!(house.ai_activation, HouseAiActivationLatches::default());
         assert!(!house.ai_activation.production);
+        assert!(!house.ai_activation.autocreate_allowed);
         assert!(!house.ai_activation.ai_triggers_active);
         assert!(!house.ai_activation.auto_base_building);
+        assert_eq!(house.current_iq, 0);
     }
 
     #[test]
@@ -740,6 +769,7 @@ mod ai_activation_latch_tests {
         let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
         house.ai_activation = HouseAiActivationLatches {
             production: true,
+            autocreate_allowed: false,
             ai_triggers_active: false,
             auto_base_building: true,
         };
@@ -749,6 +779,7 @@ mod ai_activation_latch_tests {
             house.ai_activation,
             HouseAiActivationLatches {
                 production: true,
+                autocreate_allowed: false,
                 ai_triggers_active: true,
                 auto_base_building: true,
             }
@@ -756,6 +787,147 @@ mod ai_activation_latch_tests {
         let once = house.ai_activation;
         house.enable_ai_deploy_latches();
         assert_eq!(house.ai_activation, once);
+    }
+
+    #[test]
+    fn house_ai_activation_signed_threshold_and_auto_base_bypass() {
+        for (current_iq, threshold, auto_base, expected) in [
+            (4, 5, false, false),
+            (5, 5, false, true),
+            (6, 5, false, true),
+            (0, -1, false, true),
+            (-100, 5, true, true),
+        ] {
+            let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+            house.current_iq = current_iq;
+            house.ai_activation.ai_triggers_active = true;
+            house.ai_activation.auto_base_building = auto_base;
+
+            house.update_ai_activation(true, threshold);
+
+            assert_eq!(house.ai_activation.production, expected);
+            assert_eq!(house.ai_activation.autocreate_allowed, expected);
+            assert_eq!(house.ai_activation.auto_base_building, expected);
+            assert!(
+                house.ai_activation.ai_triggers_active,
+                "House update never writes AITriggersActive"
+            );
+        }
+    }
+
+    #[test]
+    fn house_ai_activation_uses_mode_sensitive_control_predicate() {
+        let mut campaign_current =
+            HouseState::new(Default::default(), 0, None, true, 0, 10);
+        campaign_current.current_iq = 5;
+        campaign_current.update_ai_activation(false, 5);
+        assert_eq!(
+            campaign_current.ai_activation,
+            HouseAiActivationLatches::default()
+        );
+
+        let mut campaign_player_control =
+            HouseState::new(Default::default(), 0, None, false, 0, 10);
+        campaign_player_control.player_control = true;
+        campaign_player_control.current_iq = 5;
+        campaign_player_control.update_ai_activation(false, 5);
+        assert_eq!(
+            campaign_player_control.ai_activation,
+            HouseAiActivationLatches::default()
+        );
+
+        let mut skirmish_player_control = campaign_player_control.clone();
+        skirmish_player_control.update_ai_activation(true, 5);
+        assert!(skirmish_player_control.ai_activation.production);
+        assert!(skirmish_player_control.ai_activation.autocreate_allowed);
+        assert!(skirmish_player_control.ai_activation.auto_base_building);
+
+        let mut skirmish_current =
+            HouseState::new(Default::default(), 0, None, true, 0, 10);
+        skirmish_current.current_iq = 5;
+        skirmish_current.update_ai_activation(true, 5);
+        assert_eq!(
+            skirmish_current.ai_activation,
+            HouseAiActivationLatches::default()
+        );
+    }
+
+    #[test]
+    fn house_ai_activation_preserves_split_states_and_completes_deploy_state() {
+        let mut split = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        split.current_iq = 4;
+        split.ai_activation = HouseAiActivationLatches {
+            production: true,
+            autocreate_allowed: true,
+            ai_triggers_active: false,
+            auto_base_building: false,
+        };
+        let below_threshold = split.ai_activation;
+        split.update_ai_activation(true, 5);
+        assert_eq!(split.ai_activation, below_threshold);
+
+        split.current_iq = 5;
+        split.update_ai_activation(true, 5);
+        assert_eq!(
+            split.ai_activation,
+            HouseAiActivationLatches {
+                production: true,
+                autocreate_allowed: true,
+                ai_triggers_active: false,
+                auto_base_building: true,
+            }
+        );
+
+        let mut deployed = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        deployed.current_iq = i32::MIN;
+        deployed.enable_ai_deploy_latches();
+        assert!(!deployed.ai_activation.autocreate_allowed);
+        deployed.update_ai_activation(true, 5);
+        assert_eq!(
+            deployed.ai_activation,
+            HouseAiActivationLatches {
+                production: true,
+                autocreate_allowed: true,
+                ai_triggers_active: true,
+                auto_base_building: true,
+            }
+        );
+    }
+
+    #[test]
+    fn house_ai_activation_has_no_defeat_passive_or_difficulty_gate_and_is_idempotent() {
+        for difficulty in [HouseDifficulty::Hard, HouseDifficulty::Easy] {
+            let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+            house.current_iq = 5;
+            house.is_defeated = true;
+            house.multiplay_passive = true;
+            house.difficulty = difficulty;
+            house.credits = 4321;
+            house.owned_building_count = 7;
+            house.owned_unit_count = 11;
+
+            house.update_ai_activation(true, 5);
+            let once = house.ai_activation;
+            house.update_ai_activation(true, 5);
+
+            assert_eq!(house.ai_activation, once);
+            assert_eq!(
+                once,
+                HouseAiActivationLatches {
+                    production: true,
+                    autocreate_allowed: true,
+                    ai_triggers_active: false,
+                    auto_base_building: true,
+                }
+            );
+            assert_eq!(house.current_iq, 5);
+            assert_eq!(house.credits, 4321);
+            assert_eq!(house.owned_building_count, 7);
+            assert_eq!(house.owned_unit_count, 11);
+            assert!(house.is_defeated);
+            assert!(house.multiplay_passive);
+            assert_eq!(house.difficulty, difficulty);
+        }
     }
 }
 

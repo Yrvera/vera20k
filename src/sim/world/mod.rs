@@ -27,6 +27,8 @@ mod world_spawn;
 #[cfg(test)]
 mod gsi_04_18_tests;
 #[cfg(test)]
+mod house_ai_activation_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod team_script_vm_tests;
@@ -5306,6 +5308,26 @@ impl Simulation {
         self.apply_active_vision_structures(&effects);
     }
 
+    /// Visit the live House registry for the early AI-activation transition.
+    ///
+    /// gamemd-derived: `LogicClass__PerTickUpdate @ 0x0055AFB0`, House loop
+    /// `0x0055B68D..0x0055B6B1`, walks the House array forward, skips nulls,
+    /// and reloads the live count after every `HouseClass__Update @ 0x004F8440`
+    /// call. The bounded Rust transition is the verified update block
+    /// `0x004F8564..0x004F85B7`.
+    fn update_house_ai_activation_latches(&mut self, rules: &RuleSet) {
+        let game_mode_nonzero = self.session.game_mode_nonzero;
+        let iq_production = rules.general.iq_production;
+        let mut index = 0;
+        while index < self.session.house_order.len() {
+            let owner = self.session.house_order[index];
+            if let Some(house) = self.houses.get_mut(&owner) {
+                house.update_ai_activation(game_mode_nonzero, iq_production);
+            }
+            index += 1;
+        }
+    }
+
     fn refresh_fog(
         &mut self,
         path_grid: Option<&PathGrid>,
@@ -6015,6 +6037,10 @@ impl Simulation {
         self.trace_master_frame_rung(MasterFrameTestRung::Houses);
         if let Some(rules) = rules {
             self.reconcile_active_vision_structures(rules);
+            // Factory/production work has already completed in Phase 7. This
+            // early House update follows vision reconciliation and precedes
+            // both defeat processing and strategic AI command generation.
+            self.update_house_ai_activation_latches(rules);
         }
         // --- Phase 8: Defeat detection (runs BEFORE AI) ---
         // gamemd evaluates each house's defeat before its AI manage/produce step,

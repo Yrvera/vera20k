@@ -734,6 +734,10 @@ pub struct GeneralRules {
     pub iq_scatter: i32,
     /// `[IQ] MaxIQLevels` stamped onto ordinary skirmish AI houses.
     pub max_iq_levels: i32,
+    /// Signed `[IQ] Production` threshold for the House-update AI activation
+    /// transaction. Native accepts the constructor default `5` or the parsed
+    /// dword verbatim, without clamping it to `MaxIQLevels`.
+    pub iq_production: i32,
     /// `[IQ] RepairSell` outer gate for BuildingClass repair/sell AI.
     pub iq_repair_sell: i32,
     /// `[IQ] SellBack` gate for the red-health low-credit sell decision.
@@ -1098,6 +1102,7 @@ impl Default for GeneralRules {
             player_scatter: false,
             iq_scatter: 3,
             max_iq_levels: 5,
+            iq_production: 5,
             iq_repair_sell: 3,
             iq_sell_back: 2,
             credit_reserve: 1000,
@@ -1441,8 +1446,19 @@ impl GeneralRules {
     }
 
     fn from_ini(ini: &IniFile) -> Self {
+        let defaults = Self::default();
+        // gamemd-derived: `RulesClass__ReadIQ @ 0x00674240` reads signed
+        // `[IQ] Production` into `Rules+0x143C` at `0x006742C1`, independently
+        // of the `[General]` pass and without clamping the parsed dword.
+        let iq_production = ini
+            .section("IQ")
+            .and_then(|section| section.get_i32("Production"))
+            .unwrap_or(defaults.iq_production);
         let Some(general) = ini.section("General") else {
-            return Self::default();
+            return Self {
+                iq_production,
+                ..defaults
+            };
         };
         // ConditionYellow/ConditionRed live in [AudioVisual], not [General].
         let audio_visual = ini.section("AudioVisual");
@@ -1466,7 +1482,6 @@ impl GeneralRules {
                 .unwrap_or(default)
                 .to_string()
         };
-        let defaults = Self::default();
         let mut infantry_death_anims = defaults.infantry_death_anims.clone();
         for (index, key, fallback) in [
             (3, "InfantryExplode", "S_BANG34"),
@@ -2023,6 +2038,7 @@ impl GeneralRules {
             max_iq_levels: iq
                 .and_then(|s| s.get_i32("MaxIQLevels"))
                 .unwrap_or(defaults.max_iq_levels),
+            iq_production,
             iq_repair_sell: iq
                 .and_then(|s| s.get_i32("RepairSell"))
                 .unwrap_or(defaults.iq_repair_sell),
@@ -5362,6 +5378,52 @@ ChuteSound=
         let general = GeneralRules::from_ini(&ini);
         assert!(general.player_scatter);
         assert_eq!(general.iq_scatter, 4);
+    }
+
+    #[test]
+    fn house_ai_activation_iq_production_preserves_native_signed_iq_binding() {
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str("")).iq_production,
+            5,
+            "missing [IQ] retains the RulesClass constructor default"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nProduction=-12\n[IQ]\nFixtureOnly=1\n"
+            ))
+            .iq_production,
+            5,
+            "the same key under [General] is not an IQ input"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[IQ]\nProduction=5\n"
+            ))
+            .iq_production,
+            5
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[IQ]\nProduction=-7\n"
+            ))
+            .iq_production,
+            -7,
+            "negative custom thresholds remain signed and unclamped"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[IQ]\nMaxIQLevels=5\nProduction=9\n"
+            ))
+            .iq_production,
+            9,
+            "Production is not clamped to MaxIQLevels"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str("[IQ]\nProduction=-3\n"))
+                .iq_production,
+            -3,
+            "ReadIQ remains authoritative when [General] is absent"
+        );
     }
 
     #[test]
