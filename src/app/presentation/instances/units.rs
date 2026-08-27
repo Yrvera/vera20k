@@ -28,6 +28,7 @@ use crate::render::unit_slope_transition_cache::{
 };
 use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::components::HarvestOverlay;
+use crate::sim::movement::slope_transition::SLOPE_TRANSITION_FRAMES;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -94,6 +95,7 @@ enum UnitRenderSlopeState {
         from_slope: u8,
         to_slope: u8,
         phase_num: i32,
+        phase_den: u8,
     },
 }
 
@@ -186,7 +188,7 @@ fn locomotor_render_slope_state(
                 from_slope,
                 to_slope,
                 phase_num,
-                ..
+                phase_den,
             } => {
                 let from_slope = clamp_slope_for_render(from_slope);
                 let to_slope = clamp_slope_for_render(to_slope);
@@ -197,6 +199,7 @@ fn locomotor_render_slope_state(
                         from_slope,
                         to_slope,
                         phase_num,
+                        phase_den,
                     }
                 }
             }
@@ -538,11 +541,16 @@ pub(crate) fn build_unit_instances(
 /// camera/slope/body-facing chain the hull was drawn with. That matters on ramps:
 /// the pivot is a point on the tilted hull, so it has to rise and fall with it
 /// rather than being nudged by a fixed screen-space vector.
-fn turret_screen_offset(turret_offset: i32, body_facing: u8, slope_type: u8) -> (f32, f32) {
-    crate::render::vxl_raster::turret_pivot_screen_offset(
+fn turret_screen_offset(
+    turret_offset: i32,
+    body_facing: u8,
+    slope_state: UnitRenderSlopeState,
+) -> (f32, f32) {
+    crate::render::vxl_raster::turret_pivot_screen_offset_for_slope_state(
         turret_offset,
         body_facing,
-        slope_type,
+        stable_slope_for_key(slope_state),
+        slope_blend_for_render_state(slope_state),
         crate::render::vxl_raster::VxlRenderParams::default().scale,
     )
 }
@@ -598,6 +606,25 @@ fn stable_slope_for_key(slope_state: UnitRenderSlopeState) -> u8 {
     }
 }
 
+fn slope_blend_for_render_state(
+    slope_state: UnitRenderSlopeState,
+) -> Option<crate::render::vxl_raster::VxlSlopeBlend> {
+    match slope_state {
+        UnitRenderSlopeState::Stable(_) => None,
+        UnitRenderSlopeState::Transition {
+            from_slope,
+            to_slope,
+            phase_num,
+            phase_den,
+        } => Some(crate::render::vxl_raster::VxlSlopeBlend {
+            from_slope,
+            to_slope,
+            phase_num,
+            phase_den,
+        }),
+    }
+}
+
 fn transition_key_for_unit(
     key: &UnitSpriteKey,
     slope_state: UnitRenderSlopeState,
@@ -608,6 +635,7 @@ fn transition_key_for_unit(
             from_slope,
             to_slope,
             phase_num,
+            phase_den,
         } => Some(TransitionUnitSpriteKey {
             type_id: key.type_id.clone(),
             facing: key.facing,
@@ -616,6 +644,7 @@ fn transition_key_for_unit(
             from_slope,
             to_slope,
             phase_num,
+            phase_den,
         }),
     }
 }
@@ -755,9 +784,9 @@ fn emit_turret_unit_sprites(
         .and_then(|a| a.get(type_id))
         .map(|e| e.turret_offset)
         .unwrap_or(0);
-    // Same slope the body sprite was keyed with, so the pivot cannot disagree with
-    // the hull it sits on.
-    let (tur_ox, tur_oy) = turret_screen_offset(art_offset, body_facing, slope_type);
+    // Use the same stable or quaternion-SLERP slope matrix as every hull,
+    // turret, and barrel raster layer in this presentation phase.
+    let (tur_ox, tur_oy) = turret_screen_offset(art_offset, body_facing, slope_state);
 
     // All layers of a turreted unit share one depth so insertion order
     // (body, then turret/barrel) controls visual stacking via stable sort.
@@ -980,6 +1009,7 @@ mod tests {
                     from_slope: 3,
                     to_slope: 8,
                     phase_num: 0,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
                 },
             ),
             (
@@ -988,6 +1018,7 @@ mod tests {
                     from_slope: 3,
                     to_slope: 8,
                     phase_num: 1,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
                 },
             ),
             (
@@ -996,6 +1027,7 @@ mod tests {
                     from_slope: 3,
                     to_slope: 8,
                     phase_num: 2,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
                 },
             ),
             (44, UnitRenderSlopeState::Stable(8)),
@@ -1059,9 +1091,51 @@ mod tests {
                 from_slope: 4,
                 to_slope: 9,
                 phase_num: 1,
+                phase_den: SLOPE_TRANSITION_FRAMES,
             }),
             "session frame 51 presents processed frame 50, one third through a timer started at 49"
         );
+    }
+
+    #[test]
+    fn turret_offset_pivot_uses_the_same_slope_blend_as_raster_layers() {
+        const OFFSET: i32 = 80;
+        const FACING: u8 = 0;
+        fn close(a: (f32, f32), b: (f32, f32)) -> bool {
+            (a.0 - b.0).abs() < 0.000_01 && (a.1 - b.1).abs() < 0.000_01
+        }
+
+        let stable_from = turret_screen_offset(OFFSET, FACING, UnitRenderSlopeState::Stable(0));
+        let stable_to = turret_screen_offset(OFFSET, FACING, UnitRenderSlopeState::Stable(4));
+        assert_eq!(
+            stable_to,
+            crate::render::vxl_raster::turret_pivot_screen_offset(OFFSET, FACING, 4, 1.0),
+            "the stable path remains the existing exact slope transform"
+        );
+
+        let blended = |phase_num| {
+            turret_screen_offset(
+                OFFSET,
+                FACING,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 0,
+                    to_slope: 4,
+                    phase_num,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
+                },
+            )
+        };
+        let phase_zero = blended(0);
+        let phase_one_third = blended(1);
+        let phase_two_thirds = blended(2);
+
+        assert!(close(phase_zero, stable_from));
+        assert!(!close(phase_zero, stable_to));
+        assert!(!close(phase_one_third, stable_from));
+        assert!(!close(phase_one_third, stable_to));
+        assert!(!close(phase_two_thirds, stable_from));
+        assert!(!close(phase_two_thirds, stable_to));
+        assert!(!close(phase_one_third, phase_two_thirds));
     }
 
     fn spawn_manager(states: &[SpawnSlotState]) -> SpawnManagerState {

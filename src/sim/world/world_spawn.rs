@@ -13,6 +13,7 @@ use super::{
 };
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{Animation, SequenceKind};
@@ -36,6 +37,18 @@ fn object_uses_voxel(type_id: &str, object: &ObjectType, rules: &RuleSet) -> boo
             object.category,
             ObjectCategory::Vehicle | ObjectCategory::Aircraft
         ))
+}
+
+/// A Foot object owns its configured locomotor independently of the parsed
+/// `Speed=` scalar. Drive/Ship constructor state is therefore load-bearing at
+/// Speed=0, while Structures remain outside Foot and other zero-speed custom
+/// locomotors retain the existing inactive compatibility behavior.
+fn should_construct_locomotor(category: EntityCategory, object: &ObjectType) -> bool {
+    object.speed > 0
+        || (matches!(
+            category,
+            EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Aircraft
+        ) && matches!(object.locomotor, LocomotorKind::Drive | LocomotorKind::Ship))
 }
 
 impl Simulation {
@@ -199,7 +212,7 @@ impl Simulation {
             }
             // Locomotor for movable entities.
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
-                if obj.speed > 0 {
+                if should_construct_locomotor(map_ent.category, obj) {
                     let flight_level = rules.map_or(1500, |r| r.general.flight_level);
                     let mut loco = LocomotorState::from_object_type(
                         obj,
@@ -445,7 +458,7 @@ impl Simulation {
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
-        if obj.speed > 0 {
+        if should_construct_locomotor(category, obj) {
             ge.locomotor = Some(LocomotorState::from_object_type(
                 obj,
                 rules.general.flight_level,
@@ -608,7 +621,7 @@ impl Simulation {
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
-        if obj.speed > 0 {
+        if should_construct_locomotor(category, obj) {
             ge.locomotor = Some(LocomotorState::from_object_type(
                 obj,
                 rules.general.flight_level,
