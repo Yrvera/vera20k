@@ -6,13 +6,11 @@
 
 **Branch:** `feature/phase3-map-spatial-close`
 
-**Documentation checkpoint:** `546dcd86 docs(map): hand off open Ship bridge Z design`
-
-**Pre-handoff research HEAD:** `18280d5e docs(map): normalize Ship bridge Z report`
+**HEAD before this handoff update:** `49e8aa06 docs(map): finalize Phase 3 handoff`
 
 **Publish state:** local only; no push or PR authority was granted
 
-## Completed slice
+## Closed work
 
 The bounded GSI-04.03 Spark shared-CellClass-dummy mechanism is closed. Its final certification is `6463f2c2`; supporting implementation, repair, provenance, and critic-led commits are in branch history through that commit. The final recorded focused validation was:
 
@@ -22,22 +20,32 @@ Spark focused groups: 45 passed; 0 failed
 snapshot v111 rejection: 1 passed; 0 failed
 ```
 
-No phase-wide/full `cargo test -p vera20k --lib` was run; Phase 3 is not closed.
+No phase-wide/full `cargo test -p vera20k --lib` was run; Phase 3 remains open.
 
-## Open slice at stop
+## Open work at stop
 
-The current bounded mechanism is ShipLocomotion bridge-Z destination/braking behavior. Native research and design drafts are present in:
+The current mechanism is GSI-04.03 ShipLocomotion bridge-Z destination, braking, terminal, and guard behavior. The committed research and design drafts are:
 
-- `docs/research/PHASE3_SHIP_BRIDGE_Z_ADJUSTMENT_GHIDRA_REPORT.md` (modified)
-- `docs/plans/2026-08-27-phase3-ship-bridge-z-adjustment-design.md` (untracked)
+- `docs/research/PHASE3_SHIP_BRIDGE_Z_ADJUSTMENT_GHIDRA_REPORT.md`
+- `docs/plans/2026-08-27-phase3-ship-bridge-z-adjustment-design.md`
 
-No Rust implementation for this mechanism has started. The design is `REVISED / OPEN` and must not be treated as implementation-ready.
+They are included in branch history through `49e8aa06`. No Rust implementation for this mechanism has started. The design remains `REVISED / OPEN` and is not implementation-ready.
 
-Fresh design critic 4 rejected the earlier approximation. The repaired documents now require exact reciprocal Giant Squid attachment state, exact `CanAttach`, the real interval between attach and the first timer write, victim-Foot-AI-tail refresh, actual detach transactions, and native `start == -1` timer semantics. They preserve the previously rechecked Ship destination-Z, transactional scatter, 3D braking distance, invalid-geometry rejection, terminal stored-Z retry, snapshot, and hash requirements.
+Fresh read-only critic 5 completed with `BLOCK`. Its largest finding is that the report/design misstate `TimerStruct::IsActive @ 0x004DE770`: live disassembly shows `start == -1` skips the elapsed-time calculation and returns `duration != 0`. Thus `(-1, positive duration)` is active. Current Rust `CdTimer::remaining` already has the matching sentinel behavior, but the research transcript, formula, design prose, and acceptance test are wrong. This finding has not been repaired or independently reverified by the parent.
 
-Two stock-active prerequisites remain explicitly open: exact Chronosphere attachment-release admission and exact IsLocomotor/PerformDeploy attachment-release admission. The attempted fresh critic 5 audit was interrupted before verdict when the user asked to stop. Any missing, approximate, or residual attachment/release behavior keeps GSI-04.03 open.
+Critic 5 also kept the row open for:
 
-## Working-tree ownership
+- omitted stock Giant Squid damage, culling, detach, and Naval attacker removal/death behavior;
+- an unsupported extra `dying` gate in the proposed exact `CanAttach` contract;
+- stock-active Chronosphere source-area selection, attachment release, manager timer, and later warp ownership;
+- stock-active IsLocomotor admission and `PerformDeploy` release;
+- stale design prose claiming the timer is the only new state.
+
+The critic rechecked the core bridge-Z requirements without finding a new gap: transactional command/internal/direct/scatter entry, separate Ship/Drive Z, structural destination authority, native 3D distance and fixed saturation, strict terminal cell-plus-stored-Z retry, geometry rejection without mutation, cancel/getter behavior, and destination/retry save/hash coverage.
+
+Any unresolved, approximate, missing, or residual attachment/release behavior keeps this row open. Remaining Phase 3 rows and the phase-wide reverse audit have not begun.
+
+## Working-tree and process state
 
 Preserve the three unrelated pre-existing untracked reports; this task did not create or modify them:
 
@@ -45,8 +53,10 @@ Preserve the three unrelated pre-existing untracked reports; this task did not c
 - `docs/research/PHASE3_MAIN_TICK_MODAL_SCHEDULER_SEAM_GHIDRA_REPORT.md`
 - `docs/research/PHASE3_UNIT_DEPLOY_HOUSE_FLAGS_GHIDRA_REPORT.md`
 
-At pause, `git diff --check` passed for the Ship report/design drafts. `Get-Process cargo,rustc` returned no processes, so this worktree owns no running Cargo build. No merge, rebase, or cherry-pick is in progress.
+At stop, the branch was 69 commits ahead of `origin/main` before this handoff update. No merge, rebase, or cherry-pick is in progress. All three delegated agents are completed. The process check returned no `cargo` or `rustc` processes, so this worktree owns no running build.
+
+No Cargo validation was run after the recorded Spark tests because the subsequent work was research/design only.
 
 ## Exact next safe action
 
-Resume on this same branch/worktree. Reconcile `git status`, worktrees, recent commits, and Cargo ownership first. Give the repaired Ship report/design plus critic-4 findings to a genuinely fresh read-only critic. Close the single largest active prerequisite it identifies, update the documents, and repeat with another fresh critic. Do not begin the Ship Rust builder until the design has zero open prerequisites and receives a zero-finding PASS. Continue focused `--lib` validation only; reserve the one full `cargo test -p vera20k --lib` for final Phase-3 closure.
+Resume in this same branch/worktree and reconcile actual git/worktree/process state first. Independently verify `0x004DE770` in the active `gamemd.exe`, then correct only the timer-sentinel finding in the existing Ship research report and design, run `git diff --check`, and commit that coherent documentation repair. Submit the revised requirement, native evidence, diff, and output to a genuinely fresh read-only critic that rechecks prior fixes. Continue one-largest-finding-at-a-time with a new critic per repair. Do not start the Ship Rust builder until the design has no open prerequisites and receives a zero-finding PASS. Reserve the single full `cargo test -p vera20k --lib` for final Phase 3 closure.
