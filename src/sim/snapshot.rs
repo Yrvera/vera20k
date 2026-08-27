@@ -311,7 +311,9 @@ use crate::sim::world::Simulation;
 // Bumped 105 -> 106: active-retail Cell ground is one 104-lepton numeric
 // authority rather than the false 90-lepton duplicate. Shape is unchanged,
 // but retained Cell targets/world state would resume with different Z results.
-const SNAPSHOT_VERSION: u32 = 106;
+// Bumped 106 -> 107: add unconditional shared-dummy level/slope hash authority
+// now that active Spark ground and collision queries consume those bytes.
+const SNAPSHOT_VERSION: u32 = 107;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2716,10 +2718,11 @@ mod tests {
     /// structure-upgrade parent/slot identity; 104 -> 105 adds active/stashed
     /// Drive/Ship slope-transition state; 105 -> 106 rejects saves that would
     /// resume under the corrected one-authority 104-lepton Cell ground formula
-    /// despite unchanged wire shape.
+    /// despite unchanged wire shape; 106 -> 107 adds unconditional shared-
+    /// dummy level/slope hash authority for active Spark queries.
     #[test]
-    fn phase3_cell_ground_104_snapshot_version_is_106() {
-        assert_eq!(super::SNAPSHOT_VERSION, 106);
+    fn phase3_spark_dummy_snapshot_version_is_107() {
+        assert_eq!(super::SNAPSHOT_VERSION, 107);
     }
 
     #[test]
@@ -2764,7 +2767,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "Drive Ship slope", 3);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("current v106 slope snapshot")
+            .expect("current v107 slope snapshot")
             .sim;
         let loaded = restored
             .substrate

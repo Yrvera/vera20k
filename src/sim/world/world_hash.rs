@@ -157,6 +157,23 @@ mod shared_dummy_bridge_hash_tests {
             "without a retained Bullet only persistent 0x1180 joins the hash"
         );
     }
+
+    #[test]
+    fn gsi_04_03_hashes_dummy_level_slope_without_retained_projectile() {
+        let sim = Simulation::new();
+        let dummy = sim.effective_shared_cell_dummy();
+        let clear_hash = sim.state_hash();
+        let v106_clear_hash = sim.state_hash_without_spark_dummy_level_slope_v107();
+
+        dummy.set_level_slope(-3, 9);
+
+        assert_ne!(clear_hash, sim.state_hash());
+        assert_eq!(
+            v106_clear_hash,
+            sim.state_hash_without_spark_dummy_level_slope_v107(),
+            "the v106 provenance schema excludes unretained dummy level/slope"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -307,7 +324,7 @@ impl Simulation {
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -319,6 +336,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
+            false,
         )
     }
 
@@ -330,6 +348,16 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
+            false,
+        )
+    }
+
+    /// Test-only provenance probe for the v107 unconditional Spark dummy
+    /// level/slope fold. It reconstructs the committed v106 hash layout.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, false,
         )
     }
 
@@ -347,6 +375,7 @@ impl Simulation {
         include_real_cell_bridge_flags_v90: bool,
         include_base_defense_response_v97: bool,
         include_techno_constructor_v104: bool,
+        include_spark_dummy_level_slope_v107: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -417,18 +446,30 @@ impl Simulation {
             // Unlike the requested coordinate, native `+0x140 & 0x1180`
             // survives ordinary lookups and changes later bridge/FNPC/target
             // behavior even when no Bullet currently retains the dummy.
-            b"shared-cell-dummy-bridge-v3".hash(&mut hasher);
-            shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+            if include_spark_dummy_level_slope_v107 {
+                b"shared-cell-dummy-spark-v4".hash(&mut hasher);
+                shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+                shared_dummy.level.hash(&mut hasher);
+                shared_dummy.slope_type.hash(&mut hasher);
+            } else {
+                b"shared-cell-dummy-bridge-v3".hash(&mut hasher);
+                shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+            }
             if self.projectiles.iter().any(|(_, projectile)| {
                 projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
             }) {
-                // A retained Bullet pointer additionally makes coordinate,
-                // level, and slope deterministic future behavior. The bridge
-                // subset was folded unconditionally above.
-                b"shared-cell-dummy-target-v2".hash(&mut hasher);
-                shared_dummy.coord.hash(&mut hasher);
-                shared_dummy.level.hash(&mut hasher);
-                shared_dummy.slope_type.hash(&mut hasher);
+                // A retained Bullet pointer additionally makes coordinate
+                // deterministic future behavior. Preserve the complete v106
+                // field/tag order for historical provenance probes.
+                if include_spark_dummy_level_slope_v107 {
+                    b"shared-cell-dummy-target-v3".hash(&mut hasher);
+                    shared_dummy.coord.hash(&mut hasher);
+                } else {
+                    b"shared-cell-dummy-target-v2".hash(&mut hasher);
+                    shared_dummy.coord.hash(&mut hasher);
+                    shared_dummy.level.hash(&mut hasher);
+                    shared_dummy.slope_type.hash(&mut hasher);
+                }
             }
             self.hash_waves(&mut hasher);
         }
