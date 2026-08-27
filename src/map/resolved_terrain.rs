@@ -4406,17 +4406,27 @@ mod tests {
 
     #[test]
     fn gsi_04_02_last_tiles_pack_materialization_precedes_tmp_lat_and_final_state() {
-        let theater = gsi_04_02_last_tiles_theater();
-        assert_eq!(theater.lookup.translate_legacy_map_tile_index(5), 8);
+        let mut theater = gsi_04_02_last_tiles_theater();
+        let raw_legacy = gsi_04_02_last_tiles_tmp_bytes(6, [11, 12, 13], [14, 15, 16]);
         let rough = gsi_04_02_last_tiles_tmp_bytes(3, [1, 2, 3], [4, 5, 6]);
+        let rough_suffix =
+            gsi_04_02_last_tiles_tmp_bytes(9, [31, 32, 33], [34, 35, 36]);
         let lat = gsi_04_02_last_tiles_tmp_bytes(7, [21, 22, 23], [24, 25, 26]);
         let (_directory, assets) = gsi_04_02_asset_manager_with_loose_tmps(&[
+            ("old03.tem", &raw_legacy),
             ("rough01.tem", &rough),
+            ("rough01a.tem", &rough_suffix),
             ("lat16.tem", &lat),
         ]);
+        crate::map::theater::resolve_contiguous_variant_chains_for_test(
+            &mut theater.lookup,
+            &assets,
+        );
+        assert_eq!(theater.lookup.translate_legacy_map_tile_index(5), 8);
+        assert_eq!(theater.lookup.total_file_count(8), 2);
         let mut map = make_map(
             vec![MapCell {
-                rx: 2,
+                rx: 3,
                 ry: 2,
                 tile_index: 5,
                 sub_tile: 0,
@@ -4435,10 +4445,10 @@ mod tests {
 
         let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
         cache.complete_theater_registry_load(Some(5), None);
-        let mut forbidden_main = || panic!("single-file TMPs must not draw Main");
+        let mut deterministic_main = || 0;
         let mut fill = |_low, _high| 0;
         let without_lat = {
-            let mut selector = cache.begin_load(&mut forbidden_main);
+            let mut selector = cache.begin_load(&mut deterministic_main);
             ResolvedTerrainGrid::build_with_variant_selector(
                 &map,
                 Some(&theater),
@@ -4452,13 +4462,14 @@ mod tests {
                 &mut selector,
             )
         };
-        let translated = without_lat.cell(2, 2).expect("accepted Pack5 cell");
+        let translated = without_lat.cell(3, 2).expect("accepted Pack5 cell");
         assert_eq!(translated.source_tile_index, 8);
         assert_eq!(translated.final_tile_index, 8);
         assert_eq!(translated.tileset_index, Some(2));
-        assert_eq!(translated.radar_left, [1, 2, 3]);
-        assert_eq!(translated.radar_right, [4, 5, 6]);
-        assert_eq!(translated.variant, 0);
+        assert!(translated.variant > 0);
+        assert_eq!(translated.variant, 1);
+        assert_eq!(translated.radar_left, [31, 32, 33]);
+        assert_eq!(translated.radar_right, [34, 35, 36]);
         assert_eq!(translated.level, 4);
 
         let fill_cell = without_lat.cell(1, 3).expect("prefilled real CellClass");
@@ -4466,7 +4477,7 @@ mod tests {
         assert_ne!(fill_cell.source_tile_index, 8);
 
         let with_lat = {
-            let mut selector = cache.begin_load(&mut forbidden_main);
+            let mut selector = cache.begin_load(&mut deterministic_main);
             ResolvedTerrainGrid::build_with_variant_selector(
                 &map,
                 Some(&theater),
@@ -4480,7 +4491,7 @@ mod tests {
                 &mut selector,
             )
         };
-        let lat_fixed = with_lat.cell(2, 2).expect("LAT-fixed Pack5 cell");
+        let lat_fixed = with_lat.cell(3, 2).expect("LAT-fixed Pack5 cell");
         assert_eq!(lat_fixed.source_tile_index, 8);
         assert_eq!(lat_fixed.final_tile_index, 24);
         assert_eq!(lat_fixed.tileset_index, Some(3));

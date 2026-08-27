@@ -1181,6 +1181,14 @@ fn resolve_contiguous_variant_chains(lookup: &mut TilesetLookup, asset_manager: 
     );
 }
 
+#[cfg(test)]
+pub(crate) fn resolve_contiguous_variant_chains_for_test(
+    lookup: &mut TilesetLookup,
+    asset_manager: &AssetManager,
+) {
+    resolve_contiguous_variant_chains(lookup, asset_manager);
+}
+
 fn resolve_tileset_start(lookup: &TilesetLookup, ordinal: Option<i32>) -> Option<u16> {
     let ordinal = ordinal?;
     if ordinal < 0 {
