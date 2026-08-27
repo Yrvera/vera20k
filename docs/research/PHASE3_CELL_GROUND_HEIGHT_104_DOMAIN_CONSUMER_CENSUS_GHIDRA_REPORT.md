@@ -22,6 +22,15 @@
 
 **Implementation scope:** none. This report is a research handoff. It changes no Rust code and makes no Ghidra changes.
 
+**Post-implementation Spark status (2026-08-27):** The Spark-specific
+shared-dummy and invalid/unallocated-cell gap identified in this census is
+closed. The current authority is the [Phase 3 Spark shared-dummy routing
+contract](PHASE3_SPARK_SHARED_DUMMY_ROUTING_GHIDRA_REPORT.md). Implementation
+and review repairs are `4c71b488`, `72bf8e15`, `96779c16`, and `0054549e`.
+Spark-gap statements below are retained only as a historical pre-`4c71b488`
+baseline; they do not describe current Rust. This addendum does not change the
+status of other 104-domain consumers owned by separate rows.
+
 ## Verdict
 
 The proposed split between a **90-lepton `CellClass::GetGroundHeight` domain** and a **104-lepton object/VXL/bridge domain is false in the active retail executable**.
@@ -357,17 +366,22 @@ ascending snap       = bridge plane - 20 = ground + 396
 
 The stale `ground + 360` / `ground + 340` interpretation is wrong.
 
-### 7.3 Current Rust Spark verdict
+### 7.3 Post-implementation Rust Spark verdict
 
 `src/sim/particles/spark_world.rs` calls `ground_height_leptons` at lines 96 and 119. That evaluator uses 104 and is the correct scalar choice. `src/sim/particles/spark.rs` obtains `STRUCTURAL_BRIDGE_HEIGHT` from the 416-lepton bridge topology constant. These numeric choices match active retail.
 
-The remaining boundary distinction is lookup failure:
+The historical pre-`4c71b488` boundary distinction was lookup failure:
 
-- Rust's Spark adapter reproduces signed truncation and fixed-stride flattened indexing.
-- For a canonical cell missing from resolved terrain, it returns `UnavailableCell`; constructor `ground_height_at` converts that to `None`.
+- Rust's Spark adapter reproduced signed truncation and fixed-stride flattened indexing.
+- For a canonical cell missing from resolved terrain, it returned `UnavailableCell`; constructor ground converted that to `None`.
 - Native uses the shared dummy and continues.
 
-This is an explicit safety/availability divergence, not evidence for a different height scalar. It cannot be called exact invalid-cell parity until Spark is routed through the existing shared dummy-cell substrate or invalid-cell reachability is separately excluded for every active Spark entry path.
+Current Rust now routes constructor ground and behavior-3 collision through the
+same terrain-bound shared dummy with native lookup order, restamping, lazy fact
+reads, collision continuation, and unconditional level/slope hash authority.
+For Spark, the former safety/availability divergence and invalid-cell residual
+are closed; other height consumers retain their own separately scoped routing
+status.
 
 ## 8. Native scalar xrefs and ownership
 
@@ -625,8 +639,8 @@ For flat level 2, current bad output is `180`; native is `208`. With a structura
 | Spark ground | same Cell wrapper, 104 | common 104 | PASS |
 | Spark plane | ground +416 | ground +416 | PASS numeric |
 | signed world-to-cell | trunc toward zero | Spark uses shared trunc helper | PASS |
-| flattened 512 lookup | flattened range/pointer; dummy fallback | Spark matches fixed stride but errors on missing cell | PARTIAL; invalid-cell residual |
-| shared dummy ground | live dummy level/slope | generic cell substrate models it; not all height callers use it | PARTIAL integration |
+| flattened 512 lookup | flattened range/pointer; dummy fallback | Spark uses the shared fixed-stride fallback and preserves valid aliases | PASS for Spark |
+| shared dummy ground | live dummy level/slope | Spark consumes the terrain-bound dummy; other height callers remain separately owned | PASS for Spark |
 | INI override | none | constants | PASS conceptually |
 
 ## 12. Final questions log
@@ -685,7 +699,9 @@ Both reproduced 104 and 416. The current Ghidra plate comments on `CellClass::Ge
 2. Correct all five production users in §11.2. A constant-only change may be sufficient numerically, but the builder should avoid retaining duplicate tables that can drift again.
 3. Preserve Spark's current 104 `ground_height_leptons` call and 416 structural plane.
 4. Rebaseline all 90-derived tests, snapshot hashes, wave target expectations, and recent design prose.
-5. Route height callers through the shared fixed-stride/dummy-cell substrate where native can observe unavailable cells. If the builder does not close this in the same slice, GSI-04.03 remains open; returning zero/`None` is not exact native behavior.
+5. Spark-specific shared fixed-stride/dummy-cell routing is completed by
+   `4c71b488` and its review repairs. Other height callers remain separately
+   owned and must not infer parity from Spark's closure.
 6. Keep floor and deck composition separate. Do not add 416 inside `ground_height_leptons`.
 
 ### Acceptance fixtures
@@ -738,7 +754,7 @@ Flat level-0 maps hide the scalar regression because both domains return zero th
 - replace slope-table `L=90` and slopes 17..20 contribution 45 with `L=104` and contribution 52;
 - replace Spark plane `G+360` and ascending `G+340` with `G+416` and `G+396`;
 - delete the claim that VXL 104 and Cell ground 90 are different numeric domains; retain only that their globals/initializers are independently owned.
-- replace its stale claim that Rust has no mutable shared dummy: the substrate now exists in `cell_rect`, while Spark's adapter still returns typed unavailable/off-array errors instead of routing through it.
+- replace its stale pre-implementation claim that Spark returns typed unavailable/off-array errors: the substrate exists in `cell_rect`, and Spark routing is implemented in `4c71b488` with review repairs through `0054549e`.
 
 `docs/research/PARTICLE_SPARK_COLLISION_AND_PIXEL_COMPOSITOR_GHIDRA_REPORT.md`:
 
@@ -758,7 +774,7 @@ Flat level-0 maps hide the scalar regression because both domains return zero th
 `docs/plans/2026-07-18-spark-live-collision-adapter-and-owner-design.md`:
 
 - replace its retained `G+360` / ascending `G+340` adapter contract with the verified `G+416` / `G+396` composition;
-- state explicitly that the existing Spark ground evaluator already uses the correct 104 scalar while shared-dummy routing remains open.
+- state explicitly that the Spark ground evaluator uses the correct 104 scalar and shared-dummy routing is implemented; use the current Spark routing contract for status.
 
 `docs/plans/2026-08-26-naval-base-placement-design.md` and any plans/tests copied from it:
 

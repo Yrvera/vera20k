@@ -1,7 +1,7 @@
 # Phase 3 Spark shared-dummy routing design
 
-**Status:** implemented in `4c71b488`; validation repair `72bf8e15`; critic round
-active, not yet parity-pass certified
+**Status:** implemented in `4c71b488`; review repairs `72bf8e15`, `96779c16`,
+and `0054549e`; critic 4 P1 prose repair active, not yet parity-pass certified
 
 **Phase/GSI ownership hypothesis:** Phase 3 / GSI-04.03, behavior-3 Spark
 height/collision lookup routing. The general overlay writer lifecycle remains
