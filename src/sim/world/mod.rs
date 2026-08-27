@@ -7564,3 +7564,7 @@ mod production_shadow_tests;
 #[cfg(test)]
 #[path = "radar_dirty_ack_tests.rs"]
 mod radar_dirty_ack_tests;
+
+#[cfg(test)]
+#[path = "bridge_parity_harness_tests.rs"]
+mod bridge_parity_harness_tests;
