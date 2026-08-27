@@ -610,16 +610,14 @@ fn diagnose_rejected_order(
     );
 }
 
-/// Issue the crossing through the very same `issue_move_command_with_layered`
-/// production entry point `Command::Move` uses, with **one** argument changed:
-/// `blocker_neighbor_counts` is passed as `None`.
+/// Issue an ordinary player `Command::Move` — the same entry point a right-click
+/// goes through, with nothing disabled.
 ///
-/// That argument is the only input that turns on the zone-hierarchy expansion
-/// gate (`HierarchyGate::allows`, `core.rs:381-386`), and on a retail high bridge
-/// that gate is what refuses the route. Everything downstream — the drive track,
-/// the cell-transition resolver, the height writes — is untouched production code,
-/// so the height observation still stands; only the order-time search is widened.
-fn issue_crossing_order_without_hierarchy_gate(
+/// Every order this harness issues, the crossing and the control alike, goes
+/// through here. A control move that used a widened search could pass while the
+/// crossing was refused by a gate, which would report "the mover is fine, the
+/// bridge is the problem" from two different code paths and prove neither.
+fn issue_ordinary_move(
     scenario: &mut crate::headless_scenario::HeadlessScenario,
     owner_name: &str,
     entity_id: u64,
@@ -633,33 +631,18 @@ fn issue_crossing_order_without_hierarchy_gate(
         simulation,
         resources,
     } = &mut scenario.runtime;
-    let info = simulation
-        .resolve_move_info(entity_id, Some(&resources.rules))
-        .expect("move info for a stock vehicle");
-    let (blocks, block_map) = crate::sim::movement::bump_crush::build_entity_block_set(
-        simulation.entities(),
+    simulation.apply_command(
         owner_name,
-        &simulation.house_alliances,
-        &simulation.interner,
+        &Command::Move {
+            entity_id,
+            target_rx: target.0,
+            target_ry: target.1,
+            queue: false,
+            group_id: None,
+        },
         Some(&resources.rules),
-    );
-    let costs = simulation.terrain_costs.get(&info.speed_type);
-    super::movement_commands::issue_move_command_with_layered(
-        &mut simulation.substrate.entities,
-        &grid,
-        entity_id,
-        target,
-        info.speed,
-        false,
-        costs,
-        Some(&blocks),
-        simulation.resolved_terrain.as_ref(),
-        simulation.zone_grid.as_ref(),
-        Some(&block_map),
-        info.mover_is_crusher,
-        None,
-        simulation.playfield_bounds,
-        Some(&mut simulation.substrate.cell_occupation),
+        Some(&grid),
+        &resources.height_map,
     )
 }
 
@@ -832,39 +815,21 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
             path.last()
         ),
         None => {
-            println!(
-                "!! the ordinary Command::Move order to {:?} was REFUSED — this is a separate \
-                 order-time defect, not a height one; diagnosing, then re-issuing with the \
-                 zone-hierarchy gate off so the deck height can still be observed",
+            // RATCHET. This branch used to re-issue the order with the
+            // zone-hierarchy gate switched off, so a deck-height observation was
+            // still possible while the order path itself stayed broken. That
+            // fallback is deleted along with the defect it worked around
+            // (cf91caa3): an ordinary, undisabled `Command::Move` is the only
+            // route a player has, so it must succeed here or the run fails. A
+            // harness that can route around a regression is not a ratchet.
+            diagnose_rejected_order(&mut scenario, &owner_name, entity_id, start_cell, &span);
+            panic!(
+                "the ordinary Command::Move to {:?} was REFUSED — a player cannot cross this \
+                 span at all. See the diagnosis above; the bridge-deck exemption from the \
+                 zone-hierarchy corridor gate (sim::pathfinding::core) is the first thing to \
+                 check.",
                 span.approach_b
             );
-            diagnose_rejected_order(&mut scenario, &owner_name, entity_id, start_cell, &span);
-            let reissued = issue_crossing_order_without_hierarchy_gate(
-                &mut scenario,
-                &owner_name,
-                entity_id,
-                span.approach_b,
-            );
-            println!("re-issue without the hierarchy gate -> {reissued}");
-            let path = scenario
-                .sim()
-                .entities()
-                .get(entity_id)
-                .and_then(|entity| entity.movement_target.as_ref())
-                .map(|target| target.path.clone());
-            match path {
-                Some(path) => println!(
-                    "fallback order accepted: {} node(s) {:?} -> {:?}",
-                    path.len(),
-                    path.first(),
-                    path.last()
-                ),
-                None => panic!(
-                    "no crossing could be issued to {:?} by either route — nothing about deck \
-                     height was observed",
-                    span.approach_b
-                ),
-            }
         }
     }
 
@@ -952,12 +917,7 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
         // "the mover is broken" from "the bridge route is refused".
         let control_goal = offset(start_cell, (-span.step.0 * 3, -span.step.1 * 3))
             .unwrap_or((start_cell.0, start_cell.1));
-        let issued = issue_crossing_order_without_hierarchy_gate(
-            &mut scenario,
-            &owner_name,
-            entity_id,
-            control_goal,
-        );
+        let issued = issue_ordinary_move(&mut scenario, &owner_name, entity_id, control_goal);
         println!("control move away from the bridge to {control_goal:?} issued -> {issued}");
         let mut control_cells = Vec::new();
         for _ in 0..300 {
