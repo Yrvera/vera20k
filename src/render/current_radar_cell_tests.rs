@@ -1,7 +1,8 @@
 use super::*;
 
 use crate::map::bridge_facts::{
-    Axis, BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts, BridgeheadAnchorClass,
+    Axis, BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts, BridgeStampFamily,
+    BridgeheadAnchorClass,
 };
 use crate::map::playfield::PlayfieldBounds;
 use crate::map::resolved_terrain::{
@@ -19,7 +20,8 @@ use crate::sim::bridge_state::{
     BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
 };
 use crate::sim::overlay_grid::OverlayGrid;
-use crate::sim::runtime::SimRuntime;
+use crate::sim::runtime::{SimResources, SimRuntime};
+use crate::sim::snapshot::GameSnapshot;
 use crate::sim::world::Simulation;
 
 const SIDE: u16 = 64;
@@ -28,6 +30,8 @@ const LOW_BRIDGE_COLOR: [u8; 3] = [31, 32, 33];
 const LOW_BRIDGE_CD_COLOR: [u8; 3] = [41, 42, 43];
 const OVERLAY_COLOR: [u8; 3] = [11, 12, 13];
 const BASE_COLOR: [u8; 3] = [10, 20, 30];
+const SAVED_COLLAPSED_TMP_RAW: [u8; 3] = [200, 100, 50];
+const SAVED_COLLAPSED_TMP_COLOR: [u8; 3] = [100, 50, 25];
 
 fn expanded_bounds() -> PlayfieldBounds {
     PlayfieldBounds {
@@ -55,8 +59,7 @@ fn fixture(static_bridge: Option<(u16, u16)>) -> (TerrainGrid, ResolvedTerrainGr
             (0..SIDE).map(move |rx| {
                 let mut cell = flat_cell(rx, ry);
                 if static_bridge == Some((rx, ry)) {
-                    cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
-                    cell.has_bridge_deck = true;
+                    mark_high_bridge_source(&mut cell);
                 }
                 cell
             })
@@ -65,6 +68,16 @@ fn fixture(static_bridge: Option<(u16, u16)>) -> (TerrainGrid, ResolvedTerrainGr
     let resolved = ResolvedTerrainGrid::from_cells(SIDE, SIDE, cells);
     let grid = build_terrain_grid_from_resolved(&resolved, None, None);
     (grid, resolved)
+}
+
+fn mark_high_bridge_source(cell: &mut ResolvedTerrainCell) {
+    cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+    cell.bridge_facts.family = BridgeStampFamily::Nesw;
+    cell.bridge_facts.direction = Some(0);
+    cell.bridge_facts.overlay_id = Some(0xCD);
+    cell.has_bridge_deck = true;
+    cell.bridge_walkable = true;
+    cell.bridge_deck_level = cell.level.saturating_add(4);
 }
 
 fn central_cell(grid: &TerrainGrid, bounds: PlayfieldBounds) -> (u16, u16) {
@@ -234,12 +247,84 @@ fn structural_runtime_with_stale_grid(
     live_runtime(resolved, bridge_state, stale_overlay_grid)
 }
 
+fn snapshot_restored_collapsed_high_runtime(
+    terrain_template: &ResolvedTerrainGrid,
+    cell: (u16, u16),
+    runtime_overlay: u8,
+) -> SimRuntime {
+    let mut sim = Simulation::new();
+    sim.session.map_name = "RADARLOAD.MAP".to_string();
+    sim.install_resolved_terrain_for_new_map(terrain_template.clone());
+    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
+        terrain_template,
+        true,
+        1500,
+    ));
+    let runtime_cell = sim
+        .bridge_state
+        .as_mut()
+        .and_then(|state| state.cell_mut(cell.0, cell.1))
+        .expect("production-shaped high bridge runtime cell");
+    runtime_cell.deck_present = false;
+    runtime_cell.damage_state = DamageState::Destroyed;
+    runtime_cell.overlay_byte = runtime_overlay;
+
+    let mut stale_overlay_grid = OverlayGrid::new(SIDE, SIDE);
+    stale_overlay_grid.place_overlay(cell.0, cell.1, 0xCD, 0);
+    sim.overlay_grid = Some(stale_overlay_grid);
+    let saved_dynamic_cell = {
+        let live_terrain = sim.resolved_terrain.as_mut().expect("installed terrain");
+        let saved_cell = live_terrain
+            .cell_mut(cell.0, cell.1)
+            .expect("saved high bridge cell");
+        saved_cell.bridge_facts.raw_flags &= !BRIDGE_FLAG_STRUCTURAL;
+        saved_cell.radar_left = SAVED_COLLAPSED_TMP_RAW;
+        saved_cell.radar_right = [7, 8, 9];
+        crate::map::resolved_terrain::DynamicTerrainCellState::capture(saved_cell)
+    };
+    sim.dynamic_terrain_cells.insert(cell, saved_dynamic_cell);
+    sim.real_cell_bridge_flags_0x1180 = sim
+        .resolved_terrain
+        .as_ref()
+        .expect("installed terrain")
+        .capture_real_cell_bridge_flags_0x1180();
+
+    let terrain_speed_config = sim.terrain_speed_config.clone();
+    let bridge_explosions = sim.bridge_explosions.clone();
+    let metallic_debris = sim.metallic_debris.clone();
+    let bridge_anim_sounds = sim.bridge_anim_sounds.clone();
+    let bytes = GameSnapshot::save_validated(&sim, 1, 2, "Radar load", 3);
+    let mut restored = GameSnapshot::load_validated(&bytes, 1, 2, "RADARLOAD.MAP")
+        .expect("validated current snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("restored object graph");
+    restored.rebuild_caches_after_load(
+        terrain_template.clone(),
+        terrain_speed_config,
+        bridge_explosions,
+        metallic_debris,
+        bridge_anim_sounds,
+    );
+    let resources = SimResources::empty();
+    restored
+        .restore_map_authority_after_snapshot_load(
+            &resources.rules,
+            &resources.overlay_registry,
+        )
+        .expect("restored current map authority");
+    SimRuntime {
+        simulation: restored,
+        resources,
+    }
+}
+
 #[test]
 fn gsi_04_01_structural_high_bridge_wins_in_full_and_incremental_paths() {
     let (grid, mut resolved) = fixture(None);
     let cell = central_cell(&grid, expanded_bounds());
-    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags =
-        BRIDGE_FLAG_STRUCTURAL;
+    mark_high_bridge_source(resolved.cell_mut(cell.0, cell.1).unwrap());
     let colors = colors();
     let stale_destroyed = runtime_with_overlay(
         resolved.clone(),
@@ -295,8 +380,7 @@ fn gsi_04_01_intact_low_overlay_stays_overlay_in_full_and_incremental_paths() {
 fn gsi_04_01_high_collapse_uses_runtime_overlay_then_repairs_in_full_and_incremental_paths() {
     let (grid, mut resolved) = fixture(None);
     let cell = central_cell(&grid, expanded_bounds());
-    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags =
-        BRIDGE_FLAG_STRUCTURAL;
+    mark_high_bridge_source(resolved.cell_mut(cell.0, cell.1).unwrap());
     let colors = colors();
     let repaired = structural_runtime_with_stale_grid(resolved.clone(), cell, 0xCD);
 
@@ -325,6 +409,70 @@ fn gsi_04_01_high_collapse_uses_runtime_overlay_then_repairs_in_full_and_increme
         assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
         apply_incremental(&mut incremental, &repaired, cell, &colors);
         assert_eq!(raw_pair(&incremental, cell), [BRIDGE_COLOR; 2]);
+    }
+}
+
+#[test]
+fn gsi_04_01_snapshot_high_collapse_uses_runtime_overlay_after_structural_flag_clear() {
+    let (grid, mut terrain_template) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    let source_cell = terrain_template
+        .cell_mut(cell.0, cell.1)
+        .expect("high bridge source cell");
+    mark_high_bridge_source(source_cell);
+
+    let colors = colors();
+    let repaired = structural_runtime_with_stale_grid(terrain_template.clone(), cell, 0xCD);
+    assert_eq!(
+        raw_pair(
+            &projection(&grid, &repaired, &[], expanded_bounds(), &colors),
+            cell,
+        ),
+        [BRIDGE_COLOR; 2],
+    );
+
+    for saved_overlay in [0xE7, 0xE8, u8::MAX] {
+        let restored = snapshot_restored_collapsed_high_runtime(
+            &terrain_template,
+            cell,
+            saved_overlay,
+        );
+        let restored_cell = restored
+            .simulation
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(cell.0, cell.1))
+            .expect("restored high bridge cell");
+        assert!(!restored_cell.bridge_facts.has_structural_bridge());
+        assert_eq!(restored_cell.bridge_facts.family, BridgeStampFamily::Nesw);
+        assert_eq!(restored_cell.radar_left, SAVED_COLLAPSED_TMP_RAW);
+        assert_eq!(
+            restored
+                .simulation
+                .overlay_grid
+                .as_ref()
+                .expect("restored overlay grid")
+                .cell(cell.0, cell.1)
+                .overlay_id,
+            Some(0xCD),
+            "high-bridge load intentionally leaves the original deck byte in OverlayGrid",
+        );
+        assert!(restored.simulation.radar_terrain_dirty_cells.is_empty());
+
+        let full = projection(&grid, &restored, &[], expanded_bounds(), &colors);
+        assert_eq!(
+            raw_pair(&full, cell),
+            [SAVED_COLLAPSED_TMP_COLOR; 2],
+            "saved runtime overlay {saved_overlay:#04X} must fall through to saved TMP",
+        );
+
+        let mut incremental = projection(&grid, &repaired, &[], expanded_bounds(), &colors);
+        apply_incremental(&mut incremental, &restored, cell, &colors);
+        assert_eq!(
+            raw_pair(&incremental, cell),
+            [SAVED_COLLAPSED_TMP_COLOR; 2],
+            "incremental source must share the snapshot-restored high-family authority",
+        );
     }
 }
 
@@ -445,8 +593,7 @@ fn gsi_04_01_absent_live_cell_clears_full_and_incremental_bridge_sources() {
 fn gsi_04_01_load_intact_bridge_discards_abandoned_destroyed_pixels() {
     let (grid, mut resolved) = fixture(None);
     let cell = central_cell(&grid, expanded_bounds());
-    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags =
-        BRIDGE_FLAG_STRUCTURAL;
+    mark_high_bridge_source(resolved.cell_mut(cell.0, cell.1).unwrap());
     let overlay = OverlayGrid::new(SIDE, SIDE);
     let abandoned = live_runtime(
         resolved.clone(),
@@ -480,8 +627,7 @@ fn gsi_04_01_load_intact_bridge_discards_abandoned_destroyed_pixels() {
 fn gsi_04_01_load_destroyed_bridge_discards_abandoned_repair_pixels() {
     let (grid, mut resolved) = fixture(None);
     let cell = central_cell(&grid, expanded_bounds());
-    resolved.cell_mut(cell.0, cell.1).unwrap().bridge_facts.raw_flags =
-        BRIDGE_FLAG_STRUCTURAL;
+    mark_high_bridge_source(resolved.cell_mut(cell.0, cell.1).unwrap());
     let overlay = OverlayGrid::new(SIDE, SIDE);
     let abandoned = live_runtime(
         resolved.clone(),
