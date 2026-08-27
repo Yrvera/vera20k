@@ -175,8 +175,10 @@ fn object_uses_voxel(type_id: &str, object: &ObjectType, rules: &RuleSet) -> boo
 }
 
 /// A Foot object owns its configured locomotor independently of the parsed
-/// `Speed=` scalar. Drive/Ship constructor state is therefore load-bearing at
-/// Speed=0, while Structures remain outside Foot and other zero-speed custom
+/// `Speed=` scalar. `DriveLocomotionClass::Process @ 0x004B0500` and
+/// `ShipLocomotionClass::Process @ 0x0069FC10` consume their class-local state
+/// without a Speed gate. That state is therefore load-bearing at Speed=0,
+/// while Structures remain outside Foot and other zero-speed custom
 /// locomotors retain the existing inactive compatibility behavior.
 fn should_construct_locomotor(category: EntityCategory, object: &ObjectType) -> bool {
     object.speed > 0
