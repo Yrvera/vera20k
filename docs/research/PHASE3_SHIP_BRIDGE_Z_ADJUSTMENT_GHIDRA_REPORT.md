@@ -854,9 +854,9 @@ Consequently the attacker is already off-map while the projectile travels. A sec
 
 There is no alliance, Verses, `ImmuneToPoison`, mission, owner-house, or ordinary target-category test in this predicate. `Parasiteable` defaults true in `UnitTypeClass`; retail's explicit `SQD Parasiteable=no` prevents SQD-as-victim, not SQD-as-attacker.
 
-`Attach` first resets state/major/subframe, destroys the prior persistent animation, removes the manager's animation listener when registered, and resets the manager attack timer to current/zero. On admission failure it tries to restore the limboed attacker near its old location; failed fallback placement removes the attacker. No link or victim timer is installed.
+`Attach` first resets state/major/subframe, destroys the prior persistent animation, removes the manager's animation listener when registered, and resets the manager attack timer to current/zero. On admission failure it resolves the attacker's cached pre-limbo packed cell `+0x55C` directly, obtains that cell's centered ground coordinate, and calls `UnitClass__Unlimbo(coord, facing=0)`. There is no nearby search in this path. Failed Unlimbo calls `UnInit`; successful Unlimbo performs the exact reveal/fog/idle tail detailed in Section 19.5. No link or victim timer is installed.
 
-On success it calls the attacker's locomotor slot `+0x70` with victim coordinates and selector `-1`, then writes both ownership directions in this order: victim `+0x694 = attacker`, manager `+0x28 = victim`. The SQD remains limboed. Successful attachment still does not write `Foot+0x6A0/+0x6A8`.
+On success it calls the attacker's locomotor interface slot `+0x70` with selector `-1` and the victim's exact current world XYZ by value; the ignored HRESULT cannot veto attachment. It then writes both ownership directions in this order: victim `+0x694 = attacker`, manager `+0x28 = victim`. The SQD remains limboed. Successful attachment still does not write `Foot+0x6A0/+0x6A8`.
 
 ### 17.4 Victim-driven scheduler order and Ship timer write
 
@@ -931,7 +931,7 @@ For stock SQD the threshold is 250. The positive-damage timer is not the state-4
 
 ### 17.9 Corrected detach, re-entry, and caller overrides
 
-The old claim that Naval SQD always dies on Detach is false. `Detach @ 0x0062A4A0` tests owner type `Naval` at `0x0062A525`. The Naval branch uses victim facing to choose an adjacent cell, then joins common cell, zone/passability, `CanPlaceAtTarget`, `CanEnterCell`, reveal/occupation, and `Unlimbo` validation.
+The old claim that Naval SQD always dies on Detach is false. `Detach @ 0x0062A4A0` tests owner type `Naval` at `0x0062A525`. The Naval branch derives exactly one adjacent cell from the victim's current 16-bit body facing. If its first zone/passability test fails, it performs the deterministic frame-indexed nearby scan around the victim specified in Section 19.5; it does not rotate through other adjacent directions. The selected cell then passes null-coordinate, Naval `CanPlaceAtTarget`, and nested `UnitClass__Can_Enter_Cell`/Unlimbo gates in that order.
 
 On success the SQD reappears and owner `+0x6A0/+0x6A8` is armed for `3 * current primary Weapon.ROF`; stock duration is 297. On invalid candidate, failed placement, or failed unlimbo only, owner health becomes zero and owner vslot `+0xF8` removes it. The separate active-damage-timer forced-removal branch is non-Naval.
 
@@ -1080,9 +1080,10 @@ owner draw/cell fields only when ownership changes, not on every SQD update.
 
 WAKE1 also has delay zero and takes the synchronous `Middle` path. State-4 splash
 animations use delay 2: construction does not call `Middle`; a later same-pass ordinary
-Anim visit decrements delay `2 -> 1`; the next global pass decrements `1 -> 0`, calls
-`Middle`, starts the animation, and emits its retail `Report`. Active SQDG, WAKE1, and
-H2O_EXP1/2/3 have no `RandomRate`, so their constructors consume no hidden RNG.
+Anim visit clears the constructor's first-AI guard without changing the delay. The next
+global pass decrements `2 -> 1`; the following pass decrements `1 -> 0`, calls `Middle`,
+starts the animation, and emits its retail `Report`. Active SQDG, WAKE1, and H2O_EXP1/2/3
+have no `RandomRate`, so their constructors consume no hidden RNG.
 
 The allocation/RNG contract is therefore exact:
 
@@ -1201,7 +1202,7 @@ The Rust implementation must additionally:
 
 - `[RESOLVED] SQD-15 — May positive rocking values simply be negated for state 2? -> No; native negative folding produces asymmetric f32 bits.`
 - `[RESOLVED] SQD-16 — Can the existing global Rust rocking pass remain after the victim tail? -> No; it would erase the native last writer.`
-- `[RESOLVED] SQD-17 — When does a delay-2 splash emit its Report? -> After a same-pass 2-to-1 visit, the next global pass reaches zero and calls Middle.`
+- `[RESOLVED] SQD-17 — When does a delay-2 splash emit its Report? -> Its same-pass visit only clears the first-AI guard; the next pass changes 2-to-1 and the following pass reaches zero and calls Middle.`
 - `[RESOLVED] SQD-18 — Do active SQD animations consume constructor RNG? -> No; none has RandomRate.`
 - `[RESOLVED] SQD-19 — Does ChronoWarp release depend on final warp admission? -> No; linked Naval Detach occurs first.`
 - `[RESOLVED] SQD-20 — Is ChronoWarp vtable +0x54 a cloak gate? -> No; it is the high-flying predicate.`
@@ -1236,3 +1237,263 @@ validation, independent criticism, and the phase-wide reverse audit.
 - Current Rust: `src/sim/{combat,world,rocking,anim,snapshot}.rs`,
   `src/rules/{object_type,weapon_type,warhead_type}.rs`, and Chronosphere/locomotor
   launch/effect dispatch cited in the repository inventory.
+
+## 19. Design-critic gap closure: native boundaries omitted or misstated by Section 18
+
+Section 19 supersedes Section 18.2's splash first-visit timing and makes the
+health-band, manager-load, placement, and sinking contracts directly implementable.
+
+### 19.1 GetHealthStatus uses native double division and inclusive upper bounds
+
+`TechnoClass__GetHealthStatus @ 0x005F5DD0` does not use a scaled-integer
+percentage. Each comparison independently converts signed current health at
+`+0x6C` and signed type Strength at `Type+0xA0`, divides `health / strength`,
+and compares the result with the Rules double fields. The exact branch sequence
+is:
+
+```text
+q = native_divide(health, strength)
+if q <= ConditionRed or q is unordered:
+    if health > 0: return 0
+q = native_divide(health, strength)
+if q <= ConditionRed or q is unordered: return 2
+q = native_divide(health, strength)
+if q <= ConditionYellow or q is unordered: return 1
+return 2
+```
+
+`ConditionRed` is Rules `+0x1708`; `ConditionYellow` is Rules `+0x1700`.
+Equality belongs to the lower band in both cases. Health zero or negative does
+not return red through the first branch; a second red-or-unordered test then
+returns status 2. There is no clamp, zero-divisor guard, negative-strength guard,
+or threshold reordering. With finite thresholds and zero Strength, positive
+health yields positive infinity, zero health yields unordered, and negative
+health yields negative infinity; all three return status 2 through the literal
+branch order. The SQD state-4 cull call is made on a live positive-Strength
+victim, but the shared helper must retain the complete signed rule.
+
+The quotient remains in x87 through the compare. Process initialization selects
+53-bit precision (`FUN_007CEAAF @ 0x007CEAAF`) and chop/toward-zero rounding
+(`WinMain @ 0x006BBFB7..0x006BBFC1`). Therefore the deterministic helper must
+round the exact signed integer quotient to a binary64-significand value toward
+zero before comparison; ordinary host round-to-nearest `f64` division and exact
+rational cross-multiplication are not bit-equivalent at crafted boundaries.
+
+`CCINIClass__ReadDouble @ 0x005283D0` parses these fields through CRT `%f` into
+binary32, widens that value exactly to binary64, and, when the source contains
+`%`, multiplies it by binary64 `0.01` under the same x87 mode. Retail `25%` and
+`50%` land exactly on `0.25` and `0.5`. Adversarial modified-data decimal-parser
+midpoints are outside this active-retail row; no stock threshold depends on an
+unreproduced CRT conversion edge.
+
+Current Rust already retains the parsed native `f64` condition values in
+`GeneralRules`; the x1000 presentation/convenience fields are not sufficient
+authority for this call. The implementation must expose/use a deterministic
+native-health-status helper over those `f64` values and test exact red/yellow
+equality plus the signed-health cases. It must not derive the cull decision
+from `condition_*_x1000`.
+
+### 19.2 Every new SQD Anim keeps the constructor first-AI guard
+
+The splash timing stated in Section 18.2 is one global pass too early.
+`AnimClass__Constructor @ 0x00421EA0` unconditionally writes byte
+`Anim+0x19C = 1` at `0x00422009`. `AnimClass__AI @ 0x00423AC0` reads that byte
+at `0x0042436D`; when set, it clears it at `0x00424377` and returns at
+`0x00424385`. The delay countdown at `Anim+0x184` begins only at
+`0x00424386`. The SQD state machine `0x006297F0` has no read or write of
+`Anim+0x19C`, so neither SQDG nor WAKE1 nor a splash bypasses this rule.
+
+The exact delay-2 splash schedule for a tail-appended Anim is therefore:
+
+1. construction pass: constructor stores delay 2; a later same-pass visit
+   clears the first-AI guard and returns with delay still 2;
+2. next global pass: ordinary visit decrements delay `2 -> 1` and returns;
+3. following global pass: ordinary visit decrements delay `1 -> 0`, calls
+   `AnimClass__Middle @ 0x00424CE0`, and emits the configured `Report`.
+
+Delay-zero SQDG and WAKE1 still call `Middle` synchronously in construction.
+Their first ordinary visit only clears the guard. For SQDG this occurs after
+the manager stores its pointer/listener/state, writes the exact frame and
+128-tick timer, and binds the victim; no special Rust visit mode is required.
+Current `AnimStore::spawn_anim_at_world` plus `visit_anim` already owns the
+correct general guard order. SQD must preserve that path, not clear
+`first_ai_guard` or add a constructor exception.
+
+### 19.3 Manager load persists the FSM but resets both behavioral timers
+
+`ParasiteClass__Save @ 0x006296B0` delegates to the raw Abstract body save.
+`ParasiteClass__Load @ 0x006295B0` first restores that body, then intentionally
+overwrites the damage timer with `start=current, duration=0` at
+`0x006295E1..0x006295E8` and the attack timer with
+`start=current, duration=0` at `0x006295F0..0x006295F3`. Only afterward does it
+re-register a non-null animation listener and swizzle owner `+0x24`, victim
+`+0x28`, and animation `+0x44`.
+
+Thus state, major/subframe, animation identity, listener flag, links, Foot
+destination delay, and Parasite refire lock persist, while both manager timer
+pairs restart at the restored current frame with zero duration. Rust may carry
+the timer fields in its serialized payload for schema validation, but its
+post-load rehydration must overwrite them exactly. A load test must assert
+this intentional non-round-trip behavior at each active FSM state; requiring
+the pre-save manager timer remainder or pre-save world hash to survive load is
+wrong.
+
+### 19.4 Positive-health sinking and WAKE1 are global-frame ordered
+
+`UnitClass__AI @ 0x007360C0` enters its sinking continuation whenever Unit byte
+`+0x3CD` is nonzero. It first commits `(x, y, z - 5)` through vslot `+0x1B4`
+at `0x007364AF..0x007364E3`, then reads altitude through vslot `+0x1C8`.
+Altitude strictly below `-400` calls vslot `+0xE0(0)`, then vslot `+0xF8`, and
+returns immediately. Exactly `-400` survives. Thus the final descent precedes
+removal and a removal tick emits no wake.
+
+A surviving unit attempts a wake only when `(CurrentFrameCounter & 3) == 0`;
+this is global-frame cadence, not every fourth visit, and there is no catch-up.
+The wake attempt performs these operations in exact order:
+
+1. `RandomRanged(-170, +170)` inclusive for the direct Y offset;
+2. another `RandomRanged(-170, +170)` inclusive for the direct X offset;
+3. a second altitude query;
+4. coordinate construction as `(current X + second draw, current Y + first
+   draw, current Z - second altitude)`;
+5. `operator new(0x1C8)`;
+6. on allocation success only, construct Rules `Wake` (retail `WAKE1`) with
+   delay 0, loops 1, flags `0x600`, Z-adjust 0, and reverse false.
+
+The ranged generator masks raw scenario-RNG results to nine bits and rejects
+values above 340. Each range therefore consumes one or more shared RNG words;
+the contract is two successful ranged results, not exactly two raw advances.
+Both ranges and the altitude query occur before allocation, so allocation
+failure preserves their consumption. There is no facing rotation, per-spawn
+WAKE1 lookup, null-type guard, or retained Unit-to-Anim pointer. Delay zero calls
+`Middle` synchronously. A same-pass tail visit may occur, but it only clears the
+ordinary constructor first-AI guard. Retail WAKE1 has no `Report` or `StartSound`,
+so this sinking wake has no stock sound side effect.
+
+### 19.5 Attach restore and Naval Detach placement are separate exact paths
+
+#### Rejected Attach restores only the cached old cell
+
+`WarpAttachClass__Attach @ 0x0062A980`, rejection branch
+`0x0062AA02..0x0062AAD6`, reads attacker cached packed cell `+0x55C`.
+`FootClass__Limbo` reads but does not clear that value, so it remains the
+pre-limbo occupied cell. `MapClass__Get_CellClass @ 0x005657A0` followed by
+`CellClass__GetCoords @ 0x00486840` produces cell-center X/Y (`+0x80,+0x80`)
+and exact ground level/slope Z. Attach calls
+`UnitClass__Unlimbo @ 0x00737BA0` as `Unlimbo(coord, facing=0)`.
+
+Nested Unlimbo accepts only `UnitClass__Can_Enter_Cell(candidate,-1,-1,0,0)
+== 0`; null coordinate, inactive scenario, already-on-map state, CanEnter, or
+occupation-mark failure rejects. On rejection Attach calls attacker `UnInit`
+without first zeroing health. On success it performs, in order:
+
+1. `TechnoClass__ReReveal(0,0,0,0)`;
+2. `MapClass__UpdateFogBorder(actual attacker coordinate, Sight-3, Sight+2, 0)`;
+3. when `Foot+0x5C4 == -1`, `Assign_Target(0)` then `Set_Destination(0,1)`;
+4. always `Enter_Idle_Mode(0,1)`.
+
+There is no zone check, `CanPlaceAtTarget`, nearby scan, link write, or victim
+timer write in rejected-Attach restoration. Successful Attach instead copies
+the victim's exact subcell/world Z, calls attacker locomotor vslot `+0x70`
+with selector `-1` and that `CoordStruct` by value, ignores its result, then
+writes the reciprocal links. It does not Unlimbo or reveal the attacker.
+
+#### Naval Detach facing and first candidate
+
+Let `F` be the low 16 bits of the victim body-facing current value:
+
+```text
+o  = ((((F  >> 12) + 1) >> 1) & 7)
+F2 = wrapping_u16(if o <= 2 { F + 0x3FFF } else { F - 0x3FFF })
+d  = ((((F2 >> 12) + 1) >> 1) & 7)
+face8 = (((F2 + 0x80) >> 8) & 0xFF)
+candidate = victim_current_cell + DirectionOffsets[d]
+```
+
+Direction offsets 0..7 are N `(0,-1)`, NE `(1,-1)`, E `(1,0)`, SE `(1,1)`,
+S `(0,1)`, SW `(-1,1)`, W `(-1,0)`, NW `(-1,-1)`. The exact reachable
+source-octant results are:
+
+| Initial `o` / `F` range | Adjacent direction |
+|---|---|
+| 0 / `0000-0FFF` or `F000-FFFF` | E, except exact `F000` -> NE |
+| 1 / `1000-2FFF` | SE, except exact `1000` -> E |
+| 2 / `3000-4FFF` | S, except exact `3000` -> SE |
+| 3 / `5000-6FFF` | NE, except exact `6FFF` -> E |
+| 4 / `7000-8FFF` | E, except exact `8FFF` -> SE |
+| 5 / `9000-AFFF` | SE, except exact `AFFF` -> S |
+| 6 / `B000-CFFF` | S, except exact `CFFF` -> SW |
+| 7 / `D000-EFFF` | SW, except exact `EFFF` -> W |
+
+The single-value anomalies are required evidence for `0x3FFF` rather than an
+approximate quarter-turn. `face8` is passed to Unit Unlimbo, which expands it
+to `face8 << 8`.
+
+#### Naval Detach predicate and fallback order
+
+The first candidate is resolved and checked as follows:
+
+1. `zone = MapClass__GetZoneID(candidate, attacker.MovementZone, false)`;
+2. `CellClass__CheckCellPassability(attacker.SpeedType, false, false, zone,
+   attacker.MovementZone, level=-1, bridgeArg=true)`;
+3. only when false, call `FUN_00703590` with `this=victim`, the failed adjacent
+   argument, and null third argument;
+4. reject NullCell; get selected cell-center/ground coordinate; reject
+   NullCoord;
+5. call `WarpAttachClass__CanPlaceAtTarget`;
+6. call `UnitClass__Unlimbo(coord, face8)`, whose final placement predicate is
+   `Can_Enter_Cell(candidate,-1,-1,0,0) == 0`.
+
+Because the wrapper's third argument is null, the fallback ignores the failed
+adjacent cell and starts at the victim's current cell. It uses the *victim's*
+SpeedType (normalizing 4 to 1), MovementZone, current-cell zone, and OnBridge,
+not the SQD's. It invokes the 1x1 nearby scan with radius cap
+`min(map width + map height, 32)`. Each ring `r` visits interleaved top/bottom
+for `d=-r..r`, then interleaved left/right for `d=1-r..r-1`, with corners
+excluded from the latter. Each candidate must be in the playfield and pass the
+1x1 CellRect passability call with level `-1`, victim OnBridge, bridge allowed,
+and explicit occupancy-rectangle checking disabled. At most 24 results are
+retained. The first qualifying ring stops the ordinary non-bridge scan after
+the ring completes; reaching 24 stops immediately.
+
+Accepted candidates are partitioned into coordinate-round-tripping direct and
+indirect lists, preferring direct. The null target `{0,0}` makes selection
+`list[CurrentFrameCounter % list.len()]`. There is no RNG. For a Naval attacker,
+`CanPlaceAtTarget` rejects a missing or high-flying victim and a building in
+the victim's current cell; it skips the non-Naval land-type, overlay, and
+bridge-range gates and does not inspect the selected candidate cell.
+
+Success performs the nested and explicit reveal/idle/team cleanup, writes the
+attacker Foot delay as current frame / `3 * current primary ROF`, and resets the
+manager visual/FSM. Null cell/coord, CanPlace, or Unlimbo failure writes attacker
+health zero then calls UnInit. Both outcomes finally zero victim rocking and
+destination delay and clear both reciprocal links. The compiler-residue middle
+timer dwords are not behavioral state and are not modeled.
+
+### 19.6 Critic-gap closure verdict and sources
+
+The active-retail SQD health, animation, load, sinking, Attach restoration, and
+Naval Detach placement gaps raised by the fresh design critic are now resolved
+to exact predicates, arguments, ordering, and outcomes. Non-Naval parasite
+placement, adversarial modified CRT decimal midpoints, compiler-residue timer
+dwords, and the semantic name of helper `0x006EA500` are evidence-backed
+exclusions: none is consumed by the active retail Naval+Organic SQD path. No
+behavioral unknown remains inside the investigated Mechanisms A/B scope.
+
+- Live read-only Ghidra MCP, active `gamemd.exe`:
+  `TechnoClass__GetHealthStatus @ 0x005F5DD0`,
+  `AnimClass__Constructor @ 0x00421EA0`,
+  `AnimClass__AI @ 0x00423AC0`, SQD state machine `0x006297F0`,
+  `ParasiteClass__Load @ 0x006295B0`, and
+  `ParasiteClass__Save @ 0x006296B0`; x87 setup
+  `FUN_007CEAAF @ 0x007CEAAF` and `WinMain @ 0x006BBFB7`; Rules parsing
+  `0x0066B34B..0x0066B37F` plus `CCINIClass__ReadDouble @ 0x005283D0`;
+  Unit sinking/wake continuation `0x007364A1..0x007365BB`;
+  `WarpAttachClass::{Attach @ 0x0062A980, Detach @ 0x0062A4A0,
+  CanPlaceAtTarget @ 0x0062AB40}`; `FootClass__Limbo @ 0x004DB260`;
+  `UnitClass__Unlimbo @ 0x00737BA0`; `CellClass__GetCoords @ 0x00486840`;
+  `CellClass__CheckCellPassability @ 0x004834A0`; nearby wrapper
+  `FUN_00703590 @ 0x00703590`; and
+  `FootClass__Find_Nearby_Passable_Cell @ 0x0056DC20`.
+- Current Rust: `src/rules/ruleset.rs` native condition doubles and
+  `src/sim/anim_class.rs` constructor/first-visit ordering.
