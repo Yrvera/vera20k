@@ -1012,3 +1012,227 @@ Adversarial re-reads covered launch/fire-lock order, null-cell admission, state 
 - Retail data: `ini/rulesmd.ini` `[SQD]`, `[SquidGrab]`, `[SquidGrabE]`, `[SquidPunch]`, `[ParasitePlus]`, `[General]`, and `Parasiteable` overrides; `ini/artmd.ini` `[SQDG]`, directional SQDG sections, `WAKE1`, and water splash definitions.
 - Current Rust: `src/rules/{object_type,weapon_type,warhead_type}.rs`; `src/sim/{combat,projectile,game_entity,timer,snapshot,world}.rs`; current effect, sinking, lifecycle, scheduler, and world-hash surfaces cited in the repository inventory.
 - Secondary-source negative check: exhaustive `rg` over the sibling OpenTS tree for the YR mechanism/key/type names listed in Section 17.1.
+
+## 18. Gap closure: exact SQD math, Anim scheduling, and stock release admissions
+
+Section 18 supersedes the final “research is complete” sentence in Section 17. The
+state-machine investigation left two active-retail presentation/order seams and two
+shared Detach callers insufficiently specified for an exact implementation. This
+addendum closes them against the active `gamemd.exe` and retail data. The modified-data
+and catastrophic-allocation exclusions below do not apply to stock retail play.
+
+### 18.1 Exact table trig and rocking stores
+
+`Math__SinFromTable @ 0x004CACB0` (cosine entry `0x004CAD00`) multiplies its input by
+the f32 value at `0x008223B0`, bits `0x4522F983`
+(`2607.594482421875`). `Math__ftol` installs x87 control word `0x0E7F`, so the phase is
+truncated under 53-bit precision and chop rounding before native folds it into the
+shared f32 table at `0x00822D80`. SQD then multiplies that table result by the f32
+`pi/4` constant and stores to victim rocking with a chopped f32 `FSTP`.
+
+State 3 uses `major * +pi/10`; state 2 uses `major * -pi/10`. Major 10 completes the
+animation state and is not looked up. The reachable stored values are:
+
+| major | state 3 table index -> stored f32 bits | state 2 table index -> stored f32 bits |
+|---:|---|---|
+| 0 | 0 -> `0x00000000` | 0 -> `0x00000000` |
+| 1 | 410 -> `0x3E78C2C7` | 7784 -> `0xBE77965D` |
+| 2 | 819 -> `0x3EEC5003` | 7373 -> `0xBEEC5003` |
+| 3 | 1229 -> `0x3F22AE3E` | 6965 -> `0xBF227FCB` |
+| 4 | 1638 -> `0x3F3F33C2` | 6554 -> `0xBF3F33C2` |
+| 5 | 2048 -> `0x3F490FDB` | 6146 -> `0xBF490FCB` |
+| 6 | 2458 -> `0x3F3F33C2` | 5736 -> `0xBF3F4C1F` |
+| 7 | 2867 -> `0x3F22AE3E` | 5325 -> `0xBF22AE3E` |
+| 8 | 3277 -> `0x3EEC5003` | 4917 -> `0xBEECCFB6` |
+| 9 | 3686 -> `0x3E78C2C7` | 4506 -> `0xBE78C2C7` |
+
+The negative side is observably asymmetric. Rust must use these exact reachable
+results, or an equivalent proven native table implementation; `f32::sin()` and
+negating the positive results are not parity substitutes.
+
+Wake and splash rotation use
+`(i16(FacingCurrent.low16) - 16383) * (2*pi/65536)`, with the qword absolute-angle
+constant at `0x007E2810` having bits `0x3F19222D989F5E57`. Each rotated X/Y result is
+truncated toward zero. This controls the integer coordinates already specified in
+Sections 17.6 and 17.7.
+
+Native scheduler order is also load-bearing. `TechnoClass::RockingUpdate` runs early
+in the victim's parent AI and may clear victim `+0x328`; the victim-tail SQD manager
+callback runs later and writes the state-2/3 value. That value persists into later
+movement/rendering. A Rust global rocking update after the victim-tail callback would
+erase the native final write and is therefore wrong.
+
+### 18.2 SQDG, wake, splash, and live Logic scheduling
+
+SQDG construction is synchronous and ordered:
+
+1. allocate the Anim;
+2. construct/register/unlimbo it;
+3. because delay is zero, call `AnimClass__Middle` in the constructor;
+4. store the manager animation pointer, listener membership, and next state;
+5. manager `Advance` writes its exact frame and 128-tick timer fields;
+6. `SetOwnerObject` binds the victim.
+
+The live Logic vector is tail-extended. A successfully registered SQDG may therefore
+receive an ordinary Anim visit later in the same global pass, but the manager's active
+timer prevents that visit from overwriting its frame. `SetOwnerObject` updates the
+owner draw/cell fields only when ownership changes, not on every SQD update.
+
+WAKE1 also has delay zero and takes the synchronous `Middle` path. State-4 splash
+animations use delay 2: construction does not call `Middle`; a later same-pass ordinary
+Anim visit decrements delay `2 -> 1`; the next global pass decrements `1 -> 0`, calls
+`Middle`, starts the animation, and emits its retail `Report`. Active SQDG, WAKE1, and
+H2O_EXP1/2/3 have no `RandomRate`, so their constructors consume no hidden RNG.
+
+The allocation/RNG contract is therefore exact:
+
+- each wake always consumes `RandomRanged(-180,180)` and then
+  `RandomRanged(-64,64)` before allocation; allocation failure preserves both draws;
+- a three-wake transition consumes six mandatory draws, plus its preceding direction
+  chooser for seven;
+- each splash always consumes its `RandomRanged(0,1)` side draw before allocation;
+  only successful allocation consumes the SplashList index draw;
+- three successful splashes consume six draws, and a surviving state-4 callback then
+  consumes the seven transition/wake draws, for thirteen total;
+- SQDG allocation has no preceding RNG and failure removes only the visual, not the
+  state-machine transition.
+
+Retail has `SplashList=H2O_EXP3,H2O_EXP2,H2O_EXP1` and `Wake=WAKE1`. The native
+zero-length SplashList hazard is a modified-data exclusion. Catastrophic failure to
+register an otherwise allocated Anim in the Logic vector is general memory-exhaustion
+recovery, not an ordinary active-retail mechanism.
+
+### 18.3 ChronoWarp source-area release is pre-warp and link-specific
+
+`SuperClass__Launch @ 0x006CC390`, ChronoWarp case, initializes and scans the fixed
+center-first 3x3 source-area offset table at `0x00B0C038..0x00B0C058` in this order:
+
+```text
+(0,0), (1,0), (1,-1), (0,-1), (-1,-1), (-1,0), (-1,1), (0,1), (1,1)
+```
+
+For each source cell it walks the live `Cell+0xE8` list when structural bridge flag
+`Cell+0x140 & 0x100` is set, otherwise `Cell+0xE4`; object linkage advances through
+`Object+0x30`. An object reaches the SQD release block only when:
+
+1. its AbstractFlags byte `+0x14` has Foot bit `0x04`;
+2. vtable `+0x54` returns false;
+3. victim `+0x694` contains an attached attacker;
+4. the attacker's type `+0xCCE` has `Naval != 0`; and
+5. attacker `+0x69C` contains its manager.
+
+The `+0x54` predicate is `ObjectClass__IsHighFlying`, not cloak: for UnitClass it
+requires the airborne byte and height at least twice the Foot-level height. A
+non-high-flying Foot is admitted regardless of Organic. Missing link, non-Naval
+attacker, or missing manager skips release while later Chrono processing continues.
+
+Before Detach, ChronoWarp writes manager damage timer `start=current` and
+`duration=500`. The native middle timer dword comes from an uninitialized stack slot
+that has no other write or behavioral read; deterministic Rust must not serialize or
+reproduce that residue. Detach occurs before the later target RTTI, docking, and warp
+eligibility checks. Consequently a linked SQD is released even when the target is
+later rejected for warp.
+
+This path is stock-active through `[ChronoSphereSpecial] PreClick=yes` and
+`[ChronoWarpSpecial] PostClick=yes, PreDependent=ChronoSphere`. Current Rust parses
+those types and fields but has no Chronosphere two-click launch body. Implementing a
+standalone release side effect and then rejecting the launch would be observably wrong;
+the design must either close the exact source-selection/launch prerequisite or keep
+this caller and the parent row open.
+
+### 18.4 IsLocomotor release inside admitted PerformDeploy
+
+`BulletClass__DetonateAtCoord @ 0x004690B0` enters the IsLocomotor branch from warhead
+`+0x15B`. With source at bullet `+0xB0` and target at bullet `+0x10C`, native calls
+`TechnoClass__PerformDeploy @ 0x00710000` only when all of the following hold:
+
+1. source is non-null;
+2. source `+0x2AC` is not already the same target;
+3. source `+0x2B0` is null;
+4. a Foot source has `+0x6AD == 0`;
+5. a Unit target is not in the same cell as its current Radio contact when that contact
+   is a Building whose type has `WeaponsFactory`;
+6. target is non-null, ground display layer 2, and Foot-derived;
+7. target is not Iron Curtain active through vtable `+0x160`;
+8. target RTTI is UnitClass (1) or AircraftClass (2);
+9. target `+0x6AD == 0`; and
+10. signed raw bullet Damage is strictly greater than target type's double `Size` at
+    `+0x380`.
+
+If source `+0x2AC` contains a different prior linked object, native finishes that link
+through `BuildingClass__DeployUnit_ChronoWarp @ 0x0070FEE0` before evaluating the main
+target gates. On admitted PerformDeploy, target SpawnManager `Kill_All_Spawns` runs
+first. Native then releases an attached parasite only when target `+0x694` has an
+attacker, attacker `+0x69C` has its manager, and attacker type `Naval` is true; there
+is no Organic gate and this caller does not arm the manager damage timer. The release
+precedes the later locomotor COM/piggyback preflight and swap.
+
+Retail `[LocomotorBeam] IsLocomotor=yes` and `[MagneticBeam] Damage=5000` (elite
+10000) make this path active. Current Rust already parses/selects IsLocomotor and has
+exact SpawnManager kill support, but returns “unsupported” before any effect. It lacks
+the source piggyback relations, exact Radio/WeaponsFactory conflict, locomotor swap,
+and reciprocal SQD link needed to execute this route. A resolved generic locomotor
+action is not evidence that Detach succeeded.
+
+### 18.5 Implementation deltas, coverage, and resolved questions
+
+The Rust implementation must additionally:
+
+- preserve the exact ten-by-two rocking bit table and victim-tail-after-rocking order;
+- split or reorder the current global rocking pass so it cannot erase the SQD tail;
+- construct Anim effects with the native delay-0/delay-2 scheduling and allocation
+  draw dependencies; a two-stage reserve/construct operation may be required so the
+  successful-allocation SplashList draw occurs at the native point;
+- support moving-owner SQDG state rather than reducing it to a static coarse effect;
+- implement ChronoWarp and IsLocomotor release only through reciprocal-link-validated
+  Detach and their exact parent admission paths; and
+- reject snapshot state with malformed reciprocal or piggyback ownership rather than
+  repairing it.
+
+| Previously open area | Status | Evidence-backed result |
+|---|---|---|
+| SQD non-table trig | verified | exact x87/table folding and all reachable stored f32 bits |
+| rocking scheduler order | verified | Techno clearing precedes Foot-tail SQD write |
+| SQDG constructor/tail visit | verified | delay-0 Middle, manager overwrite, owner bind, same-pass eligibility |
+| splash Report timing | verified | delay 2 becomes 1 same pass; Middle/Report next global pass |
+| Anim constructor RNG | verified-negative | no RandomRate on active SQD/wake/splash types |
+| ChronoWarp Detach | verified | fixed source scan, exact high-flight/link/Naval/manager gates, timer then pre-warp Detach |
+| IsLocomotor Detach | verified | exact PerformDeploy admission, spawn kill then reciprocal Naval Detach |
+
+- `[RESOLVED] SQD-15 — May positive rocking values simply be negated for state 2? -> No; native negative folding produces asymmetric f32 bits.`
+- `[RESOLVED] SQD-16 — Can the existing global Rust rocking pass remain after the victim tail? -> No; it would erase the native last writer.`
+- `[RESOLVED] SQD-17 — When does a delay-2 splash emit its Report? -> After a same-pass 2-to-1 visit, the next global pass reaches zero and calls Middle.`
+- `[RESOLVED] SQD-18 — Do active SQD animations consume constructor RNG? -> No; none has RandomRate.`
+- `[RESOLVED] SQD-19 — Does ChronoWarp release depend on final warp admission? -> No; linked Naval Detach occurs first.`
+- `[RESOLVED] SQD-20 — Is ChronoWarp vtable +0x54 a cloak gate? -> No; it is the high-flying predicate.`
+- `[RESOLVED] SQD-21 — May the Chrono timer middle dword copy stack residue? -> No; it has no mechanism behavior and Rust must remain deterministic.`
+- `[RESOLVED] SQD-22 — Is IsLocomotor release keyed only by the warhead flag? -> No; the complete bullet/source/target admission and reciprocal Naval link are required.`
+
+Cold re-reads covered both sign paths and every reachable rocking phase; the Logic
+tail-insertion loop; delay-0 and delay-2 constructor branches; Chrono's offset
+initializer, bridge/non-bridge list selection, live-list successor, and release-before-
+warp order; and IsLocomotor's source-link, Radio/WeaponsFactory, layer, Iron Curtain,
+RTTI, Size, spawn-kill, and Detach call order. No ordinary active-retail unknown remains
+in this research slice. The GSI row remains open for exact design, implementation,
+validation, independent criticism, and the phase-wide reverse audit.
+
+### Addendum-8 sources
+
+- Live read-only Ghidra MCP, active `gamemd.exe`: `Math__SinFromTable @ 0x004CACB0`,
+  cosine entry `0x004CAD00`, `Math__ftol`, `WarpAttachClass__Advance @ 0x00629720`,
+  grapple FSM `0x006297F0`, wake helper `0x00629E90`, Anim constructors
+  `0x00421EA0`, `AnimClass__Middle @ 0x00424CE0`, Logic loop `0x0055AFB0`,
+  `SuperClass__Launch @ 0x006CC390`, Chrono offset initializer
+  `0x006CAE00..0x006CAEBE`, `BulletClass__DetonateAtCoord @ 0x004690B0`,
+  `TechnoClass__PerformDeploy @ 0x00710000`, and
+  `BuildingClass__DeployUnit_ChronoWarp @ 0x0070FEE0`.
+- Active binary constants/table: `0x008223B0`, `0x008223B4`, `0x00822D80`,
+  `0x007E2810`, and `0x007E2808`.
+- Retail `rulesmd.ini`: `[SQD]`, `[SquidGrab]`, `[SquidGrabE]`,
+  `[ParasitePlus]`, `[ChronoSphereSpecial]`, `[ChronoWarpSpecial]`,
+  `[LocomotorBeam]`, and `[MagneticBeam]`.
+- Retail `artmd.ini`: `[SQDG]`, `[WAKE1]`, `[H2O_EXP1]`, `[H2O_EXP2]`, and
+  `[H2O_EXP3]`.
+- Current Rust: `src/sim/{combat,world,rocking,anim,snapshot}.rs`,
+  `src/rules/{object_type,weapon_type,warhead_type}.rs`, and Chronosphere/locomotor
+  launch/effect dispatch cited in the repository inventory.
