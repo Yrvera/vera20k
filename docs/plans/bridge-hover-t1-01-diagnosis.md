@@ -49,7 +49,20 @@ label happens to be correct there.
 
 ## 3. THE MECHANISM GAP
 
-**gamemd has no hover-specific bridge gate anywhere on the path.** VERIFIED (gamemd lane):
+**No hover-specific bridge gate was found on the stages examined below.**
+
+**Status corrected 2026-08-27 (critic round 3).** This section previously read "gamemd has no
+hover-specific bridge gate anywhere on the path — VERIFIED (gamemd lane)". Two problems: the
+claim is a whole-path negative drawn from five sampled stages, and its evidence is a lane report
+that is not in the repository, so no later reader can audit it. Every address in the table below
+is therefore **UNCHECKED here** — reported by the investigation lane, not re-derived at this
+document's own hand, and explicitly *not* to be cited as resolving `Find_Path`'s `vtable+0x2CC`
+gate (see the provenance block in `movement_path.rs`, which demotes exactly these three).
+
+What *is* verified end to end, by direct reads recorded in `movement_path.rs`: the `+0x2CC` slot
+binding, and that the one native gate on this path is a MovementZone reachability abort with no
+locomotor term. The fix rests on that plus gate-deletion logic plus the production crossings —
+not on the table below.
 
 | stage | gamemd | Hover vs Drive |
 |---|---|---|
@@ -150,10 +163,19 @@ on the same line of code.
 **Smallest change: delete the invented gate, do not add a hover case.**
 
 **F1 (the fix).** `src/sim/movement/movement_path.rs:91-94` — remove `Hover`'s exclusion
-from `supports_layered_bridge_pathing`. gamemd source: `FootClass::Find_Path` @ `0x004D3920`
-selects no path plane by locomotor kind; `CheckBridgeTraversal` @ `0x004D9C60` and
-`UnitClass::Can_Enter_Cell` @ `0x0073F0A0` are locomotor-agnostic; `ILocomotion+0x1C`
-resolves to the same `return 0;` at `0x0055ABF0` for Drive and Hover (VERIFIED, gamemd lane).
+from `supports_layered_bridge_pathing`.
+
+**gamemd source, as landed (status corrected 2026-08-27):** the gate `Find_Path` actually
+consults is `vtable+0x2CC` → `FootClass::CanReachDestination` @ `0x004D3810`, a MovementZone
+reachability abort with no locomotor term. That binding is **VERIFIED** by direct reads —
+`UnitClass` vtable `0x007F5C70` (installed at `0x0073543A`), slot `0x007F5F3C` holding
+`0x004D3810`, the callsite at `0x004D397F`, the clear-and-return-0 at `0x004D3989` — recorded in
+the `movement_path.rs` provenance block. `CheckBridgeTraversal` @ `0x004D9C60`,
+`UnitClass::Can_Enter_Cell` @ `0x0073F0A0` and `ILocomotion+0x1C` → `0x0055ABF0` are
+**UNCHECKED here**: lane-reported corroboration that the downstream legality path is
+locomotor-agnostic, never re-derived, and not the gate. The fix is justified by *deleting* a
+VERA-only restriction — which needs the absence of a native gate demanding it, not affirmative
+native proof — plus the production crossings.
 Rewrite the provenance block at `:64-82` to record what remains VERA-internal after the
 change. All four consumers pick this up with no further edit:
 `movement_tick.rs:434`, `movement_tick.rs:694`, `movement_commands.rs:394`,
