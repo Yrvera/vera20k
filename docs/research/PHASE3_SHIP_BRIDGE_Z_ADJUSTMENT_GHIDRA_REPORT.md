@@ -1712,3 +1712,204 @@ ordering edge is established.
   `0x0062AC30`, normal `WarpAttachClass__Detach @ 0x0062A4A0`,
   `UnitClass__Unlimbo @ 0x00737BA0`, and scenario-active global
   `0x00A8ED5C` writers.
+
+## 22. Critic-12 closure: rocking admission, Attach ForceTrack, and Sonic source notification
+
+Section 22 supersedes the older `BODY_ROCKING_GHIDRA_REPORT.md` interpretation
+of ObjectType `+0xB0` as an unidentified immunity-like gate. It also expands
+Section 17's compressed successful-Attach and Sonic-release wording. Two critic
+findings are closed below. The successful-Attach ForceTrack finding exposed a
+separate active crate-authority prerequisite and therefore remains blocking.
+
+### 22.1 Positive RockingUpdate admission is successful body-VXL load
+
+`TechnoClass::AI_Update @ 0x006F9E50` calls the virtual admission function at
+`0x006F9E10` before `RockingUpdate`. The admission function reads the object's
+type through vslot `+0x84`, rejects a null type `+0xB0`, and otherwise returns
+true only when the first byte of the object at `type+0xB0` is zero.
+
+`ObjectTypeClass::Constructor @ 0x005F7090` initializes `+0xB0` to null.
+`ObjectTypeClass::LoadVoxelAssets @ 0x005F8110` formats and loads the body VXL,
+replaces `+0xB0` with the allocated 0x1c-byte VXL reader, loads the matching
+HVA and then the optional turret/barrel variants. A null reader or nonzero
+reader status byte is failure. Any body/HVA failure deletes and nulls the body
+VXL/HVA authority. A successfully loaded body VXL therefore has the zero first
+byte which admits RockingUpdate. This is asset-load success, not a separate INI
+boolean and not a sinking-created state.
+
+The active retail data closes the translation boundary. The repository asset
+auditor parsed all 221 VXL and 220 HVA files with zero failures (8,824 total
+audited assets, 8,824 passed, zero failed). Direct retail MIX lookups and parser
+checks confirmed body VXL/HVA pairs for the stock naval victims AEGIS, DEST,
+CARRIER, DRED, HYD, SUB, BSUB, LCRF, SAPC and YHVR. Rust's effective-art
+resolution sets `GameEntity.is_voxel` from `ArtEntry.voxel`, with the existing
+Vehicle/Aircraft category fallback, and every map, ordinary-production and
+limbo-production route passes that fact through the shared GameEntity
+constructor. For the active-retail/retail-data scope of this row, constructing
+`rocking=Some(RockingState::default())` exactly when `is_voxel` is true is an
+evidence-complete projection of native successful body-VXL admission. Snapshot
+restore preserves the payload rather than reconstructing it.
+
+Missing or malformed custom body VXL/HVA assets are outside this active-retail
+closure. They must not be advertised as exact mod-data behavior: the current
+Rust `Voxel=` projection does not perform native per-type load-failure fallback.
+That evidence-backed exclusion cannot be used to omit the positive stock
+construction path.
+
+Required discriminators are a map-created and production-created stock voxel
+naval Unit with a default rocking payload before any impulse, the same payload
+after snapshot restore, a culled sinking voxel victim pitching on its next
+Techno visit, and non-voxel DLPH/SQD remaining unadmitted and unpitched.
+
+### 22.2 Successful Attach ForceTrack invokes synchronous crate pickup
+
+Successful `ParasiteClass::Attach` snapshots the victim's exact XYZ and calls
+the attacker's locomotor vslot `+0x70` with selector `-1` and that coordinate.
+For the active SQD Ship locomotor this is
+`ShipLocomotionClass::Force_Track @ 0x006A0310`. It writes selector `-1` at
+locomotor `+0x54` and index zero at `+0x58`. With a non-null coordinate it
+clears an old destination and validity byte when one existed, installs the
+requested XYZ and validity, resolves the destination cell and synchronously
+calls `CrateClass__PickupDispatch(cell, linked techno)`.
+
+When pickup returns true and the linked techno is not in limbo, ForceTrack
+applies a track step, copies the requested XYZ into head-to `+0x30..+0x38` and
+stores speed 1.0. Otherwise, when the linked techno remains alive it clears
+destination XYZ and validity before return; a dead techno retains the
+requested destination. The successful SQD attacker is already limboed, so the
+ordinary no-crate survivor result is selector `-1`, index zero, null/invalid
+destination, and unchanged stale head-to/speed. Attach ignores the locomotor
+return and then writes victim backlink followed by manager victim.
+
+Crate dispatch itself has no collector-limbo rejection and executes a present
+crate synchronously before ForceTrack re-reads the collector's limbo and alive
+state. Random placement cannot create that overlap directly. The crate-slot
+finder may select a coordinate without an occupancy check, but the subsequent
+`OverlayClass::Mark @ 0x005FC570` calls
+`CellClass::CheckCellPassability @ 0x004834A0` for WaterCrateImg with
+SpeedType 5, both occupation-mask relaxations false, zone -1, MovementZone 0,
+height -1 and bridge allowed. An occupying Unit has already marked cell
+occupation bit 0x20 through `UnitClass__MarkCellOccupationBit20 @ 0x007441B0`,
+so the overlay Mark/Unlimbo fails beneath the naval victim. The slot creator
+does not propagate that failure: it can retain a timer slot while cell overlay
+`+0x44` remains absent, and PickupDispatch therefore observes no crate.
+
+Current `src/sim/crates.rs` instead documents that the slot bypasses
+OverlayClass::Mark and stamps the OverlayGrid directly. That is wrong.
+`CrateSlot__ValidateCellAndCreateOverlay @ 0x004A18F0` calls
+`OverlayClass__Constructor @ 0x005FC380`, which reaches Object Unlimbo and
+Overlay Mark; only the constructor/Mark failure result is ignored by the slot
+wrapper. Exact placement must preserve the timer-slot-without-overlay state on
+a failed Mark. The reachability path below is crate-first production, never
+crate-after-occupied-ship direct stamping.
+
+Stock naval production supplies a different constructive path. A pre-existing
+water crate is ephemeral cell-overlay `+0x44` state, not an active object.
+`BuildingClass::ExitObject_Main @ 0x00443C60` chooses a naval delivery cell by
+a rally fast path which tests water, active-object absence and playfield, or by
+`FindNearbyPoint @ 0x0056DC20` with overlay rejection false and all occupancy
+filters false. `UnitClass::Can_Enter_Cell @ 0x0073F0A0` accepts the non-wall,
+passable crate in skirmish; its crate rejection arm requires AI plus
+`g_GameMode==0`. ExitObject then calls Unit Unlimbo, and neither ExitObject nor
+Unlimbo calls PickupDispatch. With no yard rally target it assigns no Move
+mission, recentres/marks the produced ship and leaves it parked over the
+crate. Idle Ship Process_Movement returns before pickup when not moving and
+path step is -1. A later SQD Attach therefore reaches the ForceTrack crate call.
+
+Ordinary Ship movement and teleport arrival do perform pickup, and skirmish
+map overlay-pack loading rejects authored crate overlays, but neither removes
+the production path. Current Rust implements an approximate placement subset;
+runtime slot maintenance, pickup, weighted/predetermined selection, effects
+and immediate replacement are absent, and placement skips the native
+constructor/Mark gate. Because ForceTrack runs the shared dispatch and must
+re-read limbo/alive after an effect, a ForceTrack-only overlay clear or no-op
+would be approximate. The smallest prerequisite is exact shared runtime crate
+slot/pickup/effect/immediate-replacement authority. It includes the persistent
+256-slot timers; trigger callback before the liveness reread; canonical
+weighted selection and Scenario RNG; guards, water downgrade and FreeMCV;
+slot-backed removal and immediate random replacement; stock Money, HealBase,
+Reveal, Armor, Speed, Firepower, Veteran and Unit effects; presentation; and
+the same dispatch wiring for ForceTrack, ordinary Ship movement and teleport
+arrival.
+
+If dispatch or its trigger kills/uninitializes the limboed SQD, ForceTrack
+retains the requested victim XYZ and valid bit while preserving stale head-to/
+speed. `ParasiteClass::Attach @ 0x0062A980` ignores the return and still writes
+victim backlink followed by manager victim. Native uninitialization does not
+make those raw objects instantly unreadable at this continuation point; Rust
+must model the exact inactive-object/link result without holding an invalid
+borrow. This is a real lifetime/reentrancy boundary, not an error path to
+sanitize. A stock matching crate-trigger event at the production cell has not
+yet been archive-censused, so its synchronous callback cannot be excluded.
+Mechanisms A+B remain blocked until the shared prerequisite closes that trigger
+surface and lifetime result, is built, and is independently passed.
+
+### 22.3 Sonic release must preserve Dolphin rearm state
+
+`FootClass::ReceiveDamage @ 0x004D7330`, reached for Unit victims through
+`UnitClass::ReceiveDamage @ 0x00737C90`, performs this ordered prefix:
+
+1. require non-null warhead with `Warhead+0x14B` Sonic and an attached manager;
+2. call the manager's `Detach`;
+3. if the damage source is non-null, call its vtable `+0x3C8` with null;
+4. only then re-read the attachment, process suppression/negative-heal cases,
+   and enter downstream Techno damage/HP/death/retaliation work.
+
+The retail source is DLPH. Unit vtable `0x007F5C70` is COL-identified
+`UnitClass`; slot `+0x3C8` is `TechnoClass::Assign_Target @ 0x006FCDB0`.
+`Assign_Target(NULL)` first loads the old target, clears passive-acquire
+`+0x50C`, and returns immediately when the old target is already null. With a
+non-null old target, the active Unit path commits target null, notifies a
+present SpawnManager, clears `CurrentBurstIndex+0x3B8`, and conditionally
+cleans the `+0x304` linked fire-particle object. It does not write the separate
+weapon rearm timer at `+0x2EC..+0x2F4`.
+
+Active retail exclusions make the callback smaller but do not make it a plain
+Rust target drop. DLPH has no AirstrikeTeam, `Spawns=`, or
+`UseFireParticles`; SonicZap/SonicZapE use SonicWarhead, and the elite weapon
+has Burst=2. Rust currently stores cooldown, burst remaining and burst delay
+inside `AttackTarget`. `represented_assign_target(source,None)` drops the
+whole record, incorrectly erasing the already-running rearm wait and allowing
+an early Dolphin shot. The implementation must separate/preserve source rearm
+authority across target clearing, reset burst progression to index zero, and
+retain the native same-null short circuit: clear passive acquisition but
+preserve targetless rearm/burst state.
+
+Required tests cover rookie ROF preservation, elite post-first-shot burst
+reset with the native 3-5-frame wait retained, same-null no-op except passive
+clear, source currently targeting a third entity, null source, and the trace
+`Detach complete < source Assign_Target(NULL) < suppression/heal checks < HP
+mutation`. Sonic plus negative damage performs one Detach and does not arm the
+50-frame attached-manager heal timer.
+
+### 22.4 Closure verdict and sources
+
+Positive RockingUpdate admission and active DLPH Sonic notification now have
+exact native-to-Rust contracts and evidence-backed exclusions. Successful
+Attach ForceTrack proves a stock-reachable synchronous runtime-crate dependency
+through naval factory exit. The design must list exact shared crate authority
+before its A+B builder; no critic may approve the combined mechanism while
+that selection/effect/reentrancy contract remains unresolved.
+
+- Live read-only Ghidra MCP, active `gamemd.exe`:
+  `TechnoClass::RockingUpdateAdmission @ 0x006F9E10`,
+  `ObjectTypeClass::Constructor @ 0x005F7090`,
+  `ObjectTypeClass::LoadVoxelAssets @ 0x005F8110`,
+  `ShipLocomotionClass::Force_Track @ 0x006A0310`,
+  `CrateClass__PickupDispatch @ 0x00481A00`,
+  `CrateSlot__ValidateCellAndCreateOverlay @ 0x004A18F0`,
+  `OverlayClass__Constructor @ 0x005FC380`,
+  `OverlayClass::Mark @ 0x005FC570`,
+  `CellClass::CheckCellPassability @ 0x004834A0`,
+  `UnitClass__MarkCellOccupationBit20 @ 0x007441B0`,
+  `BuildingClass::ExitObject_Main @ 0x00443C60`,
+  `FindNearbyPoint @ 0x0056DC20`,
+  `UnitClass::Can_Enter_Cell @ 0x0073F0A0`,
+  `FootClass::ReceiveDamage @ 0x004D7330`,
+  `UnitClass::ReceiveDamage @ 0x00737C90`, and
+  `TechnoClass::Assign_Target @ 0x006FCDB0`.
+- Retail `rulesmd.ini`: DLPH, SonicZap, SonicZapE and SonicWarhead; retail MIX
+  body-VXL/HVA files for the listed naval types.
+- Current Rust: `world_spawn::object_uses_voxel`, shared GameEntity creation,
+  `sim/crates.rs`, `mission/concrete_effects.rs::represented_assign_target`,
+  `GameEntity::attack_target`, and `combat::AttackTarget`.
