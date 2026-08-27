@@ -707,6 +707,33 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn gsi_04_03_dummy_collision_uses_exact_nonzero_slope_and_candidate_restamp() {
+        let sim = one_cell_sim(terrain_cell(0, 0));
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        terrain.test_set_dummy_cell_level_slope(0, 5);
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let motion = motion_between(IVec3::new(512, 0, 20), IVec3::new(320, 192, -100));
+        let (facts, transcript) = world.query_with_transcript(motion).unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 320, 192),
+                (SparkCellSelectionRole::Cell, 320, 192),
+                (SparkCellSelectionRole::Cell, 512, 0),
+                (SparkCellSelectionRole::Slope, 320, 192),
+            ]
+        );
+        assert_eq!(facts.slope_matrix, Some(slope_matrix(5).unwrap()));
+        assert_eq!(
+            terrain.shared_cell_dummy().snapshot().coord,
+            (1, 0),
+            "the collision-only slope selection must restamp the candidate after old"
+        );
+    }
+
+    #[test]
     fn gsi_04_03_candidate_and_old_dummy_no_collision_finishes_with_old_stamp() {
         let sim = one_cell_sim(terrain_cell(0, 0));
         let rules = empty_rules();
