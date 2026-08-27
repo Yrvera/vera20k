@@ -321,7 +321,10 @@ use crate::sim::world::Simulation;
 // latches in native conceptual byte order.
 // Bumped 110 -> 111: persist active and stashed Drive/Ship locomotor slope
 // cache/global-frame timer state; the positional payload enum changed shape.
-const SNAPSHOT_VERSION: u32 = 111;
+// Bumped 111 -> 112: active-retail Cell ground is one 104-lepton numeric
+// authority rather than the false 90-lepton duplicate. Shape is unchanged,
+// but retained Cell targets/world state would resume with different Z results.
+const SNAPSHOT_VERSION: u32 = 112;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2614,7 +2617,7 @@ mod tests {
         let wrong_internal = GameSnapshotPreamble {
             product_magic: SNAPSHOT_PRODUCT_MAGIC,
             envelope_version: SNAPSHOT_ENVELOPE_VERSION,
-            version: SNAPSHOT_VERSION - 1,
+            version: 110,
         };
         let preamble_only = bincode::serialize(&wrong_internal).expect("schema-version preamble");
         assert!(matches!(
@@ -2622,7 +2625,7 @@ mod tests {
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
                 found,
-            }) if found == SNAPSHOT_VERSION - 1
+            }) if found == 110
         ));
     }
 
@@ -2731,10 +2734,11 @@ mod tests {
     /// and immutable BuildingType facts; 107 -> 108 adds the distinct BaseClass
     /// plan center; 108 -> 109 adds the three House AI activation latches;
     /// 109 -> 110 adds House AutocreateAllowed; 110 -> 111 adds active/stashed
-    /// Drive/Ship slope-transition state.
+    /// Drive/Ship slope-transition state; 111 -> 112 adopts the corrected
+    /// one-authority 104-lepton Cell ground formula.
     #[test]
-    fn phase3_combined_snapshot_version_is_111() {
-        assert_eq!(super::SNAPSHOT_VERSION, 111);
+    fn phase3_combined_snapshot_version_is_112() {
+        assert_eq!(super::SNAPSHOT_VERSION, 112);
     }
 
     #[test]
@@ -2889,12 +2893,21 @@ mod tests {
 
         let before_hash = sim.state_hash();
         let before_rng = sim.scenario_rng.logical_state();
-        let before = sim.substrate.entities.get(1).unwrap().locomotor.as_ref().unwrap();
+        let before = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap();
         let active_before = before.runtime_payload.clone();
         let stashed_before = before.piggyback.clone();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "Drive Ship slope", 3);
-        let mut restored = GameSnapshot::load(&bytes).expect("current v111 slope snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("current slope snapshot")
+            .sim;
         let loaded = restored
             .substrate
             .entities
@@ -5499,7 +5512,7 @@ mod tests {
             let target =
                 crate::sim::projectile::cell_target_coord(Some(&pristine_load_template), 1, 1);
             let cell = pristine_load_template.cell(1, 1).unwrap();
-            crate::util::lepton::cellclass_ground_height_leptons(
+            crate::util::lepton::ground_height_leptons(
                 cell.level,
                 cell.slope_type,
                 target.x,
@@ -5631,7 +5644,7 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(Some(restored_terrain), 1, 1).z,
             expected_ground_z,
-            "restored raw 0x100 clear removes +416 while retaining the 90-lepton ground kernel"
+            "restored raw 0x100 clear removes +416 while retaining the 104-lepton ground kernel"
         );
         assert_eq!(
             restored.state_hash(),
@@ -5687,7 +5700,7 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(restored.resolved_terrain.as_ref(), 1, 1,).z,
             expected_ground_z,
-            "accepted Resize keeps the restored real CellClass on the 90-lepton ground surface"
+            "accepted Resize keeps the restored real CellClass on the 104-lepton ground surface"
         );
         assert_eq!(
             restored.real_cell_bridge_flags_0x1180, serialized_cleared_authority,

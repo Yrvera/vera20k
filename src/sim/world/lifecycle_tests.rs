@@ -366,10 +366,21 @@ fn drive_ship_slope_production_spawn_unlimbo_snaps_without_manual_rocking_state(
         let rng_before = sim.scenario_rng.logical_state();
 
         let stable_id = sim
-            .spawn_object(type_id, "Americans", cell.0, cell.1, 0, &rules, &BTreeMap::new())
+            .spawn_object(
+                type_id,
+                "Americans",
+                cell.0,
+                cell.1,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
             .expect("production spawn/unlimbo");
         let entity = sim.substrate.entities.get(stable_id).unwrap();
-        assert!(entity.rocking.is_none(), "slope state is not manually injected");
+        assert!(
+            entity.rocking.is_none(),
+            "slope state is not manually injected"
+        );
         assert_eq!(
             crate::sim::movement::slope_transition::state_for_entity(entity)
                 .expect("active Drive/Ship state")
@@ -402,10 +413,21 @@ fn zero_speed_foot_drive_ship_payloads_survive_all_world_spawn_paths() {
         ("ZAIRS", (6, 2), LocomotorKind::Ship, 11),
     ] {
         let stable_id = sim
-            .spawn_object(type_id, "Americans", cell.0, cell.1, 0, &rules, &BTreeMap::new())
+            .spawn_object(
+                type_id,
+                "Americans",
+                cell.0,
+                cell.1,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
             .expect("zero-speed Foot production spawn/reveal");
         let entity = sim.substrate.entities.get(stable_id).unwrap();
-        assert_eq!(entity.locomotor.as_ref().unwrap().active_kind(), expected_kind);
+        assert_eq!(
+            entity.locomotor.as_ref().unwrap().active_kind(),
+            expected_kind
+        );
         assert_eq!(
             crate::sim::movement::slope_transition::state_for_entity(entity)
                 .expect("constructor-owned Drive/Ship payload")
@@ -430,7 +452,10 @@ fn zero_speed_foot_drive_ship_payloads_survive_all_world_spawn_paths() {
         recruitable_a: true,
         recruitable_b: true,
     };
-    assert_eq!(sim.spawn_from_map(&[placement], Some(&rules), &BTreeMap::new()), 1);
+    assert_eq!(
+        sim.spawn_from_map(&[placement], Some(&rules), &BTreeMap::new()),
+        1
+    );
     let map_entity = sim
         .substrate
         .entities
@@ -463,7 +488,12 @@ fn zero_speed_foot_drive_ship_payloads_survive_all_world_spawn_paths() {
             .spawn_object_limbo_at_height(type_id, "Americans", 10, 3, 0, 0, &rules)
             .unwrap();
         assert!(
-            sim.substrate.entities.get(stable_id).unwrap().locomotor.is_none(),
+            sim.substrate
+                .entities
+                .get(stable_id)
+                .unwrap()
+                .locomotor
+                .is_none(),
             "{type_id}: structures and non-Drive/Ship zero-speed types stay excluded"
         );
     }
@@ -4346,7 +4376,7 @@ fn gsi_04_01_cell_target_uses_live_structural_bit_when_runtime_unwalkable() {
     let projectile_id = sim.allocate_stable_id();
     let center_x = 6 * 256 + 128;
     let center_y = 7 * 256 + 128;
-    let bridge_z = crate::util::lepton::cellclass_ground_height_leptons(2, 1, center_x, center_y)
+    let bridge_z = crate::util::lepton::ground_height_leptons(2, 1, center_x, center_y)
         .unwrap()
         .wrapping_add(crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
     let center = ProjectileCoord::new(center_x, center_y, bridge_z);

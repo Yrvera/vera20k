@@ -235,10 +235,10 @@ pub(crate) fn cell_target_coord(
         .map(|cell| {
             // gamemd-derived: `CellClass::GetTargetCoords +0x58 @ 0x00486890`
             // delegates `+0x48 @ 0x00486840` to
-            // `CellClass::GetGroundHeight @ 0x0047B3A0`, then adds 416 iff
+            // `CellClass::ComputeGroundHeightAtCoord @ 0x0047B3A0`, then adds 416 iff
             // this CellClass's own `+0x140 & 0x100` is set. Bridge runtime
             // walkability is not consulted.
-            crate::util::lepton::cellclass_ground_height_leptons(cell.level, cell.slope_type, x, y)
+            crate::util::lepton::ground_height_leptons(cell.level, cell.slope_type, x, y)
                 .expect("resolved CellClass target must have a supported slope")
                 .wrapping_add(
                     if cell.bridge_facts.raw_flags
@@ -278,26 +278,25 @@ pub(crate) fn dummy_cell_target_coord(dummy: &SharedCellDummy) -> ProjectileCoor
         .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
         .wrapping_add(crate::sim::cell_kernel::CELL_CENTER_LEPTONS);
     // `CellClass` target virtual +0x58 at `0x00486890` delegates +0x48 at
-    // `0x00486840`, which calls `CellClass::GetGroundHeight @ 0x0047B3A0`.
-    // This is the 90-lepton CellClass surface domain, not the 104-lepton
-    // object/world floor kernel used by stable allocated-cell targeting.
-    let z = crate::util::lepton::cellclass_ground_height_leptons(
-        snapshot.level as u8,
-        snapshot.slope_type,
-        x,
-        y,
-    )
-    .expect("shared CellClass target must have a supported slope")
-    // `CellClass::GetTargetCoords @ 0x00486890` adds the process-global
-    // high-bridge delta when `CellClass+0x140 & 0x100` is live. The floor
-    // beneath it remains the verified 90-lepton CellClass kernel above.
-    .wrapping_add(
-        if snapshot.bridge_flags_0x1180 & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0 {
-            crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32
-        } else {
-            0
-        },
-    );
+    // `0x00486840`, which calls
+    // `CellClass::ComputeGroundHeightAtCoord @ 0x0047B3A0`.
+    // Active retail initializes the Cell-owned scalar independently, but its
+    // captured value is the same 104 used by the shared ground evaluator.
+    let z =
+        crate::util::lepton::ground_height_leptons(snapshot.level as u8, snapshot.slope_type, x, y)
+            .expect("shared CellClass target must have a supported slope")
+            // `CellClass::GetTargetCoords @ 0x00486890` adds the process-global
+            // high-bridge delta when `CellClass+0x140 & 0x100` is live. The floor
+            // beneath it remains the verified 104-lepton CellClass kernel above.
+            .wrapping_add(
+                if snapshot.bridge_flags_0x1180 & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                    != 0
+                {
+                    crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32
+                } else {
+                    0
+                },
+            );
     ProjectileCoord::new(x, y, z)
 }
 
@@ -307,7 +306,10 @@ pub enum ProjectileTarget {
     Entity(u64),
     /// Stable MapClass CellClass identity. Its target coordinate is resolved
     /// from live terrain state instead of freezing the cleanup-time Vec3.
-    Cell { rx: u16, ry: u16 },
+    Cell {
+        rx: u16,
+        ry: u16,
+    },
     /// Native null AbstractClass target. This is distinct from an expired
     /// entity lookup: BulletClass pointer cleanup has already handled the
     /// reference synchronously, so `TargetExpiryPolicy` must not run.
@@ -1276,12 +1278,9 @@ mod tests {
         });
         let id = store.spawn(1, guided);
 
-        store.advance(
-            &BTreeMap::new(),
-            None,
-            &SharedCellDummy::fresh(),
-            |_, _| None,
-        );
+        store.advance(&BTreeMap::new(), None, &SharedCellDummy::fresh(), |_, _| {
+            None
+        });
 
         let guided = store
             .get(id)
@@ -1298,8 +1297,8 @@ mod tests {
         let flat = dummy_cell_target_coord(&dummy);
         assert_eq!(
             flat,
-            ProjectileCoord::new(128, 128, -89),
-            "CellClass::GetGroundHeight uses the verified 90-lepton domain"
+            ProjectileCoord::new(128, 128, -103),
+            "CellClass::GetGroundHeight uses the verified 104-lepton domain"
         );
 
         dummy.set_level_slope(-1, 1);
@@ -1308,14 +1307,10 @@ mod tests {
         assert_eq!((target.x, target.y), (4 * 256 + 128, 5 * 256 + 128));
         assert_eq!(
             target.z,
-            crate::util::lepton::cellclass_ground_height_leptons(
-                0xff, 1, target.x, target.y
-            )
-            .unwrap()
+            crate::util::lepton::ground_height_leptons(0xff, 1, target.x, target.y).unwrap()
         );
         assert_ne!(
-            target.z,
-            flat.z,
+            target.z, flat.z,
             "the live slope byte participates in dummy floor resolution"
         );
 
@@ -1324,10 +1319,7 @@ mod tests {
         assert_eq!((moved.x, moved.y), (-2 * 256 + 128, 7 * 256 + 128));
         assert_eq!(
             moved.z,
-            crate::util::lepton::cellclass_ground_height_leptons(
-                0xff, 1, moved.x, moved.y
-            )
-            .unwrap(),
+            crate::util::lepton::ground_height_leptons(0xff, 1, moved.x, moved.y).unwrap(),
             "coord stamps preserve and reuse the level/slope bytes"
         );
     }
@@ -1358,12 +1350,9 @@ mod tests {
         let first = store.spawn(1, first_spawn);
         let second = store.spawn(2, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
-        let result = store.advance(
-            &BTreeMap::new(),
-            None,
-            &SharedCellDummy::fresh(),
-            |_, _| None,
-        );
+        let result = store.advance(&BTreeMap::new(), None, &SharedCellDummy::fresh(), |_, _| {
+            None
+        });
 
         assert_eq!(
             result
@@ -1386,12 +1375,7 @@ mod tests {
         let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 128, 0))]);
 
-        store.advance(
-            &targets,
-            None,
-            &SharedCellDummy::fresh(),
-            |_, _| None,
-        );
+        store.advance(&targets, None, &SharedCellDummy::fresh(), |_, _| None);
 
         assert_eq!(
             store.get(id).unwrap().position,
@@ -1404,19 +1388,11 @@ mod tests {
         let mut store = ProjectileStore::new();
         let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 0, 0))]);
-        store.advance(
-            &targets,
-            None,
-            &SharedCellDummy::fresh(),
-            |_, _| None,
-        );
+        store.advance(&targets, None, &SharedCellDummy::fresh(), |_, _| None);
 
-        let result = store.advance(
-            &BTreeMap::new(),
-            None,
-            &SharedCellDummy::fresh(),
-            |_, _| None,
-        );
+        let result = store.advance(&BTreeMap::new(), None, &SharedCellDummy::fresh(), |_, _| {
+            None
+        });
 
         assert_eq!(result.detonations.len(), 1);
         assert_eq!(result.detonations[0].projectile_id, id);
@@ -1477,10 +1453,7 @@ mod tests {
         let mut empty = crate::sim::world::Simulation::new();
         let mut sim = crate::sim::world::Simulation::new();
         let stable_id = sim.allocate_stable_id();
-        sim.admit_projectile(
-            stable_id,
-            spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }),
-        );
+        sim.admit_projectile(stable_id, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
         // Native in-scenario load restarts Scenario RNG from Seed0. Normalize
         // both controls so this fixture isolates projectile persistence/hash.
         empty.scenario_rng = crate::sim::rng::SimRng::new(0);

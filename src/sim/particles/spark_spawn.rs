@@ -523,6 +523,28 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_03_particle_constructor_clamps_at_or_below_level_two_104_floor() {
+        let rules = spark_rules(1, 2, "1");
+        let particle_type_id = crate::rules::particle_type::ParticleTypeId(0);
+        let particle_type = rules.particle_type(particle_type_id).clone();
+        let mut cell = super::super::spark_world::tests::terrain_cell(0, 0);
+        cell.level = 2;
+        let mut sim = super::super::spark_world::tests::one_cell_sim(cell);
+
+        for (input_z, expected_z) in [(207, 208), (208, 208), (209, 209)] {
+            let particle = construct_spark_particle(
+                &mut sim,
+                &rules,
+                &particle_type,
+                particle_type_id,
+                IVec3::new(128, 128, input_z),
+            )
+            .expect("finite stock-shaped Spark construction");
+            assert_eq!(particle.coords.z, expected_z, "input Z {input_z}");
+        }
+    }
+
+    #[test]
     fn gsi_05_13_spawn_frames_one_bursts_and_takes_no_gate_draw() {
         // `CMP EAX,0x1 / JZ 0x0062E89E` skips the probability roll entirely.
         // Stock `[SparkSys]` and `[FirestormSparkSys]` both set

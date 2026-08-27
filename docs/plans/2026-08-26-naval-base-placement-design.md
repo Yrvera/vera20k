@@ -50,7 +50,7 @@ For a ready BuildingType whose native naval byte at `+0xCCE` is nonzero:
 5. If the owning House's ordered `BuildConst` vector is empty, return the candidate unchanged.
    Otherwise take only its first live stable ID, read that Building's exact
    `BuildingClass::GetCoords` coordinate,
-   get the candidate CellClass center coordinate using CellClass 90-lepton terrain Z at subcell
+   get the candidate CellClass center coordinate using the verified 104-lepton terrain Z at subcell
    `(128,128)`, subtract with wrapping i32 semantics, and apply
    `native_x87::distance_3d_leptons`. Reject only when distance is strictly greater than signed
    `AINavalYardAdjacency << 8`; equality passes.
@@ -63,7 +63,7 @@ object queued, matching the existing deferred placement contract.
 Active retail always has MapClass, path, resolved CellClass terrain, map-size, and playfield
 authority. If a headless/compatibility caller lacks any input required for the exact FNPC
 projection or CellClass-center Z, naval selection returns failure; it must not use FNPC's
-no-terrain compatibility projection or invent a flat/104-lepton CellClass surface.
+no-terrain compatibility projection or invent a flat CellClass surface.
 
 ## Exact shipyard selector
 
@@ -155,8 +155,9 @@ state versioning is needed.
 
 - Candidate X/Y: `cell * 256 + 128`, with native signed-cell/wrapped-i32 semantics at the kernel
   boundary.
-- Candidate Z: `cellclass_ground_height_leptons` at center subcell, the established 90-lepton
-  CellClass terrain surface.
+- Candidate Z: the common `ground_height_leptons` authority at center subcell, the active-runtime
+  verified 104-lepton CellClass terrain surface. See
+  `PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`.
 - Yard X/Y: start from the live entity's stored north-west anchor coordinate and apply
   `BuildingClass::GetCoords` foundation centering, `(width - 1) * 128` and
   `(height - 1) * 128`, with wrapped i32 arithmetic. Yard Z preserves the live object's exact
@@ -214,7 +215,7 @@ state versioning is needed.
    Reveal no append, successful Conceal stable removal, already-limbo no-op, old-owner removal and
    new-owner tail append on capture, and re-entry tail append. A stable-ID/owner-order counterexample
    must leave a different first yard and show the stored order wins.
-6. Distance tests prove no-yard bypass; first-yard-only behavior; exact CellClass 90-Z and object
+6. Distance tests prove no-yard bypass; first-yard-only behavior; exact CellClass 104-Z and object
    `BuildingClass::GetCoords` foundation centering and object Z; equality acceptance;
    strict-greater rejection; signed/negative scalar behavior; and an elevation case differing
    from a 2D/cell-radius shortcut.

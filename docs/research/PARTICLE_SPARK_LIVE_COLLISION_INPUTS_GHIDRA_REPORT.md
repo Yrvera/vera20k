@@ -12,20 +12,26 @@
 
 **Implementation scope:** none; this report is a research handoff and intentionally changes no Rust code
 
+**2026-08-27 numeric correction:** active runtime capture in
+`PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`
+supersedes this report's original 90/360/340 interpretation. Cell ground is
+104; Particle's independently owned structural offset is 416; Spark's
+ascending commit is ground +396. The text below incorporates that correction.
+
 ## Verdict
 
 The live-input prerequisites for the approved Spark collision adapter are closed for valid stock map cells.
 
 The adapter must not approximate these inputs:
 
-- ground height uses a signed cell conversion, a flattened 512-stride lookup, a 90-lepton level step, and one of 20 slope records;
+- ground height uses a signed cell conversion, a flattened 512-stride lookup, the active-retail 104-lepton Cell scalar, and one of 20 slope records;
 - Spark queries a 3x4 `f32` matrix by the candidate cell's slope byte, including identity for slope 0 and an all-zero matrix for slopes 17-20;
 - the structural bridge test is the live `CellClass+0x140 & 0x100` bit, not the presence of a bridge overlay or a generic deck height;
 - high-bridge collapse clears `0x100`, and engineer repair does **not** restore it—an active native quirk;
 - `Gravity` is an `i32` rule with constructor default 3 and stock override 6, while `ColorSpeed` is stored as the exact `f64` widening of an INI-parsed `f32`;
 - the stock LaserFence exception is compiled and reachable only when a type enables it; stock rules do not enable it.
 
-The current Rust owners already contain most source facts, but two precision changes are mandatory before activation: retain `Gravity` as the native integer-derived `f32` input, and retain `ColorSpeed` as native `f64` bits instead of `SimFixed`. Invalid/dummy-cell parity is deliberately outside this slice; the adapter must return a typed unavailable/error result there and must not substitute height zero, identity slope, or missing collision facts.
+The current Rust owners already contain most source facts, but two precision changes are mandatory before activation: retain `Gravity` as the native integer-derived `f32` input, and retain `ColorSpeed` as native `f64` bits instead of `SimFixed`. The shared mutable dummy substrate now exists in `src/sim/cell_rect.rs`; Spark's adapter is not yet routed through it and still returns a typed unavailable/error result rather than substituting height zero, identity slope, or missing collision facts. That caller-specific routing remains open.
 
 ## 1. Scope, duplication check, and source order
 
@@ -100,7 +106,7 @@ This is signed truncation toward zero by 256. Concrete fixtures:
 
 The lookup then forms `linear = cell_y * 0x200 + cell_x`. It validates the flattened result and pointer, not X and Y independently. Consequently, an individually out-of-range axis can alias an in-range flattened slot. A Rust helper that bounds-checks X/Y separately is not equivalent at this boundary.
 
-On failure or null pointer, the wrapper uses the shared dummy cell at `0x00ABDC50`, writes the requested packed cell coordinate at dummy `+0x24` (`0x00ABDC74`), and calls the same inner ground function. `CellClass::Constructor @ 0x0047BBF0`, reached for the dummy at the end of the `MapClass::Resize` path around `0x005670E7`, initializes dummy level `+0x11B` and slope `+0x11C` to zero. Other off-map helpers can mutate shared dummy state later. Because Rust does not model that shared mutable dummy contract, an invalid/dummy lookup must be reported as unavailable rather than silently treated as a flat level-zero cell.
+On failure or null pointer, the wrapper uses the shared dummy cell at `0x00ABDC50`, writes the requested packed cell coordinate at dummy `+0x24` (`0x00ABDC74`), and calls the same inner ground function. `CellClass::Constructor @ 0x0047BBF0`, reached for the dummy at the end of the `MapClass::Resize` path around `0x005670E7`, initializes dummy level `+0x11B` and slope `+0x11C` to zero. Other off-map helpers can mutate shared dummy state later. Rust now models the shared mutable substrate in `cell_rect`, but Spark has not integrated it; its adapter must continue reporting typed unavailable state until that separate routing mechanism is verified and implemented.
 
 Evidence: fresh Ghidra `disassemble_function(address="0x00578080")`, `decompile_function(address="0x00565730")`, `decompile_function(address="0x0047BBF0")`, and disassembly around `0x005670E7`; the coordinate conversion and dummy writes are explicit instructions, not inferred names.
 
@@ -108,18 +114,18 @@ Evidence: fresh Ghidra `disassemble_function(address="0x00578080")`, `decompile_
 
 The inner ground function `0x0047B3A0` receives `ECX = CellClass*` and a pointer to the original world/lepton coordinate. It lazily initializes:
 
-- ground `LevelHeight = 90`;
-- `LevelHeight / 256 = 0.3515625`;
+- ground `LevelHeight = 104`;
+- `LevelHeight / 256 = 0.40625`;
 - the 20 ground-slope records in §3.3;
-- the structural bridge plane constant `ftol(4 * 90 + 0.5) = 360`.
+- the structural bridge plane constant `ftol(4 * 104 + 0.5) = 416`.
 
 Base height is:
 
 ```text
-base = ftol_chop(sign_extend_i8(cell.level) * 90 + 0.5)
+base = ftol_chop(sign_extend_i8(cell.level) * 104 + 0.5)
 ```
 
-For ordinary nonnegative map levels this is exactly `level * 90`. The signed load matters for corrupted or synthetic negative levels: level `-1` produces `ftol(-89.5) = -89`, not `-90`.
+For ordinary nonnegative map levels this is exactly `level * 104`. The signed load matters for corrupted or synthetic negative levels: level `-1` produces `ftol(-103.5) = -103`, not `-104`.
 
 Evidence: fresh Ghidra `decompile_function(address="0x0047B3A0")` plus full `disassemble_function(address="0x0047B3A0")`; the body uses `MOVSX`, `FILD`, adds the `0.5` constant at `0x007E1738`, and calls `Math__ftol @ 0x007C5F00`.
 
@@ -130,15 +136,15 @@ Slope zero returns `base`. For nonzero `s`, the function reads record `(s - 1) *
 ```text
 x = world_x & 0xFF
 y = world_y & 0xFF
-raw = y * coeff_y * (90 / 256)
-    + x * coeff_x * (90 / 256)
+raw = y * coeff_y * (104 / 256)
+    + x * coeff_x * (104 / 256)
     + bias_a
     + bias_b
 clamped = min(max(raw, 0.0), max_value)
 height = ftol_chop(base + clamped)
 ```
 
-The clamp occurs before adding base; final conversion chops toward zero. Let `L = 90`:
+The clamp occurs before adding base; final conversion chops toward zero. Let `L = 104`:
 
 | Slope | `coeff_x` | `coeff_y` | `bias_a` | `max` | `bias_b` |
 |---:|---:|---:|---:|---:|---:|
@@ -163,7 +169,7 @@ The clamp occurs before adding base; final conversion chops toward zero. Let `L 
 | 19 | `0` | `0` | `0` | `L/2` | `L/2` |
 | 20 | `0` | `0` | `L` | `L/2` | `-L/2` |
 
-Ground slopes 17-20 therefore all add exactly 45 leptons, independent of local X/Y. This does **not** imply that their VXL/Spark reflection matrices are identity; §4 shows they are zero.
+Ground slopes 17-20 therefore all add exactly 52 leptons, independent of local X/Y. This does **not** imply that their VXL/Spark reflection matrices are identity; §4 shows they are zero.
 
 Evidence: Ghidra disassembly `0x0047B3ED..0x0047BA8E` for record initialization and `0x0047BA94..0x0047BB58` for the evaluation/clamp/return path. `FUN_006D6AD0` independently confirms that slope is read as the unsigned byte at `CellClass+0x11C` with no clamp.
 
@@ -183,7 +189,7 @@ Evidence: fresh Ghidra `decompile_function` and `disassemble_function` on `0x007
 
 ### 4.2 VXL height and tilt derivation
 
-Ground `LevelHeight=90` and VXL `LevelHeight=104` are different globals and different mechanisms.
+Cell ground and VXL use independently owned and initialized globals, but active runtime capture proves that both `LevelHeight` values are 104. Independent ownership does not create different numeric domains.
 
 `VXL_Init_CellHeightRatio @ 0x007549E0` uses the tangent lookup `0x004CAD50`, not an analytic sine. Its `pi/6` sample selects table index 341, whose retail `f32` is `0.5766686797142029`; multiplying by half the 256-cell diagonal and chopping yields VXL level height 104.
 
@@ -328,10 +334,10 @@ After resolving the opening ledger, a second pass revisited all direct callees a
 | Question | Answer |
 |---|---|
 | What if a candidate X/Y axis is negative or individually outside 0-511? | Native conversion truncates toward zero and only the flattened index is validated; Rust must reproduce a valid alias or return typed unavailable when the shared dummy would be used. |
-| What if a collapsed high bridge is repaired by an engineer? | Its overlays/attributes are repaired, but structural `0x100` is not restored; Spark no longer applies the 360-lepton bridge plane there. |
-| What if the terrain slope is 0 or 17-20? | Slope 0 returns identity. Slopes 17-20 return zero matrices even though their ground contribution is 45. |
+| What if a collapsed high bridge is repaired by an engineer? | Its overlays/attributes are repaired, but structural `0x100` is not restored; Spark no longer applies the 416-lepton bridge plane there. |
+| What if the terrain slope is 0 or 17-20? | Slope 0 returns identity. Slopes 17-20 return zero matrices even though their ground contribution is 52. |
 | What if `.13` is stored through `SimFixed` because the visual result seems close? | That changes the native `f64` input and is DRIFT; retain `0x3FC0A3D700000000`. |
-| What if VXL level height 104 is reused for ground or bridge height? | Wrong reference frame/mechanism: ground levels are 90 and Spark structural plane is 360; 104 exists only in VXL tilt initialization. |
+| What if independently owned Cell/VXL globals are assumed numerically different? | Wrong: active runtime capture proves both level scalars are 104; Spark composes its independently owned 416 structural offset over Cell ground. |
 | What if stock maps never use a discovered edge? | Trigger frequency affects priority, not parity. Every valid stock slope 0-20 and bridge lifecycle state must retain the listed mechanism. |
 
 ## 10. Final questions disposition
@@ -340,10 +346,10 @@ After resolving the opening ledger, a second pass revisited all direct callees a
 |---|---|---|
 | S01 | RESOLVED | Spark AI consumes one owned bundle per forward particle tick; reverse cleanup follows. |
 | G01 | RESOLVED | Signed truncation toward zero by 256, then flattened 512-stride index. |
-| G02 | RESOLVED | Signed level times 90, add 0.5, x87 chop. |
+| G02 | RESOLVED | Signed level times 104, add 0.5, x87 chop. |
 | G03 | RESOLVED | Low-byte X/Y affine record, clamp to `[0,max]`, add base, chop. |
 | G04 | RESOLVED | All 20 records are listed in §3.3. |
-| G05 | RESOLVED | Native dummy routing is known; adapter returns typed unavailable because full mutable dummy state is outside scope. |
+| G05 | RESOLVED | Native dummy routing is known and Rust has the shared substrate; Spark integration remains open because its adapter still returns typed unavailable. |
 | M01 | RESOLVED | `VXL_MasterLighting_Init` writes identity 0 and rotations 1-16; 17-20 remain BSS zero. |
 | M02 | RESOLVED | Exact `f32` bits are listed in §4.3. |
 | M03 | RESOLVED | Direct `slope*0x30` copy; no clamp or fallback. |
