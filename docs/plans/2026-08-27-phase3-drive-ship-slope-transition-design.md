@@ -444,8 +444,11 @@ the stable-matrix rules of excluded classes.
   `0|3`. Keep fields private so normal Rust writers cannot create anything
   else. Debug assertions may flag internal incoherence, but gameplay code does
   not repair it by borrowing terrain or another component.
-- There is no payload default. Missing payload bytes in a version-105 record
-  are a decode error, and no fallback constructs Drive state at frame zero.
+- There is no payload default. Historically, the slope-payload change advanced
+  schema 104 -> 105 so missing payload bytes could not default to Drive state at
+  frame zero. The later Cell ground-height correction advanced 105 -> 106; the
+  current loader rejects a v105 preamble before body decode, so missing v105
+  payload bytes no longer reach deserialization.
 - A missing terrain grid or out-of-grid current cell in synthetic fixtures is
   a no-write result. It must not become a slope-zero transition and must not
   make ordinary movement fail.
@@ -516,9 +519,11 @@ production-path discriminating rather than manually attaching `RockingState`.
     tests with body-only `RockingState`. Prove slope construction leaves
     `entity.rocking` unchanged and body rocking never writes the locomotor
     payload.
-14. **Schema boundary:** current snapshots report version `105`; a version
-    `104` preamble is rejected before body decode. The round trip includes both
-    an active and a stashed Drive/Ship slope payload. A nonzero-frame ordinary
+14. **Schema boundary:** the slope change historically advanced snapshots
+    `104 -> 105`; the later Cell ground-height correction advanced `105 -> 106`.
+    Current snapshots report version `106`, and the loader rejects v105 (as well
+    as older) preambles before body decode. The round trip includes both an
+    active and a stashed Drive/Ship slope payload. A nonzero-frame ordinary
     constructor and fresh piggyback replacement must retain that frame before
     reveal/sampling; no default/omitted payload path may create frame zero.
 

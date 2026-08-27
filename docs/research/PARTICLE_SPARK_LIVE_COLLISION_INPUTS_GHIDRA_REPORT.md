@@ -116,8 +116,14 @@ The inner ground function `0x0047B3A0` receives `ECX = CellClass*` and a pointer
 
 - ground `LevelHeight = 104`;
 - `LevelHeight / 256 = 0.40625`;
-- the 20 ground-slope records in §3.3;
-- the structural bridge plane constant `ftol(4 * 104 + 0.5) = 416`.
+- the 20 ground-slope records in §3.3.
+
+The ground evaluator owns only the 104-based floor and slope result. Cell's
+416 structural-deck offset is initialized separately. Spark does not consume
+that Cell-owned offset: it reads Particle's independently initialized 416 and
+composes `ground + 416` in its collision path. See the active-runtime ownership
+census in
+`PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`.
 
 Base height is:
 
@@ -408,7 +414,7 @@ No in-scope question remains deferred. The generic shared-dummy mutation taxonom
 
 | Verified requirement | Current Rust state | Required delta | Acceptance test |
 |---|---|---|---|
-| Exact valid-cell coordinate selection and ground formula | Terrain stores level/slope, but existing rectangular helpers do not reproduce all flattened aliases/dummy semantics | Add a read-only Spark world adapter that performs the native signed conversion/flattened lookup; return typed unavailable at dummy boundary | Fixtures `255/256/-1/-255/-256`; one flattened alias; invalid lookup errors; slopes 0-20 match §3 |
+| Exact valid-cell coordinate selection and ground formula | `cell_rect` owns the fixed-512 real-or-shared-dummy substrate, and the existing `spark_world` adapter reproduces signed conversion and valid flattened aliases while returning typed unavailable at the dummy boundary | Route Spark's adapter through the existing shared dummy without changing its already-exact valid-cell path | Retain fixtures `255/256/-1/-255/-256`, flattened alias, and slopes 0-20; add shared-dummy level/slope/coordinate routing fixtures |
 | Exact candidate slope matrix | No Spark world table; renderer table is not authoritative for collision and treats unsupported slopes differently | Add native-derived matrix source using §4.3 bits or exact table builder; 0 identity, 17-20 zero | Compare all 21×12 raw `f32` bits to §4.3 |
 | Live structural bit | Static bridge facts and runtime `deck_present` exist separately | Query static structural AND runtime state exactly as §5.3 | Intact true; collapsed false; repaired-after-collapse remains false; forward-3/extra false |
 | Candidate building/wall facts | Occupancy and overlay grids exist | Read in verified list order; preserve typed failure at unavailable terrain boundary | Multiple-object list ordering; accepted building; rejected non-building; wall overlay ID |
@@ -417,10 +423,11 @@ No in-scope question remains deferred. The generic shared-dummy mutation taxonom
 | Borrow/RNG ordering | Pure Spark kernel exists; production dispatch disabled | Gather all facts into owned input, release world borrows, then call kernel with authoritative RNG | Fact-query failure consumes no RNG; successful tick consumes the parent-report sequence only |
 | Activation safety | Spark/Railgun public dispatch/render remain disabled | Keep disabled until adapter integration and focused tests pass; no fallback path | Unsupported/unavailable input reports error and never silently activates approximation |
 
-Recommended implementation surface from the approved design:
+Current implementation surface and remaining integration seam:
 
-- new read-only `src/sim/particles/spark_world.rs` for native cell/ground/matrix/bridge/occupancy/overlay fact gathering;
-- focused rule changes in `src/rules/ruleset.rs` and `src/rules/particle_type.rs`;
+- preserve the existing read-only `src/sim/particles/spark_world.rs` valid-cell ground/matrix/bridge/occupancy/overlay fact gathering;
+- preserve the existing shared real-or-dummy substrate in `src/sim/cell_rect.rs` and route only Spark's unavailable-cell branch through it;
+- retain the focused rule ownership in `src/rules/ruleset.rs` and `src/rules/particle_type.rs`;
 - owner wiring only after owned facts are complete and all borrows are released;
 - no change to public Spark spawn/render activation in the same patch.
 
