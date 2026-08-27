@@ -2051,8 +2051,22 @@ pub(super) fn process_cell_crossings(
             if let Some(next_cell) = pg.cell(nx, ny) {
                 let next_level = next_cell.effective_cell_z_for_layer(next_layer);
                 let diff = (position.z as i16 - next_level as i16).unsigned_abs();
-                let is_bridge_ramp =
-                    next_cell.is_bridge_transition_cell() || next_cell.is_elevated_bridge_cell();
+                // `is_elevated_bridge_cell` keys on the walkable permission bit, so a
+                // structural deck cell whose permission is clear — a damaged span, or
+                // one carrying a terrain object — reads as ordinary terrain here. A
+                // mover on the deck now carries `ground + 4` (the native height model,
+                // `FootClass::Set_Height_On_Bridge` 0x005F5FA0), so against that cell's
+                // terrain level the difference is exactly the deck delta and the mover
+                // is stopped mid-span as if it had walked off a cliff. Reading the
+                // structural flag as well keeps the deck a deck regardless of the
+                // permission bit.
+                //
+                // VERA-internal, gamemd equivalent UNCHECKED: `CLIFF_HEIGHT_THRESHOLD`
+                // itself has no identified native owner (`sim::movement::mod.rs`), so
+                // this widens a VERA-only gate rather than porting a native one.
+                let is_bridge_ramp = next_cell.is_bridge_transition_cell()
+                    || next_cell.is_elevated_bridge_cell()
+                    || next_cell.has_structural_bridge();
                 if diff >= CLIFF_HEIGHT_THRESHOLD && !is_bridge_ramp {
                     position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
                     position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
