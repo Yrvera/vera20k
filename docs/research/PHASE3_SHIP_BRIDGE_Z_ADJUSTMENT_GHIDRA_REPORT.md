@@ -42,7 +42,7 @@ The active setter is not identified from its Ghidra name. The Ship ILocomotion v
 The four owner guards dispatch through the UnitClass vtable `0x007F5C70`; `vtable-4` points to COL `0x0080CC68`, whose TypeDescriptor is `0x00842D80` (`.?AVUnitClass@@`). The resolved slot bodies are:
 
 1. `+0x37C -> 0x00746C90`: `UnitClass__IsCrashing`; nonzero aborts the coordinate write.
-2. `+0x380 -> 0x004DE770`: returns whether the rearm timer still has time remaining; nonzero aborts.
+2. `+0x380 -> 0x004DE770`: returns whether the Foot destination-delay timer has a nonzero remaining value; nonzero aborts. Section 16 gives the corrected raw-sentinel semantics.
 3. `+0x1D4 -> 0x0070C5B0`: returns owner byte `+0x270` (`IsWarpingOut`); nonzero aborts.
 4. `+0x1D8 -> 0x0070C5C0`: returns owner byte `+0x271` (`IsBeingWarped`); nonzero aborts.
 
@@ -259,7 +259,7 @@ The global has no direct presentation integration. Deck rendering, voxel Z-buffe
 - `[RESOLVED] OQ-04 — Is helper 0x004CAD50 sine or tangent? -> Tangent; its 4096-angle table returns the pi/6 tangent entry.` (evidence: `0x004CAD50`; table `0x0085D0A4`, entry `0x0085D5F8`)
 - `[RESOLVED] OQ-05 — What is the exact rounding rule? -> x87 signed conversion toward zero under control word 0x0E7F; the final +0.5 is retained but immaterial for integer 416.` (evidence: `0x007C5F00`, `0x00822D80`, `0x0069EBC1..CB`)
 - `[RESOLVED] OQ-06 — Is 0x0069F450 truly the active Ship setter? -> Yes, Ship RTTI/COL and ILocomotion slot 17 bind it.` (evidence: `0x007F2D88 -> 0x008093A0 -> 0x0083F880`, slot `0x007F2DD0`)
-- `[RESOLVED] OQ-07 — What suppresses the setter? -> UnitClass IsCrashing, active rearm timer, IsWarpingOut, and IsBeingWarped, in that exact order.` (evidence: `0x0069F450`; Unit COL/vtable and four resolved bodies)
+- `[RESOLVED] OQ-07 — What suppresses the setter? -> UnitClass IsCrashing, nonzero Foot destination-delay remaining, IsWarpingOut, and IsBeingWarped, in that exact order.` (evidence: `0x0069F450`; Unit COL/vtable and four resolved bodies; corrected timer semantics in Section 16)
 - `[RESOLVED] OQ-08 — Does a partial NullCoord triple suppress adjustment? -> No; only exact equality of all X, Y, and Z skips lookup. Any differing component resolves the cell.` (evidence: `0x0069F4B2..0x0069F4CC`)
 - `[RESOLVED] OQ-09 — Does the ordinary reader inspect current or destination cell? -> Destination cell copied from Ship-locomotor +0x34/+0x38/+0x3C.` (evidence: `0x006A068A..0x006A06B1`)
 - `[RESOLVED] OQ-10 — Is native distance planar-plus-offset? -> No; offset forms target Z before signed dx/dy/dz square-sum, Sqrt_Approx, and truncation.` (evidence: `0x006A06D3..0x006A0755`)
@@ -608,7 +608,7 @@ This section supersedes Sections 12.5, 12.7-12.8, 13.1, 14.3/14.6, and the forme
 
 ### 15.1 Timer predicate and corrected function identity
 
-The predicate at `0x004DE770` reads signed `Foot+0x6A0` (start) and `Foot+0x6A8` (duration). `start == -1` returns false without treating `duration` as a paused remainder. Otherwise it performs signed/wrapping `elapsed = g_CurrentFrameCounter - start`; it returns true exactly when `elapsed < duration` and `duration - elapsed != 0`. Constructor store `0x004D3402` initializes duration to zero. This timer is not Techno's ordinary weapon cadence at `+0x2EC/+0x2F4` and is not locomotor speed.
+The predicate at `0x004DE770` reads signed `Foot+0x6A0` (start) and `Foot+0x6A8` (duration). The earlier sentinel claim was inverted. When `start == -1`, assembly `0x004DE77C..0x004DE79F` skips the elapsed-time calculation and returns `duration != 0`; a positive or negative nonzero raw duration is active. Otherwise it performs signed/wrapping `elapsed = g_CurrentFrameCounter - start`; if signed `elapsed >= duration`, it returns false, and otherwise it returns `duration.wrapping_sub(elapsed) != 0`. The Ship caller tests AL. `FootClass::Constructor` stores `start = g_CurrentFrameCounter` at `0x004D33F6..0x004D33FC` and `duration = 0` at `0x004D3402`, so newly constructed native Foot objects begin inactive without using the `-1` sentinel. This timer is not Techno's ordinary weapon cadence at `+0x2EC/+0x2F4` and is not locomotor speed.
 
 `WarpAttachClass::UpdateAttack @ 0x00629FD0` first rejects a null manager victim. It then reads the manager owner type. When both `TechnoType+0xCCE Naval` and `TechnoType+0xD97 Organic` are true, it calls `0x006297F0` and returns before the generic attack-timer/ROF writer at `0x0062A074..0x0062A0A7`. `TechnoTypeClass::ReadINI @ 0x00715024..0x0071503F`, anchored by the literal `Organic`, proves `+0xD97`; retail `[SQD]` sets both flags. Therefore stock Giant Squid always uses `0x006297F0`.
 
@@ -674,7 +674,7 @@ The smallest exact prerequisite is a bounded persistent attachment subset, not a
 
 - parse signed `WarheadType.paralyzes`, Warhead `Sonic`, and `ObjectType.organic`; parse `ObjectType.parasiteable` for the bounded recognized-Ship UnitType path with the live UnitType default true. Non-Ship Parasite admission remains on the explicit unsupported path rather than inventing other registry defaults;
 - create per-attacker manager state at object initialization exactly when the non-building rookie primary warhead is Parasite; the state contains only `victim_id: Option<u64>` for this slice;
-- add victim `parasite_attacker_id: Option<u64>` and owner `foot_destination_delay: CdTimer`, initialized raw inactive (`start=-1`, duration=0);
+- add victim `parasite_attacker_id: Option<u64>` and owner `foot_destination_delay: CdTimer`; construct the raw native pair as `start=current creation frame, duration=0`, not `CdTimer::default()` / `(-1,0)`. The raw pair is serialized and hashed, so equal inactive predicates do not make the representations interchangeable;
 - at the Parasite special detonation branch, require a recognized Ship victim, the source entity and its manager, and `ProjectileTarget::Entity`; evaluate every Section 15.2 gate read-only, then install both links transactionally; do not arm the timer. Non-Ship targets remain explicitly unsupported in this GSI slice;
 - after each victim's mission/destination and locomotor work, at the existing per-object Foot-AI tail seam, validate reciprocal links and resolve the attacker's live slot-0 weapon/warhead from current type and veterancy. For Naval+Organic attacker plus missing cell or water-set cell, write `CdTimer::started(current_frame, paralyzes)` every visit; for a known non-water cell, detach;
 - centralize `detach_parasite(attacker_id, victim_id, current_frame)` so it validates the reciprocal pair, clears both links, and writes victim raw start=current/duration=0. Call it from every currently reachable release seam in Section 15.4 and from pointer expiry/uninit of either endpoint. Grinder and grapple-damage producers stay explicit while their upstream effects are absent;
@@ -684,11 +684,11 @@ Snapshot version remains 113/reject-112, but the payload and hash membership now
 
 ### 15.6 Required discriminators
 
-- Detonation frame: a legal SQD hit installs reciprocal links with timer still `start=-1,duration=0`; a Ship destination request in that interval is admitted. The next victim tail writes 32767 after locomotion, and every later qualifying tail re-anchors it.
+- Detonation frame: a legal SQD hit installs reciprocal links without changing the victim's prior raw timer pair; for the ordinary inactive case its duration remains zero, so a Ship destination request in that interval is admitted. The next victim tail writes 32767 after locomotion, and every later qualifying tail re-anchors it.
 - Admission failures (null source, non-entity target, limbo/dead/health-zero victim, existing attacker, `Parasiteable=no`, installed bunker, Naval attacker on missing/non-water cell) preserve both entities and timer byte-for-byte.
 - Two-Squid race: first attach wins; second fails without timer restart or link replacement.
 - Water loss, Sonic damage, negative heal, accepted repair-radio heal, non-Organic Iron Curtain, and endpoint uninit clear one exact reciprocal link and write victim duration zero. Organic invulnerability target, unattached targets, true chrono-erase, and a merely resolved IsLocomotor target do not clear.
-- `start=-1,duration>0` remains false for the Ship setter predicate; start=current/duration=32767 is true; exact expiry is false.
+- `start=-1,duration=0` is false, while `start=-1,duration=32767` (and any negative nonzero duration) is true; start=current/duration=32767 is true; exact signed expiry is false.
 - v113 round-trips manager-without-victim and active reciprocal attachment/timer states; v112 rejects; changing either link or either raw timer dword changes the world hash; malformed reciprocal snapshots reject.
 
 The GSI row and design remain **OPEN** on two stock-active upstream release dependencies: Chronosphere source-area admission and IsLocomotor's full pre-`PerformDeploy` admission. A broad superweapon/locomotor target clear is forbidden; those exact upstream surfaces must be promoted before closure. The row also remains open until this prerequisite and the already-specified Ship destination/braking/arrival work are implemented, tested, and freshly criticized. This section does not claim full Giant Squid/Terror Drone combat parity.
@@ -698,3 +698,97 @@ The GSI row and design remain **OPEN** on two stock-active upstream release depe
 - Live Ghidra MCP, active `gamemd.exe`: `BulletClass::DetonateAtCoord @ 0x004690B0`; `TechnoClass::Init_Managers @ 0x006F3F40`; `WarpAttachClass::{CanAttach @ 0x0062A8E0, Attach @ 0x0062A980, UpdateAttack @ 0x00629FD0, Detach @ 0x0062A4A0}`; Naval+Organic update `0x006297F0`; `FootClass::AI @ 0x004DA530`; timer predicate `0x004DE770`; `FootClass::ReceiveDamage @ 0x004D7330`; `TechnoClass::Receive_Radio @ 0x006F4AB0`; invulnerability body `0x004DEAE4`; `SuperClass::Launch @ 0x006CC390`; `TechnoClass::PerformDeploy @ 0x00710000`; Teleport state machine `0x007192F0`; `UnitClass::PerCellProcess @ 0x00739EC0`; true chrono-erase manager `0x0071A760`, `0x0071AE50`, `0x0071AF20`.
 - Retail `ini/rulesmd.ini`: `[SQD]`, `[SquidGrab]`, `[SquidGrabE]`, `[SquidPunch]`, `[ParasitePlus]`, explicit `Parasiteable=` overrides, and `NavalTargeting` enum comments.
 - Current Rust: `src/rules/{object_type,warhead_type}.rs`; `src/sim/{projectile,game_entity,timer}.rs`; `src/sim/combat/{mod,combat_targeting}.rs`; `src/sim/world/{mod,lifecycle,world_hash}.rs`; `src/sim/{snapshot,docking/building_dock,superweapon/iron_curtain}.rs`; resolved terrain and live-object scheduler code cited above.
+
+## 16. Critic-5 Timer-Sentinel Correction (2026-08-27)
+
+**Investigation Mode:** exhaustive-slice
+
+**Claimed Scope:** the raw branch semantics of `0x004DE770`, its Unit vtable binding and Ship-setter consumption, native constructor state, and equivalence/delta against current Rust `CdTimer`.
+
+**Non-Scope:** Parasite damage/culling/removal, Chronosphere, IsLocomotor, and every other critic-5 finding. Those remain open exactly as Section 15 and the design state them.
+
+**Active in YR:** Yes. UnitClass vtable slot `+0x380` contains `0x004DE770`, and active Ship setter `0x0069F450` calls that slot as its second pre-write guard.
+
+### 16.1 Exact low-byte predicate
+
+Live `disassemble_function 0x004DE770` proves this exact sequence:
+
+```text
+duration = Foot[+0x6A8]
+start = Foot[+0x6A0]
+if start == -1:
+    return_low_byte(duration != 0)
+
+elapsed = g_CurrentFrameCounter.wrapping_sub(start)
+if elapsed >= duration:              // signed JGE
+    return_low_byte(false)
+
+remaining = duration.wrapping_sub(elapsed)
+return_low_byte(remaining != 0)
+```
+
+The `JZ 0x004DE79B` sentinel branch preserves EAX's loaded duration and reaches `TEST EAX,EAX; SETNZ`. It does not zero EAX. This is why `(-1,32767)` is active and `(-1,0)` is inactive. A negative nonzero raw duration is also active under the sentinel branch. The Ship caller at `0x0069F46E` observes only AL and aborts before its first coordinate write when AL is nonzero.
+
+For a non-sentinel start, subtraction wraps in 32 bits and the expiry comparison is signed. Exact equality takes `JGE` and is inactive. The subsequent nonzero test is retained as native ordering even though signed `elapsed < duration` already excludes bitwise equality.
+
+### 16.2 Binding, construction, and current Rust
+
+The Unit vtable CompleteObjectLocator chain is `0x007F5C6C -> 0x0080CC68`; `COL+0x0C @ 0x0080CC74 -> 0x00842D80`, whose TypeDescriptor string is `.?AVUnitClass@@`. Raw bytes at Unit vtable slot `0x007F5FF0` are `70 e7 4d 00`, binding slot `+0x380` to `0x004DE770`. `ShipLocomotionClass::Set_Destination @ 0x0069F450` calls it second, after `+0x37C` and before `+0x1D4/+0x1D8`, and performs no destination write on a nonzero result.
+
+`FootClass::Constructor @ 0x004D31E0` writes `g_CurrentFrameCounter` to `Foot+0x6A0` at `0x004D33F6..0x004D33FC`, then zero to `Foot+0x6A8` at `0x004D3402`. Native construction is therefore raw `(current frame, 0)`, not `(-1,0)`.
+
+Current `src/sim/timer.rs::CdTimer::remaining` already matches the helper for all raw pairs: the `start==-1` branch returns raw duration; the running branch uses wrapping subtraction, signed comparison, wrapping remainder, and zero after expiry. Consequently the exact Ship guard adapter is simply `foot_destination_delay.remaining(frame) != 0`; a dedicated predicate that forces the sentinel inactive would be wrong. The future field's planned use of `CdTimer::default()` remains a separate raw-state mismatch because that default is `(-1,0)` and the field is intended to be serialized and hashed.
+
+### 16.3 Coverage Ledger
+
+| Area / function / branch | Status | Evidence | What remains |
+|---|---|---|---|
+| helper boundary/body | verified | `get_function_by_address`, decompile, and disassembly `0x004DE770..0x004DE7A4` | none |
+| `start == -1` branch | verified | `0x004DE77C..0x004DE79F` | none |
+| running wrapping/signed branch | verified | `0x004DE781..0x004DE798` | none |
+| Unit vtable identity and slot binding | verified | raw reads `0x007F5C6C`, `0x0080CC74`, `0x00842D88`, `0x007F5FF0` | none |
+| Ship caller order/no-write rejection | verified | decompile/disassembly `0x0069F450..0x0069F4A9` | none |
+| native constructor raw pair | verified | disassembly `0x004D33F6..0x004D3402` | none |
+| current Rust predicate equivalence | verified | `src/sim/timer.rs::CdTimer::remaining` | no code change required for the predicate |
+| planned Rust raw initialization | conflict-needs-resolution | native constructor versus design `CdTimer::from_raw(-1,0)` | design/builder must use current-frame/zero construction |
+
+### 16.4 Open Questions — Final State
+
+- `[RESOLVED] TMR-01 — What is the exact helper boundary? -> 0x004DE770..0x004DE7A4.` (evidence: `get_function_by_address 0x004DE770`)
+- `[RESOLVED] TMR-02 — Does start=-1 force false? -> No; it jumps directly to a nonzero test of the loaded duration.` (evidence: `0x004DE77C..0x004DE79F`)
+- `[RESOLVED] TMR-03 — What does (-1,0) return? -> False.` (evidence: `TEST EAX,EAX; SETNZ @ 0x004DE79D..0x004DE79F`)
+- `[RESOLVED] TMR-04 — What does (-1,positive) return? -> True.` (evidence: same sentinel branch)
+- `[RESOLVED] TMR-05 — What does (-1,negative nonzero) return? -> True; the branch tests bits/nonzero, not sign.` (evidence: same sentinel branch)
+- `[RESOLVED] TMR-06 — How is elapsed formed? -> Signed dword frame minus start with native 32-bit wrap.` (evidence: `SUB ECX,EDX @ 0x004DE787`)
+- `[RESOLVED] TMR-07 — What comparison expires the timer? -> Signed elapsed >= duration.` (evidence: `CMP/JGE @ 0x004DE789..0x004DE78B`)
+- `[RESOLVED] TMR-08 — Is the exact boundary active? -> No; equality takes JGE and zeros EAX.` (evidence: `0x004DE789..0x004DE799`)
+- `[RESOLVED] TMR-09 — Is remaining arithmetic wrapping? -> Yes, native dword SUB; Rust uses wrapping_sub.` (evidence: `0x004DE78D`; `src/sim/timer.rs`)
+- `[RESOLVED] TMR-10 — Which return portion does Ship observe? -> AL only.` (evidence: call then `TEST AL,AL @ 0x0069F46E..0x0069F474`)
+- `[RESOLVED] TMR-11 — Which live class slot binds the helper? -> UnitClass vtable +0x380.` (evidence: COL/TypeDescriptor and raw slot `0x007F5FF0`)
+- `[RESOLVED] TMR-12 — Where is it ordered in the Ship setter? -> Second of four guards, before any destination write.` (evidence: `0x0069F450..0x0069F4A9`)
+- `[RESOLVED] TMR-13 — What raw pair does native construction install? -> (current frame,0).` (evidence: `0x004D33F6..0x004D3402`)
+- `[RESOLVED] TMR-14 — Does current CdTimer::remaining match the predicate? -> Yes for sentinel, running, wrapping, and expiry branches.` (evidence: `src/sim/timer.rs` versus `0x004DE770`)
+- `[RESOLVED] TMR-15 — Does current CdTimer::default match native raw construction? -> No; it is (-1,0), predicate-equivalent while inactive but byte/state-distinct.` (evidence: `src/sim/timer.rs`; `0x004D33F6..0x004D3402`)
+- `[RESOLVED] TMR-16 — Is this active for stock Ship destinations? -> Yes; stock naval Units use UnitClass ownership and the Ship setter calls the bound slot.` (evidence: Unit RTTI/vtable, `0x0069F450`, retail Ship set in Section 4)
+
+Adversarial cases are now answered: paused/raw positive and negative nonzero durations both reject; sentinel zero admits; running zero duration admits; exact expiry admits; frame wrap uses signed wrapped elapsed; and a newly constructed Foot begins at `(current frame,0)`. A cold second read of helper assembly, Unit slot bytes, constructor assembly, and the Ship caller added no further question after TMR-15 was recorded.
+
+### 16.5 Implementation handoff delta
+
+| Verified behavior | Evidence | Current Rust delta | Affected Rust surface | Required implementation effect | Acceptance scenario | Risk / do-not-do |
+|---|---|---|---|---|---|---|
+| Ship guard uses raw TimerStruct remaining semantics, including nonzero duration at start=-1 | `0x004DE770`; Unit slot `0x007F5FF0`; Ship caller `0x0069F450` | `CdTimer::remaining != 0` already matches; report/design predicate was wrong | existing report; Ship design; future recognized-Ship preflight | use `remaining(frame) != 0`; do not create a sentinel-forces-false adapter | `(-1,0)` admits; `(-1,32767)` and `(-1,-7)` reject; running exact expiry admits | Do not normalize or discard a restored nonzero paused remainder |
+| Native Foot construction writes raw `(current frame,0)` | `0x004D33F6..0x004D3402` | planned `CdTimer::default()` / `(-1,0)` is raw-state drift | future GameEntity/spawn initialization and snapshot/hash fixtures | initialize this field with the entity creation frame and zero duration | creation at frame 123 stores `(123,0)`, is inactive, round-trips and hashes that exact pair | Predicate-equivalent inactive state is not sufficient once raw fields are persisted/hashed |
+
+### 16.6 Stale design wording and annotation candidate
+
+The design's dedicated-adapter formula and `start=-1,duration=32767 is inactive` test must be replaced with Section 16.1's formula and cases. Its planned raw `(-1,0)` construction must be replaced with `(current creation frame,0)`. These corrections are not yet applied to the design in this research-only pass.
+
+| Address/source | Current metadata | Proposed metadata | Kind | Live proof | Status |
+|---|---|---|---|---|---|
+| `0x004DE770` | stale `TechnoClass__Fire` label | retain address/name pending complete shared-owner identity; add plate comment with raw `+0x6A0/+0x6A8` remaining semantics and Unit `+0x380` Ship use | comment candidate only | complete helper body, Unit RTTI/slot, Ship caller | reported-not-applied; synchronization not authorized |
+
+### Correction sources
+
+- Live Ghidra MCP, active `gamemd.exe`: `get_function_by_address`, `decompile_function`, and two cold `disassemble_function` reads of `0x004DE770`; decompile/disassembly `0x0069F450`; decompile and two assembly reads of `0x004D31E0`; xrefs to `0x004DE770`; raw memory at `0x007F5C6C`, `0x0080CC74`, `0x00842D88`, and `0x007F5FF0`.
+- Current Rust: `src/sim/timer.rs`.
