@@ -1,10 +1,10 @@
 # Phase 3 Ship Bridge Z Adjustment — Ghidra Research Report
 
-**Address(es):** `g_BridgeZ_Offset @ 0x00B0782C`; initializer `0x0069EBB0`; direct consumers `0x0069F4F2`, `0x006A06B7`, `0x006A0F58`  
-**Investigation Mode:** exhaustive-slice  
-**Claimed Scope:** the active-retail `ShipLocomotionClass` bridge-Z global, its complete static initialization and lifetime, every direct read/write, the stock naval types and map state that can reach each reader, the propagated movement effect, and the current Rust parity delta for Phase-3 GSI-04.03  
-**Non-Scope:** the separate Drive/Walk height globals; the complete Ship locomotor; generic bridge rendering; non-stock mods that set `IsTrain=` or `Passive=`  
-**Confidence:** High  
+**Address(es):** `g_BridgeZ_Offset @ 0x00B0782C`; initializer `0x0069EBB0`; direct consumers `0x0069F4F2`, `0x006A06B7`, `0x006A0F58`
+**Investigation Mode:** exhaustive-slice
+**Claimed Scope:** the active-retail `ShipLocomotionClass` bridge-Z global, its complete static initialization and lifetime, every direct read/write, the stock naval types and map state that can reach each reader, the propagated movement effect, and the current Rust parity delta for Phase-3 GSI-04.03
+**Non-Scope:** the separate Drive/Walk height globals; the complete Ship locomotor; generic bridge rendering; non-stock mods that set `IsTrain=` or `Passive=`
+**Confidence:** High
 **Active in YR:** Yes. The destination-Z and braking-distance readers are active for ordinary stock Ship-locomotor movement when the stored destination cell has `Cell+0x140 & 0x100`. The other `Process_Drive_Track` reader is compiled and reachable for mods, but inactive for all inspected stock retail naval types and maps because it requires `IsTrain=true` and stock supplies none.
 
 ## 1. Overview
