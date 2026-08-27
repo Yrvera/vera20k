@@ -584,10 +584,7 @@ fn produced_unit_unlimbo_entry(
     producer_id: u64,
     cell: (u16, u16),
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-) -> Option<(
-    ProductionUnitAdmission,
-    (u16, u16),
-)> {
+) -> Option<(ProductionUnitAdmission, (u16, u16))> {
     let resolved_cell = resolve_produced_unit_cell_coords(sim, cell)?;
     Some((
         produced_unit_unlimbo_entry_at_resolved_cell(
@@ -618,9 +615,11 @@ fn resolve_produced_unit_cell_coords(
         i32::from(requested.1),
     );
     let (coord, level, slope) = match selected {
-        crate::sim::cell_rect::CellRef::Real(cell) => {
-            ((i32::from(cell.rx), i32::from(cell.ry)), cell.level, cell.slope_type)
-        }
+        crate::sim::cell_rect::CellRef::Real(cell) => (
+            (i32::from(cell.rx), i32::from(cell.ry)),
+            cell.level,
+            cell.slope_type,
+        ),
         crate::sim::cell_rect::CellRef::Dummy { cell } => {
             let snapshot = cell.snapshot();
             (snapshot.coord, snapshot.level as u8, snapshot.slope_type)
@@ -634,10 +633,8 @@ fn resolve_produced_unit_cell_coords(
         .1
         .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
         .wrapping_add(crate::sim::cell_kernel::CELL_CENTER_LEPTONS);
-    let ground_z = crate::util::lepton::cellclass_ground_height_leptons(
-        level, slope, center_x, center_y,
-    )
-    .ok()?;
+    let ground_z =
+        crate::util::lepton::ground_height_leptons(level, slope, center_x, center_y).ok()?;
     let coords = crate::sim::cell_kernel::cell_center(
         crate::sim::cell_kernel::CellCoordinate {
             x: coord.0,
@@ -695,7 +692,10 @@ fn produced_unit_unlimbo_entry_at_resolved_cell(
     } else {
         MovementLayer::Ground
     };
-    let overlay_cell = sim.overlay_grid.as_ref().map(|grid| grid.cell(cell.0, cell.1));
+    let overlay_cell = sim
+        .overlay_grid
+        .as_ref()
+        .map(|grid| grid.cell(cell.0, cell.1));
     let overlay_id = overlay_cell
         .and_then(|overlay| overlay.overlay_id)
         .or(terrain_cell.bridge_facts.overlay_id);
@@ -710,8 +710,8 @@ fn produced_unit_unlimbo_entry_at_resolved_cell(
         && land_type != Some(required)
     {
         let tunnel_continues = land_type == Some(LandType::Tunnel);
-        let low_bridge_height_exception = matches!(overlay_id, Some(0xED | 0xEE))
-            && -1i8 != terrain_cell.level as i8;
+        let low_bridge_height_exception =
+            matches!(overlay_id, Some(0xED | 0xEE)) && -1i8 != terrain_cell.level as i8;
         if !tunnel_continues && !low_bridge_height_exception {
             return ProductionUnitAdmission::nonzero(7, layer);
         }
@@ -767,14 +767,12 @@ fn produced_unit_unlimbo_entry_at_resolved_cell(
                 return ProductionUnitAdmission::nonzero(7, layer);
             };
             let blocker_owner = sim.interner.resolve(blocker.owner);
-            let allied = crate::map::houses::are_houses_friendly(
-                &sim.house_alliances,
-                owner,
-                blocker_owner,
-            );
+            let allied =
+                crate::map::houses::are_houses_friendly(&sim.house_alliances, owner, blocker_owner);
 
             if blocker.category == EntityCategory::Structure {
-                let Some(blocker_type) = rules.object(sim.interner.resolve(blocker.type_ref)) else {
+                let Some(blocker_type) = rules.object(sim.interner.resolve(blocker.type_ref))
+                else {
                     return ProductionUnitAdmission::nonzero(7, layer);
                 };
                 if blocker_type.invisible_in_game {
@@ -858,9 +856,7 @@ fn produced_unit_unlimbo_entry_at_resolved_cell(
     // TerrainClass objects participate in the ground object list and are never
     // crushable in active retail data. Early rejection is result-equivalent for
     // this zero-only caller because no later arm can lower a nonzero result.
-    if layer == MovementLayer::Ground
-        && sim.production.terrain_object_cells.contains_key(&cell)
-    {
+    if layer == MovementLayer::Ground && sim.production.terrain_object_cells.contains_key(&cell) {
         return ProductionUnitAdmission::nonzero(7, layer);
     }
 
@@ -876,16 +872,18 @@ fn produced_unit_unlimbo_entry_at_resolved_cell(
         return ProductionUnitAdmission::nonzero(7, layer);
     }
 
-    let raw_bits = match layer {
-        MovementLayer::Ground => sim.substrate.raw_cell_occupation.ground_bits(cell.0, cell.1),
-        MovementLayer::Bridge => sim.substrate.raw_cell_occupation.deck_bits(cell.0, cell.1),
-        MovementLayer::Air | MovementLayer::Underground => 0,
-    } | sim.substrate.cell_occupation.vehicle_bits_ignoring(
-        cell.0,
-        cell.1,
-        layer,
-        produced_id,
-    );
+    let raw_bits =
+        match layer {
+            MovementLayer::Ground => sim
+                .substrate
+                .raw_cell_occupation
+                .ground_bits(cell.0, cell.1),
+            MovementLayer::Bridge => sim.substrate.raw_cell_occupation.deck_bits(cell.0, cell.1),
+            MovementLayer::Air | MovementLayer::Underground => 0,
+        } | sim
+            .substrate
+            .cell_occupation
+            .vehicle_bits_ignoring(cell.0, cell.1, layer, produced_id);
     let unit_bit = raw_bits & crate::sim::occupancy::VEHICLE_OCCUPATION_BIT != 0;
     if !crush_victims.is_empty() {
         if unit_bit {
@@ -919,13 +917,17 @@ fn produced_unit_unlimbo_entry_at_resolved_cell(
                 .substrate
                 .raw_cell_occupation
                 .infantry_owner(cell.0, cell.1, layer)
-                && sim.substrate.entities.get(infantry_id).is_some_and(|infantry| {
-                    crate::map::houses::are_houses_friendly(
-                        &sim.house_alliances,
-                        owner,
-                        sim.interner.resolve(infantry.owner),
-                    )
-                })
+                && sim
+                    .substrate
+                    .entities
+                    .get(infantry_id)
+                    .is_some_and(|infantry| {
+                        crate::map::houses::are_houses_friendly(
+                            &sim.house_alliances,
+                            owner,
+                            sim.interner.resolve(infantry.owner),
+                        )
+                    })
             {
                 return ProductionUnitAdmission::nonzero(2, layer);
             }
@@ -1192,7 +1194,12 @@ fn find_exact_exitcoord_spawn_cell(
     require_water: bool,
 ) -> Option<(u16, u16)> {
     let (lx, ly, _lz) = rules.object(structure_id)?.exit_coord?;
-    let cand = add_cell_offset(base_rx, base_ry, lepton_to_cell_round_nearest(lx), lepton_to_cell_round_nearest(ly))?;
+    let cand = add_cell_offset(
+        base_rx,
+        base_ry,
+        lepton_to_cell_round_nearest(lx),
+        lepton_to_cell_round_nearest(ly),
+    )?;
     if let Some(grid) = path_grid {
         if cand.0 >= grid.width()
             || cand.1 >= grid.height()
@@ -1837,11 +1844,7 @@ mod tests {
         layer: MovementLayer,
     ) {
         let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            stable_id,
-            type_id,
-            owner,
-            origin.0,
-            origin.1,
+            stable_id, type_id, owner, origin.0, origin.1,
         );
         entity.type_ref = sim.interner.intern(type_id);
         entity.owner = sim.interner.intern(owner);
@@ -1965,6 +1968,71 @@ mod tests {
             )
             .exact_zero(),
             "an otherwise-identical in-diamond control remains admissible"
+        );
+    }
+
+    #[test]
+    fn production_cell_center_uses_104_for_real_and_dummy_without_changing_xy() {
+        let mut sim = production_admission_sim();
+        let requested = (8, 8);
+        let flat = resolve_produced_unit_cell_coords(&sim, requested);
+        assert_eq!(flat, Some(requested));
+
+        let cell = sim
+            .resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(requested.0, requested.1)
+            .unwrap();
+        cell.level = 2;
+        cell.slope_type = 0;
+        assert_eq!(
+            crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                i32::from(requested.0) * 256 + 128,
+                i32::from(requested.1) * 256 + 128,
+            ),
+            Ok(208),
+        );
+        assert_eq!(
+            resolve_produced_unit_cell_coords(&sim, requested),
+            flat,
+            "GetCoords evaluates raised Z but the current production helper returns only X/Y",
+        );
+
+        sim.resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(requested.0, requested.1)
+            .unwrap()
+            .slope_type = 21;
+        assert_eq!(resolve_produced_unit_cell_coords(&sim, requested), None);
+
+        let dummy_grid = ResolvedTerrainGrid::from_cells(0, 0, Vec::new());
+        let mut dummy_sim = Simulation::default();
+        dummy_sim.resolved_terrain = Some(dummy_grid);
+        let dummy_request = (u16::MAX, 7);
+        let flat_dummy = resolve_produced_unit_cell_coords(&dummy_sim, dummy_request);
+        dummy_sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .test_set_dummy_cell_level_slope(2, 0);
+        assert_eq!(
+            resolve_produced_unit_cell_coords(&dummy_sim, dummy_request),
+            flat_dummy,
+            "shared-dummy GetCoords evaluates Level 2 as 208 but retains the same signed-center X/Y output",
+        );
+        dummy_sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .test_set_dummy_cell_level_slope(2, 21);
+        assert_eq!(
+            resolve_produced_unit_cell_coords(&dummy_sim, dummy_request),
+            None,
+            "the native-unsafe slope remains a Rust admission failure on the retained dummy too",
         );
     }
 
@@ -2102,9 +2170,11 @@ mod tests {
             bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
             bridge.bridge_facts.overlay_id = Some(0xED);
         }
-        sim.substrate
-            .raw_cell_occupation
-            .mark_ground(cell.0, cell.1, crate::sim::occupancy::VEHICLE_OCCUPATION_BIT);
+        sim.substrate.raw_cell_occupation.mark_ground(
+            cell.0,
+            cell.1,
+            crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+        );
         assert_eq!(
             admission(&sim),
             ProductionUnitAdmission::ExactZero {
@@ -2114,9 +2184,11 @@ mod tests {
             "BRIDGEB1 bypasses the restriction and ignores the occupied ground plane"
         );
 
-        sim.substrate
-            .raw_cell_occupation
-            .mark_deck(cell.0, cell.1, crate::sim::occupancy::VEHICLE_OCCUPATION_BIT);
+        sim.substrate.raw_cell_occupation.mark_deck(
+            cell.0,
+            cell.1,
+            crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+        );
         assert_eq!(
             admission(&sim),
             ProductionUnitAdmission::NonZero {
@@ -2133,10 +2205,7 @@ mod tests {
         let overlay_ini = crate::rules::ini_parser::IniFile::from_str(
             "[OverlayTypes]\n0=TESTWALL\n[TESTWALL]\nWall=yes\nCrushable=yes\nLand=Wall\n",
         );
-        let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(
-            &overlay_ini,
-            None,
-        );
+        let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&overlay_ini, None);
         let cell = (8, 8);
         let admission = |sim: &Simulation, type_id: &str| {
             produced_unit_unlimbo_entry_at_resolved_cell(
@@ -2325,12 +2394,11 @@ mod tests {
                 cell,
                 MovementLayer::Ground,
             );
-            sim.substrate.entities.get_mut(40).unwrap().building_gate =
-                Some(BuildingGateRuntime {
-                    phase,
-                    mission_18_active,
-                    ..BuildingGateRuntime::default()
-                });
+            sim.substrate.entities.get_mut(40).unwrap().building_gate = Some(BuildingGateRuntime {
+                phase,
+                mission_18_active,
+                ..BuildingGateRuntime::default()
+            });
             sim
         };
         let admission = |sim: &Simulation, type_id: &str| {
@@ -2587,13 +2655,8 @@ mod tests {
         );
 
         let mut enemy_infantry = production_admission_sim();
-        let mut infantry = crate::sim::game_entity::GameEntity::test_default(
-            70,
-            "E1",
-            "Russians",
-            cell.0,
-            cell.1,
-        );
+        let mut infantry =
+            crate::sim::game_entity::GameEntity::test_default(70, "E1", "Russians", cell.0, cell.1);
         infantry.category = EntityCategory::Infantry;
         infantry.owner = enemy_infantry.interner.intern("Russians");
         enemy_infantry.substrate.entities.insert(infantry);
@@ -2628,7 +2691,12 @@ mod tests {
             cell,
             MovementLayer::Ground,
         );
-        ordered_unit.substrate.entities.get_mut(71).unwrap().crushable = true;
+        ordered_unit
+            .substrate
+            .entities
+            .get_mut(71)
+            .unwrap()
+            .crushable = true;
         ordered_unit.substrate.raw_cell_occupation.mark_ground(
             cell.0,
             cell.1,
@@ -2677,15 +2745,7 @@ mod tests {
         let mut sim = production_admission_sim();
         set_admission_water_cell(&mut sim, (8, 8));
         let stable_id = sim
-            .create_production_object_limbo_at_height(
-                "DEST",
-                "Americans",
-                8,
-                8,
-                0x40,
-                0,
-                &rules,
-            )
+            .create_production_object_limbo_at_height("DEST", "Americans", 8, 8, 0x40, 0, &rules)
             .expect("held production Unit");
         assert_eq!(
             unlimbo_held_naval_unit(
@@ -2723,8 +2783,7 @@ mod tests {
                 bridge.bridge_deck_level = 7;
                 bridge.has_bridge_deck = true;
                 bridge.bridge_walkable = true;
-                bridge.bridge_facts.raw_flags =
-                    crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+                bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
             }
             sim.bridge_state = Some(
                 crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
@@ -2765,7 +2824,10 @@ mod tests {
         );
 
         let entity = sim.substrate.entities.get(stable_id).unwrap();
-        assert!(entity.on_bridge, "selected bridge admission establishes OnBridge");
+        assert!(
+            entity.on_bridge,
+            "selected bridge admission establishes OnBridge"
+        );
         assert_eq!(entity.position.z, 7, "native deck Z is CellClass Level+4");
         let occupancy = sim.substrate.occupancy.get(cell.0, cell.1).unwrap();
         assert_eq!(
@@ -2781,9 +2843,7 @@ mod tests {
             "mode-one Mark must not link the Unit into CellClass+0xE4"
         );
         assert_eq!(
-            sim.substrate
-                .raw_cell_occupation
-                .deck_bits(cell.0, cell.1)
+            sim.substrate.raw_cell_occupation.deck_bits(cell.0, cell.1)
                 & crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
             crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
         );
@@ -2795,19 +2855,15 @@ mod tests {
             0
         );
         assert_eq!(
-            sim.substrate.cell_occupation.vehicle_bits(
-                cell.0,
-                cell.1,
-                MovementLayer::Bridge,
-            ),
+            sim.substrate
+                .cell_occupation
+                .vehicle_bits(cell.0, cell.1, MovementLayer::Bridge,),
             crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
         );
         assert_eq!(
-            sim.substrate.cell_occupation.vehicle_bits(
-                cell.0,
-                cell.1,
-                MovementLayer::Ground,
-            ),
+            sim.substrate
+                .cell_occupation
+                .vehicle_bits(cell.0, cell.1, MovementLayer::Ground,),
             0
         );
 
@@ -2864,15 +2920,7 @@ mod tests {
         let mut sim = production_admission_sim();
         set_admission_water_cell(&mut sim, (8, 8));
         let stable_id = sim
-            .create_production_object_limbo_at_height(
-                "DEST",
-                "Americans",
-                8,
-                8,
-                0x40,
-                0,
-                &rules,
-            )
+            .create_production_object_limbo_at_height("DEST", "Americans", 8, 8, 0x40, 0, &rules)
             .expect("held production Unit");
         sim.substrate
             .entities

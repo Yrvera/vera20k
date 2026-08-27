@@ -319,7 +319,10 @@ use crate::sim::world::Simulation;
 // latches in native conceptual byte order.
 // Bumped 109 -> 110: persist active and stashed Drive/Ship locomotor slope
 // cache/global-frame timer state; the positional payload enum changed shape.
-const SNAPSHOT_VERSION: u32 = 110;
+// Bumped 110 -> 111: active-retail Cell ground is one 104-lepton numeric
+// authority rather than the false 90-lepton duplicate. Shape is unchanged,
+// but retained Cell targets/world state would resume with different Z results.
+const SNAPSHOT_VERSION: u32 = 111;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2612,7 +2615,7 @@ mod tests {
         let wrong_internal = GameSnapshotPreamble {
             product_magic: SNAPSHOT_PRODUCT_MAGIC,
             envelope_version: SNAPSHOT_ENVELOPE_VERSION,
-            version: SNAPSHOT_VERSION - 1,
+            version: 110,
         };
         let preamble_only = bincode::serialize(&wrong_internal).expect("schema-version preamble");
         assert!(matches!(
@@ -2620,7 +2623,7 @@ mod tests {
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
                 found,
-            }) if found == SNAPSHOT_VERSION - 1
+            }) if found == 110
         ));
     }
 
@@ -2728,10 +2731,12 @@ mod tests {
     /// 106 -> 107 adds the distinct BaseClass plan center; 107 -> 108 adds
     /// the three independent House deploy latches; 108 -> 109 adds House
     /// AutocreateAllowed and the complete House-update activation state;
-    /// 109 -> 110 adds active/stashed Drive/Ship slope-transition state.
+    /// 109 -> 110 adds active/stashed Drive/Ship slope-transition state;
+    /// 110 -> 111 rejects saves that would resume under the corrected one-
+    /// authority 104-lepton Cell ground formula despite unchanged wire shape.
     #[test]
-    fn phase3_drive_ship_slope_snapshot_version_is_110() {
-        assert_eq!(super::SNAPSHOT_VERSION, 110);
+    fn phase3_cell_ground_104_snapshot_version_is_111() {
+        assert_eq!(super::SNAPSHOT_VERSION, 111);
     }
 
     #[test]
@@ -2763,12 +2768,21 @@ mod tests {
 
         let before_hash = sim.state_hash();
         let before_rng = sim.scenario_rng.logical_state();
-        let before = sim.substrate.entities.get(1).unwrap().locomotor.as_ref().unwrap();
+        let before = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap();
         let active_before = before.runtime_payload.clone();
         let stashed_before = before.piggyback.clone();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "Drive Ship slope", 3);
-        let mut restored = GameSnapshot::load(&bytes).expect("current v110 slope snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("current v111 slope snapshot")
+            .sim;
         let loaded = restored
             .substrate
             .entities
@@ -2882,7 +2896,9 @@ mod tests {
                 GameSnapshot::read_header(&bytes).unwrap().version,
                 super::SNAPSHOT_VERSION
             );
-            let restored = GameSnapshot::load(&bytes).expect("current v110 snapshot").sim;
+            let restored = GameSnapshot::load(&bytes)
+                .expect("current v111 snapshot")
+                .sim;
             assert_eq!(restored.houses[&owner].ai_activation, latches);
         }
     }
@@ -3069,7 +3085,9 @@ mod tests {
             GameSnapshot::read_header(&bytes).unwrap().version,
             super::SNAPSHOT_VERSION
         );
-        let restored = GameSnapshot::load(&bytes).expect("current v110 snapshot").sim;
+        let restored = GameSnapshot::load(&bytes)
+            .expect("current v111 snapshot")
+            .sim;
         assert_eq!(restored.houses[&owner].base_plan.percent_built, -17);
         assert_eq!(restored.houses[&owner].base_plan.nodes.len(), 2);
         assert_eq!(restored.houses[&owner].base_plan.nodes[0].retry_count, -8);
@@ -5373,7 +5391,7 @@ mod tests {
             let target =
                 crate::sim::projectile::cell_target_coord(Some(&pristine_load_template), 1, 1);
             let cell = pristine_load_template.cell(1, 1).unwrap();
-            crate::util::lepton::cellclass_ground_height_leptons(
+            crate::util::lepton::ground_height_leptons(
                 cell.level,
                 cell.slope_type,
                 target.x,
@@ -5505,7 +5523,7 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(Some(restored_terrain), 1, 1).z,
             expected_ground_z,
-            "restored raw 0x100 clear removes +416 while retaining the 90-lepton ground kernel"
+            "restored raw 0x100 clear removes +416 while retaining the 104-lepton ground kernel"
         );
         assert_eq!(
             restored.state_hash(),
@@ -5561,7 +5579,7 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(restored.resolved_terrain.as_ref(), 1, 1,).z,
             expected_ground_z,
-            "accepted Resize keeps the restored real CellClass on the 90-lepton ground surface"
+            "accepted Resize keeps the restored real CellClass on the 104-lepton ground surface"
         );
         assert_eq!(
             restored.real_cell_bridge_flags_0x1180, serialized_cleared_authority,

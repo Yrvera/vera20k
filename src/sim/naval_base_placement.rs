@@ -171,12 +171,9 @@ fn first_yard_distance_accepts(
     let Some(cell) = terrain.cell(candidate.0, candidate.1) else {
         return false;
     };
-    let Ok(cell_z) = crate::util::lepton::cellclass_ground_height_leptons(
-        cell.level,
-        cell.slope_type,
-        cell_x,
-        cell_y,
-    ) else {
+    let Ok(cell_z) =
+        crate::util::lepton::ground_height_leptons(cell.level, cell.slope_type, cell_x, cell_y)
+    else {
         return false;
     };
 
@@ -687,14 +684,14 @@ mod tests {
             .exact_z_leptons = Some(0);
         assert!(
             !first_yard_distance_accepts(&sim, &distance_rules(0), &house, (10, 10), &elevated),
-            "CellClass 90-lepton terrain Z makes this nonzero despite identical 2D coordinates"
+            "CellClass 104-lepton terrain Z makes this nonzero despite identical 2D coordinates"
         );
         sim.substrate
             .entities
             .get_mut(30)
             .unwrap()
             .position
-            .exact_z_leptons = Some(90);
+            .exact_z_leptons = Some(104);
         assert!(first_yard_distance_accepts(
             &sim,
             &distance_rules(0),

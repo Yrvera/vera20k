@@ -36,17 +36,18 @@ The naval tail is at `HouseClass__AI_FindBasePlacement 0x005061BE..0x00506213`:
    the threshold is rejected to packed `(0,0)`.
 
 `CellClass__Get_Center_Coords @ 0x00480A30` returns signed-short cell X/Y multiplied by 256 plus
-128. Its Z is the CellClass terrain surface computed at subcell `(128,128)`. In the established
-Rust terrain model this is the CellClass 90-lepton-per-level domain, not the Techno object-ground
-104-lepton domain. `BuildingClass::GetCoords` starts from the Building's stored north-west anchor
+128. Its Z is the CellClass terrain surface computed at subcell `(128,128)`. Active-runtime
+capture in `PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md` corrects the
+earlier domain split: Cell owns a separately initialized scalar, but its active value is the same
+104 leptons as the other captured level-height globals. `BuildingClass::GetCoords` starts from the Building's stored north-west anchor
 coordinate, preserves its object Z, and adds `(foundation_width - 1) * 128` to X and
 `(foundation_height - 1) * 128` to Y. The same verified formula already appears in Rust's naval
 factory exit, radar, animation-owner, lifecycle, and combat coordinate consumers.
 `CoordStruct__Distance3D` uses the shared native approximate-square-root/f32/`ftol` pipeline
 already represented by `util::native_x87::distance_3d_leptons`.
 
-Therefore a cell-distance shortcut, 2D range, stored north-west-yard anchor, 104-lepton CellClass
-Z, or `>=` comparison is wrong.
+Therefore a cell-distance shortcut, 2D range, stored north-west-yard anchor, non-slope-aware
+CellClass Z, or `>=` comparison is wrong.
 
 ## 3. What the first construction-yard pointer means
 
@@ -124,7 +125,7 @@ The existing exact prerequisites are:
 
 - `find_nearby_passable_cell` including independently re-run native bridge projection;
 - `HouseState.base_center` (`+0x5490`) and `alternate_base_center` (`+0x5494`);
-- `cell_kernel::cell_center` plus `cellclass_ground_height_leptons` for CellClass coordinates;
+- `cell_kernel::cell_center` plus the common 104-authority `ground_height_leptons` for CellClass coordinates;
 - `native_x87::distance_3d_leptons` for the exact rounded distance.
 
 The missing state is the Rules lists/scalar, `AIBasePlanningSide`, immutable per-entity BuildConst

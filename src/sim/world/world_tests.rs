@@ -375,14 +375,7 @@ fn app_and_headless_frames_hash_identically_for_animation_progress() {
         TickLane::Ordinary,
         None,
     );
-    let headless = headless_sim.advance_tick(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        None,
-        None,
-        67,
-    );
+    let headless = headless_sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
 
     assert!(app.tick.frame_committed && headless.frame_committed);
     assert_eq!(app.tick.state_hash, headless.state_hash);
@@ -390,7 +383,11 @@ fn app_and_headless_frames_hash_identically_for_animation_progress() {
     let app_entity = app_sim.substrate.entities.get(1).expect("app infantry");
     assert_eq!(app_entity.facing, 128);
     assert_eq!(
-        app_entity.animation.as_ref().expect("app animation").sequence,
+        app_entity
+            .animation
+            .as_ref()
+            .expect("app animation")
+            .sequence,
         SequenceKind::Stand,
     );
     assert_eq!(
@@ -528,7 +525,11 @@ fn advance_tick_finishes_dying_infantry_from_rules_catalog() {
     let id = sim
         .spawn_object("E1", "Americans", 4, 4, 0, &rules, &empty_heights())
         .expect("spawn infantry");
-    let entity = sim.substrate.entities.get_mut(id).expect("spawned infantry");
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(id)
+        .expect("spawned infantry");
     entity.dying = true;
     entity.animation = Some(Animation {
         sequence: SequenceKind::Die1,
@@ -1176,14 +1177,14 @@ fn canonical_path_grid_snapshot_remains_pinned_after_publication() {
 
     assert!(pinned.is_walkable(0, 0));
     assert!(
-        !sim
-            .path_grid()
+        !sim.path_grid()
             .expect("published navigation")
             .is_walkable(0, 0)
     );
     assert!(!std::sync::Arc::ptr_eq(
         &pinned,
-        &sim.path_grid_snapshot().expect("second navigation snapshot")
+        &sim.path_grid_snapshot()
+            .expect("second navigation snapshot")
     ));
 }
 
@@ -1220,8 +1221,9 @@ fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
     sim.resolved_terrain = Some(terrain);
     let owner = sim.interner.intern("Americans");
     let type_ref = sim.interner.intern("GAREFN");
-    sim.substrate.entities.insert(
-        GameEntity::new_at_frame_zero_for_test(
+    sim.substrate
+        .entities
+        .insert(GameEntity::new_at_frame_zero_for_test(
             1,
             8,
             8,
@@ -1237,8 +1239,7 @@ fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
             0,
             0,
             false,
-        ),
-    );
+        ));
 
     assert!(sim.rebuild_dynamic_navigation(&rules));
     let grid = sim.path_grid().expect("published navigation");
@@ -2628,11 +2629,7 @@ fn sonic_tail_order_test_rules() -> RuleSet {
     .expect("Sonic Logic-tail ordering fixture")
 }
 
-fn sonic_fire_event(
-    sim: &mut Simulation,
-    attacker_id: u64,
-    target_id: u64,
-) -> SimFireEvent {
+fn sonic_fire_event(sim: &mut Simulation, attacker_id: u64, target_id: u64) -> SimFireEvent {
     SimFireEvent {
         attacker_id,
         attacker_type_ref: sim.interner.intern("DLPH"),
@@ -2773,8 +2770,8 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     let wave = sim.waves.get(wave_id).expect("registered Wave");
     assert_eq!(
         wave.target,
-        crate::sim::projectile::ProjectileCoord::new(-128, 1_920, 646),
-        "CellClass ground 2*90 plus structural +416 and Sonic +50",
+        crate::sim::projectile::ProjectileCoord::new(-128, 1_920, 674),
+        "CellClass ground 2*104 plus structural +416 and Sonic +50",
     );
     assert_eq!(process_dummy.snapshot().coord, (-1, 7));
 
@@ -2784,7 +2781,7 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     assert_eq!(
         context.target_position,
         Some(crate::sim::projectile::ProjectileCoord::new(
-            -128, 1_920, 596,
+            -128, 1_920, 624,
         )),
         "every live refresh re-enters GetCellClass then GetTargetCoords",
     );
@@ -2798,7 +2795,7 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     sim.visit_combat_appended_wave_tail(&BTreeSet::new(), &rules, None);
     let wave = sim.waves.get(wave_id).expect("Wave survives first live AI");
     assert_eq!(wave.lifetime, 99);
-    assert_eq!(wave.target.z, 646);
+    assert_eq!(wave.target.z, 674);
     assert_eq!(
         process_dummy.snapshot().coord,
         (0, 6),
@@ -2962,7 +2959,11 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
         .expect("bridge receiver");
     for id in [dolphin_id, receiver_id] {
         sim.remove_entity_occupancy(id);
-        sim.substrate.entities.get_mut(id).expect("live entity").on_bridge = true;
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .expect("live entity")
+            .on_bridge = true;
         sim.add_entity_occupancy(id);
     }
     assert!(crate::sim::combat::issue_attack_cell_command(
@@ -2982,10 +2983,13 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
         .get(&dolphin_id)
         .expect("cell FireAt registered its Wave");
     let wave = sim.waves.get(wave_id).expect("same-frame Wave survives");
-    assert_eq!(wave.lifetime, 99, "the appended tail ran in the firing pass");
     assert_eq!(
-        wave.target.z, 646,
-        "level 2 CellClass target is 2*90 + structural 416 + Sonic 50",
+        wave.lifetime, 99,
+        "the appended tail ran in the firing pass"
+    );
+    assert_eq!(
+        wave.target.z, 674,
+        "level 2 CellClass target is 2*104 + structural 416 + Sonic 50",
     );
     assert_eq!(
         sim.substrate
@@ -2995,7 +2999,7 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
             .health
             .current,
         90,
-        "Wave Z 646 meets the level-2 equality threshold 624 and walks AltObject",
+        "Wave Z 674 meets the level-2 equality threshold 624 and walks AltObject",
     );
 }
 
@@ -9028,8 +9032,7 @@ fn diag_short_range_group_reservation_trace() {
 
 #[test]
 fn rule_handles_resolve_at_init_and_stay_none_for_unresolved_fixtures() {
-    let rules =
-        RuleSet::from_ini(&IniFile::from_str("")).expect("empty rules fixture parses");
+    let rules = RuleSet::from_ini(&IniFile::from_str("")).expect("empty rules fixture parses");
 
     // Init-path resolution pins the canonical warhead names.
     let mut init_sim = Simulation::new();
@@ -9072,7 +9075,10 @@ fn current_rust_frame_call_order_is_preserved() {
         &sim,
         "Americans",
         sim.session.tick + 2,
-        Command::Select { entity_ids: vec![1], additive: false },
+        Command::Select {
+            entity_ids: vec![1],
+            additive: false,
+        },
     );
     sim.queue_command(select);
 
@@ -9134,7 +9140,10 @@ fn runtime_frame_call_order_matches_the_app_seam() {
         &sim,
         "Americans",
         sim.session.tick + 2,
-        Command::Select { entity_ids: vec![1], additive: false },
+        Command::Select {
+            entity_ids: vec![1],
+            additive: false,
+        },
     );
     let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(sim);
     runtime.simulation.queue_command(select);
@@ -9147,7 +9156,12 @@ fn runtime_frame_call_order_matches_the_app_seam() {
     let output = runtime.advance_frame(&due, 16, TickLane::Ordinary);
     assert!(output.tick.frame_committed);
     assert!(
-        runtime.simulation.substrate.entities.get(1).is_some_and(|e| e.selected),
+        runtime
+            .simulation
+            .substrate
+            .entities
+            .get(1)
+            .is_some_and(|e| e.selected),
         "a due command executes in the runtime frame that drained it"
     );
     assert!(runtime.simulation.take_due_commands().is_empty());
@@ -9168,27 +9182,49 @@ fn debug_toggle_updates_existing_and_future_entities() {
         .spawn_object("GACNST", "Player", 5, 5, 0, &rules, &height_map)
         .expect("existing spawn");
     assert!(
-        sim.entities().get(existing).expect("existing").debug_log.is_none(),
+        sim.entities()
+            .get(existing)
+            .expect("existing")
+            .debug_log
+            .is_none(),
         "logging starts disabled"
     );
 
     sim.set_debug_event_logging(true);
     assert!(
-        sim.entities().get(existing).expect("existing").debug_log.is_some(),
+        sim.entities()
+            .get(existing)
+            .expect("existing")
+            .debug_log
+            .is_some(),
         "enabling allocates a log on the existing entity"
     );
     let future = sim
         .spawn_object("GACNST", "Player", 9, 9, 0, &rules, &height_map)
         .expect("future spawn");
     assert!(
-        sim.entities().get(future).expect("future").debug_log.is_some(),
+        sim.entities()
+            .get(future)
+            .expect("future")
+            .debug_log
+            .is_some(),
         "an entity spawned after enabling logs from the spawn flag"
     );
 
     sim.set_debug_event_logging(false);
-    assert!(sim.entities().get(existing).expect("existing").debug_log.is_none());
     assert!(
-        sim.entities().get(future).expect("future").debug_log.is_none(),
+        sim.entities()
+            .get(existing)
+            .expect("existing")
+            .debug_log
+            .is_none()
+    );
+    assert!(
+        sim.entities()
+            .get(future)
+            .expect("future")
+            .debug_log
+            .is_none(),
         "disabling clears every entity's log"
     );
 }
