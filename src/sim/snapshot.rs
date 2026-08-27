@@ -324,7 +324,9 @@ use crate::sim::world::Simulation;
 // Bumped 111 -> 112: active-retail Cell ground is one 104-lepton numeric
 // authority rather than the false 90-lepton duplicate. Shape is unchanged,
 // but retained Cell targets/world state would resume with different Z results.
-const SNAPSHOT_VERSION: u32 = 112;
+// Bumped 112 -> 113: shared-dummy level/slope becomes unconditional hash
+// authority now that active Spark ground and collision queries consume it.
+const SNAPSHOT_VERSION: u32 = 113;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2617,7 +2619,7 @@ mod tests {
         let wrong_internal = GameSnapshotPreamble {
             product_magic: SNAPSHOT_PRODUCT_MAGIC,
             envelope_version: SNAPSHOT_ENVELOPE_VERSION,
-            version: 110,
+            version: 111,
         };
         let preamble_only = bincode::serialize(&wrong_internal).expect("schema-version preamble");
         assert!(matches!(
@@ -2625,7 +2627,7 @@ mod tests {
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
                 found,
-            }) if found == 110
+            }) if found == 111
         ));
     }
 
@@ -2735,10 +2737,11 @@ mod tests {
     /// plan center; 108 -> 109 adds the three House AI activation latches;
     /// 109 -> 110 adds House AutocreateAllowed; 110 -> 111 adds active/stashed
     /// Drive/Ship slope-transition state; 111 -> 112 adopts the corrected
-    /// one-authority 104-lepton Cell ground formula.
+    /// one-authority 104-lepton Cell ground formula; 112 -> 113 adds shared-
+    /// dummy level/slope hash authority for active Spark queries.
     #[test]
-    fn phase3_combined_snapshot_version_is_112() {
-        assert_eq!(super::SNAPSHOT_VERSION, 112);
+    fn phase3_combined_snapshot_version_is_113() {
+        assert_eq!(super::SNAPSHOT_VERSION, 113);
     }
 
     #[test]

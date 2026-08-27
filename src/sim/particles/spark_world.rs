@@ -6,18 +6,20 @@
 
 use thiserror::Error;
 
-use super::spark::{SparkCollisionFacts, SparkMotionStep, lepton_to_cell_trunc};
+use super::spark::{
+    SparkCollisionFacts, SparkKernelError, SparkMotionStep, bridge_collision_kind,
+    classify_collision_kind, in_contact_band,
+};
+use crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
 use crate::map::entities::EntityCategory;
-use crate::map::resolved_terrain::ResolvedTerrainCell;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::foundation::foundation_dimensions;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::cell_rect::{CELL_ROW_STRIDE, cell_linear_index};
+use crate::sim::cell_rect::{CellRef, get_cellclass_fallback_leptons};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::world::Simulation;
 use crate::util::lepton::{UnsupportedGroundSlope, ground_height_leptons};
 use crate::util::native_x87::NativeF32Bits;
-
-const CELL_AXIS_MASK: i64 = CELL_ROW_STRIDE - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SparkWorldError {
@@ -25,17 +27,6 @@ pub enum SparkWorldError {
     MissingTerrain,
     #[error("Spark collision requires the mutable overlay grid")]
     MissingOverlayGrid,
-    #[error("native cell lookup ({x}, {y}) falls outside the fixed cell array")]
-    OutOfRangeCell { x: i32, y: i32 },
-    #[error(
-        "native cell lookup ({x}, {y}) resolves to unavailable canonical cell ({canonical_x}, {canonical_y})"
-    )]
-    UnavailableCell {
-        x: i32,
-        y: i32,
-        canonical_x: u16,
-        canonical_y: u16,
-    },
     #[error("overlay state is unavailable at canonical cell ({rx}, {ry})")]
     UnavailableOverlayCell { rx: u16, ry: u16 },
     #[error("slope type {0} is outside the verified 0..=20 table")]
@@ -50,6 +41,65 @@ pub enum SparkWorldError {
     MissingObjectType(u64),
     #[error("building entity {0} needs unmodelled LaserFence connectivity state")]
     UnsupportedLaserFence(u64),
+    #[error(transparent)]
+    Kernel(#[from] SparkKernelError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SparkCellSelectionRole {
+    Ground,
+    Cell,
+    Slope,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedSparkCell<'a> {
+    role: SparkCellSelectionRole,
+    cell: CellRef<'a>,
+}
+
+fn select_cell<'a>(
+    terrain: &'a ResolvedTerrainGrid,
+    role: SparkCellSelectionRole,
+    world_x: i32,
+    world_y: i32,
+) -> SelectedSparkCell<'a> {
+    SelectedSparkCell {
+        role,
+        cell: get_cellclass_fallback_leptons(Some(terrain), world_x, world_y),
+    }
+}
+
+fn ground_height_for_selection(
+    selection: &SelectedSparkCell<'_>,
+    world_x: i32,
+    world_y: i32,
+) -> Result<i32, SparkWorldError> {
+    debug_assert_eq!(selection.role, SparkCellSelectionRole::Ground);
+    let (level, slope_type) = match &selection.cell {
+        CellRef::Real(cell) => (cell.level, cell.slope_type),
+        CellRef::Dummy { cell } => {
+            let snapshot = cell.snapshot();
+            (snapshot.level as u8, snapshot.slope_type)
+        }
+    };
+    ground_height_leptons(level, slope_type, world_x, world_y)
+        .map_err(|UnsupportedGroundSlope(slope)| SparkWorldError::UnsupportedSlope(slope))
+}
+
+/// Constructor-only terrain query. Missing terrain retains the pre-existing
+/// no-floor policy; with terrain present, a native miss returns the live dummy
+/// and therefore still produces a ground height.
+pub(super) fn constructor_ground_height(
+    sim: &Simulation,
+    world_x: i32,
+    world_y: i32,
+) -> Result<Option<i32>, SparkWorldError> {
+    let Some(terrain) = sim.resolved_terrain.as_ref() else {
+        return Ok(None);
+    };
+    let selected = select_cell(terrain, SparkCellSelectionRole::Ground, world_x, world_y);
+    ground_height_for_selection(&selected, world_x, world_y).map(Some)
 }
 
 /// Concrete read-only view over the live simulation state Spark collision reads.
@@ -63,107 +113,176 @@ impl<'a> SparkCollisionWorld<'a> {
         if sim.resolved_terrain.is_none() {
             return Err(SparkWorldError::MissingTerrain);
         }
-        if sim.overlay_grid.is_none() {
-            return Err(SparkWorldError::MissingOverlayGrid);
-        }
         Ok(Self { sim, rules })
     }
 
     /// Gather every native collision input before the owner borrows mutable RNG.
     pub fn query(&self, motion: SparkMotionStep) -> Result<SparkCollisionFacts, SparkWorldError> {
-        let (old_rx, old_ry, old_cell) =
-            self.cell_for_world_coords(motion.old_coords.x, motion.old_coords.y)?;
-        let (candidate_rx, candidate_ry, candidate_cell) =
-            self.cell_for_world_coords(motion.candidate_coords.x, motion.candidate_coords.y)?;
-
-        let old_has_structural_bridge = self.live_structural_bridge(old_rx, old_ry, old_cell)?;
-        let candidate_has_structural_bridge =
-            self.live_structural_bridge(candidate_rx, candidate_ry, candidate_cell)?;
-        let accepted_building = self.accepted_building(candidate_rx, candidate_ry)?;
-        let overlay = self
-            .sim
-            .overlay_grid
-            .as_ref()
-            .ok_or(SparkWorldError::MissingOverlayGrid)?;
-        if candidate_rx >= overlay.width() || candidate_ry >= overlay.height() {
-            return Err(SparkWorldError::UnavailableOverlayCell {
-                rx: candidate_rx,
-                ry: candidate_ry,
-            });
-        }
-
-        Ok(SparkCollisionFacts {
-            ground_z: ground_height_leptons(
-                candidate_cell.level,
-                candidate_cell.slope_type,
-                motion.candidate_coords.x,
-                motion.candidate_coords.y,
-            )
-            .map_err(|UnsupportedGroundSlope(slope)| SparkWorldError::UnsupportedSlope(slope))?,
-            slope_matrix: slope_matrix(candidate_cell.slope_type)?,
-            old_has_structural_bridge,
-            candidate_has_structural_bridge,
-            accepted_building,
-            wall_overlay_id: overlay.cell(candidate_rx, candidate_ry).overlay_id,
-        })
-    }
-
-    /// `CellClass::GetGroundHeight` at one world coordinate.
-    ///
-    /// `ParticleClass::Constructor @ 0x0062B5E0` floors a new particle's Z on
-    /// this before `Set_Raw_Coords`, so the spawn path needs it without
-    /// building a whole motion step. `None` when the coordinate has no
-    /// resolved cell, which the caller treats as "no floor".
-    pub(super) fn ground_height_at(&self, world_x: i32, world_y: i32) -> Option<i32> {
-        let (_, _, cell) = self.cell_for_world_coords(world_x, world_y).ok()?;
-        ground_height_leptons(cell.level, cell.slope_type, world_x, world_y).ok()
-    }
-
-    fn cell_for_world_coords(
-        &self,
-        world_x: i32,
-        world_y: i32,
-    ) -> Result<(u16, u16, &ResolvedTerrainCell), SparkWorldError> {
-        let x = lepton_to_cell_trunc(world_x);
-        let y = lepton_to_cell_trunc(world_y);
-        let Some((canonical_x, canonical_y)) = canonical_cell(x, y) else {
-            return Err(SparkWorldError::OutOfRangeCell { x, y });
-        };
         let terrain = self
             .sim
             .resolved_terrain
             .as_ref()
             .ok_or(SparkWorldError::MissingTerrain)?;
-        let cell =
-            terrain
-                .cell(canonical_x, canonical_y)
-                .ok_or(SparkWorldError::UnavailableCell {
-                    x,
-                    y,
-                    canonical_x,
-                    canonical_y,
-                })?;
-        Ok((canonical_x, canonical_y, cell))
+        self.query_with_selector(motion, |role, x, y| select_cell(terrain, role, x, y))
+    }
+
+    #[cfg(test)]
+    pub(super) fn query_with_transcript(
+        &self,
+        motion: SparkMotionStep,
+    ) -> Result<(SparkCollisionFacts, Vec<(SparkCellSelectionRole, i32, i32)>), SparkWorldError>
+    {
+        let terrain = self
+            .sim
+            .resolved_terrain
+            .as_ref()
+            .ok_or(SparkWorldError::MissingTerrain)?;
+        let mut transcript = Vec::new();
+        let facts = self.query_with_selector(motion, |role, x, y| {
+            transcript.push((role, x, y));
+            select_cell(terrain, role, x, y)
+        })?;
+        Ok((facts, transcript))
+    }
+
+    fn query_with_selector<F>(
+        &self,
+        motion: SparkMotionStep,
+        mut select: F,
+    ) -> Result<SparkCollisionFacts, SparkWorldError>
+    where
+        F: FnMut(SparkCellSelectionRole, i32, i32) -> SelectedSparkCell<'a>,
+    {
+        let candidate_ground = select(
+            SparkCellSelectionRole::Ground,
+            motion.candidate_coords.x,
+            motion.candidate_coords.y,
+        );
+        let ground_z = ground_height_for_selection(
+            &candidate_ground,
+            motion.candidate_coords.x,
+            motion.candidate_coords.y,
+        )?;
+
+        let candidate_cell = select(
+            SparkCellSelectionRole::Cell,
+            motion.candidate_coords.x,
+            motion.candidate_coords.y,
+        );
+        let candidate_has_structural_bridge = self.live_structural_bridge(&candidate_cell)?;
+        let old_has_structural_bridge = if candidate_has_structural_bridge {
+            false
+        } else {
+            let old_cell = select(
+                SparkCellSelectionRole::Cell,
+                motion.old_coords.x,
+                motion.old_coords.y,
+            );
+            self.live_structural_bridge(&old_cell)?
+        };
+
+        let bridge_kind = bridge_collision_kind(
+            motion,
+            ground_z,
+            old_has_structural_bridge,
+            candidate_has_structural_bridge,
+        );
+        let mut accepted_building = false;
+        let mut wall_overlay_id = None;
+        if bridge_kind.is_none() && in_contact_band(motion, ground_z)? {
+            accepted_building = self.accepted_building_for_selection(&candidate_cell)?;
+            if !accepted_building {
+                wall_overlay_id = self.wall_overlay_for_selection(&candidate_cell)?;
+            }
+        }
+
+        let mut facts = SparkCollisionFacts {
+            ground_z,
+            slope_matrix: None,
+            old_has_structural_bridge,
+            candidate_has_structural_bridge,
+            accepted_building,
+            wall_overlay_id,
+        };
+        if classify_collision_kind(motion, facts)?.is_some() {
+            let candidate_slope = select(
+                SparkCellSelectionRole::Slope,
+                motion.candidate_coords.x,
+                motion.candidate_coords.y,
+            );
+            facts.slope_matrix = Some(self.slope_matrix_for_selection(&candidate_slope)?);
+        }
+        Ok(facts)
     }
 
     fn live_structural_bridge(
         &self,
-        rx: u16,
-        ry: u16,
-        cell: &ResolvedTerrainCell,
+        selection: &SelectedSparkCell<'_>,
     ) -> Result<bool, SparkWorldError> {
-        if !cell.bridge_facts.has_structural_bridge() {
-            return Ok(false);
+        debug_assert_eq!(selection.role, SparkCellSelectionRole::Cell);
+        match &selection.cell {
+            CellRef::Dummy { cell } => {
+                Ok(cell.snapshot().bridge_flags_0x1180 & BRIDGE_FLAG_STRUCTURAL != 0)
+            }
+            CellRef::Real(cell) => {
+                if !cell.bridge_facts.has_structural_bridge() {
+                    return Ok(false);
+                }
+                let (rx, ry) = (cell.rx, cell.ry);
+                let state = self
+                    .sim
+                    .bridge_state
+                    .as_ref()
+                    .ok_or(SparkWorldError::MissingBridgeRuntimeState { rx, ry })?;
+                let runtime = state
+                    .cell(rx, ry)
+                    .ok_or(SparkWorldError::MissingBridgeRuntimeCell { rx, ry })?;
+                Ok(runtime.deck_present)
+            }
         }
-        let state = self
-            .sim
-            .bridge_state
-            .as_ref()
-            .ok_or(SparkWorldError::MissingBridgeRuntimeState { rx, ry })?;
-        let runtime = state
-            .cell(rx, ry)
-            .ok_or(SparkWorldError::MissingBridgeRuntimeCell { rx, ry })?;
-        Ok(runtime.deck_present)
+    }
+
+    fn accepted_building_for_selection(
+        &self,
+        selection: &SelectedSparkCell<'_>,
+    ) -> Result<bool, SparkWorldError> {
+        match &selection.cell {
+            CellRef::Dummy { .. } => Ok(false),
+            CellRef::Real(cell) => self.accepted_building(cell.rx, cell.ry),
+        }
+    }
+
+    fn wall_overlay_for_selection(
+        &self,
+        selection: &SelectedSparkCell<'_>,
+    ) -> Result<Option<u8>, SparkWorldError> {
+        match &selection.cell {
+            CellRef::Dummy { .. } => Ok(None),
+            CellRef::Real(cell) => {
+                let (rx, ry) = (cell.rx, cell.ry);
+                let overlay = self
+                    .sim
+                    .overlay_grid
+                    .as_ref()
+                    .ok_or(SparkWorldError::MissingOverlayGrid)?;
+                if rx >= overlay.width() || ry >= overlay.height() {
+                    return Err(SparkWorldError::UnavailableOverlayCell { rx, ry });
+                }
+                Ok(overlay.cell(rx, ry).overlay_id)
+            }
+        }
+    }
+
+    fn slope_matrix_for_selection(
+        &self,
+        selection: &SelectedSparkCell<'_>,
+    ) -> Result<[NativeF32Bits; 12], SparkWorldError> {
+        debug_assert_eq!(selection.role, SparkCellSelectionRole::Slope);
+        let slope_type = match &selection.cell {
+            CellRef::Real(cell) => cell.slope_type,
+            CellRef::Dummy { cell } => cell.snapshot().slope_type,
+        };
+        slope_matrix(slope_type)
     }
 
     fn accepted_building(&self, rx: u16, ry: u16) -> Result<bool, SparkWorldError> {
@@ -198,14 +317,6 @@ impl<'a> SparkCollisionWorld<'a> {
         }
         Ok(false)
     }
-}
-
-fn canonical_cell(x: i32, y: i32) -> Option<(u16, u16)> {
-    let index = cell_linear_index(x, y)?;
-    Some((
-        (index & CELL_AXIS_MASK) as u16,
-        (index / CELL_ROW_STRIDE) as u16,
-    ))
 }
 
 macro_rules! matrix {
@@ -374,10 +485,18 @@ pub(super) mod tests {
     }
 
     fn motion_at(x: i32, y: i32) -> SparkMotionStep {
+        motion_between(IVec3::new(x, y, 100), IVec3::new(x, y, 100))
+    }
+
+    fn motion_between(old_coords: IVec3, candidate_coords: IVec3) -> SparkMotionStep {
         SparkMotionStep {
-            old_coords: IVec3::new(x, y, 100),
-            candidate_coords: IVec3::new(x, y, 100),
-            candidate_f32: [NativeF32Bits::POSITIVE_ZERO; 3],
+            old_coords,
+            candidate_coords,
+            candidate_f32: [
+                NativeF32Bits::from_bits((candidate_coords.x as f32).to_bits()),
+                NativeF32Bits::from_bits((candidate_coords.y as f32).to_bits()),
+                NativeF32Bits::from_bits((candidate_coords.z as f32).to_bits()),
+            ],
             persistent_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
             probe_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
         }
@@ -427,10 +546,15 @@ pub(super) mod tests {
 
     #[test]
     fn fixed_stride_lookup_preserves_native_aliasing() {
-        assert_eq!(canonical_cell(0, 0), Some((0, 0)));
-        assert_eq!(canonical_cell(512, -1), Some((0, 0)));
-        assert_eq!(canonical_cell(-1, 1), Some((511, 0)));
-        assert_eq!(canonical_cell(-1, 0), None);
+        let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![terrain_cell(0, 0)]);
+        assert!(matches!(
+            select_cell(&terrain, SparkCellSelectionRole::Cell, 512 * 256, -256).cell,
+            CellRef::Real(_)
+        ));
+        assert!(matches!(
+            select_cell(&terrain, SparkCellSelectionRole::Cell, -256, 0).cell,
+            CellRef::Dummy { .. }
+        ));
     }
 
     #[test]
@@ -477,7 +601,7 @@ pub(super) mod tests {
             .unwrap()
             .query(motion_at(0, 0))
             .unwrap();
-        assert!(intact.old_has_structural_bridge);
+        assert!(!intact.old_has_structural_bridge);
         assert!(intact.candidate_has_structural_bridge);
 
         sim.bridge_state
@@ -499,12 +623,254 @@ pub(super) mod tests {
         let mut cell = terrain_cell(0, 0);
         cell.level = 2;
         let sim = one_cell_sim(cell);
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .shared_cell_dummy()
+            .stamp_coord(77, -9);
         let rules = empty_rules();
         let aliased = SparkCollisionWorld::new(&sim, &rules)
             .unwrap()
             .query(motion_at(512 * 256, -256))
             .unwrap();
         assert_eq!(aliased.ground_z, 208);
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .shared_cell_dummy()
+                .snapshot()
+                .coord,
+            (77, -9),
+            "a fixed-stride real alias leaves the dummy untouched"
+        );
+    }
+
+    #[test]
+    fn gsi_04_03_production_selection_seam_records_native_query_transcript() {
+        let sim = one_cell_sim(terrain_cell(0, 0));
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let motion = motion_between(IVec3::new(0, 0, 200), IVec3::new(256, 0, 200));
+        let mut transcript = Vec::new();
+
+        let facts = world
+            .query_with_selector(motion, |role, x, y| {
+                transcript.push((role, x, y));
+                select_cell(terrain, role, x, y)
+            })
+            .unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 256, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+                (SparkCellSelectionRole::Cell, 0, 0),
+            ]
+        );
+        assert!(
+            facts.slope_matrix.is_none(),
+            "no collision performs no slope lookup"
+        );
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (1, 0));
+    }
+
+    #[test]
+    fn gsi_04_03_collision_reselects_candidate_slope_after_old_cell_lookup() {
+        let sim = one_cell_sim(terrain_cell(0, 0));
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let motion = motion_between(IVec3::new(0, 0, 20), IVec3::new(256, 0, -100));
+        let mut transcript = Vec::new();
+
+        let facts = world
+            .query_with_selector(motion, |role, x, y| {
+                transcript.push((role, x, y));
+                select_cell(terrain, role, x, y)
+            })
+            .unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 256, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+                (SparkCellSelectionRole::Cell, 0, 0),
+                (SparkCellSelectionRole::Slope, 256, 0),
+            ]
+        );
+        assert!(facts.slope_matrix.is_some());
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (1, 0));
+    }
+
+    #[test]
+    fn gsi_04_03_candidate_and_old_dummy_no_collision_finishes_with_old_stamp() {
+        let sim = one_cell_sim(terrain_cell(0, 0));
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let motion = motion_between(IVec3::new(512, 0, 200), IVec3::new(256, 0, 200));
+        let mut transcript = Vec::new();
+
+        let facts = world
+            .query_with_selector(motion, |role, x, y| {
+                transcript.push((role, x, y));
+                select_cell(terrain, role, x, y)
+            })
+            .unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 256, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+                (SparkCellSelectionRole::Cell, 512, 0),
+            ]
+        );
+        assert!(facts.slope_matrix.is_none());
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (2, 0));
+    }
+
+    #[test]
+    fn gsi_04_03_candidate_real_old_dummy_retains_real_candidate_view() {
+        let sim = one_cell_sim(terrain_cell(0, 0));
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let motion = motion_between(IVec3::new(256, 0, 200), IVec3::new(0, 0, 200));
+        let mut transcript = Vec::new();
+
+        let facts = world
+            .query_with_selector(motion, |role, x, y| {
+                transcript.push((role, x, y));
+                select_cell(terrain, role, x, y)
+            })
+            .unwrap();
+
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 0, 0),
+                (SparkCellSelectionRole::Cell, 0, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+            ]
+        );
+        assert!(!facts.candidate_has_structural_bridge);
+        assert_eq!(terrain.shared_cell_dummy().snapshot().coord, (1, 0));
+    }
+
+    #[test]
+    fn gsi_04_03_dummy_structural_no_crossing_skips_old_and_slope_selection() {
+        let mut sim = one_cell_sim(terrain_cell(0, 0));
+        sim.overlay_grid = None;
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        terrain
+            .shared_cell_dummy()
+            .set_bridge_flags_0x1180(BRIDGE_FLAG_STRUCTURAL);
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+        let motion = motion_between(IVec3::new(0, 0, 0), IVec3::new(256, 0, 300));
+        let mut transcript = Vec::new();
+
+        let facts = world
+            .query_with_selector(motion, |role, x, y| {
+                transcript.push((role, x, y));
+                select_cell(terrain, role, x, y)
+            })
+            .unwrap();
+
+        assert!(facts.candidate_has_structural_bridge);
+        assert!(!facts.old_has_structural_bridge);
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 256, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+            ]
+        );
+        assert!(facts.slope_matrix.is_none());
+    }
+
+    #[test]
+    fn gsi_04_03_overlay_and_slope_dependencies_are_lazy() {
+        let mut sim = one_cell_sim(terrain_cell(0, 0));
+        sim.overlay_grid = None;
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+
+        let clear = world
+            .query(motion_between(IVec3::new(0, 0, 200), IVec3::new(0, 0, 200)))
+            .unwrap();
+        assert!(clear.slope_matrix.is_none());
+
+        assert_eq!(
+            world.query(motion_between(IVec3::new(0, 0, 100), IVec3::new(0, 0, 100),)),
+            Err(SparkWorldError::MissingOverlayGrid)
+        );
+    }
+
+    #[test]
+    fn gsi_04_03_building_and_wall_queries_obey_native_lazy_gates() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n1=Solid\n[Solid]\nFoundation=2x2\n",
+        ))
+        .unwrap();
+
+        let mut corrupt = one_cell_sim(terrain_cell(0, 0));
+        corrupt.occupancy_mut().add(
+            0,
+            0,
+            999,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        corrupt.overlay_grid = None;
+        let world = SparkCollisionWorld::new(&corrupt, &rules).unwrap();
+        assert!(
+            world
+                .query(motion_between(IVec3::new(0, 0, 200), IVec3::new(0, 0, 200),))
+                .is_ok()
+        );
+        assert_eq!(
+            world.query(motion_between(IVec3::new(0, 0, 100), IVec3::new(0, 0, 100),)),
+            Err(SparkWorldError::MissingOccupantEntity(999))
+        );
+
+        let mut accepted = one_cell_sim(terrain_cell(0, 0));
+        add_building(&mut accepted, 1, "Solid");
+        accepted.overlay_grid = None;
+        let facts = SparkCollisionWorld::new(&accepted, &rules)
+            .unwrap()
+            .query(motion_between(IVec3::new(0, 0, 100), IVec3::new(0, 0, 100)))
+            .unwrap();
+        assert!(facts.accepted_building);
+        assert_eq!(
+            facts.wall_overlay_id, None,
+            "accepted building suppresses wall read"
+        );
+        assert!(facts.slope_matrix.is_some());
+    }
+
+    #[test]
+    fn gsi_04_03_null_mask_and_invalid_linear_cells_are_normal_dummy_results() {
+        let mut terrain =
+            ResolvedTerrainGrid::from_cells(2, 1, vec![terrain_cell(0, 0), terrain_cell(1, 0)]);
+        terrain.test_set_native_allocated_cells(&[(0, 0)]);
+        let mut sim = Simulation::new();
+        sim.resolved_terrain = Some(terrain);
+        let rules = empty_rules();
+        let world = SparkCollisionWorld::new(&sim, &rules).unwrap();
+
+        for x in [256, -256, i32::MAX] {
+            let facts = world
+                .query(motion_between(IVec3::new(x, 0, 200), IVec3::new(x, 0, 200)))
+                .unwrap();
+            assert!(facts.slope_matrix.is_none(), "x={x}");
+        }
     }
 
     #[test]
