@@ -1020,6 +1020,22 @@ fn drive_across_high_bridge(map_file: &str, unit_type: &str, expect_crossing: bo
     );
     println!("{} mid-span frame(s) all at deck height", mid_span.len());
 
+    // 4b. The crossing finished. Reaching the deck and holding the height there
+    //     is not the same as getting across: a mover that enters the span and
+    //     then stalls, is snapped back, or gives up mid-deck satisfies every
+    //     assertion above. The recording loop breaks on the far approach, on
+    //     MAX_TICKS, or on an idle run, and only this distinguishes the first
+    //     from the other two.
+    let last = rows.last().copied().expect("at least one frame recorded");
+    assert_eq!(
+        last.cell,
+        span.approach_b,
+        "the mover never reached the far approach {:?}; it stopped at {:?} after {} frame(s)",
+        span.approach_b,
+        last.cell,
+        rows.len()
+    );
+
     // 5. Discrimination. A green run only rules the fix in if the pre-fix height
     //    path would have produced something different on at least one frame;
     //    otherwise it is a compatibility check, not a regression test.
@@ -1067,17 +1083,35 @@ fn tank_crosses_hills_high_bridge_at_deck_height() {
     drive_across_high_bridge("Hills.mmx", "MTNK", true);
 }
 
-/// The Robot Tank is a **Hover** locomotor, so `supports_layered_bridge_pathing`
-/// (`movement_path.rs:83-95`) excludes it from the layered path builder and it
-/// receives the flat fallback path, whose `path_layers` are `Ground` for every
-/// node — including the deck cells. That is C1's live trigger from
-/// `docs/plans/bridge-deck-height-diagnosis.md` on real map data: the pre-fix
-/// `NoChange` arm re-derived Z from that layer and would have written the
-/// riverbed level mid-span while `on_bridge` stayed set.
+/// Matrix row T1-01. The Robot Tank is a **Hover** locomotor, and until
+/// `supports_layered_bridge_pathing` (`movement_path.rs`) admitted Hover it was
+/// excluded from the layered path builder, received the flat fallback path whose
+/// `path_layers` are `Ground` on every node including the deck cells, and was
+/// then refused at the crossing loop's terrain test — which read the riverbed
+/// under the span. The order was never dropped, so it drove into the abutment
+/// and was snapped back to cell centre indefinitely.
+///
+/// This was a characterization test asserting that stall. It is now a positive
+/// crossing, holding the Hover mover to exactly what the Drive crossings assert:
+/// it reaches the deck at all, stands mid-span rather than only on the end
+/// cells, and on every deck frame carries `on_bridge`, `z == terrain + 4`, a
+/// height that is not the riverbed, and a `BridgeOccupancy` agreeing with its
+/// own `z`. `drive_across_high_bridge` also now asserts arrival at the far
+/// approach, so a mover that reaches the deck and then dies mid-span fails.
 #[test]
 #[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
-fn hover_tank_is_currently_blocked_from_entering_a_high_bridge() {
-    drive_across_high_bridge("BayOPigs.mmx", "ROBO", false);
+fn hover_tank_crosses_bay_of_pigs_high_bridge_at_deck_height() {
+    drive_across_high_bridge("BayOPigs.mmx", "ROBO", true);
+}
+
+/// The Hover twin on a second map's geometry. `BayOPigs.mmx` runs its span
+/// north-south down a column and `Hills.mmx` east-west along a row, so a single
+/// map would leave a Hover crossing certified on one span's axis and levels.
+/// The Drive side is covered on both; this closes the same gap for Hover.
+#[test]
+#[ignore = "requires a retail RA2/YR install (RA2_DIR or config.toml)"]
+fn hover_tank_crosses_hills_high_bridge_at_deck_height() {
+    drive_across_high_bridge("Hills.mmx", "ROBO", true);
 }
 
 /// Inventory only: which stock maps expose a high-bridge span at all, and what
