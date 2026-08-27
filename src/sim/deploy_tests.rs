@@ -21,12 +21,14 @@ use crate::sim::world::{SimSoundEvent, Simulation};
 
 const SPLIT_AI_ACTIVATION: HouseAiActivationLatches = HouseAiActivationLatches {
     production: true,
+    autocreate_allowed: false,
     ai_triggers_active: false,
     auto_base_building: true,
 };
 
 const ENABLED_AI_ACTIVATION: HouseAiActivationLatches = HouseAiActivationLatches {
     production: true,
+    autocreate_allowed: false,
     ai_triggers_active: true,
     auto_base_building: true,
 };

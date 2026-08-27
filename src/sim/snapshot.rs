@@ -317,7 +317,9 @@ use crate::sim::world::Simulation;
 // a successful non-controlled ConstructionYard deployment.
 // Bumped 108 -> 109: persist the three independent House AI activation
 // latches co-enabled by successful qualifying base-unit deployment.
-const SNAPSHOT_VERSION: u32 = 109;
+// Bumped 109 -> 110: persist House AutocreateAllowed beside the three deploy
+// latches in native conceptual byte order.
+const SNAPSHOT_VERSION: u32 = 110;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2725,10 +2727,11 @@ mod tests {
     /// alternate base cell; 105 -> 106 adds the ordered House BuildConst vector
     /// and immutable entity membership; 106 -> 107 adds ordered BasePlan state
     /// and immutable BuildingType facts; 107 -> 108 adds the distinct BaseClass
-    /// plan center; 108 -> 109 adds the three House AI activation latches.
+    /// plan center; 108 -> 109 adds the three House AI activation latches;
+    /// 109 -> 110 adds House AutocreateAllowed.
     #[test]
-    fn phase3_combined_snapshot_version_is_109() {
-        assert_eq!(super::SNAPSHOT_VERSION, 109);
+    fn phase3_combined_snapshot_version_is_110() {
+        assert_eq!(super::SNAPSHOT_VERSION, 110);
     }
 
     #[test]
@@ -2855,16 +2858,17 @@ mod tests {
     }
 
     #[test]
-    fn house_ai_activation_all_combinations_roundtrip_v109() {
+    fn house_ai_activation_all_combinations_roundtrip_v110() {
         use crate::sim::house_state::{HouseAiActivationLatches, HouseState};
 
-        for bits in 0u8..8 {
+        for bits in 0u8..16 {
             let mut sim = Simulation::new();
             let owner = sim.interner.intern("Computer1");
             let latches = HouseAiActivationLatches {
                 production: bits & 1 != 0,
-                ai_triggers_active: bits & 2 != 0,
-                auto_base_building: bits & 4 != 0,
+                autocreate_allowed: bits & 2 != 0,
+                ai_triggers_active: bits & 4 != 0,
+                auto_base_building: bits & 8 != 0,
             };
             let mut house = HouseState::new(owner, 0, None, false, 0, 10);
             house.ai_activation = latches;
@@ -2877,7 +2881,7 @@ mod tests {
                 GameSnapshot::read_header(&bytes).unwrap().version,
                 super::SNAPSHOT_VERSION
             );
-            let restored = GameSnapshot::load(&bytes).expect("current v109 snapshot").sim;
+            let restored = GameSnapshot::load(&bytes).expect("current v110 snapshot").sim;
             assert_eq!(restored.houses[&owner].ai_activation, latches);
         }
     }
