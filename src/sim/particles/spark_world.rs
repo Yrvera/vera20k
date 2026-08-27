@@ -58,6 +58,8 @@ struct SelectedSparkCell<'a> {
     cell: CellRef<'a>,
 }
 
+// gamemd-derived: MapClass::Get_CellClass_At_Coord @ 0x00565730 uses the
+// fixed-512 real-or-shared-dummy selection and stamps a miss before continuing.
 fn select_cell<'a>(
     terrain: &'a ResolvedTerrainGrid,
     role: SparkCellSelectionRole,
@@ -70,6 +72,8 @@ fn select_cell<'a>(
     }
 }
 
+// gamemd-derived: CellClass::GetGroundHeight @ 0x00578080 evaluates the real
+// or shared-dummy CellClass selected for the original world coordinate.
 fn ground_height_for_selection(
     selection: &SelectedSparkCell<'_>,
     world_x: i32,
@@ -90,6 +94,10 @@ fn ground_height_for_selection(
 /// Constructor-only terrain query. Missing terrain retains the pre-existing
 /// no-floor policy; with terrain present, a native miss returns the live dummy
 /// and therefore still produces a ground height.
+///
+/// gamemd-derived: ParticleClass::Constructor @ 0x0062B5E0 calls
+/// CellClass::GetGroundHeight @ 0x00578080 once for the comparison and again
+/// only when the input Z is at or below the first result.
 pub(super) fn constructor_ground_height(
     sim: &Simulation,
     world_x: i32,
@@ -153,6 +161,9 @@ impl<'a> SparkCollisionWorld<'a> {
     where
         F: FnMut(SparkCellSelectionRole, i32, i32) -> SelectedSparkCell<'a>,
     {
+        // gamemd-derived: behavior-3 ParticleClass AI @ 0x0062C6E0 orders
+        // candidate ground, candidate cell, conditional old cell, gated
+        // building/wall, then a collision-only candidate slope selection.
         let candidate_ground = select(
             SparkCellSelectionRole::Ground,
             motion.candidate_coords.x,
