@@ -2,11 +2,11 @@
 
 **Date:** 2026-08-27
 
-**Status:** REVISED / OPEN — awaiting fresh design critic 5. Stock-active Chronosphere and IsLocomotor release integration remains a named prerequisite blocker; no implementation-readiness or parity `PASS` is claimed.
+**Status:** REVISED / OPEN — critic 5 returned `BLOCK`; its timer-sentinel finding was corrected in research commit `37571c99` and passed fresh evidence critic 6. Awaiting fresh full-design critic 7. Stock-active Chronosphere and IsLocomotor release integration remains a named prerequisite blocker; no implementation-readiness or parity `PASS` is claimed.
 
 **Scope:** Phase 3 GSI-04.03, the stock Ship locomotor destination, bridge-Z braking distance, destination-delay guard, and terminal stored-Z consumer.
 
-**Evidence:** `docs/research/PHASE3_SHIP_BRIDGE_Z_ADJUSTMENT_GHIDRA_REPORT.md`, including Sections 12-15. Section 15 supersedes every earlier ordinary-rearm or no-stock-Ship claim.
+**Evidence:** `docs/research/PHASE3_SHIP_BRIDGE_Z_ADJUSTMENT_GHIDRA_REPORT.md`, including Sections 12-16. Section 15 supersedes every earlier ordinary-rearm or no-stock-Ship claim; Section 16 supersedes the earlier timer-sentinel and constructor-raw-state claims.
 
 ## Goal
 
@@ -64,7 +64,7 @@ terminal track
 Parasite prerequisite
   -> detonation validates source manager + exact CanAttach gates
   -> successful transaction installs attacker.manager.victim_id <-> victim.parasite_attacker_id
-  -> timer remains raw inactive through the post-detonation/pre-victim-tail interval
+  -> detonation leaves the victim raw timer pair unchanged; the ordinary zero-duration case stays inactive through the pre-victim-tail interval
   -> next victim Foot-AI tail resolves attacker's live slot-0 warhead
   -> water/missing-cell: re-anchor victim timer; known non-water: exact detach
   -> release/lifecycle producer -> one reciprocal detach-and-zero helper
@@ -78,7 +78,7 @@ Parasite prerequisite
 |---|---|
 | `src/rules/warhead_type.rs` | Parse and retain signed `Paralyzes=` as `i32`, default zero, and `Sonic=` as its own bool at native `+0x14B`. Do not alias it to the currently misdocumented neighboring field. Add omission, signed, 32767, and Sonic tests. |
 | `src/rules/object_type.rs` | Parse `Organic=` default false and `Parasiteable=` for the bounded recognized-Ship UnitType path with the live UnitType default true. `naval` already exists. Keep non-Ship Parasite targets on the unsupported path rather than inventing other registry defaults. |
-| `src/sim/game_entity.rs` | Add `parasite_manager: Option<ParasiteManagerState>`, victim `parasite_attacker_id: Option<u64>`, and `foot_destination_delay: CdTimer`. Defaults are no manager/no link and raw timer `start=-1,duration=0`. |
+| `src/sim/game_entity.rs` | Add `parasite_manager: Option<ParasiteManagerState>`, victim `parasite_attacker_id: Option<u64>`, and `foot_destination_delay: CdTimer`. Defaults are no manager/no link; native Foot construction must explicitly install raw timer `start=current creation frame,duration=0` rather than use `CdTimer::default()`. |
 | new `src/sim/parasite_attachment.rs`, plus `src/sim/mod.rs` | Own `ParasiteManagerState { victim_id }`, read-only `can_attach`, transactional `attach`, reciprocal `detach`, consistency validation, and one victim-tail update. It owns no animation/damage/placement approximation. |
 | `src/sim/world/world_spawn.rs` | Construct manager presence exactly for non-building objects whose rookie primary weapon resolves to `Parasite=yes`; manager presence persists independently of whether it has a victim. |
 | `src/sim/combat/mod.rs` | In the Parasite branch, require live source manager and `ProjectileTarget::Entity`, evaluate exact admission using entities/rules/interner/resolved terrain, then install links and return through the unsupported tail with the timer untouched. Wire Sonic and negative-damage detach before the Foot receiver mutates HP. |
@@ -149,7 +149,7 @@ GameEntity.parasite_attacker_id: Option<u64>               // victim +0x694
 GameEntity.foot_destination_delay: CdTimer                 // victim +0x6A0/+0x6A8
 ```
 
-`parasite_manager` is present from object construction exactly for a non-building object whose rookie primary weapon resolves to a `Parasite=yes` warhead. It remains present with `victim_id=None` before attachment and after detach. Do not derive manager existence from the detonating warhead: a modded secondary Parasite projectile without a primary-created manager must fail as native does. `foot_destination_delay` starts raw `CdTimer::from_raw(-1, 0)`.
+`parasite_manager` is present from object construction exactly for a non-building object whose rookie primary weapon resolves to a `Parasite=yes` warhead. It remains present with `victim_id=None` before attachment and after detach. Do not derive manager existence from the detonating warhead: a modded secondary Parasite projectile without a primary-created manager must fail as native does. Every new Foot owner explicitly starts `foot_destination_delay` as `CdTimer::started(current_creation_frame, 0)`, matching native constructor stores `0x004D33F6..0x004D3402`. Do not use `CdTimer::default()` / raw `(-1,0)`: it is predicate-inactive but byte/state-distinct once serialized and hashed.
 
 Add `ObjectType.organic` (default false), `ObjectType.parasiteable` for UnitType/`Vehicle` with the live default true, `WarheadType.paralyzes: i32`, and the separate native `WarheadType.sonic` boolean. This bounded prerequisite handles only a recognized Ship victim; non-Ship Parasite targets retain the existing explicit unsupported result, so no unverified Infantry/Aircraft/Building default is invented. Existing `ObjectType.naval`, lifecycle, health, installed `BunkerLink`, type/veterancy weapon selection, and resolved terrain supply the other facts. `ImmuneToPoison`, houses, mission, and Verses are deliberately absent from admission because native does not read them.
 
@@ -175,7 +175,7 @@ Call `tick_parasite_victim_tail_one(sim, victim_id, rules, resolved_terrain)` af
 - known non-water cell: call the detach helper instead;
 - non-Naval+Organic manager: leave its generic ROF/damage behavior unsupported and do not invent a timer write in this bounded slice.
 
-This ordering is load-bearing. A frame-N projectile detonation installs links after the ordinary stock victim has already visited the live-object loop. The timer stays `start=-1,duration=0`, so a Ship destination request in that interval is admitted. The first 32767 write occurs only at the victim's frame-N+1 tail, after its destination/locomotor work; every later qualifying tail re-anchors it. `SquidGrab ROF=99` is irrelevant to this path.
+This ordering is load-bearing. A frame-N projectile detonation installs links after the ordinary stock victim has already visited the live-object loop and leaves its raw timer pair unchanged. For the ordinary newly constructed/inactive victim, duration remains zero (normally raw `(creation_frame,0)`), so a Ship destination request in that interval is admitted. The first 32767 write occurs only at the victim's frame-N+1 tail, after its destination/locomotor work; every later qualifying tail re-anchors it. `SquidGrab ROF=99` is irrelevant to this path.
 
 #### 1.4 Exact detach transaction and active callers
 
@@ -196,15 +196,18 @@ Native also detaches an actual Naval attachment in Chronosphere selection and af
 
 Until those exact admission surfaces are designed/implemented, neither `SpecialDetonationAction::Locomotor` nor a superweapon/chrono target may call `detach_parasite`. This is a blocker, not a harmless residual. Teleport primary locomotion and Grinder entry are evidence-excluded for stock recognized Ships. True chrono-erase does not write or clear this timer.
 
-The destination-delay predicate must be a dedicated adapter, not generic `CdTimer::remaining`, because native `start == -1` returns false even if duration is positive:
+The destination-delay predicate is the existing raw `CdTimer::remaining(frame) != 0` behavior. Live `0x004DE770` loads duration before testing the sentinel; `start == -1` skips elapsed calculation and tests that raw duration directly:
 
 ```text
-active(frame) = start != -1
-             && elapsed(frame, start) < duration
-             && duration - elapsed(frame, start) != 0
+if start == -1:
+    active = duration != 0
+else:
+    elapsed = current_frame.wrapping_sub(start)
+    active = elapsed < duration
+          && duration.wrapping_sub(elapsed) != 0
 ```
 
-No command, attack retarget, or ordinary cooldown tick clears it. Only the exact refresh/detach writers above mutate it.
+The running comparison is signed and exact expiry is inactive. Thus raw `(-1,0)` is inactive, while `(-1,32767)` and `(-1,-7)` are active. No command, attack retarget, or ordinary cooldown tick clears it. Only the exact refresh/detach writers above mutate it.
 
 ### 2. Transactional recognized-Ship preflight
 
@@ -369,9 +372,10 @@ Hash every new field in stable entity order. Changing only manager presence/link
 | Manager construction | Rookie primary Parasite creates an empty manager on non-building SQD/DRON; secondary-only Parasite and buildings do not. Empty manager round-trips distinctly from no manager. |
 | Exact CanAttach matrix | Null source, missing manager, non-entity target, limbo/dead/dying/health-zero victim, existing link, `Parasiteable=no`, installed bunker, and Naval missing/non-water cell all preserve state; approach-only bunker control admits. No alliance/mission/ImmuneToPoison gate is added. |
 | Two-Squid race | First admitted projectile installs the reciprocal pair; the second fails without replacing links or touching timer. |
-| Detonation-to-tail order | Admitted frame-N detonation installs links with timer raw `(-1,0)`; a Ship destination install before its next visit is admitted; frame-N+1 victim tail runs after destination/locomotor and first writes 32767. |
+| Detonation-to-tail order | Admitted frame-N detonation installs links without changing the timer; an ordinary raw `(creation_frame,0)` victim remains zero-duration and admits a Ship destination install before its next visit; frame-N+1 victim tail runs after destination/locomotor and first writes 32767. |
 | Active SQD refresh | Every later water-cell victim tail re-anchors start=current and duration=32767 using the attacker's live slot-0 warhead; ROF 99 and ordinary cooldown do not gate it. |
-| Timer predicate | `start=-1,duration=32767` is inactive; current start/32767 is active; exact signed expiry is inactive. |
+| Timer construction | A Foot created at frame 123 stores raw `(123,0)`, is inactive, and round-trips/hashes that exact pair; it does not normalize to `(-1,0)`. |
+| Timer predicate | `(-1,0)` is inactive; `(-1,32767)` and `(-1,-7)` are active; current start/32767 is active; exact signed expiry is inactive; wrapping-frame cases match `CdTimer::remaining`. |
 | Exact detach controls | Known non-water, Sonic, negative damage, accepted funded repair, non-Organic Iron Curtain, attacker uninit, and victim uninit clear both links and set victim duration zero. Unattached, Organic IC, failed repair, true chrono-erase, and broad resolved targets do not clear. |
 | OPEN upstream releases | Chronosphere and IsLocomotor tests remain blocking until their exact upstream admission exists; once present, only an actual Naval reciprocal attachment detaches at the cited point. |
 | Guarded Move/AttackMove | Positive owner timer rejects before mission/order/attack/NavCom/destination/movement mutation; timer survives the attempt. |
@@ -418,4 +422,4 @@ This is the smallest architecture-aware fit that makes the stock guard's attach/
 
 ## Review Gate
 
-This revision is **OPEN** and does not claim implementation readiness or `PASS`. Fresh read-only critic 5 must receive the requirement, live native evidence, retail data, current Rust state, this diff, and all earlier findings. The row cannot close until the exact stock-active Chronosphere and IsLocomotor release admissions are promoted or implemented and then reviewed with the attachment, Ship destination, braking, scatter, arrival, snapshot, and hash work. Any incorrect admission, writer ordering, detach caller, transactional caller, invalid-geometry mutation, terminal clear mismatch, snapshot/hash omission, or prior-regression keeps the design and GSI row open.
+This revision is **OPEN** and does not claim implementation readiness or `PASS`. Fresh read-only critic 7 must receive the requirement, live native evidence, retail data, current Rust state, the complete diff through the timer repair, critic-5 findings, critic-6 timer PASS, and every earlier finding. It must recheck the corrected sentinel and native `(current frame,0)` construction plus all prior fixes. The row cannot close until the exact stock-active Chronosphere and IsLocomotor release admissions are promoted or implemented and then reviewed with the attachment, Ship destination, braking, scatter, arrival, snapshot, and hash work. Any incorrect admission, writer ordering, detach caller, transactional caller, invalid-geometry mutation, terminal clear mismatch, snapshot/hash omission, or prior-regression keeps the design and GSI row open.
