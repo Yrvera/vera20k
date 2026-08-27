@@ -2128,7 +2128,7 @@ pub(super) fn process_cell_crossings(
             path_grid,
             (old_rx, old_ry),
             (nx, ny),
-            next_layer,
+            projected_on_bridge_state,
         );
         projected_on_bridge_state =
             super::movement_bridge::projected_on_bridge(projected_on_bridge_state, bridge_update);
