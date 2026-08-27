@@ -361,7 +361,7 @@ fn gsi_13_06_counter_suppressions_hold_the_persistent_value() {
             .locomotor
             .as_mut()
             .expect("locomotor")
-            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground)
+            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground, 0)
     );
     variants.push(("piggyback", piggyback));
 

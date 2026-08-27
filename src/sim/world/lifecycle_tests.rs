@@ -118,6 +118,16 @@ fn request(rx: u16, ry: u16, placement: PlacementEvidence) -> RevealRequest {
     }
 }
 
+fn drive_ship_slope_rules() -> crate::rules::ruleset::RuleSet {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[VehicleTypes]\n0=DRIVE\n1=SHIP\n2=TTRAIN\n\
+         [DRIVE]\nStrength=100\nSpeed=6\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n\
+         [SHIP]\nStrength=100\nSpeed=6\nLocomotor={2BEA74E1-7CCA-11D3-BE14-00104B62A16C}\n\
+         [TTRAIN]\nStrength=100\nSpeed=6\nIsTrain=yes\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n",
+    );
+    crate::rules::ruleset::RuleSet::from_ini(&ini).expect("Drive/Ship slope rules")
+}
+
 fn packed_reservation_test_coord(x: i32, y: i32) -> u32 {
     u32::from(x as i16 as u16) | (u32::from(y as i16 as u16) << 16)
 }
@@ -310,6 +320,73 @@ fn install_common_raw_terrain(
         crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500),
     );
     sim.resolved_terrain = Some(terrain);
+}
+
+#[test]
+fn drive_ship_slope_production_spawn_unlimbo_snaps_without_manual_rocking_state() {
+    let rules = drive_ship_slope_rules();
+    for (type_id, cell, slope) in [
+        ("DRIVE", (2, 2), 5),
+        ("SHIP", (4, 2), 9),
+        ("TTRAIN", (6, 2), 12),
+    ] {
+        let mut sim = Simulation::with_seed(0x51_0f_e);
+        sim.session.binary_frame = 37;
+        install_common_raw_terrain(&mut sim, 10, 5, 0, None);
+        sim.resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(cell.0, cell.1)
+            .unwrap()
+            .slope_type = slope;
+        let rng_before = sim.scenario_rng.logical_state();
+
+        let stable_id = sim
+            .spawn_object(type_id, "Americans", cell.0, cell.1, 0, &rules, &BTreeMap::new())
+            .expect("production spawn/unlimbo");
+        let entity = sim.substrate.entities.get(stable_id).unwrap();
+        assert!(entity.rocking.is_none(), "slope state is not manually injected");
+        assert_eq!(
+            crate::sim::movement::slope_transition::state_for_entity(entity)
+                .expect("active Drive/Ship state")
+                .hash_fields(),
+            (slope, slope, 37, 0),
+            "successful Foot unlimbo snaps both slope bytes at the current frame"
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+}
+
+#[test]
+fn drive_ship_slope_failed_reveal_does_not_snap_or_consume_rng() {
+    let mut sim = Simulation::with_seed(0x51_0f_e);
+    sim.session.binary_frame = 40;
+    install_common_raw_terrain(&mut sim, 8, 8, 0, None);
+    sim.resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(3, 4)
+        .unwrap()
+        .slope_type = 8;
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(1).unwrap().locomotor = Some(
+        LocomotorState::for_test_kind_at_frame(LocomotorKind::Drive, 11),
+    );
+    let rng_before = sim.scenario_rng.logical_state();
+
+    assert_eq!(
+        sim.try_reveal_entity(1, request(3, 4, PlacementEvidence::MarkFailed)),
+        RevealOutcome::Failed(RevealFailure::MarkFailed)
+    );
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (0, 0, 11, 0)
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before);
 }
 
 #[test]

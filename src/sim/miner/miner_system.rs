@@ -1629,6 +1629,7 @@ fn try_issue_chrono_far_return_teleport(
         true,
         false,
         sim.playfield_bounds,
+        sim.session.binary_frame,
     );
     if issued {
         emit_chrono_warp_sounds(sim, rules, snap.type_id, (snap.rx, snap.ry), staging);
@@ -2197,7 +2198,8 @@ fn issue_stock_miner_drive_move_with_overlay_registry(
                     locomotor.layer,
                     locomotor.phase,
                 );
-                let _ = locomotor.begin_drive_piggyback_for_teleporter();
+                let _ = locomotor
+                    .begin_drive_piggyback_for_teleporter(sim.session.binary_frame);
                 snapshot
             })
     } else {
