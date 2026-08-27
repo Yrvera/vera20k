@@ -792,3 +792,223 @@ The design's dedicated-adapter formula and `start=-1,duration=32767 is inactive`
 
 - Live Ghidra MCP, active `gamemd.exe`: `get_function_by_address`, `decompile_function`, and two cold `disassemble_function` reads of `0x004DE770`; decompile/disassembly `0x0069F450`; decompile and two assembly reads of `0x004D31E0`; xrefs to `0x004DE770`; raw memory at `0x007F5C6C`, `0x0080CC74`, `0x00842D88`, and `0x007F5FF0`.
 - Current Rust: `src/sim/timer.rs`.
+
+## 17. Active Naval+Organic Giant-Squid Core (critic-7 repair, 2026-08-27)
+
+**Investigation Mode:** exhaustive-slice
+
+**Claimed Scope:** every stock-active mechanism promoted by the Ship setter's `Foot+0x6A0/+0x6A8` guard: Parasite fire lock, manager construction, `LimboLaunch`, projectile attachment, reciprocal ownership, victim-tail scheduling, the complete Naval+Organic state machine, animation/RNG production, damage and Culling, damage/healing suppression, detach/re-entry, pointer expiry, persistence, and teardown.
+
+**Non-Scope:** generic non-Naval Terror-Drone periodic damage. It is a different `UpdateAttack` branch and does not own the stock SQD state machine or the Ship destination guard. Its shared manager/link/teardown invariants remain required; its weapon-ROF attack body is not evidence for SQD cadence.
+
+**Active in YR:** Yes. Retail `[SQD]` is simultaneously `Naval=yes` and `Organic=yes`, has `Primary=SquidGrab`, `ElitePrimary=SquidGrabE`, `NavalTargeting=3`, Ship locomotion, and `SuppressionThreshold=250`. Both grab weapons use `ParasitePlus`, `LimboLaunch=yes`, and the special SQD path. `ParasitePlus` has `Parasite=yes`, `Culling=yes`, and `Paralyzes=32767`.
+
+This section supersedes Section 15.2's missing-cell rejection, Section 15.4's unconditional Naval-owner death, Section 15.5's bounded-link-only prerequisite, and every earlier statement that `0x006297F0` is temporal/CLEG code or that SQD damage/animation/culling can remain outside this row. Those statements are wrong or incomplete under the zero-residual closure bar.
+
+### 17.1 Identity and retail activation
+
+`WarpAttachClass::UpdateAttack @ 0x00629FD0` is the only direct caller of `0x006297F0`. With a non-null manager victim, it reads the owner type and dispatches to `0x006297F0` exactly when type `+0xCCE Naval` and `+0xD97 Organic` are both true; it then returns before the generic Parasite ROF branch. Retail SQD satisfies both flags. CLEG does not, and `Temporal=yes` does not participate in this predicate.
+
+Retail binding is exact:
+
+| Retail section | Relevant values | Native effect |
+|---|---|---|
+| `[SQD]` | `Primary=SquidGrab`, `ElitePrimary=SquidGrabE`, `Secondary=SquidPunch`, `NavalTargeting=3`, `Naval=yes`, `Organic=yes`, `Parasiteable=no`, `SuppressionThreshold=250`, Ship locomotor | selects grab against ordinary non-organic naval targets; organic targets use the secondary punch; the SQD cannot itself be parasited |
+| `[SquidGrab]` | `Damage=15`, `ROF=99`, `Projectile=SQDJUMP`, `Warhead=ParasitePlus`, `LimboLaunch=yes` | rookie/veteran grapple damage; ROF is not the grapple-cycle cadence |
+| `[SquidGrabE]` | `Damage=40`, otherwise the same special path | elite grapple damage |
+| `[ParasitePlus]` | `Parasite=yes`, `Culling=yes`, `Paralyzes=32767`, `Rocker=yes` | manager allocation/admission, Ship command lock, red/elite-yellow culling |
+| `[SQDG]` and `SQDG_N..SQDG_NW` | central grab animation plus directional frame sets | persistent victim-bound grapple visual |
+| `[General] Wake` / splash list | `WAKE1`; `H2O_EXP3,H2O_EXP2,H2O_EXP1` | transition wakes and state-4 water splashes/report sounds |
+
+An exhaustive OpenTS source search for `SQD`, Giant Squid, `SquidGrab`, `ParasitePlus`, `LimboLaunch`, `Parasiteable`, `Paralyzes`, `Culling`, `NavalTargeting`, and `SQDG` found no equivalent gameplay implementation. OpenTS supplies no secondary-source acceleration for this YR-only path.
+
+### 17.2 Manager construction, fire lock, and launch ordering
+
+`TechnoClass::Init_Managers @ 0x006F3F40` allocates a 0x58-byte Parasite manager for a non-building whose rookie primary weapon resolves to a warhead with `+0x159 Parasite`; it stores the manager at owner `+0x69C`. `ParasiteClass::Constructor @ 0x006292B0` installs owner `+0x24`, null victim `+0x28`, damage timer `+0x2C/+0x34`, attack timer `+0x38/+0x40`, null visual and zero FSM fields `+0x44..+0x54`, and appends the manager to the global Parasite vector. SQD qualifies at construction.
+
+The earlier unknown instance field at target `+0x698` is resolved. `TechnoClass::GetFireError @ 0x006FCAE1` checks it only for a weapon whose warhead has `Parasite=yes`: if `current_frame < target+0x698` by signed comparison, it returns fire error 5. `FootClass::Constructor @ 0x004D33EA` initializes it to zero. The `LimboLaunch` path writes `current_frame + 20` at `0x006FF816..0x006FF81F`. It is therefore the Parasite refire-lock-until frame, not an invulnerability-end or temporal-warp field.
+
+`WeaponTypeClass::ReadINI` writes `LimboLaunch` to weapon `+0x132`. The gameplay reader in `TechnoClass::FireAtSpawnsBullet` performs the ordinary bullet construction, then:
+
+1. calls the firing SQD's `Limbo` virtual;
+2. for a Parasite warhead and Foot-class object target, writes target Parasite refire lock to `current+20`;
+3. limbos and reinitializes the projectile with the same source/target/weapon payload;
+4. launches the projectile.
+
+Consequently the attacker is already off-map while the projectile travels. A second attacker evaluated after the first launch in the same live-object order is rejected for 20 frames before projectile impact. If multiple projectiles were already admitted, attachment still has a first-link-wins gate.
+
+`BulletClass::DetonateAtCoord @ 0x004690B0`, branch `0x004693D3..0x0046941E`, requires the Parasite warhead, a non-null bullet source, and an object-class target at bullet `+0x10C`. It loads source manager `+0x69C` and calls `Attach @ 0x0062A980`. It does not apply area damage or write the Ship guard timer.
+
+### 17.3 Exact attachment admission and reciprocal ownership
+
+`CanAttach @ 0x0062A8E0` requires all of the following:
+
+1. non-null victim;
+2. victim `InLimbo +0x81 == 0`;
+3. victim native-alive byte `+0x90 != 0`;
+4. victim health `+0x6C != 0`;
+5. victim `+0x694 == null` (no current Parasite attacker);
+6. victim type `+0xD38 Parasiteable != 0`;
+7. victim `+0x2E4 == null` (no conflicting installed/contained binding);
+8. for a Naval owner only: a non-null victim cell must be a water-set tile. A null cell is admitted; it is not a rejection condition.
+
+There is no alliance, Verses, `ImmuneToPoison`, mission, owner-house, or ordinary target-category test in this predicate. `Parasiteable` defaults true in `UnitTypeClass`; retail's explicit `SQD Parasiteable=no` prevents SQD-as-victim, not SQD-as-attacker.
+
+`Attach` first resets state/major/subframe, destroys the prior persistent animation, removes the manager's animation listener when registered, and resets the manager attack timer to current/zero. On admission failure it tries to restore the limboed attacker near its old location; failed fallback placement removes the attacker. No link or victim timer is installed.
+
+On success it calls the attacker's locomotor slot `+0x70` with victim coordinates and selector `-1`, then writes both ownership directions in this order: victim `+0x694 = attacker`, manager `+0x28 = victim`. The SQD remains limboed. Successful attachment still does not write `Foot+0x6A0/+0x6A8`.
+
+### 17.4 Victim-driven scheduler order and Ship timer write
+
+The attacker has no active Foot tick while limboed. `FootClass::AI @ 0x004DA530` drives the manager from the victim's tail: after the victim's mission, destination setters, locomotor process, scatter, and entry work, `0x004DAEE1..0x004DAEF3` follows victim `+0x694` to attacker `+0x69C` and calls manager vtable `+0x5C`.
+
+`LogicClass::PerTickUpdate @ 0x0055AFB0` walks the live vector forward and reloads its count after callbacks. A projectile that attaches after a pre-existing victim's frame-N visit cannot retroactively run that victim tail. The first grapple update is the victim's next visit. The command-queue tail can therefore install a Ship destination between attachment and the first timer write; detonation-time timer writes remain forbidden.
+
+At the head of every Naval+Organic grapple update, a known non-water victim cell detaches. A null cell or water-set cell writes victim `+0x6A0=current` and `+0x6A8=current slot-0 warhead Paralyzes` before the switch. Retail writes 32767 on every victim tail. This is not ROF-gated. The native middle timer dword `+0x6A4` is filled from an uninitialized local stack slot; the active remaining predicate and Ship setter read only start/duration. It has no behavioral authority and must not be invented as deterministic Rust state.
+
+### 17.5 Complete states 0-4 and exact cadence
+
+Manager gameplay fields are `+0x44` persistent SQDG animation, `+0x48` state, `+0x4C` major frame, `+0x50` subframe, and `+0x54` listener-registration flag. Victim rocking is float `+0x328`.
+
+| State | Exact action |
+|---|---|
+| 0 | zero victim rocking; look up hard-coded `SQDG`; attempt animation allocation at victim XYZ with delay 0, loop 1, flags `0x600`; store it and attempt listener append; regardless of lookup/allocation/append failure set state 1, reset counters, and advance once |
+| 1 | advance; on completion consume `RandomRanged(0,1)`: zero selects state 3, nonzero state 2; reset, advance selected state once, then emit a three-wake burst |
+| 2 | use rocking sign `-1`; otherwise share state-3 body |
+| 3 | use rocking sign `+1`; write `sin(major * sign * 0.3141592653589793) * 0.7853982`; completion selects state 4, resets, and advances it once |
+| 4 | zero rocking; emit three water splashes; evaluate Culling; cull or apply current slot-0 weapon damage; on surviving damage choose state 2/3, reset/advance, and emit a three-wake burst |
+| other | detach immediately |
+
+`Advance @ 0x00629720` uses base frame 0/cadence 3 for states 0/1, base 80/cadence 4 for state 2, and base 160/cadence 4 for states 3/4. It increments subframe, rolls it at the cadence, and increments major. Major 10 completes without writing an animation frame. A non-completing advance writes persistent animation frame `base + direction_index*10 + major` and its 128-frame native rate timer. The rate timer's middle dword is likewise stack residue and is ignored by the native timer predicate.
+
+Counting the initial state-0 call as victim update 1, state 1 completes on update 30, state 2/3 completes and primes state 4 on update 69, and the first damage/cull occurs on update 70. A surviving target is damaged every 40 victim updates thereafter. Retail `SquidGrab ROF=99` is not part of this cadence.
+
+The common tail keeps the SQDG animation bound to the victim, refreshes owner-derived draw ownership, and writes the victim cell's bridge/height short. Animation allocation failure changes presentation only; the state counters and damage cadence continue exactly.
+
+### 17.6 Exact RNG, wake, splash, and report-sound production
+
+The wake helper runs exactly three iterations. Each consumes `RNG[-180,180]` then `RNG[-64,64]` before allocation, rotates the two offsets by victim facing with truncation toward zero, preserves Z, and constructs `[General] Wake=WAKE1` with delay 0, loop 1, flags `0x600` if allocation succeeds. A state chooser plus wake burst therefore consumes seven RNG draws even when all three wake allocations fail.
+
+State 4 performs all three splash iterations before culling or damage. For iteration `i=0..2`, longitudinal `B=i*128-128`; one mandatory RNG chooses lateral `A=+64` for zero and `A=-64` for nonzero. Position is:
+
+```text
+dx = trunc(B*cos - A*sin)
+dy = trunc(B*sin + A*cos)
+```
+
+Each splash chooser is consumed before allocation. Successful allocation consumes one additional `RandomRanged(0,splash_count-1)` and constructs the chosen retail `H2O_EXP3/H2O_EXP2/H2O_EXP1` animation with delay 2, loop 1, flags `0x600`, and Z adjustment `-10`. Retail count is three. The list animation's `Report` is later emitted by the ordinary `AnimClass::Middle` scheduler; the grapple function has no direct sound call. SQDG and WAKE1 have no retail report sound.
+
+With all splash allocations successful, state 4 consumes six splash draws. A survivor then consumes one state draw plus six wake draws, for 13 total. Cull or victim death skips the survivor chooser/wakes. Allocation failure suppresses only the allocation-dependent splash-list draw and construction, never the mandatory lateral draw.
+
+### 17.7 Damage, Culling, veterancy, and delayed sinking
+
+State 4 uses the attacker's current slot-0 weapon, so elite attackers select `SquidGrabE`. Normal damage passes raw weapon `Damage` to the ordinary victim `ReceiveDamage` pipeline: 15 for rookie/veteran, 40 for elite.
+
+When warhead `Culling` is true, native health status is tested before damage. With retail `ConditionRed=25%` and `ConditionYellow=50%`, rookie/veteran culls red only; elite culls red or yellow. Green and non-eligible yellow targets take normal damage.
+
+Cull suppresses `ReceiveDamage`. If attacker type `Trainable` is true, it first awards experience:
+
+```text
+xp += victim_value / (attacker_value * VeteranRatio)
+xp = min(xp, VeteranCap)
+```
+
+Retail uses `VeteranRatio=3.0` and `VeteranCap=2`. The routine then saves the victim pointer, calls Detach, sets victim `+0x3CD=1`, invokes the victim's Unit-lost notification and `StopFiring`, resets visual/listener state, overwrites the reappeared attacker's `+0x6A8` to zero, and returns.
+
+`+0x3CD` enters the normal Unit sinking/death continuation, not immediate store deletion. `UnitClass::AI` lowers Z by 5 per visit, removes below -400, and every fourth global frame consumes two `RNG[-170,170]` draws before attempting a WAKE1 animation. The implementation must use the existing sinking/death pipeline or add its exact equivalent; replacing cull with immediate deletion changes visibility, occupancy, RNG, and lifetime ordering.
+
+If normal damage kills/uninitializes the victim, the manager clears FSM/animation/listener state and does not consume survivor RNG. If it survives, it chooses state 2/3 and emits the seven-draw transition wake burst.
+
+### 17.8 Damage/healing suppression while attached
+
+`FootClass::ReceiveDamage @ 0x004D7330` supplies three shared attachment effects:
+
+- a Sonic warhead with an actual attacker link detaches before downstream damage, then notifies a non-null damage source;
+- when the source is not the attached attacker and positive raw damage is greater than the attacker's `SuppressionThreshold`, manager damage timer becomes `start=current`, `duration=damage*2-SuppressionThreshold`;
+- negative damage with an actual attachment arms the manager damage timer for 50 frames and detaches.
+
+For stock SQD the threshold is 250. The positive-damage timer is not the state-4 cadence. It becomes relevant if the victim expires: the pointer-expiry path can remove the attacker rather than release/re-place it while that timer remains active and the victim is not protected by its vslot `+0x160` predicate. The negative-heal path detaches immediately after arming; its timer belongs to shared post-release manager state.
+
+### 17.9 Corrected detach, re-entry, and caller overrides
+
+The old claim that Naval SQD always dies on Detach is false. `Detach @ 0x0062A4A0` tests owner type `Naval` at `0x0062A525`. The Naval branch uses victim facing to choose an adjacent cell, then joins common cell, zone/passability, `CanPlaceAtTarget`, `CanEnterCell`, reveal/occupation, and `Unlimbo` validation.
+
+On success the SQD reappears and owner `+0x6A0/+0x6A8` is armed for `3 * current primary Weapon.ROF`; stock duration is 297. On invalid candidate, failed placement, or failed unlimbo only, owner health becomes zero and owner vslot `+0xF8` removes it. The separate active-damage-timer forced-removal branch is non-Naval.
+
+The common success/failure cleanup resets FSM counters, destroys SQDG, removes the listener, zeros victim rocking, clears victim destination delay, clears victim `+0x694`, and clears manager victim `+0x28`. Two callers intentionally override the successful SQD delay:
+
+- lost-water detach in `0x006297F0` writes owner duration zero after Detach;
+- culling detach writes owner duration zero after Detach.
+
+Other direct callers are Chronosphere launch, `PerformDeploy`'s admitted IsLocomotor effect, repair-radio acceptance, Sonic/healing damage, non-Organic Iron Curtain application, teleport locomotor release, and grinder/building-entry consumption. Each must require the actual reciprocal link. A resolved target, broad Temporal flag, or generic locomotor special action is not enough to detach.
+
+### 17.10 Pointer expiry, teardown, persistence, and game-active gate
+
+Manager pointer expiry clears owner `+0x24` when the owner expires. When the victim expires, global `0x00A8ED5C` decides whether world-placement cleanup is legal. Xrefs prove it is set to 1 at scenario start/load and cleared on gameplay exit; it is the game/scenario-loaded-active gate. When false, pointer expiry only clears manager victim. When true, it executes the damage-timer/placement release path described above. Expired persistent animation clears `+0x44` and marks listener removal `+0x54`.
+
+Attacker destruction deletes its manager. The manager destructor destroys SQDG, removes the animation listener, and stable-erases the manager from the global Parasite vector. Victim destruction must clear both directions through pointer expiry before IDs can be reused.
+
+The manager vtable reports virtual size 0x58. Native save writes the raw manager body; load restores vtables, resets both manager timers to current/zero, re-registers an existing animation listener, and swizzles owner, victim, and animation pointers. Foot load swizzles victim `+0x694` and owner manager `+0x69C`; Foot destination delay and Parasite refire-lock-until are raw-persisted. FSM state, major/subframe, visual presence, and listener flag persist. Native manager CRC includes animation identity plus state/major/subframe/listener, not object pointers or timers; Rust must nevertheless serialize and deterministically hash every logical link/timer/FSM field used by its lockstep simulation.
+
+### 17.11 Current Rust delta and exact implementation contract
+
+Current Rust parses `limbo_launch`, weapon damage/ROF/projectile, and warhead `parasite`/`culling`, but does not parse `Paralyzes`, Sonic, Organic, Parasiteable, SuppressionThreshold, or the SQD art/rule animation bindings needed here. The special detonation resolver currently logs Parasite as unsupported and returns. There is no manager, refire lock, reciprocal link, attacker limbo/re-entry, victim-tail update, FSM, RNG choreography, culling/sinking handoff, suppression timer, detach transaction, or persistence/hash payload.
+
+The implementation is complete only if it supplies all of these as one coherent mechanism:
+
+1. parse the exact rule/type/art inputs and preserve retail defaults;
+2. create manager presence from the rookie primary Parasite warhead and initialize native raw timers at current/zero;
+3. enforce the signed `target.parasite_fire_lock_until > current` fire gate and write `current+20` at LimboLaunch;
+4. limbo the attacker, carry a real projectile source/entity target, evaluate all attachment gates, and either restore/remove on failure or install both links on success;
+5. invoke the manager from the victim's post-locomotion Foot tail, not detonation, and refresh Ship destination delay before the FSM switch;
+6. preserve exact states, update counts, rocking, animation/effect scheduling, RNG order, current-weapon damage, Culling, XP, and delayed sinking;
+7. implement Sonic, suppression, healing, pointer-expiry, destruction, repair, invulnerability, superweapon, deploy, teleport, and entry release through one reciprocal-link-validated Detach transaction;
+8. re-place Naval owners beside the victim, arm 3*ROF on ordinary success, kill only on failed placement, and apply the lost-water/cull zero-duration overrides;
+9. serialize/load/validate/hash refire lock, manager presence, reciprocal IDs, damage/attack timers, state/counters, visual logical state, listener membership, rocking, destination delay, and any sinking state consumed by this mechanism.
+
+Snapshot validation must reject self-links, one-sided links, duplicate victims, missing endpoints, links without a manager, manager victims that disagree with victim backlinks, active attackers not in limbo, and persisted state outside 0..4. It must never silently repair malformed ownership.
+
+Required discriminators include: 20-frame pre-impact refire lock; command admission between attachment and first victim tail; first damage at update 70 and 40-update repeats; null-cell admission versus known non-water detach; first-link-wins; `Parasiteable=no`; existing installed link; all allocation-failure RNG variants; rookie/veteran/elite Culling thresholds; normal versus cull XP; delayed sinking RNG; positive suppression timer; Sonic and healing release; successful adjacent re-entry and placement-failure death; caller-specific owner-delay overrides; load round-trip at each FSM state; endpoint expiry; and exact raw signed Ship timer predicates from Section 16.
+
+### 17.12 Coverage ledger and final questions
+
+| Area | Status | Evidence-backed result |
+|---|---|---|
+| stock activation / exclusions | verified | Naval+Organic SQD only; CLEG/Temporal identity refuted; organic naval targets use SquidPunch |
+| manager construction and destruction | verified | rookie-primary Parasite gate; 0x58 body; global registration and stable erase |
+| Parasite fire lock | verified | target `+0x698`, `GetFireError`, constructor zero, launch `current+20` |
+| LimboLaunch/projectile impact | verified | attacker limbo, target lock, projectile re-init, object-target Attach |
+| CanAttach/Attach | verified | complete gate list, null-cell exception, fallback and reciprocal write order |
+| scheduler | verified | victim Foot tail; next-visit first write; live-vector ordering |
+| states/cadence | verified | all 0..4/default; updates 30/69/70 and 40-repeat |
+| animation/RNG/sound ownership | verified | SQDG, wake and splash geometry, allocation-dependent draw counts, Anim scheduler Reports |
+| damage/Culling/XP/sinking | verified | current slot-0 weapon, thresholds, formula, delayed sink/removal |
+| suppression/healing/Sonic | verified | exact threshold/duration and detach ordering |
+| Detach/re-entry | verified | Naval adjacent placement; 3*ROF; only failure kills; overrides |
+| pointer expiry / active gate | verified | scenario-loaded-active global and both cleanup modes |
+| persistence/hash | verified | raw native save/load/swizzle/CRC ownership; deterministic Rust payload requirement |
+| OpenTS | verified-negative | no corresponding YR mechanism found |
+
+- `[RESOLVED] SQD-01 — Is 0x006297F0 temporal/CLEG behavior? -> No; it is the Naval+Organic Parasite grapple used by retail SQD.`
+- `[RESOLVED] SQD-02 — Does initial detonation arm the Ship guard? -> No; the next victim Foot tail performs the first write.`
+- `[RESOLVED] SQD-03 — Does a missing victim cell reject attachment or update? -> No; null passes the Naval cell gate and update treats it like water.`
+- `[RESOLVED] SQD-04 — What is target +0x698? -> Signed Parasite refire-lock-until frame, written current+20 at LimboLaunch.`
+- `[RESOLVED] SQD-05 — Is SQD damage ROF=99-gated? -> No; first damage is victim update 70, then every 40 surviving updates.`
+- `[RESOLVED] SQD-06 — What are the exact splash offsets? -> B=-128,0,128 and A=+64/-64, facing-rotated with truncation.`
+- `[RESOLVED] SQD-07 — Which RNG draws survive allocation failure? -> all wake offset and splash lateral draws; only splash-list selection depends on successful allocation.`
+- `[RESOLVED] SQD-08 — Which targets are culled? -> pre-damage red; elite also pre-damage yellow.`
+- `[RESOLVED] SQD-09 — Is cull immediate deletion? -> No; it awards eligible XP, detaches, and enters delayed sinking.`
+- `[RESOLVED] SQD-10 — Does Naval detach kill the SQD? -> Only if adjacent placement/unlimbo fails; normal success reappears it and arms 3*ROF.`
+- `[RESOLVED] SQD-11 — What does positive third-party host damage do? -> above SuppressionThreshold it arms manager damage timer for damage*2-threshold; it does not advance grapple state.`
+- `[RESOLVED] SQD-12 — Does native load restart grapple visuals from state 0? -> No; logical FSM/visual state persists while manager timers reset.`
+- `[RESOLVED] SQD-13 — Must native uninitialized middle timer dwords be reproduced? -> No; active predicates ignore them, they have no mechanism-level behavior, and importing stack residue would violate deterministic Rust state.`
+- `[RESOLVED] SQD-14 — Does OpenTS implement this path? -> No matching code or data consumer exists.`
+
+Adversarial re-reads covered launch/fire-lock order, null-cell admission, state transition counts, splash stack offsets, cull XP argument order, delayed sinking, every Detach tail, and pointer-expiry mode. They added the `+0x698` fire-lock mechanism and corrected Naval re-entry plus the `+64/-64` splash geometry. A final cold comparison of the complete state-machine and lifecycle investigations added no remaining material question. Research is complete; the GSI row remains open only for design, implementation, validation, fresh criticism, and phase-wide reverse audit.
+
+### Addendum-7 sources
+
+- Live read-only Ghidra MCP, active `gamemd.exe`: `TechnoClass::{Init_Managers @ 0x006F3F40, GetFireError @ 0x006FCAE1, FireAtSpawnsBullet @ 0x006FDD50}`; `FootClass::{Constructor @ 0x004D31E0, AI @ 0x004DA530, ReceiveDamage @ 0x004D7330}`; `BulletClass::DetonateAtCoord @ 0x004690B0`; Parasite bodies `0x006292B0`, `0x006295B0`, `0x006296B0`, `0x00629720`, `0x006297F0`, `0x00629E90`, `0x00629FD0`, `0x0062A260`, `0x0062A4A0`, `0x0062A8E0`, `0x0062A980`, `0x0062AF50`, and `0x0062AF70`; `FUN_0074FF50` veterancy arithmetic; Unit sinking continuation `0x007360C0`; scenario/game-active global `0x00A8ED5C` xrefs.
+- Retail data: `ini/rulesmd.ini` `[SQD]`, `[SquidGrab]`, `[SquidGrabE]`, `[SquidPunch]`, `[ParasitePlus]`, `[General]`, and `Parasiteable` overrides; `ini/artmd.ini` `[SQDG]`, directional SQDG sections, `WAKE1`, and water splash definitions.
+- Current Rust: `src/rules/{object_type,weapon_type,warhead_type}.rs`; `src/sim/{combat,projectile,game_entity,timer,snapshot,world}.rs`; current effect, sinking, lifecycle, scheduler, and world-hash surfaces cited in the repository inventory.
+- Secondary-source negative check: exhaustive `rg` over the sibling OpenTS tree for the YR mechanism/key/type names listed in Section 17.1.
