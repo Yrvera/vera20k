@@ -84,25 +84,36 @@ const NEAREST_REACHABLE_SEARCH_RADIUS: u16 = 10;
 /// unused, and `Can_Enter_Cell` never reads it. It is not why a Robot Tank
 /// could not use a span, and it did not stop one driving under one either.)
 ///
-/// **Why the exclusion was indefensible on the binary's own terms.** The native
-/// analogue of this predicate is the `vtable+0x2CC` gate inside
-/// `FootClass::Find_Path` @ `0x004D3920`, cited above — a *per-class* virtual.
-/// All four Hover types and every whitelisted Drive vehicle are `[VehicleTypes]`
-/// (verified in `ini/rulesmd.ini`), so they are the same `UnitClass` and resolve
-/// `+0x2CC` to the same slot value. The native gate therefore cannot separate a
-/// Robot Tank from a Grizzly, and this one did.
+/// **Why the exclusion has no native counterpart.** The `vtable+0x2CC` gate
+/// inside `FootClass::Find_Path` @ `0x004D3920`, cited above, resolves to
+/// `FootClass::CanReachDestination` @ `0x004D3810` — VERIFIED by decompiling it
+/// 2026-08-27. Its body reads the type class through `vtable+0x84`, takes
+/// `TechnoTypeClass+0x5B4` (**MovementZone**), returns 1 immediately when that
+/// is `-1`, and otherwise tail-calls `MapClass::Can_Reach_Zone` with it. So it
+/// is a zone **reachability abort** — should the search run at all — and it
+/// carries no locomotor-CLSID term of any kind. Nothing native selects a
+/// *pathing plane* by locomotor kind, which is what this predicate does.
 ///
-/// The `Can_Enter_Cell` / `CheckBridgeTraversal` / `ILocomotion+0x1C` addresses
-/// reported alongside that finding are **UNCHECKED here** — corroboration that
-/// the downstream legality path is locomotor-agnostic, not the gate itself, and
-/// not re-read at this callsite. Do not cite them as if they resolved
-/// `+0x2CC`.
+/// Do NOT reason "same vtable slot, therefore same answer": a shared virtual
+/// that reads type data answers differently per type, and this one does exactly
+/// that. `ROBO` is `MovementZone=AmphibiousDestroyer` and `MTNK` is `Normal`, so
+/// `0x004D3810` genuinely can separate them — it just separates them by zone,
+/// not by locomotor, and never by pathing plane. An earlier draft of this
+/// comment argued from `[VehicleTypes]` membership to a shared slot value to a
+/// shared answer; the middle step is true and the last does not follow.
+///
+/// `Can_Enter_Cell` @ `0x0073F0A0`, `CheckBridgeTraversal` @ `0x004D9C60` and
+/// the `ILocomotion+0x1C` slot are **UNCHECKED here** — reported as corroboration
+/// that the downstream legality path is locomotor-agnostic, not re-read at this
+/// callsite, and not the gate. Do not cite them as if they resolved `+0x2CC`.
 ///
 /// The remaining `Drive | Walk | Mech | Hover` list stays VERA-internal. Ship,
-/// Fly and Teleport are excluded because admitting them is a separate question
-/// with its own blast radius, not because the binary excludes them. `Mech` is a
-/// dead arm: its CLSID is deliberately absent from `INSTALLED_CLSID_KIND_TABLE`
-/// (`locomotor_type.rs`), so no stock type can reach it.
+/// Fly, Teleport, Jumpjet and Rocket are excluded because admitting them is a
+/// separate question with its own blast radius, not because the binary excludes
+/// them — per the paragraph above, the binary excludes nothing here by kind.
+/// `Mech` is a dead arm: its CLSID is deliberately absent from
+/// `INSTALLED_CLSID_KIND_TABLE` (`locomotor_type.rs`), so no stock type reaches
+/// it.
 pub(super) fn supports_layered_bridge_pathing(
     loco: &LocomotorState,
     grid: &PathGrid,
