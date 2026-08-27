@@ -459,7 +459,9 @@ mod tests {
     use crate::app::match_runtime::frame_pacer::LocalFramePacer;
     use crate::map::lighting::CellLightGrid;
     use crate::map::overlay::OverlayEntry;
+    use crate::map::resolved_terrain::{DynamicTerrainCellState, ResolvedTerrainCell};
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::overlay_grid::OverlayGrid;
     use crate::sim::replay::{ReplayHeader, ReplayLog};
     use crate::sim::world::{Simulation, SimulationRngState};
@@ -697,6 +699,64 @@ mod tests {
 
     fn load_fixture_terrain() -> ResolvedTerrainGrid {
         ResolvedTerrainGrid::from_cells(0, 0, Vec::new())
+    }
+
+    fn compatibility_snapshot_cell(tile_index: i32) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx: 0,
+            ry: 0,
+            source_tile_index: tile_index,
+            source_sub_tile: 0,
+            final_tile_index: tile_index,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            height_in_pixels: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: crate::map::resolved_terrain::zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: TerrainClass::Clear,
+            base_speed_costs: SpeedCostProfile::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
     }
 
     fn snapshot_bytes(simulation: &Simulation, rules: &RuleSet) -> Vec<u8> {
@@ -1018,6 +1078,64 @@ mod tests {
         );
 
         std::fs::remove_dir_all(directory).expect("remove startup fixture directory");
+    }
+
+    #[test]
+    fn gsi_04_02_last_tiles_full_load_route_does_not_retranslate_actual_runtime_ids() {
+        let compatibility = crate::map::theater::parse_tileset_ini(
+            b"[TileSet0000]\nTilesInSet=3\n\
+              [TileSet0001]\nTilesInSet=5\nLastTilesInSet=2\n\
+              [TileSet0002]\nTilesInSet=1\n",
+            "tem",
+        )
+        .expect("compatibility table");
+        assert_eq!(compatibility.translate_legacy_map_tile_index(5), 8);
+
+        let rules = load_fixture_rules();
+        let registry = OverlayTypeRegistry::empty();
+        let translated_template =
+            ResolvedTerrainGrid::from_cells(1, 1, vec![compatibility_snapshot_cell(8)]);
+        let mut runtime_actual = compatibility_snapshot_cell(5);
+        runtime_actual.radar_left = [31, 32, 33];
+
+        let mut saved = load_fixture_simulation(false);
+        saved.overlay_grid = Some(OverlayGrid::new(1, 1));
+        saved.install_resolved_terrain_for_new_map(translated_template.clone());
+        saved
+            .dynamic_terrain_cells
+            .insert((0, 0), DynamicTerrainCellState::capture(&runtime_actual));
+        let bytes = snapshot_bytes(&saved, &rules);
+
+        let mut current = load_fixture_simulation(false);
+        current.overlay_grid = Some(OverlayGrid::new(1, 1));
+        let (restored, _) = PreparedLoad::prepare_candidate(
+            &bytes,
+            Some(&current),
+            Some(LOAD_FIXTURE_MAP_HASH),
+            Some(&rules),
+            Some(&translated_template),
+            Some(&registry),
+        )
+        .expect("full persistence prepare/serde/rebuild/restore route");
+
+        let restored_cell = restored
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(0, 0))
+            .expect("restored dynamic terrain cell");
+        assert_eq!(
+            restored_cell.source_tile_index, 8,
+            "the retained already-translated map template is cloned verbatim"
+        );
+        assert_eq!(
+            restored_cell.final_tile_index, 5,
+            "serialized runtime actual ID must not cross legacy translation again"
+        );
+        assert_eq!(restored_cell.radar_left, [31, 32, 33]);
+        assert_eq!(
+            restored.dynamic_terrain_cells.get(&(0, 0)),
+            Some(&DynamicTerrainCellState::capture(&runtime_actual))
+        );
     }
 
     #[test]
