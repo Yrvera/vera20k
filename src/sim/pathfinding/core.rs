@@ -1351,7 +1351,55 @@ pub fn astar_search(
                 // Zone_precheck marker gate for normal compass edges. Direction-8
                 // tube jumps are handled below; callers that enable this gate must
                 // defer explicit tube scenarios until their hierarchy semantics are verified.
-                if let Some(gate) = options.hierarchy_gate {
+                //
+                // A bridge deck is exempt from this gate.
+                //
+                // VERIFIED in `AStar_main_loop` 0x00429A90, read at the disassembly
+                // 2026-08-27. `0x00429E54-0x00429E78` builds a stack flag at
+                // `[ESP+0x60]`: `TEST AH,0x1` on `Cell+0x140` at 0x00429E5A (the
+                // 0x100 structural-bridge bit), then `CMP EAX,0x1` at 0x00429E75 on
+                // `abs(path_height - Cell+0x11B)`. The flag is 0 for, and only for, a
+                // structural bridge cell more than one level from the carried path
+                // height — the same predicate as `is_at_bridge_level` above. At
+                // 0x00429EA4 a per-zone word is compared against `[ESI+0x28]`; on
+                // equal it proceeds, and on NOT equal the flag is tested at
+                // 0x00429EAD and a deck takes `JZ 0x00429F04` at 0x00429EAF, skipping
+                // the `Cell+0x122` test at 0x00429EB1 and the `[ESP+0x74]` test at
+                // 0x00429EBB that an ordinary cell must still pass. So a deck that
+                // fails the zone comparison is genuinely admitted where a ground cell
+                // is not.
+                //
+                // **UNCHECKED, and load-bearing for calling this parity:** that the
+                // native zone comparison at 0x00429EA4 is the same gate as
+                // `HierarchyGate` here. Ours additionally consults
+                // `blocker_neighbor_counts`, for which no native counterpart has been
+                // identified. Note also that 0x00429F04 is the *bridge* closed-list
+                // and cost-array branch (`[ESI+0x1c]` / `[ESI+0x20]`, against the
+                // ground pair `[ESI+0x18]` / `[ESI+0x24]` at 0x00429ECF) — dual-list
+                // selection this crate already models — not a dedicated
+                // skip-the-gate landing. The exemption below is therefore justified
+                // by the observed native branch shape and by production behaviour (an
+                // ordinary move order across a retail span is refused without it),
+                // not by a proven one-to-one mapping of the two gates.
+                //
+                // Without this, `HierarchyGate::allows` resolves a deck cell through
+                // a ground-plane `zone_at` with no layer term, so every deck cell
+                // answers the level-0 zone of the water underneath. That zone is
+                // never on the coarse route, so every deck neighbour is rejected and
+                // the search exhausts: an ordinary move order across any high bridge
+                // is refused and the unit never leaves its start cell.
+                //
+                // Keyed on `has_structural_bridge()` — the native 0x100 bit — and not
+                // on the `bridge_walkable` form used by `is_at_bridge_level` above,
+                // because the producer marks ramps and bridgeheads walkable without
+                // marking them structural; the walkable form would exempt every ramp
+                // approach as well and widen this well past what 0x00429EAF skips.
+                let neighbor_is_bridge_deck = neighbor_cell.has_structural_bridge()
+                    && current.height.abs_diff(neighbor_cell.ground_level)
+                        >= BRIDGE_HEIGHT_THRESHOLD;
+                if let Some(gate) = options.hierarchy_gate
+                    && !neighbor_is_bridge_deck
+                {
                     if !gate.allows(nx, ny) {
                         trace_step.rejected_reason = Some("hierarchy_gate_blocked");
                         emit_astar_trace(options, trace_step);
