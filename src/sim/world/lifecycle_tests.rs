@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts, BridgeStampFamily,
 };
-use crate::map::entities::EntityCategory;
+use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
@@ -133,6 +133,23 @@ fn drive_ship_slope_rules() -> crate::rules::ruleset::RuleSet {
          [TTRAIN]\nStrength=100\nSpeed=6\nIsTrain=yes\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n",
     );
     crate::rules::ruleset::RuleSet::from_ini(&ini).expect("Drive/Ship slope rules")
+}
+
+fn zero_speed_drive_ship_slope_rules() -> crate::rules::ruleset::RuleSet {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[VehicleTypes]\n0=ZUNITD\n1=ZMAPD\n2=ZLIMBOS\n3=ZWALK\n\
+         [InfantryTypes]\n0=ZINFD\n\
+         [AircraftTypes]\n0=ZAIRS\n\
+         [BuildingTypes]\n0=ZBUILDD\n\
+         [ZUNITD]\nStrength=100\nSpeed=0\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n\
+         [ZMAPD]\nStrength=100\nSpeed=0\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n\
+         [ZLIMBOS]\nStrength=100\nSpeed=0\nLocomotor={2BEA74E1-7CCA-11D3-BE14-00104B62A16C}\n\
+         [ZWALK]\nStrength=100\nSpeed=0\nLocomotor={4A582744-9839-11D1-B709-00A024DDAFD1}\n\
+         [ZINFD]\nStrength=100\nSpeed=0\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n\
+         [ZAIRS]\nStrength=100\nSpeed=0\nLocomotor={2BEA74E1-7CCA-11D3-BE14-00104B62A16C}\n\
+         [ZBUILDD]\nStrength=100\nSpeed=0\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n",
+    );
+    crate::rules::ruleset::RuleSet::from_ini(&ini).expect("zero-speed Drive/Ship rules")
 }
 
 fn packed_reservation_test_coord(x: i32, y: i32) -> u32 {
@@ -361,6 +378,94 @@ fn drive_ship_slope_production_spawn_unlimbo_snaps_without_manual_rocking_state(
             "successful Foot unlimbo snaps both slope bytes at the current frame"
         );
         assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+}
+
+#[test]
+fn zero_speed_foot_drive_ship_payloads_survive_all_world_spawn_paths() {
+    let rules = zero_speed_drive_ship_slope_rules();
+    let mut sim = Simulation::with_seed(0x51_0f_e);
+    sim.session.binary_frame = 71;
+    install_common_raw_terrain(&mut sim, 12, 8, 0, None);
+    for (cell, slope) in [((2, 2), 5), ((4, 2), 8), ((6, 2), 11), ((8, 2), 14)] {
+        sim.resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(cell.0, cell.1)
+            .unwrap()
+            .slope_type = slope;
+    }
+
+    for (type_id, cell, expected_kind, slope) in [
+        ("ZUNITD", (2, 2), LocomotorKind::Drive, 5),
+        ("ZINFD", (4, 2), LocomotorKind::Drive, 8),
+        ("ZAIRS", (6, 2), LocomotorKind::Ship, 11),
+    ] {
+        let stable_id = sim
+            .spawn_object(type_id, "Americans", cell.0, cell.1, 0, &rules, &BTreeMap::new())
+            .expect("zero-speed Foot production spawn/reveal");
+        let entity = sim.substrate.entities.get(stable_id).unwrap();
+        assert_eq!(entity.locomotor.as_ref().unwrap().active_kind(), expected_kind);
+        assert_eq!(
+            crate::sim::movement::slope_transition::state_for_entity(entity)
+                .expect("constructor-owned Drive/Ship payload")
+                .hash_fields(),
+            (slope, slope, 71, 0),
+            "successful reveal snaps the payload without test injection"
+        );
+    }
+
+    let placement = MapEntity {
+        owner: "Americans".to_string(),
+        type_id: "ZMAPD".to_string(),
+        health: 256,
+        cell_x: 8,
+        cell_y: 2,
+        facing: 0,
+        category: EntityCategory::Unit,
+        sub_cell: 0,
+        veterancy: 0,
+        high: false,
+        mission: None,
+        recruitable_a: true,
+        recruitable_b: true,
+    };
+    assert_eq!(sim.spawn_from_map(&[placement], Some(&rules), &BTreeMap::new()), 1);
+    let map_entity = sim
+        .substrate
+        .entities
+        .values()
+        .find(|entity| sim.interner.resolve(entity.type_ref) == "ZMAPD")
+        .unwrap();
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(map_entity)
+            .unwrap()
+            .hash_fields(),
+        (14, 14, 71, 0),
+        "scenario world spawn also constructs and reveals the zero-speed Drive payload"
+    );
+
+    let limbo_ship = sim
+        .spawn_object_limbo_at_height("ZLIMBOS", "Americans", 10, 2, 0, 0, &rules)
+        .expect("zero-speed limbo Ship");
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(limbo_ship).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (0, 0, 71, 0),
+        "limbo construction owns fresh class state without an Unlimbo snap"
+    );
+
+    for type_id in ["ZBUILDD", "ZWALK"] {
+        let stable_id = sim
+            .spawn_object_limbo_at_height(type_id, "Americans", 10, 3, 0, 0, &rules)
+            .unwrap();
+        assert!(
+            sim.substrate.entities.get(stable_id).unwrap().locomotor.is_none(),
+            "{type_id}: structures and non-Drive/Ship zero-speed types stay excluded"
+        );
     }
 }
 
