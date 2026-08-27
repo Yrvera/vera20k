@@ -102,6 +102,287 @@ fn test_parse_tileset_ini_basic() {
 }
 
 #[test]
+fn gsi_04_02_last_tiles_parser_builds_native_ordered_exceptions_and_boundaries() {
+    let lookup = parse_tileset_ini(
+        b"[TileSet0000]\nTilesInSet=3\nFileName=a\n\n\
+          [TileSet0001]\nTilesInSet=5\nLastTilesInSet=2\nFileName=b\n\n\
+          [TileSet0002]\nTilesInSet=4\nLastTilesInSet=6\nFileName=c\n",
+        "tem",
+    )
+    .expect("verified compatibility example parses");
+
+    assert_eq!(
+        lookup.legacy_tile_index_exceptions,
+        vec![
+            LegacyTileIndexException {
+                legacy_boundary: 5,
+                delta: 3,
+            },
+            LegacyTileIndexException {
+                legacy_boundary: 11,
+                delta: -2,
+            },
+        ]
+    );
+    assert_eq!(lookup.len(), 12);
+    assert_eq!(lookup.translate_legacy_map_tile_index(4), 4);
+    assert_eq!(lookup.translate_legacy_map_tile_index(5), 8);
+    assert_eq!(lookup.translate_legacy_map_tile_index(10), 13);
+    assert_eq!(lookup.translate_legacy_map_tile_index(11), 12);
+    assert_eq!(
+        lookup.translate_legacy_map_tile_index(i32::from(u16::MAX)),
+        i32::from(u16::MAX),
+        "only positive 0xFFFF is the native no-tile sentinel"
+    );
+}
+
+#[test]
+fn gsi_04_02_last_tiles_transform_is_signed_original_ordered_and_wrapping() {
+    let signed = parse_tileset_ini(b"[TileSet0000]\nTilesInSet=2\nLastTilesInSet=-2\n", "tem")
+        .expect("negative-boundary theater");
+    assert_eq!(signed.translate_legacy_map_tile_index(-1), 3);
+    assert_eq!(signed.translate_legacy_map_tile_index(0), 4);
+    assert_eq!(
+        signed.translate_legacy_map_tile_index(i32::from(u16::MAX)),
+        i32::from(u16::MAX),
+    );
+
+    let original_raw = parse_tileset_ini(
+        b"[TileSet0000]\nTilesInSet=105\nLastTilesInSet=5\n\n\
+          [TileSet0001]\nTilesInSet=1\nLastTilesInSet=45\n",
+        "tem",
+    )
+    .expect("original-input comparison theater");
+    assert_eq!(original_raw.translate_legacy_map_tile_index(5), 105);
+
+    let nonmonotonic = parse_tileset_ini(
+        b"[TileSet0000]\nTilesInSet=11\nLastTilesInSet=10\n\n\
+          [TileSet0001]\nTilesInSet=-4\nLastTilesInSet=-5\n",
+        "tem",
+    )
+    .expect("nonmonotonic declaration-order theater");
+    assert_eq!(
+        nonmonotonic.legacy_tile_index_exceptions[1].legacy_boundary,
+        5
+    );
+    assert_eq!(nonmonotonic.translate_legacy_map_tile_index(6), 6);
+
+    let wraps_max = parse_tileset_ini(
+        format!(
+            "[TileSet0000]\nTilesInSet={}\nLastTilesInSet={}\n",
+            i32::MIN,
+            i32::MAX
+        )
+        .as_bytes(),
+        "tem",
+    )
+    .expect("wrapping delta theater");
+    assert_eq!(
+        wraps_max.legacy_tile_index_exceptions,
+        vec![LegacyTileIndexException {
+            legacy_boundary: i32::MAX,
+            delta: 1,
+        }]
+    );
+    assert_eq!(
+        wraps_max.translate_legacy_map_tile_index(i32::MAX),
+        i32::MIN
+    );
+
+    let mut wraps_min = parse_tileset_ini(b"", "tem").expect("empty theater");
+    wraps_min.legacy_tile_index_exceptions = vec![LegacyTileIndexException {
+        legacy_boundary: i32::MIN,
+        delta: -1,
+    }];
+    assert_eq!(
+        wraps_min.translate_legacy_map_tile_index(i32::MIN),
+        i32::MAX
+    );
+}
+
+#[test]
+fn gsi_04_02_empty_last_tiles_table_is_full_signed_identity() {
+    let lookup = parse_tileset_ini(b"[TileSet0000]\nTilesInSet=1\n", "tem")
+        .expect("empty compatibility table");
+    assert!(lookup.legacy_tile_index_exceptions.is_empty());
+    for raw in [i32::MIN, -123, -1, 0, 123, i32::from(u16::MAX), i32::MAX] {
+        assert_eq!(lookup.translate_legacy_map_tile_index(raw), raw);
+    }
+}
+
+#[test]
+fn gsi_04_02_last_tiles_parser_preserves_readint_termination_and_wrapping() {
+    let parsed = parse_tileset_ini(
+        b"[TileSet0000]\nTilesInSet=junk\nLastTilesInSet=-1\n\n\
+          [TileSet0001]\nTilesInSet=$3\nLastTilesInSet=1H\n\n\
+          [TileSet0002]\nTilesInSet=-1\n\n\
+          [TileSet0003]\nTilesInSet=9\nLastTilesInSet=0\n",
+        "tem",
+    )
+    .expect("ReadInt edge theater");
+    assert_eq!(parsed.bounds().len(), 2);
+    assert_eq!(parsed.bounds()[0].count, 0, "present junk is atoi zero");
+    assert_eq!(
+        parsed.bounds()[1].count,
+        3,
+        "native hexadecimal is accepted"
+    );
+    assert_eq!(
+        parsed.legacy_tile_index_exceptions,
+        vec![LegacyTileIndexException {
+            legacy_boundary: 1,
+            delta: 2,
+        }]
+    );
+
+    for terminator in [
+        "[TileSet0000]\nTilesInSet=0\n\n\
+         [TileSet0001]\nFileName=missing-key\n\n\
+         [TileSet0002]\nTilesInSet=9\n",
+        "[TileSet0000]\nTilesInSet=0\n\n\
+         [TileSet0001]\nTilesInSet=\n\n\
+         [TileSet0002]\nTilesInSet=9\n",
+    ] {
+        let terminated = parse_tileset_ini(terminator.as_bytes(), "tem")
+            .expect("missing or empty TilesInSet terminates");
+        assert_eq!(terminated.bounds().len(), 1);
+        assert_eq!(terminated.len(), 0);
+    }
+
+    let malformed_last = parse_tileset_ini(
+        b"[TileSet0000]\nTilesInSet=2\nLastTilesInSet=not-a-number\n",
+        "tem",
+    )
+    .expect("present malformed LastTilesInSet is native atoi zero");
+    assert_eq!(
+        malformed_last.legacy_tile_index_exceptions,
+        vec![LegacyTileIndexException {
+            legacy_boundary: 0,
+            delta: 2,
+        }]
+    );
+
+    let suppressed = parse_tileset_ini(
+        b"[TileSet0000]\nTilesInSet=2\nLastTilesInSet=-1\n\n\
+          [TileSet0001]\nTilesInSet=3\nLastTilesInSet=3\n",
+        "tem",
+    )
+    .expect("suppressed records");
+    assert!(suppressed.legacy_tile_index_exceptions.is_empty());
+
+    let negative = parse_tileset_ini(
+        b"[TileSet0000]\nTilesInSet=-2\n\n\
+          [TileSet0001]\nTilesInSet=2\nLastTilesInSet=0\n",
+        "tem",
+    )
+    .expect("nonterminating negative count");
+    assert_eq!(negative.bounds()[0], TilesetBounds { start: 0, count: 0 });
+    assert_eq!(negative.bounds()[1], TilesetBounds { start: 0, count: 2 });
+    assert_eq!(
+        negative.legacy_tile_index_exceptions,
+        vec![LegacyTileIndexException {
+            legacy_boundary: -2,
+            delta: 2,
+        }]
+    );
+
+    let cursor_wrap = parse_tileset_ini(
+        format!(
+            "[TileSet0000]\nTilesInSet=0\nLastTilesInSet={}\n\n\
+             [TileSet0001]\nTilesInSet=0\nLastTilesInSet=1\n",
+            i32::MAX
+        )
+        .as_bytes(),
+        "tem",
+    )
+    .expect("wrapping legacy cursor");
+    assert_eq!(
+        cursor_wrap.legacy_tile_index_exceptions,
+        vec![
+            LegacyTileIndexException {
+                legacy_boundary: i32::MAX,
+                delta: -i32::MAX,
+            },
+            LegacyTileIndexException {
+                legacy_boundary: i32::MIN,
+                delta: -1,
+            },
+        ]
+    );
+}
+
+#[test]
+fn gsi_04_02_last_tiles_safe_domains_and_native_string_defaults() {
+    let maximum = parse_tileset_ini(b"[TileSet0000]\nTilesInSet=65535\n", "tem")
+        .expect("all usable u16 tile IDs fit");
+    assert_eq!(maximum.len(), 65_535);
+    assert_eq!(maximum.bounds()[0].count, u16::MAX);
+    assert_eq!(maximum.set_name(0), Some("No Name"));
+    assert_eq!(maximum.filename(0), None);
+
+    assert!(matches!(
+        parse_tileset_ini(b"[TileSet0000]\nTilesInSet=65536\n", "tem"),
+        Err(crate::map::map_file::MapError::TilesetRegistryTooLarge {
+            attempted: 65_536,
+            maximum: 65_535,
+        })
+    ));
+    assert!(matches!(checked_tileset_ordinal(65_535), Ok(65_535)));
+    assert!(matches!(
+        checked_tileset_ordinal(65_536),
+        Err(crate::map::map_file::MapError::TilesetOrdinalOverflow {
+            ordinal: 65_536,
+            maximum: 65_535,
+        })
+    ));
+}
+
+#[test]
+fn gsi_04_02_tileset_10000_is_not_an_artificial_terminator() {
+    let mut ini = String::new();
+    for ordinal in 0..10_000u32 {
+        ini.push_str(&format!("[TileSet{ordinal:04}]\nTilesInSet=0\n\n"));
+    }
+    ini.push_str("[TileSet10000]\nTilesInSet=1\nFileName=late\n");
+    let lookup = parse_tileset_ini(ini.as_bytes(), "tem").expect("ordinal 10000 parses");
+    assert_eq!(lookup.bounds().len(), 10_001);
+    assert_eq!(
+        lookup.bounds()[10_000],
+        TilesetBounds { start: 0, count: 1 }
+    );
+    assert_eq!(lookup.filename(0), Some("late01.tem"));
+}
+
+#[test]
+#[ignore = "requires VERA20K_RETAIL_THEATER_INI_DIR"]
+fn gsi_04_02_all_retail_theaters_have_empty_compatibility_tables() {
+    let root = std::path::PathBuf::from(
+        std::env::var_os("VERA20K_RETAIL_THEATER_INI_DIR")
+            .expect("set VERA20K_RETAIL_THEATER_INI_DIR to extracted retail ini directory"),
+    );
+    let expected = [
+        ("temperatmd.ini", 82, 838, 837),
+        ("snowmd.ini", 83, 964, 960),
+        ("urbanmd.ini", 111, 1_081, 1_077),
+        ("urbannmd.ini", 122, 1_175, 1_174),
+        ("desertmd.ini", 82, 726, 726),
+        ("lunarmd.ini", 85, 198, 192),
+    ];
+    for (name, section_count, slot_count, last_start) in expected {
+        let bytes = std::fs::read(root.join(name)).expect("read extracted retail theater INI");
+        let lookup = parse_tileset_ini(&bytes, "tmp").expect("parse retail theater INI");
+        assert!(lookup.legacy_tile_index_exceptions.is_empty(), "{name}");
+        assert_eq!(lookup.bounds().len(), section_count, "{name}");
+        assert_eq!(lookup.len(), slot_count, "{name}");
+        assert_eq!(
+            lookup.bounds().last().map(|bounds| bounds.start),
+            Some(last_start),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn gsi_02_11_actual_chain_count_stops_at_first_missing_sibling() {
     let present = [
         "clear01.urb",
