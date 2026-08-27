@@ -4,7 +4,17 @@ Date: 2026-08-27
 Scope: GSI-04.03, behavior-3 `Spark` only
 Binary: active retail Yuri's Revenge `gamemd.exe` in live Ghidra (`/gamemd.exe`)
 Method: exhaustive-slice re-investigation; live decompile plus assembly, active retail INI, current Rust read
-Status: **VERIFIED implementation handoff; Rust row remains OPEN**
+Status: **VERIFIED native contract; Rust implemented; critic round remains OPEN**
+
+## Post-implementation addendum
+
+Production shared-dummy routing landed in `4c71b488`; the first critic-driven
+validation and stale-prose repair landed in `72bf8e15`. The pre-fix Rust summary
+in the verdict, the disparity inventory in section 9, and the prescriptive
+handoff in section 10 are retained as historical implementation provenance.
+They describe the baseline before `4c71b488`, not the active Rust behavior.
+The native evidence and acceptance contract remain authoritative while the
+fresh-critic loop is active; this addendum does not declare parity pass.
 
 ## Question and stop condition
 
@@ -29,12 +39,13 @@ slope, raw structural-bridge flag, overlay identity, and empty object-list
 behavior in a branch-dependent order. Later lookups can restamp the same object
 before retained-pointer reads.
 
-Current Rust's shared substrate is sufficient in shape but Spark bypasses it.
-`SparkCollisionWorld` performs strict real-cell lookups, errors on invalid or
-unallocated cells, queries old before candidate, evaluates both bridge cells
-without native short-circuiting, gathers building/overlay/slope eagerly, and
-turns a constructor miss into `None`. That changes dummy state, collisions,
-coordinates, deletion, lifetime, and the synchronized particle RNG stream.
+Historically, Rust's shared substrate was sufficient in shape but Spark bypassed
+it. Pre-fix `SparkCollisionWorld` performed strict real-cell lookups, errored on
+invalid or unallocated cells, queried old before candidate, evaluated both
+bridge cells without native short-circuiting, gathered building/overlay/slope
+eagerly, and turned a constructor miss into `None`. That changed dummy state,
+collisions, coordinates, deletion, lifetime, and the synchronized particle RNG
+stream.
 
 This is not safely excludable. A valid allocated Size-diamond edge cell has an
 adjacent unallocated canonical slot; behavior-3 motion has no interior-margin or
@@ -313,9 +324,10 @@ state. Rust's existing `SharedCellDummy` identity and
 `reconstruct_for_map_resize` boundary match this lifecycle for its represented
 fields.
 
-## 9. Exact current Rust disparities
+## 9. Historical pre-implementation Rust disparities (superseded)
 
-Current files were read in the active Phase 3 worktree.
+These files were read in the active Phase 3 worktree before `4c71b488`; the
+following disparities are retained only as the implementation baseline.
 
 1. `src/sim/particles/spark_spawn.rs:327-336` calls
    `SparkCollisionWorld::ground_height_at`; `src/sim/particles/spark_world.rs:117-119`
@@ -343,7 +355,9 @@ Current files were read in the active Phase 3 worktree.
    harmless only if Spark deliberately uses the proven valid-lifecycle non-wall
    projection; it must not consult a rectangular OverlayGrid on fallback.
 
-## 10. Smallest architecture-correct handoff
+## 10. Historical architecture-correct handoff (implemented)
+
+The following handoff is satisfied by `4c71b488` and is retained for provenance.
 
 Keep arithmetic and world ownership where they are. Replace only Spark's eager
 strict fact adapter with a native-ordered query transcript over the existing
@@ -422,7 +436,7 @@ gsi_04_03_spark_shared_dummy_query_order_and_miss_continuation
 | Dummy object-list contamination | Excluded for supported active lifecycle |
 | Overlay/flags persistence | Closed: constructor defaults, active fallback writers, no per-lookup reset |
 | Save/load lifecycle | Closed: not an allocated serialized cell; reconstructed at Resize |
-| Rust mismatch and handoff | Closed; row remains open pending implementation/tests/critic loop |
+| Rust mismatch and handoff | Implemented in `4c71b488`, with validation repair `72bf8e15`; row remains open pending critic pass |
 
 No load-bearing Spark/dummy mechanism remains approximate in this report.
 

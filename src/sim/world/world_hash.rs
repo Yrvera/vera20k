@@ -180,7 +180,7 @@ mod shared_dummy_bridge_hash_tests {
         assert_eq!(
             bridge_hash,
             sim.state_hash(),
-            "without a retained Bullet only persistent 0x1180 joins the hash"
+            "without a retained Bullet the requested coordinate stays excluded; 0x1180, level, and slope are unconditional"
         );
     }
 
@@ -191,13 +191,31 @@ mod shared_dummy_bridge_hash_tests {
         let clear_hash = sim.state_hash();
         let v111_clear_hash = sim.state_hash_without_spark_dummy_level_slope_v112();
 
-        dummy.set_level_slope(-3, 9);
-
-        assert_ne!(clear_hash, sim.state_hash());
+        dummy.set_level_slope(-3, 0);
+        let level_only_hash = sim.state_hash();
+        assert_ne!(
+            clear_hash, level_only_hash,
+            "dummy level alone is unconditional v112 hash authority"
+        );
         assert_eq!(
             v111_clear_hash,
             sim.state_hash_without_spark_dummy_level_slope_v112(),
-            "the v111 provenance schema excludes unretained dummy level/slope"
+            "the v111 provenance schema excludes an unretained dummy level change"
+        );
+
+        dummy.set_level_slope(0, 0);
+        assert_eq!(clear_hash, sim.state_hash());
+
+        dummy.set_level_slope(0, 9);
+        let slope_only_hash = sim.state_hash();
+        assert_ne!(
+            clear_hash, slope_only_hash,
+            "dummy slope alone is unconditional v112 hash authority"
+        );
+        assert_eq!(
+            v111_clear_hash,
+            sim.state_hash_without_spark_dummy_level_slope_v112(),
+            "the v111 provenance schema excludes an unretained dummy slope change"
         );
     }
 }

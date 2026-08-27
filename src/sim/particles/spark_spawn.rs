@@ -668,6 +668,41 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_03_constructor_miss_uses_dummy_nonzero_slope_off_center() {
+        let rules = spark_rules(1, 2, "1");
+        let particle_type_id = crate::rules::particle_type::ParticleTypeId(0);
+        let particle_type = rules.particle_type(particle_type_id).clone();
+        let mut sim = super::super::spark_world::tests::one_cell_sim(
+            super::super::spark_world::tests::terrain_cell(0, 0),
+        );
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        terrain.test_set_dummy_cell_level_slope(2, 1);
+
+        let particle = construct_spark_particle(
+            &mut sim,
+            &particle_type,
+            particle_type_id,
+            IVec3::new(320, 192, 0),
+        )
+        .unwrap();
+
+        assert_eq!(
+            particle.coords.z, 234,
+            "level 2 plus slope 1 at local (64,192) uses the exact 104-lepton Cell domain"
+        );
+        assert_ne!(particle.coords.z, 208, "the nonzero slope must be observed");
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .shared_cell_dummy()
+                .snapshot()
+                .coord,
+            (1, 0)
+        );
+    }
+
+    #[test]
     fn gsi_05_13_spawn_frames_one_bursts_and_takes_no_gate_draw() {
         // `CMP EAX,0x1 / JZ 0x0062E89E` skips the probability roll entirely.
         // Stock `[SparkSys]` and `[FirestormSparkSys]` both set

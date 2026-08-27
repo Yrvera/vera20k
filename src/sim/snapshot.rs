@@ -322,6 +322,10 @@ use crate::sim::world::Simulation;
 // Bumped 110 -> 111: active-retail Cell ground is one 104-lepton numeric
 // authority rather than the false 90-lepton duplicate. Shape is unchanged,
 // but retained Cell targets/world state would resume with different Z results.
+// Bumped 111 -> 112: behavior-3 Spark now consumes the shared CellClass dummy's
+// persistent Level and Slope without requiring a retained dummy projectile.
+// The wire shape remains unchanged, but older saves do not certify the same
+// future-affecting lockstep hash authority for those live process-global bytes.
 const SNAPSHOT_VERSION: u32 = 112;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
