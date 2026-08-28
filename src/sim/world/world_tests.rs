@@ -132,17 +132,89 @@ fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
 }
 
 #[test]
+fn mind_control_house_delta_preserves_independent_live_mutations() {
+    let mut sim = Simulation::new();
+    let old_owner = sim.interner.intern("OldOwner");
+    let new_owner = sim.interner.intern("NewOwner");
+    let mut staged_before = BTreeMap::new();
+    let mut old_before = crate::sim::house_state::HouseState::new(
+        old_owner, 0, None, false, 0, 10,
+    );
+    old_before.owned_building_count = 2;
+    old_before.owned_unit_count = 4;
+    old_before.build_const_order = vec![10, 20];
+    let mut new_before = crate::sim::house_state::HouseState::new(
+        new_owner, 1, None, false, 0, 10,
+    );
+    new_before.owned_building_count = 1;
+    new_before.build_const_order = vec![30];
+    staged_before.insert(old_owner, old_before);
+    staged_before.insert(new_owner, new_before);
+    let ownership_before = capture_house_ownership_transaction_state(&staged_before);
+
+    let mut staged_after = staged_before.clone();
+    {
+        let old = staged_after.get_mut(&old_owner).unwrap();
+        old.owned_building_count = 1;
+        old.owned_unit_count = 3;
+        old.build_const_order = vec![20];
+        old.credits = -1;
+    }
+    {
+        let new = staged_after.get_mut(&new_owner).unwrap();
+        new.owned_building_count = 2;
+        new.owned_unit_count = 1;
+        new.build_const_order = vec![30, 10];
+        new.waypoint_edge = 3;
+    }
+
+    let mut live = staged_before;
+    {
+        let old = live.get_mut(&old_owner).unwrap();
+        old.owned_building_count = 6;
+        old.owned_unit_count = 9;
+        old.build_const_order.push(99);
+        old.credits = 777;
+        old.grudge_scores.insert(new_owner, 42);
+        old.strategy_emergency.set_state_four();
+    }
+    {
+        let new = live.get_mut(&new_owner).unwrap();
+        new.owned_building_count = 8;
+        new.owned_unit_count = 6;
+        new.build_const_order.push(77);
+    }
+
+    apply_house_ownership_transaction_delta(&mut live, &ownership_before, &staged_after);
+
+    let old = &live[&old_owner];
+    assert_eq!(old.owned_building_count, 5);
+    assert_eq!(old.owned_unit_count, 8);
+    assert_eq!(old.build_const_order, vec![20, 99]);
+    assert_eq!(old.credits, 777, "staged House replacement is forbidden");
+    assert_eq!(old.grudge_scores.get(&new_owner), Some(&42));
+    assert_eq!(old.strategy_emergency.mode(), 4);
+    let new = &live[&new_owner];
+    assert_eq!(new.owned_building_count, 9);
+    assert_eq!(new.owned_unit_count, 7);
+    assert_eq!(new.build_const_order, vec![30, 77, 10]);
+    assert_eq!(new.waypoint_edge, 3);
+}
+
+#[test]
 fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
     let mut rules = RuleSet::from_ini(&IniFile::from_str(
         "[General]\nControlledAnimationType=MINDANIM\n\
          [AudioVisual]\nYuriMindControlSound=YuriCapture\nMindClearedSound=MindCleared\n\
-         [VehicleTypes]\n0=CTRL\n1=TARGET\n\
+         [VehicleTypes]\n0=CTRL\n\
          [InfantryTypes]\n\
          [AircraftTypes]\n\
-         [BuildingTypes]\n\
+         [BuildingTypes]\n0=TARGET\n1=TARGET2\n\
+         [AI]\nBuildConst=TARGET,TARGET2\n\
          [Warheads]\n0=CONTROLLER\n\
          [CTRL]\nStrength=100\nPrimary=MIND\n\
-         [TARGET]\nStrength=100\n\
+         [TARGET]\nStrength=100\nFoundation=1x1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
+         [TARGET2]\nStrength=100\nFoundation=1x1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
          [MIND]\nDamage=1\nROF=10\nRange=8\nSpeed=100\nProjectile=Invisible\nWarhead=CONTROLLER\n\
          [CONTROLLER]\nMindControl=yes\n",
     ))
@@ -196,6 +268,23 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
             &empty_heights(),
         )
         .expect("allied target reveals");
+    let replacement_target_id = sim
+        .spawn_object(
+            "TARGET2",
+            "AlliedTarget",
+            9,
+            5,
+            0,
+            &rules,
+            &empty_heights(),
+        )
+        .expect("replacement BuildConst target reveals");
+    assert_eq!(sim.houses[&controller_house].owned_unit_count, 1);
+    assert_eq!(sim.houses[&allied_house].owned_building_count, 2);
+    assert_eq!(
+        sim.houses[&allied_house].build_const_order,
+        vec![target_id, replacement_target_id]
+    );
     let detonation = crate::sim::projectile::ProjectileDetonation {
         projectile_id: 100,
         source_id: controller_id,
@@ -214,7 +303,7 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         &rules,
         None,
         100,
-        &[controller_id, target_id],
+        &[controller_id, target_id, replacement_target_id],
         &BTreeSet::new(),
         &[detonation],
         &[],
@@ -223,6 +312,19 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
     assert!(result.immediate_uninit_ids.is_empty());
     let target = sim.substrate.entities.get(target_id).unwrap();
     assert_eq!(target.owner, controller_house);
+    assert_eq!(
+        sim.houses[&controller_house].owned_building_count, 1,
+        "combat-path Added_To_Game must survive the staged House merge"
+    );
+    assert_eq!(
+        sim.houses[&allied_house].owned_building_count, 1,
+        "combat-path Removed_From_Game must survive the staged House merge"
+    );
+    assert_eq!(
+        sim.houses[&allied_house].build_const_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&controller_house].build_const_order, vec![target_id]);
     assert_eq!(target.health.current, target.health.max, "MC does no ordinary damage");
     assert_eq!(target.mind_control_controller_id, Some(controller_id));
     let ring_id = target.mind_control_anim_id.expect("capture attaches MINDANIM");
@@ -265,6 +367,73 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         }]
     );
 
+    let replacement_detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 101,
+        source_id: controller_id,
+        target: crate::sim::projectile::ProjectileTarget::Entity(replacement_target_id),
+        impact: crate::sim::projectile::ProjectileCoord::new(9 * 256 + 128, 5 * 256 + 128, 0),
+        payload: crate::sim::projectile::ProjectilePayload {
+            base_damage: 1,
+            warhead: sim.interner.intern("CONTROLLER"),
+            weapon: sim.interner.intern("MIND"),
+            owner: controller_house,
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+    let replacement_result = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        None,
+        100,
+        &[controller_id, target_id, replacement_target_id],
+        &BTreeSet::new(),
+        &[replacement_detonation],
+        &[],
+    );
+    assert!(replacement_result.immediate_uninit_ids.is_empty());
+    let first_target = sim.substrate.entities.get(target_id).unwrap();
+    let replacement_target = sim
+        .substrate
+        .entities
+        .get(replacement_target_id)
+        .unwrap();
+    assert_eq!(first_target.owner, allied_house);
+    assert_eq!(first_target.mind_control_controller_id, None);
+    assert_eq!(replacement_target.owner, controller_house);
+    assert_eq!(
+        replacement_target.mind_control_controller_id,
+        Some(controller_id)
+    );
+    let replacement_ring_id = replacement_target
+        .mind_control_anim_id
+        .expect("replacement capture attaches its ring");
+    assert!(sim.anim(ring_id).unwrap().runtime.inactive);
+    assert!(sim.substrate.pending_delete.contains(&ring_id));
+    assert_eq!(sim.houses[&controller_house].owned_building_count, 1);
+    assert_eq!(sim.houses[&allied_house].owned_building_count, 1);
+    assert_eq!(sim.houses[&allied_house].build_const_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&controller_house].build_const_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_ref()
+            .unwrap()
+            .controlled_nodes
+            .iter()
+            .map(|node| node.victim_id)
+            .collect::<Vec<_>>(),
+        vec![replacement_target_id],
+        "max-one release and replacement capture commit in one staged transaction"
+    );
+    sim.process_pending_delete();
+    assert!(sim.anim(ring_id).is_none());
+    assert!(sim.anim(replacement_ring_id).is_some());
+
     sim.apply_fatal_lifecycle_stage(
         &rules,
         crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects,
@@ -272,22 +441,41 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         EntityCategory::Unit,
         None,
     );
-    let released = sim.substrate.entities.get(target_id).unwrap();
+    let released = sim
+        .substrate
+        .entities
+        .get(replacement_target_id)
+        .unwrap();
     assert_eq!(released.owner, allied_house);
+    assert_eq!(sim.houses[&controller_house].owned_building_count, 0);
+    assert_eq!(sim.houses[&allied_house].owned_building_count, 2);
+    assert!(sim.houses[&controller_house].build_const_order.is_empty());
+    assert_eq!(
+        sim.houses[&allied_house].build_const_order,
+        vec![target_id, replacement_target_id]
+    );
     assert_eq!(released.mind_control_controller_id, None);
     assert!(released.mind_control_anim_id.is_none());
-    assert!(sim.anim(ring_id).unwrap().runtime.inactive);
-    assert!(sim.substrate.pending_delete.contains(&ring_id));
+    assert!(sim.anim(replacement_ring_id).unwrap().runtime.inactive);
+    assert!(sim.substrate.pending_delete.contains(&replacement_ring_id));
     assert!(matches!(
         sim.sound_events.as_slice(),
         [
             SimSoundEvent::MindControlSound { sound_id: capture, .. },
-            SimSoundEvent::AnimationStopped { anim_id, .. },
-            SimSoundEvent::MindControlSound { sound_id: cleared, .. },
-        ] if capture == "YuriCapture" && *anim_id == ring_id && cleared == "MindCleared"
+            SimSoundEvent::AnimationStopped { anim_id: first_anim_id, .. },
+            SimSoundEvent::MindControlSound { sound_id: first_cleared, .. },
+            SimSoundEvent::MindControlSound { sound_id: replacement_capture, .. },
+            SimSoundEvent::AnimationStopped { anim_id: replacement_anim_id, .. },
+            SimSoundEvent::MindControlSound { sound_id: replacement_cleared, .. },
+        ] if capture == "YuriCapture"
+            && *first_anim_id == ring_id
+            && first_cleared == "MindCleared"
+            && replacement_capture == "YuriCapture"
+            && *replacement_anim_id == replacement_ring_id
+            && replacement_cleared == "MindCleared"
     ));
     sim.process_pending_delete();
-    assert!(sim.anim(ring_id).is_none());
+    assert!(sim.anim(replacement_ring_id).is_none());
     assert!(
         sim.substrate
             .entities
