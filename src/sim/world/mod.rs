@@ -301,6 +301,7 @@ pub(crate) struct SimFrameOutput {
     pub sound_events: Vec<SimSoundEvent>,
     pub fire_events: Vec<SimFireEvent>,
     pub invulnerability_impacts: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
+    pub crate_presentation: Vec<crate::sim::crates::CratePresentationEvent>,
 }
 
 /// Front-end admission lane for one Main_Tick call.
@@ -335,6 +336,7 @@ pub(crate) enum MasterFrameTestRung {
     SessionCommands,
     Triggers,
     LogicVector,
+    CrateRegeneration,
     Houses,
     TeamScript,
     FrameCommit,
@@ -819,6 +821,16 @@ pub struct Simulation {
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
     pub overlay_grid: Option<crate::sim::overlay_grid::OverlayGrid>,
+    /// Persistent `MapClass+0x158` crate slots plus the pickup-any latch.
+    ///
+    /// gamemd-derived: `MapClass::Init_Clear @ 0x005659F0`, save/load through
+    /// the raw MapClass body, and crate lifecycle routines `0x0056BBE0..`.
+    #[serde(default)]
+    pub(crate) crate_authority: crate::sim::crates::CrateAuthority,
+    /// Ordered native crate invalidation facts. Presentation-only: neither
+    /// serialized nor hashed, and drained exactly once with frame output.
+    #[serde(skip)]
+    pub(crate) crate_presentation: Vec<crate::sim::crates::CratePresentationEvent>,
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
@@ -3011,6 +3023,8 @@ impl Simulation {
             dynamic_terrain_cells: BTreeMap::new(),
             bridge_state: None,
             overlay_grid: None,
+            crate_authority: crate::sim::crates::CrateAuthority::default(),
+            crate_presentation: Vec::new(),
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,
@@ -6404,6 +6418,7 @@ impl Simulation {
         let overlay_updates = std::mem::take(&mut self.frame_overlay_updates);
         let fire_events = std::mem::take(&mut self.fire_events);
         let sound_events = std::mem::take(&mut self.sound_events);
+        let crate_presentation = std::mem::take(&mut self.crate_presentation);
         SimFrameOutput {
             tick,
             trigger_effects,
@@ -6412,6 +6427,7 @@ impl Simulation {
             sound_events,
             fire_events,
             invulnerability_impacts,
+            crate_presentation,
         }
     }
 
@@ -7319,6 +7335,14 @@ impl Simulation {
             // factory's per-step cost against the REAL wallet (house.credits) in
             // insertion_seq (temporal) order; the spawn/placement pass below then
             // delivers completed builds and advances the queue-of-record.
+            // `LogicClass__PerTickUpdate @ 0x0055AFB0` runs crate regeneration
+            // after live objects/effects/AlphaShape work and immediately before
+            // Tactical/Factory arrays, using the pre-increment master frame.
+            #[cfg(test)]
+            self.trace_master_frame_rung(MasterFrameTestRung::CrateRegeneration);
+            if let Some(overlay_registry) = overlay_registry {
+                self.update_crate_regeneration(rules, overlay_registry, phase_six_path_grid);
+            }
             {
                 let mut registry = std::mem::take(&mut self.production.factory_shadow);
                 // P6: prereq/factory-loss revalidation BEFORE the charge sweep. Builds whose

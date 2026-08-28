@@ -578,6 +578,10 @@ impl Simulation {
             self.dynamic_terrain_cells.hash(&mut hasher);
         }
         self.hash_overlay_grid(&mut hasher);
+        self.crate_authority.pickup_any_latch.hash(&mut hasher);
+        for slot in &self.crate_authority.slots {
+            slot.hash(&mut hasher);
+        }
         self.hash_smudge_grid(&mut hasher);
         self.hash_radiation(&mut hasher);
         if include_master_frame_v43 {
