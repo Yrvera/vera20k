@@ -28,6 +28,7 @@
 use std::ops::Deref;
 
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+use crate::sim::components::DriveCoord;
 use crate::util::fixed_math::SimFixed;
 
 use super::super::drop_pod_movement::DropPodState;
@@ -53,6 +54,8 @@ pub struct LocomotorCommonRuntime {
     pub jumpjet_speed: SimFixed,
     pub jumpjet_accel: SimFixed,
     pub jumpjet_current_speed: SimFixed,
+    #[serde(default)]
+    pub jumpjet_destination: Option<DriveCoord>,
     pub jumpjet_deviation: i32,
     pub jumpjet_crash_speed: SimFixed,
     pub jumpjet_turn_rate: i32,
@@ -65,6 +68,8 @@ pub struct LocomotorCommonRuntime {
     pub infantry_wobble_phase: f32,
     pub subcell_dest: Option<(SimFixed, SimFixed)>,
     pub hover_throttle: SimFixed,
+    #[serde(default)]
+    pub hover_destination: Option<DriveCoord>,
     pub hover_speed_request: SimFixed,
     pub hover_bob_offset: SimFixed,
 }
@@ -142,6 +147,7 @@ impl LocomotorRuntime {
                 jumpjet_speed: state.jumpjet_speed,
                 jumpjet_accel: state.jumpjet_accel,
                 jumpjet_current_speed: state.jumpjet_current_speed,
+                jumpjet_destination: state.jumpjet_destination,
                 jumpjet_deviation: state.jumpjet_deviation,
                 jumpjet_crash_speed: state.jumpjet_crash_speed,
                 jumpjet_turn_rate: state.jumpjet_turn_rate,
@@ -154,6 +160,7 @@ impl LocomotorRuntime {
                 infantry_wobble_phase: state.infantry_wobble_phase,
                 subcell_dest: state.subcell_dest,
                 hover_throttle: state.hover_throttle,
+                hover_destination: state.hover_destination,
                 hover_speed_request: state.hover_speed_request,
                 hover_bob_offset: state.hover_bob_offset,
             },
@@ -212,6 +219,7 @@ impl LocomotorRuntime {
         state.jumpjet_speed = self.common.jumpjet_speed;
         state.jumpjet_accel = self.common.jumpjet_accel;
         state.jumpjet_current_speed = self.common.jumpjet_current_speed;
+        state.jumpjet_destination = self.common.jumpjet_destination;
         state.jumpjet_deviation = self.common.jumpjet_deviation;
         state.jumpjet_crash_speed = self.common.jumpjet_crash_speed;
         state.jumpjet_turn_rate = self.common.jumpjet_turn_rate;
@@ -224,6 +232,7 @@ impl LocomotorRuntime {
         state.infantry_wobble_phase = self.common.infantry_wobble_phase;
         state.subcell_dest = self.common.subcell_dest;
         state.hover_throttle = self.common.hover_throttle;
+        state.hover_destination = self.common.hover_destination;
         state.hover_speed_request = self.common.hover_speed_request;
         state.hover_bob_offset = self.common.hover_bob_offset;
         state.runtime_payload = self.payload;

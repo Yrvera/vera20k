@@ -13,12 +13,37 @@
 //! the flag into the rules mult or 1.0, so each stage multiplies unconditionally
 //! (ftol(d * 1.0) == d, so this is exact).
 
+use crate::util::native_x87::{NativeF64Bits, X87Chop53};
+
 use super::CombatMods;
 
 #[allow(dead_code)] // Verified Fire_At reference math is staged but not authoritative yet.
 #[inline]
 fn ftol(v: f64) -> i32 {
-    v as i32
+    let value = X87Chop53::load_f64(NativeF64Bits::from_bits(v.to_bits()))
+        .expect("binary64 attacker stage input");
+    X87Chop53::ftol_i64(value).unwrap_or(i64::MIN) as i32
+}
+
+/// Exact common prefix used by both native Fire_At projectile construction
+/// consumers (`0x006FDBD3` and `0x006FE343`). House firepower, the persistent
+/// Techno crate qword, and signed base damage remain in one x87 expression and
+/// cross exactly one FISTP boundary. Invalid-domain integer-indefinite has a
+/// zero low dword, which is the dword consumed by the native callers.
+pub(crate) fn firepower_damage(
+    weapon_damage: i32,
+    house_firepower: NativeF64Bits,
+    crate_firepower: NativeF64Bits,
+) -> i32 {
+    let Ok(house) = X87Chop53::load_f64(house_firepower) else {
+        return 0;
+    };
+    let Ok(crate_mult) = X87Chop53::load_f64(crate_firepower) else {
+        return 0;
+    };
+    let product = X87Chop53::mul(house, crate_mult);
+    let product = X87Chop53::mul(product, X87Chop53::load_i32(weapon_damage));
+    X87Chop53::ftol_i64(product).unwrap_or(i64::MIN) as i32
 }
 
 /// gamemd Fire_At damage build. `disabled` (weapon Wave/+0x130 OR the +0x129
@@ -31,8 +56,11 @@ pub(crate) fn fire_damage(weapon_damage: i32, mods: &CombatMods, disabled: bool)
     }
     // FirePower fold: (country * unit) * base, ONE ftol (gamemd: FLD country;
     // FMUL unit; FIMUL base).
-    let mut d =
-        ftol(mods.attacker_country_firepower * mods.attacker_unit_firepower * weapon_damage as f64);
+    let mut d = firepower_damage(
+        weapon_damage,
+        NativeF64Bits::from_bits(mods.attacker_country_firepower.to_bits()),
+        NativeF64Bits::from_bits(mods.attacker_unit_firepower.to_bits()),
+    );
     // Each subsequent stage: ftol(d * mult). Caller passes 1.0 when the gate is
     // inactive, so multiplying unconditionally matches the binary exactly.
     d = ftol(d as f64 * mods.attacker_vet_combat); // VeteranCombat (Rules+0x670)
@@ -76,6 +104,26 @@ mod tests {
             ..CombatMods::default()
         };
         assert_eq!(fire_damage(50, &mods, false), 150);
+    }
+
+    #[test]
+    fn crate_firepower_invalid_domain_consumes_integer_indefinite_low_dword() {
+        assert_eq!(
+            firepower_damage(
+                100,
+                NativeF64Bits::ONE,
+                NativeF64Bits::from_bits(f64::NAN.to_bits()),
+            ),
+            0
+        );
+        assert_eq!(
+            firepower_damage(
+                100,
+                NativeF64Bits::ONE,
+                NativeF64Bits::from_bits(f64::INFINITY.to_bits()),
+            ),
+            0
+        );
     }
 
     #[test]

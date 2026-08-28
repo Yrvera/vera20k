@@ -11,9 +11,10 @@ use crate::sim::components::{
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::MissionType;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::native_x87::NativeF64Bits;
 
-const SHIP_STOP_TARGET_FRACTION: SimFixed = SimFixed::lit("0.3");
+const SHIP_STOP_TARGET_FRACTION: NativeF64Bits =
+    NativeF64Bits::from_bits(0x3fd3_3333_4000_0000);
 
 fn is_drive_locomotor(entity: &GameEntity) -> bool {
     entity
@@ -265,8 +266,8 @@ fn drive_stop_moving(entity: &mut GameEntity) {
     // ramps up from zero; in stock YR that set is the Ore Miner and both MCVs,
     // which omit `Accelerates=` and take the constructor default.
     if drive.head_to.is_none() {
-        if drive.current_speed_fraction > SIM_ZERO {
-            drive.current_speed_fraction = SIM_ZERO;
+        if f64::from_bits(entity.current_speed_fraction.bits()) > 0.0 {
+            entity.current_speed_fraction = NativeF64Bits::POSITIVE_ZERO;
         }
         drive.owner_current_speed = 0;
     }
@@ -287,7 +288,9 @@ fn ship_stop_moving(entity: &mut GameEntity) {
         .get_or_insert_with(ShipLocomotionRuntime::default);
     // Ship Stop_Moving clamps the class-owned target fraction, then clears
     // only +0x30. A committed head may continue to its track endpoint.
-    if ship.target_speed_fraction > SHIP_STOP_TARGET_FRACTION {
+    if f64::from_bits(ship.target_speed_fraction.bits())
+        > f64::from_bits(SHIP_STOP_TARGET_FRACTION.bits())
+    {
         ship.target_speed_fraction = SHIP_STOP_TARGET_FRACTION;
     }
     ship.destination = None;
@@ -298,8 +301,8 @@ fn ship_stop_moving(entity: &mut GameEntity) {
     // A non-null head is the sole case that preserves the committed segment.
     if ship.head_to.is_none() {
         ship.path.cursor = ship.path.directions.len().min(u16::MAX as usize) as u16;
-        if ship.current_speed_fraction > SIM_ZERO {
-            ship.current_speed_fraction = SIM_ZERO;
+        if f64::from_bits(entity.current_speed_fraction.bits()) > 0.0 {
+            entity.current_speed_fraction = NativeF64Bits::POSITIVE_ZERO;
         }
         ship.owner_current_speed = 0;
     }
@@ -310,7 +313,10 @@ mod tests {
     use super::*;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::LocomotorState;
-    use crate::util::fixed_math::{SIM_HALF, SIM_ONE};
+
+    fn native_f64(value: f64) -> NativeF64Bits {
+        NativeF64Bits::from_bits(value.to_bits())
+    }
 
     #[test]
     fn gsi_13_06_ship_destination_and_stop_stay_on_locomotor_runtime() {
@@ -318,14 +324,14 @@ mod tests {
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
 
         set_destination_internal_cell(&mut entity, (4, 3), None);
+        entity.current_speed_fraction = native_f64(0.5);
         let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
         assert_eq!(ship.destination, Some(DriveCoord::cell(4, 3, 0)));
         assert_eq!(
             ship.head_to, None,
             "Move_To does not invent a committed head"
         );
-        ship.target_speed_fraction = SIM_ONE;
-        ship.current_speed_fraction = SIM_HALF;
+        ship.target_speed_fraction = NativeF64Bits::ONE;
         ship.owner_current_speed = 10;
         ship.path.directions = vec![64, 64];
         ship.path.cursor = 0;
@@ -335,7 +341,7 @@ mod tests {
         assert_eq!(ship.destination, None);
         assert_eq!(ship.target_speed_fraction, SHIP_STOP_TARGET_FRACTION);
         assert_eq!(ship.path.cursor, 2);
-        assert_eq!(ship.current_speed_fraction, SIM_ZERO);
+        assert_eq!(entity.current_speed_fraction, NativeF64Bits::POSITIVE_ZERO);
         assert_eq!(ship.owner_current_speed, 0);
     }
 
@@ -344,6 +350,7 @@ mod tests {
         let mut entity = GameEntity::test_default(1, "DLPH", "Americans", 3, 3);
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
         entity.navigation.nav_com = Some(NavTargetRef::cell(5, 3));
+        entity.current_speed_fraction = native_f64(0.5);
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(5, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
@@ -352,8 +359,9 @@ mod tests {
                 cursor: 1,
                 ..Default::default()
             },
-            target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
+            track_facing: 0,
+            track_index: -1,
+            target_speed_fraction: NativeF64Bits::ONE,
             owner_current_speed: 10,
         });
 
@@ -363,12 +371,12 @@ mod tests {
         assert_eq!(ship.destination, None);
         assert_eq!(ship.head_to, Some(DriveCoord::cell(4, 3, 0)));
         assert_eq!(ship.target_speed_fraction, SHIP_STOP_TARGET_FRACTION);
-        assert_eq!(ship.current_speed_fraction, SIM_HALF);
+        assert_eq!(entity.current_speed_fraction, native_f64(0.5));
         assert_eq!(ship.owner_current_speed, 10);
 
         let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
         ship.destination = Some(DriveCoord::cell(5, 3, 0));
-        ship.target_speed_fraction = SimFixed::lit("0.2");
+        ship.target_speed_fraction = native_f64(0.2);
         set_destination_internal_null(&mut entity);
         assert_eq!(
             entity
@@ -376,7 +384,7 @@ mod tests {
                 .as_ref()
                 .expect("Ship runtime")
                 .target_speed_fraction,
-            SimFixed::lit("0.2"),
+            native_f64(0.2),
             "Stop stores min(previous target, 0.3)"
         );
     }
@@ -386,6 +394,7 @@ mod tests {
         let mut entity = GameEntity::test_default(1, "DLPH", "Americans", 4, 3);
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
         entity.navigation.nav_com = Some(NavTargetRef::cell(4, 3));
+        entity.current_speed_fraction = native_f64(0.5);
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(4, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
@@ -394,8 +403,9 @@ mod tests {
                 cursor: 0,
                 ..Default::default()
             },
-            target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
+            track_facing: 0,
+            track_index: -1,
+            target_speed_fraction: NativeF64Bits::ONE,
             owner_current_speed: 10,
         });
 
@@ -405,7 +415,7 @@ mod tests {
         assert_eq!(ship.destination, None);
         assert_eq!(ship.head_to, None);
         assert_eq!(ship.path.cursor, 1);
-        assert_eq!(ship.current_speed_fraction, SIM_ZERO);
+        assert_eq!(entity.current_speed_fraction, NativeF64Bits::POSITIVE_ZERO);
         assert_eq!(ship.owner_current_speed, 0);
     }
 
@@ -414,9 +424,9 @@ mod tests {
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
         entity.drive_locomotion = Some(DriveLocomotionRuntime {
             destination: Some(DriveCoord::cell(3, 3, 0)),
-            current_speed_fraction: SIM_ONE,
             ..Default::default()
         });
+        entity.current_speed_fraction = NativeF64Bits::ONE;
         entity
     }
 
@@ -431,7 +441,7 @@ mod tests {
         set_destination_internal_null(&mut entity);
 
         let drive = entity.drive_locomotion.as_ref().expect("drive state");
-        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(entity.current_speed_fraction, NativeF64Bits::POSITIVE_ZERO);
         assert_eq!(drive.destination, None);
     }
 
@@ -445,21 +455,13 @@ mod tests {
             .as_mut()
             .expect("drive state")
             .head_to = Some(DriveCoord::cell(4, 3, 0));
-        entity
-            .drive_locomotion
-            .as_mut()
-            .expect("drive state")
-            .current_speed_fraction = SIM_HALF;
+        entity.current_speed_fraction = native_f64(0.5);
 
         set_destination_internal_null(&mut entity);
 
         assert_eq!(
-            entity
-                .drive_locomotion
-                .as_ref()
-                .expect("drive state")
-                .current_speed_fraction,
-            SIM_HALF
+            entity.current_speed_fraction,
+            native_f64(0.5)
         );
     }
 

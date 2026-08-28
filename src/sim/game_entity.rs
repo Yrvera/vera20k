@@ -118,6 +118,14 @@ fn default_armor_multiplier() -> NativeF64Bits {
     NativeF64Bits::ONE
 }
 
+fn default_crate_multiplier() -> NativeF64Bits {
+    NativeF64Bits::ONE
+}
+
+fn default_current_speed_fraction() -> NativeF64Bits {
+    NativeF64Bits::POSITIVE_ZERO
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BuildingGatePhase {
     #[default]
@@ -363,6 +371,11 @@ pub struct GameEntity {
     pub health: Health,
     /// rules.ini section name (e.g., "HTNK", "E1", "GAPOWR") — interned for zero-cost clones.
     pub type_ref: InternedId,
+    /// Map-authored Techno AttachedTag identity. Native object-trigger
+    /// callbacks resolve this stable Tag reference synchronously; produced
+    /// objects construct with no AttachedTag.
+    #[serde(default)]
+    pub attached_tag_id: Option<InternedId>,
     /// Entity category: Unit, Infantry, Aircraft, or Structure.
     pub category: EntityCategory,
     /// Rules foundation string for structure footprint occupancy.
@@ -427,6 +440,20 @@ pub struct GameEntity {
     /// this double to 1.0; armor powerups are its active non-neutral writer.
     #[serde(default = "default_armor_multiplier")]
     pub armor_multiplier: NativeF64Bits,
+    /// Persistent FootClass `+0x580` speed-crate multiplier.
+    #[serde(default = "default_crate_multiplier")]
+    pub speed_crate_multiplier: NativeF64Bits,
+    /// Authoritative FootClass `+0x578` current-speed fraction qword. Every
+    /// native owner setter canonicalizes it through ordered comparisons.
+    #[serde(default = "default_current_speed_fraction")]
+    pub current_speed_fraction: NativeF64Bits,
+    /// Persistent TechnoClass `+0x160` firepower-crate multiplier.
+    #[serde(default = "default_crate_multiplier")]
+    pub firepower_crate_multiplier: NativeF64Bits,
+    /// Distinct stock-disabled Cloak powerup anti-stack bit. It is not the
+    /// object's ordinary cloak-capability/runtime state.
+    #[serde(default)]
+    pub cloak_crate_applied: bool,
     /// House credited with destroying this object, captured at the instant its
     /// health reached zero.
     ///
@@ -629,6 +656,10 @@ pub struct GameEntity {
     pub disguise: Option<DisguiseRuntime>,
     /// Teleport movement state machine (warp out/in phases).
     pub teleport_state: Option<TeleportState>,
+    /// Native TechnoClass `+0x280` pending warp phase. Teleport arrival clears
+    /// this only after the synchronous crate callback and arrival WarpOut row.
+    #[serde(default)]
+    pub pending_teleport_warp_phase: u32,
     /// Dormant YR TunnelLocomotionClass process state. Its underground depth
     /// lives in the typed runtime, because `Position::z` cannot represent -256.
     #[serde(default)]
@@ -643,6 +674,14 @@ pub struct GameEntity {
     /// cannot be reconstructed from victim-side `mind_controlled` flags.
     #[serde(default)]
     pub capture_manager: Option<crate::sim::capture_manager::CaptureManagerState>,
+    /// Per-attacker Parasite manager identity. The crate prerequisite owns the
+    /// reciprocal victim only; the Ship/SQD mechanism extends the manager with
+    /// its timers, grapple FSM, and visual state.
+    #[serde(default)]
+    pub parasite_manager: Option<crate::sim::parasite_attachment::ParasiteManagerState>,
+    /// Victim-side `FootClass+0x694` Parasite attacker backlink.
+    #[serde(default)]
+    pub parasite_attacker_id: Option<u64>,
     /// Spawn-manager pool carried by a `Spawns=` parent (V3 Launcher,
     /// Dreadnought, Boomer, Aircraft Carrier, Destroyer). Mirrors the native
     /// `TechnoClass+0x2D0` manager pointer: present iff `Spawns=` resolved.
@@ -693,6 +732,30 @@ pub struct GameEntity {
     /// One-shot forced drive track, independent of normal path movement.
     #[serde(default)]
     pub forced_drive_track: Option<ForcedDriveTrackState>,
+    /// Pass-local suspension record for a synchronous native movement crate
+    /// call. Never serialized: pickup plus continuation are one native stack.
+    #[serde(skip, default)]
+    pub(crate) pending_movement_crate_probes:
+        Vec<crate::sim::movement::crate_callers::MovementCrateProbe>,
+    /// Pass-local ProcessDriveTrack continuation suspended across synchronous
+    /// crate dispatch. Never serialized or hashed.
+    #[serde(skip, default)]
+      pub(crate) pending_drive_track_crate_resume:
+          Option<crate::sim::movement::crate_callers::DriveTrackPickupResume>,
+      /// Pass-local two-stage ProcessMovement candidate/final continuation.
+      /// Never serialized or hashed: each stage completes synchronously.
+      #[serde(skip, default)]
+      pub(crate) pending_process_movement_crate_resume:
+          Option<crate::sim::movement::crate_callers::ProcessMovementPickupResume>,
+      #[serde(skip, default)]
+      pub(crate) pending_air_crate_resume:
+          Option<crate::sim::movement::crate_callers::AirPickupResume>,
+    #[serde(skip, default)]
+    pub(crate) pending_teleport_crate_resume:
+        Option<crate::sim::movement::crate_callers::TeleportPickupResume>,
+    #[serde(skip, default)]
+    pub(crate) pending_ground_crossing_crate_resume:
+        Option<crate::sim::movement::crate_callers::GroundCrossingPickupResume>,
     /// Docking state machine — present when unit is approaching, waiting,
     /// or servicing at a repair depot.
     pub dock_state: Option<DockState>,
@@ -728,6 +791,14 @@ pub struct GameEntity {
     /// Parsed from `Accelerates=` and kept separate from raw `Speed=`.
     #[serde(default = "default_true")]
     pub drive_accelerates: bool,
+    /// Native owner `+0x3CD`: selects the promoted-f32 0.0015/0.1 alternate
+    /// Drive/Ship braking band outside the ordinary arrival slowdown radius.
+    #[serde(default)]
+    pub drive_alternate_brake: bool,
+    /// UnitClass `CurrentlyCrushing +0x6B5`. The active Drive/Ship ramp clamps
+    /// and writes its locomotor target to `min(target, 0.2)` while set.
+    #[serde(default)]
+    pub currently_crushing: bool,
     /// Whether this entity is immune to ALL crush types (OmniCrushResistant= in rules.ini).
     pub omni_crush_resistant: bool,
     /// Whether this entity ignores per-cell radiation damage (ImmuneToRadiation= in rules.ini).
@@ -863,6 +934,15 @@ pub struct GameEntity {
     pub(crate) base_defense_response: BaseDefenseResponseState,
     /// ObjectClass falling-down byte read by Infantry readiness.
     pub(crate) object_is_falling_down: u8,
+    /// Foot +0x425/+0x427 and +0x6AE Jumpjet landing bytes. They are distinct:
+    /// EMP-style falling need not arm recovery, and successful state-4 landing
+    /// clears both before setting the restored marker.
+    #[serde(default)]
+    pub(crate) jumpjet_falling_crash_requested: bool,
+    #[serde(default)]
+    pub(crate) jumpjet_recovery_landing_armed: bool,
+    #[serde(default)]
+    pub(crate) jumpjet_post_landing_restored: bool,
     /// Sim-side model of gamemd's TechnoClass `+0x308` (`DamageSparkSystem`): the
     /// `session.tick` at which the live AI_Update damage-Spark particle system
     /// expires and the object may roll again. `0` = no live system (may roll;
@@ -1091,6 +1171,7 @@ impl GameEntity {
             owner,
             health,
             type_ref,
+            attached_tag_id: None,
             category,
             foundation: default_foundation(),
             building_hidden_occupancy: (category == EntityCategory::Structure)
@@ -1105,6 +1186,10 @@ impl GameEntity {
             veterancy_raw: crate::sim::combat::veterancy::raw_for_rank(veterancy),
             veterancy_rank_cache: veterancy_rank_cache_default(),
             armor_multiplier: NativeF64Bits::ONE,
+            speed_crate_multiplier: NativeF64Bits::ONE,
+            current_speed_fraction: NativeF64Bits::POSITIVE_ZERO,
+            firepower_crate_multiplier: NativeF64Bits::ONE,
+            cloak_crate_applied: false,
             vision_range,
             is_voxel,
             selected: false,
@@ -1152,9 +1237,12 @@ impl GameEntity {
             sensor_deposit: None,
             disguise: None,
             teleport_state: None,
+            pending_teleport_warp_phase: 0,
             tunnel_state: None,
             low_bridge_tube_state: None,
             capture_manager: None,
+            parasite_manager: None,
+            parasite_attacker_id: None,
             spawn_manager: None,
             spawn_owner_id: None,
             rocket_state: None,
@@ -1168,6 +1256,12 @@ impl GameEntity {
             drive_locomotion: None,
             ship_locomotion: None,
             forced_drive_track: None,
+            pending_movement_crate_probes: Vec::new(),
+              pending_drive_track_crate_resume: None,
+              pending_process_movement_crate_resume: None,
+              pending_air_crate_resume: None,
+            pending_teleport_crate_resume: None,
+            pending_ground_crossing_crate_resume: None,
             dock_state: None,
             aircraft_ammo: None,
             aircraft_mission: None,
@@ -1184,6 +1278,8 @@ impl GameEntity {
             omni_crusher: false,
             regular_crusher: false,
             drive_accelerates: true,
+            drive_alternate_brake: false,
+            currently_crushing: false,
             omni_crush_resistant: false,
             immune_to_radiation: false,
             zfudge_bridge: 7,
@@ -1221,6 +1317,9 @@ impl GameEntity {
             suspended_attack_target: None,
             base_defense_response: BaseDefenseResponseState::default(),
             object_is_falling_down: 0,
+            jumpjet_falling_crash_requested: false,
+            jumpjet_recovery_landing_armed: false,
+            jumpjet_post_landing_restored: false,
             damage_particle_live_until: 0,
             damage_smoke_system_id: None,
             debug_log: None,

@@ -45,7 +45,7 @@ pub struct TeleportVisuals<'a> {
 }
 
 impl TeleportVisuals<'_> {
-    fn spawn_warp_out(&mut self, rx: u16, ry: u16, z: u8) {
+    pub(crate) fn spawn_warp_out(&mut self, rx: u16, ry: u16, z: u8) {
         let mut anim_spawn = AnimClassSpawnDescriptor::new(
             self.warp_out_type,
             rx,
@@ -313,7 +313,32 @@ pub fn tick_teleport_movement(
     occupancy: &mut OccupancyGrid,
     live_order: &[u64],
     sim_tick: u64,
+    visuals: Option<&mut TeleportVisuals<'_>>,
+) -> Vec<(u64, SpecialMovementOutcome)> {
+    tick_teleport_movement_scoped(
+        entities, occupancy, live_order, sim_tick, visuals, false,
+    )
+}
+
+pub(crate) fn resume_teleport_crate_tail(
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    live_order: &[u64],
+    sim_tick: u64,
+    visuals: Option<&mut TeleportVisuals<'_>>,
+) -> Vec<(u64, SpecialMovementOutcome)> {
+    tick_teleport_movement_scoped(
+        entities, occupancy, live_order, sim_tick, visuals, true,
+    )
+}
+
+fn tick_teleport_movement_scoped(
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    live_order: &[u64],
+    sim_tick: u64,
     mut visuals: Option<&mut TeleportVisuals<'_>>,
+    resume_crate_tail_only: bool,
 ) -> Vec<(u64, SpecialMovementOutcome)> {
     // Collect entity IDs that need cleanup after ticking.
     let mut finished: Vec<u64> = Vec::new();
@@ -327,7 +352,7 @@ pub fn tick_teleport_movement(
     };
 
     let mut outcomes = Vec::new();
-    for &id in ordered_ids {
+    'teleport_object: for &id in ordered_ids {
         // Teleport removes incoming target locks before its owner is relocated.
         // Do this before borrowing the owner mutably for the Process state.
         let is_relocating = entities
@@ -340,6 +365,44 @@ pub fn tick_teleport_movement(
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
+        if resume_crate_tail_only {
+            let Some(resume) = entity.pending_teleport_crate_resume.take() else {
+                continue;
+            };
+            debug_assert!(resume.admitted, "only an admitted teleport tail may resume");
+            // Arrival WarpOut is after pickup and reads post-callback XYZ.
+            if let Some(visuals) = visuals.as_deref_mut() {
+                visuals.spawn_warp_out(
+                    entity.position.rx,
+                    entity.position.ry,
+                    entity.position.z,
+                );
+            }
+            // Native arrival clears TechnoClass +0x280 only after the
+            // post-callback animation has read the collector's live XYZ.
+            entity.pending_teleport_warp_phase = 0;
+            let Some(teleport) = entity.teleport_state.as_mut() else {
+                continue;
+            };
+            if resume.being_warped_ticks == 0 {
+                finished.push(id);
+                outcomes.push((id, SpecialMovementOutcome::Complete));
+            } else {
+                teleport.phase = TeleportPhase::ChronoDelay;
+                outcomes.push((id, SpecialMovementOutcome::Continue));
+                if let Some(locomotor) = entity.locomotor.as_mut() {
+                    locomotor.runtime_payload =
+                        LocomotorRuntimePayload::Teleport(Some(teleport.clone()));
+                }
+                entity.push_debug_event(
+                    sim_tick as u32,
+                    DebugEventKind::SpecialMovementPhase {
+                        phase: format!("{:?}", TeleportPhase::ChronoDelay),
+                    },
+                );
+            }
+            continue 'teleport_object;
+        }
         let Some(ref mut teleport) = entity.teleport_state else {
             continue;
         };
@@ -361,13 +424,9 @@ pub fn tick_teleport_movement(
                 entity.position.sub_x = CELL_CENTER_LEPTON;
                 entity.position.sub_y = CELL_CENTER_LEPTON;
                 entity.position.exact_z_leptons = None;
-                if let Some(visuals) = visuals.as_deref_mut() {
-                    visuals.spawn_warp_out(
-                        entity.position.rx,
-                        entity.position.ry,
-                        entity.position.z,
-                    );
-                }
+                // Arrival owns its second WarpOut row only after synchronous
+                // crate pickup, from the collector's post-callback XYZ. The
+                // Simulation caller emits that row after re-fetch.
                 let layer = entity.locomotor.as_ref().map_or(
                     crate::sim::movement::locomotor::MovementLayer::Ground,
                     |l| l.layer,
@@ -382,15 +441,30 @@ pub fn tick_teleport_movement(
                     entity.sub_cell,
                     CellListInsertion::from_category(entity.category),
                 );
-                // Harvester instant-warp: when chrono delay is 0, finish in one
-                // frame (cleanup runs at end of this frame) — no post-warp lock.
-                if teleport.being_warped_ticks == 0 {
-                    finished.push(id);
-                    outcomes.push((id, SpecialMovementOutcome::Complete));
-                } else {
-                    teleport.phase = TeleportPhase::ChronoDelay;
-                    outcomes.push((id, SpecialMovementOutcome::Continue));
-                }
+                // Suspend at the exact arrival pickup xref. Cleanup, delay
+                // transition, the second WarpOut, and piggyback END all wait
+                // until Simulation has dispatched and re-fetched the owner.
+                entity.pending_teleport_crate_resume = Some(
+                    crate::sim::movement::crate_callers::TeleportPickupResume {
+                        being_warped_ticks: teleport.being_warped_ticks,
+                        admitted: false,
+                    },
+                );
+                entity.pending_movement_crate_probes.push(
+                    crate::sim::movement::crate_callers::MovementCrateProbe {
+                        callsite: crate::sim::movement::crate_callers::MovementCrateCallsite::TeleportArrival,
+                        requested: crate::sim::components::DriveCoord {
+                            x: i32::from(entity.position.rx) * 256
+                                + entity.position.sub_x.to_num::<i32>(),
+                            y: i32::from(entity.position.ry) * 256
+                                + entity.position.sub_y.to_num::<i32>(),
+                            z: entity.position.exact_z_leptons
+                                .unwrap_or_else(|| i32::from(entity.position.z)),
+                        },
+                        saved_current_speed_fraction: entity.current_speed_fraction,
+                    },
+                );
+                continue 'teleport_object;
             }
             TeleportPhase::ChronoDelay => {
                 // Count down chrono delay frames. Unit remains 50% translucent until 0.
@@ -490,12 +564,20 @@ mod tests {
             special_threat_value: 0.0,
             armor: "none".to_string(),
             speed: 6,
+            native_speed: crate::rules::object_type::native_scaled_speed(6),
             walk_rate: 1,
             idle_rate: 0,
             weight: SimFixed::lit("2.0"),
             accel_factor: SimFixed::lit("0.03"),
+            accel_factor_native: crate::util::native_x87::NativeF64Bits::from_bits(
+                0.03_f64.to_bits(),
+            ),
             decel_factor: SimFixed::lit("0.02"),
+            decel_factor_native: crate::util::native_x87::NativeF64Bits::from_bits(
+                0.02_f64.to_bits(),
+            ),
             accelerates: true,
+            passive: false,
             slowdown_distance: 512,
             sight: 5,
             tech_level: -1,
@@ -568,6 +650,8 @@ mod tests {
             elite_explodes: false,
             veteran_stronger: false,
             elite_stronger: false,
+            veteran_faster: false,
+            elite_faster: false,
             veteran_scatter: false,
             elite_scatter: false,
             veteran_cloak: false,
@@ -768,6 +852,156 @@ mod tests {
         GeneralRules::default()
     }
 
+    fn admit_teleport_arrivals_without_crates(entities: &mut EntityStore) -> bool {
+        let suspended_ids: Vec<_> = entities
+            .keys_sorted()
+            .into_iter()
+            .filter(|&id| {
+                entities
+                    .get(id)
+                    .is_some_and(|entity| entity.pending_teleport_crate_resume.is_some())
+            })
+            .collect();
+        for id in &suspended_ids {
+            let probes = entities
+                .get_mut(*id)
+                .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                .unwrap_or_default();
+            assert_eq!(probes.len(), 1, "Relocate owns exactly one arrival xref");
+            assert_eq!(
+                probes[0].callsite,
+                crate::sim::movement::crate_callers::MovementCrateCallsite::TeleportArrival
+            );
+            assert!(crate::sim::movement::crate_callers::continue_after_pickup(
+                entities.get_mut(*id).expect("teleport owner"),
+                probes[0],
+                crate::sim::crates::NativePickupReturn::One,
+            ));
+        }
+        !suspended_ids.is_empty()
+    }
+
+    fn tick_teleport_without_crate(
+        entities: &mut EntityStore,
+        occupancy: &mut OccupancyGrid,
+        live_order: &[u64],
+        sim_tick: u64,
+        mut visuals: Option<&mut TeleportVisuals<'_>>,
+    ) -> Vec<(u64, SpecialMovementOutcome)> {
+        let mut outcomes = tick_teleport_movement(
+            entities,
+            occupancy,
+            live_order,
+            sim_tick,
+            visuals.as_deref_mut(),
+        );
+        if admit_teleport_arrivals_without_crates(entities) {
+            outcomes.extend(resume_teleport_crate_tail(
+                entities,
+                occupancy,
+                live_order,
+                sim_tick,
+                visuals.as_deref_mut(),
+            ));
+        }
+        outcomes
+    }
+
+    #[test]
+    fn teleport_arrival_suspends_before_postwrites_and_resumes_from_callback_xyz() {
+        let mut entities = EntityStore::new();
+        let mut entity = GameEntity::test_default(1, "CMIN", "Americans", 5, 5);
+        entity.pending_teleport_warp_phase = 3;
+        entity.movement_target = Some(Default::default());
+        entity.current_speed_fraction = crate::util::native_x87::NativeF64Bits::ONE;
+        entities.insert(entity);
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (8, 9),
+            &default_rules(),
+            true,
+            0,
+        ));
+
+        let warp_out_type = crate::sim::intern::test_intern("WARPOUT");
+        let mut world_effects = Vec::new();
+        let mut occupancy = OccupancyGrid::new();
+        {
+            let mut visuals = TeleportVisuals {
+                world_effects: &mut world_effects,
+                warp_out_type,
+                warp_out_total_frames: 13,
+                warp_out_frame_delay: 1,
+            };
+            assert!(tick_teleport_movement(
+                &mut entities,
+                &mut occupancy,
+                &[1],
+                0,
+                Some(&mut visuals),
+            )
+            .is_empty());
+        }
+        let owner = entities.get(1).expect("suspended owner");
+        assert_eq!((owner.position.rx, owner.position.ry), (8, 9));
+        assert_eq!(owner.teleport_state.as_ref().unwrap().phase, TeleportPhase::Relocate);
+        assert!(owner.pending_teleport_crate_resume.is_some());
+        assert_eq!(owner.pending_teleport_warp_phase, 3);
+        assert_eq!(world_effects.len(), 1, "only departure precedes pickup");
+
+        let probe = entities
+            .get_mut(1)
+            .and_then(|owner| owner.pending_movement_crate_probes.pop())
+            .expect("arrival probe");
+        {
+            let owner = entities.get_mut(1).expect("callback tombstone");
+            owner.position.rx = 30;
+            owner.position.ry = 31;
+            owner.position.z = 7;
+            owner.lifecycle.object_alive = false;
+            owner.lifecycle.in_limbo = true;
+            assert!(crate::sim::movement::crate_callers::continue_after_pickup(
+                owner,
+                probe,
+                crate::sim::crates::NativePickupReturn::Zero,
+            ));
+            assert!(owner.movement_target.is_none());
+            assert_eq!(
+                owner.current_speed_fraction,
+                crate::util::native_x87::NativeF64Bits::POSITIVE_ZERO
+            );
+        }
+        {
+            let mut visuals = TeleportVisuals {
+                world_effects: &mut world_effects,
+                warp_out_type,
+                warp_out_total_frames: 13,
+                warp_out_frame_delay: 1,
+            };
+            assert_eq!(
+                resume_teleport_crate_tail(
+                    &mut entities,
+                    &mut occupancy,
+                    &[1],
+                    0,
+                    Some(&mut visuals),
+                ),
+                vec![(1, SpecialMovementOutcome::Complete)]
+            );
+        }
+        let owner = entities.get(1).expect("resumed tombstone");
+        assert!(owner.teleport_state.is_none());
+        assert!(owner.pending_teleport_crate_resume.is_none());
+        assert_eq!(owner.pending_teleport_warp_phase, 0);
+        assert_eq!(world_effects.len(), 2);
+        assert_eq!(
+            (world_effects[1].rx, world_effects[1].ry, world_effects[1].z),
+            (30, 31, 7),
+            "arrival animation re-reads callback-moved XYZ"
+        );
+    }
+
     #[test]
     fn test_teleport_issues_and_completes() {
         let mut entities = EntityStore::new();
@@ -796,7 +1030,7 @@ mod tests {
         );
 
         // One admitted frame relocates instantly.
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
+        tick_teleport_without_crate(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20, "Should have relocated to target");
@@ -811,7 +1045,13 @@ mod tests {
         // Advance through the ChronoDelay countdown.
         let delay = ts.being_warped_ticks;
         for _ in 0..delay + 5 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
+            tick_teleport_without_crate(
+                &mut entities,
+                &mut OccupancyGrid::new(),
+                &[],
+                0,
+                None,
+            );
         }
 
         // TeleportState should be removed after completion.
@@ -848,7 +1088,7 @@ mod tests {
                 warp_out_total_frames: 13,
                 warp_out_frame_delay: 1,
             };
-            tick_teleport_movement(
+            tick_teleport_without_crate(
                 &mut entities,
                 &mut OccupancyGrid::new(),
                 &[],
@@ -899,14 +1139,14 @@ mod tests {
                 warp_out_total_frames: FALLBACK_WARP_FRAME_COUNT,
                 warp_out_frame_delay: 2,
             };
-            tick_teleport_movement(
+            tick_teleport_without_crate(
                 &mut entities,
                 &mut OccupancyGrid::new(),
                 &[],
                 0,
                 Some(&mut visuals),
             );
-            tick_teleport_movement(
+            tick_teleport_without_crate(
                 &mut entities,
                 &mut OccupancyGrid::new(),
                 &[],
@@ -939,7 +1179,13 @@ mod tests {
         live_entities.insert(teleporter(1, 5, 5, 21));
         live_entities.insert(teleporter(2, 6, 5, 22));
 
-        tick_teleport_movement(&mut live_entities, &mut OccupancyGrid::new(), &[2], 0, None);
+        tick_teleport_without_crate(
+            &mut live_entities,
+            &mut OccupancyGrid::new(),
+            &[2],
+            0,
+            None,
+        );
 
         let first = live_entities.get(1).expect("id 1");
         assert_eq!(
@@ -956,7 +1202,7 @@ mod tests {
         fallback_entities.insert(teleporter(1, 5, 5, 21));
         fallback_entities.insert(teleporter(2, 6, 5, 22));
 
-        tick_teleport_movement(
+        tick_teleport_without_crate(
             &mut fallback_entities,
             &mut OccupancyGrid::new(),
             &[],
@@ -1011,7 +1257,13 @@ mod tests {
 
         // Complete the whole sequence: one Relocate frame plus the chrono delay.
         for _ in 0..200 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
+            tick_teleport_without_crate(
+                &mut entities,
+                &mut OccupancyGrid::new(),
+                &[],
+                0,
+                None,
+            );
         }
 
         // Should have restored to Drive.
@@ -1207,7 +1459,7 @@ mod tests {
         assert!(entity.locomotor.as_ref().expect("loco").is_overridden());
 
         // Single frame: position snaps, then cleanup runs because being_warped_ticks==0.
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
+        tick_teleport_without_crate(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20);
@@ -1249,7 +1501,7 @@ mod tests {
         );
 
         // Frame 1: Relocate snaps position and transitions to ChronoDelay (NOT cleanup).
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
+        tick_teleport_without_crate(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
         let ts = entities
             .get(1)
             .and_then(|e| e.teleport_state.as_ref())
@@ -1276,7 +1528,13 @@ mod tests {
             0,
         ));
         let outcomes =
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
+            tick_teleport_without_crate(
+                &mut entities,
+                &mut OccupancyGrid::new(),
+                &[],
+                0,
+                None,
+            );
 
         assert_eq!(outcomes, vec![(1, SpecialMovementOutcome::Continue)]);
         assert!(entities.get(2).expect("attacker").attack_target.is_none());

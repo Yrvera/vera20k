@@ -5593,6 +5593,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             rules,
             interner,
             handles,
+            houses,
             resource_nodes,
             fog,
             occupancy,
@@ -6239,6 +6240,7 @@ pub(crate) fn resolve_attacker_fire(
     rules: &RuleSet,
     interner: &mut StringInterner,
     handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
+    houses: &BTreeMap<InternedId, HouseState>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     fog: Option<&FogState>,
     occupancy: &OccupancyGrid,
@@ -6880,15 +6882,33 @@ pub(crate) fn resolve_attacker_fire(
             .min(weapon_burst.saturating_sub(1))
     };
     let warhead = selected.warhead;
-    // Garrison damage: apply OccupyDamageMultiplier to base damage before AoE or
-    // single-target paths. Matches gamemd Fire_At which modifies damage before bullet
-    // creation, so AoE splash uses the modified value.
+    // gamemd-derived active crate prerequisite: both Fire_At construction
+    // consumers fold House.Firepower * Techno.CrateFirepower * weapon Damage
+    // in one x87 expression and cross one FISTP boundary. Garrison Occupy is a
+    // distinct later stage, so it consumes the already-truncated prefix.
+    let house_firepower = houses.get(&snap.owner).map_or(1.0, |house| {
+        let country_name = house
+            .country
+            .map(|country| interner.resolve(country))
+            .unwrap_or_else(|| interner.resolve(snap.owner));
+        rules.general.difficulty_firepower[house.difficulty.table_index()]
+            * rules.country_firepower(country_name)
+    });
+    let crate_firepower = entities
+        .get(snap.stable_id)
+        .map_or(NativeF64Bits::ONE, |entity| entity.firepower_crate_multiplier);
+    let firepower_damage = damage::attacker::firepower_damage(
+        weapon.damage,
+        NativeF64Bits::from_bits(house_firepower.to_bits()),
+        crate_firepower,
+    );
     let base_damage = if is_garrison {
         sim_to_i32(
-            SimFixed::from_num(weapon.damage) * rules.garrison_rules.occupy_damage_multiplier,
+            SimFixed::from_num(firepower_damage)
+                * rules.garrison_rules.occupy_damage_multiplier,
         )
     } else {
-        weapon.damage
+        firepower_damage
     };
     let persistent_delivery = classify_projectile_delivery(weapon, rules);
     if let ProjectileDelivery::Persistent {

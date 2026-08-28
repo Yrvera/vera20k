@@ -411,12 +411,12 @@ impl Simulation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CrateSurface {
+pub(super) enum CrateSurface {
     Land,
     Water,
 }
 
-fn surface_at(sim: &Simulation, cell: (u16, u16)) -> CrateSurface {
+pub(super) fn surface_at(sim: &Simulation, cell: (u16, u16)) -> CrateSurface {
     if sim
         .resolved_terrain
         .as_ref()

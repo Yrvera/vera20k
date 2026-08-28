@@ -802,6 +802,7 @@ impl Simulation {
             house.has_lost.hash(hasher);
             house.outcome_state.hash(hasher);
             house.map_is_clear.hash(hasher);
+            house.visionary.hash(hasher);
             house.spy_sat_active.hash(hasher);
             house.owned_building_count.hash(hasher);
             house.owned_unit_count.hash(hasher);
@@ -1307,7 +1308,8 @@ impl Simulation {
             entity.owner.hash(hasher);
             entity.health.current.hash(hasher);
             entity.health.max.hash(hasher);
-            entity.type_ref.hash(hasher);
+                entity.type_ref.hash(hasher);
+                entity.attached_tag_id.hash(hasher);
             (entity.category as u8).hash(hasher);
             entity.foundation.hash(hasher);
             entity.building_hidden_occupancy.hash(hasher);
@@ -1328,6 +1330,10 @@ impl Simulation {
             entity.veterancy_raw.bits().hash(hasher);
             entity.veterancy_rank_cache.hash(hasher);
             entity.armor_multiplier.bits().hash(hasher);
+            entity.speed_crate_multiplier.bits().hash(hasher);
+            entity.current_speed_fraction.bits().hash(hasher);
+            entity.firepower_crate_multiplier.bits().hash(hasher);
+            entity.cloak_crate_applied.hash(hasher);
             entity.berserk.hash(hasher);
             entity.was_attacked_by_enemy.hash(hasher);
             if include_base_defense_response_v97 {
@@ -1336,6 +1342,8 @@ impl Simulation {
             }
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
+            entity.drive_alternate_brake.hash(hasher);
+            entity.currently_crushing.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
             entity.damage_fire_state_active.hash(hasher);
             entity.damage_fire_anim_ids.hash(hasher);
@@ -1395,6 +1403,7 @@ impl Simulation {
                 // pair (altitude + bob spring state) is likewise authoritative:
                 // altitude feeds combat's effective-Z and the hover float.
                 loco.hover_throttle.to_bits().hash(hasher);
+                loco.hover_destination.hash(hasher);
                 loco.hover_bob_offset.to_bits().hash(hasher);
                 loco.altitude.to_bits().hash(hasher);
                 hash_locomotor_payload(&loco.runtime_payload, hasher);
@@ -1429,6 +1438,7 @@ impl Simulation {
             entity.building_light.hash(hasher);
             entity.low_bridge_tube_state.hash(hasher);
             hash_teleport_state(entity.teleport_state.as_ref(), hasher);
+            entity.pending_teleport_warp_phase.hash(hasher);
             hash_tunnel_state(entity.tunnel_state.as_ref(), hasher);
             hash_rocket_state(entity.rocket_state.as_ref(), hasher);
             hash_drop_pod_state(entity.drop_pod_state.as_ref(), hasher);
@@ -1674,6 +1684,17 @@ impl Simulation {
                 3u8.hash(hasher);
                 manager.hash(hasher);
             }
+            // Reciprocal Parasite ownership gates the future SQD victim tail.
+            // Presence is distinct from a manager whose victim is currently
+            // null, matching native manager construction ownership.
+            if let Some(ref manager) = entity.parasite_manager {
+                4u8.hash(hasher);
+                manager.hash(hasher);
+            }
+            if let Some(attacker_id) = entity.parasite_attacker_id {
+                5u8.hash(hasher);
+                attacker_id.hash(hasher);
+            }
             // Homing missile flight state. `HomingState` has a manual `Hash`
             // impl that excludes the render-only `pitch: f32` field — see
             // sim::movement::homing_movement.
@@ -1724,6 +1745,9 @@ impl Simulation {
                     None => 0u8.hash(hasher),
                 }
                 entity.object_is_falling_down.hash(hasher);
+                entity.jumpjet_falling_crash_requested.hash(hasher);
+                entity.jumpjet_recovery_landing_armed.hash(hasher);
+                entity.jumpjet_post_landing_restored.hash(hasher);
             } else {
                 hash_mission_com_before_v29(&entity.mission, hasher);
             }
@@ -1778,6 +1802,7 @@ fn hash_locomotor_runtime(
     common.jumpjet_speed.to_bits().hash(hasher);
     common.jumpjet_accel.to_bits().hash(hasher);
     common.jumpjet_current_speed.to_bits().hash(hasher);
+    common.jumpjet_destination.hash(hasher);
     common.jumpjet_deviation.hash(hasher);
     common.jumpjet_crash_speed.to_bits().hash(hasher);
     common.jumpjet_turn_rate.hash(hasher);
@@ -1793,6 +1818,7 @@ fn hash_locomotor_runtime(
         .map(|(x, y)| (x.to_bits(), y.to_bits()))
         .hash(hasher);
     common.hover_throttle.to_bits().hash(hasher);
+    common.hover_destination.hash(hasher);
     common.hover_speed_request.to_bits().hash(hasher);
     common.hover_bob_offset.to_bits().hash(hasher);
     hash_locomotor_payload(&runtime.payload, hasher);

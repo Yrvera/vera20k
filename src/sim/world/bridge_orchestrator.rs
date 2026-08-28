@@ -2363,6 +2363,7 @@ mod tests {
             jumpjet_speed: SIM_ZERO,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: 0,
             jumpjet_crash_speed: SIM_ZERO,
             jumpjet_turn_rate: 4,
@@ -2375,6 +2376,7 @@ mod tests {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }

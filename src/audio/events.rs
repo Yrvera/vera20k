@@ -20,6 +20,10 @@
 /// A sound event produced by the game simulation or UI.
 #[derive(Debug, Clone)]
 pub enum GameSoundEvent {
+    /// Crate Armor/Speed/Firepower upgrade EVA. This is non-spatial and uses
+    /// STANDARD Vox playback after the complete sim-side radius walk.
+    CrateUpgradeEva { eva_sound_id: String },
+
     /// Local player's base structure / harvester is under enemy attack — queue
     /// the EVA voice (no spatial SFX; the radar diamond is sim-side).
     UnderAttackEva { eva_sound_id: String },
@@ -255,7 +259,9 @@ impl GameSoundEvent {
             | Self::BridgeRepaired { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
-            Self::UnderAttackEva { eva_sound_id } | Self::OutcomeEva { eva_sound_id } => {
+            Self::UnderAttackEva { eva_sound_id }
+            | Self::OutcomeEva { eva_sound_id }
+            | Self::CrateUpgradeEva { eva_sound_id } => {
                 eva_sound_id
             }
         }

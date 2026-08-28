@@ -1483,6 +1483,22 @@ impl Simulation {
         stats
     }
 
+    /// Resume only the Jumpjet tail suspended at its crate xref. The ordinary
+    /// altitude/speed/object-list process entry has already run on this stack.
+    pub(crate) fn resume_air_movement_crate_tail_one(
+        &mut self,
+        stable_id: u64,
+    ) -> crate::sim::movement::air_movement::AirMovementTickStats {
+        let stats = crate::sim::movement::air_movement::resume_air_movement_crate_tail(
+            &mut self.substrate.entities,
+            &[stable_id],
+            self.session.tick,
+        );
+        self.sync_fly_object_height(stable_id);
+        self.sync_air_spatial_membership(stable_id);
+        stats
+    }
+
     /// Object-kind classification for the LogicVector dispatch (F13). Probes
     /// the stores in the exact pre-consolidation order (anims → particle
     /// systems → terrain → projectiles → waves → entities) and returns `None`

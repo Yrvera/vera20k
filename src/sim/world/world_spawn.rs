@@ -477,6 +477,10 @@ impl Simulation {
                 self.session.binary_frame,
                 techno_ctor_random_word,
             );
+            ge.attached_tag_id = map_ent
+                .attached_tag_id
+                .as_deref()
+                .map(|tag_id| self.interner.intern(tag_id));
             ge.base_defense_response.recruitable_a = map_ent.recruitable_a;
             ge.base_defense_response.recruitable_b = map_ent.recruitable_b;
 

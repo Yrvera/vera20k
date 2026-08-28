@@ -38,6 +38,7 @@ use crate::util::fixed_math::{
     SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, fixed_distance, isqrt_i64,
     native_movement_frame_fraction, ra2_speed_to_leptons_per_second,
 };
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 
 use super::bump_crush;
 use super::drive_locomotion;
@@ -62,6 +63,77 @@ use super::{
 use crate::sim::occupancy::{
     CellListInsertion, CellOccupationGrid, OccupancyGrid, RawCellOccupationGrid,
 };
+
+#[derive(Clone, Copy)]
+struct NativeSpeedQuery {
+    native_type_speed: i32,
+    house_speed_bonus: NativeF32Bits,
+    crate_speed: NativeF64Bits,
+    has_faster: bool,
+    veteran_speed: NativeF64Bits,
+    accel_factor: NativeF64Bits,
+    decel_factor: NativeF64Bits,
+    slowdown_distance: i32,
+    is_infantry: bool,
+    is_prone: bool,
+    crawls: bool,
+    passive: bool,
+}
+
+impl NativeSpeedQuery {
+    fn execute(self, current_fraction: NativeF64Bits) -> i32 {
+        let common = drive_locomotion::foot_current_speed(
+            self.native_type_speed,
+            self.house_speed_bonus,
+            self.crate_speed,
+            self.has_faster,
+            self.veteran_speed,
+            current_fraction,
+        );
+        if self.is_infantry {
+            drive_locomotion::infantry_current_speed(common, self.is_prone, self.crawls)
+        } else {
+            common
+        }
+    }
+}
+
+fn native_speed_query(
+    entity: &crate::sim::game_entity::GameEntity,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    houses: &BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState>,
+    interner: &crate::sim::intern::StringInterner,
+) -> Option<NativeSpeedQuery> {
+    let rules = rules?;
+    let object = rules.object(interner.resolve(entity.type_ref))?;
+    let country_name = houses
+        .get(&entity.owner)
+        .and_then(|house| house.country)
+        .map(|country| interner.resolve(country))
+        .unwrap_or_else(|| interner.resolve(entity.owner));
+    let has_faster = if entity.veterancy
+        >= crate::sim::combat::veterancy::RANK_ELITE_U16
+    {
+        object.veteran_faster || object.elite_faster
+    } else {
+        entity.veterancy >= crate::sim::combat::veterancy::RANK_VETERAN_U16
+            && object.veteran_faster
+    };
+    Some(NativeSpeedQuery {
+        native_type_speed: object.native_speed,
+        house_speed_bonus: rules.country_speed_bonus(country_name, object.category),
+        crate_speed: entity.speed_crate_multiplier,
+        has_faster,
+        veteran_speed: rules.general.veteran_speed,
+        accel_factor: object.accel_factor_native,
+        decel_factor: object.decel_factor_native,
+        slowdown_distance: object.slowdown_distance,
+        is_infantry: object.category == crate::rules::object_type::ObjectCategory::Infantry,
+        is_prone: crate::sim::infantry::is_prone_for_damage(entity),
+        crawls: object.crawls,
+        passive: object.passive,
+    })
+}
 
 fn tick_forced_drive_tracks(
     entities: &mut EntityStore,
@@ -1426,8 +1498,10 @@ pub(crate) fn tick_movement_with_grids(
         blockage_path_delay_ticks,
         interner,
         rules,
+        None,
         sound_events,
         lifecycle_requests,
+        false,
         false,
     )
 }
@@ -1457,8 +1531,13 @@ pub(crate) fn tick_movement_object_with_grids(
     blockage_path_delay_ticks: u16,
     interner: &mut crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
+    houses: &BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState>,
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
     lifecycle_requests: &mut Vec<LifecycleRequest>,
+    // Re-enter only the continuation suspended at a native crate xref. This
+    // skips the Process entry, scheduler, ramp, steering, RNG, and stats
+    // preamble which has already run on the same logical native invocation.
+    resume_crate_tail_only: bool,
 ) -> MovementTickStats {
     tick_movement_with_grids_scoped(
         entities,
@@ -1484,9 +1563,11 @@ pub(crate) fn tick_movement_object_with_grids(
         blockage_path_delay_ticks,
         interner,
         rules,
+        Some(houses),
         sound_events,
         lifecycle_requests,
         true,
+        resume_crate_tail_only,
     )
 }
 
@@ -1515,10 +1596,16 @@ fn tick_movement_with_grids_scoped(
     blockage_path_delay_ticks: u16,
     interner: &mut crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
+    houses: Option<
+        &BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState>,
+    >,
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
     lifecycle_requests: &mut Vec<LifecycleRequest>,
     single_object: bool,
+    resume_crate_tail_only: bool,
 ) -> MovementTickStats {
+    let empty_houses = BTreeMap::new();
+    let houses = houses.unwrap_or(&empty_houses);
     let mut stats = MovementTickStats::default();
     if live_order.is_some_and(|order| order.is_empty()) {
         // An explicitly supplied empty LogicVector is authoritative. It is not
@@ -1558,9 +1645,11 @@ fn tick_movement_with_grids_scoped(
             &fallback_order
         }
     };
-    for &entity_id in entity_order {
-        if let Some(entity) = entities.get(entity_id) {
-            cell_occupation.reconcile_entity(entity);
+    if !resume_crate_tail_only {
+        for &entity_id in entity_order {
+            if let Some(entity) = entities.get(entity_id) {
+                cell_occupation.reconcile_entity(entity);
+            }
         }
     }
     // Collect entities that have finished their paths (need movement_target removal after loop).
@@ -1589,7 +1678,7 @@ fn tick_movement_with_grids_scoped(
     // ShipLocomotionClass::Process @ 0x0069FC10 does the same at
     // 0x0069FC1B..0x0069FC67. Entry-active Tube owns the whole object turn and
     // is the only exclusion here. Stationary eligible objects still Process.
-    if let Some(terrain) = resolved_terrain {
+    if !resume_crate_tail_only && let Some(terrain) = resolved_terrain {
         for &entity_id in entity_order {
             if tube_active_at_start.contains(&entity_id) {
                 continue;
@@ -1611,24 +1700,26 @@ fn tick_movement_with_grids_scoped(
         }
     }
 
-    let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
-        drive_locomotion::drive_entity_nav_targets(entities)
-            .into_iter()
-            .filter(|(mover_id, _)| entity_order.contains(mover_id))
-            .filter(|(mover_id, _)| !tube_active_at_start.contains(mover_id))
-            .filter_map(|(mover_id, target)| {
-                super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
-                    .map(|coord| (mover_id, coord))
-            })
-            .collect();
-    for (mover_id, coord) in drive_reaims {
-        if let Some(entity) = entities.get_mut(mover_id) {
-            drive_locomotion::refresh_drive_head_to_coord(entity, coord);
+    if !resume_crate_tail_only {
+        let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
+            drive_locomotion::drive_entity_nav_targets(entities)
+                .into_iter()
+                .filter(|(mover_id, _)| entity_order.contains(mover_id))
+                .filter(|(mover_id, _)| !tube_active_at_start.contains(mover_id))
+                .filter_map(|(mover_id, target)| {
+                    super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
+                        .map(|coord| (mover_id, coord))
+                })
+                .collect();
+        for (mover_id, coord) in drive_reaims {
+            if let Some(entity) = entities.get_mut(mover_id) {
+                drive_locomotion::refresh_drive_head_to_coord(entity, coord);
+            }
         }
     }
 
     let mut tube_processed = tube_active_at_start;
-    if let Some(terrain) = resolved_terrain {
+    if !resume_crate_tail_only && let Some(terrain) = resolved_terrain {
         for &entity_id in entity_order {
             if tube_movement::tick_active_tube_object(
                 entities,
@@ -1649,16 +1740,20 @@ fn tick_movement_with_grids_scoped(
             }
         }
     }
-    let forced_drive_processed = tick_forced_drive_tracks(
-        entities,
-        entity_order,
-        &tube_processed,
-        occupancy,
-        cell_occupation,
-        next_occupancy_enter_order,
-        dt,
-        &mut stats,
-    );
+    let forced_drive_processed = if resume_crate_tail_only {
+        BTreeSet::new()
+    } else {
+        tick_forced_drive_tracks(
+            entities,
+            entity_order,
+            &tube_processed,
+            occupancy,
+            cell_occupation,
+            next_occupancy_enter_order,
+            dt,
+            &mut stats,
+        )
+    };
     let ordinary_entry_order: Vec<u64> = entity_order
         .iter()
         .copied()
@@ -1718,16 +1813,18 @@ fn tick_movement_with_grids_scoped(
             .map(|&owner| (owner, block_set_build_gen))
             .collect();
 
-    process_pending_drive_arrivals(
-        entities,
-        &ordinary_entry_order,
-        ctx,
-        terrain_costs,
-        &entity_block_sets,
-        interner,
-        rules,
-        cell_occupation,
-    );
+    if !resume_crate_tail_only {
+        process_pending_drive_arrivals(
+            entities,
+            &ordinary_entry_order,
+            ctx,
+            terrain_costs,
+            &entity_block_sets,
+            interner,
+            rules,
+            cell_occupation,
+        );
+    }
     movers.clear();
     for &id in entity_order {
         if let Some(entity) = entities.get(id) {
@@ -1745,11 +1842,14 @@ fn tick_movement_with_grids_scoped(
         }
     }
 
-    for entity_id in movers {
+    let mut crate_suspended = false;
+    'movement_object: for entity_id in movers {
         if contains_crush_victim(&crush_kills, entity_id) {
             continue;
         }
-        stats.movers_total = stats.movers_total.saturating_add(1);
+        if !resume_crate_tail_only {
+            stats.movers_total = stats.movers_total.saturating_add(1);
+        }
 
         // Snapshot mover data before entering the inner loop so we can release the
         // mutable borrow on `entities` when needed for crush/bump immutable lookups.
@@ -1818,9 +1918,69 @@ fn tick_movement_with_grids_scoped(
             // `Move` before this loop clears the target on arrival.
             active_layer = entity.movement_layer_or_ground();
             let marker_body_facing = entity.body_facing;
+            let mut skip_cell_crossings_after_chain_ready = false;
+            let current_occupation_layer = if entity.on_bridge {
+                MovementLayer::Bridge
+            } else {
+                MovementLayer::Ground
+            };
+            let prior_position = (
+                entity.position.rx,
+                entity.position.ry,
+                entity.position.sub_x,
+                entity.position.sub_y,
+            );
+            let saved_current_speed_fraction = entity.current_speed_fraction;
+            let category = entity.category;
+            let native_speed_query = native_speed_query(entity, rules, houses, interner);
+            let owner_xyz_for_ramp = crate::sim::components::DriveCoord {
+                x: i32::from(entity.position.rx)
+                    .wrapping_mul(256)
+                    .wrapping_add(entity.position.sub_x.to_num::<i32>()),
+                y: i32::from(entity.position.ry)
+                    .wrapping_mul(256)
+                    .wrapping_add(entity.position.sub_y.to_num::<i32>()),
+                z: crate::sim::combat::object_world_z_leptons(entity, resolved_terrain),
+            };
             let Some(ref mut target) = entity.movement_target else {
                 continue;
             };
+            let advance_result = if resume_crate_tail_only {
+                marker_context = path_grid.map(|grid| BridgeMarkerContext {
+                    enabled: true,
+                    peers: &marker_peers,
+                    raw_occupation: raw_cell_occupation,
+                    grid,
+                    terrain: resolved_terrain,
+                    playfield_bounds,
+                    native_frame,
+                });
+                movement_step::advance_lepton_position_with_crate_probes(
+                    target,
+                    &mut entity.position,
+                    &mut entity.facing,
+                    &mut entity.facing_target,
+                    &mut entity.drive_track,
+                    &mut entity.drive_locomotion,
+                    &mut entity.ship_locomotion,
+                    &mut entity.locomotor,
+                    category,
+                    SIM_ZERO,
+                    0,
+                    dt,
+                    entity_id,
+                    Some(&mut *cell_occupation),
+                    movement_step::DriveCellAdmission {
+                        units: mover_entity_block_map,
+                    },
+                    current_occupation_layer,
+                    path_grid,
+                    &mut entity.pending_movement_crate_probes,
+                    saved_current_speed_fraction,
+                    &mut entity.pending_drive_track_crate_resume,
+                    &mut entity.pending_process_movement_crate_resume,
+                )
+            } else {
             target.movement_delay = target.movement_delay.saturating_sub(1);
             target.blocked_delay = target.blocked_delay.saturating_sub(1);
 
@@ -1845,6 +2005,11 @@ fn tick_movement_with_grids_scoped(
                 sim_tick,
             ) {
                 PathExhaustionResult::Finished => {
+                    if snap.locomotor.as_ref().is_some_and(|locomotor| {
+                        locomotor.kind == crate::rules::locomotor_type::LocomotorKind::Walk
+                    }) {
+                        entity.current_speed_fraction = NativeF64Bits::POSITIVE_ZERO;
+                    }
                     finished_entities.push(entity_id);
                     continue;
                 }
@@ -1952,13 +2117,14 @@ fn tick_movement_with_grids_scoped(
             // builds this fraction inside Drive/Ship Process_Movement only, so
             // the helper returns 1.0 for every other locomotor.
             let below_condition_yellow = rules.is_some_and(|r| {
-                crate::sim::pathfinding::terrain_speed::is_at_or_below_condition_yellow(
-                    entity.health.current as i64,
-                    entity.health.max as i64,
-                    r.general.condition_yellow_x1000,
-                )
+                entity.health.max == 0
+                    || crate::sim::pathfinding::terrain_speed::is_at_or_below_condition_yellow(
+                        entity.health.current as i64,
+                        entity.health.max as i64,
+                        r.general.condition_yellow_x1000,
+                    )
             });
-            let cell_speed_mod: SimFixed = {
+            let cell_speed_mod: NativeF64Bits = {
                 let next_cell = target.path.get(target.next_index).copied();
                 match (
                     resolved_terrain,
@@ -1972,12 +2138,22 @@ fn tick_movement_with_grids_scoped(
                             loco.kind,
                             (entity.position.rx, entity.position.ry),
                             nc,
+                            (
+                                i32::from(entity.position.rx)
+                                    .wrapping_mul(256)
+                                    .wrapping_add(entity.position.sub_x.to_num::<i32>()),
+                                i32::from(entity.position.ry)
+                                    .wrapping_mul(256)
+                                    .wrapping_add(entity.position.sub_y.to_num::<i32>()),
+                            ),
+                            entity.on_bridge,
+                            entity.category == EntityCategory::Unit,
                             terrain,
                             terrain_speed_config,
                             below_condition_yellow,
                         )
                     }
-                    _ => SIM_ONE,
+                    _ => NativeF64Bits::ONE,
                 }
             };
             let uses_drive_locomotor = snap.locomotor.as_ref().is_some_and(|loco| {
@@ -1989,6 +2165,10 @@ fn tick_movement_with_grids_scoped(
             let uses_ship_locomotor = snap.locomotor.as_ref().is_some_and(|loco| {
                 matches!(loco.kind, crate::rules::locomotor_type::LocomotorKind::Ship)
             });
+            let uses_walk_locomotor = snap.locomotor.as_ref().is_some_and(|loco| {
+                matches!(loco.kind, crate::rules::locomotor_type::LocomotorKind::Walk)
+            });
+            let mut native_speed_budget_applied = false;
             // Speed ramping: acceleration toward max speed, deceleration near goal.
             // Matches the Drive/Ship Process_Drive_Track fraction computation.
             if uses_drive_locomotor || uses_ship_locomotor {
@@ -1999,65 +2179,136 @@ fn tick_movement_with_grids_scoped(
                         .copied()
                         .unwrap_or((entity.position.rx, entity.position.ry))
                 });
-                let mut dist = distance_to_goal_leptons(&entity.position, goal);
-
-                if snap.movement_zone.is_water_mover() {
-                    if let Some(cell) =
-                        path_grid.and_then(|pg| pg.cell(entity.position.rx, entity.position.ry))
-                    {
-                        if cell.bridge_deck_level_if_any().is_some() {
-                            dist += BRIDGE_Z_OFFSET;
-                        }
-                    }
-                }
+                let dist = distance_to_goal_leptons(&entity.position, goal);
+                let stored_destination = entity
+                    .drive_locomotion
+                    .as_ref()
+                    .and_then(|drive| drive.destination)
+                    .or_else(|| {
+                        entity
+                            .ship_locomotion
+                            .as_ref()
+                            .and_then(|ship| ship.destination)
+                    });
+                let native_ramp_distance = stored_destination.map_or_else(
+                    || dist.to_num::<i32>(),
+                    |destination| {
+                        super::drive_locomotion::stored_destination_distance(
+                            owner_xyz_for_ramp,
+                            destination,
+                            resolved_terrain,
+                        )
+                    },
+                );
 
                 if uses_drive_locomotor {
-                    let raw_speed_per_frame = target.speed / SimFixed::from_num(15);
                     if let Some(drive) = entity.drive_locomotion.as_mut() {
-                        super::drive_locomotion::update_drive_speed_fraction(
+                        let fallback_native_speed =
+                            (target.speed / SimFixed::from_num(15)).to_num::<i32>();
+                        let native_type_speed = native_speed_query
+                            .map_or(fallback_native_speed, |query| query.native_type_speed);
+                        let accel_factor = native_speed_query.map_or_else(
+                            || super::drive_locomotion::native_fraction_from_sim(target.accel_factor),
+                            |query| query.accel_factor,
+                        );
+                        let decel_factor = native_speed_query.map_or_else(
+                            || super::drive_locomotion::native_fraction_from_sim(target.decel_factor),
+                            |query| query.decel_factor,
+                        );
+                        let slowdown_distance = native_speed_query.map_or_else(
+                            || target.slowdown_distance.to_num::<i32>(),
+                            |query| query.slowdown_distance,
+                        );
+                        super::drive_locomotion::update_drive_speed_fraction_with_flags(
                             drive,
+                            &mut entity.current_speed_fraction,
                             cell_speed_mod,
                             snap.drive_accelerates,
-                            raw_speed_per_frame,
-                            target.accel_factor,
-                            target.decel_factor,
-                            target.slowdown_distance,
-                            dist,
+                            native_type_speed,
+                            accel_factor,
+                            decel_factor,
+                            slowdown_distance,
+                            native_ramp_distance,
+                            super::drive_locomotion::VehicleRampFlags {
+                                passive: native_speed_query.is_some_and(|query| query.passive),
+                                alternate_brake: entity.drive_alternate_brake,
+                                currently_crushing: entity.currently_crushing,
+                            },
                         );
-                        target.current_speed = target.speed * drive.current_speed_fraction;
-                        drive.owner_current_speed =
-                            super::drive_locomotion::owner_current_speed_from_fraction(
-                                target.speed,
-                                drive.current_speed_fraction,
-                            );
+                        drive.owner_current_speed = native_speed_query.map_or_else(
+                            || {
+                                (target.speed
+                                    * SimFixed::from_num(f64::from_bits(
+                                        entity.current_speed_fraction.bits(),
+                                    ))
+                                    / SimFixed::from_num(15))
+                                .to_num::<i32>()
+                            },
+                            |query| query.execute(entity.current_speed_fraction),
+                        );
+                        target.current_speed =
+                            SimFixed::from_num(drive.owner_current_speed.wrapping_mul(15));
+                        native_speed_budget_applied = native_speed_query.is_some();
                     } else {
-                        target.current_speed = target.speed * cell_speed_mod;
+                        target.current_speed = target.speed
+                            * SimFixed::from_num(f64::from_bits(cell_speed_mod.bits()));
                     }
                 } else if let Some(ship) = entity.ship_locomotion.as_mut() {
-                    let raw_speed_per_frame = target.speed / SimFixed::from_num(15);
+                    let movement_target = cell_speed_mod;
                     let requested_fraction =
                         super::drive_locomotion::ship_process_target_speed_fraction(
                             ship,
-                            cell_speed_mod,
+                            movement_target,
                         );
-                    super::drive_locomotion::update_ship_speed_fraction(
+                    let fallback_native_speed =
+                        (target.speed / SimFixed::from_num(15)).to_num::<i32>();
+                    let native_type_speed = native_speed_query
+                        .map_or(fallback_native_speed, |query| query.native_type_speed);
+                    let accel_factor = native_speed_query.map_or_else(
+                        || super::drive_locomotion::native_fraction_from_sim(target.accel_factor),
+                        |query| query.accel_factor,
+                    );
+                    let decel_factor = native_speed_query.map_or_else(
+                        || super::drive_locomotion::native_fraction_from_sim(target.decel_factor),
+                        |query| query.decel_factor,
+                    );
+                    let slowdown_distance = native_speed_query.map_or_else(
+                        || target.slowdown_distance.to_num::<i32>(),
+                        |query| query.slowdown_distance,
+                    );
+                    super::drive_locomotion::update_ship_speed_fraction_with_flags(
                         ship,
+                        &mut entity.current_speed_fraction,
                         requested_fraction,
                         snap.drive_accelerates,
-                        raw_speed_per_frame,
-                        target.accel_factor,
-                        target.decel_factor,
-                        target.slowdown_distance,
-                        dist,
+                        native_type_speed,
+                        accel_factor,
+                        decel_factor,
+                        slowdown_distance,
+                        native_ramp_distance,
+                        super::drive_locomotion::VehicleRampFlags {
+                            passive: native_speed_query.is_some_and(|query| query.passive),
+                            alternate_brake: entity.drive_alternate_brake,
+                            currently_crushing: entity.currently_crushing,
+                        },
                     );
-                    target.current_speed = target.speed * ship.current_speed_fraction;
-                    ship.owner_current_speed =
-                        super::drive_locomotion::owner_current_speed_from_fraction(
-                            target.speed,
-                            ship.current_speed_fraction,
-                        );
+                    ship.owner_current_speed = native_speed_query.map_or_else(
+                        || {
+                            (target.speed
+                                * SimFixed::from_num(f64::from_bits(
+                                    entity.current_speed_fraction.bits(),
+                                ))
+                                / SimFixed::from_num(15))
+                            .to_num::<i32>()
+                        },
+                        |query| query.execute(entity.current_speed_fraction),
+                    );
+                    target.current_speed =
+                        SimFixed::from_num(ship.owner_current_speed.wrapping_mul(15));
+                    native_speed_budget_applied = native_speed_query.is_some();
                 } else {
-                    target.current_speed = target.speed * cell_speed_mod;
+                    target.current_speed = target.speed
+                        * SimFixed::from_num(f64::from_bits(cell_speed_mod.bits()));
                 }
             } else if uses_hover_locomotor {
                 // Hover throttle (the hover locomotor's SpeedUpdate model, see
@@ -2123,7 +2374,15 @@ fn tick_movement_with_grids_scoped(
                     // The readiness producer reads the request, not the ramp.
                     loco.hover_speed_request = request;
                 }
-                target.current_speed = target.speed * new_throttle;
+                if let Some(query) = native_speed_query {
+                    entity.current_speed_fraction = NativeF64Bits::ONE;
+                    let common_speed = query.execute(entity.current_speed_fraction);
+                    target.current_speed =
+                        SimFixed::from_num(common_speed.wrapping_mul(15)) * new_throttle;
+                    native_speed_budget_applied = true;
+                } else {
+                    target.current_speed = target.speed * new_throttle;
+                }
             } else if target.accel_factor > SIM_ZERO || target.decel_factor > SIM_ZERO {
                 let goal = target.final_goal.unwrap_or_else(|| {
                     target
@@ -2171,14 +2430,23 @@ fn tick_movement_with_grids_scoped(
                 // No ramping data — constant speed fallback.
                 target.current_speed = target.speed;
             }
+            if uses_walk_locomotor && let Some(query) = native_speed_query {
+                // Walk writes exact one immediately before its sole owner-speed
+                // query; terrain, health, and generic acceleration do not enter.
+                entity.current_speed_fraction = NativeF64Bits::ONE;
+                let owner_speed = query.execute(entity.current_speed_fraction);
+                target.current_speed = SimFixed::from_num(owner_speed.wrapping_mul(15));
+                native_speed_budget_applied = true;
+            }
             let mut effective_speed: SimFixed = if uses_drive_locomotor || uses_ship_locomotor {
                 target.current_speed
             } else {
-                target.current_speed * cell_speed_mod
+                target.current_speed
+                    * SimFixed::from_num(f64::from_bits(cell_speed_mod.bits()))
             };
             let mut frame_budget =
                 movement_step::movement_frame_budget_from_current_speed(effective_speed);
-            if let Some(crawls) = prone_crawls {
+            if !native_speed_budget_applied && let Some(crawls) = prone_crawls {
                 frame_budget =
                     infantry::apply_prone_speed(SimFixed::from_num(frame_budget), crawls)
                         .to_num::<i32>();
@@ -2193,19 +2461,7 @@ fn tick_movement_with_grids_scoped(
 
             // Advance sub_x/sub_y toward the next cell — either via drive track
             // (smooth curve) or straight-line lepton vector.
-            let mut skip_cell_crossings_after_chain_ready = false;
-            let current_occupation_layer = if entity.on_bridge {
-                MovementLayer::Bridge
-            } else {
-                MovementLayer::Ground
-            };
-            let prior_position = (
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.sub_x,
-                entity.position.sub_y,
-            );
-            let advance_result = movement_step::advance_lepton_position(
+            movement_step::advance_lepton_position_with_crate_probes(
                 target,
                 &mut entity.position,
                 &mut entity.facing,
@@ -2228,7 +2484,12 @@ fn tick_movement_with_grids_scoped(
                 },
                 current_occupation_layer,
                 path_grid,
-            );
+                &mut entity.pending_movement_crate_probes,
+                saved_current_speed_fraction,
+                &mut entity.pending_drive_track_crate_resume,
+                &mut entity.pending_process_movement_crate_resume,
+            )
+            };
             if (
                 entity.position.rx,
                 entity.position.ry,
@@ -2239,6 +2500,16 @@ fn tick_movement_with_grids_scoped(
                 entity.position.exact_z_leptons = None;
             }
             match advance_result {
+                // Return this object's movement leaf to Simulation immediately.
+                // `world` supplied a one-object order for active-crate dispatch,
+                // so this labelled continue exits the leaf without consuming the
+                // stored (not-yet-admitted) native continuation.  The world owner
+                // runs pickup/re-fetch, marks the tail admitted, and only then
+                // invokes this leaf again.
+                movement_step::AdvanceResult::CrateSuspended => {
+                    crate_suspended = true;
+                    continue 'movement_object;
+                }
                 movement_step::AdvanceResult::DriveTrackActive => continue,
                 movement_step::AdvanceResult::DriveTrackCellJump { cell_dx, cell_dy } => {
                     // Drive track coordinates crossed a cell boundary.
@@ -2578,6 +2849,9 @@ fn tick_movement_with_grids_scoped(
                     mcfg,
                     sim_tick,
                     marker_context,
+                    &mut entity.pending_movement_crate_probes,
+                    saved_current_speed_fraction,
+                    &mut entity.pending_ground_crossing_crate_resume,
                 );
                 deferred_cell_check = crossing.deferred_cell_check;
                 pending_bridge_update = crossing.pending_bridge_update;
@@ -2585,6 +2859,10 @@ fn tick_movement_with_grids_scoped(
                 debug_events.extend(crossing.debug_events);
                 aborted_for_stuck = crossing.aborted_for_stuck;
                 entity.runtime_bridge_transition = crossing.runtime_bridge_transition;
+                if crossing.crate_suspended {
+                    crate_suspended = true;
+                    continue 'movement_object;
+                }
 
                 // Apply bridge layer state BEFORE computing screen position, so that
                 // the render frame always sees consistent state. Without this, there's
@@ -2766,6 +3044,13 @@ fn tick_movement_with_grids_scoped(
                 }
             }
         }
+    }
+
+    // A native xref is still on this object's logical stack. Do not run the
+    // ordinary Process epilogue (arrival finalization, phase update, hover Z)
+    // until pickup/re-fetch has resumed and completed that stack.
+    if crate_suspended {
+        return stats;
     }
 
     if !single_object {

@@ -448,6 +448,7 @@ fn finalize_tube_object(
                     .map_or(entity.position.z, |cell| cell.level);
                 entity.position.exact_z_leptons = None;
             }
+            entity.current_speed_fraction = crate::util::native_x87::NativeF64Bits::ONE;
         } else {
             let owner_current_speed = entity.movement_target.as_ref().map_or(0, |target| {
                 super::drive_locomotion::owner_current_speed_from_fraction(target.speed, SIM_ONE)
@@ -462,10 +463,10 @@ fn finalize_tube_object(
             }
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 drive.turn.first_movement_allowed = true;
-                drive.target_speed_fraction = SIM_ONE;
-                drive.current_speed_fraction = SIM_ONE;
+                drive.target_speed_fraction = crate::util::native_x87::NativeF64Bits::ONE;
                 drive.owner_current_speed = owner_current_speed;
             }
+            entity.current_speed_fraction = crate::util::native_x87::NativeF64Bits::ONE;
         }
         entity.low_bridge_tube_state = None;
     }
@@ -590,12 +591,14 @@ fn locomotor_is_moving(entity: &GameEntity) -> bool {
 
 fn stop_blocked_mover(entities: &mut EntityStore, entity_id: u64) {
     if let Some(entity) = entities.get_mut(entity_id) {
+        entity.current_speed_fraction =
+            crate::util::native_x87::NativeF64Bits::POSITIVE_ZERO;
         if let Some(target) = entity.movement_target.as_mut() {
             target.current_speed = SIM_ZERO;
         }
         if let Some(drive) = entity.drive_locomotion.as_mut() {
-            drive.current_speed_fraction = SIM_ZERO;
-            drive.target_speed_fraction = SIM_ZERO;
+            drive.target_speed_fraction =
+                crate::util::native_x87::NativeF64Bits::POSITIVE_ZERO;
             drive.owner_current_speed = 0;
         }
     }

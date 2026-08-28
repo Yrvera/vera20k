@@ -65,6 +65,7 @@ fn resolve_once(
         rules,
         interner,
         None,
+        &BTreeMap::new(),
         &mut resources,
         None,
         &OccupancyGrid::new(),

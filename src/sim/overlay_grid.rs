@@ -2650,6 +2650,17 @@ NoUseTileLandType=yes
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [
+                crate::util::native_x87::NativeF32Bits::from_bits(0.9f32.to_bits()),
+                crate::util::native_x87::NativeF32Bits::from_bits(0.7f32.to_bits()),
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+            ],
         };
         let mut overlay_grid = OverlayGrid::new(10, 10);
         let tib_lt = LandType::Tiberium.as_index();

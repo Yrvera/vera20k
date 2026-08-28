@@ -714,16 +714,8 @@ pub(crate) fn issue_move_command_with_layered(
                 .map(|(dx, dy)| crate::util::fixed_math::facing_from_delta_int_u16(dx, dy));
             drive.turn.rate_timer = 0;
             drive.turn.first_movement_allowed = false;
-            super::drive_locomotion::update_drive_speed_fraction(
-                drive,
-                crate::util::fixed_math::SIM_ONE,
-                entity_mut.drive_accelerates,
-                SIM_ZERO,
-                SIM_ZERO,
-                SIM_ZERO,
-                SIM_ZERO,
-                SIM_ZERO,
-            );
+            // Native path acceptance installs path/turn/destination only.
+            // Process_Movement/Track owns the later target/current qword writes.
         } else if uses_ship_locomotor {
             let ship = entity_mut
                 .ship_locomotion

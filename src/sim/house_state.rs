@@ -294,6 +294,10 @@ pub struct HouseState {
     /// shroud restoration can clear it again.
     #[serde(default)]
     pub map_is_clear: bool,
+    /// Persistent HouseClass Visionary latch written by Reveal crates after
+    /// the first successful local map reveal.
+    #[serde(default)]
+    pub visionary: bool,
     /// Aggregate active SpySat state for this house.
     ///
     /// This is the edge-trigger authority for whole-map reveal/restoration.
@@ -509,6 +513,7 @@ impl HouseState {
             has_lost: false,
             outcome_state: None,
             map_is_clear: false,
+            visionary: false,
             spy_sat_active: false,
             owned_building_count: 0,
             owned_unit_count: 0,
