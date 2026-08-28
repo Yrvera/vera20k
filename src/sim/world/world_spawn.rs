@@ -23,6 +23,7 @@ use crate::sim::components::{
 use crate::sim::game_entity::{
     GameEntity, GeneratedTechnoInit, StructureUpgradeLink, TechnoConstructorInit,
 };
+use crate::sim::intern::InternedId;
 use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::production::{ProductionCategory, foundation_dimensions};
@@ -178,6 +179,53 @@ impl Simulation {
                 Ok(generated.techno_ctor_random_word)
             }
         }
+    }
+
+    /// Build one deliberately lifecycle-free Techno for diagnostic tools.
+    ///
+    /// This is not a gameplay spawn: it does not reveal the entity, register
+    /// occupancy, or update house ownership. It still owns the two native
+    /// constructor invariants that apply to every Techno-shaped object:
+    /// Simulation allocates the stable identity and consumes one Scenario RNG
+    /// draw for `TechnoClass +0x224` before the entity enters its store.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_synthetic_techno_for_diagnostics(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        z: u8,
+        facing: u8,
+        owner: InternedId,
+        health: Health,
+        type_ref: InternedId,
+        category: EntityCategory,
+        veterancy: u16,
+        vision_range: u16,
+        is_voxel: bool,
+    ) -> u64 {
+        let stable_id = self.allocate_stable_id();
+        let techno_ctor_random_word = self
+            .resolve_techno_constructor_word(TechnoConstructorInit::FreshScenario, None)
+            .expect("fresh Techno constructor initialization cannot fail");
+        let entity = GameEntity::new_at_frame_from_constructor_word(
+            stable_id,
+            rx,
+            ry,
+            z,
+            facing,
+            owner,
+            health,
+            type_ref,
+            category,
+            veterancy,
+            vision_range,
+            is_voxel,
+            self.session.binary_frame,
+            techno_ctor_random_word,
+        );
+        self.substrate.entities.insert(entity);
+        stable_id
     }
 }
 
@@ -2018,8 +2066,54 @@ mod techno_constructor_tests {
         owners.sort();
         assert_eq!(
             owners,
-            vec![("src/sim/world/world_spawn.rs".to_string(), 3)]
+            vec![("src/sim/world/world_spawn.rs".to_string(), 4)]
         );
+
+        let production_zero_helper = ["new_at_frame_", "zero_for_diagnostics"].concat();
+        let game_entity_source = std::fs::read_to_string(root.join("src/sim/game_entity.rs"))
+            .expect("read GameEntity source");
+        assert!(
+            !game_entity_source.contains(&production_zero_helper),
+            "production diagnostics must not synthesize a Techno constructor word"
+        );
+    }
+
+    #[test]
+    fn techno_constructor_diagnostic_path_is_simulation_owned_and_draws_once() {
+        let seed = 0xC701_0006;
+        let mut sim = Simulation::with_seed(seed);
+        let mut expected = SimRng::new(seed);
+        let expected_word = (expected.next_u32() & 0xFFFF) as u16;
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("GACNST");
+
+        let stable_id = sim.insert_synthetic_techno_for_diagnostics(
+            10,
+            12,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            6,
+            false,
+        );
+
+        assert_eq!(stable_id, 1);
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(stable_id)
+                .expect("diagnostic Techno stored")
+                .techno_ctor_random_word,
+            expected_word
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
     }
 
     #[test]

@@ -1274,43 +1274,6 @@ impl GameEntity {
         )
     }
 
-    /// Explicit zero-word constructor for the parity-digest's synthetic,
-    /// non-gameplay entities. Gameplay construction must use Simulation's
-    /// `TechnoConstructorInit` funnel instead.
-    #[doc(hidden)]
-    pub fn new_at_frame_zero_for_diagnostics(
-        stable_id: u64,
-        rx: u16,
-        ry: u16,
-        z: u8,
-        facing: u8,
-        owner: InternedId,
-        health: Health,
-        type_ref: InternedId,
-        category: EntityCategory,
-        veterancy: u16,
-        vision_range: u16,
-        is_voxel: bool,
-        construction_frame: u32,
-    ) -> Self {
-        Self::new_at_frame_from_constructor_word(
-            stable_id,
-            rx,
-            ry,
-            z,
-            facing,
-            owner,
-            health,
-            type_ref,
-            category,
-            veterancy,
-            vision_range,
-            is_voxel,
-            construction_frame,
-            0,
-        )
-    }
-
     #[cfg(test)]
     pub(crate) fn set_object_is_falling_down_for_test(&mut self, raw: u8) {
         self.object_is_falling_down = raw;
