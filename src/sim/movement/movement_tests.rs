@@ -6046,6 +6046,209 @@ fn process_movement_descriptor_first_and_final_are_two_synchronous_suspensions()
 }
 
 #[test]
+fn ship_process_movement_final_marks_handoff_then_head_after_callback_without_teleport() {
+    fn advance_once(
+        mover: &mut GameEntity,
+        occupation: &mut CellOccupationGrid,
+    ) -> super::movement_step::AdvanceResult {
+        let category = mover.category;
+        let saved = mover.current_speed_fraction;
+        let target = mover.movement_target.as_mut().expect("movement target");
+        super::movement_step::advance_lepton_position_with_crate_probes(
+            target,
+            &mut mover.position,
+            &mut mover.facing,
+            &mut mover.facing_target,
+            &mut mover.drive_track,
+            &mut mover.drive_locomotion,
+            &mut mover.ship_locomotion,
+            &mut mover.locomotor,
+            category,
+            SimFixed::from_num(768),
+            51,
+            crate::util::fixed_math::native_movement_frame_fraction(),
+            mover.stable_id,
+            Some(occupation),
+            super::movement_step::DriveCellAdmission::default(),
+            MovementLayer::Ground,
+            None,
+            &mut mover.pending_movement_crate_probes,
+            saved,
+            &mut mover.pending_drive_track_crate_resume,
+            &mut mover.pending_process_movement_crate_resume,
+        )
+    }
+
+    let mut mover = gsi_06_13_fixture_mover(
+        (10, 10),
+        0x40,
+        vec![(10, 10), (11, 10), (11, 11)],
+        vec![2, 4],
+    );
+    mover.lifecycle.in_limbo = false;
+    let drive = mover.drive_locomotion.take().expect("drive fixture runtime");
+    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+    mover.ship_locomotion = Some(crate::sim::components::ShipLocomotionRuntime {
+        path: drive.path,
+        target_speed_fraction: drive.target_speed_fraction,
+        ..Default::default()
+    });
+    let mut occupation = CellOccupationGrid::rebuild(&{
+        let mut entities = EntityStore::new();
+        entities.insert(mover.clone());
+        entities
+    });
+
+    assert!(matches!(
+        advance_once(&mut mover, &mut occupation),
+        super::movement_step::AdvanceResult::CrateSuspended
+    ));
+    let first = std::mem::take(&mut mover.pending_movement_crate_probes);
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].callsite,
+        super::crate_callers::MovementCrateCallsite::ShipProcessMovementFirst
+    );
+    assert!(super::crate_callers::continue_after_pickup(
+        &mut mover,
+        first[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert!(matches!(
+        advance_once(&mut mover, &mut occupation),
+        super::movement_step::AdvanceResult::CrateSuspended
+    ));
+    let final_probe = std::mem::take(&mut mover.pending_movement_crate_probes);
+    assert_eq!(final_probe.len(), 1);
+    assert_eq!(
+        final_probe[0].callsite,
+        super::crate_callers::MovementCrateCallsite::ShipProcessMovementFinal
+    );
+    let resume = mover
+        .pending_process_movement_crate_resume
+        .expect("final resume");
+    let endpoint = crate::sim::components::DriveOccupationFootprint {
+        rx: resume.endpoint.0 as u16,
+        ry: resume.endpoint.1 as u16,
+        layer: MovementLayer::Ground,
+    };
+    let handoff = resume
+        .handoff_occupation
+        .expect("turning Ship track has a handoff");
+    assert_ne!(handoff, endpoint, "fixture must expose the two native roles");
+    let ship_before = mover.ship_locomotion.as_ref().expect("Ship runtime");
+    assert_eq!(ship_before.occupation_handoff, None);
+    assert_eq!(ship_before.occupation_head_to, None);
+    assert_eq!(
+        occupation.vehicle_bits(endpoint.rx, endpoint.ry, endpoint.layer),
+        0,
+        "Ship final applies neither role before pickup returns"
+    );
+
+    // The event-49 callback moves and retargets the collector. The final tail
+    // must preserve both while applying the immutable RawTrack occupation pair.
+    mover.position.rx = 14;
+    mover.position.ry = 13;
+    let callback_destination = crate::sim::components::DriveCoord::cell(17, 16, 0);
+    mover
+        .ship_locomotion
+        .as_mut()
+        .expect("Ship runtime")
+        .destination = Some(callback_destination);
+    let callback_track = super::drive_track::begin_drive_track(1, 0, 1, 0, 0x40)
+        .expect("callback replacement track");
+    let callback_track_index = callback_track.raw_track_index;
+    assert_ne!(
+        callback_track_index,
+        mover.drive_track.as_ref().expect("original track").raw_track_index,
+        "fixture must prove the staged handoff is independent of callback repath"
+    );
+    mover.drive_track = Some(callback_track);
+    occupation.reconcile_entity(&mover);
+
+    let mut dead = mover.clone();
+    let mut dead_occupation = occupation.clone();
+    dead.lifecycle.object_alive = false;
+    dead.lifecycle.cell_marked = false;
+    dead_occupation.reconcile_entity(&dead);
+    let dead_position = (dead.position.rx, dead.position.ry, dead.position.sub_x, dead.position.sub_y);
+    assert!(!super::crate_callers::continue_after_pickup(
+        &mut dead,
+        final_probe[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert!(super::complete_process_movement_final_pickup(
+        &mut dead,
+        &mut dead_occupation,
+    ));
+    let dead_ship = dead.ship_locomotion.as_ref().expect("dead Ship runtime");
+    assert_eq!(dead_ship.occupation_handoff, Some(handoff));
+    assert_eq!(dead_ship.occupation_head_to, Some(endpoint));
+    assert_eq!(
+        dead_occupation.owner_mark_order(dead.stable_id),
+        vec![
+            (handoff.rx, handoff.ry, handoff.layer),
+            (endpoint.rx, endpoint.ry, endpoint.layer),
+        ],
+        "dead/unlimbo mode 1 still marks handoff before head"
+    );
+    assert_eq!(
+        (dead.position.rx, dead.position.ry, dead.position.sub_x, dead.position.sub_y),
+        dead_position,
+        "Ship occupation mode never teleports a dead tombstone"
+    );
+    assert_eq!(dead_ship.destination, Some(callback_destination));
+
+    let live_position = (
+        mover.position.rx,
+        mover.position.ry,
+        mover.position.sub_x,
+        mover.position.sub_y,
+    );
+    assert!(!super::crate_callers::continue_after_pickup(
+        &mut mover,
+        final_probe[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert!(super::complete_process_movement_final_pickup(
+        &mut mover,
+        &mut occupation,
+    ));
+    let ship_after = mover.ship_locomotion.as_ref().expect("Ship runtime");
+    assert_eq!(ship_after.destination, Some(callback_destination));
+    assert_eq!(ship_after.occupation_handoff, Some(handoff));
+    assert_eq!(ship_after.occupation_head_to, Some(endpoint));
+    assert_eq!(
+        mover.drive_track.as_ref().expect("callback track survives").raw_track_index,
+        callback_track_index,
+        "the final occupation tail must not restore the pre-callback RawTrack"
+    );
+    assert_eq!(
+        (
+            mover.position.rx,
+            mover.position.ry,
+            mover.position.sub_x,
+            mover.position.sub_y,
+        ),
+        live_position,
+        "Ship mode 1 preserves callback movement"
+    );
+    let order = occupation.owner_mark_order(mover.stable_id);
+    let handoff_index = order
+        .iter()
+        .position(|mark| *mark == (handoff.rx, handoff.ry, handoff.layer))
+        .expect("handoff mark");
+    let head_index = order
+        .iter()
+        .position(|mark| *mark == (endpoint.rx, endpoint.ry, endpoint.layer))
+        .expect("head mark");
+    assert!(
+        handoff_index < head_index,
+        "Ship Apply_Track_Occupation_Mode marks handoff before head: {order:?}"
+    );
+}
+
+#[test]
 fn drive_and_ship_process_drive_track_emit_distinct_exact_producers() {
     fn advance_once(
         mover: &mut GameEntity,

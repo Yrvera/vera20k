@@ -1227,6 +1227,13 @@ impl Simulation {
                 crate::sim::occupancy::clear_drive_head_to_occupation_for_remove(
                     drive, occupation, stable_id,
                 );
+            } else if let Some(ship) = entities
+                .get_mut(stable_id)
+                .and_then(|entity| entity.ship_locomotion.as_mut())
+            {
+                crate::sim::occupancy::clear_ship_track_occupation_for_remove(
+                    ship, occupation, stable_id,
+                );
             }
         }
         if let Some(layer) = layer {
@@ -1288,6 +1295,9 @@ impl Simulation {
             }
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 drive.current_occupation_cleared = true;
+            }
+            if let Some(ship) = entity.ship_locomotion.as_mut() {
+                ship.current_occupation_cleared = true;
             }
         }
         true
@@ -2735,6 +2745,24 @@ impl Simulation {
         if self.substrate.anims.contains_key(stable_id) {
             self.conceal_anim(stable_id);
             self.detach_anim_from_owner(stable_id);
+        }
+        // A successful Ship final-pickup continuation still runs its native
+        // occupation call on a dead, already-unmarked tombstone. Its later
+        // scalar destruction therefore owns the final auxiliary-pair release;
+        // the ordinary RemoveContent gate has already returned on cell_marked.
+        let (entities, cell_occupation) = (
+            &mut self.substrate.entities,
+            &mut self.substrate.cell_occupation,
+        );
+        if let Some(ship) = entities
+            .get_mut(stable_id)
+            .and_then(|entity| entity.ship_locomotion.as_mut())
+        {
+            crate::sim::occupancy::clear_ship_track_occupation_for_remove(
+                ship,
+                cell_occupation,
+                stable_id,
+            );
         }
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);

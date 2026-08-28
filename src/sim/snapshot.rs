@@ -342,7 +342,11 @@ use crate::sim::world::Simulation;
 // type-membership bits. DecideUnitFate consumes vector order after load.
 // Bumped 116 -> 117: the active Grinder parasite detach continuation persists
 // WarpAttach's signed start frame and 0x32 duration beside its victim link.
-const SNAPSHOT_VERSION: u32 = 117;
+// Bumped 117 -> 118: ShipLocomotionRuntime persists the independently marked
+// RawTrack handoff and endpoint installed by Apply_Track_Occupation_Mode plus
+// the paid-point current-cell-clear latch. The skipped owner-aware
+// CellOccupationGrid rebuilds those roles after load.
+const SNAPSHOT_VERSION: u32 = 118;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3244,10 +3248,11 @@ mod tests {
     /// adds the distinct House Grinder/Absorber vectors and immutable entity
     /// membership bits consumed by DecideUnitFate; 116 -> 117 adds WarpAttach
     /// Grinder-detach timer state and the independently nested CargoClass
-    /// relation exercised by Unit Grinder/absorber continuations.
+    /// relation exercised by Unit Grinder/absorber continuations; 117 -> 118
+    /// adds Ship's RawTrack handoff/endpoint occupation pair.
     #[test]
-    fn phase3_capture_facility_snapshot_version_is_117() {
-        assert_eq!(super::SNAPSHOT_VERSION, 117);
+    fn phase3_ship_track_occupation_snapshot_version_is_118() {
+        assert_eq!(super::SNAPSHOT_VERSION, 118);
     }
 
     #[test]
@@ -4182,7 +4187,10 @@ mod tests {
     #[test]
     fn gsi_13_06_body_frame_counter_roundtrips_and_changes_hash() {
         use crate::map::entities::EntityCategory;
-        use crate::sim::components::{DriveCoord, Health, ShipLocomotionRuntime};
+        use crate::sim::components::{
+            DriveCoord, DriveOccupationFootprint, Health, ShipLocomotionRuntime,
+        };
+        use crate::sim::movement::locomotor::MovementLayer;
         use crate::sim::game_entity::GameEntity;
 
         let mut sim = Simulation::new();
@@ -4218,11 +4226,23 @@ mod tests {
         assert_ne!(populated_counter_hash, zero_counter_hash);
 
         let ship_head = DriveCoord::cell(6, 5, 0);
+        let ship_handoff_occupation = DriveOccupationFootprint {
+            rx: 5,
+            ry: 6,
+            layer: MovementLayer::Ground,
+        };
+        let ship_head_occupation = DriveOccupationFootprint {
+            rx: 6,
+            ry: 5,
+            layer: MovementLayer::Ground,
+        };
         let shp_unit = sim
             .substrate
             .entities
             .get_mut(1)
             .expect("SHP unit");
+        shp_unit.lifecycle.in_limbo = false;
+        shp_unit.lifecycle.cell_marked = true;
         shp_unit.current_speed_fraction =
             crate::util::native_x87::NativeF64Bits::from_bits(0.5f64.to_bits());
         shp_unit.ship_locomotion = Some(ShipLocomotionRuntime {
@@ -4230,10 +4250,34 @@ mod tests {
             head_to: Some(ship_head),
             target_speed_fraction: crate::util::native_x87::NativeF64Bits::ONE,
             owner_current_speed: 10,
+            occupation_handoff: Some(ship_handoff_occupation),
+            occupation_head_to: Some(ship_head_occupation),
+            current_occupation_cleared: true,
             ..Default::default()
         });
         let populated_shp_state_hash = sim.state_hash();
         assert_ne!(populated_shp_state_hash, populated_counter_hash);
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .expect("SHP unit")
+            .ship_locomotion
+            .as_mut()
+            .expect("Ship runtime")
+            .occupation_handoff = None;
+        assert_ne!(
+            sim.state_hash(),
+            populated_shp_state_hash,
+            "Ship handoff occupation participates in the broader deterministic hash"
+        );
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .expect("SHP unit")
+            .ship_locomotion
+            .as_mut()
+            .expect("Ship runtime")
+            .occupation_handoff = Some(ship_handoff_occupation);
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
         let restored = GameSnapshot::load(&bytes)
@@ -4259,6 +4303,15 @@ mod tests {
         assert_eq!(restored_ship.destination, Some(ship_head));
         assert_eq!(restored_ship.head_to, Some(ship_head));
         assert_eq!(
+            restored_ship.occupation_handoff,
+            Some(ship_handoff_occupation)
+        );
+        assert_eq!(
+            restored_ship.occupation_head_to,
+            Some(ship_head_occupation)
+        );
+        assert!(restored_ship.current_occupation_cleared);
+        assert_eq!(
             restored_ship.target_speed_fraction,
             crate::util::native_x87::NativeF64Bits::ONE
         );
@@ -4272,6 +4325,16 @@ mod tests {
             crate::util::native_x87::NativeF64Bits::from_bits(0.5f64.to_bits())
         );
         assert_eq!(restored_ship.owner_current_speed, 10);
+        let rebuilt_ship_occupation =
+            crate::sim::occupancy::CellOccupationGrid::rebuild(&restored.substrate.entities);
+        assert_eq!(
+            rebuilt_ship_occupation.owner_mark_order(1),
+            vec![
+                (5, 6, MovementLayer::Ground),
+                (6, 5, MovementLayer::Ground),
+            ],
+            "load rebuild preserves paid-point clear, then Ship handoff/head order"
+        );
         assert_eq!(restored.state_hash(), populated_shp_state_hash);
     }
 

@@ -1211,12 +1211,12 @@ fn finish_fresh_track_after_first_pickup(
 /// synchronous callback has released every Simulation borrow.
 ///
 /// Active `gamemd.exe` does **not** move the object to the installed endpoint
-/// here.  `DriveLocomotionClass::Process_Movement @ 0x004B46E6` dispatches the
-/// pickup and, on `One` plus unlimbo, calls
-/// `Apply_Track_Occupation_Mode(endpoint, 1) @ 0x004B4705`.  The object remains
-/// at its current coordinate and the already-installed RawTrack advances it on
-/// later paid points.  Keeping this tail on `CellOccupationGrid` also preserves
-/// the required callback-before-mark order without splitting Position from the
+/// here. Drive calls `Apply_Track_Occupation_Mode(endpoint, 1) @ 0x004B4705`;
+/// Ship dispatches pickup at `0x006A3D15` and reaches the same helper (callee
+/// `0x006A01A0`) at `0x006A3D34`. The object remains at its callback-visible
+/// coordinate and the already-installed RawTrack advances it on later paid
+/// points. Keeping this tail on `CellOccupationGrid` also preserves the
+/// required callback-before-mark order without splitting Position from the
 /// object-list occupancy owner.
 pub(crate) fn complete_process_movement_final_pickup(
     entity: &mut crate::sim::game_entity::GameEntity,
@@ -1240,9 +1240,7 @@ pub(crate) fn complete_process_movement_final_pickup(
             })
         })
         .flatten();
-    let handoff_occupation = entity.drive_track.as_ref().and_then(|track| {
-        drive_track_handoff_footprint(track, resume.origin_cell, resume.endpoint_layer)
-    });
+    let handoff_occupation = resume.handoff_occupation;
     // The callback may have moved the object without changing the immutable
     // RawTrack selection.  Apply_Track_Occupation_Mode still uses that
     // original track endpoint/handoff, but replacement bookkeeping must
@@ -1250,16 +1248,41 @@ pub(crate) fn complete_process_movement_final_pickup(
     // cell ProcessMovement occupied before dispatch.
     let current_cell = (entity.position.rx, entity.position.ry);
     let current_layer = entity.occupancy_list_layer().unwrap_or(resume.origin_layer);
-    let mut occupation = Some(cell_occupation);
-    install_drive_head_to_occupation(
-        &mut entity.drive_locomotion,
-        &mut occupation,
-        entity.stable_id,
-        current_cell,
-        current_layer,
-        next_occupation,
-        handoff_occupation,
-    );
+    if resume.shared_kind == LocomotorKind::Ship {
+        let current_occupation_cleared = entity
+            .ship_locomotion
+            .as_ref()
+            .is_some_and(|ship| ship.current_occupation_cleared);
+        let marked_current = (entity.lifecycle.cell_marked
+            && !entity.passenger_role.is_inside_transport()
+            && !current_occupation_cleared)
+        .then_some(DriveOccupationFootprint {
+            rx: current_cell.0,
+            ry: current_cell.1,
+            layer: current_layer,
+        });
+        if let Some(ship) = entity.ship_locomotion.as_mut() {
+            crate::sim::occupancy::replace_ship_track_occupation_mode_one(
+                ship,
+                cell_occupation,
+                entity.stable_id,
+                marked_current,
+                handoff_occupation,
+                next_occupation,
+            );
+        }
+    } else {
+        let mut occupation = Some(cell_occupation);
+        install_drive_head_to_occupation(
+            &mut entity.drive_locomotion,
+            &mut occupation,
+            entity.stable_id,
+            current_cell,
+            current_layer,
+            next_occupation,
+            handoff_occupation,
+        );
+    }
     true
 }
 
@@ -1335,10 +1358,11 @@ fn select_fresh_drive_track_at_current_cell(
     // the head node's octant turns in place and never reaches the cell test — is
     // answered before the cell question.
     //
-    // Ships keep their previous behaviour: they carry no Drive runtime and stamp
-    // no occupation mark, so there is nothing here for them to contend over.
-    // The ShipLocomotion equivalent is UNCHECKED. The forward RawTrack handoff
-    // cell is marked but NOT tested here; whether it can be doubly claimed is
+    // Ship's final ProcessMovement tail now stamps its own RawTrack handoff and
+    // endpoint pair. This pre-selection collision gate remains Drive-only: the
+    // exact Ship CanEnter/mask refusal branch is outside this corrected native
+    // final-tail call and remains UNCHECKED. The forward RawTrack handoff cell
+    // is marked but NOT tested here; whether it can be doubly claimed is also
     // UNCHECKED.
     if drive_locomotion.is_some() {
         let plan_head_index = target.next_index + plan.nodes - 1;
@@ -1438,7 +1462,6 @@ fn select_fresh_drive_track_at_current_cell(
         stage: super::crate_callers::ProcessMovementPickupStage::First,
         plan,
         shared_kind,
-        origin_cell: (position.rx, position.ry),
         origin_layer: current_occupation_layer,
         endpoint,
         endpoint_layer,
@@ -1448,6 +1471,9 @@ fn select_fresh_drive_track_at_current_cell(
             endpoint_layer,
             position.z,
         ),
+        handoff_occupation: drive_track_state.as_ref().and_then(|track| {
+            drive_track_handoff_footprint(track, (position.rx, position.ry), endpoint_layer)
+        }),
         saved_current_speed_fraction,
         admitted: false,
     };
@@ -1743,6 +1769,16 @@ pub(super) fn advance_lepton_position_with_crate_probes(
                     (position.rx, position.ry),
                     current_occupation_layer,
                 );
+            } else if let Some(ship) = ship_locomotion.as_mut() {
+                if let Some(occupation) = cell_occupation.as_deref_mut() {
+                    occupation.clear_vehicle_on_layer(
+                        position.rx,
+                        position.ry,
+                        entity_id,
+                        current_occupation_layer,
+                    );
+                }
+                ship.current_occupation_cleared = true;
             }
             if let Some(kind) = shared_track_kind(locomotor) {
                 let probe = super::crate_callers::MovementCrateProbe {
