@@ -1686,6 +1686,37 @@ impl Simulation {
                 3u8.hash(hasher);
                 manager.hash(hasher);
             }
+            // Native permanent mind control is independent of reversible
+            // controller/MCNode ownership. `IsMindControlled` ORs these two
+            // values, but both remain distinct persistent authority.
+            if entity.permanently_mind_controlled {
+                6u8.hash(hasher);
+            }
+            if let Some(controller_id) = entity.mind_control_controller_id {
+                7u8.hash(hasher);
+                controller_id.hash(hasher);
+            }
+            // Techno+0x2CC marker and +0x2E0 source are independent House
+            // pointers: ChangeOwner clears the latter but not the former.
+            if let Some(marker) = entity.temporary_owner_transfer_marker {
+                8u8.hash(hasher);
+                marker.hash(hasher);
+            }
+            if let Some(source) = entity.temporary_owner_transfer_source {
+                12u8.hash(hasher);
+                source.hash(hasher);
+            }
+            if let Some(temporal) = entity.temporal_manager {
+                9u8.hash(hasher);
+                temporal.hash(hasher);
+            }
+            if let Some(head_id) = entity.temporal_targeting_me_id {
+                10u8.hash(hasher);
+                head_id.hash(hasher);
+            }
+            if entity.being_temporally_warped_out {
+                11u8.hash(hasher);
+            }
             // Reciprocal Parasite ownership gates the future SQD victim tail.
             // Presence is distinct from a manager whose victim is currently
             // null, matching native manager construction ownership.

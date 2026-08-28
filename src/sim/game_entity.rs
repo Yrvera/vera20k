@@ -285,6 +285,18 @@ pub struct PendingBuildingFire {
     pub weapon_slot: WeaponSlot,
 }
 
+/// Persistent native `TemporalClass` owned by this Techno.
+/// Each Techno owns at most one TemporalClass, so stable owner IDs are exact
+/// identities for the native target and doubly-linked chain pointers. Manager
+/// presence and `warp_points` exist even while the manager is detached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct TemporalManagerState {
+    pub warp_points: i32,
+    pub target_id: Option<u64>,
+    pub previous_owner_id: Option<u64>,
+    pub next_owner_id: Option<u64>,
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -669,11 +681,33 @@ pub struct GameEntity {
     /// legacy and was removed as unreachable in stock YR.
     #[serde(default)]
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
+    /// This Techno's own TemporalClass manager, target, and chain links.
+    #[serde(default)]
+    pub temporal_manager: Option<TemporalManagerState>,
+    /// Victim-side `Techno+0x278` pointer to the head TemporalClass owner.
+    #[serde(default)]
+    pub temporal_targeting_me_id: Option<u64>,
+    /// Victim-side `Techno+0x270` warped-out byte.
+    #[serde(default)]
+    pub being_temporally_warped_out: bool,
     /// Controller-owned reversible mind-control manager (`TechnoClass+0x2BC`).
     /// Capacity and ordered victim links are authoritative runtime state; they
-    /// cannot be reconstructed from victim-side `mind_controlled` flags.
+    /// cannot be reconstructed from the independent permanent-control byte.
     #[serde(default)]
     pub capture_manager: Option<crate::sim::capture_manager::CaptureManagerState>,
+    /// Victim-side reciprocal controller identity (`Techno+0x2C0`).
+    #[serde(default)]
+    pub mind_control_controller_id: Option<u64>,
+    /// Native temporary-transfer destination/current marker (`Techno+0x2CC`).
+    /// Action 123 writes the destination House after ChangeOwner; ChangeOwner
+    /// itself does not clear this pointer, so it is independent of `+0x2E0`.
+    #[serde(default)]
+    pub temporary_owner_transfer_marker: Option<InternedId>,
+    /// Native temporary-transfer source/original House (`Techno+0x2E0`).
+    /// ChangeOwner clears this pointer while leaving `+0x2CC` intact, so a
+    /// marker with no source is a representable native state.
+    #[serde(default)]
+    pub temporary_owner_transfer_source: Option<InternedId>,
     /// Per-attacker Parasite manager identity. The crate prerequisite owns the
     /// reciprocal victim only; the Ship/SQD mechanism extends the manager with
     /// its timers, grapple FSM, and visual state.
@@ -714,9 +748,11 @@ pub struct GameEntity {
     /// (except healing) until the timer expires. Applied by superweapon launch handlers.
     #[serde(default)]
     pub invulnerability: Option<InvulnerabilityState>,
-    /// Native `TechnoClass::IsMindControlled` gate surrogate.
+    /// Native permanent mind-control byte (`Techno+0x2C4`). Reversible
+    /// CaptureManager control is represented only by the controller pointer;
+    /// `TechnoClass::IsMindControlled @ 0x7105E0` ORs the two states.
     #[serde(default)]
-    pub mind_controlled: bool,
+    pub permanently_mind_controlled: bool,
     /// Psychedelic/chaos runtime, separate from reversible mind control.
     #[serde(default)]
     pub berserk: BerserkState,
@@ -1240,7 +1276,13 @@ impl GameEntity {
             pending_teleport_warp_phase: 0,
             tunnel_state: None,
             low_bridge_tube_state: None,
+            temporal_manager: None,
+            temporal_targeting_me_id: None,
+            being_temporally_warped_out: false,
             capture_manager: None,
+            mind_control_controller_id: None,
+            temporary_owner_transfer_marker: None,
+            temporary_owner_transfer_source: None,
             parasite_manager: None,
             parasite_attacker_id: None,
             spawn_manager: None,
@@ -1250,7 +1292,7 @@ impl GameEntity {
             homing_state: None,
             parachute_state: None,
             invulnerability: None,
-            mind_controlled: false,
+            permanently_mind_controlled: false,
             berserk: BerserkState::default(),
             drive_track: None,
             drive_locomotion: None,
@@ -1514,6 +1556,13 @@ impl GameEntity {
     /// Whether this entity is alive (health > 0).
     pub fn is_alive(&self) -> bool {
         self.health.current > 0
+    }
+
+    /// Exact native `TechnoClass::IsMindControlled @ 0x7105E0` gate.
+    /// Reversible control is the victim controller pointer at `+0x2C0`;
+    /// Psychic Dominator control is the independent permanent byte at `+0x2C4`.
+    pub fn is_mind_controlled(&self) -> bool {
+        self.mind_control_controller_id.is_some() || self.permanently_mind_controlled
     }
 
     /// Whether ObjectClass native-alive state is set. This is intentionally

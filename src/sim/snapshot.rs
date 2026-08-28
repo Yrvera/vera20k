@@ -332,7 +332,12 @@ use crate::sim::world::Simulation;
 // slot/trigger state and replaces the derived House outcome enum with the
 // independent pending/win/loss bytes plus the shared signed result timer.
 // Bincode encodes these records positionally, so v113 cannot be admitted.
-const SNAPSHOT_VERSION: u32 = 114;
+// Bumped 114 -> 115: GameEntity persists reversible mind-control controller
+// identity, the independent permanent-control byte, ordered MCNodes with saved
+// original Houses, the two independent temporary-transfer House pointers, and
+// TemporalClass manager/warp/reciprocal-chain state. Bincode encodes every
+// GameEntity positionally, so a v114 record cannot safely supply these fields.
+const SNAPSHOT_VERSION: u32 = 115;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -507,6 +512,22 @@ pub enum SnapshotRestoreError {
     InvalidParasiteReciprocalState {
         entity_id: u64,
         reason: &'static str,
+    },
+    #[error("entity {entity_id} has invalid mind-control reciprocal state: {reason}")]
+    InvalidMindControlReciprocalState {
+        entity_id: u64,
+        reason: &'static str,
+    },
+    #[error("entity {entity_id} has invalid temporal reciprocal state: {reason}")]
+    InvalidTemporalReciprocalState {
+        entity_id: u64,
+        reason: &'static str,
+    },
+    #[error("entity {entity_id} field {field} references missing House {owner}")]
+    UnresolvedHouseReference {
+        entity_id: u64,
+        field: &'static str,
+        owner: crate::sim::intern::InternedId,
     },
     #[error(
         "carrier {carrier_id} has {passenger_count} passengers but {size_count} saved Size entries"
@@ -943,6 +964,8 @@ fn restore_object_references(
     use crate::sim::projectile::ProjectileTarget;
 
     let entity_ids: BTreeSet<u64> = sim.substrate.entities.keys_sorted().into_iter().collect();
+    let house_ids: BTreeSet<crate::sim::intern::InternedId> =
+        sim.houses.keys().copied().collect();
     let anim_ids: BTreeSet<u64> = sim.substrate.anims.iter().map(|(&id, _)| id).collect();
     let particle_system_ids: BTreeSet<u64> = sim
         .substrate
@@ -1114,15 +1137,247 @@ fn restore_object_references(
             )?;
         }
         if let Some(manager) = entity.capture_manager.as_ref() {
-            for &target_id in &manager.controlled_entity_ids {
+            let mut seen_victims = BTreeSet::new();
+            for node in &manager.controlled_nodes {
+                let target_id = node.victim_id;
                 require_resolved_reference(
                     entity_ids.contains(&target_id),
                     "EntityStore",
                     entity_id,
-                    "capture_manager.controlled_entity_ids",
+                    "capture_manager.controlled_nodes.victim_id",
                     "EntityStore",
                     target_id,
                 )?;
+                if !house_ids.contains(&node.original_owner) {
+                    return Err(SnapshotRestoreError::UnresolvedHouseReference {
+                        entity_id,
+                        field: "capture_manager.controlled_nodes.original_owner",
+                        owner: node.original_owner,
+                    });
+                }
+                if target_id == entity_id || !seen_victims.insert(target_id) {
+                    return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                        entity_id,
+                        reason: "manager has a self or duplicate victim node",
+                    });
+                }
+                let victim = sim
+                    .substrate
+                    .entities
+                    .get(target_id)
+                    .expect("validated mind-control victim disappeared");
+                if victim.mind_control_controller_id != Some(entity_id) {
+                    return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                        entity_id,
+                        reason: "manager victim lacks matching active controller backlink",
+                    });
+                }
+            }
+        }
+        if let Some(controller_id) = entity.mind_control_controller_id {
+            require_resolved_reference(
+                entity_ids.contains(&controller_id),
+                "EntityStore",
+                entity_id,
+                "mind_control_controller_id",
+                "EntityStore",
+                controller_id,
+            )?;
+            let reciprocal = sim
+                .substrate
+                .entities
+                .get(controller_id)
+                .and_then(|controller| controller.capture_manager.as_ref())
+                .is_some_and(|manager| {
+                    manager
+                        .controlled_nodes
+                        .iter()
+                        .any(|node| node.victim_id == entity_id)
+                });
+            if controller_id == entity_id || !reciprocal {
+                return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                    entity_id,
+                    reason: "victim controller lacks matching MCNode",
+                });
+            }
+        }
+        if let Some(marker) = entity.temporary_owner_transfer_marker {
+            if !house_ids.contains(&marker) {
+                return Err(SnapshotRestoreError::UnresolvedHouseReference {
+                    entity_id,
+                    field: "temporary_owner_transfer_marker",
+                    owner: marker,
+                });
+            }
+        }
+        if let Some(source) = entity.temporary_owner_transfer_source {
+            if !house_ids.contains(&source) {
+                return Err(SnapshotRestoreError::UnresolvedHouseReference {
+                    entity_id,
+                    field: "temporary_owner_transfer_source",
+                    owner: source,
+                });
+            }
+        }
+        if let Some(link) = entity.temporal_manager {
+            if link.target_id.is_none()
+                && (link.previous_owner_id.is_some() || link.next_owner_id.is_some())
+            {
+                return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                    entity_id,
+                    reason: "detached TemporalClass retains chain links",
+                });
+            }
+            if let Some(target_id) = link.target_id {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "temporal_manager.target_id",
+                    "EntityStore",
+                    target_id,
+                )?;
+                if target_id == entity_id {
+                    return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                        entity_id,
+                        reason: "TemporalClass targets its own owner",
+                    });
+                }
+                let target = sim
+                    .substrate
+                    .entities
+                    .get(target_id)
+                    .expect("validated temporal target disappeared");
+                match link.previous_owner_id {
+                    None => {
+                        if target.temporal_targeting_me_id != Some(entity_id)
+                            || !target.being_temporally_warped_out
+                        {
+                            return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                                entity_id,
+                                reason: "head lacks matching target backlink and warped byte",
+                            });
+                        }
+                    }
+                    Some(previous_id) => {
+                        require_resolved_reference(
+                            entity_ids.contains(&previous_id),
+                            "EntityStore",
+                            entity_id,
+                            "temporal_manager.previous_owner_id",
+                            "EntityStore",
+                            previous_id,
+                        )?;
+                        let previous = sim
+                            .substrate
+                            .entities
+                            .get(previous_id)
+                            .and_then(|owner| owner.temporal_manager);
+                        if previous_id == entity_id
+                            || previous.is_none_or(|previous| {
+                                previous.target_id != Some(target_id)
+                                    || previous.next_owner_id != Some(entity_id)
+                            })
+                        {
+                            return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                                entity_id,
+                                reason: "previous TemporalClass link is not reciprocal",
+                            });
+                        }
+                    }
+                }
+                if let Some(next_id) = link.next_owner_id {
+                    require_resolved_reference(
+                        entity_ids.contains(&next_id),
+                        "EntityStore",
+                        entity_id,
+                        "temporal_manager.next_owner_id",
+                        "EntityStore",
+                        next_id,
+                    )?;
+                    let next = sim
+                        .substrate
+                        .entities
+                        .get(next_id)
+                        .and_then(|owner| owner.temporal_manager);
+                    if next_id == entity_id
+                        || next.is_none_or(|next| {
+                            next.target_id != Some(target_id)
+                                || next.previous_owner_id != Some(entity_id)
+                        })
+                    {
+                        return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                            entity_id,
+                            reason: "next TemporalClass link is not reciprocal",
+                        });
+                    }
+                }
+                let mut chain_cursor = entity_id;
+                let mut visited = BTreeSet::new();
+                loop {
+                    if !visited.insert(chain_cursor) {
+                        return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                            entity_id,
+                            reason: "TemporalClass chain contains a previous-link cycle",
+                        });
+                    }
+                    let chain_link = sim
+                        .substrate
+                        .entities
+                        .get(chain_cursor)
+                        .and_then(|owner| owner.temporal_manager)
+                        .expect("validated temporal chain member disappeared");
+                    match chain_link.previous_owner_id {
+                        Some(previous_id) => chain_cursor = previous_id,
+                        None => {
+                            if target.temporal_targeting_me_id != Some(chain_cursor) {
+                                return Err(
+                                    SnapshotRestoreError::InvalidTemporalReciprocalState {
+                                        entity_id,
+                                        reason: "TemporalClass chain does not reach victim head",
+                                    },
+                                );
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        match (
+            entity.temporal_targeting_me_id,
+            entity.being_temporally_warped_out,
+        ) {
+            (None, false) => {}
+            (Some(head_id), true) => {
+                require_resolved_reference(
+                    entity_ids.contains(&head_id),
+                    "EntityStore",
+                    entity_id,
+                    "temporal_targeting_me_id",
+                    "EntityStore",
+                    head_id,
+                )?;
+                let valid_head = sim
+                    .substrate
+                    .entities
+                    .get(head_id)
+                    .and_then(|head| head.temporal_manager)
+                    .is_some_and(|head| {
+                        head.target_id == Some(entity_id) && head.previous_owner_id.is_none()
+                    });
+                if head_id == entity_id || !valid_head {
+                    return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                        entity_id,
+                        reason: "target backlink does not resolve to its chain head",
+                    });
+                }
+            }
+            _ => {
+                return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                    entity_id,
+                    reason: "target backlink and warped-out byte disagree",
+                });
             }
         }
         if let Some(victim_id) = entity
@@ -2833,10 +3088,12 @@ mod tests {
     /// one-authority 104-lepton Cell ground formula; 112 -> 113 adds shared-
     /// dummy level/slope hash authority for active Spark queries; 113 -> 114
     /// adds the active-retail crate/result authority and the local Tactical
-    /// camera presentation adjunct envelope.
+    /// camera presentation adjunct envelope; 114 -> 115 adds the mind-control,
+    /// temporary-transfer, and TemporalClass state required by native House-wide
+    /// destruction ownership and synchronous detachment.
     #[test]
-    fn phase3_combined_snapshot_version_is_114() {
-        assert_eq!(super::SNAPSHOT_VERSION, 114);
+    fn phase3_combined_snapshot_version_is_115() {
+        assert_eq!(super::SNAPSHOT_VERSION, 115);
     }
 
     #[test]
@@ -4312,6 +4569,8 @@ mod tests {
     fn gsi_04_07_damage_v60_air_spatial_armor_berserk_hostile_hit_iq_smoke_capture_anger_and_delay_roundtrip_hash()
      {
         let mut sim = Simulation::new();
+        let owner = sim.interner.intern("ComputerIQ");
+        let threat_peer = sim.interner.intern("ThreatPeer");
         let entity_id = sim.allocate_stable_id();
         let mut aircraft = crate::sim::game_entity::GameEntity::test_default(
             entity_id,
@@ -4331,7 +4590,16 @@ mod tests {
         aircraft.capture_manager = Some(crate::sim::capture_manager::CaptureManagerState {
             max_control: 3,
             infinite_mind_control: false,
-            controlled_entity_ids: vec![3, 4],
+            controlled_nodes: vec![
+                crate::sim::capture_manager::CaptureNodeState {
+                    victim_id: 3,
+                    original_owner: owner,
+                },
+                crate::sim::capture_manager::CaptureNodeState {
+                    victim_id: 4,
+                    original_owner: owner,
+                },
+            ],
         });
         aircraft.pending_c4_detonation = Some(crate::sim::components::PendingC4Detonation {
             start_frame: 11,
@@ -4339,24 +4607,17 @@ mod tests {
             source_entity_id: Some(3),
         });
         sim.substrate.entities.insert(aircraft);
-        sim.substrate
-            .entities
-            .insert(crate::sim::game_entity::GameEntity::test_default(
-                3,
+        for (victim_id, rx) in [(3, 12), (4, 13)] {
+            let mut victim = crate::sim::game_entity::GameEntity::test_default(
+                victim_id,
                 "E1",
                 "AMERICANS",
-                12,
+                rx,
                 7,
-            ));
-        sim.substrate
-            .entities
-            .insert(crate::sim::game_entity::GameEntity::test_default(
-                4,
-                "E1",
-                "AMERICANS",
-                13,
-                7,
-            ));
+            );
+            victim.mind_control_controller_id = Some(entity_id);
+            sim.substrate.entities.insert(victim);
+        }
         sim.substrate
             .particle_systems
             .insert(crate::sim::particles::ParticleSystem {
@@ -4378,10 +4639,8 @@ mod tests {
                 done_spawning: false,
             });
         sim.substrate.next_stable_object_id = 5;
-        let owner = sim.interner.intern("ComputerIQ");
         let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 51);
         house.current_iq = 2;
-        let threat_peer = sim.interner.intern("ThreatPeer");
         house.grudge_scores.insert(threat_peer, 350);
         house.enemy_house = Some(threat_peer);
         sim.houses.insert(owner, house);
@@ -4505,7 +4764,7 @@ mod tests {
             .capture_manager
             .as_mut()
             .unwrap()
-            .controlled_entity_ids
+            .controlled_nodes
             .reverse();
         assert_ne!(sim.state_hash(), expected_hash, "MCNode order is hashed");
         sim.substrate
@@ -4515,7 +4774,7 @@ mod tests {
             .capture_manager
             .as_mut()
             .unwrap()
-            .controlled_entity_ids
+            .controlled_nodes
             .reverse();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_07_air_spatial", 0);
@@ -4547,8 +4806,20 @@ mod tests {
             entity
                 .capture_manager
                 .as_ref()
-                .map(|manager| manager.controlled_entity_ids.as_slice()),
-            Some([3, 4].as_slice())
+                .map(|manager| manager.controlled_nodes.as_slice()),
+            Some(
+                [
+                    crate::sim::capture_manager::CaptureNodeState {
+                        victim_id: 3,
+                        original_owner: owner,
+                    },
+                    crate::sim::capture_manager::CaptureNodeState {
+                        victim_id: 4,
+                        original_owner: owner,
+                    },
+                ]
+                .as_slice()
+            )
         );
         assert_eq!(restored.houses.get(&owner).unwrap().current_iq, 2);
         assert_eq!(
@@ -7108,5 +7379,383 @@ mod tests {
             .map(|o| (o.entity_id, o.layer))
             .collect();
         assert_eq!(rebuilt_again_list, rebuilt_list, "rebuild is deterministic");
+    }
+
+    fn result_destruction_link_fixture(
+    ) -> (
+        Simulation,
+        [u64; 4],
+        [crate::sim::intern::InternedId; 3],
+    ) {
+        use crate::sim::capture_manager::{CaptureManagerState, CaptureNodeState};
+        use crate::sim::game_entity::{GameEntity, TemporalManagerState};
+        use crate::sim::house_state::HouseState;
+
+        let mut sim = Simulation::new();
+        let controller_house = sim.interner.intern("ControllerHouse");
+        let original_house = sim.interner.intern("OriginalHouse");
+        let alternate_house = sim.interner.intern("AlternateHouse");
+        for (side, owner) in [controller_house, original_house, alternate_house]
+            .into_iter()
+            .enumerate()
+        {
+            sim.houses.insert(
+                owner,
+                HouseState::new(owner, side as u8, None, false, 0, 10),
+            );
+            sim.session.house_order.push(owner);
+        }
+
+        let controller_id = sim.allocate_stable_id();
+        let victim_id = sim.allocate_stable_id();
+        let target_id = sim.allocate_stable_id();
+        let marker_tail_id = sim.allocate_stable_id();
+
+        let mut controller =
+            GameEntity::test_default(controller_id, "YURI", "ControllerHouse", 5, 5);
+        controller.owner = controller_house;
+        controller.capture_manager = Some(CaptureManagerState {
+            max_control: 1,
+            infinite_mind_control: false,
+            controlled_nodes: vec![CaptureNodeState {
+                victim_id,
+                original_owner: original_house,
+            }],
+        });
+        controller.temporal_manager = Some(TemporalManagerState {
+            warp_points: 100,
+            target_id: Some(target_id),
+            previous_owner_id: None,
+            next_owner_id: Some(marker_tail_id),
+        });
+
+        let mut victim = GameEntity::test_default(victim_id, "MTNK", "ControllerHouse", 6, 5);
+        victim.owner = controller_house;
+        victim.mind_control_controller_id = Some(controller_id);
+
+        let mut target = GameEntity::test_default(target_id, "HTNK", "ControllerHouse", 7, 5);
+        target.owner = controller_house;
+        target.temporary_owner_transfer_marker = Some(controller_house);
+        target.temporary_owner_transfer_source = Some(original_house);
+        target.temporal_manager = Some(TemporalManagerState {
+            warp_points: 40,
+            ..TemporalManagerState::default()
+        });
+        target.temporal_targeting_me_id = Some(controller_id);
+        target.being_temporally_warped_out = true;
+
+        let mut marker_tail =
+            GameEntity::test_default(marker_tail_id, "E1", "AlternateHouse", 8, 5);
+        marker_tail.owner = alternate_house;
+        marker_tail.temporal_manager = Some(TemporalManagerState {
+            warp_points: 75,
+            target_id: Some(target_id),
+            previous_owner_id: Some(controller_id),
+            next_owner_id: None,
+        });
+
+        for entity in [controller, victim, target, marker_tail] {
+            sim.substrate.entities.insert(entity);
+        }
+        // Native in-scenario load restarts Scenario RNG from Seed0. Keep the
+        // pre-save future-state cursor on that same canonical projection so
+        // this fixture isolates the new link authority.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        (
+            sim,
+            [controller_id, victim_id, target_id, marker_tail_id],
+            [controller_house, original_house, alternate_house],
+        )
+    }
+
+    #[test]
+    fn result_destruction_prerequisite_links_roundtrip_and_hash_all_authority() {
+        let (sim, [controller_id, victim_id, target_id, marker_tail_id], owners) =
+            result_destruction_link_fixture();
+        let baseline = sim.state_hash();
+        let copy_fixture = || {
+            bincode::deserialize::<Simulation>(
+                &bincode::serialize(&sim).expect("serialize link fixture"),
+            )
+            .expect("deserialize link fixture")
+        };
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes[0]
+            .original_owner = owners[2];
+        assert_ne!(changed.state_hash(), baseline, "MCNode original owner hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .mind_control_controller_id = None;
+        assert_ne!(changed.state_hash(), baseline, "victim controller hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .permanently_mind_controlled = true;
+        assert_ne!(changed.state_hash(), baseline, "permanent-control byte hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_source = Some(owners[2]);
+        assert_ne!(changed.state_hash(), baseline, "transfer source hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_marker = Some(owners[2]);
+        assert_ne!(changed.state_hash(), baseline, "transfer marker hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(marker_tail_id)
+            .unwrap()
+            .temporal_manager
+            .as_mut()
+            .unwrap()
+            .previous_owner_id = None;
+        assert_ne!(changed.state_hash(), baseline, "temporal chain links hash");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .temporal_manager
+            .as_mut()
+            .unwrap()
+            .warp_points = 101;
+        assert_ne!(changed.state_hash(), baseline, "temporal warp points hash");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporal_targeting_me_id = None;
+        assert_ne!(changed.state_hash(), baseline, "temporal target backlink hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .being_temporally_warped_out = false;
+        assert_ne!(changed.state_hash(), baseline, "temporal warped byte hashes");
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "result_link_fixture", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("v115 link snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("all reciprocal references resolve");
+        assert_eq!(restored.state_hash(), baseline);
+        let controller = restored.substrate.entities.get(controller_id).unwrap();
+        assert_eq!(
+            controller
+                .capture_manager
+                .as_ref()
+                .unwrap()
+                .controlled_nodes[0]
+                .original_owner,
+            owners[1],
+        );
+        let restored_victim = restored.substrate.entities.get(victim_id).unwrap();
+        assert_eq!(restored_victim.mind_control_controller_id, Some(controller_id));
+        assert!(!restored_victim.permanently_mind_controlled);
+        assert!(restored_victim.is_mind_controlled());
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(target_id)
+                .unwrap()
+                .temporary_owner_transfer_marker,
+            Some(owners[0]),
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(target_id)
+                .unwrap()
+                .temporal_manager
+                .expect("detached Temporal manager persists")
+                .warp_points,
+            40,
+        );
+    }
+
+    #[test]
+    fn result_destruction_prerequisite_restore_rejects_bad_reciprocals_and_refs() {
+        let (mut loaded_coexistence, [_, victim_id, _, _], _) =
+            result_destruction_link_fixture();
+        loaded_coexistence
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .permanently_mind_controlled = true;
+        loaded_coexistence
+            .restore_after_snapshot_load()
+            .expect("loader preserves independent permanent byte with valid MCNode");
+
+        let (mut standalone, [controller_id, victim_id, _, _], _) =
+            result_destruction_link_fixture();
+        standalone
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes
+            .clear();
+        standalone
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .mind_control_controller_id = None;
+        standalone
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .permanently_mind_controlled = true;
+        assert!(standalone
+            .substrate
+            .entities
+            .get(victim_id)
+            .unwrap()
+            .is_mind_controlled());
+        standalone
+            .restore_after_snapshot_load()
+            .expect("standalone permanent control needs no controller");
+
+        let (mut marker_without_source, [_, _, target_id, _], _) =
+            result_destruction_link_fixture();
+        marker_without_source
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_source = None;
+        marker_without_source
+            .restore_after_snapshot_load()
+            .expect("ChangeOwner can clear source while retaining marker");
+
+        let (mut bad_mc, [controller_id, victim_id, _, _], _) =
+            result_destruction_link_fixture();
+        bad_mc
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .mind_control_controller_id = None;
+        assert!(matches!(
+            bad_mc.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                entity_id,
+                ..
+            }) if entity_id == controller_id
+        ));
+
+        let (mut bad_owner, [controller_id, _, _, _], _) = result_destruction_link_fixture();
+        bad_owner
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes[0]
+            .original_owner = crate::sim::intern::InternedId::from_index(u32::MAX);
+        assert!(matches!(
+            bad_owner.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedHouseReference {
+                entity_id,
+                field: "capture_manager.controlled_nodes.original_owner",
+                ..
+            }) if entity_id == controller_id
+        ));
+
+        let (mut bad_transfer, [_, _, target_id, _], _) = result_destruction_link_fixture();
+        bad_transfer
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_marker =
+            Some(crate::sim::intern::InternedId::from_index(u32::MAX));
+        assert!(matches!(
+            bad_transfer.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedHouseReference {
+                entity_id,
+                field: "temporary_owner_transfer_marker",
+                ..
+            }) if entity_id == target_id
+        ));
+
+        let (mut bad_transfer, [_, _, target_id, _], _) = result_destruction_link_fixture();
+        bad_transfer
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_source =
+            Some(crate::sim::intern::InternedId::from_index(u32::MAX));
+        assert!(matches!(
+            bad_transfer.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedHouseReference {
+                entity_id,
+                field: "temporary_owner_transfer_source",
+                ..
+            }) if entity_id == target_id
+        ));
+
+        let (mut bad_temporal, [_, _, _, tail_id], _) = result_destruction_link_fixture();
+        bad_temporal
+            .substrate
+            .entities
+            .get_mut(tail_id)
+            .unwrap()
+            .temporal_manager
+            .as_mut()
+            .unwrap()
+            .previous_owner_id = None;
+        assert!(matches!(
+            bad_temporal.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidTemporalReciprocalState { .. })
+        ));
     }
 }

@@ -55,7 +55,7 @@ fn stock_cloak_tick_facts(
     let can_auto_cloak = !destination_is_weapons_factory
         && delay_expired
         && !firing
-        && !entity.mind_controlled
+        && !entity.is_mind_controlled()
         && entity.position.z < 1
         && (is_cloakable
             || rank_cloak

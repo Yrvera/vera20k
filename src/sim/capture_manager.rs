@@ -5,12 +5,22 @@
 //! `MindControl=yes` warhead. The manager snapshots the weapon's signed
 //! `Damage=` as its finite link limit and `InfiniteMindControl=` as its capacity
 //! bypass. Victim links are controller-owned and retain insertion order; they
-//! are not reconstructed by scanning unrelated `mind_controlled` objects.
+//! are not reconstructed by scanning the independent permanent-control byte.
 
 use serde::{Deserialize, Serialize};
 
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::intern::InternedId;
+
+/// One persistent native MCNode. The victim pointer and the House owner saved
+/// at capture time are independent: House-wide destruction resolves effective
+/// ownership from this saved owner, not from the victim's current House.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CaptureNodeState {
+    pub victim_id: u64,
+    pub original_owner: InternedId,
+}
 
 /// Persistent controller-side subset of native `CaptureManagerClass`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -19,8 +29,10 @@ pub struct CaptureManagerState {
     pub max_control: i32,
     /// `WeaponType.InfiniteMindControl`; skips the capacity gate when true.
     pub infinite_mind_control: bool,
-    /// Native MCNode vector order, represented by controlled object identity.
-    pub controlled_entity_ids: Vec<u64>,
+    /// Native MCNode construction order, including each node's saved original
+    /// House owner. Victim-side controller identity is stored reciprocally on
+    /// `GameEntity` and validated on snapshot admission.
+    pub controlled_nodes: Vec<CaptureNodeState>,
 }
 
 impl CaptureManagerState {
@@ -30,7 +42,7 @@ impl CaptureManagerState {
         if self.infinite_mind_control {
             return false;
         }
-        let count = i32::try_from(self.controlled_entity_ids.len()).unwrap_or(i32::MAX);
+        let count = i32::try_from(self.controlled_nodes.len()).unwrap_or(i32::MAX);
         self.max_control <= count
     }
 
@@ -39,16 +51,28 @@ impl CaptureManagerState {
     // The capture-acquisition producer is not wired yet, but this is the
     // controller-owned insertion seam it must use.
     #[allow(dead_code)]
-    pub(crate) fn link_controlled_entity(&mut self, stable_id: u64) {
-        if !self.controlled_entity_ids.contains(&stable_id) {
-            self.controlled_entity_ids.push(stable_id);
+    pub(crate) fn link_controlled_entity(
+        &mut self,
+        victim_id: u64,
+        original_owner: InternedId,
+    ) {
+        if !self
+            .controlled_nodes
+            .iter()
+            .any(|node| node.victim_id == victim_id)
+        {
+            self.controlled_nodes.push(CaptureNodeState {
+                victim_id,
+                original_owner,
+            });
         }
     }
 
     /// Pointer-expiry listener: a victim's UnInit removes its MCNode before a
     /// later receiver/attacker can observe this manager's capacity.
     pub(crate) fn pointer_expired(&mut self, stable_id: u64) {
-        self.controlled_entity_ids.retain(|&id| id != stable_id);
+        self.controlled_nodes
+            .retain(|node| node.victim_id != stable_id);
     }
 }
 
@@ -62,7 +86,7 @@ pub(crate) fn init_capture_manager(
     warhead.mind_control.then(|| CaptureManagerState {
         max_control: weapon.damage,
         infinite_mind_control: weapon.infinite_mind_control,
-        controlled_entity_ids: Vec::new(),
+        controlled_nodes: Vec::new(),
     })
 }
 
@@ -86,10 +110,11 @@ mod tests {
         let mut manager = init_capture_manager(rules.object("YAPSYT").unwrap(), &rules).unwrap();
         assert_eq!(manager.max_control, 3);
         assert!(!manager.blocks_retaliation());
-        manager.link_controlled_entity(10);
-        manager.link_controlled_entity(11);
+        let original_owner = InternedId::from_index(7);
+        manager.link_controlled_entity(10, original_owner);
+        manager.link_controlled_entity(11, original_owner);
         assert!(!manager.blocks_retaliation());
-        manager.link_controlled_entity(12);
+        manager.link_controlled_entity(12, original_owner);
         assert!(manager.blocks_retaliation());
         manager.pointer_expired(11);
         assert!(!manager.blocks_retaliation());
