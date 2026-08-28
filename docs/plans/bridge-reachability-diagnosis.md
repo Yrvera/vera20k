@@ -5,8 +5,8 @@ Synthesis of three lanes, all read this session:
 `repro.md` (live Bay of Pigs run, OBSERVED data outranks reasoning).
 All three lanes present; nothing invented to fill a gap.
 
-Repro lane ran on `ef643809`, which **already contains** the height fixes `7bef24a8` and
-`d30c7416` (VERIFIED: `git merge-base --is-ancestor 7bef24a8 ef643809` → true). Everything the
+Repro lane ran on `bf9a3a0f`, which **already contains** the height fixes `5c67724c` and
+`5e1cbe08` (VERIFIED: `git merge-base --is-ancestor 5c67724c bf9a3a0f` → true). Everything the
 repro observed is post-height-fix behaviour.
 
 ---
@@ -54,12 +54,12 @@ successive clicks do cross the bridge cleanly.
 **"Falls to the bottom" / "through it"** — the literal wording — matches two things, neither of
 them today's ordinary crossing:
 
-* **Before `7bef24a8` (committed today), a unit that did get onto the deck was dropped to the
+* **Before `5c67724c` (committed today), a unit that did get onto the deck was dropped to the
   riverbed mid-span.** Deck-to-deck steps re-derived the unit's height from the A* path layer, so a
   planner layer of `Ground` put the body at riverbed height halfway across while it still counted
-  as on the bridge (VERIFIED from `7bef24a8`'s own commit body, which describes this symptom in the
+  as on the bridge (VERIFIED from `5c67724c`'s own commit body, which describes this symptom in the
   user's words). Combined with the one-cell-at-a-time crossing above, this is the most likely thing
-  the user actually watched. It is fixed: on `ef643809` all 17 deck cells report `z=5`,
+  the user actually watched. It is fixed: on `bf9a3a0f` all 17 deck cells report `z=5`,
   `on_bridge=true`, deck occupancy 5, and a clean clear on exit (VERIFIED, repro §4).
 * **A unit *placed* on a deck cell is put at riverbed height with `on_bridge` clear.**
   `spawn_object` (`src/sim/world/world_spawn.rs:344`) has no bridge-deck handling at all: spawning
@@ -110,10 +110,10 @@ repro §3's sweep table.
 
 ### 2. Mid-span deck height re-derived from the A* path layer — **REAL, ALREADY FIXED**
 Explains the literal report wording; does not explain "bridges do not work".
-*For:* `7bef24a8`'s commit body describes exactly "appeared to fall to the bottom of the bridge or
+*For:* `5c67724c`'s commit body describes exactly "appeared to fall to the bottom of the bridge or
 through it"; the one-cell-at-a-time crossing gives a route by which a player reaches mid-span even
 with cause 1 active.
-*Against:* on `ef643809` the height holds on all 17 deck cells every frame (VERIFIED, repro §4).
+*Against:* on `bf9a3a0f` the height holds on all 17 deck cells every frame (VERIFIED, repro §4).
 *Cheapest check:* already done — the repro step-walk is the check.
 
 ### 3. `spawn_object` places a unit on a deck cell at riverbed height — **REAL, OPEN**
@@ -123,14 +123,14 @@ the unit is then unpathable in both gate states (VERIFIED, repro §6).
 *Cheapest check:* grep the map corpus for pre-placed units whose cell carries
 `bridge_structural`; one pass over `.mmx` load output, no cargo needed.
 
-### 4. Cliff gate blocks a mover mid-span — **REAL, INTRODUCED BY `7bef24a8`, DORMANT ON THIS MAP**
+### 4. Cliff gate blocks a mover mid-span — **REAL, INTRODUCED BY `5c67724c`, DORMANT ON THIS MAP**
 `movement_step.rs:2050-2056` compares the mover's `position.z` (now deck height, 5) against
 `next_cell.effective_cell_z_for_layer(next_layer)`, and its bridge escape is
 `is_bridge_transition_cell() || is_elevated_bridge_cell()` — the latter routed through
 `bridge_deck_level_if_any()` = `bridge_walkable.then_some(...)` (`core.rs:1755-1762`, VERIFIED).
 So a **structural** deck cell with `bridge_walkable` clear has no escape, `diff = 4 >= 3`, and the
 mover is blocked mid-span.
-*For:* the code path is verified above; `d30c7416`'s commit body records it as a known regression.
+*For:* the code path is verified above; `5e1cbe08`'s commit body records it as a known regression.
 *Against:* on Bay of Pigs every deck cell has `bridge_walkable = 1` and `transition = 1`, so it
 never fires there (VERIFIED, repro span table).
 *Cheapest check:* count cells with `bridge_structural && !bridge_walkable` across the map corpus
@@ -211,11 +211,11 @@ fixture and none of them is what refuses the Bay of Pigs order.
 
 ---
 
-## 6. WHERE THIS LEAVES THE HEIGHT FIX (`7bef24a8`, `d30c7416`)
+## 6. WHERE THIS LEAVES THE HEIGHT FIX (`5c67724c`, `5e1cbe08`)
 
 **KEEP both. Do not revert. Amend one line for the regression.**
 
-* **`7bef24a8` — keep, VERIFIED correct.** The repro ran on a HEAD containing it and the step-walk
+* **`5c67724c` — keep, VERIFIED correct.** The repro ran on a HEAD containing it and the step-walk
   shows `z=5`, `on_bridge=true`, deck occupancy 5 on all 17 deck cells for every frame, with a
   clean clear at `(111,152)`. That is the behaviour `FootClass::Set_Height_On_Bridge 0x005F5FA0`
   specifies (terrain level + 4 exactly when the mover's own OnBridge byte is set). It removed two
@@ -223,7 +223,7 @@ fixture and none of them is what refuses the Bay of Pigs order.
   layer. Reverting would restore a mover height derived from the planner's layer, which has no
   native counterpart, and would re-open the literal "falls to the bottom" symptom on the
   one-cell-at-a-time crossing that players are currently forced into.
-* **`d30c7416` — keep.** Its own commit body already withdraws the claim that it fixes the tank
+* **`5e1cbe08` — keep.** Its own commit body already withdraws the claim that it fixes the tank
   case, and that self-correction is right: no Drive mover's Z has ever come from
   `resolved_track_endpoint`. It stands on its own merits — it deletes an A*-layer dependence gamemd
   lacks on the ship endpoint. It earns no credit for the bridge bug and should not be cited for it.

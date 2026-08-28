@@ -4,7 +4,7 @@ Reconciles three lanes: `gamemd.md` (Ghidra, read-only, 2026-08-27 — outranks 
 behavior), `stall.md` (read-only Rust trace), `repro.md` (instrumented live measurement —
 its observations outrank reasoning, including this document's).
 
-VERA citations are `file:line` at HEAD `2f5072a4`, each re-read while writing this and found
+VERA citations are `file:line` at HEAD `9b97b7c9`, each re-read while writing this and found
 at the cited line. gamemd citations are the addresses the Ghidra lane decompiled this
 session; they are marked VERIFIED on that lane's read, not re-derived here.
 
@@ -82,7 +82,7 @@ claim that no other asymmetry exists in the binary.
 
 | stage | VERA | effect on Hover |
 |---|---|---|
-| planner branch selection | `supports_layered_bridge_pathing` — **as it was before the fix**, `matches!(kind, Drive \| Walk \| Mech) \|\| on_bridge` | Hover excluded → flat branch. **Historical: `3687cc94` admits Hover, so this row describes the defect, not current behaviour.** |
+| planner branch selection | `supports_layered_bridge_pathing` — **as it was before the fix**, `matches!(kind, Drive \| Walk \| Mech) \|\| on_bridge` | Hover excluded → flat branch. **Historical: `53695936` admits Hover, so this row describes the defect, not current behaviour.** |
 | layer array | `build_flat_fallback_layers`, `movement_path.rs:539-558` — `vec![Ground; path.len()]` when `start_layer != Bridge` | all 19 nodes `Ground`, deck included (measured, `repro.md` §3) |
 | runtime layer | `can_enter_layer_context`, `src/sim/pathfinding/core.rs:683-702` — copies `terrain_layer` **verbatim** from the planned layer, re-deriving only `occupancy_bits_layer` | `terrain_layer: Ground` while `object_list_layer`/`occupancy_bits_layer` are correctly `Bridge` (measured) |
 | the refusal | `movement_step.rs:1986` on the Ground arm at `:1934-1968` → `cell_entry.rs:397-419` → `evaluate_shared_cell_leaf` bridgehead early return, `cell_entry.rs:442-453` → `HardBlocked` | `grid_ok = PathGrid::is_walkable` = raw `ground_walkable` = the riverbed = **false** |
@@ -108,7 +108,7 @@ gate exists anywhere. Its positive evidence is the two production crossings.
 
 A second, milder invention rides along: `is_bridge_only_goal` (`movement_path.rs:101-121`),
 whose comment states outright *"**VERA-internal, gamemd has no equivalent**"*. It is
-consulted only on the flat branch, so **before `3687cc94`** it applied to Hover and not to
+consulted only on the flat branch, so **before `53695936`** it applied to Hover and not to
 Drive; since the fix it sees neither. It is **not** what fires here — the goal `(111,152)` is an ordinary approach
 cell, and the order was accepted (VERIFIED, measured) — but it is the same class of defect
 on the same line of code.
