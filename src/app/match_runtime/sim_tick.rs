@@ -901,6 +901,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 sound_events: frame_sound_events,
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
+                crate_presentation: _crate_presentation,
             } = rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane);
             let resources = &rt.resources;
             let sim = &mut rt.simulation;
