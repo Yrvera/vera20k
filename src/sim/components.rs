@@ -19,6 +19,7 @@ use crate::map::entities::EntityCategory;
 use crate::sim::intern::InternedId;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::native_x87::NativeF64Bits;
 
 /// World position in isometric cell coordinates plus sub-cell lepton offset.
 ///
@@ -389,7 +390,7 @@ pub struct DrivePathQueue {
 /// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
 /// fractions, and cached owner-speed result with Drive, but do not own Drive's
 /// tube, forced-track, or raw-occupation state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShipLocomotionRuntime {
     #[serde(default)]
     pub destination: Option<DriveCoord>,
@@ -397,13 +398,36 @@ pub struct ShipLocomotionRuntime {
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
     pub path: DrivePathQueue,
+    /// Native Ship locomotor track-facing/selector dword `+0x54`.
     #[serde(default)]
-    pub target_speed_fraction: SimFixed,
-    #[serde(default)]
-    pub current_speed_fraction: SimFixed,
+    pub track_facing: i32,
+    /// Native Ship locomotor track index `+0x58`; values >=64 bypass the
+    /// ordinary target/ramp owner path exactly like Drive.
+    #[serde(default = "default_drive_track_index")]
+    pub track_index: i16,
+    #[serde(default = "default_native_fraction")]
+    pub target_speed_fraction: NativeF64Bits,
     /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
     #[serde(default)]
     pub owner_current_speed: i32,
+}
+
+impl Default for ShipLocomotionRuntime {
+    fn default() -> Self {
+        Self {
+            destination: None,
+            head_to: None,
+            path: DrivePathQueue::default(),
+            track_facing: 0,
+            track_index: -1,
+            target_speed_fraction: NativeF64Bits::POSITIVE_ZERO,
+            owner_current_speed: 0,
+        }
+    }
+}
+
+fn default_native_fraction() -> NativeF64Bits {
+    NativeF64Bits::POSITIVE_ZERO
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -459,10 +483,8 @@ pub struct DriveLocomotionRuntime {
     pub track_valid: bool,
     #[serde(default)]
     pub is_reversed: bool,
-    #[serde(default)]
-    pub target_speed_fraction: SimFixed,
-    #[serde(default)]
-    pub current_speed_fraction: SimFixed,
+    #[serde(default = "default_native_fraction")]
+    pub target_speed_fraction: NativeF64Bits,
     /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
     #[serde(default)]
     pub owner_current_speed: i32,
@@ -498,8 +520,7 @@ impl Default for DriveLocomotionRuntime {
             point_index: 0,
             track_valid: false,
             is_reversed: false,
-            target_speed_fraction: SIM_ZERO,
-            current_speed_fraction: SIM_ZERO,
+            target_speed_fraction: NativeF64Bits::POSITIVE_ZERO,
             owner_current_speed: 0,
             residual_budget: 0,
             occupation_head_to: None,
@@ -1227,8 +1248,10 @@ mod tests {
         assert_eq!(drive.point_index, 0);
         assert!(!drive.track_valid);
         assert!(!drive.is_reversed);
-        assert_eq!(drive.target_speed_fraction, SIM_ZERO);
-        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(
+            drive.target_speed_fraction,
+            NativeF64Bits::POSITIVE_ZERO
+        );
         assert_eq!(drive.owner_current_speed, 0);
         assert_eq!(drive.residual_budget, 0);
     }

@@ -1012,6 +1012,56 @@ impl FogState {
         }
     }
 
+    /// `MapClass__BlackoutShroud @ 0x00577D90` direct CellClass writes for
+    /// the active offline Reveal-crate/SpySat path.
+    ///
+    /// `size_width`/`size_height` are the raw `[Map] Size` dimensions, not
+    /// this rectangular backing grid's extents. Native visits the allocated
+    /// isometric diamond in sum-major (anti-diagonal) order and writes the
+    /// four fields without routing through `RevealCell`.
+    pub(crate) fn blackout_shroud_for_owner(
+        &mut self,
+        owner: InternedId,
+        size_width: u16,
+        size_height: u16,
+    ) -> usize {
+        if self.width == 0 || self.height == 0 || size_width == 0 || size_height == 0 {
+            return 0;
+        }
+        let vis = self
+            .by_owner
+            .entry(owner)
+            .or_insert_with(|| OwnerVisibility::new(self.width, self.height));
+        vis.ensure_cell_runtime();
+
+        let n = u32::from(size_width);
+        let m = u32::from(size_height);
+        let last_sum = n.wrapping_add(m.wrapping_mul(2));
+        let mut written = 0usize;
+        for sum in n.wrapping_add(1)..=last_sum {
+            for x in 0..=sum {
+                let y = sum.wrapping_sub(x);
+                if x.abs_diff(y) >= n {
+                    continue;
+                }
+                let (Ok(rx), Ok(ry)) = (u16::try_from(x), u16::try_from(y)) else {
+                    continue;
+                };
+                let Some(index) = vis.index(rx, ry) else {
+                    continue;
+                };
+                let runtime = &mut vis.cell_runtime[index];
+                runtime.shroud_counter = 0;
+                runtime.gap_shroud_counter = 0;
+                runtime.alt_flags |= 0x18;
+                runtime.flags |= 0x03;
+                vis.cells[index] |= FLAG_REVEALED;
+                written += 1;
+            }
+        }
+        written
+    }
+
     /// Lift unexplored shroud only on the supplied allocated map cells.
     pub fn reveal_cells_for_owner<I>(&mut self, owner: InternedId, cells: I)
     where

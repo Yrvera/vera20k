@@ -191,6 +191,23 @@ pub fn tick_air_movement(
     live_order: &[u64],
     sim_tick: u64,
 ) -> AirMovementTickStats {
+    tick_air_movement_scoped(entities, live_order, sim_tick, false)
+}
+
+pub(crate) fn resume_air_movement_crate_tail(
+    entities: &mut EntityStore,
+    live_order: &[u64],
+    sim_tick: u64,
+) -> AirMovementTickStats {
+    tick_air_movement_scoped(entities, live_order, sim_tick, true)
+}
+
+fn tick_air_movement_scoped(
+    entities: &mut EntityStore,
+    live_order: &[u64],
+    sim_tick: u64,
+    resume_crate_tail_only: bool,
+) -> AirMovementTickStats {
     let mut stats = AirMovementTickStats::default();
     let dt = native_movement_frame_fraction();
 
@@ -218,12 +235,50 @@ pub fn tick_air_movement(
 
     let mut finished: Vec<u64> = Vec::new();
 
-    for &entity_id in &air_entity_ids {
-        stats.air_movers = stats.air_movers.saturating_add(1);
+    'air_entity: for &entity_id in &air_entity_ids {
+        if !resume_crate_tail_only {
+            stats.air_movers = stats.air_movers.saturating_add(1);
+        }
 
         let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
+
+        if resume_crate_tail_only {
+            let Some(resume) = entity.pending_air_crate_resume.take() else {
+                continue;
+            };
+            debug_assert!(resume.admitted, "only an admitted air pickup tail may resume");
+            if resume.install_post_callback_current {
+                let current = crate::sim::components::DriveCoord {
+                    x: i32::from(entity.position.rx) * 256
+                        + entity.position.sub_x.to_num::<i32>(),
+                    y: i32::from(entity.position.ry) * 256
+                        + entity.position.sub_y.to_num::<i32>(),
+                    z: entity
+                        .position
+                        .exact_z_leptons
+                        .unwrap_or_else(|| i32::from(entity.position.z)),
+                };
+                if let Some(locomotor) = entity.locomotor.as_mut() {
+                    locomotor.jumpjet_destination = Some(current);
+                }
+            }
+            if resume.stage
+                == crate::sim::movement::crate_callers::AirPickupStage::JumpjetMovement
+                && !resume.install_post_callback_current
+                && resume.arrived
+                && let Some(final_goal) = resume.final_goal
+            {
+                entity.position.rx = final_goal.0;
+                entity.position.ry = final_goal.1;
+                entity.position.sub_x = CELL_CENTER;
+                entity.position.sub_y = CELL_CENTER;
+                finished.push(entity_id);
+                stats.arrivals = stats.arrivals.saturating_add(1);
+            }
+            continue;
+        }
 
         // --- Altitude state machine ---
         let Some(ref mut loco) = entity.locomotor else {
@@ -252,6 +307,26 @@ pub fn tick_air_movement(
                     reason: "altitude change".into(),
                 },
             );
+        }
+        if is_jumpjet
+            && air_phase_before == AirMovePhase::Descending
+            && air_phase_after == AirMovePhase::Landed
+        {
+            entity.pending_air_crate_resume = Some(
+                crate::sim::movement::crate_callers::AirPickupResume {
+                    stage: crate::sim::movement::crate_callers::AirPickupStage::JumpjetDescend,
+                    final_goal: None,
+                    arrived: false,
+                    install_post_callback_current: false,
+                    admitted: false,
+                },
+            );
+            let probe = crate::sim::movement::crate_callers::MovementCrateProbe::at_entity(
+                crate::sim::movement::crate_callers::MovementCrateCallsite::JumpjetDescend,
+                entity,
+            );
+            entity.pending_movement_crate_probes.push(probe);
+            continue 'air_entity;
         }
 
         // --- Horizontal movement (facing-based, only when airborne) ---
@@ -373,6 +448,28 @@ pub fn tick_air_movement(
                             SimFixed::from_num(sub_x.to_num::<i32>().max(0).min(255));
                         entity.position.sub_y =
                             SimFixed::from_num(sub_y.to_num::<i32>().max(0).min(255));
+                        if is_jumpjet {
+                            let arrived = dist_i32 < 128
+                                && entity
+                                    .locomotor
+                                    .as_ref()
+                                    .is_some_and(|l| l.fly_current_speed < MIN_CREEP_SPEED);
+                            entity.pending_air_crate_resume = Some(
+                                crate::sim::movement::crate_callers::AirPickupResume {
+                                    stage: crate::sim::movement::crate_callers::AirPickupStage::JumpjetMovement,
+                                    final_goal: Some(final_goal),
+                                    arrived,
+                                    install_post_callback_current: false,
+                                    admitted: false,
+                                },
+                            );
+                            let probe = crate::sim::movement::crate_callers::MovementCrateProbe::at_entity(
+                                crate::sim::movement::crate_callers::MovementCrateCallsite::JumpjetMovement,
+                                entity,
+                            );
+                            entity.pending_movement_crate_probes.push(probe);
+                            continue 'air_entity;
+                        }
                     }
                 }
 
@@ -723,6 +820,7 @@ mod tests {
             jumpjet_speed: SIM_ZERO,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: 0,
             jumpjet_crash_speed: SIM_ZERO,
             jumpjet_turn_rate: 4,
@@ -735,6 +833,7 @@ mod tests {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
@@ -762,6 +861,7 @@ mod tests {
             jumpjet_speed: SimFixed::from_num(14),
             jumpjet_accel: SimFixed::from_num(2),
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: 40,
             jumpjet_crash_speed: SimFixed::from_num(150), // (5+5)*15
             jumpjet_turn_rate: 4,
@@ -774,9 +874,69 @@ mod tests {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
+    }
+
+    #[test]
+    fn jumpjet_move_and_descend_emit_their_distinct_exact_crate_producers() {
+        let mut moving_store = EntityStore::new();
+        let mut moving = GameEntity::test_default(1, "JUMPJET", "Americans", 10, 10);
+        moving.lifecycle.in_limbo = false;
+        let mut moving_loco = make_jumpjet_loco();
+        moving_loco.air_phase = AirMovePhase::Hovering;
+        moving_loco.altitude = moving_loco.target_altitude;
+        moving_loco.fly_current_speed = SIM_ONE;
+        moving.locomotor = Some(moving_loco);
+        moving.facing = 0x40;
+        moving.movement_target = Some(MovementTarget {
+            path: vec![(10, 10), (12, 10)],
+            path_layers: vec![MovementLayer::Air; 2],
+            next_index: 1,
+            speed: SimFixed::from_num(768),
+            current_speed: SimFixed::from_num(768),
+            final_goal: Some((12, 10)),
+            ..Default::default()
+        });
+        moving_store.insert(moving);
+
+        let moving_stats = tick_air_movement(&mut moving_store, &[1], 1);
+        let moving = moving_store.get(1).expect("moving jumpjet");
+        assert_eq!(moving_stats.air_movers, 1);
+        assert_eq!(moving.pending_movement_crate_probes.len(), 1);
+        assert_eq!(
+            moving.pending_movement_crate_probes[0].callsite,
+            crate::sim::movement::crate_callers::MovementCrateCallsite::JumpjetMovement
+        );
+        assert_eq!(
+            moving.pending_air_crate_resume.as_ref().unwrap().stage,
+            crate::sim::movement::crate_callers::AirPickupStage::JumpjetMovement
+        );
+
+        let mut descending_store = EntityStore::new();
+        let mut descending = GameEntity::test_default(2, "JUMPJET", "Americans", 10, 10);
+        descending.lifecycle.in_limbo = false;
+        let mut descending_loco = make_jumpjet_loco();
+        descending_loco.air_phase = AirMovePhase::Descending;
+        descending_loco.altitude = SimFixed::from_num(1);
+        descending_loco.jumpjet_crash_speed = SimFixed::from_num(300);
+        descending.locomotor = Some(descending_loco);
+        descending_store.insert(descending);
+
+        let descending_stats = tick_air_movement(&mut descending_store, &[2], 2);
+        let descending = descending_store.get(2).expect("descending jumpjet");
+        assert_eq!(descending_stats.air_movers, 1);
+        assert_eq!(descending.pending_movement_crate_probes.len(), 1);
+        assert_eq!(
+            descending.pending_movement_crate_probes[0].callsite,
+            crate::sim::movement::crate_callers::MovementCrateCallsite::JumpjetDescend
+        );
+        assert_eq!(
+            descending.pending_air_crate_resume.as_ref().unwrap().stage,
+            crate::sim::movement::crate_callers::AirPickupStage::JumpjetDescend
+        );
     }
 
     #[test]

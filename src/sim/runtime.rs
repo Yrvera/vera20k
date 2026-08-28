@@ -421,6 +421,19 @@ where
                 rules.general.wheeled_uphill,
                 rules.general.wheeled_downhill,
             );
+        sim.terrain_speed_config.install_native(
+            rules.general.tracked_uphill_native,
+            rules.general.tracked_downhill_native,
+            rules.general.wheeled_uphill_native,
+            rules.general.wheeled_downhill_native,
+            rules
+                .terrain_rules
+                .semantics_for_land_type(
+                    crate::rules::terrain_rules::LandType::Road.as_index(),
+                )
+                .map(|row| row.speed_costs)
+                .unwrap_or_default(),
+        );
         sim.radar_events =
             crate::sim::radar::RadarEventQueue::from_config(&rules.radar_event_config);
     }

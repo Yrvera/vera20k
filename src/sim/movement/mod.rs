@@ -47,12 +47,13 @@ use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 #[cfg(test)]
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
+use crate::util::fixed_math::{SimFixed, facing_from_delta_int};
 #[cfg(test)]
 use crate::util::fixed_math::SIM_ZERO;
 
 // --- Internal submodules ---
 mod drive_locomotion;
+pub(crate) mod crate_callers;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
 pub(crate) mod movement_bridge;
@@ -167,10 +168,9 @@ pub(crate) fn install_forced_drive_track(
     drive.track_index = i16::from(forced.turn_track_index);
     drive.point_index = forced.track.point_index;
     drive.track_valid = true;
-    drive.target_speed_fraction = SIM_ONE;
-    drive.current_speed_fraction = SIM_ONE;
-    drive.owner_current_speed =
-        drive_locomotion::owner_current_speed_from_fraction(forced.speed, SIM_ONE);
+    // Force_Track writes its locomotor-owned target qword only. Verified
+    // callers own any separate Foot current-fraction write.
+    drive.target_speed_fraction = crate::util::native_x87::NativeF64Bits::ONE;
     // Force_Track directly installs the new head mark. Its active retail callers
     // enter with no old head — but nothing in this function's signature enforces
     // that, and a caller that reached a mid-curve mover would otherwise strand
@@ -202,6 +202,11 @@ pub(crate) fn install_forced_drive_track(
 
     entity.drive_track = None;
     entity.forced_drive_track = Some(forced);
+    entity.pending_movement_crate_probes.push(crate_callers::MovementCrateProbe {
+        callsite: crate_callers::MovementCrateCallsite::DriveForceTrack,
+        requested: head,
+        saved_current_speed_fraction: entity.current_speed_fraction,
+    });
     entity.facing_target = None;
     true
 }

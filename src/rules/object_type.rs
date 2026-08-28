@@ -32,6 +32,7 @@ use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::terrain_rules::LandType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
+use crate::util::native_x87::NativeF64Bits;
 
 /// Which type registry an object belongs to.
 ///
@@ -230,6 +231,11 @@ pub struct ObjectType {
     pub armor: String,
     /// Movement speed (0 = immobile, e.g., buildings).
     pub speed: i32,
+    /// Native TechnoType speed dword used by FootClass::GetCurrentSpeed.
+    /// `Speed=` is clamped to 0..100, scaled by `(raw << 8) / 100`, and
+    /// capped at 255; this is intentionally distinct from Rust's lepton-rate
+    /// movement adapter.
+    pub native_speed: i32,
     /// `WalkRate=` — signed native-frame divisor for Foot body animation.
     /// TechnoTypeClass owns this value; art.ini owns only the frame layout.
     pub walk_rate: i32,
@@ -244,13 +250,23 @@ pub struct ObjectType {
     /// Fraction of max speed gained per tick during acceleration (AccelerationFactor=).
     /// Default 0.03. At 15 fps, reaches max speed in ~2 seconds.
     pub accel_factor: SimFixed,
+    /// Native Drive/Ship qword. Constructor 0.03 is true binary64; an authored
+    /// override passes through ReadDouble's f32-widening boundary.
+    pub accel_factor_native: NativeF64Bits,
     /// Fraction of max speed lost per tick during braking (DeaccelerationFactor=).
     /// Default 0.02. Applied when within slowdown_distance of destination.
     pub decel_factor: SimFixed,
+    /// Native Drive/Ship qword. Constructor 0.002 is true binary64; an authored
+    /// override passes through ReadDouble's f32-widening boundary.
+    pub decel_factor_native: NativeF64Bits,
     /// Whether Drive/Ship locomotors ramp toward target speed (`Accelerates=`).
     /// Defaults to true; `Accelerates=false` is handled by locomotor speed
     /// fraction ownership, not by mutating raw `Speed=`.
     pub accelerates: bool,
+    /// UnitTypeClass `Passive +0xE0C`. Accelerating Drive/Ship locomotors skip
+    /// every current-fraction write while this byte is set. Constructor false;
+    /// installed retail authors no override.
+    pub passive: bool,
     /// Lepton distance from destination at which braking begins (SlowdownDistance=).
     /// Default 512 (~2 cells). Original engine default is 500.
     pub slowdown_distance: i32,
@@ -440,6 +456,10 @@ pub struct ObjectType {
     /// separate `VeteranArmor` divide.
     pub veteran_stronger: bool,
     pub elite_stronger: bool,
+    /// `FASTER` in the independently parsed rank ability lists. Elite runtime
+    /// inherits the veteran byte and additionally consults the elite byte.
+    pub veteran_faster: bool,
+    pub elite_faster: bool,
     /// `SCATTER` in the rank-selected ability list lets player-owned Infantry
     /// accept an unforced direct Scatter call even when PlayerScatter is off.
     pub veteran_scatter: bool,
@@ -1114,6 +1134,21 @@ fn native_minutes_to_ticks(value: f32) -> u32 {
     }
 }
 
+/// Convert authored `Speed=` to the exact TechnoType dword consumed by native
+/// Foot movement. This is a shared authority for every category; callers must
+/// not reconstruct it from leptons-per-second.
+pub const fn native_scaled_speed(raw_speed: i32) -> i32 {
+    let clamped = if raw_speed < 0 {
+        0
+    } else if raw_speed > 100 {
+        100
+    } else {
+        raw_speed
+    };
+    let scaled = (clamped << 8) / 100;
+    if scaled > 255 { 255 } else { scaled }
+}
+
 impl ObjectType {
     /// BuildingType virtual used by the Building receive-damage prelude and
     /// the native base-reservation writer.
@@ -1233,6 +1268,7 @@ impl ObjectType {
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
+            native_speed: native_scaled_speed(section.get_i32("Speed").unwrap_or(0)),
             // TechnoTypeClass ctor/read contract: raw signed ints, with no
             // clamp or conversion. A zero WalkRate is invalid content natively
             // (the live consumer executes IDIV without a zero guard).
@@ -1246,11 +1282,24 @@ impl ObjectType {
                 .get_f32("AccelerationFactor")
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.03")),
+            accel_factor_native: NativeF64Bits::from_bits(
+                section
+                    .get_f64("AccelerationFactor")
+                    .unwrap_or(0.03_f64)
+                    .to_bits(),
+            ),
             decel_factor: section
                 .get_f32("DeaccelerationFactor")
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.002")),
+            decel_factor_native: NativeF64Bits::from_bits(
+                section
+                    .get_f64("DeaccelerationFactor")
+                    .unwrap_or(0.002_f64)
+                    .to_bits(),
+            ),
             accelerates: section.get_bool("Accelerates").unwrap_or(true),
+            passive: section.get_bool("Passive").unwrap_or(false),
             slowdown_distance: section.get_i32("SlowdownDistance").unwrap_or(500),
             sight: section.get_i32("Sight").unwrap_or(0),
             // TechnoTypeClass ctor @ gamemd.exe 0x00711082 initializes
@@ -1354,6 +1403,8 @@ impl ObjectType {
             elite_explodes: ability_list_has(section.get_list("EliteAbilities"), "EXPLODES"),
             veteran_stronger: ability_list_has(section.get_list("VeteranAbilities"), "STRONGER"),
             elite_stronger: ability_list_has(section.get_list("EliteAbilities"), "STRONGER"),
+            veteran_faster: ability_list_has(section.get_list("VeteranAbilities"), "FASTER"),
+            elite_faster: ability_list_has(section.get_list("EliteAbilities"), "FASTER"),
             veteran_scatter: ability_list_has(section.get_list("VeteranAbilities"), "SCATTER"),
             elite_scatter: ability_list_has(section.get_list("EliteAbilities"), "SCATTER"),
             veteran_cloak: ability_list_has(section.get_list("VeteranAbilities"), "CLOAK"),
@@ -3185,5 +3236,16 @@ mod tests {
             ObjectCategory::Vehicle,
         );
         assert_eq!(mtnk.weight, SimFixed::lit("2.0"));
+    }
+
+    #[test]
+    fn active_native_speed_scaling_clamps_before_integer_scale() {
+        assert_eq!(native_scaled_speed(-2), 0);
+        assert_eq!(native_scaled_speed(-1), 0);
+        assert_eq!(native_scaled_speed(4), 10);
+        assert_eq!(native_scaled_speed(7), 17);
+        assert_eq!(native_scaled_speed(99), 253);
+        assert_eq!(native_scaled_speed(100), 255);
+        assert_eq!(native_scaled_speed(101), 255);
     }
 }

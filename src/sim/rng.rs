@@ -260,6 +260,19 @@ impl SimRng {
         }
     }
 
+    /// Signed inclusive `Random__RandomRanged` view.
+    ///
+    /// XOR-bias maps signed-i32 order and every contiguous signed span onto
+    /// the unsigned helper without changing span width, rejection masks, or
+    /// draw count. This matters for typed crate data whose `ftol` result may
+    /// be negative or cross zero.
+    pub fn next_range_i32_inclusive(&mut self, low: i32, high: i32) -> i32 {
+        const SIGN_BIAS: u32 = 0x8000_0000;
+        let low = (low as u32) ^ SIGN_BIAS;
+        let high = (high as u32) ^ SIGN_BIAS;
+        (self.next_range_u32_inclusive(low, high) ^ SIGN_BIAS) as i32
+    }
+
     /// Raw signed-abs remainder draw: `abs((next_u32() as i32) % n)`, one draw.
     ///
     /// Models gamemd's particle-lifetime / fire-insert-offset primitive: a

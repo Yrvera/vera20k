@@ -16,7 +16,7 @@ fn registry() -> OverlayTypeRegistry {
         &IniFile::from_str(
             "[OverlayTypes]\n0=OTHER\n1=SILVER\n2=WOOD\n3=WATER\n4=MODCRATE\n\
              [OTHER]\nWall=yes\n[SILVER]\nCrate=yes\n[WOOD]\nCrate=yes\n\
-             [WATER]\nCrate=yes\n[MODCRATE]\nCrate=yes\n",
+             [WATER]\nCrate=yes\n[MODCRATE]\nCrate=yes\nCrateTrigger=yes\n",
         ),
         None,
     )
@@ -40,6 +40,8 @@ fn speed_costs() -> SpeedCostProfile {
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     }
 }
 
@@ -133,6 +135,53 @@ fn sim(seed: u64, water: bool) -> Simulation {
     sim.overlay_grid = Some(OverlayGrid::new(MAP, MAP));
     sim.resolved_terrain = Some(terrain(water));
     sim
+}
+
+fn pickup_rules() -> crate::rules::ruleset::RuleSet {
+    crate::rules::ruleset::RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n0=PICKER\n1=GOODIE\n[AircraftTypes]\n[BuildingTypes]\n\
+         [PICKER]\nStrength=100\nSpeed=5\nTrainable=yes\nPrimary=GUN\n\
+         [GOODIE]\nStrength=100\nSpeed=5\nCrateGoodie=yes\n\
+         [GUN]\nDamage=10\nROF=15\nRange=5\nProjectile=PROJ\nWarhead=WH\n\
+         [PROJ]\nInviso=yes\nAG=yes\n[WH]\nVerses=100%\n\
+         [CrateRules]\nCrateImg=SILVER\nWoodCrateImg=WOOD\nWaterCrateImg=WATER\nCrateRegen=3\n",
+    ))
+    .expect("pickup rules")
+}
+
+fn add_house_and_picker(sim: &mut Simulation, rules: &crate::rules::ruleset::RuleSet) -> u64 {
+    let owner = sim.interner.intern("AMERICANS");
+    sim.session.house_order.push(owner);
+    sim.houses.insert(
+        owner,
+        crate::sim::house_state::HouseState::new(owner, 0, Some(owner), true, 1000, 10),
+    );
+    sim.spawn_object_at_height("PICKER", "AMERICANS", 7, 7, 0, 0, rules)
+        .expect("picker spawn")
+}
+
+fn install_pickup_crate(
+    sim: &mut Simulation,
+    overlays: &OverlayTypeRegistry,
+    overlay_name: &str,
+    cell: (u16, u16),
+    data: u8,
+) {
+    let id = overlays.id_for_name(overlay_name).expect("crate identity");
+    assert!(
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_crate_overlay_bytes(cell.0, cell.1, id)
+    );
+    assert!(
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .write_crate_data_no_dirty(cell.0, cell.1, data)
+    );
+    sim.crate_authority.slots[0].cell_x = cell.0 as i16;
+    sim.crate_authority.slots[0].cell_y = cell.1 as i16;
 }
 
 #[test]
@@ -535,4 +584,305 @@ fn active_retail_scheduler_runs_regeneration_before_house_tail_on_preincrement_f
         .position(|rung| *rung == crate::sim::world::MasterFrameTestRung::Houses)
         .expect("house rung");
     assert!(regen < houses);
+}
+
+#[test]
+fn active_retail_fixed_money_skips_selection_draw_then_removes_before_amount_draw() {
+    let mut rules = pickup_rules();
+    rules.crate_rules.powerups[crate::rules::crate_rules::CrateEffect::Money as usize].data =
+        crate::util::native_x87::NativeF64Bits::from_bits(2000.0_f64.to_bits());
+    let overlays = registry();
+    let mut sim = sim(0x9137, false);
+    sim.session.game_options.crates = false;
+    let picker = add_house_and_picker(&mut sim, &rules);
+    install_pickup_crate(&mut sim, &overlays, "WOOD", (7, 7), 0);
+
+    let mut expected = sim.scenario_rng.clone();
+    let amount = expected.next_range_u32_inclusive(2000, 2900) as i32;
+    let result = sim.pickup_crate_at(
+        (7, 7),
+        picker,
+        CratePickupInputs {
+            rules: &rules,
+            overlays: &overlays,
+            path_grid: None,
+            event_49: None,
+        },
+    );
+
+    assert_eq!(result, NativePickupReturn::One);
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    let owner = sim.entities().get(picker).unwrap().owner;
+    assert_eq!(sim.houses[&owner].credits, 1000_i32.wrapping_add(amount));
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(7, 7).overlay_id,
+        None
+    );
+    assert!(!sim.crate_authority.slots[0].is_occupied());
+}
+
+struct KillOnEvent49;
+
+impl super::pickup::CrateEvent49Dispatch for KillOnEvent49 {
+    fn raise(
+        &mut self,
+        sim: &mut Simulation,
+        collector_id: u64,
+        _tag_id: crate::sim::intern::InternedId,
+    ) {
+        sim.uninit(collector_id);
+    }
+}
+
+struct MoveAndUnlimboSqdOnEvent49 {
+    callback_destination: crate::sim::components::DriveCoord,
+}
+
+impl super::pickup::CrateEvent49Dispatch for MoveAndUnlimboSqdOnEvent49 {
+    fn raise(
+        &mut self,
+        sim: &mut Simulation,
+        collector_id: u64,
+        _tag_id: crate::sim::intern::InternedId,
+    ) {
+        let collector = sim.entities_mut().get_mut(collector_id).expect("SQD tombstone");
+        collector.lifecycle.in_limbo = false;
+        collector.position.rx = 20;
+        collector.position.ry = 21;
+        collector.position.sub_x = crate::util::fixed_math::SimFixed::from_num(11);
+        collector.position.sub_y = crate::util::fixed_math::SimFixed::from_num(13);
+        collector.ship_locomotion.as_mut().unwrap().destination = Some(self.callback_destination);
+    }
+}
+
+fn configure_sqd_attach_pair(
+    sim: &mut Simulation,
+    rules: &crate::rules::ruleset::RuleSet,
+) -> (u64, u64) {
+    let attacker = add_house_and_picker(sim, rules);
+    let victim = sim
+        .spawn_object_at_height("PICKER", "AMERICANS", 9, 10, 0, 0, rules)
+        .expect("SQD victim");
+    {
+        let attacker = sim.entities_mut().get_mut(attacker).unwrap();
+        attacker.lifecycle.in_limbo = true;
+        attacker.parasite_manager = Some(
+            crate::sim::parasite_attachment::ParasiteManagerState::default(),
+        );
+        attacker.ship_locomotion = Some(Default::default());
+    }
+    (attacker, victim)
+}
+
+#[test]
+fn sqd_attach_runs_real_trigger_and_money_effect_before_reciprocal_continuation() {
+    let mut rules = pickup_rules();
+    rules.crate_rules.powerups[crate::rules::crate_rules::CrateEffect::Money as usize].data =
+        crate::util::native_x87::NativeF64Bits::from_bits(2000.0_f64.to_bits());
+    let overlays = registry();
+    let mut sim = sim(0x5344, false);
+    sim.session.game_options.crates = false;
+    let (attacker_id, victim_id) = configure_sqd_attach_pair(&mut sim, &rules);
+    let owner = sim.entities().get(attacker_id).unwrap().owner;
+    let before_credits = sim.houses[&owner].credits;
+    let tag = sim.interner.intern("TAG_SQD_CRATE");
+    sim.entities_mut().get_mut(attacker_id).unwrap().attached_tag_id = Some(tag);
+    install_pickup_crate(&mut sim, &overlays, "MODCRATE", (9, 10), 0);
+    let callback_destination = crate::sim::components::DriveCoord::cell(40, 41, 7);
+    let mut callback = MoveAndUnlimboSqdOnEvent49 {
+        callback_destination,
+    };
+
+    let result = sim
+        .pickup_crate_from_sqd_attach(
+            attacker_id,
+            victim_id,
+            CratePickupInputs {
+                rules: &rules,
+                overlays: &overlays,
+                path_grid: None,
+                event_49: Some(&mut callback),
+            },
+        )
+        .expect("accepted SQD Attach seam");
+
+    assert_eq!(result, NativePickupReturn::One);
+    assert!(sim.houses[&owner].credits > before_credits, "real Money effect ran");
+    let attacker = sim.entities().get(attacker_id).unwrap();
+    let ship = attacker.ship_locomotion.as_ref().unwrap();
+    let victim_coord = crate::sim::movement::crate_callers::MovementCrateProbe::current_coord(
+        sim.entities().get(victim_id).unwrap(),
+    );
+    assert_eq!(
+        (attacker.position.rx, attacker.position.ry),
+        (9, 10),
+        "One/unlimbo ForceTrack raw-applies the immutable victim request"
+    );
+    assert_eq!(ship.destination, Some(callback_destination), "callback retarget survives");
+    assert_eq!(ship.head_to, Some(victim_coord));
+    assert_eq!(ship.target_speed_fraction, crate::util::native_x87::NativeF64Bits::ONE);
+    assert_eq!(sim.entities().get(victim_id).unwrap().parasite_attacker_id, Some(attacker_id));
+    assert_eq!(attacker.parasite_manager.as_ref().unwrap().victim_id, Some(victim_id));
+}
+
+#[test]
+fn sqd_attach_event49_death_keeps_crate_and_still_installs_both_links() {
+    let rules = pickup_rules();
+    let overlays = registry();
+    let mut sim = sim(0x5345, false);
+    sim.session.game_options.crates = false;
+    let (attacker_id, victim_id) = configure_sqd_attach_pair(&mut sim, &rules);
+    let tag = sim.interner.intern("TAG_SQD_KILL");
+    sim.entities_mut().get_mut(attacker_id).unwrap().attached_tag_id = Some(tag);
+    install_pickup_crate(&mut sim, &overlays, "MODCRATE", (9, 10), 0);
+    let mut kill = KillOnEvent49;
+
+    let result = sim
+        .pickup_crate_from_sqd_attach(
+            attacker_id,
+            victim_id,
+            CratePickupInputs {
+                rules: &rules,
+                overlays: &overlays,
+                path_grid: None,
+                event_49: Some(&mut kill),
+            },
+        )
+        .expect("accepted SQD Attach seam");
+
+    assert_eq!(result, NativePickupReturn::Zero);
+    let attacker = sim.entities().get(attacker_id).expect("deferred tombstone");
+    assert!(!attacker.lifecycle.object_alive);
+    assert_eq!(attacker.parasite_manager.as_ref().unwrap().victim_id, Some(victim_id));
+    assert_eq!(sim.entities().get(victim_id).unwrap().parasite_attacker_id, Some(attacker_id));
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(9, 10).overlay_id,
+        overlays.id_for_name("MODCRATE"),
+        "Event-49 death returns before crate removal"
+    );
+}
+
+#[test]
+fn active_retail_event49_death_returns_zero_before_latch_rng_or_removal() {
+    let rules = pickup_rules();
+    let overlays = registry();
+    let mut sim = sim(0x91, false);
+    sim.session.game_options.crates = false;
+    let picker = add_house_and_picker(&mut sim, &rules);
+    let tag = sim.interner.intern("TAG_CRATE");
+    sim.entities_mut().get_mut(picker).unwrap().attached_tag_id = Some(tag);
+    install_pickup_crate(&mut sim, &overlays, "MODCRATE", (7, 7), 0);
+    let before_rng = sim.scenario_rng.logical_state();
+    let before_slot = sim.crate_authority.slots[0];
+    let mut kill = KillOnEvent49;
+
+    let result = sim.pickup_crate_at(
+        (7, 7),
+        picker,
+        CratePickupInputs {
+            rules: &rules,
+            overlays: &overlays,
+            path_grid: None,
+            event_49: Some(&mut kill),
+        },
+    );
+
+    assert_eq!(result, NativePickupReturn::Zero);
+    assert!(!sim.crate_authority.pickup_any_latch);
+    assert_eq!(sim.crate_authority.slots[0], before_slot);
+    assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(7, 7).overlay_id,
+        overlays.id_for_name("MODCRATE")
+    );
+}
+
+#[test]
+fn active_retail_trigger_crate_without_tag_sets_latch_and_continues_pickup() {
+    let mut rules = pickup_rules();
+    rules.crate_rules.powerups[crate::rules::crate_rules::CrateEffect::Money as usize].data =
+        crate::util::native_x87::NativeF64Bits::from_bits(2000.0_f64.to_bits());
+    let overlays = registry();
+    let mut sim = sim(0x72, false);
+    sim.session.game_options.crates = false;
+    let picker = add_house_and_picker(&mut sim, &rules);
+    install_pickup_crate(&mut sim, &overlays, "MODCRATE", (7, 7), 0);
+
+    assert_eq!(
+        sim.pickup_crate_at(
+            (7, 7),
+            picker,
+            CratePickupInputs {
+                rules: &rules,
+                overlays: &overlays,
+                path_grid: None,
+                event_49: None,
+            },
+        ),
+        NativePickupReturn::One
+    );
+    assert!(sim.crate_authority.pickup_any_latch);
+    assert!(!sim.crate_authority.slots[0].is_occupied());
+}
+
+#[test]
+fn active_retail_armor_effect_uses_strict_radius_and_raw_multiplier_bits_without_owner_filter() {
+    let mut rules = pickup_rules();
+    rules.crate_rules.radius_leptons = 768;
+    rules.crate_rules.powerups[crate::rules::crate_rules::CrateEffect::Armor as usize].data =
+        crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits());
+    let overlays = registry();
+    let mut sim = sim(0x77, false);
+    sim.session.game_options.crates = false;
+    let picker = add_house_and_picker(&mut sim, &rules);
+    let enemy = sim.interner.intern("ENEMY");
+    sim.session.house_order.push(enemy);
+    sim.houses.insert(
+        enemy,
+        crate::sim::house_state::HouseState::new(enemy, 1, Some(enemy), false, 1000, 10),
+    );
+    let near = sim
+        .spawn_object_at_height("PICKER", "ENEMY", 8, 7, 0, 0, &rules)
+        .expect("near enemy");
+    let boundary = sim
+        .spawn_object_at_height("PICKER", "ENEMY", 10, 7, 0, 0, &rules)
+        .expect("boundary enemy");
+    for stable_id in [picker, near, boundary] {
+        let entity = sim.entities_mut().get_mut(stable_id).unwrap();
+        entity.position.sub_x = crate::util::fixed_math::SimFixed::from_num(
+            crate::util::lepton::CELL_CENTER_LEPTON,
+        );
+        entity.position.sub_y = crate::util::fixed_math::SimFixed::from_num(
+            crate::util::lepton::CELL_CENTER_LEPTON,
+        );
+    }
+    install_pickup_crate(&mut sim, &overlays, "WOOD", (7, 7), 9);
+
+    assert_eq!(
+        sim.pickup_crate_at(
+            (7, 7),
+            picker,
+            CratePickupInputs {
+                rules: &rules,
+                overlays: &overlays,
+                path_grid: None,
+                event_49: None,
+            },
+        ),
+        NativePickupReturn::One
+    );
+    assert_eq!(
+        sim.entities().get(picker).unwrap().armor_multiplier.bits(),
+        1.5_f64.to_bits()
+    );
+    assert_eq!(
+        sim.entities().get(near).unwrap().armor_multiplier.bits(),
+        1.5_f64.to_bits(),
+        "enemy inside the radius is modified"
+    );
+    assert_eq!(
+        sim.entities().get(boundary).unwrap().armor_multiplier.bits(),
+        1.0_f64.to_bits(),
+        "three-cell/768-lepton boundary is strict"
+    );
 }

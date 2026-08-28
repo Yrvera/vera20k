@@ -944,6 +944,44 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             // Convert sim sound events to app-layer sound events for playback.
             for sim_event in frame_sound_events {
                 let app_event: GameSoundEvent = match sim_event {
+                    SimSoundEvent::CrateEffect {
+                        sound_id,
+                        owner: _,
+                        rx,
+                        ry,
+                    } => {
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::WeaponFired {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
+                    SimSoundEvent::CrateUpgradeEva { kind } => {
+                        let Some(owner_name) = local_owner_name.as_deref() else {
+                            continue;
+                        };
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
+                            owner_name,
+                            &state.match_state.match_presentation.house_roster,
+                        );
+                        let key = match kind {
+                            crate::sim::world::CrateUpgradeEvaKind::Armor => {
+                                "EVA_UnitArmorUpgraded"
+                            }
+                            crate::sim::world::CrateUpgradeEvaKind::Speed => {
+                                "EVA_UnitSpeedUpgraded"
+                            }
+                            crate::sim::world::CrateUpgradeEvaKind::Firepower => {
+                                "EVA_UnitFirePowerUpgraded"
+                            }
+                        };
+                        let Some(eva_sound_id) = state.audio.eva_registry.get(key, faction) else {
+                            continue;
+                        };
+                        GameSoundEvent::CrateUpgradeEva {
+                            eva_sound_id: eva_sound_id.to_owned(),
+                        }
+                    }
                     SimSoundEvent::AnimationStarted {
                         anim_id,
                         sound_id,
@@ -2062,6 +2100,8 @@ mod tests {
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
         };
         let terrain = ResolvedTerrainGrid::from_cells(
             1,

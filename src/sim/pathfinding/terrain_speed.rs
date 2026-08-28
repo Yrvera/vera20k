@@ -41,7 +41,9 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
+use crate::rules::terrain_rules::SpeedCostProfile;
 use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SimFixed};
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 
 // --- Constants from the original engine ---
 
@@ -116,16 +118,37 @@ pub struct TerrainSpeedConfig {
     pub wheeled_uphill: SimFixed,
     /// Non-tracked vehicle moving downhill (`WheeledDownhill=`; vanilla 1.2).
     pub wheeled_downhill: SimFixed,
+    pub tracked_uphill_native: NativeF64Bits,
+    pub tracked_downhill_native: NativeF64Bits,
+    pub wheeled_uphill_native: NativeF64Bits,
+    pub wheeled_downhill_native: NativeF64Bits,
+    pub road_speed_costs: SpeedCostProfile,
 }
 
 impl Default for TerrainSpeedConfig {
     fn default() -> Self {
+        let full_row = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [NativeF32Bits::ONE; 8],
+        };
         // Vanilla rulesmd.ini [General]: 1.0 uphill / 1.2 downhill for both pairs.
         Self {
             tracked_uphill: SIM_ONE,
             tracked_downhill: SimFixed::lit("1.2"),
             wheeled_uphill: SIM_ONE,
             wheeled_downhill: SimFixed::lit("1.2"),
+            tracked_uphill_native: NativeF64Bits::ONE,
+            tracked_downhill_native: NativeF64Bits::from_bits(0x3ff3_3333_4000_0000),
+            wheeled_uphill_native: NativeF64Bits::ONE,
+            wheeled_downhill_native: NativeF64Bits::from_bits(0x3ff3_3333_4000_0000),
+            road_speed_costs: full_row,
         }
     }
 }
@@ -143,7 +166,23 @@ impl TerrainSpeedConfig {
             tracked_downhill,
             wheeled_uphill,
             wheeled_downhill,
+            ..Self::default()
         }
+    }
+
+    pub fn install_native(
+        &mut self,
+        tracked_uphill: NativeF64Bits,
+        tracked_downhill: NativeF64Bits,
+        wheeled_uphill: NativeF64Bits,
+        wheeled_downhill: NativeF64Bits,
+        road_speed_costs: SpeedCostProfile,
+    ) {
+        self.tracked_uphill_native = tracked_uphill;
+        self.tracked_downhill_native = tracked_downhill;
+        self.wheeled_uphill_native = wheeled_uphill;
+        self.wheeled_downhill_native = wheeled_downhill;
+        self.road_speed_costs = road_speed_costs;
     }
 }
 
@@ -423,6 +462,7 @@ mod tests {
             tracked_downhill: SimFixed::lit("1.5"),
             wheeled_uphill: SimFixed::lit("0.7"),
             wheeled_downhill: SimFixed::lit("1.1"),
+            ..TerrainSpeedConfig::default()
         };
         assert_eq!(
             slope_factor_for(SpeedType::Track, 0, 1, &config),

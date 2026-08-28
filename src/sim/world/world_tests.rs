@@ -28,11 +28,12 @@ use crate::sim::components::{
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::movement::FacingClass;
+use crate::util::native_x87::NativeF64Bits;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::particles::{Particle, ParticleSystem};
 use crate::sim::pathfinding::PathGrid;
-use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 use glam::IVec3;
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
@@ -1955,6 +1956,8 @@ fn gsi_04_10_clear_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
     let mut terrain = water_terrain(width, height);
     for cell in &mut terrain.cells {
@@ -5972,9 +5975,9 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
     let committed_head = {
         let entity = sim.substrate.entities.get_mut(1).unwrap();
         assert!(entity.drive_track.is_some());
+        entity.current_speed_fraction = NativeF64Bits::from_bits(0.5f64.to_bits());
         let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
-        ship.target_speed_fraction = SIM_ONE;
-        ship.current_speed_fraction = SIM_HALF;
+        ship.target_speed_fraction = NativeF64Bits::ONE;
         ship.owner_current_speed = 10;
         ship.head_to.expect("Ship curve has a committed head")
     };
@@ -6001,8 +6004,14 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
     let ship = stopped.ship_locomotion.as_ref().expect("Ship runtime");
     assert_eq!(ship.destination, None);
     assert_eq!(ship.head_to, Some(committed_head));
-    assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
-    assert_eq!(ship.current_speed_fraction, SIM_HALF);
+    assert_eq!(
+        ship.target_speed_fraction,
+        NativeF64Bits::from_bits(0x3fd3_3333_4000_0000)
+    );
+    assert_eq!(
+        stopped.current_speed_fraction,
+        NativeF64Bits::from_bits(0.5f64.to_bits())
+    );
     assert_eq!(ship.owner_current_speed, 10);
 }
 

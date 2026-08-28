@@ -29,10 +29,15 @@ use crate::sim::pathfinding::zone_hierarchy::{
 use crate::sim::rng::SimRngLogicalState;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, ra2_speed_to_leptons_per_second};
+use crate::util::native_x87::NativeF64Bits;
 
 const GRID_SIZE: u16 = 64;
 const START: (u16, u16) = (32, 32);
 const ONE_ORE_LEVEL: u16 = 120;
+
+fn current_fraction_as_sim(entity: &crate::sim::game_entity::GameEntity) -> SimFixed {
+    SimFixed::from_num(f64::from_bits(entity.current_speed_fraction.bits()))
+}
 
 /// Jitter ceiling of the Harvest dispatch epilogue: `RandomRanged(0, 2)`.
 const RATE_EPILOGUE_JITTER_MAX: u32 = 2;
@@ -448,7 +453,7 @@ fn assert_command_state(
     // The Harvest handler dispatches BEFORE Phase-1 ground movement (the
     // native handler→locomotion order), so by observation time the drive has
     // already begun accelerating in the same tick the command was issued.
-    assert!(drive.current_speed_fraction > SIM_ZERO);
+    assert!(f64::from_bits(entity.current_speed_fraction.bits()) > 0.0);
     assert_eq!(
         entity.locomotor.as_ref().expect("active locomotor").kind,
         LocomotorKind::Drive,
@@ -591,11 +596,13 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
         );
         {
             let entity = sim.substrate.entities.get(entity_id).expect("miner");
-            let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
             let movement = entity.movement_target.as_ref().expect("movement");
             // One cell out is inside `SlowdownDistance=500`, so the ramp opens on
             // the destination brake floor and holds there for the whole hop.
-            assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.3"));
+            assert_eq!(
+                entity.current_speed_fraction,
+                NativeF64Bits::from_bits(0x3fd3_3333_4000_0000)
+            );
             assert_eq!(
                 movement.current_speed,
                 movement.speed * SimFixed::lit("0.3"),
@@ -682,14 +689,7 @@ fn production_harv_outbound_drive_uses_rule_profile() {
 
     // Dispatch precedes movement, so the issuing tick already took one accel step.
     assert_eq!(
-        sim.substrate
-            .entities
-            .get(entity_id)
-            .expect("HARV")
-            .drive_locomotion
-            .as_ref()
-            .expect("Drive runtime")
-            .current_speed_fraction,
+        current_fraction_as_sim(sim.substrate.entities.get(entity_id).expect("HARV")),
         acceleration,
     );
 
@@ -697,9 +697,11 @@ fn production_harv_outbound_drive_uses_rule_profile() {
     // the hull one more accel step without running a Harvest dispatch at all.
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
-    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
     let movement = entity.movement_target.as_ref().expect("movement");
-    assert_eq!(drive.current_speed_fraction, acceleration + acceleration);
+    assert_eq!(
+        current_fraction_as_sim(entity),
+        acceleration + acceleration
+    );
     assert_eq!(
         movement.current_speed,
         movement.speed * (acceleration + acceleration)
@@ -778,7 +780,10 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
     // the first path node's octant, and a frame spent rotating carries no speed
     // ramp — so the issuing tick leaves the drive fraction at zero and the ramp
     // only starts once the turn has finished.
-    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+    assert_eq!(
+        entity.current_speed_fraction,
+        NativeF64Bits::POSITIVE_ZERO
+    );
     assert!(
         entity.facing_target.is_some(),
         "the hull is commanded onto the head path node's octant first"
@@ -795,15 +800,14 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
     assert!(departed, "stock HARV must physically leave {start:?}");
 
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
-    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
     let movement = entity.movement_target.as_ref().expect("movement target");
     assert!(
-        drive.current_speed_fraction >= harv.accel_factor,
+        current_fraction_as_sim(entity) >= harv.accel_factor,
         "the rules accel profile ramps once the hull is under way"
     );
     assert_eq!(
         movement.current_speed,
-        movement.speed * drive.current_speed_fraction,
+        movement.speed * current_fraction_as_sim(entity),
     );
     assert!(movement.current_speed > SIM_ZERO);
 }

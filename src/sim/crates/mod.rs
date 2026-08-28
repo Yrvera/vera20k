@@ -4,12 +4,15 @@
 //! persistent MapClass slot table, placement/removal lifecycle, pickup
 //! transaction, and effects. It never depends on render, UI, audio, or net.
 
+mod effects;
 mod placement;
+mod pickup;
 mod state;
 
 pub use placement::{CratePlacement, human_player_count, scenario_start_crate_count};
 pub(crate) use placement::{CratePlacementFaults, place_scenario_start_crates};
 pub(crate) use state::{CRATE_SLOT_CAPACITY, CrateAuthority, CrateSlot};
+pub(crate) use pickup::{CratePickupInputs, NativePickupReturn};
 
 /// Ordered, transient presentation facts produced by the native crate tails.
 /// They are drained at the sim-to-app frame boundary and are neither saved nor

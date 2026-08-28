@@ -41,6 +41,7 @@ use crate::rules::voxel_anim_type::{VoxelAnimType, VoxelAnimTypeId};
 use crate::rules::warhead_type::WarheadType;
 use crate::rules::weapon_type::WeaponType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 
 /// Country-level fields needed by gameplay systems.
 #[derive(Debug, Clone)]
@@ -57,6 +58,14 @@ pub struct CountryRules {
     /// `Armor=` global country armor multiplier. Native stores this as a
     /// double and folds it into the house armor value when difficulty is set.
     pub armor: f64,
+    /// `Firepower=` global country firepower multiplier. Native stores this
+    /// as binary64 and folds it with the selected difficulty firepower when
+    /// HouseClass difficulty is installed.
+    pub firepower: f64,
+    /// HouseType category speed bonuses, stored as their native f32 words.
+    pub speed_infantry_mult: NativeF32Bits,
+    pub speed_units_mult: NativeF32Bits,
+    pub speed_aircraft_mult: NativeF32Bits,
     /// Per-target category armor multipliers. Native stores these as f32 and
     /// reads the selected slot live for every receiver call.
     pub armor_infantry_mult: f32,
@@ -86,6 +95,10 @@ impl Default for CountryRules {
             wall_owner: true,
             income_ppm: INCOME_PPM_SCALE,
             armor: 1.0,
+            firepower: 1.0,
+            speed_infantry_mult: NativeF32Bits::ONE,
+            speed_units_mult: NativeF32Bits::ONE,
+            speed_aircraft_mult: NativeF32Bits::ONE,
             armor_infantry_mult: 1.0,
             armor_units_mult: 1.0,
             armor_aircraft_mult: 1.0,
@@ -109,6 +122,16 @@ impl CountryRules {
                 .map(|v| (v as f64 * INCOME_PPM_SCALE as f64).round() as i64)
                 .unwrap_or(INCOME_PPM_SCALE),
             armor: section.get_f64("Armor").unwrap_or(1.0),
+            firepower: section.get_f64("Firepower").unwrap_or(1.0),
+            speed_infantry_mult: NativeF32Bits::from_bits(
+                section.get_f32("SpeedInfantryMult").unwrap_or(1.0).to_bits(),
+            ),
+            speed_units_mult: NativeF32Bits::from_bits(
+                section.get_f32("SpeedUnitsMult").unwrap_or(1.0).to_bits(),
+            ),
+            speed_aircraft_mult: NativeF32Bits::from_bits(
+                section.get_f32("SpeedAircraftMult").unwrap_or(1.0).to_bits(),
+            ),
             armor_infantry_mult: section.get_f32("ArmorInfantryMult").unwrap_or(1.0),
             armor_units_mult: section.get_f32("ArmorUnitsMult").unwrap_or(1.0),
             armor_aircraft_mult: section.get_f32("ArmorAircraftMult").unwrap_or(1.0),
@@ -277,6 +300,9 @@ pub struct GeneralRules {
     /// Receiver-side divisor selected by the rank-specific `STRONGER`
     /// ability (`VeteranArmor=` in `[General]`).
     pub veteran_armor: f64,
+    /// `[General] VeteranSpeed=` parsed through native binary32 then widened
+    /// and stored as binary64. Stock bits are `0x3FF3333340000000`.
+    pub veteran_speed: NativeF64Bits,
     /// `[General] VeteranRatio=` — how many times its own cost an object must
     /// destroy to gain one rank. `RulesClass+0x668`, read at `0x0066EEB0`.
     pub veteran_ratio: f64,
@@ -286,6 +312,8 @@ pub struct GeneralRules {
     pub veteran_cap: f64,
     /// Difficulty armor doubles in native Hard/Normal/Easy table order.
     pub difficulty_armor: [f64; 3],
+    /// Difficulty firepower doubles in native Hard/Normal/Easy table order.
+    pub difficulty_firepower: [f64; 3],
     /// `[General] ComputerBaseDefenseResponse=`. The active House responder
     /// forms its signed/wrapping budget as `attacker Cost * this value`.
     pub computer_base_defense_response: i32,
@@ -681,6 +709,12 @@ pub struct GeneralRules {
     pub wheeled_uphill: SimFixed,
     /// Non-tracked vehicle downhill coefficient (`WheeledDownhill=`; vanilla 1.2).
     pub wheeled_downhill: SimFixed,
+    /// Native binary64 slope operands. Constructor is exact one; explicit INI
+    /// values are `%f` binary32 widened to binary64.
+    pub tracked_uphill_native: NativeF64Bits,
+    pub tracked_downhill_native: NativeF64Bits,
+    pub wheeled_uphill_native: NativeF64Bits,
+    pub wheeled_downhill_native: NativeF64Bits,
 
     // -- Per-object draw-light offsets --
     /// Signed `[AudioVisual] ExtraUnitLight=` body-light offset (`1000 == 1.0`).
@@ -926,9 +960,11 @@ impl Default for GeneralRules {
             gravity: 3,
             veteran_sight: 0,
             veteran_armor: 1.0,
+            veteran_speed: NativeF64Bits::from_bits(0x3ff3_3333_4000_0000),
             veteran_ratio: VETERAN_RATIO_DEFAULT,
             veteran_cap: VETERAN_CAP_DEFAULT,
             difficulty_armor: [1.0; 3],
+            difficulty_firepower: [1.0; 3],
             computer_base_defense_response: 3,
             // Native Rules+0xE48 constructor default; active retail overrides to 3.
             maximum_building_placement_failures: 5,
@@ -1080,9 +1116,13 @@ impl Default for GeneralRules {
             // Vanilla rulesmd.ini [General]: 1.0 uphill (no change) / 1.2 downhill (faster),
             // same for tracked and wheeled. Mods can override via [General].
             tracked_uphill: SimFixed::lit("1.0"),
-            tracked_downhill: SimFixed::lit("1.2"),
+            tracked_downhill: SimFixed::lit("1.0"),
             wheeled_uphill: SimFixed::lit("1.0"),
-            wheeled_downhill: SimFixed::lit("1.2"),
+            wheeled_downhill: SimFixed::lit("1.0"),
+            tracked_uphill_native: NativeF64Bits::ONE,
+            tracked_downhill_native: NativeF64Bits::ONE,
+            wheeled_uphill_native: NativeF64Bits::ONE,
+            wheeled_downhill_native: NativeF64Bits::ONE,
             extra_unit_light: 0,
             extra_infantry_light: 0,
             extra_aircraft_light: 0,
@@ -1464,6 +1504,11 @@ impl GeneralRules {
                 .and_then(|section| section.get_f64("Armor"))
                 .unwrap_or(1.0)
         });
+        let difficulty_firepower = ["Difficult", "Normal", "Easy"].map(|section_name| {
+            ini.section(section_name)
+                .and_then(|section| section.get_f64("Firepower"))
+                .unwrap_or(1.0)
+        });
         // These are ReadDouble values (single-precision parse widened to f64)
         // and the consumer's ftol boundary chops toward zero.
         let ambient_change_rate = general.read_double("AmbientChangeRate", 0.2);
@@ -1515,11 +1560,18 @@ impl GeneralRules {
                 .unwrap_or(defaults.gravity),
             veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
             veteran_armor: general.get_f64("VeteranArmor").unwrap_or(1.0),
+            veteran_speed: NativeF64Bits::from_bits(
+                general
+                    .get_f64("VeteranSpeed")
+                    .unwrap_or(f64::from(1.2_f32))
+                    .to_bits(),
+            ),
             veteran_ratio: general
                 .get_f64("VeteranRatio")
                 .unwrap_or(VETERAN_RATIO_DEFAULT),
             veteran_cap: general.get_f64("VeteranCap").unwrap_or(VETERAN_CAP_DEFAULT),
             difficulty_armor,
+            difficulty_firepower,
             computer_base_defense_response: general
                 .get_i32("ComputerBaseDefenseResponse")
                 .unwrap_or(defaults.computer_base_defense_response),
@@ -1897,6 +1949,38 @@ impl GeneralRules {
                 .get_f32("WheeledDownhill")
                 .map(sim_from_f32)
                 .unwrap_or(defaults.wheeled_downhill),
+            tracked_uphill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "TrackedUphill",
+                        f64::from_bits(defaults.tracked_uphill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
+            tracked_downhill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "TrackedDownhill",
+                        f64::from_bits(defaults.tracked_downhill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
+            wheeled_uphill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "WheeledUphill",
+                        f64::from_bits(defaults.wheeled_uphill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
+            wheeled_downhill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "WheeledDownhill",
+                        f64::from_bits(defaults.wheeled_downhill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
             // RulesClass's AudioVisual pass stores these ReadDouble values as
             // signed milliunits after the active x87 chop-toward-zero conversion.
             extra_unit_light: (audio_visual
@@ -3148,6 +3232,15 @@ impl RuleSet {
             .map(|handle| self.object_by_handle(*handle))
     }
 
+    /// Native UnitType registry in construction/source order. Crate Unit
+    /// selection draws an index from this exact family, not the combined
+    /// Techno registry or a hash-map projection.
+    pub(crate) fn unit_types_in_order(&self) -> impl Iterator<Item = &ObjectType> {
+        self.object_list
+            .iter()
+            .filter(|object| object.category == ObjectCategory::Vehicle)
+    }
+
     /// Resolve one scenario BasePlan token through the native BuildingType
     /// registry only, matching
     /// `BuildingTypeClass__FindIndexByName @ 0x0045E7B0` used by
@@ -3339,6 +3432,31 @@ impl RuleSet {
             ObjectCategory::Building => country.armor_buildings_mult,
         };
         (country.armor, f64::from(category))
+    }
+
+    /// Country half of native HouseClass firepower installation. The caller
+    /// folds this with the House difficulty row before the per-Techno crate
+    /// qword and base damage enter the single x87 conversion boundary.
+    pub(crate) fn country_firepower(&self, id: &str) -> f64 {
+        self.country_rules(id).map_or(1.0, |country| country.firepower)
+    }
+
+    /// Raw HouseType f32 selected by `HouseClass::GetSpeedBonus` for the
+    /// supplied TechnoType category. Building/unknown categories use exact one.
+    pub(crate) fn country_speed_bonus(
+        &self,
+        id: &str,
+        category: ObjectCategory,
+    ) -> NativeF32Bits {
+        let Some(country) = self.country_rules(id) else {
+            return NativeF32Bits::ONE;
+        };
+        match category {
+            ObjectCategory::Infantry => country.speed_infantry_mult,
+            ObjectCategory::Vehicle => country.speed_units_mult,
+            ObjectCategory::Aircraft => country.speed_aircraft_mult,
+            ObjectCategory::Building => NativeF32Bits::ONE,
+        }
     }
 
     /// Resolve a country name to its stable `[Countries]` registration index.

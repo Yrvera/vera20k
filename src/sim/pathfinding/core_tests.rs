@@ -2716,6 +2716,17 @@ fn make_water_channel_terrain() -> ResolvedTerrainGrid {
                         amphibious: Some(100),
                         hover: Some(100),
                         float_beach: Some(100),
+                        native_row_present: true,
+                        native_speed_bits: [
+                            crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+                            crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+                            crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                        ],
                     }
                 } else {
                     // Land: ground passable, Float blocked.
@@ -2727,6 +2738,17 @@ fn make_water_channel_terrain() -> ResolvedTerrainGrid {
                         amphibious: Some(80),
                         hover: Some(50),
                         float_beach: Some(0),
+                        native_row_present: true,
+                        native_speed_bits: [
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::from_bits(0.5f32.to_bits()),
+                            crate::util::native_x87::NativeF32Bits::ONE,
+                            crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+                            crate::util::native_x87::NativeF32Bits::from_bits(0.8f32.to_bits()),
+                            crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+                        ],
                     }
                 },
                 ..make_resolved_cell(rx, ry)

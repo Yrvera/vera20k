@@ -25,6 +25,7 @@
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
+use crate::sim::components::DriveCoord;
 use crate::sim::movement::locomotion::LocomotorSlot;
 use crate::sim::movement::locomotion::piggyback::{
     self, EndGateContext, LocomotorRuntimePayload, StashedLocomotor,
@@ -187,6 +188,10 @@ pub struct LocomotorState {
     pub jumpjet_accel: SimFixed,
     /// Current speed during jumpjet flight (ramps via accel/decel).
     pub jumpjet_current_speed: SimFixed,
+    /// JumpjetLocomotion-owned stored destination. This is separate from the
+    /// Foot movement order and is raw-written by both native crate callers.
+    #[serde(default)]
+    pub jumpjet_destination: Option<DriveCoord>,
     /// Max lateral deviation in leptons during hover wobble (JumpjetDeviation).
     pub jumpjet_deviation: i32,
     /// Combined crash descent speed: climb + crash (leptons/sec, scaled).
@@ -234,6 +239,12 @@ pub struct LocomotorState {
     /// Unused by non-Hover locomotors.
     #[serde(default)]
     pub hover_throttle: SimFixed,
+
+    /// HoverLocomotion-owned resolved destination. A synchronous crate
+    /// callback may retarget this field; the admitted continuation does not
+    /// reinstall its original candidate.
+    #[serde(default)]
+    pub hover_destination: Option<DriveCoord>,
 
     /// Hover speed *request* — the unramped throttle target, distinct from
     /// `hover_throttle` (the ramped value that lags it).
@@ -318,6 +329,7 @@ impl LocomotorState {
             jumpjet_speed: jj_speed,
             jumpjet_accel: jj_accel,
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: jj_deviation,
             jumpjet_crash_speed: jj_crash_speed,
             jumpjet_turn_rate: jj_turn_rate,
@@ -330,6 +342,7 @@ impl LocomotorState {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: SIM_ZERO,
             hover_bob_offset: SIM_ZERO,
         }
@@ -394,6 +407,7 @@ impl LocomotorState {
             jumpjet_speed: SIM_ZERO,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: 0,
             jumpjet_crash_speed: SIM_ZERO,
             jumpjet_turn_rate: 4,
@@ -406,6 +420,7 @@ impl LocomotorState {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: SIM_ZERO,
             hover_bob_offset: SIM_ZERO,
         }

@@ -477,6 +477,11 @@ pub enum SnapshotRestoreError {
         target_registry: &'static str,
         target_id: u64,
     },
+    #[error("entity {entity_id} has invalid Parasite reciprocal state: {reason}")]
+    InvalidParasiteReciprocalState {
+        entity_id: u64,
+        reason: &'static str,
+    },
     #[error(
         "carrier {carrier_id} has {passenger_count} passengers but {size_count} saved Size entries"
     )]
@@ -1065,6 +1070,67 @@ fn restore_object_references(
                     "EntityStore",
                     target_id,
                 )?;
+            }
+        }
+        if let Some(victim_id) = entity
+            .parasite_manager
+            .as_ref()
+            .and_then(|manager| manager.victim_id)
+        {
+            require_resolved_reference(
+                entity_ids.contains(&victim_id),
+                "EntityStore",
+                entity_id,
+                "parasite_manager.victim_id",
+                "EntityStore",
+                victim_id,
+            )?;
+            if victim_id == entity_id {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "manager victim is self",
+                });
+            }
+            if sim
+                .substrate
+                .entities
+                .get(victim_id)
+                .and_then(|victim| victim.parasite_attacker_id)
+                != Some(entity_id)
+            {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "manager victim lacks matching attacker backlink",
+                });
+            }
+        }
+        if let Some(attacker_id) = entity.parasite_attacker_id {
+            require_resolved_reference(
+                entity_ids.contains(&attacker_id),
+                "EntityStore",
+                entity_id,
+                "parasite_attacker_id",
+                "EntityStore",
+                attacker_id,
+            )?;
+            if attacker_id == entity_id {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "victim attacker is self",
+                });
+            }
+            if sim
+                .substrate
+                .entities
+                .get(attacker_id)
+                .and_then(|attacker| attacker.parasite_manager.as_ref())
+                .and_then(|manager| manager.victim_id)
+                != Some(entity_id)
+            {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "victim backlink lacks matching manager victim",
+                });
             }
         }
         if let Some(plant) = entity.c4_plant.as_ref() {
@@ -3530,7 +3596,6 @@ mod tests {
         use crate::map::entities::EntityCategory;
         use crate::sim::components::{DriveCoord, Health, ShipLocomotionRuntime};
         use crate::sim::game_entity::GameEntity;
-        use crate::util::fixed_math::{SIM_HALF, SIM_ONE};
 
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Soviet");
@@ -3565,15 +3630,17 @@ mod tests {
         assert_ne!(populated_counter_hash, zero_counter_hash);
 
         let ship_head = DriveCoord::cell(6, 5, 0);
-        sim.substrate
+        let shp_unit = sim
+            .substrate
             .entities
             .get_mut(1)
-            .expect("SHP unit")
-            .ship_locomotion = Some(ShipLocomotionRuntime {
+            .expect("SHP unit");
+        shp_unit.current_speed_fraction =
+            crate::util::native_x87::NativeF64Bits::from_bits(0.5f64.to_bits());
+        shp_unit.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(ship_head),
             head_to: Some(ship_head),
-            target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
+            target_speed_fraction: crate::util::native_x87::NativeF64Bits::ONE,
             owner_current_speed: 10,
             ..Default::default()
         });
@@ -3603,8 +3670,19 @@ mod tests {
             .expect("restored Ship runtime");
         assert_eq!(restored_ship.destination, Some(ship_head));
         assert_eq!(restored_ship.head_to, Some(ship_head));
-        assert_eq!(restored_ship.target_speed_fraction, SIM_ONE);
-        assert_eq!(restored_ship.current_speed_fraction, SIM_HALF);
+        assert_eq!(
+            restored_ship.target_speed_fraction,
+            crate::util::native_x87::NativeF64Bits::ONE
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .expect("restored SHP unit")
+                .current_speed_fraction,
+            crate::util::native_x87::NativeF64Bits::from_bits(0.5f64.to_bits())
+        );
         assert_eq!(restored_ship.owner_current_speed, 10);
         assert_eq!(restored.state_hash(), populated_shp_state_hash);
     }
@@ -5029,6 +5107,36 @@ mod tests {
                 .attached_entity,
             Some(999),
             "failed restoration must not sanitize the unresolved strong reference"
+        );
+    }
+
+    #[test]
+    fn parasite_snapshot_validation_requires_exact_reciprocal_links() {
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::parasite_attachment::ParasiteManagerState;
+
+        let mut sim = Simulation::new();
+        let mut attacker = GameEntity::test_default(1, "SQD", "RUSSIANS", 1, 1);
+        attacker.parasite_manager = Some(ParasiteManagerState { victim_id: Some(2) });
+        let mut victim = GameEntity::test_default(2, "DEST", "AMERICANS", 2, 2);
+        victim.parasite_attacker_id = Some(1);
+        sim.substrate.entities.insert(attacker);
+        sim.substrate.entities.insert(victim);
+        let identities = BTreeMap::from([(1, "EntityStore"), (2, "EntityStore")]);
+
+        assert_eq!(restore_object_references(&mut sim, &identities), Ok(()));
+
+        sim.substrate
+            .entities
+            .get_mut(2)
+            .unwrap()
+            .parasite_attacker_id = None;
+        assert_eq!(
+            restore_object_references(&mut sim, &identities),
+            Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                entity_id: 1,
+                reason: "manager victim lacks matching attacker backlink",
+            })
         );
     }
 

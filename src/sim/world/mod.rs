@@ -368,6 +368,16 @@ struct MovementSoundProbe {
 /// Pure data — no audio library dependency. Drained by the app layer each frame.
 #[derive(Debug, Clone)]
 pub enum SimSoundEvent {
+    /// Spatial crate-effect sound after the effect's native local-owner gate.
+    CrateEffect {
+        sound_id: String,
+        owner: InternedId,
+        rx: u16,
+        ry: u16,
+    },
+    /// Non-spatial crate upgrade EVA emitted after the complete live Ground
+    /// walk and before the picker-owned spatial crate sound.
+    CrateUpgradeEva { kind: CrateUpgradeEvaKind },
     /// Constructor-time animation start/report sound, keyed to object identity.
     AnimationStarted {
         anim_id: crate::sim::anim_class::AnimId,
@@ -522,6 +532,13 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         z: u8,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrateUpgradeEvaKind {
+    Armor,
+    Speed,
+    Firepower,
 }
 
 impl SimSoundEvent {
@@ -6544,6 +6561,31 @@ impl Simulation {
                 .get(stable_id)
                 .is_some_and(|entity| entity.category == EntityCategory::Structure);
             sim.object_ai_visit_one(stable_id, rules, object_ctx);
+            // ForceTrack is one of the verified native pickup callers. Its
+            // leaf recorded immutable request data before releasing the entity
+            // borrow; drain in insertion order before any ordinary locomotor
+            // work or alive short-circuit so dead tombstone postwrites remain
+            // possible. No other cell-change path flows through this seam.
+            let movement_crate_probes = sim
+                .substrate
+                .entities
+                .get_mut(stable_id)
+                .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                .unwrap_or_default();
+            if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                for probe in movement_crate_probes {
+                    let _ = sim.pickup_crate_from_movement_probe(
+                        stable_id,
+                        probe,
+                        crate::sim::crates::CratePickupInputs {
+                            rules,
+                            overlays,
+                            path_grid,
+                            event_49: None,
+                        },
+                    );
+                }
+            }
             if was_structure
                 && sim
                     .substrate
@@ -6569,60 +6611,81 @@ impl Simulation {
                 .get(stable_id)
                 .map(|entity| (entity.position.rx, entity.position.ry));
             let one = [stable_id];
-            movement_stats.merge(movement::tick_movement_object_with_grids(
-                &mut sim.substrate.entities,
-                stable_id,
-                path_grid,
-                &sim.terrain_costs,
-                &sim.house_alliances,
-                &mut sim.substrate.occupancy,
-                &mut sim.substrate.cell_occupation,
-                &mut sim.substrate.raw_cell_occupation,
-                &mut sim.substrate.next_occupancy_enter_order,
-                &mut sim.scenario_rng,
-                sim.session.tick,
-                sim.session.binary_frame,
-                sim.zone_grid.as_ref(),
-                sim.resolved_terrain.as_ref(),
-                sim.overlay_grid.as_ref(),
-                overlay_registry,
-                sim.playfield_bounds,
-                &sim.terrain_speed_config,
-                sim.close_enough,
-                sim.path_delay_ticks,
-                sim.blockage_path_delay_ticks,
-                &mut sim.interner,
-                rules,
-                &mut sim.sound_events,
-                &mut sim.pending_lifecycle_requests,
-            ));
-
-            // FootClass advances the SHP Unit body counter immediately after
-            // this object's locomotor Process, against the still-current
-            // absolute binary frame. The global frame commits only after the
-            // complete live-object pass.
-            if shp_vehicle_counter_admitted(tube_active_at_entry) {
-                let shp_vehicle_cadence =
-                    sim.substrate.entities.get(stable_id).and_then(|entity| {
-                        if entity.category != EntityCategory::Unit || entity.is_voxel {
-                            return None;
-                        }
-                        let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
-                        Some(crate::sim::animation::ShpVehicleCadence {
-                            walk_rate: object.walk_rate,
-                            idle_rate: object.idle_rate,
-                        })
-                    });
-                if let (Some(cadence), Some(entity)) = (
-                    shp_vehicle_cadence,
-                    sim.substrate.entities.get_mut(stable_id),
-                ) {
-                    crate::sim::animation::tick_shp_vehicle_body_frame_counter(
-                        entity,
-                        cadence,
-                        sim.session.binary_frame,
-                    );
+            let mut resume_crate_tail_only = false;
+            loop {
+                movement_stats.merge(movement::tick_movement_object_with_grids(
+                    &mut sim.substrate.entities,
+                    stable_id,
+                    path_grid,
+                    &sim.terrain_costs,
+                    &sim.house_alliances,
+                    &mut sim.substrate.occupancy,
+                    &mut sim.substrate.cell_occupation,
+                    &mut sim.substrate.raw_cell_occupation,
+                    &mut sim.substrate.next_occupancy_enter_order,
+                    &mut sim.scenario_rng,
+                    sim.session.tick,
+                    sim.session.binary_frame,
+                    sim.zone_grid.as_ref(),
+                    sim.resolved_terrain.as_ref(),
+                    sim.overlay_grid.as_ref(),
+                    overlay_registry,
+                    sim.playfield_bounds,
+                    &sim.terrain_speed_config,
+                    sim.close_enough,
+                    sim.path_delay_ticks,
+                    sim.blockage_path_delay_ticks,
+                    &mut sim.interner,
+                    rules,
+                    &sim.houses,
+                    &mut sim.sound_events,
+                    &mut sim.pending_lifecycle_requests,
+                    resume_crate_tail_only,
+                ));
+                let probes = sim
+                    .substrate
+                    .entities
+                    .get_mut(stable_id)
+                    .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                    .unwrap_or_default();
+                if probes.is_empty() {
+                    break;
                 }
+                for probe in probes {
+                    if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                        let _ = sim.pickup_crate_from_movement_probe(
+                            stable_id,
+                            probe,
+                            crate::sim::crates::CratePickupInputs {
+                                rules,
+                                overlays,
+                                path_grid,
+                                event_49: None,
+                            },
+                        );
+                    } else if let Some(entity) =
+                        sim.substrate.entities.get_mut(stable_id)
+                    {
+                        // A runtime without parsed rules/overlay types cannot
+                        // contain an active crate. The native dispatch is thus
+                        // the deterministic no-crate `One` path, but the exact
+                        // caller continuation still has to run so test/scenario
+                        // shells cannot strand an unadmitted suspension.
+                        let _ = crate::sim::movement::crate_callers::continue_after_pickup(
+                            entity,
+                            probe,
+                            crate::sim::crates::NativePickupReturn::One,
+                        );
+                    }
+                }
+                if !sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                    entity.pending_drive_track_crate_resume.is_some()
+                        || entity.pending_process_movement_crate_resume.is_some()
+                        || entity.pending_ground_crossing_crate_resume.is_some()
+                }) {
+                    break;
+                }
+                resume_crate_tail_only = true;
             }
 
             // A direction-8 producer also ends this object's ordinary turn as
@@ -6641,41 +6704,193 @@ impl Simulation {
                 return;
             }
 
-            sim.tick_air_movement_with_cell_lists_one(stable_id);
-            let teleport_relocating = sim
+            let locomotor_kind_at_process = sim
                 .substrate
                 .entities
                 .get(stable_id)
-                .and_then(|entity| entity.teleport_state.as_ref())
-                .is_some_and(|state| {
-                    state.phase == crate::sim::movement::teleport_movement::TeleportPhase::Relocate
+                .and_then(|entity| entity.locomotor.as_ref().map(|locomotor| locomotor.kind));
+            let tick_shp_counter = |sim: &mut Simulation| {
+                if !shp_vehicle_counter_admitted(tube_active_at_entry) {
+                    return;
+                }
+                let cadence = sim.substrate.entities.get(stable_id).and_then(|entity| {
+                    if entity.category != EntityCategory::Unit || entity.is_voxel {
+                        return None;
+                    }
+                    let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
+                    Some(crate::sim::animation::ShpVehicleCadence {
+                        walk_rate: object.walk_rate,
+                        idle_rate: object.idle_rate,
+                    })
                 });
-            if let Some(rules) = rules {
-                let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
-                let warp_out_total_frames = rules
-                    .effect_frame_count(&rules.general.warp_out.name)
-                    .unwrap_or(teleport_movement::FALLBACK_WARP_FRAME_COUNT);
-                let mut teleport_visuals = teleport_movement::TeleportVisuals {
-                    world_effects: &mut sim.world_effects,
-                    warp_out_type,
-                    warp_out_total_frames,
-                    warp_out_frame_delay: rules.general.warp_out.frame_delay,
-                };
-                teleport_movement::tick_teleport_movement(
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.occupancy,
-                    &one,
-                    sim.session.tick,
-                    Some(&mut teleport_visuals),
-                );
-            } else {
-                teleport_movement::tick_teleport_movement(
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.occupancy,
-                    &one,
-                    sim.session.tick,
-                    None,
-                );
+                if let (Some(cadence), Some(entity)) =
+                    (cadence, sim.substrate.entities.get_mut(stable_id))
+                {
+                    crate::sim::animation::tick_shp_vehicle_body_frame_counter(
+                        entity,
+                        cadence,
+                        sim.session.binary_frame,
+                    );
+                }
+            };
+            let air_owns_process = matches!(
+                locomotor_kind_at_process,
+                Some(
+                    crate::rules::locomotor_type::LocomotorKind::Fly
+                        | crate::rules::locomotor_type::LocomotorKind::Jumpjet
+                )
+            );
+            let teleport_owns_process = locomotor_kind_at_process
+                == Some(crate::rules::locomotor_type::LocomotorKind::Teleport);
+            let teleport_relocated_this_process = teleport_owns_process
+                && sim
+                    .substrate
+                    .entities
+                    .get(stable_id)
+                    .and_then(|entity| entity.teleport_state.as_ref())
+                    .is_some_and(|state| {
+                        state.phase
+                            == crate::sim::movement::teleport_movement::TeleportPhase::Relocate
+                    });
+            if !air_owns_process && !teleport_owns_process {
+                tick_shp_counter(sim);
+            }
+
+            let mut resume_air_crate_tail = false;
+            loop {
+                if resume_air_crate_tail {
+                    sim.resume_air_movement_crate_tail_one(stable_id);
+                } else {
+                    sim.tick_air_movement_with_cell_lists_one(stable_id);
+                }
+                let air_crate_probes = sim
+                    .substrate
+                    .entities
+                    .get_mut(stable_id)
+                    .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                    .unwrap_or_default();
+                if air_crate_probes.is_empty() {
+                    break;
+                }
+                for probe in air_crate_probes {
+                    if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                        let _ = sim.pickup_crate_from_movement_probe(
+                            stable_id,
+                            probe,
+                            crate::sim::crates::CratePickupInputs {
+                                rules,
+                                overlays,
+                                path_grid,
+                                event_49: None,
+                            },
+                        );
+                    } else if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
+                        let _ = crate::sim::movement::crate_callers::continue_after_pickup(
+                            entity,
+                            probe,
+                            crate::sim::crates::NativePickupReturn::One,
+                        );
+                    }
+                }
+                if !sim
+                    .substrate
+                    .entities
+                    .get(stable_id)
+                    .is_some_and(|entity| entity.pending_air_crate_resume.is_some())
+                {
+                    break;
+                }
+                resume_air_crate_tail = true;
+            }
+
+            if air_owns_process {
+                tick_shp_counter(sim);
+            }
+            let mut resume_teleport_crate_tail = false;
+            loop {
+                if let Some(rules) = rules {
+                    let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
+                    let warp_out_total_frames = rules
+                        .effect_frame_count(&rules.general.warp_out.name)
+                        .unwrap_or(teleport_movement::FALLBACK_WARP_FRAME_COUNT);
+                    let mut teleport_visuals = teleport_movement::TeleportVisuals {
+                        world_effects: &mut sim.world_effects,
+                        warp_out_type,
+                        warp_out_total_frames,
+                        warp_out_frame_delay: rules.general.warp_out.frame_delay,
+                    };
+                    if resume_teleport_crate_tail {
+                        teleport_movement::resume_teleport_crate_tail(
+                            &mut sim.substrate.entities,
+                            &mut sim.substrate.occupancy,
+                            &one,
+                            sim.session.tick,
+                            Some(&mut teleport_visuals),
+                        );
+                    } else {
+                        teleport_movement::tick_teleport_movement(
+                            &mut sim.substrate.entities,
+                            &mut sim.substrate.occupancy,
+                            &one,
+                            sim.session.tick,
+                            Some(&mut teleport_visuals),
+                        );
+                    }
+                } else if resume_teleport_crate_tail {
+                    teleport_movement::resume_teleport_crate_tail(
+                        &mut sim.substrate.entities,
+                        &mut sim.substrate.occupancy,
+                        &one,
+                        sim.session.tick,
+                        None,
+                    );
+                } else {
+                    teleport_movement::tick_teleport_movement(
+                        &mut sim.substrate.entities,
+                        &mut sim.substrate.occupancy,
+                        &one,
+                        sim.session.tick,
+                        None,
+                    );
+                }
+                let probes = sim
+                    .substrate
+                    .entities
+                    .get_mut(stable_id)
+                    .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                    .unwrap_or_default();
+                if probes.is_empty() {
+                    break;
+                }
+                for probe in probes {
+                    if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                        let _ = sim.pickup_crate_from_movement_probe(
+                            stable_id,
+                            probe,
+                            crate::sim::crates::CratePickupInputs {
+                                rules,
+                                overlays,
+                                path_grid,
+                                event_49: None,
+                            },
+                        );
+                    } else if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
+                        let _ = crate::sim::movement::crate_callers::continue_after_pickup(
+                            entity,
+                            probe,
+                            crate::sim::crates::NativePickupReturn::One,
+                        );
+                    }
+                }
+                if !sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                    entity.pending_teleport_crate_resume.is_some()
+                }) {
+                    break;
+                }
+                resume_teleport_crate_tail = true;
+            }
+            if teleport_owns_process {
+                tick_shp_counter(sim);
             }
             sim.pending_rocket_detonations
                 .extend(rocket_movement::tick_rocket_movement(
@@ -6713,7 +6928,7 @@ impl Simulation {
                     rules,
                 );
             }
-            if teleport_relocating {
+            if teleport_relocated_this_process {
                 // `TeleportLocomotionClass` arrival owns the exceptional exact
                 // outside clear at 0x00719A99; it must not flow through the
                 // ordinary promote-only per-cell writer.
