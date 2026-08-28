@@ -1073,10 +1073,10 @@ pub struct DestroyedCrewedBuilding {
     pub z: u8,
 }
 
-/// A `CanBeOccupied` building destroyed in combat with live occupants —
-/// gamemd routes this through `BuildingClass::SellBuilding @ 0x00457DE0`, the
-/// same occupant-eject helper used by sell. The world layer owns the deferred
-/// repositioning because it has access to `Simulation` and the occupancy grid.
+/// A `CanBeOccupied` or capture-fate absorber building destroyed in combat with
+/// live occupants. Both classes release occupants while the Building is still
+/// represented; the world layer owns deferred placement because it has access
+/// to `Simulation` and the occupancy grid.
 pub struct DestroyedGarrisonBuilding {
     pub building_id: u64,
     pub type_id: InternedId,
@@ -2228,9 +2228,10 @@ fn handle_entity_deaths(
                 .map(|c| c.passengers.clone())
                 .unwrap_or_default();
 
-            // Garrisoned CanBeOccupied buildings use the same gamemd
-            // SellBuilding occupant-eject contract as sell. Generic transports
-            // deliberately emit no passenger-side mutations from combat.
+            // Garrisoned CanBeOccupied buildings and Bio Reactor capture-fate
+            // absorbers release their live cargo before Building UnInit.
+            // Generic transports deliberately emit no passenger-side mutations
+            // from combat.
             //
             // Re-resolve the type string here because earlier mutable borrows
             // of `interner` (death_weapon_aoe, intern calls) ended its prior
@@ -2238,7 +2239,7 @@ fn handle_entity_deaths(
             let type_id_str_for_branch = interner.resolve(type_id);
             let is_garrison_building = rules
                 .object(type_id_str_for_branch)
-                .map(|obj| obj.can_be_occupied)
+                .map(|obj| obj.can_be_occupied || obj.infantry_absorb || obj.unit_absorb)
                 .unwrap_or(false)
                 && category == EntityCategory::Structure
                 && !passenger_ids.is_empty();

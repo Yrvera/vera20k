@@ -650,6 +650,59 @@ fn hunt(sim: &mut Simulation, victim_id: u64, current_frame: u32) {
     assign_mission(sim, victim_id, MissionType::Hunt, current_frame);
 }
 
+/// Unit/Infantry vslot `+0x340`, the action-3 Bio Reactor selector.
+///
+/// `CaptureManagerClass::DecideUnitFate @ 0x004723B0` consumes the return and
+/// falls back to Hunt when it is false. `FootClass::Mission_Guard @
+/// 0x004D5070` and `FootClass::Mission_AreaGuard @ 0x004D6AA0` call the same
+/// vslot for persistent Foot `+0x68F` intent but deliberately ignore the
+/// return. Keeping that distinction at the callers prevents a failed later
+/// redispatch from inventing a Hunt assignment.
+pub(crate) fn select_capture_fate_absorber(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    victim_id: u64,
+    current_frame: u32,
+) -> bool {
+    let absorber = nearest_owned_building(
+        sim,
+        rules,
+        victim_id,
+        HouseCaptureFacilityVector::Absorber,
+        |sim, object, victim, building| {
+            building_can_enter_absorber(sim, rules, object, victim, building)
+        },
+    );
+    let Some(absorber_id) = absorber else {
+        if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+            victim.ai_absorb_enter_pending = false;
+        }
+        return false;
+    };
+
+    let should_retarget = sim.substrate.entities.get(victim_id).is_some_and(|victim| {
+        victim.radio_contacts.slot(0) != Some(absorber_id)
+            && victim.navigation.nav_com != Some(NavTargetRef::building(absorber_id))
+    });
+    if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+        victim.ai_absorb_enter_pending = true;
+    }
+    if should_retarget {
+        assign_mission(sim, victim_id, MissionType::Enter, current_frame);
+        if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+            crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                victim,
+                Some(NavTargetRef::building(absorber_id)),
+            );
+        }
+        establish_capture_fate_contact(sim, victim_id, absorber_id);
+        if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+            victim.navigation.pending_arrival_clear = true;
+        }
+    }
+    true
+}
+
 fn decide_unit_fate(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -711,6 +764,7 @@ fn decide_unit_fate(
                     TeamScriptMember {
                         entity_id: victim_id,
                         member_type: identity,
+                        has_special_building_entry_intent: false,
                     },
                 )
             {
@@ -740,40 +794,7 @@ fn decide_unit_fate(
             }
         }
         3 if victim_category != EntityCategory::Structure => {
-            let absorber = nearest_owned_building(
-                sim,
-                rules,
-                victim_id,
-                HouseCaptureFacilityVector::Absorber,
-                |sim, object, victim, building| {
-                    building_can_enter_absorber(sim, rules, object, victim, building)
-                },
-            );
-            if let Some(absorber_id) = absorber {
-                let should_retarget = sim.substrate.entities.get(victim_id).is_some_and(|victim| {
-                    victim.radio_contacts.slot(0) != Some(absorber_id)
-                        && victim.navigation.nav_com != Some(NavTargetRef::building(absorber_id))
-                });
-                if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
-                    victim.ai_absorb_enter_pending = true;
-                }
-                if should_retarget {
-                    assign_mission(sim, victim_id, MissionType::Enter, current_frame);
-                    if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
-                        crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
-                            victim,
-                            Some(NavTargetRef::building(absorber_id)),
-                        );
-                    }
-                    establish_capture_fate_contact(sim, victim_id, absorber_id);
-                    if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
-                        victim.navigation.pending_arrival_clear = true;
-                    }
-                }
-            } else {
-                if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
-                    victim.ai_absorb_enter_pending = false;
-                }
+            if !select_capture_fate_absorber(sim, rules, victim_id, current_frame) {
                 hunt(sim, victim_id, current_frame);
             }
         }
@@ -1319,6 +1340,7 @@ mod tests {
             &[TeamScriptMember {
                 entity_id: controller_id,
                 member_type: identity,
+                has_special_building_entry_intent: false,
             }],
             None,
             0,

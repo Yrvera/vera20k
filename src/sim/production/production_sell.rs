@@ -426,6 +426,7 @@ fn garrison_scatter_direction_index(dx: i32, dy: i32) -> usize {
 fn place_garrison_passenger_at_cell(
     sim: &mut Simulation,
     rules: &RuleSet,
+    building_id: u64,
     passenger_id: u64,
     owner_override: Option<InternedId>,
     rx: u16,
@@ -475,6 +476,13 @@ fn place_garrison_passenger_at_cell(
         return false;
     }
 
+    crate::sim::passenger::clear_capture_fate_absorb_intent_after_exit(
+        sim,
+        rules,
+        passenger_id,
+        building_id,
+    );
+
     sellbuilding_direct_scatter_handoff(
         sim,
         rules,
@@ -491,6 +499,7 @@ fn place_garrison_passenger_at_cell(
 fn eject_garrison_passengers_at_edges(
     sim: &mut Simulation,
     rules: &RuleSet,
+    building_id: u64,
     rx: u16,
     ry: u16,
     z: u8,
@@ -527,6 +536,7 @@ fn eject_garrison_passengers_at_edges(
         if place_garrison_passenger_at_cell(
             sim,
             rules,
+            building_id,
             pax_id,
             owner_override,
             exit_rx,
@@ -581,6 +591,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
     let ejected = eject_garrison_passengers_at_edges(
         sim,
         rules,
+        building_id,
         rx,
         ry,
         z,
@@ -606,11 +617,13 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
 /// Eject garrison occupants from a building destroyed in combat.
 ///
 /// Verified gamemd evidence routes destroyed `CanBeOccupied` garrisons through
-/// the same SellBuilding helper used by sell/abandon. Destruction callers use
-/// the null no-exit branch: if no edge coordinate is accepted, occupants are
-/// removed rather than parachuted or placed inside the foundation. The caller
-/// invokes this while the building is still resolvable, before building UnInit,
-/// so its cargo can be detached from generic transport-death recursion.
+/// the same SellBuilding helper used by sell/abandon. Capture-fate absorbers
+/// use the same Building unload placement while the Building is still live;
+/// `BuildingClass::Mission_Unload @ 0x0044D880` owns the raw-human `+0x68F`
+/// clear at `0x0044DBEA`. Destruction callers use the null no-exit branch: if
+/// no edge coordinate is accepted, occupants are removed rather than
+/// parachuted or placed inside the foundation. The caller invokes this before
+/// Building UnInit so cargo is detached from generic transport-death recursion.
 ///
 /// Returns the count of occupants successfully ejected (excludes those killed
 /// when no edge cell can be used).
@@ -640,16 +653,24 @@ pub(crate) fn eject_destruction_garrison_with_context(
         "destroyed-garrison cargo must be detached before building UnInit"
     );
 
+    let capture_fate_absorber = sim
+        .substrate
+        .entities
+        .get(event.building_id)
+        .and_then(|building| sim.object_type(building.type_ref, rules))
+        .is_some_and(|object| object.infantry_absorb || object.unit_absorb);
+
     eject_garrison_passengers_at_edges(
         sim,
         rules,
+        event.building_id,
         event.rx,
         event.ry,
         event.z,
         event.foundation_w,
         event.foundation_h,
         &passenger_ids,
-        Some(event.owner),
+        (!capture_fate_absorber).then_some(event.owner),
         GarrisonEjectMode::DestructionNoExitRemove,
         uninit_context,
     )
@@ -696,6 +717,7 @@ pub(crate) fn eject_red_hp_garrison(
     let ejected = eject_garrison_passengers_at_edges(
         sim,
         rules,
+        building_id,
         rx,
         ry,
         z,
@@ -940,6 +962,7 @@ mod tests {
     use crate::rules::ini_parser::IniFile;
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::house_state::HouseState;
     use crate::sim::movement::locomotor::LocomotorState;
     use crate::sim::occupancy::CellListInsertion;
 
@@ -985,6 +1008,78 @@ mod tests {
              [AudioVisual]\nConditionYellow=50%\n",
         );
         RuleSet::from_ini(&ini).expect("repair damage-state rules should parse")
+    }
+
+    fn capture_fate_absorber_sell_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             0=INF\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=BIO\n\
+             [INF]\n\
+             Strength=100\n\
+             Size=1\n\
+             Speed=4\n\
+             [BIO]\n\
+             Strength=500\n\
+             Cost=600\n\
+             Foundation=2x2\n\
+             InfantryAbsorb=yes\n\
+             Passengers=5\n\
+             SizeLimit=15\n",
+        );
+        RuleSet::from_ini(&ini).expect("capture-fate absorber sell rules should parse")
+    }
+
+    fn insert_capture_fate_absorber_with_occupant(
+        sim: &mut Simulation,
+        building_id: u64,
+        passenger_id: u64,
+        passenger_raw_human: bool,
+    ) -> (InternedId, InternedId) {
+        let facility_owner = sim.interner.intern("FacilityOwner");
+        let passenger_owner = sim.interner.intern("PassengerOwner");
+        sim.houses.insert(
+            facility_owner,
+            HouseState::new(facility_owner, 0, None, false, 0, 10),
+        );
+        sim.houses.insert(
+            passenger_owner,
+            HouseState::new(passenger_owner, 1, None, passenger_raw_human, 0, 10),
+        );
+
+        let mut building =
+            GameEntity::test_default(building_id, "BIO", "FacilityOwner", 10, 10);
+        building.category = EntityCategory::Structure;
+        building.foundation = "2x2".to_string();
+        building.owner = facility_owner;
+        building.type_ref = sim.interner.intern("BIO");
+        building.passenger_role = PassengerRole::Transport {
+            cargo: crate::sim::passenger::PassengerCargo::new(5, 15),
+        };
+        building
+            .passenger_role
+            .cargo_mut()
+            .expect("absorber CargoClass")
+            .board_forced(passenger_id, 1);
+        sim.substrate.entities.insert(building);
+        sim.reveal(building_id);
+        sim.add_entity_occupancy(building_id);
+
+        let mut passenger =
+            GameEntity::test_default(passenger_id, "INF", "PassengerOwner", 10, 10);
+        passenger.category = EntityCategory::Infantry;
+        passenger.owner = passenger_owner;
+        passenger.type_ref = sim.interner.intern("INF");
+        passenger.passenger_role = PassengerRole::Inside {
+            transport_id: building_id,
+        };
+        passenger.ai_absorb_enter_pending = true;
+        sim.substrate.entities.insert(passenger);
+
+        (facility_owner, passenger_owner)
     }
 
     fn insert_hidden_passenger_with_subcell(
@@ -1244,6 +1339,75 @@ mod tests {
                 )
             }),
             "player sell must not emit StructureAbandoned"
+        );
+    }
+
+    #[test]
+    fn absorber_player_sell_exit_clears_raw_human_special_entry_intent() {
+        let rules = capture_fate_absorber_sell_rules();
+        let mut sim = Simulation::new();
+        let building_id = 70;
+        let passenger_id = 71;
+        let (_, passenger_owner) = insert_capture_fate_absorber_with_occupant(
+            &mut sim,
+            building_id,
+            passenger_id,
+            true,
+        );
+
+        assert!(sell_building(&mut sim, &rules, building_id));
+
+        let passenger = sim
+            .substrate
+            .entities
+            .get(passenger_id)
+            .expect("sold absorber occupant should be released");
+        assert_eq!(passenger.owner, passenger_owner);
+        assert!(matches!(passenger.passenger_role, PassengerRole::None));
+        assert!(!passenger.lifecycle.in_limbo);
+        assert!(!passenger.ai_absorb_enter_pending);
+    }
+
+    #[test]
+    fn absorber_destruction_exit_preserves_ai_special_entry_intent_and_owner() {
+        let rules = capture_fate_absorber_sell_rules();
+        let mut sim = Simulation::new();
+        let building_id = 80;
+        let passenger_id = 81;
+        let (facility_owner, passenger_owner) = insert_capture_fate_absorber_with_occupant(
+            &mut sim,
+            building_id,
+            passenger_id,
+            false,
+        );
+        let event = DestroyedGarrisonBuilding {
+            building_id,
+            type_id: sim.interner.intern("BIO"),
+            owner: facility_owner,
+            rx: 10,
+            ry: 10,
+            z: 0,
+            foundation_w: 2,
+            foundation_h: 2,
+            passenger_ids: vec![passenger_id],
+        };
+
+        assert_eq!(eject_destruction_garrison(&mut sim, &rules, &event), 1);
+
+        let passenger = sim
+            .substrate
+            .entities
+            .get(passenger_id)
+            .expect("destroyed absorber occupant should be released");
+        assert_eq!(
+            passenger.owner, passenger_owner,
+            "absorber unload does not rehome the victim to the facility owner",
+        );
+        assert!(matches!(passenger.passenger_role, PassengerRole::None));
+        assert!(!passenger.lifecycle.in_limbo);
+        assert!(
+            passenger.ai_absorb_enter_pending,
+            "raw AI House retains Foot+0x68F after absorber exit",
         );
     }
 

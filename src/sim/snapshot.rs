@@ -3850,6 +3850,7 @@ mod tests {
             &[crate::sim::team_script_vm::TeamScriptMember {
                 entity_id: 1,
                 member_type: member_identity,
+                has_special_building_entry_intent: false,
             }],
             None,
             sim.session.binary_frame as i32,
