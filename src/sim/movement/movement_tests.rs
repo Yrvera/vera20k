@@ -6048,6 +6048,80 @@ fn process_movement_descriptor_first_and_final_are_two_synchronous_suspensions()
 }
 
 #[test]
+fn drive_and_ship_final_rejection_cannot_restart_the_discarded_path_next_tick() {
+    for (kind, callsite) in [
+        (
+            LocomotorKind::Drive,
+            super::crate_callers::MovementCrateCallsite::DriveProcessMovementFinal,
+        ),
+        (
+            LocomotorKind::Ship,
+            super::crate_callers::MovementCrateCallsite::ShipProcessMovementFinal,
+        ),
+    ] {
+        for (pickup, limbo_during_callback) in [
+            (crate::sim::crates::NativePickupReturn::Zero, false),
+            (crate::sim::crates::NativePickupReturn::One, true),
+        ] {
+            let mut mover = gsi_06_13_fixture_mover(
+                (10, 10),
+                0x40,
+                vec![(10, 10), (11, 10), (12, 10)],
+                vec![2, 2],
+            );
+            mover.lifecycle.in_limbo = limbo_during_callback;
+            mover.drive_track = Some(
+                super::drive_track::begin_drive_track(1, 0, 1, 0, 0x40)
+                    .expect("fixture curve"),
+            );
+            if kind == LocomotorKind::Ship {
+                let drive = mover.drive_locomotion.take().expect("Drive fixture runtime");
+                mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+                mover.ship_locomotion = Some(crate::sim::components::ShipLocomotionRuntime {
+                    path: drive.path,
+                    destination: Some(DriveCoord::cell(12, 10, 0)),
+                    track_index: 6,
+                    target_speed_fraction: drive.target_speed_fraction,
+                    ..Default::default()
+                });
+            } else {
+                let drive = mover.drive_locomotion.as_mut().expect("Drive runtime");
+                drive.destination = Some(DriveCoord::cell(12, 10, 0));
+                drive.track_index = 6;
+                drive.track_valid = true;
+            }
+            let probe = super::crate_callers::MovementCrateProbe::at_entity(callsite, &mover);
+            assert!(!super::crate_callers::continue_after_pickup(
+                &mut mover,
+                probe,
+                pickup,
+            ));
+
+            // One+limbo can later become live again.  The rejected native
+            // stack has already discarded its curve and Foot path head, so
+            // that later Process visit must finish instead of auto-repathing
+            // to MovementTarget::final_goal.
+            mover.lifecycle.in_limbo = false;
+            let position_before = mover.position.clone();
+            let mut entities = EntityStore::new();
+            entities.insert(mover);
+            let mut harness = GroundCrateMovementHarness::new(&entities);
+
+            let stats = harness.tick(&mut entities, false);
+            let mover = entities.get(1).expect("mover survives stop");
+            assert_eq!(stats.moved_steps, 0);
+            assert_eq!(mover.position.rx, position_before.rx);
+            assert_eq!(mover.position.ry, position_before.ry);
+            assert_eq!(mover.position.sub_x, position_before.sub_x);
+            assert_eq!(mover.position.sub_y, position_before.sub_y);
+            assert!(mover.pending_movement_crate_probes.is_empty());
+            assert!(mover.drive_track.is_none());
+            assert!(mover.movement_target.is_none());
+        }
+    }
+}
+
+#[test]
 fn ship_process_movement_final_marks_handoff_then_head_after_callback_without_teleport() {
     fn advance_once(
         mover: &mut GameEntity,
