@@ -1487,6 +1487,27 @@ impl OccupancyGrid {
             .is_some_and(|occ| occ.occupants.iter().any(|o| o.entity_id == entity_id))
     }
 
+    /// Locate a mobile object's actual CellClass list membership.
+    ///
+    /// Object coordinates and object-list membership are independent during
+    /// native raw-coordinate continuations such as Drive ForceTrack: the
+    /// callback applies the requested XYZ before the forced curve's terminal
+    /// RemoveContent/AddContent relink.  Callers that own that interval must
+    /// query the object-list authority instead of deriving the old cell from
+    /// `GameEntity::position`.
+    pub(crate) fn registered_mobile_cell_layer(
+        &self,
+        entity_id: u64,
+    ) -> Option<((u16, u16), MovementLayer)> {
+        self.cells.iter().find_map(|(&cell, occupancy)| {
+            occupancy
+                .occupants
+                .iter()
+                .find(|occupant| occupant.entity_id == entity_id && !occupant.is_building)
+                .map(|occupant| (cell, occupant.layer))
+        })
+    }
+
     /// Total number of occupied cells (for diagnostics).
     pub fn occupied_cell_count(&self) -> usize {
         self.cells.len()
