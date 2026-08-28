@@ -37,6 +37,7 @@ pub(crate) fn seed_skirmish_opening_if_needed(
     house_roster: &HouseRoster,
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: &OverlayTypeRegistry,
     settings: &SkirmishSettings,
 ) -> Option<String> {
     // Seed MCVs whenever multiplayer start waypoints exist, even if the map
@@ -78,7 +79,7 @@ pub(crate) fn seed_skirmish_opening_if_needed(
         }
         let mcv_type: &str = skirmish_mcv_type_for_house(house, rules);
         if sim
-            .spawn_object(
+            .spawn_object_with_overlay_registry(
                 mcv_type,
                 &house.name,
                 start.rx,
@@ -86,6 +87,7 @@ pub(crate) fn seed_skirmish_opening_if_needed(
                 64,
                 rules,
                 height_map,
+                overlay_registry,
             )
             .is_some()
         {

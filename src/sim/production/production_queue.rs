@@ -450,13 +450,7 @@ pub fn tick_production_with_overlay_registry(
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
-    tick_production_impl(
-        sim,
-        rules,
-        height_map,
-        path_grid,
-        overlay_registry,
-    )
+    tick_production_impl(sim, rules, height_map, path_grid, overlay_registry)
 }
 
 fn tick_production_impl(
@@ -600,14 +594,16 @@ fn tick_production_impl(
             ),
             ProductionDeliveryKind::Standard => {
                 let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
-                sim.unlimbo_held_production_object(
+                sim.unlimbo_held_production_object_with_unit_context(
                     stable_id,
+                    spawn_producer_id.unwrap_or(stable_id),
                     rx,
                     ry,
                     64,
                     z,
                     crate::sim::world::PlacementEvidence::EvaluateMark,
                     rules,
+                    overlay_registry,
                 )
             }
         };
@@ -650,9 +646,10 @@ fn tick_production_impl(
                     ProductionDeliveryKind::NavalUnit { producer_rally, .. } => producer_rally,
                     ProductionDeliveryKind::Standard => rally_point_for_owner(sim, &owner_str),
                 };
-                let naval_rally = matches!(spawn_delivery, ProductionDeliveryKind::NavalUnit { .. })
-                    .then_some(rally)
-                    .flatten();
+                let naval_rally =
+                    matches!(spawn_delivery, ProductionDeliveryKind::NavalUnit { .. })
+                        .then_some(rally)
+                        .flatten();
                 if let Some((tx, ty)) = naval_rally {
                     if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
                         // BuildingClass::ExitObject_Main @ 0x0044442B calls

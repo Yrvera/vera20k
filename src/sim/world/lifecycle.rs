@@ -5,6 +5,7 @@
 //! this module never depends on render, UI, sidebar, audio, or net.
 
 use crate::map::entities::EntityCategory;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::{CellRect, resolve_reservation_real_cell, scan_cell_rect};
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
@@ -18,7 +19,6 @@ use crate::sim::occupancy::{
 };
 use crate::sim::passenger::PassengerRole;
 use crate::sim::projectile::ProjectileTarget;
-use crate::rules::ruleset::RuleSet;
 use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 
@@ -86,6 +86,15 @@ pub(crate) enum PlacementEvidence {
     /// class-specific exact-zero CanEnter admission; fixed/runtime constructors
     /// use it so a later placement rejection can retain the spent constructor.
     EvaluateMark,
+    /// The concrete `UnitClass::Can_Enter_Cell @ 0x0073F0A0` call made by
+    /// `ObjectClass::Unlimbo @ 0x005F4EC0` returned exact zero for the named
+    /// CellClass occupation plane. Carrying the selected plane prevents a
+    /// caller that already proved the native predicate (notably naval factory
+    /// delivery) from evaluating it twice while still letting the common
+    /// reveal boundary establish OnBridge and the deck Z before Mark(PUT).
+    UnitCanEnterExactZero {
+        layer: crate::sim::movement::locomotor::MovementLayer,
+    },
 }
 
 pub(super) fn building_base_reservation_rect(
@@ -966,7 +975,8 @@ impl Simulation {
             house_index,
         );
         if let Some(house) = self.houses.get_mut(&owner) {
-            house.base_reservation
+            house
+                .base_reservation
                 .update_bounds(rect.x, rect.y, rect.width, rect.height);
         } else {
             debug_assert!(false, "base-reservation owner must have HouseState");
@@ -1116,18 +1126,14 @@ impl Simulation {
         // the ground list. Each lookup selects only the first Building and calls
         // its repair-only writer immediately; identities are not deduplicated.
         scan_cell_rect(repair_rect, |x, y| {
-            let neighbor_id = resolve_reservation_real_cell(
-                self.resolved_terrain.as_ref(),
-                x,
-                y,
-            )
-            .and_then(|(rx, ry)| {
-                self.substrate.occupancy.first_building_on_layer(
-                    rx,
-                    ry,
-                    crate::sim::movement::locomotor::MovementLayer::Ground,
-                )
-            });
+            let neighbor_id = resolve_reservation_real_cell(self.resolved_terrain.as_ref(), x, y)
+                .and_then(|(rx, ry)| {
+                    self.substrate.occupancy.first_building_on_layer(
+                        rx,
+                        ry,
+                        crate::sim::movement::locomotor::MovementLayer::Ground,
+                    )
+                });
             if let Some(neighbor_id) = neighbor_id
                 && neighbor_id != stable_id
             {
@@ -2445,12 +2451,9 @@ impl Simulation {
                     system.done_spawning = true;
                 }
             } else if is_projectile {
-                let target_matches = self
-                    .projectiles
-                    .get(listener_id)
-                    .is_some_and(|projectile| {
-                        projectile.target == ProjectileTarget::Entity(expired_id)
-                    });
+                let target_matches = self.projectiles.get(listener_id).is_some_and(|projectile| {
+                    projectile.target == ProjectileTarget::Entity(expired_id)
+                });
                 let projectile_replacement_target = if !target_matches
                     || expired_is_high_flying
                     || expired_target_cell.is_none()
@@ -2505,9 +2508,7 @@ impl Simulation {
                     .waves
                     .pointer_expired(listener_id, expired_id)
                     .expect("Wave listener disappeared during expiry callback");
-                if owner_cleared
-                    && self.active_wave_links.get(&expired_id) == Some(&listener_id)
-                {
+                if owner_cleared && self.active_wave_links.get(&expired_id) == Some(&listener_id) {
                     // TechnoClass keeps the Wave link through the dying/deferred
                     // interval. Once the exact owner pointer expires, retaining
                     // this Rust projection would serialize a link whose Wave

@@ -5338,7 +5338,11 @@ impl Simulation {
     /// Advance building-down (undeploy) animations. When done, despawn the
     /// building and spawn the mobile unit (e.g., ConYard → MCV).
     /// Returns true if any entities were spawned (triggers atlas refresh).
-    fn tick_building_down(&mut self, rules: Option<&RuleSet>) -> bool {
+    fn tick_building_down(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> bool {
         let keys = self.substrate.entities.keys_sorted();
         let mut finished: Vec<u64> = Vec::new();
         for &sid in &keys {
@@ -5382,7 +5386,16 @@ impl Simulation {
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
             if let Some(new_sid) =
-                self.spawn_object_at_height(&unit_type_str, &owner_str, rx, ry, 0, z, rules)
+                self.spawn_object_at_height_with_overlay_context(
+                    &unit_type_str,
+                    &owner_str,
+                    rx,
+                    ry,
+                    0,
+                    z,
+                    rules,
+                    overlay_registry,
+                )
             {
                 if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
                     ge.selected = was_selected;
@@ -6002,10 +6015,11 @@ impl Simulation {
                 rules,
                 path_grid,
                 height_map,
+                overlay_registry,
             );
         }
         // Advance building-down (undeploy) animations; spawn units when done.
-        *spawned_entities |= self.tick_building_down(rules);
+        *spawned_entities |= self.tick_building_down(rules, overlay_registry);
 
         // Tick radar event aging (remove expired pings).
         self.radar_events.tick();

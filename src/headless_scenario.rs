@@ -45,6 +45,8 @@ impl HeadlessTerrainBootstrap {
         rules: Option<&crate::rules::ruleset::RuleSet>,
         art: Option<&crate::rules::art_data::ArtRegistry>,
         height_map: &BTreeMap<(u16, u16), u8>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        overlay_grid: Option<&OverlayGrid>,
         bridge_destroyability_mode: crate::map::basic::BridgeDestroyabilityMode,
         descriptor: &ScenarioDescriptor,
         initialize_houses_before_objects: F,
@@ -59,6 +61,8 @@ impl HeadlessTerrainBootstrap {
             rules,
             art,
             height_map,
+            overlay_registry,
+            overlay_grid,
             bridge_destroyability_mode,
             descriptor,
             self.bootstrap_rng,
@@ -167,10 +171,13 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         .ok_or_else(|| format!("load theater {}", map.header.theater))?;
 
     // Production rules layering: RULESMD, then the map's own INI on top.
-    let (mut rules, rules_ini) =
-        crate::app::loading::init_helpers::load_rules_with_merged_ini(&assets, None, Some(&map.ini))
-            .ok_or_else(|| "load merged rules".to_string())?
-            .into_parts();
+    let (mut rules, rules_ini) = crate::app::loading::init_helpers::load_rules_with_merged_ini(
+        &assets,
+        None,
+        Some(&map.ini),
+    )
+    .ok_or_else(|| "load merged rules".to_string())?
+    .into_parts();
     let (mut art, art_ini) = crate::app::loading::init_helpers::load_art_ini(&assets)
         .ok_or_else(|| "load merged art".to_string())?;
     rules.merge_art_data(&art);
@@ -287,6 +294,8 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         Some(&rules),
         Some(&rules.art_registry),
         &height_map,
+        Some(&overlay_registry),
+        Some(&overlay_grid),
         crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
             bridge_destruction: true,
         },
@@ -421,6 +430,8 @@ mod retail_construction_tests {
             None,
             None,
             &height_map,
+            None,
+            None,
             crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
                 bridge_destruction: true,
             },

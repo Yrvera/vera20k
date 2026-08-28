@@ -246,6 +246,7 @@ fn complete_stock_allied_refinery(
         sim.spawn_object("BLOCKER", "Russians", rx, ry, 0, &rules, &height_map)
             .expect("fixture blocker should spawn");
     }
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -261,6 +262,15 @@ fn resolved_clear_grid_with_override(
     height: u16,
     mut override_cell: impl FnMut(&mut ResolvedTerrainCell),
 ) -> ResolvedTerrainGrid {
+    let clear_speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(0),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
     let mut cells = Vec::with_capacity((width as usize) * (height as usize));
     for ry in 0..height {
         for rx in 0..width {
@@ -282,7 +292,7 @@ fn resolved_clear_grid_with_override(
                 render_offset_x: 0,
                 render_offset_y: 0,
                 terrain_class: TerrainClass::Clear,
-                speed_costs: SpeedCostProfile::default(),
+                speed_costs: clear_speed_costs,
                 is_water: false,
                 is_cliff_like: false,
                 height_in_pixels: 0,
@@ -305,7 +315,7 @@ fn resolved_clear_grid_with_override(
                 base_land_type: 0,
                 base_yr_cell_land_type: 0,
                 base_terrain_class: Default::default(),
-                base_speed_costs: Default::default(),
+                base_speed_costs: clear_speed_costs,
                 build_blocked: false,
                 has_bridge_deck: false,
                 bridge_walkable: false,
@@ -324,6 +334,20 @@ fn resolved_clear_grid_with_override(
         }
     }
     ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
+/// Install the MapClass inputs that active UnitClass::Unlimbo always sees.
+/// Blocker fixtures are inserted before this call so they model objects already
+/// occupying the bay rather than a second constructor placement.
+fn install_refinery_test_terrain(sim: &mut Simulation) {
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -100,
+        off_100: -100,
+        off_104: 200,
+        off_108: 200,
+    });
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
 }
 
 fn naval_yard_placement_rules() -> RuleSet {
@@ -834,6 +858,7 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
         &height_map,
     );
     block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 2);
 
     assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
@@ -865,11 +890,10 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
 #[test]
 fn stock_4x3_refinery_free_unit_is_refused_its_footprint_and_placed_by_the_nearby_search() {
     // The primary cell is `(bx + W/2, by + H/2 + 1)`, which for a 4x3 refinery at
-    // (20,20) is (22,22) — inside the building's own footprint. The cell-entry test
-    // grants the placing building no exemption, so the refinery is itself the
-    // occupant that refuses its free unit: the nearby search is the ORDINARY path on
-    // every stock refinery, not an exception, and the unit lands beside the building
-    // with the fallback facing rather than on the primary cell with 0xC0.
+    // (20,20) is (22,22) — inside the building's own footprint. The fresh Unit has
+    // no radio contact before `UnitClass::Unlimbo`; `Can_Enter_Cell @ 0x0073F0A0`
+    // therefore retains the refinery as an ordinary building blocker. The nearby
+    // search is the ordinary stock path and uses fallback facing 0xA0.
     //
     // The frame sweep is the point of the loop: selection is `pool[frame % len]` over
     // the ring-ordered pool, so walking the counter must walk the pool and must never
@@ -971,6 +995,7 @@ fn refinery_whose_primary_cell_clears_its_footprint_keeps_the_primary_cell_and_f
         &grid,
         &height_map,
     );
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1021,6 +1046,7 @@ fn occupied_primary_bay_uses_one_fallback_without_overlap() {
         .expect("dynamic primary blocker should spawn");
     assert!(sim.substrate.occupancy.contains_entity(22, 22, refinery_id));
     assert!(sim.substrate.occupancy.contains_entity(22, 22, blocker_id));
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1140,6 +1166,18 @@ fn free_unit_total_placement_failure_refunds_once_and_leaves_no_entity() {
         .get(&americans)
         .expect("house should exist")
         .owned_unit_count;
+    install_refinery_test_terrain(&mut sim);
+    for ry in 0..64 {
+        for rx in 0..64 {
+            let cell = sim
+                .resolved_terrain
+                .as_mut()
+                .and_then(|terrain| terrain.cell_mut(rx, ry))
+                .expect("fixture terrain cell");
+            cell.speed_costs = SpeedCostProfile::default();
+            cell.base_speed_costs = SpeedCostProfile::default();
+        }
+    }
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1177,10 +1215,9 @@ fn free_unit_total_placement_failure_refunds_once_and_leaves_no_entity() {
 #[test]
 fn stock_soviet_refinery_completion_spawns_harv() {
     // The Soviet refinery is the same 4x3 shape as the Allied one, so its primary
-    // cell (22,22) also lands on its own footprint and is refused; only the FreeUnit
-    // type differs. The frame is pinned because selection is `pool[frame % len]` —
-    // and deliberately not 0, so an implementation that always returned the first
-    // pool entry would not pass.
+    // cell (22,22) also lands on its own occupied footprint; only the FreeUnit type
+    // differs. The deliberately nonzero frame proves the same ordered fallback pool
+    // is used rather than always selecting its first entry.
     const SELECTION_FRAME: u32 = 3;
     let mut sim = Simulation::new();
     sim.session.binary_frame = SELECTION_FRAME;
@@ -1199,6 +1236,7 @@ fn stock_soviet_refinery_completion_spawns_harv() {
         &height_map,
     );
     block_building_foundation(&mut grid, &rules, "NAREFN", 20, 20);
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1287,6 +1325,7 @@ fn simultaneous_refinery_completions_preserve_stable_id_order() {
     assert!(allied_refinery < soviet_refinery);
     block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
     block_building_foundation(&mut grid, &rules, "NAREFN", 20, 35);
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, allied_refinery, 1);
     set_ticks_until_completion(&mut sim, soviet_refinery, 1);
 
@@ -1340,6 +1379,7 @@ fn modded_refinery_completion_uses_free_unit_from_rules() {
         &height_map,
     );
     assert!(unit_ids(&sim, "Americans", "MODHARV").is_empty());
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);

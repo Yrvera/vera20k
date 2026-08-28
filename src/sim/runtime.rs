@@ -11,9 +11,9 @@
 //! - Part of sim/; NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::resolved_terrain::TerrainTileAnimation;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::anim_class::{AnimDrawRuntime, AnimWorldCoord};
 use crate::sim::components::AnimClassSpawnDescriptor;
-use crate::rules::ruleset::RuleSet;
 use crate::sim::world::Simulation;
 
 /// Immutable per-match resources bound at construction (F07 cones land here).
@@ -117,8 +117,10 @@ impl<'a> SimView<'a> {
 
     pub fn houses(
         &self,
-    ) -> &'a std::collections::BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState>
-    {
+    ) -> &'a std::collections::BTreeMap<
+        crate::sim::intern::InternedId,
+        crate::sim::house_state::HouseState,
+    > {
         &self.simulation.houses
     }
 
@@ -183,8 +185,7 @@ impl<'a> SimView<'a> {
 impl SimRuntime {
     /// Clear the exact radar-terrain batch a completed presentation update read.
     pub(crate) fn acknowledge_radar_terrain_dirty(&mut self, generation: u64) -> bool {
-        self.simulation
-            .acknowledge_radar_terrain_dirty(generation)
+        self.simulation.acknowledge_radar_terrain_dirty(generation)
     }
 
     /// One command-free Ordinary-lane frame for side binaries (parity-digest):
@@ -227,10 +228,7 @@ impl SimRuntime {
     /// (same-content in-scenario load: rules, heights, registries, and
     /// trigger definitions are immutable match inputs and MUST carry over —
     /// an empty rebind would silently break every bound-resource consumer).
-    pub fn rebind_restored(
-        previous: Option<SimRuntime>,
-        simulation: Simulation,
-    ) -> SimRuntime {
+    pub fn rebind_restored(previous: Option<SimRuntime>, simulation: Simulation) -> SimRuntime {
         let resources = previous
             .map(|rt| rt.resources)
             .unwrap_or_else(SimResources::empty);
@@ -355,6 +353,8 @@ pub(crate) fn construct_scenario<F>(
     rules: Option<&crate::rules::ruleset::RuleSet>,
     art: Option<&crate::rules::art_data::ArtRegistry>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     bridge_destroyability_mode: crate::map::basic::BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
     bootstrap_rng: crate::sim::scenario_bootstrap::ScenarioBootstrapRng,
@@ -388,6 +388,11 @@ where
         }
     }
     sim.install_resolved_terrain_for_new_map(resolved_terrain.clone());
+    // Active `CellClass` overlay identity exists before the Techno map
+    // sections are read. Install the already-resolved grid now so every
+    // UnitClass virtual Unlimbo sees ore, walls, and structural bridges;
+    // finalization later replaces this clone after wall-owner reconstruction.
+    sim.overlay_grid = overlay_grid.cloned();
     // Wire the cliff/slope coefficients from [General] into the live World config;
     // it otherwise holds compiled vanilla defaults and never sees a modded INI.
     if let Some(rules) = rules {
@@ -474,11 +479,12 @@ where
         log::warn!("No rules loaded — skipping terrain object construction");
     }
     if !map_data.entities.is_empty() {
-        let _count: u32 = sim.spawn_from_map_with_resolved(
+        let _count: u32 = sim.spawn_from_map_with_resolved_and_overlay_registry(
             &map_data.entities,
             rules,
             height_map,
             Some(resolved_terrain),
+            overlay_registry,
         );
         let miner_count: usize = sim
             .entities()

@@ -10,11 +10,8 @@ use crate::sim::find_nearby_cell::{
     NearbyAnchorGate, NearbyFootprint, NearbyQuery, NearbySearchOptions, PassabilityArgs,
     RADIUS_HARD_CAP, find_nearby_passable_cell_with_options,
 };
-use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::world::{
-    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, Simulation,
-};
+use crate::sim::world::{PlacementEvidence, Simulation};
 
 use super::production_tech::foundation_dimensions;
 
@@ -47,6 +44,7 @@ pub(crate) fn spawn_completed_refinery_free_units(
     rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
     let mut any_spawned = false;
 
@@ -78,6 +76,7 @@ pub(crate) fn spawn_completed_refinery_free_units(
         any_spawned |= try_spawn_refinery_free_unit(
             sim,
             rules,
+            stable_id,
             &owner,
             &building_type_id,
             rx,
@@ -86,6 +85,7 @@ pub(crate) fn spawn_completed_refinery_free_units(
             height,
             path_grid,
             height_map,
+            overlay_registry,
         );
     }
 
@@ -95,6 +95,7 @@ pub(crate) fn spawn_completed_refinery_free_units(
 fn try_spawn_refinery_free_unit(
     sim: &mut Simulation,
     rules: &RuleSet,
+    building_id: u64,
     owner: &str,
     building_type_id: &str,
     building_rx: u16,
@@ -103,6 +104,7 @@ fn try_spawn_refinery_free_unit(
     height: u16,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
     if !rules.is_refinery_type(building_type_id) {
         return false;
@@ -158,7 +160,10 @@ fn try_spawn_refinery_free_unit(
             primary_rx,
             primary_ry,
             FREE_UNIT_FACING_PRIMARY,
+            rules,
+            building_id,
             height_map,
+            overlay_registry,
         )
     {
         log::info!(
@@ -193,7 +198,10 @@ fn try_spawn_refinery_free_unit(
             fallback_rx,
             fallback_ry,
             FREE_UNIT_FACING_FALLBACK,
+            rules,
+            building_id,
             height_map,
+            overlay_registry,
         ) {
             log::info!(
                 "Completed refinery {} spawned free {} at fallback ({},{}) for {}",
@@ -226,49 +234,32 @@ fn try_place_free_unit(
     rx: u16,
     ry: u16,
     facing: u8,
+    rules: &RuleSet,
+    producer_id: u64,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
-    // gamemd admits the cell only when its cell-entry test returns "clear", and that
-    // test grants no exemption to the building that is placing the unit: a refinery
-    // sitting on its own bay cell refuses the free unit exactly like any other
-    // blocker, which is why the two-attempt nearby search below is the ordinary path
-    // rather than the exception.
-    //
-    // Only the ground-blocker half of that test is modelled here. The rest of the
-    // native cell-entry family — the per-cell bib / impassable-row escapes that let a
-    // unit stand on a refinery's unload lane, infantry sub-cell occupants, and the
-    // terrain/zone clauses — is NOT modelled and is left as a stated residual rather
-    // than replaced by a substitute rule.
-    let admitted = sim
-        .substrate
-        .occupancy
-        .get(rx, ry)
-        .is_none_or(|occupancy| !occupancy.has_blockers_on(MovementLayer::Ground));
-    let Some((sub_x, sub_y)) = sim.substrate.entities.get_mut(free_unit_id).map(|entity| {
-        entity.facing = facing;
-        (entity.position.sub_x, entity.position.sub_y)
-    }) else {
-        return false;
-    };
-    let outcome = sim.try_reveal_entity(
+    // BuildingClass::OnConstructionComplete @ 0x00445F80 invokes the newly
+    // constructed UnitClass through virtual Unlimbo for every primary/fallback
+    // attempt. ObjectClass::Unlimbo @ 0x005F4EC0 reaches the concrete
+    // UnitClass::Can_Enter_Cell @ 0x0073F0A0 before Reveal mutates coordinates
+    // or occupancy, so this path must use the same exact gate as every other
+    // newly constructed Unit placement. Stock 4x3 refinery primary cells remain
+    // occupied by their own live building object and therefore enter the native
+    // nearby-search sequence; independent occupants are evaluated in that same
+    // ordered cell list rather than through the old coarse ground-blocker model.
+    sim.reveal_constructed_object_at_height_with_unit_context(
         free_unit_id,
-        RevealRequest {
-            position: RevealPosition {
-                rx,
-                ry,
-                z: height_map.get(&(rx, ry)).copied().unwrap_or(0),
-                sub_x,
-                sub_y,
-            },
-            placement: if admitted {
-                PlacementEvidence::MarkSucceeded
-            } else {
-                PlacementEvidence::MarkFailed
-            },
-            logic_eligible: true,
-        },
-    );
-    matches!(outcome, RevealOutcome::Revealed { .. })
+        rx,
+        ry,
+        facing,
+        height_map.get(&(rx, ry)).copied().unwrap_or(0),
+        PlacementEvidence::EvaluateMark,
+        rules,
+        overlay_registry,
+        producer_id,
+    )
+    .is_some()
 }
 
 fn refund_failed_free_unit(sim: &mut Simulation, owner: &str, refund: i32) {

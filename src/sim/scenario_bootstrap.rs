@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseRoster;
 use crate::map::map_file::MapFile;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::waypoints::Waypoint;
 use crate::rng_continuation::MapGenRngContinuation;
@@ -712,6 +713,30 @@ pub(crate) fn apply_explicit_skirmish_launch_session(
         resolved_terrain,
         descriptor,
         None,
+        None,
+    )
+}
+
+pub(crate) fn apply_explicit_skirmish_launch_session_with_overlay_registry(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    descriptor: &MatchLaunchDescriptor,
+    overlay_registry: &OverlayTypeRegistry,
+) -> SkirmishLaunchApplyResult {
+    apply_resolved_skirmish_launch_session(
+        sim,
+        map_data,
+        house_roster,
+        rules,
+        height_map,
+        resolved_terrain,
+        descriptor,
+        Some(overlay_registry),
+        None,
     )
 }
 
@@ -734,6 +759,32 @@ pub(crate) fn apply_preloaded_battle_launch_session(
         height_map,
         resolved_terrain,
         descriptor,
+        None,
+        Some(plan),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_preloaded_battle_launch_session_with_overlay_registry(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    descriptor: &MatchLaunchDescriptor,
+    overlay_registry: &OverlayTypeRegistry,
+    plan: &PreloadedBattleStartPlan,
+) -> SkirmishLaunchApplyResult {
+    apply_resolved_skirmish_launch_session(
+        sim,
+        map_data,
+        house_roster,
+        rules,
+        height_map,
+        resolved_terrain,
+        descriptor,
+        Some(overlay_registry),
         Some(plan),
     )
 }
@@ -746,6 +797,7 @@ fn apply_resolved_skirmish_launch_session(
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
     descriptor: &MatchLaunchDescriptor,
+    overlay_registry: Option<&OverlayTypeRegistry>,
     preloaded_battle_plan: Option<&PreloadedBattleStartPlan>,
 ) -> SkirmishLaunchApplyResult {
     // Direct frontend/unit-test launch paths can enter before the shared
@@ -867,6 +919,7 @@ fn apply_resolved_skirmish_launch_session(
                 rules,
                 height_map,
                 resolved_terrain,
+                overlay_registry,
             )
             .is_some()
             {
@@ -895,7 +948,7 @@ fn apply_resolved_skirmish_launch_session(
         }
     }
 
-    seed_starting_extra_units(
+    seed_starting_extra_units_with_overlay_registry(
         sim,
         &slots,
         rules,
@@ -907,6 +960,7 @@ fn apply_resolved_skirmish_launch_session(
             .special_flags
             .initial_veteran
             .unwrap_or(rules.initial_veteran),
+        overlay_registry,
     );
 
     // The selected-mode starting-force orchestrator advances Scenario RNG once
@@ -1181,6 +1235,7 @@ fn place_starting_mcv(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Option<u64> {
     place_starting_object_near_base(
         sim,
@@ -1194,6 +1249,7 @@ fn place_starting_mcv(
         rules,
         height_map,
         resolved_terrain,
+        overlay_registry,
     )
 }
 
@@ -1209,6 +1265,7 @@ fn place_starting_object_near_base(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Option<u64> {
     let category = rules.object(type_id)?.category;
     let initial_z = height_map.get(&(base_rx, base_ry)).copied().unwrap_or(0);
@@ -1216,17 +1273,11 @@ fn place_starting_object_near_base(
     // one constructor draw therefore precedes every placement-search draw and
     // remains spent even when every attempt fails.
     let stable_id = sim.construct_object_limbo_at_height(
-        type_id,
-        owner,
-        base_rx,
-        base_ry,
-        facing,
-        initial_z,
-        rules,
+        type_id, owner, base_rx, base_ry, facing, initial_z, rules,
     )?;
     if starting_object_cell_placeable(sim, resolved_terrain, base_rx, base_ry, category) {
         if sim
-            .reveal_constructed_object_at_height(
+            .reveal_constructed_object_at_height_with_unit_context(
                 stable_id,
                 base_rx,
                 base_ry,
@@ -1234,6 +1285,8 @@ fn place_starting_object_near_base(
                 initial_z,
                 PlacementEvidence::EvaluateMark,
                 rules,
+                overlay_registry,
+                stable_id,
             )
             .is_some()
         {
@@ -1272,7 +1325,7 @@ fn place_starting_object_near_base(
                 }
                 let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
                 if sim
-                    .reveal_constructed_object_at_height(
+                    .reveal_constructed_object_at_height_with_unit_context(
                         stable_id,
                         rx,
                         ry,
@@ -1280,6 +1333,8 @@ fn place_starting_object_near_base(
                         z,
                         PlacementEvidence::EvaluateMark,
                         rules,
+                        overlay_registry,
+                        stable_id,
                     )
                     .is_some()
                 {
@@ -1317,6 +1372,31 @@ pub(crate) fn seed_starting_extra_units(
     bounds: NativeStartBounds,
     unit_count: i32,
     initial_veteran: bool,
+) -> u32 {
+    seed_starting_extra_units_with_overlay_registry(
+        sim,
+        slots,
+        rules,
+        height_map,
+        resolved_terrain,
+        bounds,
+        unit_count,
+        initial_veteran,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seed_starting_extra_units_with_overlay_registry(
+    sim: &mut Simulation,
+    slots: &[NormalizedSkirmishSlot],
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    bounds: NativeStartBounds,
+    unit_count: i32,
+    initial_veteran: bool,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> u32 {
     if unit_count <= 0 {
         return 0;
@@ -1383,6 +1463,7 @@ pub(crate) fn seed_starting_extra_units(
                 rules,
                 height_map,
                 resolved_terrain,
+                overlay_registry,
             ) else {
                 placement_failures_left -= 1;
                 continue;
@@ -1996,12 +2077,16 @@ mod tests {
             &rules,
             &BTreeMap::new(),
             &terrain,
+            None,
         )
         .expect("exact PostMap placement");
         let exact_entity = exact.substrate.entities.get(exact_id).unwrap();
         assert_eq!(exact_entity.techno_ctor_random_word, exact_word);
         assert_eq!((exact_entity.position.rx, exact_entity.position.ry), (6, 5));
-        assert_eq!(exact.scenario_rng.logical_state(), exact_expected.logical_state());
+        assert_eq!(
+            exact.scenario_rng.logical_state(),
+            exact_expected.logical_state()
+        );
 
         let mut fallback = techno_constructor_start_sim(seed, 10);
         let mut fallback_expected = SimRng::new(seed);
@@ -2010,7 +2095,12 @@ mod tests {
             .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
             .unwrap();
         assert_eq!(
-            fallback.substrate.entities.get(blocker).unwrap().techno_ctor_random_word,
+            fallback
+                .substrate
+                .entities
+                .get(blocker)
+                .unwrap()
+                .techno_ctor_random_word,
             blocker_word
         );
         let fallback_word = (fallback_expected.next_u32() & 0xFFFF) as u16;
@@ -2027,12 +2117,19 @@ mod tests {
             &rules,
             &BTreeMap::new(),
             &terrain,
+            None,
         )
         .expect("fallback PostMap placement");
         let fallback_entity = fallback.substrate.entities.get(fallback_id).unwrap();
         assert_eq!(fallback_entity.techno_ctor_random_word, fallback_word);
-        assert_ne!((fallback_entity.position.rx, fallback_entity.position.ry), (6, 5));
-        assert_eq!(fallback.scenario_rng.logical_state(), fallback_expected.logical_state());
+        assert_ne!(
+            (fallback_entity.position.rx, fallback_entity.position.ry),
+            (6, 5)
+        );
+        assert_eq!(
+            fallback.scenario_rng.logical_state(),
+            fallback_expected.logical_state()
+        );
     }
 
     #[test]
@@ -2076,10 +2173,57 @@ mod tests {
                 &rules,
                 &BTreeMap::new(),
                 &terrain,
+                None,
             )
             .is_none()
         );
         assert!(sim.substrate.entities.is_empty());
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_starting_unit_uses_raw_unit_admission_before_fallback() {
+        let seed = 0xC701_1004;
+        let rules = techno_constructor_start_rules();
+        let terrain = techno_constructor_flat_start_terrain(10);
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+        let base = (6, 5);
+        let mut sim = techno_constructor_start_sim(seed, 10);
+        sim.install_resolved_terrain_for_new_map(terrain.clone());
+        sim.substrate.raw_cell_occupation.mark_ground(
+            base.0,
+            base.1,
+            crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+        );
+
+        let mut expected = SimRng::new(seed);
+        let expected_word = (expected.next_u32() & 0xFFFF) as u16;
+        let _fallback_start_direction = expected.next_range_u32_inclusive(0, 7);
+        let stable_id = place_starting_object_near_base(
+            &mut sim,
+            "MTNK",
+            "Americans",
+            base.0,
+            base.1,
+            STARTING_MCV_FACING,
+            1,
+            bounds,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+            None,
+        )
+        .expect("raw-bit rejection must retry the same constructed Unit");
+
+        let placed = sim.substrate.entities.get(stable_id).unwrap();
+        assert_eq!(placed.techno_ctor_random_word, expected_word);
+        assert_ne!((placed.position.rx, placed.position.ry), base);
+        assert_eq!(stable_id, 1, "fallback must retain the first identity");
         assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
     }
 
@@ -2115,7 +2259,11 @@ mod tests {
             .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
             .expect("starting-cell blocker");
         assert_eq!(
-            sim.substrate.entities.get(blocker).unwrap().techno_ctor_random_word,
+            sim.substrate
+                .entities
+                .get(blocker)
+                .unwrap()
+                .techno_ctor_random_word,
             blocker_word
         );
         let candidate_index = expected.next_range_u32_inclusive(0, 1) as usize;

@@ -60,13 +60,22 @@ impl fmt::Display for GeneratedTechnoInitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateEntityIndex(index) => {
-                write!(f, "duplicate generated Techno binding for entity index {index}")
+                write!(
+                    f,
+                    "duplicate generated Techno binding for entity index {index}"
+                )
             }
             Self::MissingEntityIndex(index) => {
-                write!(f, "missing generated Techno binding for entity index {index}")
+                write!(
+                    f,
+                    "missing generated Techno binding for entity index {index}"
+                )
             }
             Self::UnexpectedEntityIndex(index) => {
-                write!(f, "unexpected generated Techno binding for entity index {index}")
+                write!(
+                    f,
+                    "unexpected generated Techno binding for entity index {index}"
+                )
             }
             Self::IdentityMismatch {
                 entity_index,
@@ -110,7 +119,11 @@ impl GeneratedTechnoInitTable {
         &'a self,
         entities: &[MapEntity],
     ) -> Result<Vec<&'a GeneratedTechnoInit>, GeneratedTechnoInitError> {
-        if let Some((&index, _)) = self.entries.iter().find(|(index, _)| **index >= entities.len()) {
+        if let Some((&index, _)) = self
+            .entries
+            .iter()
+            .find(|(index, _)| **index >= entities.len())
+        {
             return Err(GeneratedTechnoInitError::UnexpectedEntityIndex(index));
         }
         let mut ordered = Vec::with_capacity(entities.len());
@@ -187,7 +200,8 @@ impl Simulation {
     /// occupancy, or update house ownership. It still owns the two native
     /// constructor invariants that apply to every Techno-shaped object:
     /// Simulation allocates the stable identity and consumes one Scenario RNG
-    /// draw for `TechnoClass +0x224` before the entity enters its store.
+    /// draw stored at `TechnoClass +0x3C8` (`0x006F3259`) before the entity
+    /// enters its store.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub fn insert_synthetic_techno_for_diagnostics(
@@ -247,11 +261,29 @@ impl Simulation {
         height_map: &BTreeMap<(u16, u16), u8>,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
     ) -> u32 {
+        self.spawn_from_map_with_resolved_and_overlay_registry(
+            entities,
+            rules,
+            height_map,
+            resolved_terrain,
+            None,
+        )
+    }
+
+    pub(crate) fn spawn_from_map_with_resolved_and_overlay_registry(
+        &mut self,
+        entities: &[MapEntity],
+        rules: Option<&RuleSet>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> u32 {
         self.spawn_from_map_with_constructor_inits(
             entities,
             rules,
             height_map,
             resolved_terrain,
+            overlay_registry,
             None,
         )
         .expect("fresh fixed-map Techno constructor initialization cannot fail")
@@ -273,6 +305,7 @@ impl Simulation {
             Some(rules),
             height_map,
             resolved_terrain,
+            None,
             Some(constructor_inits),
         )
     }
@@ -283,6 +316,7 @@ impl Simulation {
         rules: Option<&RuleSet>,
         height_map: &BTreeMap<(u16, u16), u8>,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         constructor_inits: Option<&GeneratedTechnoInitTable>,
     ) -> Result<u32, GeneratedTechnoInitError> {
         let generated_inits = constructor_inits
@@ -380,15 +414,20 @@ impl Simulation {
             let stable_id = self.allocate_stable_id();
             let owner_id = self.interner.intern(&map_ent.owner);
             let type_id = self.interner.intern(&map_ent.type_id);
-            let constructor_init = generated_inits.as_ref().map_or(
-                TechnoConstructorInit::FreshScenario,
-                |inits| TechnoConstructorInit::PreconsumedGenerated((*inits[entity_index]).clone()),
-            );
+            let constructor_init = generated_inits
+                .as_ref()
+                .map_or(TechnoConstructorInit::FreshScenario, |inits| {
+                    TechnoConstructorInit::PreconsumedGenerated((*inits[entity_index]).clone())
+                });
             let techno_ctor_random_word = self.resolve_techno_constructor_word(
                 constructor_init,
-                generated_inits
-                    .as_ref()
-                    .map(|_| (entity_index, map_ent.type_id.as_str(), (map_ent.cell_x, map_ent.cell_y))),
+                generated_inits.as_ref().map(|_| {
+                    (
+                        entity_index,
+                        map_ent.type_id.as_str(),
+                        (map_ent.cell_x, map_ent.cell_y),
+                    )
+                }),
             )?;
 
             // Build the GameEntity with all required fields.
@@ -529,7 +568,8 @@ impl Simulation {
                     self.session.binary_frame,
                 );
             }
-            let (stable_id, outcome) = self.unlimbo_after_constructor_managers(ge, rules);
+            let (stable_id, outcome) =
+                self.unlimbo_after_constructor_managers(ge, rules, overlay_registry);
             if !matches!(outcome, RevealOutcome::Revealed { .. }) {
                 self.discard_constructed_limbo(stable_id);
                 continue;
@@ -625,9 +665,8 @@ impl Simulation {
         facing: u8,
         rules: &RuleSet,
     ) -> Option<u64> {
-        let stable_id = self.construct_object_limbo_at_height(
-            type_id, owner, rx, ry, facing, z, rules,
-        )?;
+        let stable_id =
+            self.construct_object_limbo_at_height(type_id, owner, rx, ry, facing, z, rules)?;
         {
             let upgrade = self.substrate.entities.get_mut(stable_id)?;
             upgrade.structure_upgrade_link = Some(StructureUpgradeLink {
@@ -731,6 +770,34 @@ impl Simulation {
         self.spawn_object_at_height(type_id, owner, rx, ry, facing, z, rules)
     }
 
+    /// Immediate construction with the match's live OverlayTypeClass table.
+    /// Production callers use this boundary whenever the constructed type may
+    /// be a Unit, so its virtual Unlimbo sees the same overlay facts as native.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_object_with_overlay_registry(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        rules: &RuleSet,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    ) -> Option<u64> {
+        let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
+        self.spawn_object_at_height_with_overlay_registry(
+            type_id,
+            owner,
+            rx,
+            ry,
+            facing,
+            z,
+            rules,
+            overlay_registry,
+        )
+    }
+
     pub(crate) fn spawn_object_at_height(
         &mut self,
         type_id: &str,
@@ -741,6 +808,23 @@ impl Simulation {
         z: u8,
         rules: &RuleSet,
     ) -> Option<u64> {
+        self.spawn_object_at_height_with_overlay_context(
+            type_id, owner, rx, ry, facing, z, rules, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_object_at_height_with_overlay_context(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> Option<u64> {
         self.spawn_object_at_height_with_init(
             type_id,
             owner,
@@ -749,9 +833,34 @@ impl Simulation {
             facing,
             z,
             rules,
+            overlay_registry,
             TechnoConstructorInit::FreshScenario,
         )
         .expect("fresh Techno constructor initialization cannot fail")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_object_at_height_with_overlay_registry(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+        overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    ) -> Option<u64> {
+        self.spawn_object_at_height_with_overlay_context(
+            type_id,
+            owner,
+            rx,
+            ry,
+            facing,
+            z,
+            rules,
+            Some(overlay_registry),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -764,6 +873,7 @@ impl Simulation {
         facing: u8,
         z: u8,
         rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         init: TechnoConstructorInit,
     ) -> Result<Option<u64>, GeneratedTechnoInitError> {
         let Some(obj) = rules.object(type_id) else {
@@ -904,7 +1014,8 @@ impl Simulation {
             &mut self.interner,
             self.session.binary_frame,
         );
-        let (stable_id, outcome) = self.unlimbo_after_constructor_managers(ge, Some(rules));
+        let (stable_id, outcome) =
+            self.unlimbo_after_constructor_managers(ge, Some(rules), overlay_registry);
         if !matches!(outcome, RevealOutcome::Revealed { .. }) {
             // This convenience path owns its transient constructor result.
             // Held production objects use the separate limbo/retry boundary.
@@ -1141,7 +1252,27 @@ impl Simulation {
         placement: PlacementEvidence,
         rules: &RuleSet,
     ) -> Option<u64> {
-        self.reveal_constructed_object_at_height(
+        self.reveal_constructed_object_at_height_with_unit_context(
+            stable_id, rx, ry, facing, z, placement, rules, None, stable_id,
+        )
+    }
+
+    /// Production delivery boundary for a held object whose concrete Unit
+    /// virtual needs the live overlay table and selected producer identity.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn unlimbo_held_production_object_with_unit_context(
+        &mut self,
+        stable_id: u64,
+        producer_id: u64,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        placement: PlacementEvidence,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> Option<u64> {
+        self.reveal_constructed_object_at_height_with_unit_context(
             stable_id,
             rx,
             ry,
@@ -1149,6 +1280,8 @@ impl Simulation {
             z,
             placement,
             rules,
+            overlay_registry,
+            producer_id,
         )
     }
 
@@ -1166,6 +1299,73 @@ impl Simulation {
         placement: PlacementEvidence,
         rules: &RuleSet,
     ) -> Option<u64> {
+        self.reveal_constructed_object_at_height_with_unit_context(
+            stable_id, rx, ry, facing, z, placement, rules, None, stable_id,
+        )
+    }
+
+    /// Common concrete Unlimbo boundary. A Unit arriving with ordinary
+    /// `EvaluateMark` first executes its exact `+0x1AC` CanEnter predicate;
+    /// callers that already proved exact zero carry that evidence instead.
+    /// Rejection returns before facing, subcell, bridge, or position mutation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reveal_constructed_object_at_height_with_unit_context(
+        &mut self,
+        stable_id: u64,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        placement: PlacementEvidence,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        producer_id: u64,
+    ) -> Option<u64> {
+        let requested_position = RevealPosition {
+            rx,
+            ry,
+            z,
+            sub_x: self.substrate.entities.get(stable_id)?.position.sub_x,
+            sub_y: self.substrate.entities.get(stable_id)?.position.sub_y,
+        };
+        let placement = if placement == PlacementEvidence::EvaluateMark {
+            self.constructor_unlimbo_placement(
+                stable_id,
+                requested_position,
+                rules,
+                overlay_registry,
+                producer_id,
+            )
+        } else {
+            placement
+        };
+        if placement == PlacementEvidence::RejectedEarly {
+            let _ = self.try_reveal_entity(
+                stable_id,
+                RevealRequest {
+                    position: requested_position,
+                    placement,
+                    logic_eligible: true,
+                },
+            );
+            return None;
+        }
+
+        let z = match placement {
+            PlacementEvidence::UnitCanEnterExactZero {
+                layer: MovementLayer::Bridge,
+            } => self
+                .resolved_terrain
+                .as_ref()
+                .and_then(|terrain| terrain.cell(rx, ry))
+                .map_or(z, |cell| cell.bridge_deck_level),
+            _ => z,
+        };
+        if let PlacementEvidence::UnitCanEnterExactZero { layer } = placement
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+        {
+            entity.on_bridge = layer == MovementLayer::Bridge;
+        }
         let is_infantry = self
             .substrate
             .entities
@@ -1325,8 +1525,9 @@ impl Simulation {
         &mut self,
         ge: GameEntity,
         rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) -> (u64, RevealOutcome) {
-        let position = RevealPosition {
+        let mut position = RevealPosition {
             rx: ge.position.rx,
             ry: ge.position.ry,
             z: ge.position.z,
@@ -1338,8 +1539,26 @@ impl Simulation {
             self.commit_constructor_owned_techno_children(stable_id, rules);
         }
         let placement = rules.map_or(PlacementEvidence::EvaluateMark, |rules| {
-            self.constructor_unlimbo_placement(stable_id, position, rules)
+            self.constructor_unlimbo_placement(
+                stable_id,
+                position,
+                rules,
+                overlay_registry,
+                stable_id,
+            )
         });
+        if let PlacementEvidence::UnitCanEnterExactZero { layer } = placement {
+            if layer == MovementLayer::Bridge {
+                position.z = self
+                    .resolved_terrain
+                    .as_ref()
+                    .and_then(|terrain| terrain.cell(position.rx, position.ry))
+                    .map_or(position.z, |cell| cell.bridge_deck_level);
+            }
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.on_bridge = layer == MovementLayer::Bridge;
+            }
+        }
         let outcome = self.try_reveal_entity(
             stable_id,
             RevealRequest {
@@ -1357,14 +1576,20 @@ impl Simulation {
     /// the first active constructor specialization promoted here; the shared
     /// evaluator is the same `(cell,-1,-1,0,0)` body used by production.
     fn constructor_unlimbo_placement(
-        &mut self,
+        &self,
         stable_id: u64,
         position: RevealPosition,
         rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        producer_id: u64,
     ) -> PlacementEvidence {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return PlacementEvidence::RejectedEarly;
         };
+        // Active scenario construction installs its CellClass grid before any
+        // Techno can reach Unlimbo. Terrain-less diagnostic/unit-test harnesses
+        // remain on the generic Mark seam because no native UnitClass cell input
+        // exists there to evaluate.
         if entity.category != EntityCategory::Unit || self.resolved_terrain.is_none() {
             return PlacementEvidence::EvaluateMark;
         }
@@ -1376,17 +1601,14 @@ impl Simulation {
             &owner,
             &type_id,
             stable_id,
-            stable_id,
+            producer_id,
             (position.rx, position.ry),
-            None,
+            overlay_registry,
         );
         let Some(layer) = admission.exact_zero_layer() else {
             return PlacementEvidence::RejectedEarly;
         };
-        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-            entity.on_bridge = layer == MovementLayer::Bridge;
-        }
-        PlacementEvidence::EvaluateMark
+        PlacementEvidence::UnitCanEnterExactZero { layer }
     }
 
     /// Materialize constructor-owned Technos in native manager order. The
@@ -1398,18 +1620,13 @@ impl Simulation {
         if self.production.slave_bindings.contains_key(&parent_id) {
             return;
         }
-        let Some((slave_type, slave_count, owner, rx, ry, z, facing, capacity)) = self
-            .substrate
-            .entities
-            .get(parent_id)
-            .and_then(|parent| {
+        let Some((slave_type, slave_count, owner, rx, ry, z, facing, capacity)) =
+            self.substrate.entities.get(parent_id).and_then(|parent| {
                 let parent_type = self.interner.resolve(parent.type_ref);
                 let object = rules.object_case_insensitive(parent_type)?;
                 let slave_type = object.enslaves.as_deref()?;
                 let slave_object = rules.object_case_insensitive(slave_type)?;
-                if object.slaves_number <= 0
-                    || slave_object.category != ObjectCategory::Infantry
-                {
+                if object.slaves_number <= 0 || slave_object.category != ObjectCategory::Infantry {
                     return None;
                 }
                 Some((
@@ -1447,20 +1664,15 @@ impl Simulation {
             }
             slave_ids.push(slave_id);
         }
-        self.production
-            .slave_bindings
-            .insert(parent_id, slave_ids);
+        self.production.slave_bindings.insert(parent_id, slave_ids);
     }
 
     /// Unit/Infantry constructor cloak ability plus UnitClass::Unlimbo's
     /// exceptional state-2 establishment. Active evidence: constructor copy at
     /// 0x007355B6/0x00517D88 and UnitClass::Unlimbo @ 0x00737BA0.
     fn initialize_cloak_after_unlimbo(&mut self, stable_id: u64, rules: &RuleSet) {
-        let Some((category, veterancy, in_playfield, type_ref)) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| {
+        let Some((category, veterancy, in_playfield, type_ref)) =
+            self.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.category,
                     entity.veterancy,
@@ -1477,8 +1689,8 @@ impl Simulation {
         let Some(object) = rules.object(self.interner.resolve(type_ref)) else {
             return;
         };
-        let rank_cloak = veterancy >= 100 && object.veteran_cloak
-            || veterancy >= 200 && object.elite_cloak;
+        let rank_cloak =
+            veterancy >= 100 && object.veteran_cloak || veterancy >= 200 && object.elite_cloak;
         if !object.cloakable && !rank_cloak {
             return;
         }
@@ -2033,6 +2245,172 @@ mod techno_constructor_tests {
         sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(10, 10, cells));
     }
 
+    fn constructor_overlay_registry() -> crate::map::overlay_types::OverlayTypeRegistry {
+        crate::map::overlay_types::OverlayTypeRegistry::from_ini(
+            &IniFile::from_str(
+                "[OverlayTypes]\n0=TESTORE\n1=TESTWALL\n\
+                 [TESTORE]\nTiberium=yes\nLand=Tiberium\n\
+                 [TESTWALL]\nWall=yes\nCrushable=yes\nLand=Wall\n",
+            ),
+            None,
+        )
+    }
+
+    #[test]
+    fn techno_constructor_live_overlay_context_admits_ore_and_structural_bridge() {
+        let seed = 0xC701_0017;
+        let rules = constructor_rules();
+        let registry = constructor_overlay_registry();
+        let mut sim = Simulation::with_seed(seed);
+        install_constructor_test_playfield(&mut sim);
+        sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
+        });
+        install_constructor_flat_terrain(&mut sim);
+
+        let ore_authored = (6, 5);
+        let ore_runtime = (7, 5);
+        let bridge_cell = (8, 5);
+        {
+            let bridge = sim
+                .resolved_terrain
+                .as_mut()
+                .unwrap()
+                .cell_mut(bridge_cell.0, bridge_cell.1)
+                .unwrap();
+            bridge.level = 3;
+            bridge.bridge_deck_level = 7;
+            bridge.has_bridge_deck = true;
+            bridge.bridge_walkable = true;
+            bridge.bridge_facts.raw_flags =
+                crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            bridge.bridge_facts.overlay_id = Some(0);
+        }
+        sim.bridge_state = Some(
+            crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
+                sim.resolved_terrain.as_ref().unwrap(),
+                true,
+                300,
+            ),
+        );
+        let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(10, 10);
+        for cell in [ore_authored, ore_runtime, bridge_cell] {
+            overlays.place_overlay(cell.0, cell.1, 0, 0);
+        }
+        sim.overlay_grid = Some(overlays);
+
+        assert_eq!(
+            sim.spawn_from_map_with_resolved_and_overlay_registry(
+                &[
+                    map_entity("MTNK", EntityCategory::Unit, ore_authored),
+                    map_entity("MTNK", EntityCategory::Unit, bridge_cell),
+                ],
+                Some(&rules),
+                &BTreeMap::new(),
+                None,
+                Some(&registry),
+            ),
+            2,
+        );
+        let authored = sim.substrate.entities.get(1).unwrap();
+        assert_eq!((authored.position.rx, authored.position.ry), ore_authored);
+        assert!(!authored.on_bridge);
+        let bridge = sim.substrate.entities.get(2).unwrap();
+        assert_eq!((bridge.position.rx, bridge.position.ry), bridge_cell);
+        assert_eq!(bridge.position.z, 7);
+        assert!(bridge.on_bridge);
+        assert_ne!(
+            sim.substrate
+                .raw_cell_occupation
+                .deck_bits(bridge_cell.0, bridge_cell.1)
+                & crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+            0,
+        );
+
+        let runtime = sim
+            .spawn_object_with_overlay_registry(
+                "MTNK",
+                "Americans",
+                ore_runtime.0,
+                ore_runtime.1,
+                0,
+                &rules,
+                &BTreeMap::new(),
+                &registry,
+            )
+            .expect("non-wall overlay must not veto runtime Unit Unlimbo");
+        assert_eq!((sim.substrate.entities.get(runtime).unwrap().position.rx, sim.substrate.entities.get(runtime).unwrap().position.ry), ore_runtime);
+
+        let mut expected = SimRng::new(seed);
+        for _ in 0..3 {
+            let _ = expected.next_u32();
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_wall_rejection_precedes_mutation_and_keeps_graph_draws_spent() {
+        let seed = 0xC701_0018;
+        let rules = constructor_rules();
+        let registry = constructor_overlay_registry();
+        let mut sim = Simulation::with_seed(seed);
+        install_constructor_test_playfield(&mut sim);
+        install_constructor_flat_terrain(&mut sim);
+        let wall_cell = (6, 5);
+        let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(10, 10);
+        overlays.place_overlay(wall_cell.0, wall_cell.1, 1, 0);
+        sim.overlay_grid = Some(overlays);
+
+        let parent_id = sim
+            .construct_object_limbo_at_height("CARRIER", "Americans", 2, 2, 9, 0, &rules)
+            .expect("constructor-complete carrier graph");
+        let child_ids = sim
+            .substrate
+            .entities
+            .get(parent_id)
+            .unwrap()
+            .spawn_manager
+            .as_ref()
+            .unwrap()
+            .slots
+            .iter()
+            .filter_map(|slot| slot.spawn)
+            .collect::<Vec<_>>();
+        assert_eq!(child_ids.len(), 3);
+        assert!(
+            sim.reveal_constructed_object_at_height_with_unit_context(
+                parent_id,
+                wall_cell.0,
+                wall_cell.1,
+                0x80,
+                7,
+                PlacementEvidence::EvaluateMark,
+                &rules,
+                Some(&registry),
+                parent_id,
+            )
+            .is_none()
+        );
+        let rejected = sim.substrate.entities.get(parent_id).unwrap();
+        assert_eq!((rejected.position.rx, rejected.position.ry, rejected.position.z), (2, 2, 0));
+        assert_eq!(rejected.facing, 9);
+        assert!(rejected.lifecycle.in_limbo && !rejected.lifecycle.cell_marked);
+        assert!(child_ids.iter().all(|id| sim.substrate.entities.contains(*id)));
+
+        let mut expected = SimRng::new(seed);
+        for _ in 0..4 {
+            let _ = expected.next_u32();
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+        assert!(sim.discard_constructed_limbo(parent_id));
+        assert!(sim.substrate.entities.is_empty());
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
     #[test]
     fn techno_constructor_raw_entity_constructor_is_world_spawn_only() {
         fn collect_rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -2136,7 +2514,11 @@ mod techno_constructor_tests {
             .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
             .expect("placed runtime Techno");
         assert_eq!(
-            sim.substrate.entities.get(placed).unwrap().techno_ctor_random_word,
+            sim.substrate
+                .entities
+                .get(placed)
+                .unwrap()
+                .techno_ctor_random_word,
             placed_word
         );
 
@@ -2171,7 +2553,11 @@ mod techno_constructor_tests {
         let parent_id = sim
             .construct_object_limbo_at_height("CARRIER", "Americans", 0, 0, 0, 0, &rules)
             .expect("factory-held carrier constructor");
-        let parent = sim.substrate.entities.get(parent_id).expect("carrier parent");
+        let parent = sim
+            .substrate
+            .entities
+            .get(parent_id)
+            .expect("carrier parent");
         assert_eq!(parent.techno_ctor_random_word, words[0]);
         let child_ids = parent
             .spawn_manager
@@ -2246,21 +2632,14 @@ mod techno_constructor_tests {
     #[test]
     fn techno_constructor_manager_pools_survive_delivery_without_reconstruction() {
         let rules = constructor_rules();
-        for (seed, parent_type, expected_child_count) in
-            [(0xC701_0012, "CARRIER", 3usize), (0xC701_0013, "SMIN", 2usize)]
-        {
+        for (seed, parent_type, expected_child_count) in [
+            (0xC701_0012, "CARRIER", 3usize),
+            (0xC701_0013, "SMIN", 2usize),
+        ] {
             let mut sim = Simulation::with_seed(seed);
             install_constructor_test_playfield(&mut sim);
             let parent_id = sim
-                .construct_object_limbo_at_height(
-                    parent_type,
-                    "Americans",
-                    0,
-                    0,
-                    0,
-                    0,
-                    &rules,
-                )
+                .construct_object_limbo_at_height(parent_type, "Americans", 0, 0, 0, 0, &rules)
                 .expect("held manager parent");
             let child_ids = if parent_type == "CARRIER" {
                 sim.substrate
@@ -2313,11 +2692,13 @@ mod techno_constructor_tests {
     }
 
     #[test]
-    fn techno_constructor_failed_parent_placement_discards_both_manager_pool_kinds_without_rewind() {
+    fn techno_constructor_failed_parent_placement_discards_both_manager_pool_kinds_without_rewind()
+    {
         let rules = constructor_rules();
-        for (seed, parent_type, draw_count) in
-            [(0xC701_0014, "CARRIER", 4usize), (0xC701_0015, "SMIN", 3usize)]
-        {
+        for (seed, parent_type, draw_count) in [
+            (0xC701_0014, "CARRIER", 4usize),
+            (0xC701_0015, "SMIN", 3usize),
+        ] {
             let mut sim = Simulation::with_seed(seed);
             install_constructor_test_playfield(&mut sim);
             let mut expected = SimRng::new(seed);
@@ -2449,7 +2830,11 @@ mod techno_constructor_tests {
         );
         assert_eq!(sim.scenario_rng.logical_state(), before);
         assert_eq!(
-            sim.substrate.entities.get(1).unwrap().techno_ctor_random_word,
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .techno_ctor_random_word,
             0xA55A
         );
 
@@ -2506,7 +2891,10 @@ mod techno_constructor_tests {
                 None,
                 &mismatched,
             ),
-            Err(GeneratedTechnoInitError::IdentityMismatch { entity_index: 0, .. })
+            Err(GeneratedTechnoInitError::IdentityMismatch {
+                entity_index: 0,
+                ..
+            })
         ));
         assert_eq!(rejected.scenario_rng.logical_state(), rejected_before);
         assert!(rejected.substrate.entities.is_empty());

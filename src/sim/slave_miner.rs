@@ -470,6 +470,15 @@ impl SlaveMinerConfig {
 ///
 /// Returns the new YAREFN stable_id, or None if deploy failed.
 pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
+    deploy_slave_miner_with_overlay_context(sim, stable_id, rules, None)
+}
+
+pub(crate) fn deploy_slave_miner_with_overlay_context(
+    sim: &mut Simulation,
+    stable_id: u64,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> Option<u64> {
     // Read deploy data before mutating.
     let deploy_data = {
         let entity = sim.substrate.entities.get(stable_id)?;
@@ -505,7 +514,16 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
     sim.uninit_with_rules(stable_id, rules);
 
     // Spawn the YAREFN building at the same cell.
-    let new_sid: u64 = sim.spawn_object_at_height(&target_type, &owner, rx, ry, 0, z, rules)?;
+    let new_sid: u64 = sim.spawn_object_at_height_with_overlay_context(
+        &target_type,
+        &owner,
+        rx,
+        ry,
+        0,
+        z,
+        rules,
+        overlay_registry,
+    )?;
 
     if let Some(ge) = sim.substrate.entities.get_mut(new_sid) {
         ge.selected = was_selected;
@@ -526,8 +544,7 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
         let mut live_slave_ids = Vec::with_capacity(existing_slave_ids.len());
         for slave_sid in existing_slave_ids {
             if let Some(slave_entity) = sim.substrate.entities.get_mut(slave_sid) {
-                slave_entity.slave_harvester =
-                    Some(SlaveHarvester::new(new_sid, slave_capacity));
+                slave_entity.slave_harvester = Some(SlaveHarvester::new(new_sid, slave_capacity));
                 live_slave_ids.push(slave_sid);
             }
         }
@@ -547,7 +564,11 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
 
     // Preserve the existing Rust timing: once the building form exists, wake
     // its retained limbo slaves around it without reconstructing them.
-    for (i, slave_sid) in slave_ids.into_iter().enumerate().take(slaves_number as usize) {
+    for (i, slave_sid) in slave_ids
+        .into_iter()
+        .enumerate()
+        .take(slaves_number as usize)
+    {
         let in_limbo = sim
             .substrate
             .entities
@@ -583,6 +604,15 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
 ///
 /// Returns the new SMIN stable_id, or None if undeploy failed.
 pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
+    undeploy_slave_miner_with_overlay_context(sim, stable_id, rules, None)
+}
+
+pub(crate) fn undeploy_slave_miner_with_overlay_context(
+    sim: &mut Simulation,
+    stable_id: u64,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> Option<u64> {
     // Read undeploy data.
     let undeploy_data = {
         let entity = sim.substrate.entities.get(stable_id)?;
@@ -609,7 +639,16 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
     sim.uninit_with_rules(stable_id, rules);
 
     // Spawn the SMIN vehicle.
-    let new_sid: u64 = sim.spawn_object_at_height(&target_type, &owner, rx, ry, 0, z, rules)?;
+    let new_sid: u64 = sim.spawn_object_at_height_with_overlay_context(
+        &target_type,
+        &owner,
+        rx,
+        ry,
+        0,
+        z,
+        rules,
+        overlay_registry,
+    )?;
 
     if let Some(ge) = sim.substrate.entities.get_mut(new_sid) {
         ge.selected = was_selected;
@@ -646,7 +685,12 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
 ///
 /// When a slave dies (removed from entity store), spawn a replacement after
 /// `SlaveRegenRate` ticks. `SlaveReloadRate` is the minimum gap between spawns.
-pub(super) fn tick_slave_regen(sim: &mut Simulation, live_order: &[u64], rules: &RuleSet) {
+pub(super) fn tick_slave_regen(
+    sim: &mut Simulation,
+    live_order: &[u64],
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) {
     // Missing/dead masters are lifecycle cleanup, not AI visitation. Remove
     // those bindings even though the master is no longer in LogicVector.
     let stale_master_ids = sim
@@ -722,9 +766,16 @@ pub(super) fn tick_slave_regen(sim: &mut Simulation, live_order: &[u64], rules: 
             let sx: u16 = mrx.saturating_add(1);
             let sy: u16 = mry.saturating_add(1);
 
-            if let Some(slave_sid) =
-                sim.spawn_object_at_height(&slave_type, &owner, sx, sy, 0, mz, rules)
-            {
+            if let Some(slave_sid) = sim.spawn_object_at_height_with_overlay_context(
+                &slave_type,
+                &owner,
+                sx,
+                sy,
+                0,
+                mz,
+                rules,
+                overlay_registry,
+            ) {
                 let slave_capacity: u16 = rules
                     .object_case_insensitive(&slave_type)
                     .map(|obj| obj.storage.max(1) as u16)

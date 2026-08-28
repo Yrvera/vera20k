@@ -34,7 +34,7 @@ pub(super) fn tick_resource_economy(
         path_grid,
         overlay_registry,
     );
-    super::super::slave_miner::tick_slave_regen(sim, &live_order, rules);
+    super::super::slave_miner::tick_slave_regen(sim, &live_order, rules, overlay_registry);
 }
 
 pub fn is_harvester_type(rules: &RuleSet, type_id: &str) -> bool {
