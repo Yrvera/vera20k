@@ -331,6 +331,9 @@ pub(crate) struct TriggerInputs<'a> {
     /// runtime calculations (not reparsed or substituted by trigger data).
     pub rules: Option<&'a RuleSet>,
     pub overlay_registry: Option<&'a crate::rules::overlay_types::OverlayTypeRegistry>,
+    /// Per-client `g_PlayerPtr` identity. Result actions must never infer this
+    /// from trigger ownership, raising House, IsHuman, or PlayerControl.
+    pub local_player_owner: Option<InternedId>,
 }
 
 #[cfg(test)]
@@ -3545,9 +3548,10 @@ impl Simulation {
 
     fn natural_outcome_exit_ready(&self) -> bool {
         let contending_houses = self.contending_house_count();
+        let current_frame = self.session.binary_frame as i32;
         self.houses.values().any(|house| {
             house.is_human
-                && house.outcome_state.is_some_and(|outcome| {
+                && house.outcome_state(current_frame).is_some_and(|outcome| {
                     outcome.exit_ready
                         && (outcome.kind == crate::sim::house_state::HouseOutcomeKind::Defeat
                             // VERA-internal opponent precondition; gamemd equivalent
@@ -3656,10 +3660,18 @@ impl Simulation {
         waypoints: &std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
         rules: Option<&RuleSet>,
         overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
+        local_player_owner: Option<InternedId>,
     ) -> Vec<TriggerEffect> {
         let mut rt = std::mem::take(&mut self.trigger_runtime);
         let effects = if let Some(program) = program {
-            rt.advance_native_poll(program, self, rules, overlay_registry, waypoints)
+            rt.advance_native_poll_for_client(
+                program,
+                self,
+                rules,
+                overlay_registry,
+                waypoints,
+                local_player_owner,
+            )
         } else {
             rt.advance_at_frame_with_waypoints(
                 self.session.binary_frame,
@@ -3901,6 +3913,7 @@ impl Simulation {
             inputs.waypoints,
             inputs.rules,
             inputs.overlay_registry,
+            inputs.local_player_owner,
         );
         self.trigger_effects.extend(effects);
     }
@@ -4620,14 +4633,17 @@ impl Simulation {
     /// Check each house for defeat and game completion
     /// (all remaining houses mutually allied).
     fn check_defeat(&mut self, rules: Option<&RuleSet>) {
-        let outcome_tick = self.session.tick.saturating_add(1);
+        // Trigger commands and the later House result timer rung share the
+        // current signed Scenario frame. `tick + 1` is not equivalent here:
+        // it would expire a freshly armed one-frame result on the same tick.
+        let outcome_tick = self.session.binary_frame as i32;
         let savour_frames = crate::rules::ruleset::savour_delay_frames(
             rules
                 .map(|rules| rules.general.savour_delay_minutes)
                 // RulesClass__Constructor @ 0x00665650 stores the exact f64
                 // default 0.03 before any optional INI ReadDouble override.
                 .unwrap_or(0.03),
-        );
+        ) as i32;
         // Short Game defeats houses with no buildings unless a BaseUnit remains.
         // Long games wait for all owned objects.
         let owners: Vec<InternedId> = self.houses.keys().copied().collect();
@@ -4724,7 +4740,7 @@ impl Simulation {
         // in the house rung. The expiry frame is terminal and therefore skips
         // the wrapping frame commit below, matching Main_Tick's early return.
         for house in self.houses.values_mut() {
-            house.advance_outcome_savour(outcome_tick);
+            let _ = house.advance_outcome_savour(outcome_tick);
         }
     }
 

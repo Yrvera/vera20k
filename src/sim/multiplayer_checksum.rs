@@ -590,6 +590,49 @@ mod tests {
         assert_eq!(sim.scenario_rng.next_u32(), reference.next_u32());
     }
 
+    fn one_house_result_checksum_fixture() -> Simulation {
+        let mut sim = Simulation::with_seed(0x67_68_69);
+        sim.session.binary_frame = 100;
+        let owner = sim.interner.intern("Americans");
+        let house = crate::sim::house_state::HouseState::new(
+            owner, 0, None, true, 10_000, 10,
+        );
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim
+    }
+
+    #[test]
+    fn house_quick_crc_folds_map_clear_but_omits_all_result_timer_state() {
+        let compute = |mut sim: Simulation| {
+            sim.compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]])
+                .expect("one registered House")
+                .value
+        };
+        let baseline_fixture = one_house_result_checksum_fixture();
+        let owner = baseline_fixture.session.house_order[0];
+        let baseline = compute(baseline_fixture);
+
+        let mut pending = one_house_result_checksum_fixture();
+        pending.houses.get_mut(&owner).unwrap().result_pending = true;
+        let mut won = one_house_result_checksum_fixture();
+        won.houses.get_mut(&owner).unwrap().has_won = true;
+        let mut lost = one_house_result_checksum_fixture();
+        lost.houses.get_mut(&owner).unwrap().has_lost = true;
+        let mut timer = one_house_result_checksum_fixture();
+        let timer_house = timer.houses.get_mut(&owner).unwrap();
+        timer_house.result_timer_start = -1;
+        timer_house.result_timer_duration = -37;
+
+        for changed in [pending, won, lost, timer] {
+            assert_eq!(compute(changed), baseline);
+        }
+
+        let mut map_clear = one_house_result_checksum_fixture();
+        map_clear.houses.get_mut(&owner).unwrap().map_is_clear = true;
+        assert_ne!(compute(map_clear), baseline);
+    }
+
     #[test]
     fn gsi_16_11_six_family_logic_fold_uses_stored_order_direct_coords_and_full_rtti() {
         let first_order = [5, 1, 4, 0, 3, 2];

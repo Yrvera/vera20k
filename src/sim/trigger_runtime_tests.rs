@@ -896,6 +896,7 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
             waypoints: &HashMap::new(),
             rules: None,
             overlay_registry: None,
+            local_player_owner: None,
         }),
     );
 
@@ -1146,22 +1147,30 @@ fn time_trigger_can_center_camera_at_waypoint() {
         &actions,
     );
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+    let mut sim = Simulation::new();
 
     assert!(
         runtime
-            .advance_at_frame(44, &graph, &triggers, &events, &actions, None, None)
+            .advance_at_frame(44, &graph, &triggers, &events, &actions, Some(&mut sim), None)
             .is_empty()
     );
     assert_eq!(
-        runtime.advance_at_frame(45, &graph, &triggers, &events, &actions, None, None),
-        vec![TriggerEffect::CenterCameraAtWaypoint {
-            waypoint: 9,
-            immediate: true,
-        }]
+        runtime.advance_at_frame(
+            45,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            Some(&mut sim),
+            None,
+        ),
+        vec![TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+            target: [0, 30],
+        })]
     );
     assert!(
         runtime
-            .advance_at_frame(46, &graph, &triggers, &events, &actions, None, None)
+            .advance_at_frame(46, &graph, &triggers, &events, &actions, Some(&mut sim), None)
             .is_empty()
     );
 }
@@ -1236,6 +1245,7 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
             waypoints: &HashMap::new(),
             rules: None,
             overlay_registry: None,
+            local_player_owner: None,
         }),
     );
 
@@ -1254,10 +1264,9 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
     );
     assert_eq!(
         sim.drain_trigger_effects(),
-        vec![TriggerEffect::CenterCameraAtWaypoint {
-            waypoint: 9,
-            immediate: true,
-        }]
+        vec![TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+            target: [0, 30],
+        })]
     );
 }
 
@@ -1314,6 +1323,7 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         waypoints: &waypoints,
         rules: None,
         overlay_registry: None,
+        local_player_owner: None,
     };
 
     let mut original = Simulation::new();
@@ -1627,13 +1637,21 @@ fn global_actions_can_enable_and_force_followup_trigger() {
         &actions,
     );
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+    let mut sim = Simulation::new();
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
-        vec![TriggerEffect::CenterCameraAtWaypoint {
-            waypoint: 3,
-            immediate: true,
-        }]
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            Some(&mut sim),
+            None,
+        ),
+        vec![TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+            target: [0, 30],
+        })]
     );
 }
 
@@ -1759,13 +1777,21 @@ fn linked_trigger_field_queues_followup_trigger() {
         &actions,
     );
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+    let mut sim = Simulation::new();
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
-        vec![TriggerEffect::CenterCameraAtWaypoint {
-            waypoint: 4,
-            immediate: true,
-        }]
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            Some(&mut sim),
+            None,
+        ),
+        vec![TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+            target: [0, 30],
+        })]
     );
 }
 
@@ -1899,7 +1925,7 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
 }
 
 #[test]
-fn mission_announce_then_force_end_emits_result_effects() {
+fn legacy_result_actions_have_no_inferred_owner_or_result_shortcut() {
     let triggers: TriggerMap = [(
         "TRIG_A".to_string(),
         make_trigger("TRIG_A", None, "End Mission", true, false),
@@ -1990,15 +2016,7 @@ fn mission_announce_then_force_end_emits_result_effects() {
 
     assert_eq!(
         runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
-        vec![
-            TriggerEffect::MissionAnnouncement {
-                text: "Mission Accomplished".to_string(),
-            },
-            TriggerEffect::MissionResult {
-                title: "Mission Accomplished".to_string(),
-                detail: "The scenario ended after a victory announcement.".to_string(),
-            },
-        ]
+        Vec::<TriggerEffect>::new()
     );
 }
 
@@ -2134,18 +2152,34 @@ fn local_variables_seed_and_gate_followup_triggers() {
         &actions,
     );
     let mut runtime = TriggerRuntime::from_map(&triggers, &local_variables);
+    let mut sim = Simulation::new();
 
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            0,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            Some(&mut sim),
+            None,
+        ),
         Vec::<TriggerEffect>::new()
     );
     assert!(runtime.locals_set.contains(&2));
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
-        vec![TriggerEffect::CenterCameraAtWaypoint {
-            waypoint: 6,
-            immediate: true,
-        }]
+        runtime.advance_at_frame(
+            0,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            Some(&mut sim),
+            None,
+        ),
+        vec![TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+            target: [0, 30],
+        })]
     );
 }
 
@@ -2286,14 +2320,12 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
             None,
         ),
         vec![
-            TriggerEffect::CenterCameraAtWaypoint {
-                waypoint: 11,
-                immediate: true,
-            },
-            TriggerEffect::CenterCameraAtWaypoint {
-                waypoint: 12,
-                immediate: true,
-            },
+            TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+                target: [0, 30],
+            }),
+            TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+                target: [0, 30],
+            }),
         ]
     );
 }
@@ -2388,14 +2420,35 @@ fn register_waypoint_action_house(
 
 #[test]
 fn camera_actions_use_alpha_tokens_and_ctor_zero_not_decimal_indices() {
-    for (kind, token, waypoint, immediate) in [(48, "NZ", 389, false), (112, "AA", 26, true)] {
+    for (kind, token, waypoint) in [(48, "NZ", 389), (112, "AA", 26)] {
         let mut sim = Simulation::new();
+        let cell = (10 + waypoint as u16 % 20, 20 + waypoint as u16 % 20);
+        let waypoints = [(
+            waypoint,
+            crate::map::waypoints::Waypoint {
+                index: waypoint,
+                rx: cell.0,
+                ry: cell.1,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let world_x = i32::from(cell.0) * 256 + 128;
+        let world_y = i32::from(cell.1) * 256 + 128;
+        let (screen_x, screen_y) =
+            crate::util::lepton::absolute_leptons_to_screen(world_x, world_y, 0);
+        let target = [screen_x as i32, screen_y as i32];
+        let expected = if kind == 48 {
+            TriggerEffect::TacticalCamera(TacticalCameraCommand::Glide {
+                target,
+                speed: crate::util::native_x87::NativeF32Bits::from_bits(0x3ac4_9ba6),
+            })
+        } else {
+            TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump { target })
+        };
         assert_eq!(
-            run_waypoint_action(kind, Some(token), None, &mut sim, &HashMap::new(), None),
-            vec![TriggerEffect::CenterCameraAtWaypoint {
-                waypoint,
-                immediate,
-            }]
+            run_waypoint_action(kind, Some(token), None, &mut sim, &waypoints, None),
+            vec![expected]
         );
     }
 
@@ -2403,15 +2456,133 @@ fn camera_actions_use_alpha_tokens_and_ctor_zero_not_decimal_indices() {
         let mut sim = Simulation::new();
         assert_eq!(
             run_waypoint_action(112, token, None, &mut sim, &HashMap::new(), None),
-            vec![TriggerEffect::CenterCameraAtWaypoint {
-                waypoint: 0,
-                immediate: true,
-            }]
+            vec![TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+                target: [0, 30],
+            })]
         );
     }
     for token in [Some("15"), Some("   ")] {
         let mut sim = Simulation::new();
         assert!(run_waypoint_action(112, token, None, &mut sim, &HashMap::new(), None).is_empty());
+    }
+}
+
+fn run_native_camera_action(
+    kind: i32,
+    selector: i32,
+    token: &str,
+    sim: &mut Simulation,
+    waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
+) -> Vec<TriggerEffect> {
+    let body = format!(
+        "[Triggers]\nT=Neutral,<none>,Camera,1,1,1,1,0\n\
+         [Tags]\nG=2,G,T\n\
+         [Events]\nT=1,8,0,0\n\
+         [Actions]\nT=1,{kind},0,{selector},91,-7,33,55,{token}\n",
+    );
+    let (_, program) = compile_program(&body);
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        sim.session.binary_frame,
+        &mut sim.scenario_rng,
+    );
+    runtime.advance_native_poll(&program, sim, None, None, waypoints)
+}
+
+#[test]
+fn native_camera_actions_share_exact_flat_slope_and_both_bridge_flag_targets() {
+    use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
+
+    let cell = (2_u16, 3_u16);
+    let waypoints = [(
+        1,
+        crate::map::waypoints::Waypoint {
+            index: 1,
+            rx: cell.0,
+            ry: cell.1,
+        },
+    )]
+    .into_iter()
+    .collect();
+    for (level, slope, flags) in [
+        (0_u8, 0_u8, 0_u32),
+        (2, 1, 0),
+        (1, 0, BRIDGE_FLAG_STRUCTURAL),
+        (1, 0, BRIDGE_FLAG_DESTROYED_OR_RAMP),
+    ] {
+        for kind in [48, 112] {
+            let mut sim = Simulation::new();
+            let mut terrain = flat_trigger_playfield_terrain(8, 8);
+            let target_cell = terrain.cell_mut(cell.0, cell.1).unwrap();
+            target_cell.level = level;
+            target_cell.slope_type = slope;
+            target_cell.bridge_facts.raw_flags = flags;
+            sim.install_resolved_terrain_for_new_map(terrain);
+
+            let world_x = i32::from(cell.0) * 256 + 128;
+            let world_y = i32::from(cell.1) * 256 + 128;
+            let mut world_z = crate::util::lepton::ground_height_leptons(
+                level, slope, world_x, world_y,
+            )
+            .unwrap();
+            if flags & 0x500 != 0 {
+                world_z += 416;
+            }
+            let (screen_x, screen_y) = crate::util::lepton::absolute_leptons_to_screen(
+                world_x, world_y, world_z,
+            );
+            let target = [screen_x as i32, screen_y as i32];
+            let expected = if kind == 48 {
+                TriggerEffect::TacticalCamera(TacticalCameraCommand::Glide {
+                    target,
+                    speed: crate::util::native_x87::NativeF32Bits::from_bits(0x3bf5_c28f),
+                })
+            } else {
+                TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump { target })
+            };
+            assert_eq!(
+                run_native_camera_action(kind, 2, "B", &mut sim, &waypoints),
+                vec![expected],
+                "kind={kind} level={level} slope={slope} flags={flags:#x}",
+            );
+        }
+    }
+}
+
+#[test]
+fn native_camera_valid_missing_slot_is_not_a_noop_and_typed_invalids_fail_closed() {
+    let mut sim = Simulation::new();
+    assert_eq!(
+        run_native_camera_action(112, 0, "Z", &mut sim, &HashMap::new()),
+        vec![TriggerEffect::TacticalCamera(TacticalCameraCommand::Jump {
+            target: [0, 30],
+        })]
+    );
+
+    for row in [
+        "T=1,48,0,5,91,-7,33,55,A",
+        "T=1,112,0,0,91,-7,33,55,15",
+    ] {
+        let ini = crate::rules::ini_parser::IniFile::from_str(&format!(
+            "[Triggers]\nT=Neutral,<none>,Camera,1,1,1,1,0\n\
+             [Tags]\nG=2,G,T\n\
+             [Events]\nT=1,8,0,0\n\
+             [Actions]\n{row}\n",
+        ));
+        assert!(
+            TriggerProgram::compile(
+                &ini,
+                &crate::map::tags::parse_tags(&ini),
+                &crate::map::triggers::parse_triggers(&ini),
+                &crate::map::events::parse_events(&ini),
+                &crate::map::actions::parse_actions(&ini),
+            )
+            .is_err(),
+            "invalid typed row must be rejected: {row}",
+        );
     }
 }
 
@@ -2728,4 +2899,340 @@ fn action_138_clears_only_first_country_match_without_token_or_rng_use() {
         Some(&rules),
     );
     assert_eq!(no_match.houses[&house].alternate_base_center, (105, 194));
+}
+
+struct NativeResultFixture {
+    program: TriggerProgram,
+    runtime: TriggerRuntime,
+    simulation: Simulation,
+    russian: crate::sim::intern::InternedId,
+    neutral: crate::sim::intern::InternedId,
+    local: crate::sim::intern::InternedId,
+}
+
+impl NativeResultFixture {
+    fn new(actions: &[(i32, i32)]) -> Self {
+        Self::with_trigger_owner(actions, "Neutral")
+    }
+
+    fn with_trigger_owner(actions: &[(i32, i32)], trigger_owner: &str) -> Self {
+        let chunks = actions
+            .iter()
+            .map(|(kind, operand)| format!("{kind},0,{operand},91,-7,33,55,A"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!(
+            "[Triggers]\nT={trigger_owner},<none>,Result,1,1,1,1,0\n\
+             [Tags]\nG=2,G,T\n\
+             [Events]\nT=1,8,0,0\n\
+             [Actions]\nT={},{}\n",
+            actions.len(),
+            chunks,
+        );
+        let (_, program) = compile_program(&body);
+        let mut simulation = Simulation::new();
+        simulation.session.binary_frame = 123;
+        let russian = simulation.interner.intern("Russians");
+        let neutral = simulation.interner.intern("Neutral");
+        let local = simulation.interner.intern("Americans");
+        for (owner, human) in [(russian, true), (neutral, false), (local, true)] {
+            simulation.houses.insert(
+                owner,
+                crate::sim::house_state::HouseState::new(owner, 0, None, human, 0, 10),
+            );
+            simulation.session.house_order.push(owner);
+        }
+        let runtime = TriggerRuntime::materialize_fresh(
+            &program,
+            &LocalVariableMap::new(),
+            &TriggerAttachmentPlan::default(),
+            1,
+            simulation.session.binary_frame,
+            &mut simulation.scenario_rng,
+        );
+        Self {
+            program,
+            runtime,
+            simulation,
+            russian,
+            neutral,
+            local,
+        }
+    }
+
+    fn poll(&mut self, pinned: Option<crate::sim::intern::InternedId>) -> Vec<TriggerEffect> {
+        self.runtime.advance_native_poll_for_client(
+            &self.program,
+            &mut self.simulation,
+            None,
+            None,
+            &HashMap::new(),
+            pinned,
+        )
+    }
+
+    fn notices(&self) -> Vec<(crate::sim::intern::InternedId, crate::sim::house_state::HouseOutcomeKind)> {
+        self.simulation
+            .sound_events
+            .iter()
+            .filter_map(|event| match event {
+                crate::sim::world::SimSoundEvent::MatchOutcome { owner, kind } => {
+                    Some((*owner, *kind))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn native_result_actions_use_only_the_pinned_local_house_and_ignore_operands() {
+    let mut fixture = NativeResultFixture::new(&[(67, i32::MAX)]);
+    assert!(fixture.poll(Some(fixture.local)).is_empty());
+
+    assert!(fixture.simulation.houses[&fixture.local].has_won);
+    assert!(!fixture.simulation.houses[&fixture.local].has_lost);
+    assert!(!fixture.simulation.houses[&fixture.russian].has_won);
+    assert!(!fixture.simulation.houses[&fixture.neutral].has_won);
+    assert_eq!(fixture.simulation.houses[&fixture.local].result_timer_start, 0);
+    assert_eq!(fixture.simulation.houses[&fixture.local].result_timer_duration, 0);
+    assert_eq!(
+        fixture.notices(),
+        vec![(
+            fixture.local,
+            crate::sim::house_state::HouseOutcomeKind::Victory,
+        )]
+    );
+
+    let mut no_pin = NativeResultFixture::new(&[(68, i32::MIN)]);
+    assert!(no_pin.poll(None).is_empty());
+    assert!(!no_pin.simulation.houses[&no_pin.local].has_won);
+    assert!(!no_pin.simulation.houses[&no_pin.local].has_lost);
+    assert!(no_pin.notices().is_empty());
+}
+
+#[test]
+fn native_result_actions_emit_notices_only_for_accepted_67_68_transitions() {
+    for (action, kind) in [
+        (67, crate::sim::house_state::HouseOutcomeKind::Victory),
+        (68, crate::sim::house_state::HouseOutcomeKind::Defeat),
+    ] {
+        let mut fixture = NativeResultFixture::new(&[(action, 77)]);
+        let _ = fixture.poll(Some(fixture.local));
+        let _ = fixture.poll(Some(fixture.local));
+        assert_eq!(fixture.notices(), vec![(fixture.local, kind)]);
+    }
+
+    let mut end = NativeResultFixture::new(&[(69, -12345)]);
+    let _ = end.poll(Some(end.local));
+    assert!(end.simulation.houses[&end.local].has_won);
+    assert_eq!(end.simulation.houses[&end.local].result_timer_start, 123);
+    assert_eq!(end.simulation.houses[&end.local].result_timer_duration, 27);
+    assert!(end.notices().is_empty(), "Action69 has no direct result notice");
+}
+
+#[test]
+fn native_result_actions_preserve_pending_gates_and_action_68_win_clear() {
+    let mut win = NativeResultFixture::new(&[(67, 0)]);
+    win.simulation.houses.get_mut(&win.local).unwrap().result_pending = true;
+    let _ = win.poll(Some(win.local));
+    assert!(!win.simulation.houses[&win.local].has_won);
+    assert!(win.notices().is_empty());
+
+    let mut lose = NativeResultFixture::new(&[(68, 0)]);
+    {
+        let house = lose.simulation.houses.get_mut(&lose.local).unwrap();
+        house.result_pending = true;
+        house.has_won = true;
+        house.result_timer_start = 17;
+        house.result_timer_duration = 41;
+    }
+    let _ = lose.poll(Some(lose.local));
+    let house = &lose.simulation.houses[&lose.local];
+    assert!(!house.has_won);
+    assert!(!house.has_lost);
+    assert_eq!((house.result_timer_start, house.result_timer_duration), (17, 41));
+    assert!(lose.notices().is_empty());
+
+    let mut end = NativeResultFixture::new(&[(69, 0)]);
+    {
+        let house = end.simulation.houses.get_mut(&end.local).unwrap();
+        house.result_pending = true;
+        house.result_timer_start = 29;
+        house.result_timer_duration = 53;
+    }
+    let _ = end.poll(Some(end.local));
+    let house = &end.simulation.houses[&end.local];
+    assert!(!house.has_won);
+    assert!(!house.has_lost);
+    assert_eq!((house.result_timer_start, house.result_timer_duration), (29, 53));
+    assert!(end.notices().is_empty());
+}
+
+#[test]
+fn native_result_action_order_preserves_shared_timer_and_textual_stack_results() {
+    let mut win_then_lose = NativeResultFixture::new(&[(67, 1), (68, 2)]);
+    let _ = win_then_lose.poll(Some(win_then_lose.local));
+    let house = &win_then_lose.simulation.houses[&win_then_lose.local];
+    assert!(!house.has_won && house.has_lost);
+    assert_eq!((house.result_timer_start, house.result_timer_duration), (0, 0));
+    assert_eq!(win_then_lose.notices().len(), 2);
+
+    let mut lose_then_win = NativeResultFixture::new(&[(68, 3), (67, 4)]);
+    let _ = lose_then_win.poll(Some(lose_then_win.local));
+    let house = &lose_then_win.simulation.houses[&lose_then_win.local];
+    assert!(!house.has_won && house.has_lost);
+    assert_eq!(lose_then_win.notices().len(), 1);
+
+    for terminal in [67, 68] {
+        let mut repair = NativeResultFixture::new(&[(terminal, 5), (69, 6)]);
+        repair.simulation.houses.get_mut(&repair.local).unwrap().result_timer_start = -1;
+        let _ = repair.poll(Some(repair.local));
+        assert_eq!(repair.simulation.houses[&repair.local].result_timer_start, 123);
+        assert_eq!(repair.notices().len(), 1);
+    }
+
+    let mut armed_then_lose = NativeResultFixture::new(&[(69, 7), (68, 8)]);
+    let _ = armed_then_lose.poll(Some(armed_then_lose.local));
+    let house = &armed_then_lose.simulation.houses[&armed_then_lose.local];
+    assert!(!house.has_won && house.has_lost);
+    assert_eq!((house.result_timer_start, house.result_timer_duration), (123, 27));
+    assert_eq!(armed_then_lose.notices().len(), 1);
+
+    let mut armed_then_skip_win = NativeResultFixture::new(&[(69, 9), (67, 10)]);
+    let _ = armed_then_skip_win.poll(Some(armed_then_skip_win.local));
+    let house = &armed_then_skip_win.simulation.houses[&armed_then_skip_win.local];
+    assert!(house.has_won && !house.has_lost);
+    assert_eq!((house.result_timer_start, house.result_timer_duration), (123, 27));
+    assert!(armed_then_skip_win.notices().is_empty());
+}
+
+#[test]
+fn result_action_68_census_fixture_preserves_pinned_owner_semantics() {
+    // Hermetic mirror of the separately gated active-install census below.
+    let installed = [("all01umd.map", 68), ("all04dmd.map", 68)];
+    assert_eq!(installed.len(), 2);
+    assert!(installed.iter().all(|(_, action)| *action == 68));
+
+    for (map_name, action) in installed {
+        let mut fixture = NativeResultFixture::with_trigger_owner(&[(action, 123_456)], "Americans");
+        fixture.simulation.session.map_name = map_name.to_string();
+        let pinned = fixture.simulation.interner.intern("PinnedCampaignClient");
+        fixture.simulation.houses.insert(
+            pinned,
+            crate::sim::house_state::HouseState::new(pinned, 0, None, true, 0, 10),
+        );
+        fixture.simulation.session.house_order.push(pinned);
+
+        let _ = fixture.poll(Some(pinned));
+
+        assert!(fixture.simulation.houses[&pinned].has_lost, "{map_name}");
+        assert!(!fixture.simulation.houses[&fixture.local].has_lost, "{map_name}");
+        assert!(!fixture.simulation.houses[&fixture.russian].has_lost, "{map_name}");
+        assert_eq!(
+            fixture.notices(),
+            vec![(pinned, crate::sim::house_state::HouseOutcomeKind::Defeat)],
+            "{map_name}",
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the configured active retail RA2/YR install"]
+fn active_retail_result_rows_are_extracted_and_executed_through_typed_transactions() {
+    let default_root = std::path::PathBuf::from(
+        "C:/Users/enok/Documents/Command and Conquer Red Alert II",
+    );
+    let root = std::env::var_os("RA2_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(default_root);
+    let assets = crate::assets::asset_manager::AssetManager::new(&root)
+        .unwrap_or_else(|error| panic!("open active retail install {}: {error}", root.display()));
+
+    for map_name in ["all01umd.map", "all04dmd.map"] {
+        let bytes = assets
+            .get(map_name)
+            .unwrap_or_else(|| panic!("active archive stack does not contain {map_name}"));
+        let ini = crate::rules::ini_parser::IniFile::from_bytes(&bytes)
+            .unwrap_or_else(|error| panic!("parse {map_name}: {error}"));
+        let triggers = crate::map::triggers::parse_triggers(&ini);
+        let actions = crate::map::actions::parse_actions(&ini);
+        let result_rows = actions
+            .iter()
+            .flat_map(|(trigger_id, row)| {
+                row.entries
+                    .iter()
+                    .filter(|entry| matches!(entry.kind, 67 | 68 | 69))
+                    .map(move |entry| (trigger_id, entry))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(result_rows.len(), 1, "{map_name} result-row census");
+        let (trigger_id, extracted) = result_rows[0];
+        assert_eq!(extracted.kind, 68, "{map_name} active result action");
+        assert_eq!(
+            extracted.params,
+            ["0", "0", "0", "0", "0", "0", "A"],
+            "{map_name} exact retail Action68 operands",
+        );
+        let authored_owner = triggers
+            .get(trigger_id)
+            .and_then(|trigger| trigger.owner.as_deref())
+            .unwrap_or_else(|| panic!("{map_name} {trigger_id} has no authored owner"));
+        assert!(
+            authored_owner.eq_ignore_ascii_case("Americans"),
+            "{map_name} {trigger_id} owner={authored_owner}",
+        );
+        eprintln!(
+            "{map_name}: trigger={trigger_id} owner={authored_owner} action={} params={:?}",
+            extracted.kind,
+            extracted.params,
+        );
+
+        // Feed the literal extracted chunk back through typed compilation and
+        // the production per-Tag transaction. The pinned client is deliberately
+        // neither the authored Americans House nor a preferred first human.
+        let extracted_chunk = format!("{},{}", extracted.kind, extracted.params.join(","));
+        let body = format!(
+            "[Triggers]\nT={authored_owner},<none>,Retail result,1,1,1,1,0\n\
+             [Tags]\nG=2,G,T\n\
+             [Events]\nT=1,8,0,0\n\
+             [Actions]\nT=1,{extracted_chunk}\n",
+        );
+        let (_, program) = compile_program(&body);
+        let mut simulation = Simulation::new();
+        simulation.session.map_name = map_name.to_string();
+        let preferred = simulation.interner.intern("PreferredFirstHuman");
+        let authored = simulation.interner.intern(authored_owner);
+        let pinned = simulation.interner.intern("PinnedCampaignClient");
+        for owner in [preferred, authored, pinned] {
+            simulation.houses.insert(
+                owner,
+                crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+            );
+            simulation.session.house_order.push(owner);
+        }
+        let mut runtime = TriggerRuntime::materialize_fresh(
+            &program,
+            &LocalVariableMap::new(),
+            &TriggerAttachmentPlan::default(),
+            1,
+            simulation.session.binary_frame,
+            &mut simulation.scenario_rng,
+        );
+        assert!(
+            runtime
+                .advance_native_poll_for_client(
+                    &program,
+                    &mut simulation,
+                    None,
+                    None,
+                    &HashMap::new(),
+                    Some(pinned),
+                )
+                .is_empty()
+        );
+        assert!(simulation.houses[&pinned].has_lost, "{map_name}");
+        assert!(!simulation.houses[&preferred].has_lost, "{map_name}");
+        assert!(!simulation.houses[&authored].has_lost, "{map_name}");
+    }
 }

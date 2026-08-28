@@ -931,7 +931,7 @@ mod tests {
         let due = sim.take_due_commands();
         let result = sim.advance_tick(&due, None, &BTreeMap::new(), None, None, 33);
         let local_outcome_exit_ready = sim.houses[&local]
-            .outcome_state
+            .outcome_state(sim.session.binary_frame as i32)
             .is_some_and(|outcome| outcome.exit_ready);
 
         assert!(!result.frame_committed);

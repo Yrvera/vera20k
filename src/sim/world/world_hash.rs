@@ -796,9 +796,11 @@ impl Simulation {
             house.player_control.hash(hasher);
             (house.difficulty as i32).hash(hasher);
             house.is_defeated.hash(hasher);
+            house.result_pending.hash(hasher);
             house.has_won.hash(hasher);
             house.has_lost.hash(hasher);
-            house.outcome_state.hash(hasher);
+            house.result_timer_start.hash(hasher);
+            house.result_timer_duration.hash(hasher);
             house.map_is_clear.hash(hasher);
             house.visionary.hash(hasher);
             house.spy_sat_active.hash(hasher);
@@ -2600,6 +2602,35 @@ mod rally_hash_tests {
         sim_b.houses.insert(owner_b, hard_house);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn house_result_bytes_and_shared_timer_each_change_world_hash() {
+        use crate::sim::house_state::HouseState;
+
+        fn fixture() -> (Simulation, crate::sim::intern::InternedId) {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Americans");
+            sim.houses
+                .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+            (sim, owner)
+        }
+
+        let (baseline, owner) = fixture();
+        let baseline_hash = baseline.state_hash();
+        let mutations: [fn(&mut HouseState); 5] = [
+            |house: &mut HouseState| house.result_pending = true,
+            |house: &mut HouseState| house.has_won = true,
+            |house: &mut HouseState| house.has_lost = true,
+            |house: &mut HouseState| house.result_timer_start = -1,
+            |house: &mut HouseState| house.result_timer_duration = 27,
+        ];
+        for mutate in mutations {
+            let (mut changed, changed_owner) = fixture();
+            assert_eq!(changed_owner, owner);
+            mutate(changed.houses.get_mut(&owner).unwrap());
+            assert_ne!(baseline_hash, changed.state_hash());
+        }
     }
 
     #[test]

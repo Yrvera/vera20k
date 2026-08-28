@@ -116,7 +116,7 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::house_state::{HouseOutcomeKind, HouseOutcomeState, HouseState};
+    use crate::sim::house_state::HouseState;
 
     struct HouseFixture<'a> {
         name: &'a str,
@@ -312,12 +312,10 @@ mod tests {
         let human = sim.interner.intern("Human");
         let mut human_house = HouseState::new(human, 0, None, true, 0, 10);
         human_house.is_defeated = true;
+        human_house.has_lost = true;
         human_house.economy.harvested_credits = 200;
-        human_house.outcome_state = Some(HouseOutcomeState {
-            kind: HouseOutcomeKind::Defeat,
-            savour_until_tick: 0,
-            exit_ready: true,
-        });
+        human_house.result_timer_start = 0;
+        human_house.result_timer_duration = 0;
         sim.houses.insert(human, human_house);
 
         let opponent = sim.interner.intern("Opponent");

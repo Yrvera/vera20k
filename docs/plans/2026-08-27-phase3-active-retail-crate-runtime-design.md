@@ -1371,9 +1371,11 @@ House update later in the same Logic rung owns timer expiry and result routing;
 pending expiry clears pending and scatters units. Preserve textual same-stack
 outcomes: 67->68 loss; 68->67 loss; terminal 67/68 then 69 only repairs a `-1`
 start; 69->68 changes armed win to loss while retaining its timer; 69->67
-retains the armed win. Persist/hash all future-affecting result fields. Native
-House quick CRC omits the result bytes and folds computed remaining time; keep
-that narrower rule only in the retail-checksum oracle.
+retains the armed win. Persist/hash all future-affecting result fields. Active
+network quick checksum `0x64DAB0` folds only `House+0x241 map_is_clear`; it
+omits the result bytes and TimerClass remaining time. The latter belongs to the
+distinct full House CRCEngine `0x502D60` and must not enter the Rust network
+quick-checksum oracle.
 
 The active corpus has two Action68 rows, in `all01umd` and `all04dmd`, and zero
 Action67/69. Both must target the pinned local player despite authored
@@ -2133,8 +2135,8 @@ certification run, not this mechanism loop.
   IDs and snapshot version literals agree;
 - snapshot/hash preserves independent House pending/win/loss/start/duration,
   including pending-with-no-terminal and mid-Savour states; `last_announcement`
-  is absent, and the retail checksum oracle retains its narrower remaining-time
-  fold;
+  is absent, and the active network quick-checksum oracle omits these result
+  fields and TimerClass remaining time;
 - app/presentation save adjunct preserves Tactical camera glide/committed/
   requested/progress/last-frame state while world hash and retail checksum omit
   it;

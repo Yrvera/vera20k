@@ -302,7 +302,15 @@ impl App {
                 .as_ref()
                 .map(|rt| &rt.simulation)
                 .and_then(|sim| sim.houses.get(&owner))
-                .and_then(|house| house.outcome_state)
+                .and_then(|house| {
+                    house.outcome_state(
+                        state
+                            .match_state
+                            .sim_runtime
+                            .as_ref()
+                            .map_or(0, |rt| rt.simulation.session.binary_frame as i32),
+                    )
+                })
                 .is_some_and(|outcome| outcome.exit_ready)
         });
         let executed_owner = state

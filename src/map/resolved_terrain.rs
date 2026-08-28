@@ -485,6 +485,21 @@ impl RealCellBridgeFlags0x1180 {
         debug_assert_ne!(*slot, UNALLOCATED_REAL_CELL_BRIDGE_FLAGS);
         *slot = (flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16;
     }
+
+    pub(crate) fn flags_at(&self, coord: (u16, u16)) -> u32 {
+        native_resolved_cell_index(
+            self.width,
+            self.height,
+            None,
+            self.flags_or_unallocated.len(),
+            i32::from(coord.0),
+            i32::from(coord.1),
+        )
+        .and_then(|index| self.flags_or_unallocated.get(index).copied())
+        .filter(|flags| *flags != UNALLOCATED_REAL_CELL_BRIDGE_FLAGS)
+        .map(u32::from)
+        .unwrap_or(0)
+    }
 }
 
 /// Ephemeral mutable view of the represented live `CellClass+0x140` bridge

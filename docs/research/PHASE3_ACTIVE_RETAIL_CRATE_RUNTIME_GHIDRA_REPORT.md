@@ -1259,8 +1259,10 @@ loss, terminal->69 start repair only when paused at -1, and 69->68 loss with
 the normally armed win timer retained. Independent pending/win/loss plus shared
 start/duration are required; a single outcome enum is not equivalent.
 
-Native House raw save carries all result fields. Its quick CRC omits the three
-bytes and folds computed remaining time; authoritative Rust world hash still
+Native House raw save carries all result fields. Active network quick checksum
+`0x64DAB0` folds only `House+0x241 map_is_clear`; it omits the three result
+bytes and TimerClass remaining time. That remaining-time fold belongs to the
+distinct full House CRCEngine `0x502D60`. Authoritative Rust world hash still
 includes all future-affecting result state. Current trigger-global
 `last_announcement` and hardcoded deferred result effects have no native owner
 and must be removed. Active retail has exactly two Action68 rows (`all01umd`,
