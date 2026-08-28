@@ -1666,6 +1666,23 @@ impl Simulation {
                     3u8.hash(hasher);
                     transport_id.hash(hasher);
                 }
+                crate::sim::passenger::PassengerRole::TransportInside {
+                    cargo,
+                    transport_id,
+                } => {
+                    4u8.hash(hasher);
+                    cargo.capacity.hash(hasher);
+                    (cargo.passengers.len() as u32).hash(hasher);
+                    for &pid in &cargo.passengers {
+                        pid.hash(hasher);
+                    }
+                    debug_assert_eq!(cargo.passenger_sizes.len(), cargo.passengers.len());
+                    for &passenger_size in &cargo.passenger_sizes {
+                        passenger_size.hash(hasher);
+                    }
+                    cargo.total_size.hash(hasher);
+                    transport_id.hash(hasher);
+                }
             }
             entity.weapon_override.hash(hasher);
             // Spawn-manager pool: slot states, timers and targets are

@@ -25,6 +25,7 @@ pub mod anim_class;
 pub(crate) mod base_plan;
 pub(crate) mod base_plan_generation;
 pub mod capture_manager;
+pub(crate) mod capture_fate_facility;
 pub mod cloak_disguise;
 pub mod command;
 pub mod components;

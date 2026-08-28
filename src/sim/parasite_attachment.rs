@@ -21,7 +21,6 @@ use crate::sim::movement::crate_callers::{
     Debug,
     Clone,
     Copy,
-    Default,
     PartialEq,
     Eq,
     Hash,
@@ -31,6 +30,26 @@ use crate::sim::movement::crate_callers::{
 pub struct ParasiteManagerState {
     #[serde(default)]
     pub victim_id: Option<u64>,
+    /// WarpAttach detach timer start written by Grinder at manager+0x2C.
+    #[serde(default = "detached_timer_default")]
+    pub detach_started_frame: i32,
+    /// WarpAttach detach duration written as literal 0x32 by Grinder.
+    #[serde(default)]
+    pub detach_duration_frames: i32,
+}
+
+const fn detached_timer_default() -> i32 {
+    -1
+}
+
+impl Default for ParasiteManagerState {
+    fn default() -> Self {
+        Self {
+            victim_id: None,
+            detach_started_frame: -1,
+            detach_duration_frames: 0,
+        }
+    }
 }
 
 /// Install Ship `ForceTrack(-1, victim_xyz)` through its exact native entry.

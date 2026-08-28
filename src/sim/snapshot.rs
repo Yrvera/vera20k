@@ -343,7 +343,11 @@ use crate::sim::world::Simulation;
 // Bumped 116 -> 117: HouseState persists the two distinct acquisition-ordered
 // Grinder/Absorber Building vectors, and GameEntity persists their immutable
 // type-membership bits. DecideUnitFate consumes vector order after load.
-const SNAPSHOT_VERSION: u32 = 117;
+// Bumped 117 -> 118: the active Grinder parasite detach continuation persists
+// WarpAttach's signed start frame and 0x32 duration beside its victim link.
+// PassengerRole also gains the independently nested CargoClass relation used by
+// Unit Grinder/absorber continuations, so v117 cannot be admitted.
+const SNAPSHOT_VERSION: u32 = 118;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -939,8 +943,7 @@ fn validate_nav_reference(
 
 fn validate_passenger_size_tables(sim: &Simulation) -> Result<(), SnapshotRestoreError> {
     for (carrier_id, entity) in sim.substrate.entities.iter_sorted() {
-        let crate::sim::passenger::PassengerRole::Transport { cargo } = &entity.passenger_role
-        else {
+        let Some(cargo) = entity.passenger_role.cargo() else {
             continue;
         };
         if cargo.passengers.len() != cargo.passenger_sizes.len() {
@@ -1115,7 +1118,7 @@ fn restore_object_references(
             )?;
         }
 
-        if let PassengerRole::Transport { cargo } = &entity.passenger_role {
+        if let Some(cargo) = entity.passenger_role.cargo() {
             for &passenger_id in &cargo.passengers {
                 require_resolved_reference(
                     entity_ids.contains(&passenger_id),
@@ -1661,6 +1664,9 @@ fn restore_object_references(
             } => Some((*target_transport_id, "passenger_role.boarding")),
             PassengerRole::Inside { transport_id } => {
                 Some((*transport_id, "passenger_role.inside"))
+            }
+            PassengerRole::TransportInside { transport_id, .. } => {
+                Some((*transport_id, "passenger_role.transport_inside"))
             }
             PassengerRole::None | PassengerRole::Transport { .. } => None,
         };
@@ -3241,10 +3247,12 @@ mod tests {
     /// capture continuation timing, presentation links, AI absorb-enter latch,
     /// and TeamType mind-control decision state; 116 -> 117 adds the distinct
     /// House Grinder/Absorber vectors and immutable entity membership bits
-    /// consumed by DecideUnitFate.
+    /// consumed by DecideUnitFate; 117 -> 118 adds WarpAttach Grinder-detach
+    /// timer state and the independently nested CargoClass relation exercised
+    /// by Unit Grinder/absorber continuations.
     #[test]
-    fn phase3_combined_snapshot_version_is_117() {
-        assert_eq!(super::SNAPSHOT_VERSION, 117);
+    fn phase3_combined_snapshot_version_is_118() {
+        assert_eq!(super::SNAPSHOT_VERSION, 118);
     }
 
     #[test]
@@ -3729,7 +3737,7 @@ mod tests {
         let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v117 facility references resolve");
+            .expect("v118 facility references resolve");
         assert_eq!(
             restored.houses[&owner].grinder_building_order,
             vec![older_id, newer_id]
@@ -5923,7 +5931,11 @@ mod tests {
 
         let mut sim = Simulation::new();
         let mut attacker = GameEntity::test_default(1, "SQD", "RUSSIANS", 1, 1);
-        attacker.parasite_manager = Some(ParasiteManagerState { victim_id: Some(2) });
+        attacker.parasite_manager = Some(ParasiteManagerState {
+            victim_id: Some(2),
+            detach_started_frame: 41,
+            detach_duration_frames: 50,
+        });
         let mut victim = GameEntity::test_default(2, "DEST", "AMERICANS", 2, 2);
         victim.parasite_attacker_id = Some(1);
         sim.substrate.entities.insert(attacker);
@@ -7904,7 +7916,7 @@ mod tests {
         assert_ne!(changed.state_hash(), baseline, "temporal warped byte hashes");
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "result_link_fixture", 0);
-        let mut restored = GameSnapshot::load(&bytes).expect("v117 link snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes).expect("v118 link snapshot").sim;
         restored
             .restore_after_snapshot_load()
             .expect("all reciprocal references resolve");

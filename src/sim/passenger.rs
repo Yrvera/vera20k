@@ -188,6 +188,15 @@ pub enum PassengerRole {
     None,
     /// Entity is a transport or garrisonable building that can hold passengers.
     Transport { cargo: PassengerCargo },
+    /// A cargo-bearing Unit carried by another CargoClass.
+    ///
+    /// Native TechnoClass owns its CargoClass independently from membership in
+    /// an outer CargoClass. Grinder's verified two-level walk and UnitAbsorb
+    /// can therefore conceal a transport without discarding its passengers.
+    TransportInside {
+        cargo: PassengerCargo,
+        transport_id: u64,
+    },
     /// Entity is approaching a transport to board it.
     Boarding {
         target_transport_id: u64,
@@ -201,7 +210,7 @@ impl PassengerRole {
     /// Returns the cargo hold if this entity is a transport.
     pub fn cargo(&self) -> Option<&PassengerCargo> {
         match self {
-            Self::Transport { cargo } => Some(cargo),
+            Self::Transport { cargo } | Self::TransportInside { cargo, .. } => Some(cargo),
             _ => Option::None,
         }
     }
@@ -209,7 +218,7 @@ impl PassengerRole {
     /// Returns a mutable reference to the cargo hold if this entity is a transport.
     pub fn cargo_mut(&mut self) -> Option<&mut PassengerCargo> {
         match self {
-            Self::Transport { cargo } => Some(cargo),
+            Self::Transport { cargo } | Self::TransportInside { cargo, .. } => Some(cargo),
             _ => Option::None,
         }
     }
@@ -217,19 +226,49 @@ impl PassengerRole {
     /// Returns the transport ID if this entity is inside one.
     pub fn inside_transport_id(&self) -> Option<u64> {
         match self {
-            Self::Inside { transport_id } => Some(*transport_id),
+            Self::Inside { transport_id } | Self::TransportInside { transport_id, .. } => {
+                Some(*transport_id)
+            }
             _ => Option::None,
         }
     }
 
     /// True if entity is inside a transport (hidden from map).
     pub fn is_inside_transport(&self) -> bool {
-        matches!(self, Self::Inside { .. })
+        matches!(self, Self::Inside { .. } | Self::TransportInside { .. })
     }
 
     /// True if entity is a transport/garrison with a cargo hold.
     pub fn is_transport(&self) -> bool {
-        matches!(self, Self::Transport { .. })
+        matches!(self, Self::Transport { .. } | Self::TransportInside { .. })
+    }
+
+    /// Enter one outer CargoClass without destroying an owned inner CargoClass.
+    pub(crate) fn enter_transport_preserving_cargo(&mut self, transport_id: u64) {
+        let prior = std::mem::replace(self, Self::None);
+        *self = match prior {
+            Self::Transport { cargo } | Self::TransportInside { cargo, .. } => {
+                Self::TransportInside {
+                    cargo,
+                    transport_id,
+                }
+            }
+            _ => Self::Inside { transport_id },
+        };
+    }
+
+    /// Leave one outer CargoClass while preserving an owned inner CargoClass.
+    pub(crate) fn leave_transport_if(&mut self, transport_id: u64) -> bool {
+        let matches = self.inside_transport_id() == Some(transport_id);
+        if !matches {
+            return false;
+        }
+        let prior = std::mem::replace(self, Self::None);
+        *self = match prior {
+            Self::TransportInside { cargo, .. } => Self::Transport { cargo },
+            _ => Self::None,
+        };
+        true
     }
 }
 

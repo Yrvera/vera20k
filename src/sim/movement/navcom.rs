@@ -565,3 +565,21 @@ mod tests {
         );
     }
 }
+
+/// Exact capture-fate disappearance prefix shared by Unit/Infantry arrival.
+/// Native clears Foot destination/archive movement state before FreeUnit and
+/// Limbo. Cell-list/bridge removal remains owned by `techno_limbo`.
+pub(crate) fn capture_fate_stop_moving(entity: &mut GameEntity) {
+    foot_stop_moving(entity);
+    entity.navigation.pending_arrival_clear = false;
+    entity.navigation.nav_queue.clear();
+    entity.movement_target = None;
+    entity.drive_track = None;
+    entity.forced_drive_track = None;
+    reset_drive_track_runtime(entity);
+    if is_drive_locomotor(entity) {
+        drive_stop_moving(entity);
+    } else if is_ship_locomotor(entity) {
+        ship_stop_moving(entity);
+    }
+}

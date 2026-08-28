@@ -120,6 +120,7 @@ pub(crate) use movement_tick::{
 #[cfg(test)]
 pub(crate) use movement_tick::tick_movement_with_grids;
 pub(crate) use navcom::resolve_entity_nav_target_drive_coord;
+pub(crate) use navcom::capture_fate_stop_moving;
 
 /// Install the active-YR `DriveLocomotion::Force_Track` state for a flat-ground
 /// unit. The caller supplies head offsets from the unit's current cell origin;

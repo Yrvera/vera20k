@@ -16,6 +16,7 @@ pub use receive::{
 };
 
 use crate::map::entities::EntityCategory;
+use crate::rules::ruleset::RuleSet;
 #[cfg(test)]
 use crate::sim::world::LifecycleTestEvent;
 use crate::sim::world::Simulation;
@@ -183,6 +184,73 @@ fn transmit_hello(
         RadioPayload::default(),
     );
     finish_hello_sender_contact(sim, sender_sid, target_sid, response)
+}
+
+/// Capture-fate absorber arrival's class-specific direct radio calls. These
+/// are synchronous receiver transactions but intentionally do not create a
+/// contact: action-3 `Set_Destination` already owned HELLO.
+pub(crate) fn transmit_capture_fate_absorber(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    sender_id: u64,
+    building_id: u64,
+    message: RadioMessage,
+) -> RadioResponse {
+    #[cfg(test)]
+    record_test_event(RadioTestEvent::Transmit {
+        sender_sid: sender_id,
+        target_sid: building_id,
+        message,
+    });
+
+    let Some((sender_category, building_type)) = sim
+        .substrate
+        .entities
+        .get(sender_id)
+        .zip(sim.substrate.entities.get(building_id))
+        .map(|(sender, building)| (sender.category, building.type_ref))
+    else {
+        return RadioResponse::None;
+    };
+    let Some(object) = rules.object(sim.interner.resolve(building_type)) else {
+        return RadioResponse::None;
+    };
+
+    match (sender_category, message) {
+        (EntityCategory::Unit, RadioMessage::CanEnter) => {
+            if crate::sim::capture_manager::building_can_enter_absorber(
+                sim,
+                rules,
+                object,
+                sender_id,
+                building_id,
+            ) {
+                RadioResponse::Roger
+            } else {
+                RadioResponse::Negatory
+            }
+        }
+        (EntityCategory::Infantry, RadioMessage::DockNow) => {
+            // InfantryClass arrival sends 0x15 through contact zero. The
+            // Building receiver repeats only Selling and InfantryAbsorb; it
+            // deliberately does not repeat alliance, power, capacity, size,
+            // naval, BalloonHover, or CaptureManager admission.
+            let linked = sim.substrate.entities.get(sender_id).is_some_and(|sender| {
+                sender.radio_contacts.slot(0) == Some(building_id)
+            });
+            let admitted = sim.substrate.entities.get(building_id).is_some_and(|building| {
+                building.radio_contacts.contains(sender_id)
+                    && building.mission.current().raw() != 0x13
+                    && object.infantry_absorb
+            });
+            if linked && admitted {
+                RadioResponse::Roger
+            } else {
+                RadioResponse::Negatory
+            }
+        }
+        _ => RadioResponse::None,
+    }
 }
 
 fn finish_hello_sender_contact(
