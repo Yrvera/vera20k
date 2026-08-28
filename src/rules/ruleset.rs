@@ -516,6 +516,9 @@ pub struct GeneralRules {
     /// `[AudioVisual] EnterGrinderSound=` emitted by the Grinder per-cell
     /// transaction immediately before the victim's synchronous UnInit.
     pub enter_grinder_sound: Option<String>,
+    /// `[AudioVisual] EnterBioReactorSound=` emitted by Infantry absorber
+    /// arrival after radio 0x15 accepts and before the victim is Limboed.
+    pub enter_bio_reactor_sound: Option<String>,
     /// `[General] RefundPercent=`. RulesClass stores this as binary64; the
     /// refund leaf narrows it once to f32 before multiplying a human refund.
     pub refund_percent: NativeF64Bits,
@@ -1105,6 +1108,7 @@ impl Default for GeneralRules {
             yuri_mind_control_sound: None,
             mind_cleared_sound: None,
             enter_grinder_sound: None,
+            enter_bio_reactor_sound: None,
             refund_percent: NativeF64Bits::HALF,
             controlled_animation_type: None,
             mind_control_attack_line_frames: 20,
@@ -1824,6 +1828,14 @@ impl GeneralRules {
                 .map(str::to_string),
             enter_grinder_sound: audio_visual
                 .and_then(|s| s.get("EnterGrinderSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            enter_bio_reactor_sound: audio_visual
+                .and_then(|s| s.get("EnterBioReactorSound"))
                 .map(str::trim)
                 .filter(|s| {
                     !s.is_empty()
@@ -4644,7 +4656,7 @@ CellSpread=0
     #[test]
     fn capture_fate_refund_country_and_global_inputs_preserve_native_widths() {
         let ini = IniFile::from_str(
-            "[Countries]\n0=TestCountry\n[General]\nRefundPercent=33.3%\n[AudioVisual]\nEnterGrinderSound=GrinderEnter\n[TestCountry]\nCostInfantryMult=.9\nCostUnitsMult=.75\nCostAircraftMult=1.25\nCostBuildingsMult=.8\nCostDefensesMult=.6\n[InfantryTypes]\n0=INF\n[VehicleTypes]\n0=UNIT\n1=DEFENSE\n[AircraftTypes]\n0=AIR\n[BuildingTypes]\n0=BUILDING\n[INF]\nName=Infantry\n[UNIT]\nSpeedType=Track\n[DEFENSE]\nSpeedType=Float\n[AIR]\nName=Aircraft\n[BUILDING]\nName=Building\n",
+            "[Countries]\n0=TestCountry\n[General]\nRefundPercent=33.3%\n[AudioVisual]\nEnterGrinderSound=GrinderEnter\nEnterBioReactorSound=BioEnter\n[TestCountry]\nCostInfantryMult=.9\nCostUnitsMult=.75\nCostAircraftMult=1.25\nCostBuildingsMult=.8\nCostDefensesMult=.6\n[InfantryTypes]\n0=INF\n[VehicleTypes]\n0=UNIT\n1=DEFENSE\n[AircraftTypes]\n0=AIR\n[BuildingTypes]\n0=BUILDING\n[INF]\nName=Infantry\n[UNIT]\nSpeedType=Track\n[DEFENSE]\nSpeedType=Float\n[AIR]\nName=Aircraft\n[BUILDING]\nName=Building\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("capture refund rules parse");
         let country = rules.country_rules("testcountry").expect("country exists");
@@ -4678,11 +4690,16 @@ CellSpread=0
             rules.general.enter_grinder_sound.as_deref(),
             Some("GrinderEnter")
         );
+        assert_eq!(
+            rules.general.enter_bio_reactor_sound.as_deref(),
+            Some("BioEnter")
+        );
 
         let defaults = RuleSet::from_ini(&IniFile::from_str("[General]\n"))
             .expect("default capture refund rules parse");
         assert_eq!(defaults.general.refund_percent, NativeF64Bits::HALF);
         assert!(defaults.general.enter_grinder_sound.is_none());
+        assert!(defaults.general.enter_bio_reactor_sound.is_none());
     }
 
     #[test]

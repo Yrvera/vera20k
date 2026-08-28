@@ -336,7 +336,7 @@ fn nearest_owned_building(
     best
 }
 
-fn building_can_enter_absorber(
+pub(crate) fn building_can_enter_absorber(
     sim: &Simulation,
     rules: &RuleSet,
     object: &ObjectType,
@@ -538,7 +538,7 @@ fn active_retail_factory_plant_bonus(
 /// Exact active Grinder refund leaf (`TechnoTypeClass` wrapper `0x0070ADA0`,
 /// leaf `0x00711F60`). The returned signed credits are applied to the
 /// facility's *current* House by the per-cell transaction.
-fn grinder_refund_value(
+pub(crate) fn grinder_refund_value(
     sim: &Simulation,
     rules: &RuleSet,
     refunded: &ObjectType,
@@ -1845,6 +1845,7 @@ mod tests {
 
         let mut first_arrival_frame = None;
         let mut consumed_on_arrival = false;
+        let mut roundtripped_mid_approach = false;
         let mut distinct_positions = std::collections::BTreeSet::new();
         distinct_positions.insert(initial);
         for frame in 0..240u32 {
@@ -1856,6 +1857,37 @@ mod tests {
                 None,
                 16,
             );
+            if frame == 2 {
+                let saved_rng = sim.scenario_rng.logical_state();
+                let bytes = crate::sim::snapshot::GameSnapshot::save(
+                    &sim,
+                    0,
+                    0,
+                    "capture-fate-mid-approach",
+                    0,
+                );
+                let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+                    .expect("v117 mid-approach snapshot")
+                    .sim;
+                restored
+                    .restore_after_snapshot_load()
+                    .expect("v117 approach references and derived membership restore");
+                let reset_rng = crate::sim::rng::SimRng::new(0).logical_state();
+                assert_ne!(saved_rng, reset_rng, "approach cadence advanced Scenario RNG");
+                assert_eq!(restored.scenario_rng.logical_state(), reset_rng);
+                // Native in-scenario load reads the saved Scenario RNG bytes
+                // and immediately reseeds that object with zero. Normalize
+                // only the source cursor, then prove every other hash-visible
+                // component survived the v117 roundtrip exactly.
+                sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+                assert_eq!(restored.state_hash(), sim.state_hash());
+                sim = restored;
+                assert_eq!(
+                    sim.substrate.entities.get(victim_id).unwrap().navigation.nav_com,
+                    Some(NavTargetRef::building(facility_id)),
+                );
+                roundtripped_mid_approach = true;
+            }
             let Some(victim) = sim.substrate.entities.get(victim_id) else {
                 // Slice C's synchronous PerCell continuation is allowed to
                 // consume on the first selected-Building foundation cell. The
@@ -1898,11 +1930,16 @@ mod tests {
             distinct_positions.len() > 2,
             "the approach must traverse intermediate cells rather than teleport"
         );
+        assert!(roundtripped_mid_approach);
         if !consumed_on_arrival {
             let victim = sim.substrate.entities.get(victim_id).unwrap();
             assert!(
                 footprint.contains(&(victim.position.rx, victim.position.ry)),
                 "without the per-cell consumer, the mover stops on a selected-Building footprint cell"
+            );
+            assert!(
+                !victim.lifecycle.object_alive || victim.lifecycle.in_limbo,
+                "the per-cell terminal transaction consumes on the selected footprint"
             );
         }
     }

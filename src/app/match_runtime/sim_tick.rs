@@ -1105,7 +1105,8 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         sub_y,
                         world_z_leptons,
                     ),
-                    SimSoundEvent::MindControlSound { sound_id, world } => {
+                    SimSoundEvent::MindControlSound { sound_id, world }
+                    | SimSoundEvent::CaptureFateSound { sound_id, world } => {
                         let (sx, sy) = anim_world_sound_screen(world);
                         GameSoundEvent::WeaponFired {
                             sound_id,

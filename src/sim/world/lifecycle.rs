@@ -2062,12 +2062,7 @@ impl Simulation {
                 continue;
             }
             if let Some(passenger) = self.substrate.entities.get_mut(passenger_id) {
-                if matches!(
-                    passenger.passenger_role,
-                    PassengerRole::Inside { transport_id } if transport_id == carrier_id
-                ) {
-                    passenger.passenger_role = PassengerRole::None;
-                }
+                let _ = passenger.passenger_role.leave_transport_if(carrier_id);
                 passenger.health.current = 0;
             }
             self.uninit_with_context(passenger_id, context);
@@ -2296,7 +2291,7 @@ impl Simulation {
 
             // TechnoClass removes an expiring passenger from its CargoClass before
             // clearing its target/archive/manager reference family.
-            if let PassengerRole::Transport { cargo } = &mut listener.passenger_role {
+            if let Some(cargo) = listener.passenger_role.cargo_mut() {
                 let _ = cargo.disembark(expired_id);
             }
         }
@@ -2395,17 +2390,14 @@ impl Simulation {
             }
         }
 
-        let clear_passenger_role = match &listener.passenger_role {
-            PassengerRole::Transport { .. } => false,
-            PassengerRole::Boarding {
-                target_transport_id,
-                ..
-            } => *target_transport_id == expired_id,
-            PassengerRole::Inside { transport_id } => *transport_id == expired_id,
-            PassengerRole::None => false,
-        };
-        if clear_passenger_role {
+        let boarding_expired = matches!(
+            listener.passenger_role,
+            PassengerRole::Boarding { target_transport_id, .. } if target_transport_id == expired_id
+        );
+        if boarding_expired {
             listener.passenger_role = PassengerRole::None;
+        } else {
+            let _ = listener.passenger_role.leave_transport_if(expired_id);
         }
 
         if let Some(homing) = listener.homing_state.as_mut() {

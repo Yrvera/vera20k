@@ -378,7 +378,7 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         0,
     );
     let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
-        .expect("v116 capture snapshot")
+        .expect("v117 capture snapshot")
         .sim;
     restored
         .restore_after_snapshot_load()

@@ -477,6 +477,12 @@ pub enum SimSoundEvent {
         sound_id: String,
         world: crate::sim::anim_class::AnimWorldCoord,
     },
+    /// Capture-fate Grinder/Bio Reactor positional playback. Unlike the
+    /// mind-control cue, this has no local-House audibility gate.
+    CaptureFateSound {
+        sound_id: String,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// A base structure / harvester took enemy damage — the radar ping is
     /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
     /// result (the BridgeRepaired pattern). App gates the EVA voice to the
@@ -4115,6 +4121,51 @@ impl Simulation {
         self.trigger_effects.extend(effects);
     }
 
+    /// Synchronous Object/Building Tag delivery used by the native per-cell
+    /// capture-fate leaves. The runtime is temporarily moved out because
+    /// trigger actions may mutate the same Simulation and invalidate either
+    /// participant; callers must re-fetch stable IDs after this returns.
+    pub(crate) fn dispatch_attached_tag_event(
+        &mut self,
+        inputs: TriggerInputs<'_>,
+        tag_owner_id: u64,
+        object_id: u64,
+        event_id: i32,
+    ) -> bool {
+        let Some(program) = inputs.program else {
+            return false;
+        };
+        let Some(tag_index) = self.trigger_runtime.object_tags.get(&tag_owner_id).copied() else {
+            return false;
+        };
+        let raising_owner = self.substrate.entities.get(object_id).map(|object| object.owner);
+        let cell = self
+            .substrate
+            .entities
+            .get(object_id)
+            .map(|object| (object.position.rx, object.position.ry));
+        let mut runtime = std::mem::take(&mut self.trigger_runtime);
+        let (fired, effects) = runtime.dispatch_native_event(
+            program,
+            self,
+            inputs.rules,
+            inputs.overlay_registry,
+            inputs.waypoints,
+            tag_index,
+            crate::sim::trigger_runtime::NativeTriggerEvent {
+                event_id,
+                object_id: Some(object_id),
+                cell,
+                raising_owner,
+                data: 0,
+                editor_mode: false,
+            },
+        );
+        self.trigger_runtime = runtime;
+        self.trigger_effects.extend(effects);
+        fired
+    }
+
     /// Drain app-owned outcomes after their authoritative trigger actions ran.
     /// Production consumes trigger effects through `SimFrameOutput`; only
     /// fixture replay and trigger tests drain them directly.
@@ -7242,15 +7293,35 @@ impl Simulation {
                 .entities
                 .get(stable_id)
                 .map(|entity| (entity.position.rx, entity.position.ry));
+            let mut capture_fate_concealed = false;
             if let Some(rules) = rules {
-                sim.move_unit_sensor_after_cell_change(
+                let capture_fate_result = crate::sim::capture_fate_facility::process_per_cell(
+                    sim,
                     stable_id,
                     cell_before_movement,
                     cell_after_movement,
                     rules,
+                    trigger_inputs,
                 );
+                capture_fate_concealed = matches!(
+                    capture_fate_result,
+                    crate::sim::capture_fate_facility::CaptureFatePerCellResult::GrinderConsumed
+                        | crate::sim::capture_fate_facility::CaptureFatePerCellResult::AbsorberBoarded
+                );
+                if !capture_fate_concealed {
+                    sim.move_unit_sensor_after_cell_change(
+                        stable_id,
+                        cell_before_movement,
+                        cell_after_movement,
+                        rules,
+                    );
+                }
             }
-            if teleport_relocated_this_process {
+            if capture_fate_concealed {
+                // PerCellProcess has already run the synchronous Limbo/UnInit
+                // transaction. Its cleared sensor, cell-list, and playfield
+                // state must not be re-promoted by the movement caller tail.
+            } else if teleport_relocated_this_process {
                 // `TeleportLocomotionClass` arrival owns the exceptional exact
                 // outside clear at 0x00719A99; it must not flow through the
                 // ordinary promote-only per-cell writer.
