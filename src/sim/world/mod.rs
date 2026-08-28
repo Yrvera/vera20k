@@ -1162,6 +1162,99 @@ fn dispatch_smudge_inline(
 /// Single mutable bridge back into Simulation while combat owns the moved-out
 /// receiver transaction. It deliberately implements both lifecycle and smudge
 /// callbacks so no pair of closures can alias `&mut Simulation`.
+#[derive(Clone)]
+struct HouseOwnershipTransactionState {
+    owned_building_count: u32,
+    owned_unit_count: u32,
+    build_const_order: Vec<u64>,
+    waypoint_edge: u8,
+}
+
+fn capture_house_ownership_transaction_state(
+    houses: &BTreeMap<InternedId, HouseState>,
+) -> BTreeMap<InternedId, HouseOwnershipTransactionState> {
+    houses
+        .iter()
+        .map(|(&owner, house)| {
+            (
+                owner,
+                HouseOwnershipTransactionState {
+                    owned_building_count: house.owned_building_count,
+                    owned_unit_count: house.owned_unit_count,
+                    build_const_order: house.build_const_order.clone(),
+                    waypoint_edge: house.waypoint_edge,
+                },
+            )
+        })
+        .collect()
+}
+
+fn apply_owned_count_delta(live: &mut u32, before: u32, after: u32) {
+    if after >= before {
+        *live += after - before;
+    } else {
+        *live = live.saturating_sub(before - after);
+    }
+}
+
+/// Combat starts from a House-map clone because receiver-owned combat writes
+/// must later merge around synchronous world lifecycle callbacks. Mind-control
+/// owner transfer is one such callback, but its Removed_From_Game /
+/// Added_To_Game writes run against that staged clone while the live map may
+/// already contain independent fatal-lifecycle mutations. Replay only the
+/// ownership delta into the live map; copying the staged House wholesale would
+/// discard those earlier live writes.
+fn apply_house_ownership_transaction_delta(
+    live_houses: &mut BTreeMap<InternedId, HouseState>,
+    before: &BTreeMap<InternedId, HouseOwnershipTransactionState>,
+    after: &BTreeMap<InternedId, HouseState>,
+) {
+    for (&owner, before_house) in before {
+        let (Some(after_house), Some(live_house)) =
+            (after.get(&owner), live_houses.get_mut(&owner))
+        else {
+            continue;
+        };
+        apply_owned_count_delta(
+            &mut live_house.owned_building_count,
+            before_house.owned_building_count,
+            after_house.owned_building_count,
+        );
+        apply_owned_count_delta(
+            &mut live_house.owned_unit_count,
+            before_house.owned_unit_count,
+            after_house.owned_unit_count,
+        );
+
+        for stable_id in before_house
+            .build_const_order
+            .iter()
+            .filter(|stable_id| !after_house.build_const_order.contains(stable_id))
+        {
+            if let Some(index) = live_house
+                .build_const_order
+                .iter()
+                .position(|candidate| candidate == stable_id)
+            {
+                live_house.build_const_order.remove(index);
+            }
+        }
+        for &stable_id in after_house
+            .build_const_order
+            .iter()
+            .filter(|stable_id| !before_house.build_const_order.contains(stable_id))
+        {
+            if !live_house.build_const_order.contains(&stable_id) {
+                live_house.build_const_order.push(stable_id);
+            }
+        }
+
+        if after_house.waypoint_edge != before_house.waypoint_edge {
+            live_house.waypoint_edge = after_house.waypoint_edge;
+        }
+    }
+}
+
 struct SimulationCombatInlineHooks<'a> {
     sim: &'a mut Simulation,
 }
@@ -1195,6 +1288,7 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         std::mem::swap(&mut self.sim.interner, borrowed_interner);
         std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
         std::mem::swap(&mut self.sim.houses, borrowed_houses);
+        let ownership_before = capture_house_ownership_transaction_state(&self.sim.houses);
         let mut borrowed_sound_events = borrowed_sound_events;
         if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
             std::mem::swap(&mut self.sim.sound_events, sound_events);
@@ -1226,6 +1320,11 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
             std::mem::swap(&mut self.sim.sound_events, sound_events);
         }
+        apply_house_ownership_transaction_delta(
+            borrowed_houses,
+            &ownership_before,
+            &self.sim.houses,
+        );
         std::mem::swap(&mut self.sim.houses, borrowed_houses);
         std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
         std::mem::swap(&mut self.sim.interner, borrowed_interner);
