@@ -4137,7 +4137,8 @@ impl Simulation {
             std::collections::BTreeMap::new();
         if let Some(rules) = rules {
             for e in self.substrate.entities.values() {
-                if e.category == EntityCategory::Structure
+                if !e.lifecycle.in_limbo
+                    && e.category == EntityCategory::Structure
                     && self
                         .object_type(e.type_ref, rules)
                         .is_some_and(|obj| obj.ore_purifier)
@@ -5155,7 +5156,10 @@ impl Simulation {
             gap_generators: Vec::new(),
         };
         for entity in self.substrate.entities.values() {
-            if entity.dying || entity.category != EntityCategory::Structure {
+            if entity.dying
+                || entity.lifecycle.in_limbo
+                || entity.category != EntityCategory::Structure
+            {
                 continue;
             }
             let Some(obj) = self.object_type(entity.type_ref, rules) else {
@@ -7134,7 +7138,22 @@ impl Simulation {
                 // + now-unbuildable queued items dropped, so a freshly-abandoned factory is not
                 // charged this tick and a freshly-promoted one starts charging next tick.
                 let reval_plan = registry.plan_revalidation(self, rules);
-                registry.apply_revalidation(&reval_plan, &mut self.houses);
+                let lifecycle = registry.apply_revalidation(&reval_plan, &mut self.houses);
+                for entity_id in lifecycle.discarded_entity_ids {
+                    let discarded = self.discard_constructed_limbo(entity_id);
+                    debug_assert!(
+                        discarded,
+                        "prerequisite AbandonProduction destroys its held limbo object"
+                    );
+                }
+                self.production.factory_shadow = registry;
+                for (owner, category, type_id) in lifecycle.promoted {
+                    production::construct_and_link_active_factory_object(
+                        self, rules, owner, category, type_id,
+                    )
+                    .expect("validated revalidation promotion must construct one Techno");
+                }
+                let mut registry = std::mem::take(&mut self.production.factory_shadow);
                 let prepared = registry.prepare_step_inputs(self, rules);
                 registry.step_all(&mut self.houses, &prepared);
                 self.production.factory_shadow = registry;

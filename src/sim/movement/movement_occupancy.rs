@@ -383,7 +383,7 @@ pub(super) fn build_live_building_entry_skip_map(
     let mut skips = LiveBuildingEntrySkipMap::new();
     for building in entities.values() {
         // A Dying building corpse no longer offers gate/bunker/bib entry cells.
-        if building.dying {
+        if building.dying || !building.lifecycle.cell_marked {
             continue;
         }
         if building.category != EntityCategory::Structure {

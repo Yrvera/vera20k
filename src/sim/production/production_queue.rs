@@ -200,7 +200,7 @@ pub fn enqueue_by_type(sim: &mut Simulation, rules: &RuleSet, owner: &str, type_
     // P5d: append directly to the registry queue-of-record (create-or-append). With no
     // active build the registry arms it inline (the retired reconcile SEED); otherwise it
     // joins the FIFO tail. No upfront debit (the per-step charge owns the cost).
-    sim.production.factory_shadow.enqueue(
+    let started = sim.production.factory_shadow.enqueue(
         owner_id,
         queue_category,
         type_interned,
@@ -208,7 +208,46 @@ pub fn enqueue_by_type(sim: &mut Simulation, rules: &RuleSet, owner: &str, type_
         total_base_frames,
         cost,
     );
+    if started {
+        construct_and_link_active_factory_object(
+            sim,
+            rules,
+            owner_id,
+            queue_category,
+            type_interned,
+        )
+        .expect("validated StartProduction type must construct one Techno");
+    }
     true
+}
+
+/// Materialize the exact Techno retained by an active factory head. Active
+/// retail `FactoryClass::StartProduction @ 0x004C9C70` calls
+/// `type->CreateInstance(owner)` at start and stores the result at
+/// `Factory+0x58`; queued tail entries do not construct until promoted by
+/// `FactoryClass::StartNextQueued @ 0x004CA5A0`.
+pub(in crate::sim) fn construct_and_link_active_factory_object(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner_id: InternedId,
+    category: ProductionCategory,
+    type_id: InternedId,
+) -> Option<u64> {
+    let owner = sim.interner.resolve(owner_id).to_string();
+    let type_name = sim.interner.resolve(type_id).to_string();
+    // A factory-held object is still in limbo and has no cell authority. Zero
+    // is only inert storage here; the result-bearing Unlimbo later installs the
+    // selected delivery/placement coordinate on this same stable identity.
+    let stable_id = sim.construct_object_limbo_at_height(&type_name, &owner, 0, 0, 0, 0, rules)?;
+    let linked = sim
+        .production
+        .factory_shadow
+        .link_active_entity(owner_id, category, stable_id);
+    if linked != Some(stable_id) {
+        let _ = sim.discard_constructed_limbo(stable_id);
+        return None;
+    }
+    Some(stable_id)
 }
 
 /// Build a production list across supported sidebar categories for an owner.
@@ -457,24 +496,28 @@ fn tick_production_impl(
         // item completes, before delivery. A refused Unlimbo retains the same
         // completed object, so the serialized object-owned latch prevents each
         // delivery retry from replaying the completion edge.
-        if sim
+        let first_completion = sim
             .production
             .factory_shadow
-            .account_completed_object_once(owner_id, queue_category)
-        {
+            .account_completed_object_once(owner_id, queue_category);
+        if first_completion {
             if let Some(house) = sim.houses.get_mut(&owner_id) {
                 house.stats.built = house.stats.built.saturating_add(1);
             }
         }
         if produced_category == Some(crate::rules::object_type::ObjectCategory::Building) {
-            sim.production
-                .ready_by_owner
-                .entry(owner_id)
-                .or_default()
-                .push_back(done_type);
-            sim.sound_events
-                .push(crate::sim::world::SimSoundEvent::BuildingComplete { owner: owner_id });
-            advance_after_delivery(sim, rules, owner_id, queue_category);
+            // HouseClass keeps the completed Factory object until placement.
+            // The ready queue is only a UI/type projection; repeated delivery
+            // sweeps must neither duplicate it nor clear/promote the factory.
+            if first_completion {
+                sim.production
+                    .ready_by_owner
+                    .entry(owner_id)
+                    .or_default()
+                    .push_back(done_type);
+                sim.sound_events
+                    .push(crate::sim::world::SimSoundEvent::BuildingComplete { owner: owner_id });
+            }
             continue;
         }
         let is_vehicle =
@@ -498,6 +541,7 @@ fn tick_production_impl(
                 if let Some(obj) = rules.object(&done_type_str) {
                     *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
                 }
+                discard_active_factory_entity(sim, owner_id, queue_category);
                 advance_after_delivery(sim, rules, owner_id, queue_category);
                 continue;
             }
@@ -527,40 +571,44 @@ fn tick_production_impl(
                 if let Some(obj) = rules.object(&done_type_str) {
                     *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
                 }
+                discard_active_factory_entity(sim, owner_id, queue_category);
                 advance_after_delivery(sim, rules, owner_id, queue_category);
                 continue;
             }
         }
         let (rx, ry) = spawn_cell.unwrap();
 
+        let Some(stable_id) = active_factory_entity_id(sim, owner_id, queue_category) else {
+            debug_assert!(
+                false,
+                "active Factory object must own its StartProduction entity before delivery"
+            );
+            continue;
+        };
+
         let spawned = match spawn_delivery {
-            ProductionDeliveryKind::NavalUnit { .. } => {
-                let Some(stable_id) = ensure_completed_production_entity(
-                    sim,
-                    rules,
-                    owner_id,
-                    queue_category,
-                    &owner_str,
-                    &done_type_str,
-                    (rx, ry),
-                    height_map,
-                ) else {
-                    continue;
-                };
-                unlimbo_held_naval_unit(
-                    sim,
-                    rules,
-                    &owner_str,
-                    &done_type_str,
-                    stable_id,
-                    spawn_producer_id.expect("naval delivery has one selected producer"),
-                    (rx, ry),
-                    overlay_registry,
-                    height_map,
-                )
-            }
+            ProductionDeliveryKind::NavalUnit { .. } => unlimbo_held_naval_unit(
+                sim,
+                rules,
+                &owner_str,
+                &done_type_str,
+                stable_id,
+                spawn_producer_id.expect("naval delivery has one selected producer"),
+                (rx, ry),
+                overlay_registry,
+                height_map,
+            ),
             ProductionDeliveryKind::Standard => {
-                sim.spawn_object(&done_type_str, &owner_str, rx, ry, 64, rules, height_map)
+                let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
+                sim.unlimbo_held_production_object(
+                    stable_id,
+                    rx,
+                    ry,
+                    64,
+                    z,
+                    crate::sim::world::PlacementEvidence::EvaluateMark,
+                    rules,
+                )
             }
         };
         if let Some(stable_id) = spawned {
@@ -705,6 +753,7 @@ fn tick_production_impl(
             if let Some(obj) = rules.object(&done_type_str) {
                 *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
             }
+            discard_active_factory_entity(sim, owner_id, queue_category);
             advance_after_delivery(sim, rules, owner_id, queue_category);
         }
     }
@@ -715,44 +764,30 @@ fn tick_production_impl(
     spawned_any
 }
 
-/// Construct and link the completed queue object's EntityStore identity once.
-/// A refused Unlimbo leaves this same identity linked and in limbo, so retries
-/// neither allocate another stable ID nor increment the house owned count.
-#[allow(clippy::too_many_arguments)]
-fn ensure_completed_production_entity(
-    sim: &mut Simulation,
-    rules: &RuleSet,
+fn active_factory_entity_id(
+    sim: &Simulation,
     owner_id: InternedId,
     category: ProductionCategory,
-    owner: &str,
-    type_id: &str,
-    cell: (u16, u16),
-    height_map: &BTreeMap<(u16, u16), u8>,
 ) -> Option<u64> {
-    if let Some(stable_id) = sim
-        .production
+    sim.production
         .factory_shadow
         .view(owner_id, category)
         .and_then(|view| view.object.and_then(|object| object.entity_id))
-    {
-        return sim
-            .substrate
-            .entities
-            .contains(stable_id)
-            .then_some(stable_id);
-    }
+        .filter(|&stable_id| sim.substrate.entities.contains(stable_id))
+}
 
-    let z = height_map.get(&cell).copied().unwrap_or(0);
-    let stable_id = sim.create_production_object_limbo_at_height(
-        type_id, owner, cell.0, cell.1, 0x40, z, rules,
-    )?;
-    let linked = sim.production.factory_shadow.link_completed_entity(
-        owner_id,
-        category,
-        stable_id,
-    );
-    debug_assert_eq!(linked, Some(stable_id));
-    linked
+fn discard_active_factory_entity(
+    sim: &mut Simulation,
+    owner_id: InternedId,
+    category: ProductionCategory,
+) {
+    if let Some(stable_id) = active_factory_entity_id(sim, owner_id, category) {
+        let discarded = sim.discard_constructed_limbo(stable_id);
+        debug_assert!(
+            discarded,
+            "factory-held object must remain in limbo until delivery"
+        );
+    }
 }
 
 /// C7 StartNextQueued after a successful delivery (or a completed-but-undeliverable refund):
@@ -760,7 +795,7 @@ fn ensure_completed_production_entity(
 /// cost-seeded from `rules`. Runs in `tick_production` (Phase 7, AFTER `step_all`), so the
 /// promoted build's cadence (`step_delay = 0`) starts on the NEXT tick's sweep — never the
 /// same tick it is promoted.
-fn advance_after_delivery(
+pub(super) fn advance_after_delivery(
     sim: &mut Simulation,
     rules: &RuleSet,
     owner_id: InternedId,
@@ -772,9 +807,14 @@ fn advance_after_delivery(
         .peek_next_queued(owner_id, category)
         .map(|t| sim.object_type(t, rules).map_or(0, |o| o.cost.max(0)))
         .unwrap_or(0);
-    sim.production
+    let promoted = sim
+        .production
         .factory_shadow
         .clear_active_and_advance(owner_id, category, next_cost, 0);
+    if let Some(type_id) = promoted {
+        construct_and_link_active_factory_object(sim, rules, owner_id, category, type_id)
+            .expect("validated promoted production type must construct one Techno");
+    }
 }
 
 /// Build a queue snapshot for one owner, including progress metadata for UI.
@@ -930,6 +970,17 @@ pub fn cancel_last_for_owner(sim: &mut Simulation, _rules: &RuleSet, owner: &str
     };
     registry.prune_all_idle();
     sim.production.factory_shadow = registry;
+    if let CancelOutcome::AbandonedActive {
+        entity_id: Some(entity_id),
+        ..
+    } = outcome
+    {
+        let discarded = sim.discard_constructed_limbo(entity_id);
+        debug_assert!(
+            discarded,
+            "AbandonProduction destroys the held limbo object"
+        );
+    }
     matches!(
         outcome,
         CancelOutcome::QueuedRemoved | CancelOutcome::AbandonedActive { .. }
@@ -995,24 +1046,19 @@ pub fn cancel_by_type_for_owner(
             sim.production.factory_shadow.prune_all_idle();
             true
         }
-        CancelOutcome::AbandonedActive { .. } => {
+        CancelOutcome::AbandonedActive { entity_id, .. } => {
+            if let Some(entity_id) = entity_id {
+                let discarded = sim.discard_constructed_limbo(entity_id);
+                debug_assert!(
+                    discarded,
+                    "AbandonProduction destroys the held limbo object"
+                );
+            }
             // C7: the active build was abandoned (object cleared, tail intact). Promote the
             // next queued entry into the active slot, cost-seeded. EventClass
             // dispatch is after this tick's `step_all`, so step_delay = 0
             // charges the promoted build on the next gameplay frame.
-            if let Some(next_type) = sim
-                .production
-                .factory_shadow
-                .peek_next_queued(owner_id, category)
-            {
-                let cost = sim
-                    .object_type(next_type, rules)
-                    .map(|o| o.cost.max(0))
-                    .unwrap_or(0);
-                sim.production
-                    .factory_shadow
-                    .clear_active_and_advance(owner_id, category, cost, 0);
-            }
+            advance_after_delivery(sim, rules, owner_id, category);
             sim.production.factory_shadow.prune_all_idle();
             true
         }
@@ -1050,10 +1096,29 @@ fn cancel_ready_by_type_for_owner(
     if ready_queue.is_empty() {
         sim.production.ready_by_owner.remove(&owner_id);
     }
+    let category = rules
+        .object(type_id)
+        .map(production_category_for_object)
+        .unwrap_or(ProductionCategory::Building);
+    let held_entity_id = sim
+        .production
+        .factory_shadow
+        .view(owner_id, category)
+        .and_then(|view| view.object)
+        .filter(|object| object.type_id == type_interned)
+        .and_then(|object| object.entity_id);
     // Refund full cost.
     if let Some(obj) = rules.object(type_id) {
         *credits_entry_for_owner(sim, owner) += obj.cost.max(0);
     }
+    if let Some(entity_id) = held_entity_id {
+        let discarded = sim.discard_constructed_limbo(entity_id);
+        debug_assert!(
+            discarded,
+            "ready-building cancel destroys Factory+0x58 object"
+        );
+    }
+    advance_after_delivery(sim, rules, owner_id, category);
     true
 }
 

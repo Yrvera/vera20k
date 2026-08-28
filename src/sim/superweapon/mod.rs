@@ -291,7 +291,7 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
         if entity.category != crate::map::entities::EntityCategory::Structure {
             continue;
         }
-        if entity.dying {
+        if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         let type_str = sim.interner.resolve(entity.type_ref);

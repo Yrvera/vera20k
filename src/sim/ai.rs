@@ -173,7 +173,7 @@ fn try_deploy_mcv(
         {
             continue;
         }
-        if entity.dying {
+        if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         let is_deployable: bool = sim
@@ -208,6 +208,7 @@ where
 {
     sim.substrate.entities.values().any(|e| {
         !e.dying
+            && !e.lifecycle.in_limbo
             && e.category == EntityCategory::Structure
             && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && matches(sim.interner.resolve(e.type_ref))
@@ -487,7 +488,7 @@ fn send_attack_wave(
         {
             continue;
         }
-        if entity.dying {
+        if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         if !matches!(
@@ -544,6 +545,7 @@ fn find_base_center(sim: &Simulation, owner: &str) -> Option<(u16, u16)> {
     let mut count: i64 = 0;
     for entity in sim.substrate.entities.values() {
         if !entity.dying
+            && !entity.lifecycle.in_limbo
             && entity.category == EntityCategory::Structure
             && sim
                 .interner
@@ -570,7 +572,7 @@ fn find_nearest_enemy_structure(sim: &Simulation, owner: &str) -> Option<(u16, u
     let mut best: Option<(u32, u16, u16)> = None;
 
     for entity in sim.substrate.entities.values() {
-        if entity.dying {
+        if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         if entity.category != EntityCategory::Structure {
@@ -1060,6 +1062,19 @@ mod tests {
             crate::sim::world::RevealOutcome::Revealed { .. }
         ));
         let wall_type = sim.interner.intern("GAWALL");
+        assert!(production::enqueue_by_type(
+            &mut sim,
+            &rules,
+            "Americans",
+            "GAWALL"
+        ));
+        let wall_category =
+            production::category_for_object(rules.object("GAWALL").expect("wall profile"));
+        assert!(
+            sim.production
+                .factory_shadow
+                .test_arm_ready(owner, wall_category)
+        );
         sim.production
             .ready_by_owner
             .entry(owner)
@@ -1106,7 +1121,7 @@ mod tests {
         );
         assert_eq!(tick.executed_commands, 1);
         assert!(!tick.spawned_entities);
-        assert_eq!(sim.substrate.entities.len(), entity_count);
+        assert_eq!(sim.substrate.entities.len(), entity_count - 1);
         assert!(!sim.production.ready_by_owner.contains_key(&owner));
         let wall = sim
             .overlay_grid

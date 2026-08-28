@@ -888,7 +888,7 @@ fn find_nearest_airfield_for(
         if entity.category != EntityCategory::Structure {
             continue;
         }
-        if entity.health.current == 0 || entity.dying {
+        if entity.health.current == 0 || entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         if entity.owner != owner {

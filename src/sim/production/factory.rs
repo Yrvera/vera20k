@@ -63,11 +63,12 @@ fn remaining_balance_after(cost: i32, progress: u16) -> i32 {
     balance
 }
 
-/// The object a factory holds from start through delivery. `entity_id` stays
-/// `None` while construction is represented only by type/progress state. A
-/// completed produced Unit links its one limbo EntityStore identity here before
-/// its first result-bearing delivery attempt, and retains that identity across
-/// refused attempts until delivery succeeds.
+/// The object a factory holds from start through delivery. Active-retail
+/// `FactoryClass::StartProduction @ 0x004C9C70` calls the type's create-instance
+/// virtual immediately and stores that constructed Techno at `Factory+0x58`.
+/// Therefore every live active build has one limbo `entity_id` from production
+/// start; completion, delivery retries, and cancellation operate on that same
+/// identity rather than constructing at completion.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PendingObject {
     pub type_id: InternedId,
@@ -260,7 +261,7 @@ impl Factory {
     ///
     /// `&mut Economy` is an ORACLE (clone) in P4; hash-neutrality is enforced at the
     /// CALL SITE, never in this body. The authority-flip slice flips WHO is passed.
-    fn cancel_active(&mut self, economy: &mut Economy) -> Option<i32> {
+    fn cancel_active(&mut self, economy: &mut Economy) -> Option<(i32, Option<u64>)> {
         // No active object -> no-op.
         self.object.as_ref()?;
 
@@ -281,11 +282,9 @@ impl Factory {
         let refund = (self.original_balance - self.balance).max(0);
         economy.add_credits(refund); // ORACLE economy in P4 (saturating add)
 
-        // Reset to the empty-but-registered idle state; the partial object is
-        // destroyed. Only completed produced Units acquire `object.entity_id`,
-        // while this path rejects complete-held objects above, so an abandoned
-        // partial object still has no EntityStore identity to release here.
-        self.object = None;
+        // Reset to the empty-but-registered idle state and return the exact
+        // StartProduction identity for the Simulation owner to destroy.
+        let entity_id = self.object.take().and_then(|object| object.entity_id);
         self.progress = 0;
         self.balance = 0;
         self.original_balance = 0;
@@ -296,7 +295,7 @@ impl Factory {
         self.manual = false;
         self.special = SpecialItem::NoneNeg1; // canonical "none"; do NOT collapse 0/-1
         // `self.queue` is LEFT INTACT — StartNextQueued is command-bound (C7), a later slice.
-        Some(refund)
+        Some((refund, entity_id))
     }
 
     /// Pop the FRONT of the queue into a fresh active object (FIFO StartNextQueued,
@@ -472,8 +471,18 @@ pub enum CancelOutcome {
     /// A queued tail copy of `type_id` was removed (FIRST match, front-to-back). No
     /// refund — a queued item was never charged (its spent portion is 0).
     QueuedRemoved,
-    /// The active object was AbandonProduction'd; `refund` credits returned (C8).
-    AbandonedActive { refund: i32 },
+    /// The active object was AbandonProduction'd; `refund` credits returned and
+    /// the exact limbo EntityStore identity must be destroyed by the Simulation
+    /// owner. Native: `FactoryClass::AbandonProduction @ 0x004CA0E0` destroys
+    /// the object already stored at `Factory+0x58` without rewinding RNG.
+    AbandonedActive { refund: i32, entity_id: Option<u64> },
+}
+
+/// Entity lifecycle work produced by prerequisite revalidation while the
+/// registry is temporarily split from `Simulation`.
+pub(crate) struct RevalidationLifecycle {
+    pub(crate) discarded_entity_ids: Vec<u64>,
+    pub(crate) promoted: Vec<(InternedId, ProductionCategory, InternedId)>,
 }
 
 /// 3-way prerequisite eligibility (P6 consumer; defined now so the registry
@@ -622,6 +631,8 @@ impl FactoryRegistry {
     /// runs after this tick's `step_all`, so the first charge lands on the next
     /// gameplay frame.
     /// `cost` is resolved by the caller (which holds `&rules`) so this stays `&sim`-free.
+    /// Returns `true` only when this call starts an active object; queued-tail
+    /// appends return `false` because their Techno constructor has not run yet.
     pub(crate) fn enqueue(
         &mut self,
         owner: InternedId,
@@ -630,7 +641,7 @@ impl FactoryRegistry {
         enqueue_order: u64,
         total_base_frames: u32,
         cost: i32,
-    ) {
+    ) -> bool {
         if let Some(f) = self.factories.get_mut(&(owner, category)) {
             if f.object.is_some() {
                 // Active build held -> the new build joins the FIFO tail.
@@ -639,7 +650,7 @@ impl FactoryRegistry {
                     enqueue_order,
                     total_base_frames,
                 });
-                return;
+                return false;
             }
             // Idle-but-registered (object None, empty queue) -> re-arm the active build.
             let seeded = cost.max(0);
@@ -659,7 +670,7 @@ impl FactoryRegistry {
             f.manual = false;
             f.special = SpecialItem::NoneNeg1;
             f.insertion_seq = enqueue_order;
-            return;
+            return true;
         }
         // No factory yet -> create one with the active build armed.
         let seeded = cost.max(0);
@@ -687,6 +698,7 @@ impl FactoryRegistry {
                 insertion_seq: enqueue_order,
             },
         );
+        true
     }
 
     /// Toggle the user pause on the active build of `(owner, category)` (the sidebar pause
@@ -739,19 +751,16 @@ impl FactoryRegistry {
         f.start_next_queued(next_cost, step_delay)
     }
 
-    /// Link the one EntityStore identity constructed for a completed active
-    /// object. Repeated delivery attempts get the existing identity back rather
-    /// than allocating or incrementing ownership again.
-    pub(crate) fn link_completed_entity(
+    /// Link the EntityStore identity created at StartProduction to the active
+    /// factory object. The link is established at progress zero and is retained
+    /// through completion and every delivery retry.
+    pub(crate) fn link_active_entity(
         &mut self,
         owner: InternedId,
         category: ProductionCategory,
         entity_id: u64,
     ) -> Option<u64> {
         let factory = self.factories.get_mut(&(owner, category))?;
-        if factory.progress < PRODUCTION_STEPS {
-            return None;
-        }
         let object = factory.object.as_mut()?;
         if object.entity_id.is_none() {
             object.entity_id = Some(entity_id);
@@ -877,7 +886,11 @@ impl FactoryRegistry {
         &mut self,
         plan: &[RevalAction],
         houses: &mut BTreeMap<InternedId, crate::sim::house_state::HouseState>,
-    ) {
+    ) -> RevalidationLifecycle {
+        let mut lifecycle = RevalidationLifecycle {
+            discarded_entity_ids: Vec::new(),
+            promoted: Vec::new(),
+        };
         for action in plan {
             let Some(f) = self.factories.get_mut(&(action.owner, action.category)) else {
                 continue;
@@ -889,6 +902,7 @@ impl FactoryRegistry {
                 }
             }
             if action.abandon_active {
+                let abandoned_entity_id = f.object.as_ref().and_then(|object| object.entity_id);
                 if let Some(house) = houses.get_mut(&action.owner) {
                     let mut wallet = std::mem::take(&mut house.economy);
                     wallet.credits = house.credits;
@@ -899,12 +913,20 @@ impl FactoryRegistry {
                     let mut throwaway = Economy::default();
                     let _ = f.cancel_active(&mut throwaway);
                 }
+                if let Some(entity_id) = abandoned_entity_id {
+                    lifecycle.discarded_entity_ids.push(entity_id);
+                }
                 if let Some(cost) = action.promote_cost {
-                    f.start_next_queued(cost, 1);
+                    if let Some(type_id) = f.start_next_queued(cost, 1) {
+                        lifecycle
+                            .promoted
+                            .push((action.owner, action.category, type_id));
+                    }
                 }
             }
         }
         self.prune_all_idle();
+        lifecycle
     }
 
     /// The `(owner, category)` keys whose active build has completed and is held for
@@ -952,7 +974,7 @@ impl FactoryRegistry {
             CancelOutcome::QueuedRemoved // uncharged tail: no refund
         } else {
             match f.cancel_active(economy) {
-                Some(refund) => CancelOutcome::AbandonedActive { refund },
+                Some((refund, entity_id)) => CancelOutcome::AbandonedActive { refund, entity_id },
                 None => CancelOutcome::NoMatch,
             }
         }
@@ -1121,7 +1143,7 @@ impl FactoryRegistry {
         // `cancel_active` no-ops (None) on a complete-but-held object -> NoMatch.
         if f.object.as_ref().map(|o| o.type_id) == Some(type_id) {
             return match f.cancel_active(economy) {
-                Some(refund) => CancelOutcome::AbandonedActive { refund },
+                Some((refund, entity_id)) => CancelOutcome::AbandonedActive { refund, entity_id },
                 None => CancelOutcome::NoMatch,
             };
         }
@@ -1522,13 +1544,14 @@ mod tests {
             expected_refund, spent,
             "spent portion == original_balance - balance"
         );
-        let refund = f
+        let (refund, entity_id) = f
             .cancel_active(&mut econ)
             .expect("active build is abandonable");
         assert_eq!(
             refund, spent,
             "C8: refund the already-paid spent portion only"
         );
+        assert_eq!(entity_id, None);
         assert_eq!(
             econ.credits, 700,
             "C15: oracle returns to pre-build credits"
@@ -1551,7 +1574,7 @@ mod tests {
         };
         assert_eq!(
             f.cancel_active(&mut econ),
-            Some(0),
+            Some((0, None)),
             "acted, refund 0 (spent nothing yet)"
         );
         assert_eq!(econ.credits, 0, "no credits added for a zero refund");
@@ -1721,7 +1744,10 @@ mod tests {
         let outcome = reg.cancel_one(owner, ProductionCategory::Vehicle, a, &mut econ);
         assert_eq!(
             outcome,
-            CancelOutcome::AbandonedActive { refund: 400 },
+            CancelOutcome::AbandonedActive {
+                refund: 400,
+                entity_id: None,
+            },
             "spent portion = original_balance 700 - balance 300 = 400"
         );
         assert_eq!(
@@ -1936,7 +1962,10 @@ mod tests {
         let outcome = reg.cancel_last(owner, &mut econ);
         assert_eq!(
             outcome,
-            CancelOutcome::AbandonedActive { refund: 400 },
+            CancelOutcome::AbandonedActive {
+                refund: 400,
+                entity_id: None,
+            },
             "Vehicle (stamp 2) abandoned, refund = original 700 - balance 300"
         );
         assert_eq!(econ.credits, 400);

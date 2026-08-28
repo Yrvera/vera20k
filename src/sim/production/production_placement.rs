@@ -18,7 +18,9 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding;
 use crate::sim::world::Simulation;
 
-use super::production_tech::{foundation_dimensions, producer_candidates_for_owner_category};
+use super::production_tech::{
+    foundation_dimensions, producer_candidates_for_owner_category, production_category_for_object,
+};
 use super::production_types::*;
 use super::wall_placement;
 
@@ -275,6 +277,11 @@ pub fn place_ready_building_with_overlays(
         return false;
     }
     if obj.wall {
+        let category = production_category_for_object(obj);
+        let Some(factory_entity_id) = ready_factory_entity(sim, owner_id, category, type_interned)
+        else {
+            return false;
+        };
         let Some(registry) = overlay_registry else {
             return false;
         };
@@ -303,7 +310,11 @@ pub fn place_ready_building_with_overlays(
             }
         }
         sim.finalize_wall_placement_navigation(path_grid);
-        return consume_ready_building(sim, owner_id, type_interned);
+        // Wall placement consumes the factory-created BuildingClass into
+        // overlay state; the constructor identity is destroyed, never
+        // reconstructed at placement.
+        let _ = sim.discard_constructed_limbo(factory_entity_id);
+        return consume_ready_building(sim, rules, owner_id, type_interned, category);
     }
     let foundation_str: String = rules
         .object(type_id)
@@ -318,9 +329,20 @@ pub fn place_ready_building_with_overlays(
         z,
         foundation_str,
     );
-    let new_sid = match sim.spawn_object(type_id, owner, rx, ry, 0, rules, height_map) {
-        Some(sid) => sid,
-        None => return false,
+    let category = production_category_for_object(obj);
+    let Some(new_sid) = ready_factory_entity(sim, owner_id, category, type_interned) else {
+        return false;
+    };
+    let Some(new_sid) = sim.unlimbo_held_production_object(
+        new_sid,
+        rx,
+        ry,
+        0,
+        z,
+        crate::sim::world::PlacementEvidence::EvaluateMark,
+        rules,
+    ) else {
+        return false;
     };
     // Log screen position for debugging placement alignment.
     if let Some(ge) = sim.substrate.entities.get(new_sid) {
@@ -359,13 +381,32 @@ pub fn place_ready_building_with_overlays(
         crate::sim::superweapon::refresh_super_weapons_for_owner(sim, rules, owner_id);
     }
 
-    consume_ready_building(sim, owner_id, type_interned)
+    consume_ready_building(sim, rules, owner_id, type_interned, category)
+}
+
+fn ready_factory_entity(
+    sim: &Simulation,
+    owner_id: crate::sim::intern::InternedId,
+    category: ProductionCategory,
+    type_id: crate::sim::intern::InternedId,
+) -> Option<u64> {
+    let object = sim
+        .production
+        .factory_shadow
+        .view(owner_id, category)?
+        .object?;
+    (object.type_id == type_id)
+        .then_some(object.entity_id)
+        .flatten()
+        .filter(|&stable_id| sim.substrate.entities.contains(stable_id))
 }
 
 fn consume_ready_building(
     sim: &mut Simulation,
+    rules: &RuleSet,
     owner_id: crate::sim::intern::InternedId,
     type_id: crate::sim::intern::InternedId,
+    category: ProductionCategory,
 ) -> bool {
     let Some(ready_queue) = sim.production.ready_by_owner.get_mut(&owner_id) else {
         return false;
@@ -377,6 +418,7 @@ fn consume_ready_building(
     if ready_queue.is_empty() {
         sim.production.ready_by_owner.remove(&owner_id);
     }
+    super::production_queue::advance_after_delivery(sim, rules, owner_id, category);
     true
 }
 
@@ -655,7 +697,7 @@ pub(super) fn structure_occupies_cell(
     entities.values().any(|e| {
         // A dying structure is unmarked from cell lists synchronously in uninit;
         // it must not block placement during its deferred-delete window.
-        if e.dying {
+        if e.dying || e.lifecycle.in_limbo {
             return false;
         }
         if e.category != EntityCategory::Structure {
@@ -694,7 +736,7 @@ fn is_within_build_area(
     }
     for e in sim.substrate.entities.values() {
         // A dying structure provides no build-area adjacency during its window.
-        if e.dying {
+        if e.dying || e.lifecycle.in_limbo {
             continue;
         }
         if e.category != EntityCategory::Structure {

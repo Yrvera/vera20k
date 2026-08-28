@@ -62,6 +62,7 @@ pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 // imported private submodules directly).
 #[cfg(test)]
 pub(crate) use self::production_economy::pick_best_resource_node;
+pub(in crate::sim) use self::production_queue::construct_and_link_active_factory_object;
 pub(in crate::sim) use self::production_queue::credits_entry_for_owner;
 
 // Re-exports used by test sub-modules (via `super::` in test files).

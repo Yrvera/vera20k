@@ -908,7 +908,7 @@ fn gsi_04_12_completed_ground_unit_rally_threads_exact_blocker_counts() {
         crate::sim::house_state::HouseState::new(owner, 0, None, true, STARTING_CREDITS, 10),
     );
     sim.houses.get_mut(&owner).unwrap().rally_point = Some((5, 0));
-    sim.production.factory_shadow.enqueue(
+    let started = sim.production.factory_shadow.enqueue(
         owner,
         ProductionCategory::Vehicle,
         produced_type,
@@ -916,6 +916,15 @@ fn gsi_04_12_completed_ground_unit_rally_threads_exact_blocker_counts() {
         100,
         0,
     );
+    assert!(started);
+    crate::sim::production::construct_and_link_active_factory_object(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        produced_type,
+    )
+    .expect("production fixture constructs at StartProduction");
     assert!(
         sim.production
             .factory_shadow

@@ -1601,7 +1601,7 @@ pub fn find_helipad_for_aircraft(
         if entity.category != crate::map::entities::EntityCategory::Structure {
             continue;
         }
-        if entity.health.current == 0 || entity.dying {
+        if entity.health.current == 0 || entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         if entity.owner != owner_id {

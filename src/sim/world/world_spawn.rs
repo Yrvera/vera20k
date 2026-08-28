@@ -1047,10 +1047,11 @@ impl Simulation {
         Ok(Some(stable_id))
     }
 
-    /// Construct and account for the one Unit identity held by a completed
-    /// production queue entry before its first delivery attempt. Unlike the
-    /// paradrop limbo path, production also initializes the parent spawn
-    /// manager now; its child pool is committed only after successful Unlimbo.
+    /// Compatibility name for constructing and accounting the Techno identity
+    /// held from `FactoryClass::StartProduction @ 0x004C9C70` through delivery.
+    /// Unlike the paradrop limbo path, production also initializes the parent
+    /// spawn manager now; its child pool is committed only after successful
+    /// Unlimbo.
     pub(crate) fn create_production_object_limbo_at_height(
         &mut self,
         type_id: &str,
@@ -1387,6 +1388,7 @@ impl Simulation {
                     // A Dying structure corpse (sold/destroyed earlier in this
                     // command batch) no longer blocks an MCV deploy footprint.
                     if e.dying
+                        || e.lifecycle.in_limbo
                         || e.stable_id == stable_id
                         || e.category != EntityCategory::Structure
                     {
@@ -1569,6 +1571,7 @@ impl Simulation {
         let mut occupied: [bool; 5] = [false; 5];
         for entity in self.substrate.entities.values() {
             if !entity.dying
+                && !entity.lifecycle.in_limbo
                 && entity.position.rx == rx
                 && entity.position.ry == ry
                 && entity.category == EntityCategory::Infantry

@@ -1244,7 +1244,7 @@ pub fn recompute_owner_visibility_in_place(
     for entity in entities.values() {
         // Dying corpses (uninit'd this tick, awaiting the end-of-tick drain)
         // provide no vision — gamemd conceals on death.
-        if entity.dying {
+        if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         // `TechnoClass` reveal/update readers at 0x0070ADC0/0x0070AF50
@@ -1330,6 +1330,9 @@ fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16,
     let mut max_y = 0u16;
     let mut found = false;
     for entity in entities.values() {
+        if entity.lifecycle.in_limbo {
+            continue;
+        }
         found = true;
         max_x = max_x.max(entity.position.rx);
         max_y = max_y.max(entity.position.ry);
