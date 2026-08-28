@@ -282,7 +282,22 @@ pub(crate) fn continue_after_pickup(
             } else {
                 if alive {
                     clear_drive_destination(entity, ship);
+                    // `MovementTarget::final_goal` is Rust's segmented-path
+                    // projection of the live locomotor destination.  Native
+                    // clears that destination only while the collector is
+                    // alive; leaving this projection installed would let the
+                    // next Rust tick synthesize a fresh segment after the
+                    // final pickup rejected the curve.
+                    if let Some(target) = entity.movement_target.as_mut() {
+                        target.final_goal = None;
+                    }
                 }
+                // Drive ProcessMovement @ 0x004B46E6 and Ship
+                // ProcessMovement @ 0x006A3D15 both discard the selected
+                // curve and Foot path head for Zero/unlimbo or One/limbo,
+                // including dead tombstones.  These are separate from the
+                // alive-only destination clear above.
+                entity.drive_track = None;
                 if ship {
                     if let Some(runtime) = entity.ship_locomotion.as_mut() {
                         runtime.track_index = -1;
@@ -293,6 +308,9 @@ pub(crate) fn continue_after_pickup(
                 }
                 entity.current_speed_fraction = NativeF64Bits::POSITIVE_ZERO;
                 if let Some(target) = entity.movement_target.as_mut() {
+                    target.path.clear();
+                    target.path_layers.clear();
+                    target.next_index = 0;
                     target.current_speed = SIM_ZERO;
                 }
                 entity.pending_process_movement_crate_resume = None;
@@ -478,28 +496,83 @@ mod tests {
     }
 
     #[test]
-    fn final_zero_unlimbo_clears_only_live_destination_and_stops_speed() {
-        let mut live = entity();
-        live.drive_locomotion = Some(DriveLocomotionRuntime::default());
-        live.drive_locomotion.as_mut().unwrap().destination = Some(DriveCoord::cell(8, 8, 0));
-        live.current_speed_fraction = NativeF64Bits::ONE;
-        let probe = MovementCrateProbe::at_entity(
-            MovementCrateCallsite::DriveProcessMovementFinal,
-            &live,
-        );
-        assert!(!continue_after_pickup(&mut live, probe, NativePickupReturn::Zero));
-        assert_eq!(live.drive_locomotion.as_ref().unwrap().destination, None);
-        assert_eq!(live.current_speed_fraction, NativeF64Bits::POSITIVE_ZERO);
+    fn final_rejection_matrix_clears_track_and_path_but_only_live_destination() {
+        let callback_destination = DriveCoord::cell(8, 8, 0);
+        for (ship, callsite) in [
+            (false, MovementCrateCallsite::DriveProcessMovementFinal),
+            (true, MovementCrateCallsite::ShipProcessMovementFinal),
+        ] {
+            for (pickup, limbo) in [
+                (NativePickupReturn::Zero, false),
+                (NativePickupReturn::One, true),
+            ] {
+                for alive in [false, true] {
+                    let mut entity = entity();
+                    entity.lifecycle.object_alive = alive;
+                    entity.lifecycle.in_limbo = limbo;
+                    entity.current_speed_fraction = NativeF64Bits::ONE;
+                    entity.drive_track = Some(
+                        crate::sim::movement::drive_track::begin_drive_track(1, 0, 1, 0, 0x40)
+                            .expect("fixture curve"),
+                    );
+                    let mut target = crate::sim::components::MovementTarget::default();
+                    target.path = vec![(1, 1), (2, 1), (3, 1)];
+                    target.path_layers = vec![MovementLayer::Ground; 3];
+                    target.next_index = 2;
+                    target.final_goal = Some((9, 9));
+                    target.current_speed = SimFixed::from_num(17);
+                    entity.movement_target = Some(target);
+                    if ship {
+                        entity.ship_locomotion = Some(ShipLocomotionRuntime {
+                            destination: Some(callback_destination),
+                            track_index: 4,
+                            ..Default::default()
+                        });
+                    } else {
+                        entity.drive_locomotion = Some(DriveLocomotionRuntime {
+                            destination: Some(callback_destination),
+                            track_index: 4,
+                            track_valid: true,
+                            ..Default::default()
+                        });
+                    }
 
-        let mut dead = entity();
-        dead.lifecycle.object_alive = false;
-        dead.drive_locomotion = Some(DriveLocomotionRuntime::default());
-        dead.drive_locomotion.as_mut().unwrap().destination = Some(DriveCoord::cell(8, 8, 0));
-        assert!(!continue_after_pickup(&mut dead, probe, NativePickupReturn::Zero));
-        assert_eq!(
-            dead.drive_locomotion.as_ref().unwrap().destination,
-            Some(DriveCoord::cell(8, 8, 0))
-        );
+                    let probe = MovementCrateProbe::at_entity(callsite, &entity);
+                    assert!(!continue_after_pickup(&mut entity, probe, pickup));
+
+                    let destination = if ship {
+                        let runtime = entity.ship_locomotion.as_ref().unwrap();
+                        assert_eq!(runtime.track_index, -1);
+                        runtime.destination
+                    } else {
+                        let runtime = entity.drive_locomotion.as_ref().unwrap();
+                        assert_eq!(runtime.track_index, -1);
+                        assert!(!runtime.track_valid);
+                        runtime.destination
+                    };
+                    assert_eq!(
+                        destination,
+                        if alive { None } else { Some(callback_destination) },
+                        "only a live {callsite:?} collector clears its destination"
+                    );
+                    assert!(entity.drive_track.is_none());
+                    assert_eq!(
+                        entity.current_speed_fraction,
+                        NativeF64Bits::POSITIVE_ZERO
+                    );
+                    let target = entity.movement_target.as_ref().unwrap();
+                    assert!(target.path.is_empty());
+                    assert!(target.path_layers.is_empty());
+                    assert_eq!(target.next_index, 0);
+                    assert_eq!(target.current_speed, SIM_ZERO);
+                    assert_eq!(
+                        target.final_goal,
+                        if alive { None } else { Some((9, 9)) },
+                        "the segmented destination follows the native alive gate"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
