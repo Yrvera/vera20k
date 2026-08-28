@@ -650,6 +650,37 @@ fn hunt(sim: &mut Simulation, victim_id: u64, current_frame: u32) {
     assign_mission(sim, victim_id, MissionType::Hunt, current_frame);
 }
 
+/// Capture-fate actions 2/3 both call `TechnoClass::Set_Destination` with the
+/// chosen Building object and mode 1. Preserve that object identity, but first
+/// run Set_Destination's active-retail Building-target locomotor preprocessing:
+/// Teleport-primary `Teleporter=yes` victims install default Drive piggyback at
+/// `0x00741970` before the later foundation-center path is constructed.
+fn assign_capture_fate_building_destination(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    victim_id: u64,
+    building_id: u64,
+    current_frame: u32,
+) {
+    let is_teleporter = sim
+        .substrate
+        .entities
+        .get(victim_id)
+        .and_then(|victim| rules.object(sim.interner.resolve(victim.type_ref)))
+        .is_some_and(|object| object.teleporter);
+    if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+        let _ = crate::sim::movement::preprocess_building_destination_locomotor(
+            victim,
+            is_teleporter,
+            current_frame,
+        );
+        crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+            victim,
+            Some(NavTargetRef::building(building_id)),
+        );
+    }
+}
+
 /// Unit/Infantry vslot `+0x340`, the action-3 Bio Reactor selector.
 ///
 /// `CaptureManagerClass::DecideUnitFate @ 0x004723B0` consumes the return and
@@ -689,12 +720,13 @@ pub(crate) fn select_capture_fate_absorber(
     }
     if should_retarget {
         assign_mission(sim, victim_id, MissionType::Enter, current_frame);
-        if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
-            crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
-                victim,
-                Some(NavTargetRef::building(absorber_id)),
-            );
-        }
+        assign_capture_fate_building_destination(
+            sim,
+            rules,
+            victim_id,
+            absorber_id,
+            current_frame,
+        );
         establish_capture_fate_contact(sim, victim_id, absorber_id);
         if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
             victim.navigation.pending_arrival_clear = true;
@@ -781,11 +813,14 @@ fn decide_unit_fate(
                 |_, object, _, _| object.grinding,
             );
             if let Some(grinder_id) = grinder {
+                assign_capture_fate_building_destination(
+                    sim,
+                    rules,
+                    victim_id,
+                    grinder_id,
+                    current_frame,
+                );
                 if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
-                    crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
-                        victim,
-                        Some(NavTargetRef::building(grinder_id)),
-                    );
                     victim.navigation.pending_arrival_clear = true;
                 }
                 assign_mission(sim, victim_id, MissionType::Eaten, current_frame);
@@ -1964,6 +1999,269 @@ mod tests {
                 "the per-cell terminal transaction consumes on the selected footprint"
             );
         }
+    }
+
+    fn teleporter_capture_fate_sim(
+        decision: i32,
+    ) -> (Simulation, RuleSet, InternedId, u64, u64, u64) {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=CTRL\n\
+             [InfantryTypes]\n0=CLEG\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n0=GRINDER\n1=BIO\n\
+             [CTRL]\nStrength=100\n\
+             [CLEG]\nStrength=100\nCost=100\nSoylent=75\nSize=1\nSpeed=8\nROT=5\nMovementZone=Infantry\nLocomotor={4A582747-9839-11D1-B709-00A024DDAFD1}\nTeleporter=yes\n\
+             [GRINDER]\nStrength=500\nGrinding=yes\nFoundation=3x3\n\
+             [BIO]\nStrength=500\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=15\nPower=150\nExtraPower=100\nFoundation=3x3\n\
+             [Eaten]\nRate=.016\n\
+             [Enter]\nRate=.016\n",
+        ))
+        .expect("Teleporter capture-fate rules");
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Owner");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, false, 10_000, 10));
+        sim.session.house_order.push(owner);
+        let controller_id = sim
+            .spawn_object("CTRL", "Owner", 1, 4, 0, &rules, &Default::default())
+            .expect("controller");
+        let victim_id = sim
+            .spawn_object("CLEG", "Owner", 3, 4, 0, &rules, &Default::default())
+            .expect("Teleport-primary victim");
+        let facility_id = sim
+            .spawn_object(
+                if decision == 2 { "GRINDER" } else { "BIO" },
+                "Owner",
+                13,
+                4,
+                0,
+                &rules,
+                &Default::default(),
+            )
+            .expect("capture-fate facility");
+        let _team = install_controller_decision(&mut sim, controller_id, owner, decision);
+        (sim, rules, owner, controller_id, victim_id, facility_id)
+    }
+
+    fn assert_capture_fate_teleporter_installs_drive_before_movement(
+        sim: &Simulation,
+        victim_id: u64,
+        facility_id: u64,
+        expected_mission: MissionType,
+    ) {
+        let victim = sim.substrate.entities.get(victim_id).expect("live victim");
+        assert_eq!(
+            victim.navigation.nav_com,
+            Some(NavTargetRef::building(facility_id)),
+            "Set_Destination preserves the selected Building object",
+        );
+        assert_eq!(victim.mission.current().known(), Some(expected_mission));
+        assert!(
+            victim.teleport_state.is_none(),
+            "Building target never starts Teleport relocation",
+        );
+        let locomotor = victim.locomotor.as_ref().expect("installed locomotor");
+        assert_eq!(
+            locomotor.active_kind(),
+            crate::rules::locomotor_type::LocomotorKind::Drive,
+            "TechnoClass::Set_Destination swaps default Drive before movement",
+        );
+        assert_eq!(
+            locomotor.effective_kind(),
+            crate::rules::locomotor_type::LocomotorKind::Teleport,
+        );
+        assert!(locomotor.piggyback.is_some());
+        assert!(victim.navigation.pending_arrival_clear);
+        assert!(victim.movement_target.is_none(), "no movement frame has run yet");
+    }
+
+    #[test]
+    fn capture_fate_action2_teleporter_installs_drive_then_reaches_grinder_terminal() {
+        let (mut sim, rules, owner, controller_id, victim_id, grinder_id) =
+            teleporter_capture_fate_sim(2);
+        decide_unit_fate(&mut sim, &rules, controller_id, victim_id, 17);
+        assert_capture_fate_teleporter_installs_drive_before_movement(
+            &sim,
+            victim_id,
+            grinder_id,
+            MissionType::Eaten,
+        );
+        let expected_goal = crate::sim::movement::resolve_entity_nav_target_drive_coord(
+            NavTargetRef::building(grinder_id),
+            &sim.substrate.entities,
+        )
+        .map(|coord| {
+            (
+                u16::try_from(coord.x.div_euclid(256)).unwrap(),
+                u16::try_from(coord.y.div_euclid(256)).unwrap(),
+            )
+        })
+        .expect("Building GetCoords goal");
+        let mut grid = crate::sim::pathfinding::PathGrid::new(24, 12);
+        let grinder = sim.substrate.entities.get(grinder_id).unwrap();
+        for (rx, ry) in crate::sim::production::building_base_foundation_cells(
+            grinder.position.rx,
+            grinder.position.ry,
+            &grinder.foundation,
+        ) {
+            grid.set_blocked(rx, ry, true);
+        }
+        sim.advance_tick(
+            &[],
+            Some(&rules),
+            &Default::default(),
+            Some(&grid),
+            None,
+            16,
+        );
+        let victim = sim.substrate.entities.get(victim_id).expect("still approaching");
+        assert_eq!(
+            victim
+                .movement_target
+                .as_ref()
+                .and_then(|target| target.final_goal),
+            Some(expected_goal),
+        );
+        assert_eq!(
+            victim.locomotor.as_ref().unwrap().active_kind(),
+            crate::rules::locomotor_type::LocomotorKind::Drive,
+        );
+        assert!(victim.teleport_state.is_none());
+
+        for _ in 0..720 {
+            if sim.substrate.entities.get(victim_id).is_none() {
+                break;
+            }
+            sim.advance_tick(
+                &[],
+                Some(&rules),
+                &Default::default(),
+                Some(&grid),
+                None,
+                16,
+            );
+        }
+        if let Some(victim) = sim.substrate.entities.get(victim_id) {
+            panic!(
+                "physical Drive approach reaches the per-cell Grinder transaction: pos={:?}+({:?},{:?}) alive={} limbo={} nav={:?} target={:?} track={} active={:?}",
+                (victim.position.rx, victim.position.ry),
+                victim.position.sub_x,
+                victim.position.sub_y,
+                victim.lifecycle.object_alive,
+                victim.lifecycle.in_limbo,
+                victim.navigation.nav_com,
+                victim.movement_target.as_ref().map(|target| (
+                    target.next_index,
+                    target.path.len(),
+                    target.current_speed,
+                    target.movement_delay,
+                    target.blocked_delay,
+                    target.path_blocked,
+                )),
+                victim.drive_track.is_some(),
+                victim.locomotor.as_ref().map(|loco| loco.active_kind()),
+            );
+        }
+        assert_eq!(sim.houses[&owner].credits, 10_075);
+    }
+
+    #[test]
+    fn capture_fate_action3_teleporter_installs_drive_then_reaches_absorber_terminal() {
+        let (mut sim, rules, _owner, controller_id, victim_id, bio_id) =
+            teleporter_capture_fate_sim(3);
+        decide_unit_fate(&mut sim, &rules, controller_id, victim_id, 23);
+        assert_capture_fate_teleporter_installs_drive_before_movement(
+            &sim,
+            victim_id,
+            bio_id,
+            MissionType::Enter,
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(victim_id)
+                .unwrap()
+                .radio_contacts
+                .slot(0),
+            Some(bio_id),
+            "action 3 keeps its post-Set_Destination HELLO/contact ordering",
+        );
+        let expected_goal = crate::sim::movement::resolve_entity_nav_target_drive_coord(
+            NavTargetRef::building(bio_id),
+            &sim.substrate.entities,
+        )
+        .map(|coord| {
+            (
+                u16::try_from(coord.x.div_euclid(256)).unwrap(),
+                u16::try_from(coord.y.div_euclid(256)).unwrap(),
+            )
+        })
+        .expect("Building GetCoords goal");
+        let mut grid = crate::sim::pathfinding::PathGrid::new(24, 12);
+        let bio = sim.substrate.entities.get(bio_id).unwrap();
+        for (rx, ry) in crate::sim::production::building_base_foundation_cells(
+            bio.position.rx,
+            bio.position.ry,
+            &bio.foundation,
+        ) {
+            grid.set_blocked(rx, ry, true);
+        }
+
+        sim.advance_tick(
+            &[],
+            Some(&rules),
+            &Default::default(),
+            Some(&grid),
+            None,
+            16,
+        );
+        let victim = sim.substrate.entities.get(victim_id).expect("still approaching");
+        assert_eq!(
+            victim
+                .movement_target
+                .as_ref()
+                .and_then(|target| target.final_goal),
+            Some(expected_goal),
+        );
+        assert_eq!(
+            victim.locomotor.as_ref().unwrap().active_kind(),
+            crate::rules::locomotor_type::LocomotorKind::Drive,
+        );
+        assert!(victim.teleport_state.is_none());
+
+        for _ in 0..720 {
+            if sim
+                .substrate
+                .entities
+                .get(victim_id)
+                .is_some_and(|victim| victim.lifecycle.in_limbo)
+            {
+                break;
+            }
+            sim.advance_tick(
+                &[],
+                Some(&rules),
+                &Default::default(),
+                Some(&grid),
+                None,
+                16,
+            );
+        }
+        let victim = sim.substrate.entities.get(victim_id).expect("absorbed victim persists");
+        assert!(victim.lifecycle.in_limbo);
+        assert_eq!(victim.passenger_role.inside_transport_id(), Some(bio_id));
+        assert!(victim.infantry_absorber_occupant);
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(bio_id)
+                .unwrap()
+                .passenger_role
+                .cargo()
+                .unwrap()
+                .passengers[0],
+            victim_id,
+        );
     }
 
     #[test]

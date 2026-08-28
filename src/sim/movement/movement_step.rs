@@ -1853,9 +1853,10 @@ pub(super) fn advance_lepton_position_with_crate_probes(
             let shared_kind = shared_track_kind(locomotor);
             let uses_drive_tracks = shared_kind.is_some();
             let is_ship = shared_kind == Some(LocomotorKind::Ship);
-            if uses_drive_tracks
-                && category != EntityCategory::Infantry
-                && let Some(kind) = shared_kind
+            // The active locomotor owns the Process/track family. Retail
+            // Teleporter Infantry temporarily install Drive for Building
+            // destinations, so Infantry RTTI cannot suppress this leaf.
+            if uses_drive_tracks && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
                     target,
@@ -1951,9 +1952,9 @@ pub(super) fn advance_lepton_position_with_crate_probes(
                 return AdvanceResult::ReadyForCrossings;
             }
             let uses_drive_tracks = shared_kind.is_some();
-            if uses_drive_tracks
-                && category != EntityCategory::Infantry
-                && let Some(kind) = shared_kind
+            // Same active-locomotor rule as the completed-track continuation
+            // above: Drive-primary/piggyback Infantry still select RawTrack.
+            if uses_drive_tracks && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
                     target,

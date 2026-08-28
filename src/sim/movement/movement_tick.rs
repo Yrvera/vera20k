@@ -2155,7 +2155,18 @@ fn tick_movement_with_grids_scoped(
                 )
             });
             let mut hover_stall = false;
-            if snap.category != EntityCategory::Infantry {
+            let active_shared_track_locomotor = snap.locomotor.as_ref().is_some_and(|loco| {
+                matches!(
+                    loco.kind,
+                    crate::rules::locomotor_type::LocomotorKind::Drive
+                        | crate::rules::locomotor_type::LocomotorKind::Ship
+                )
+            });
+            // Native turns through the active locomotor's Process family. A
+            // Teleporter Infantry with default Drive piggyback is therefore a
+            // Drive turn owner even though ordinary Walk Infantry keep their
+            // instant-facing path.
+            if snap.category != EntityCategory::Infantry || active_shared_track_locomotor {
                 if uses_hover_locomotor {
                     hover_stall = movement_step::hover_steer(
                         &mut entity.facing,

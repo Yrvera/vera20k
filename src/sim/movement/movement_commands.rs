@@ -74,6 +74,35 @@ fn can_accept_destination(entity: &GameEntity) -> bool {
     true
 }
 
+/// Apply the locomotor preprocessing owned by `TechnoClass::Set_Destination`
+/// when its target is a Building.
+///
+/// At active-retail `0x00741970`, a `Teleporter=yes` Foot whose installed
+/// locomotor is Teleport swaps a default Drive locomotor on top before the
+/// Building destination is forwarded. The only Teleport-preserving exception
+/// is the old DockUnload-Building -> empty-Cell transition, which cannot apply
+/// to a Building target. Keeping this operation separate from path attachment
+/// lets native object-target callers preserve their Building pointer while
+/// sharing the exact same locomotor swap as ordinary Set_Destination.
+pub(crate) fn preprocess_building_destination_locomotor(
+    entity: &mut GameEntity,
+    is_teleporter: bool,
+    binary_frame: u32,
+) -> bool {
+    if !is_teleporter
+        || !entity.locomotor.as_ref().is_some_and(|loco| {
+            loco.effective_kind() == LocomotorKind::Teleport
+                || loco.active_kind() == LocomotorKind::Teleport
+        })
+    {
+        return false;
+    }
+    entity
+        .locomotor
+        .as_mut()
+        .is_some_and(|loco| loco.begin_drive_piggyback_for_teleporter(binary_frame))
+}
+
 /// Clear owner navigation and queued endpoint state through the native-shaped
 /// null-destination path.
 pub fn clear_navigation_for_entity(entity: &mut GameEntity) {
@@ -182,10 +211,12 @@ pub fn set_destination_for_teleporter_entity(
         let Some(grid) = grid else {
             return false;
         };
-        if let Some(entity) = entities.get_mut(entity_id)
-            && let Some(ref mut loco) = entity.locomotor
-        {
-            loco.begin_drive_piggyback_for_teleporter(binary_frame);
+        if let Some(entity) = entities.get_mut(entity_id) {
+            let _ = preprocess_building_destination_locomotor(
+                entity,
+                is_teleporter,
+                binary_frame,
+            );
         }
         return issue_move_command_with_layered(
             entities,
@@ -737,8 +768,11 @@ pub(crate) fn issue_move_command_with_layered(
         // A kept in-flight curve owns facing and position until it completes;
         // the fresh-curve selection below runs only from a standstill anchor.
         if !keep_in_flight_curve && let Some(f) = new_facing {
-            if entity_mut.category != EntityCategory::Infantry
-                && uses_shared_tracks
+            // Track ownership follows the installed locomotor class, not the
+            // Foot subclass. A Teleporter Infantry (retail CLEG/CCOMAND)
+            // targeting a Building is now actively driven by the temporary
+            // Drive locomotor and must select the same track as a Unit owner.
+            if uses_shared_tracks
                 && let Some((dx, dy)) = initial_step_delta
             {
                 let to_delta =
