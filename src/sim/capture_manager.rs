@@ -9,11 +9,20 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::map::entities::EntityCategory;
+use crate::rules::locomotor_type::MovementZone;
+use crate::rules::object_type::ObjectCategory;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::anim_class::AnimWorldCoord;
+use crate::sim::components::{AnimClassSpawnDescriptor, NavTargetRef};
 use crate::sim::intern::InternedId;
-use crate::sim::mission::MissionType;
-use crate::sim::world::Simulation;
+use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::team_script_vm::{TeamMemberTypeIdentity, TeamScriptMember};
+use crate::sim::world::{SimSoundEvent, Simulation};
+use crate::util::native_x87::{
+    NativeF32Bits, X87Chop53, X87Ordering, distance_3d_leptons,
+};
 
 /// One persistent native MCNode. The victim pointer and the House owner saved
 /// at capture time are independent: House-wide destruction resolves effective
@@ -22,6 +31,10 @@ use crate::sim::world::Simulation;
 pub struct CaptureNodeState {
     pub victim_id: u64,
     pub original_owner: InternedId,
+    /// Raw signed `g_CurrentFrameCounter` sampled after successful ChangeOwner.
+    pub capture_frame: i32,
+    /// Signed Rules `MindControlAttackLineFrames` copied per node.
+    pub link_visible_frames: i32,
 }
 
 /// Persistent controller-side subset of native `CaptureManagerClass`.
@@ -54,6 +67,8 @@ impl CaptureManagerState {
         &mut self,
         victim_id: u64,
         original_owner: InternedId,
+        capture_frame: i32,
+        link_visible_frames: i32,
     ) {
         if !self
             .controlled_nodes
@@ -63,6 +78,8 @@ impl CaptureManagerState {
             self.controlled_nodes.push(CaptureNodeState {
                 victim_id,
                 original_owner,
+                capture_frame,
+                link_visible_frames,
             });
         }
     }
@@ -195,7 +212,12 @@ pub(crate) fn capture_unit(
         let Some(manager) = controller.capture_manager.as_mut() else {
             return false;
         };
-        manager.link_controlled_entity(target_id, original_owner);
+        manager.link_controlled_entity(
+            target_id,
+            original_owner,
+            current_frame as i32,
+            rules.general.mind_control_attack_line_frames,
+        );
     }
     let Some(target) = sim.substrate.entities.get_mut(target_id) else {
         if let Some(manager) = sim
@@ -209,13 +231,532 @@ pub(crate) fn capture_unit(
         return false;
     };
     target.mind_control_controller_id = Some(controller_id);
+
+    if !capture_clear_to_guard_is_skipped(target, rules, sim.interner.resolve(target.type_ref)) {
+        clear_to_guard(sim, target_id, current_frame);
+    }
+    decide_unit_fate(sim, rules, controller_id, target_id, current_frame);
+    create_control_ring(sim, rules, target_id);
     true
 }
 
-/// Release one reversible MCNode in native order: restore owner while the
-/// reciprocal node still exists, then clear the victim backlink and compact
-/// the controller's node vector. Presentation and AI-fate continuations are
-/// owned by their dedicated producers and must bracket this state transaction.
+fn capture_clear_to_guard_is_skipped(target: &crate::sim::game_entity::GameEntity, rules: &RuleSet, type_id: &str) -> bool {
+    let mission = target.mission.current().raw();
+    mission == 0x12
+        || mission == 0x13
+        || (target.category == EntityCategory::Unit
+            && mission == 0x10
+            && rules.object(type_id).is_some_and(|object| object.is_simple_deployer))
+}
+
+/// Shared relevant-vtable `+0x3D0 -> 0x0070F850` continuation used by all
+/// four Techno families. It is not the movement Scatter helper.
+fn clear_to_guard(sim: &mut Simulation, victim_id: u64, current_frame: u32) {
+    let Some(victim) = sim.substrate.entities.get_mut(victim_id) else {
+        return;
+    };
+    crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(victim, None);
+    crate::sim::mission::concrete_effects::represented_assign_target(victim, None);
+    victim.rally_target = None;
+    if let Some(miner) = victim.miner.as_mut() {
+        miner.last_harvest_cell = None;
+    }
+    let _ = sim.mission_assign_exact(
+        victim_id,
+        MissionId::from_known(MissionType::Guard),
+        current_frame,
+    );
+}
+
+fn entity_type_identity(
+    entity: &crate::sim::game_entity::GameEntity,
+) -> TeamMemberTypeIdentity {
+    TeamMemberTypeIdentity {
+        category: match entity.category {
+            EntityCategory::Unit => ObjectCategory::Vehicle,
+            EntityCategory::Infantry => ObjectCategory::Infantry,
+            EntityCategory::Aircraft => ObjectCategory::Aircraft,
+            EntityCategory::Structure => ObjectCategory::Building,
+        },
+        id: entity.type_ref,
+    }
+}
+
+fn entity_distance(sim: &Simulation, lhs: u64, rhs: u64) -> Option<i32> {
+    let lhs = sim.anim_owner_coords(lhs)?;
+    let rhs = sim.anim_owner_coords(rhs)?;
+    Some(distance_3d_leptons(
+        [lhs.x, lhs.y, lhs.z],
+        [rhs.x, rhs.y, rhs.z],
+    ))
+}
+
+fn nearest_owned_building(
+    sim: &Simulation,
+    rules: &RuleSet,
+    victim_id: u64,
+    accepts: impl Fn(&Simulation, &ObjectType, u64, u64) -> bool,
+) -> Option<u64> {
+    let owner = sim.substrate.entities.get(victim_id)?.owner;
+    let mut best = None;
+    let mut best_distance = i32::MAX;
+    for &candidate_id in sim.tactical_registration_order().iter().rev() {
+        let Some(candidate) = sim.substrate.entities.get(candidate_id) else {
+            continue;
+        };
+        if candidate.category != EntityCategory::Structure || candidate.owner != owner {
+            continue;
+        }
+        let Some(object) = rules.object(sim.interner.resolve(candidate.type_ref)) else {
+            continue;
+        };
+        if !accepts(sim, object, victim_id, candidate_id) {
+            continue;
+        }
+        let Some(distance) = entity_distance(sim, victim_id, candidate_id) else {
+            continue;
+        };
+        if distance < best_distance {
+            best_distance = distance;
+            best = Some(candidate_id);
+        }
+    }
+    best
+}
+
+fn building_can_enter_absorber(
+    sim: &Simulation,
+    rules: &RuleSet,
+    object: &ObjectType,
+    victim_id: u64,
+    building_id: u64,
+) -> bool {
+    // Active-retail exclusion for Building+0x534 (CurrentAnimState/BState):
+    // only YAPOWR has InfantryAbsorb=yes; UnitAbsorb has zero stock authors and
+    // 187 installed maps author no overrides. The ctor value is -1, while the
+    // only zero writers are Construction/Selling (already rejected below), and
+    // construction completion/ordinary Guard restore 1. Therefore every
+    // active-retail absorber reaching this helper is necessarily nonzero. Do
+    // not alias this native field to `building_damage_state_active`; a custom
+    // UnitAbsorb producer would require its own separately evidenced BState.
+    let Some(victim) = sim.substrate.entities.get(victim_id) else {
+        return false;
+    };
+    let Some(building) = sim.substrate.entities.get(building_id) else {
+        return false;
+    };
+    if !crate::map::houses::is_allied_with(
+        &sim.house_alliances,
+        sim.interner.resolve(building.owner),
+        sim.interner.resolve(victim.owner),
+    ) || matches!(building.mission.current().raw(), 0x12 | 0x13)
+    {
+        return false;
+    }
+    let Some(victim_object) = rules.object(sim.interner.resolve(victim.type_ref)) else {
+        return false;
+    };
+    if (victim_object.movement_zone != MovementZone::Amphibious
+        && object.naval != victim_object.naval)
+        || victim_object.balloon_hover
+        || !crate::sim::power_system::is_building_powered(
+            &sim.power_states,
+            rules,
+            building,
+            &sim.interner,
+        )
+    {
+        return false;
+    }
+    let category_admitted = match victim.category {
+        EntityCategory::Infantry => object.infantry_absorb,
+        EntityCategory::Unit => object.unit_absorb,
+        _ => false,
+    };
+    if !category_admitted
+        || victim
+            .capture_manager
+            .as_ref()
+            .is_some_and(CaptureManagerState::blocks_retaliation)
+    {
+        return false;
+    }
+    let victim_size = victim_object.size;
+    building
+        .passenger_role
+        .cargo()
+        .is_some_and(|cargo| cargo.can_accept(victim_size))
+}
+
+fn detach_outgoing_temporal(sim: &mut Simulation, owner_id: u64) {
+    let Some(manager) = sim
+        .substrate
+        .entities
+        .get(owner_id)
+        .and_then(|owner| owner.temporal_manager)
+    else {
+        return;
+    };
+    let Some(target_id) = manager.target_id else {
+        return;
+    };
+    if let Some(previous_id) = manager.previous_owner_id {
+        if let Some(previous) = sim
+            .substrate
+            .entities
+            .get_mut(previous_id)
+            .and_then(|owner| owner.temporal_manager.as_mut())
+        {
+            previous.next_owner_id = manager.next_owner_id;
+        }
+    } else if let Some(target) = sim.substrate.entities.get_mut(target_id) {
+        target.temporal_targeting_me_id = manager.next_owner_id;
+        if manager.next_owner_id.is_none() {
+            target.being_temporally_warped_out = false;
+        }
+    }
+    if let Some(next_id) = manager.next_owner_id
+        && let Some(next) = sim
+            .substrate
+            .entities
+            .get_mut(next_id)
+            .and_then(|owner| owner.temporal_manager.as_mut())
+    {
+        next.previous_owner_id = manager.previous_owner_id;
+        if manager.previous_owner_id.is_none() {
+            next.warp_points = next.warp_points.wrapping_add(manager.warp_points);
+        }
+    }
+    if let Some(detached) = sim
+        .substrate
+        .entities
+        .get_mut(owner_id)
+        .and_then(|owner| owner.temporal_manager.as_mut())
+    {
+        detached.target_id = None;
+        detached.previous_owner_id = None;
+        detached.next_owner_id = None;
+        detached.warp_points = 0;
+    }
+}
+
+fn health_below_wounded_mark(
+    health: crate::sim::components::Health,
+    strength: i32,
+    mark: NativeF32Bits,
+) -> bool {
+    if strength == 0 {
+        return false;
+    }
+    let Ok(current_f32) = X87Chop53::store_f32(X87Chop53::load_i32(i32::from(health.current)))
+    else {
+        return false;
+    };
+    let Ok(ratio) = X87Chop53::div(
+        X87Chop53::load_f32(current_f32).expect("a finite i32 stores as finite f32"),
+        X87Chop53::load_i32(strength),
+    ) else {
+        return false;
+    };
+    let Ok(mark) = X87Chop53::load_f32(mark) else {
+        return false;
+    };
+    X87Chop53::compare(ratio, mark) == X87Ordering::Less
+}
+
+fn fate_weights<'a>(
+    sim: &Simulation,
+    rules: &'a RuleSet,
+    controller_id: u64,
+    victim_id: u64,
+) -> &'a [i32] {
+    let Some(victim) = sim.substrate.entities.get(victim_id) else {
+        return &rules.general.ai_capture_normal;
+    };
+    let Some(controller_owner) = sim
+        .substrate
+        .entities
+        .get(controller_id)
+        .map(|controller| controller.owner)
+    else {
+        return &rules.general.ai_capture_normal;
+    };
+    let victim_strength = rules
+        .object(sim.interner.resolve(victim.type_ref))
+        .map_or(0, |object| object.strength);
+    if sim
+        .houses
+        .get(&controller_owner)
+        .is_some_and(|house| house.credits < rules.general.ai_capture_low_money_mark)
+    {
+        &rules.general.ai_capture_low_money
+    } else if sim
+        .power_states
+        .get(&controller_owner)
+        .is_some_and(|power| power.total_drain != 0 && power.total_output < power.total_drain)
+    {
+        &rules.general.ai_capture_low_power
+    } else if health_below_wounded_mark(
+        victim.health,
+        victim_strength,
+        rules.general.ai_capture_wounded_mark,
+    ) {
+        &rules.general.ai_capture_wounded
+    } else {
+        &rules.general.ai_capture_normal
+    }
+}
+
+fn select_fate_action(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    controller_id: u64,
+    victim_id: u64,
+) -> Option<i32> {
+    let weights = fate_weights(sim, rules, controller_id, victim_id).to_vec();
+    let roll = sim.scenario_rng.next_range_i32_inclusive(1, 100);
+    let mut cumulative = 0i32;
+    let mut selected = None;
+    for (index, weight) in weights.into_iter().take(6).enumerate() {
+        cumulative = cumulative.wrapping_add(weight);
+        if roll <= cumulative {
+            selected = Some(index as i32 + 1);
+            break;
+        }
+    }
+    let override_action = sim
+        .team_script_vm
+        .mind_control_decision_for_member(controller_id);
+    if override_action != 0 {
+        Some(override_action)
+    } else {
+        selected
+    }
+}
+
+fn assign_mission(sim: &mut Simulation, victim_id: u64, mission: MissionType, current_frame: u32) {
+    let _ = sim.mission_assign_exact(victim_id, MissionId::from_known(mission), current_frame);
+}
+
+fn hunt(sim: &mut Simulation, victim_id: u64, current_frame: u32) {
+    assign_mission(sim, victim_id, MissionType::Hunt, current_frame);
+}
+
+fn decide_unit_fate(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    controller_id: u64,
+    victim_id: u64,
+    current_frame: u32,
+) {
+    let Some((identity, victim_owner, open_topped, passengers, victim_category)) = sim
+        .substrate
+        .entities
+        .get(victim_id)
+        .map(|victim| {
+            let object = rules.object(sim.interner.resolve(victim.type_ref));
+            (
+                entity_type_identity(victim),
+                victim.owner,
+                object.is_some_and(|object| object.open_topped),
+                victim
+                    .passenger_role
+                    .cargo()
+                    .map(|cargo| cargo.passengers.clone())
+                    .unwrap_or_default(),
+                victim.category,
+            )
+        })
+    else {
+        return;
+    };
+
+    let _ = sim.team_script_vm.remove_member(victim_id, identity);
+    detach_outgoing_temporal(sim, victim_id);
+    if open_topped {
+        for passenger_id in passengers {
+            if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
+                crate::sim::mission::concrete_effects::represented_assign_target(passenger, None);
+            }
+        }
+    }
+    if sim.houses.get(&victim_owner).is_some_and(|house| house.is_human) {
+        return;
+    }
+
+    // A short authored vector can leave the 1..100 roll above the final
+    // cumulative weight. Native falls through switch value 0, whose default
+    // is the same Hunt continuation as actions 4/6; only action 5 is a no-op.
+    let action = select_fate_action(sim, rules, controller_id, victim_id).unwrap_or(0);
+    match action {
+        1 => {
+            let controller_owner = sim.substrate.entities.get(controller_id).map(|entity| entity.owner);
+            let controller_is_foot = sim
+                .substrate
+                .entities
+                .get(controller_id)
+                .is_some_and(|controller| controller.category != EntityCategory::Structure);
+            if controller_is_foot
+                && controller_owner == Some(victim_owner)
+                && sim.team_script_vm.add_member_to_controller_team(
+                    controller_id,
+                    TeamScriptMember {
+                        entity_id: victim_id,
+                        member_type: identity,
+                    },
+                )
+            {
+                return;
+            }
+            hunt(sim, victim_id, current_frame);
+        }
+        2 if victim_category != EntityCategory::Structure => {
+            let grinder = nearest_owned_building(sim, rules, victim_id, |_, object, _, _| object.grinding);
+            if let Some(grinder_id) = grinder {
+                if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+                    crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                        victim,
+                        Some(NavTargetRef::building(grinder_id)),
+                    );
+                }
+                assign_mission(sim, victim_id, MissionType::Eaten, current_frame);
+            } else {
+                hunt(sim, victim_id, current_frame);
+            }
+        }
+        3 if victim_category != EntityCategory::Structure => {
+            let absorber = nearest_owned_building(sim, rules, victim_id, |sim, object, victim, building| {
+                building_can_enter_absorber(sim, rules, object, victim, building)
+            });
+            if let Some(absorber_id) = absorber {
+                let should_retarget = sim.substrate.entities.get(victim_id).is_some_and(|victim| {
+                    victim.radio_contacts.slot(0) != Some(absorber_id)
+                        && victim.navigation.nav_com != Some(NavTargetRef::building(absorber_id))
+                });
+                if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+                    victim.ai_absorb_enter_pending = true;
+                }
+                if should_retarget {
+                    assign_mission(sim, victim_id, MissionType::Enter, current_frame);
+                    if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+                        crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                            victim,
+                            Some(NavTargetRef::building(absorber_id)),
+                        );
+                    }
+                }
+            } else {
+                if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+                    victim.ai_absorb_enter_pending = false;
+                }
+                hunt(sim, victim_id, current_frame);
+            }
+        }
+        5 => {}
+        _ => hunt(sim, victim_id, current_frame),
+    }
+}
+
+fn create_control_ring(sim: &mut Simulation, rules: &RuleSet, victim_id: u64) {
+    let Some(type_name) = rules.general.controlled_animation_type.as_deref() else {
+        return;
+    };
+    let Some((type_ref, category, position)) = sim
+        .substrate
+        .entities
+        .get(victim_id)
+        .map(|victim| (victim.type_ref, victim.category, victim.position.clone()))
+    else {
+        return;
+    };
+    let Some(object) = rules.object(sim.interner.resolve(type_ref)) else {
+        return;
+    };
+    let Some(mut world) = sim.anim_owner_coords(victim_id) else {
+        return;
+    };
+    world.z = if category == EntityCategory::Structure {
+        let art_height = rules
+            .art_registry
+            .get(&object.image)
+            .or_else(|| rules.art_registry.get(&object.id))
+            .map_or(2, |art| art.height);
+        world.z.wrapping_add(art_height.wrapping_mul(104))
+    } else {
+        world.z.wrapping_add(object.mind_control_ring_offset)
+    };
+    let type_id = sim.interner.intern(type_name);
+    let mut descriptor = AnimClassSpawnDescriptor::new(
+        type_id,
+        position.rx,
+        position.ry,
+        position.sub_x,
+        position.sub_y,
+        position.z,
+    );
+    descriptor.draw_flags = 0x600;
+    let Ok(anim_id) = sim.spawn_anim_at_world(rules, descriptor, world) else {
+        return;
+    };
+    if !sim.set_anim_owner_object(anim_id, Some(victim_id)) {
+        sim.destroy_anim(anim_id);
+        return;
+    }
+    if category == EntityCategory::Structure {
+        sim.set_anim_frame_and_z_adjust(anim_id, 0, -1024);
+    }
+    if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+        victim.mind_control_anim_id = Some(anim_id);
+    }
+}
+
+fn victim_sound_coord(sim: &Simulation, victim_id: u64) -> Option<AnimWorldCoord> {
+    // The sound call samples the target's Object/Techno GetCoords result.
+    // `anim_owner_coords` is the shared projection, including a structure's
+    // foundation-center adjustment and exact world Z when present.
+    sim.anim_owner_coords(victim_id)
+}
+
+pub(crate) fn emit_capture_sound_after_success(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    controller_id: u64,
+    target_id: u64,
+    target_was_human: bool,
+) {
+    let controller_is_human = sim
+        .substrate
+        .entities
+        .get(controller_id)
+        .is_some_and(|controller| is_human_player_exact(sim, controller.owner));
+    if !target_was_human && !controller_is_human {
+        return;
+    }
+    let Some(sound_id) = rules.general.yuri_mind_control_sound.clone() else {
+        return;
+    };
+    let Some(world) = victim_sound_coord(sim, target_id) else {
+        return;
+    };
+    sim.sound_events.push(SimSoundEvent::MindControlSound { sound_id, world });
+}
+
+/// Exact `HouseClass::IsHumanPlayer @ 0x0050B6F0` projection used by the
+/// successful mind-control sound gate. Nonzero game modes compare the live
+/// player pointer; mode zero accepts either human-seat byte.
+pub(crate) fn is_human_player_exact(sim: &Simulation, owner: InternedId) -> bool {
+    sim.houses.get(&owner).is_some_and(|house| {
+        if sim.session.game_mode_nonzero {
+            house.player_control
+        } else {
+            house.is_human || house.player_control
+        }
+    })
+}
+
+/// Release one reversible MCNode in native order: remove its ring, emit the
+/// cleared sound, restore owner and run AI fate while the reciprocal node still
+/// exists, then clear the victim backlink and compact the controller vector.
 pub(crate) fn free_unit(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -243,7 +784,39 @@ pub(crate) fn free_unit(
         .unwrap_or_default();
 
     for (index, original_owner) in matches {
+        if let Some(anim_id) = sim
+            .substrate
+            .entities
+            .get(victim_id)
+            .and_then(|victim| victim.mind_control_anim_id)
+        {
+            sim.destroy_anim(anim_id);
+        }
+        let cleared_sound = sim
+            .substrate
+            .entities
+            .get(victim_id)
+            .and_then(|victim| {
+                rules
+                    .object(sim.interner.resolve(victim.type_ref))
+                    .and_then(|object| object.mind_cleared_sound.clone())
+            })
+            .or_else(|| rules.general.mind_cleared_sound.clone());
+        if let Some(sound_id) = cleared_sound
+            && let Some(world) = victim_sound_coord(sim, victim_id)
+        {
+            sim.sound_events
+                .push(SimSoundEvent::MindControlSound { sound_id, world });
+        }
         sim.change_owner_with_rules(victim_id, original_owner, rules);
+        let current_frame = sim.session.binary_frame;
+        decide_unit_fate(
+            sim,
+            rules,
+            controller_id,
+            victim_id,
+            current_frame,
+        );
         if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
             if victim.mind_control_controller_id == Some(controller_id) {
                 victim.mind_control_controller_id = None;
@@ -338,15 +911,25 @@ mod tests {
     use crate::sim::combat::{AttackTarget, TargetKind};
     use crate::sim::game_entity::{BunkerLink, GameEntity};
     use crate::sim::house_state::HouseState;
+    use crate::sim::mission::state::MissionTestFixture;
+    use crate::sim::mission::{MissionDispatchTimer, MissionId};
+    use crate::sim::power_system::PowerState;
+    use crate::sim::team_script_vm::{
+        TeamScriptAction, TeamScriptDefinition, TeamTaskForceDefinition, TeamTaskForceEntry,
+        TeamTypeDefinition,
+    };
+    use crate::rules::team_ai_ini::TeamAiDefinitionSource;
 
     fn capture_rules() -> RuleSet {
         RuleSet::from_ini(&IniFile::from_str(
-            "[VehicleTypes]\n0=CTRL\n1=TARGET\n2=IMMUNE\n3=OTHER\n\
+            "[General]\nFixtureOnly=1\n\
+             [AudioVisual]\nMindClearedSound=GlobalClear\n\
+             [VehicleTypes]\n0=CTRL\n1=TARGET\n2=IMMUNE\n3=OTHER\n\
              [InfantryTypes]\n0=INF\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              [CTRL]\nStrength=100\nPrimary=MIND\n\
-             [TARGET]\nStrength=100\n\
+             [TARGET]\nStrength=100\nIsSimpleDeployer=yes\nMindClearedSound=TypeClear\n\
              [IMMUNE]\nStrength=100\nImmuneToPsionics=yes\n\
              [OTHER]\nStrength=100\n\
              [INF]\nStrength=100\n\
@@ -415,6 +998,152 @@ mod tests {
         )
     }
 
+    fn set_raw_mission(entity: &mut GameEntity, raw: i32) {
+        entity.mission.apply_test_fixture(MissionTestFixture {
+            current: MissionId::from_raw(raw),
+            suspended: MissionId::NONE,
+            queued: MissionId::NONE,
+            movement_bypass_latch: 0,
+            handler_state: 0,
+            mission_start_frame: 0,
+            ai_counter: 0,
+            dispatch_timer: MissionDispatchTimer::at_frame(0),
+        });
+    }
+
+    fn install_controller_decision(
+        sim: &mut Simulation,
+        controller_id: u64,
+        owner: InternedId,
+        decision: i32,
+    ) -> u64 {
+        let script = sim.interner.intern(&format!("CaptureScript{decision}"));
+        let task_force = sim.interner.intern(&format!("CaptureTaskForce{decision}"));
+        let team_type = sim.interner.intern(&format!("CaptureTeam{decision}"));
+        let identity = TeamMemberTypeIdentity {
+            category: ObjectCategory::Vehicle,
+            id: sim.substrate.entities.get(controller_id).unwrap().type_ref,
+        };
+        sim.team_script_vm.register_script(TeamScriptDefinition {
+            id: script,
+            actions: vec![TeamScriptAction {
+                action_id: 2,
+                argument: 0,
+            }],
+            source: TeamAiDefinitionSource::FixedAimd,
+        });
+        sim.team_script_vm
+            .register_task_force(TeamTaskForceDefinition {
+                id: task_force,
+                group: -1,
+                entries: vec![TeamTaskForceEntry {
+                    member_type: identity,
+                    count: 1,
+                }],
+                source: TeamAiDefinitionSource::FixedAimd,
+            });
+        sim.team_script_vm.register_team_type(TeamTypeDefinition {
+            id: team_type,
+            script_id: script,
+            task_force_id: task_force,
+            priority: 0,
+            is_base_defense: false,
+            mind_control_decision: decision,
+            combined_movement_zone: MovementZone::Normal,
+            base_zone_relation_enforced: false,
+            transport_crossing_required: false,
+        });
+        sim.team_script_vm.create_team_from_type(
+            owner,
+            team_type,
+            &[TeamScriptMember {
+                entity_id: controller_id,
+                member_type: identity,
+            }],
+            None,
+            0,
+        )
+    }
+
+    fn fate_facility_sim(decision: i32) -> (Simulation, RuleSet, u64, u64, u64) {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=CTRL\n\
+             [InfantryTypes]\n0=TARGET\n\
+             [BuildingTypes]\n0=GRINDER\n1=BIO\n\
+             [AircraftTypes]\n\
+             [CTRL]\nStrength=100\n\
+             [TARGET]\nStrength=100\nSize=1\nMovementZone=Infantry\n\
+             [GRINDER]\nStrength=500\nGrinding=yes\n\
+             [BIO]\nStrength=500\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\n",
+        ))
+        .unwrap();
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Owner");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, false, 10_000, 10));
+        sim.session.house_order.push(owner);
+        let controller_id = sim
+            .spawn_object("CTRL", "Owner", 4, 4, 0, &rules, &Default::default())
+            .unwrap();
+        let victim_id = sim
+            .spawn_object("TARGET", "Owner", 5, 4, 0, &rules, &Default::default())
+            .unwrap();
+        let facility = sim
+            .spawn_object(
+                if decision == 2 { "GRINDER" } else { "BIO" },
+                "Owner",
+                6,
+                4,
+                0,
+                &rules,
+                &Default::default(),
+            )
+            .unwrap();
+        let _team = install_controller_decision(&mut sim, controller_id, owner, decision);
+        (sim, rules, controller_id, victim_id, facility)
+    }
+
+    fn absorber_gate_sim(
+        target_extra: &str,
+        absorber_extra: &str,
+    ) -> (Simulation, RuleSet, InternedId, u64, u64) {
+        let rules = RuleSet::from_ini(&IniFile::from_str(&format!(
+            "[VehicleTypes]\n\
+             [InfantryTypes]\n0=TARGET\n\
+             [BuildingTypes]\n0=BIO\n\
+             [AircraftTypes]\n\
+             [TARGET]\nStrength=100\n{target_extra}\
+             [BIO]\nStrength=500\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\nGrinding=yes\n{absorber_extra}"
+        )))
+        .unwrap();
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Owner");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, false, 10_000, 10));
+        sim.session.house_order.push(owner);
+        let victim_id = sim
+            .spawn_object("TARGET", "Owner", 5, 5, 0, &rules, &Default::default())
+            .unwrap();
+        let building_id = sim
+            .spawn_object("BIO", "Owner", 6, 5, 0, &rules, &Default::default())
+            .unwrap();
+        (sim, rules, owner, victim_id, building_id)
+    }
+
+    fn absorber_gate_result(
+        target_extra: &str,
+        absorber_extra: &str,
+        mutate_sim: impl FnOnce(&mut Simulation, InternedId, u64, u64),
+        mutate_type: impl FnOnce(&mut ObjectType),
+    ) -> bool {
+        let (mut sim, rules, owner, victim_id, building_id) =
+            absorber_gate_sim(target_extra, absorber_extra);
+        let mut object = rules.object("BIO").unwrap().clone();
+        mutate_sim(&mut sim, owner, victim_id, building_id);
+        mutate_type(&mut object);
+        building_can_enter_absorber(&sim, &rules, &object, victim_id, building_id)
+    }
+
     #[test]
     fn finite_and_infinite_capacity_match_native_helper() {
         let ini = IniFile::from_str(
@@ -431,10 +1160,10 @@ mod tests {
         assert_eq!(manager.max_control, 3);
         assert!(!manager.blocks_retaliation());
         let original_owner = InternedId::from_index(7);
-        manager.link_controlled_entity(10, original_owner);
-        manager.link_controlled_entity(11, original_owner);
+        manager.link_controlled_entity(10, original_owner, 0, 20);
+        manager.link_controlled_entity(11, original_owner, 0, 20);
         assert!(!manager.blocks_retaliation());
-        manager.link_controlled_entity(12, original_owner);
+        manager.link_controlled_entity(12, original_owner, 0, 20);
         assert!(manager.blocks_retaliation());
         manager.pointer_expired(11);
         assert!(!manager.blocks_retaliation());
@@ -442,6 +1171,24 @@ mod tests {
         manager.infinite_mind_control = true;
         manager.max_control = 0;
         assert!(!manager.blocks_retaliation());
+    }
+
+    #[test]
+    fn mind_control_presentation_none_sentinels_remain_invalid() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nControlledAnimationType=none\n\
+             [AudioVisual]\nYuriMindControlSound=<none>\nMindClearedSound=none\n\
+             [VehicleTypes]\n0=TARGET\n\
+             [InfantryTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TARGET]\nStrength=100\nMindClearedSound=<none>\n",
+        ))
+        .unwrap();
+        assert!(rules.general.controlled_animation_type.is_none());
+        assert!(rules.general.yuri_mind_control_sound.is_none());
+        assert!(rules.general.mind_cleared_sound.is_none());
+        assert!(rules.object("TARGET").unwrap().mind_cleared_sound.is_none());
     }
 
     #[test]
@@ -483,6 +1230,427 @@ mod tests {
     }
 
     #[test]
+    fn capture_clear_wrapper_and_native_skip_missions_precede_fate() {
+        let (mut sim, rules, owners, [controller_id, target_id, _]) = capture_sim();
+        sim.houses.get_mut(&owners[0]).unwrap().is_human = true;
+        let target = sim.substrate.entities.get_mut(target_id).unwrap();
+        set_raw_mission(target, MissionType::Attack as i32);
+        target.navigation.nav_com = Some(NavTargetRef::cell(11, 12));
+        target.attack_target = Some(AttackTarget::new(controller_id));
+        target.rally_target = Some((21, 22));
+
+        assert!(capture_unit(&mut sim, &rules, controller_id, target_id, 11));
+        let target = sim.substrate.entities.get(target_id).unwrap();
+        assert_eq!(target.navigation.nav_com, None);
+        assert!(target.attack_target.is_none());
+        assert_eq!(target.rally_target, None);
+        assert_eq!(target.mission.current(), MissionId::from_known(MissionType::Guard));
+
+        let (mut skipped, rules, owners, [controller_id, target_id, _]) = capture_sim();
+        skipped.houses.get_mut(&owners[0]).unwrap().is_human = true;
+        let target = skipped.substrate.entities.get_mut(target_id).unwrap();
+        set_raw_mission(target, 0x10);
+        target.navigation.nav_com = Some(NavTargetRef::cell(13, 14));
+        target.attack_target = Some(AttackTarget::new(controller_id));
+        assert!(capture_unit(
+            &mut skipped,
+            &rules,
+            controller_id,
+            target_id,
+            12,
+        ));
+        let target = skipped.substrate.entities.get(target_id).unwrap();
+        assert_eq!(target.navigation.nav_com, Some(NavTargetRef::cell(13, 14)));
+        assert!(target.attack_target.is_some());
+        assert_eq!(target.mission.current().raw(), 0x10);
+
+        for (raw, expected) in [(0x11, false), (0x12, true), (0x13, true), (0x14, false)] {
+            set_raw_mission(skipped.substrate.entities.get_mut(target_id).unwrap(), raw);
+            let target = skipped.substrate.entities.get(target_id).unwrap();
+            assert_eq!(
+                capture_clear_to_guard_is_skipped(target, &rules, "TARGET"),
+                expected,
+                "raw mission {raw:#x}",
+            );
+        }
+    }
+
+    #[test]
+    fn fate_category_reads_controller_house_and_f32_strength_contract() {
+        let (mut sim, mut rules, owners, [controller_id, target_id, _]) = capture_sim();
+        rules.general.ai_capture_normal = vec![1];
+        rules.general.ai_capture_low_money = vec![2];
+        rules.general.ai_capture_low_power = vec![3];
+        rules.general.ai_capture_wounded = vec![4];
+        assert_eq!(rules.general.ai_capture_wounded_mark.bits(), 0x3e80_0000);
+
+        sim.houses.get_mut(&owners[0]).unwrap().credits = 1_999;
+        sim.houses.get_mut(&owners[1]).unwrap().credits = 9_999;
+        assert_eq!(
+            fate_weights(&sim, &rules, controller_id, target_id),
+            rules.general.ai_capture_low_money,
+        );
+
+        sim.houses.get_mut(&owners[0]).unwrap().credits = 9_999;
+        sim.power_states.insert(
+            owners[0],
+            PowerState {
+                total_output: -1,
+                total_drain: 0,
+                ..PowerState::default()
+            },
+        );
+        assert_eq!(
+            fate_weights(&sim, &rules, controller_id, target_id),
+            rules.general.ai_capture_normal,
+            "drain zero forces native GetPowerRatio to 1 even for negative output",
+        );
+        sim.power_states.get_mut(&owners[0]).unwrap().total_drain = 1;
+        assert_eq!(
+            fate_weights(&sim, &rules, controller_id, target_id),
+            rules.general.ai_capture_low_power,
+        );
+
+        sim.power_states.remove(&owners[0]);
+        let target = sim.substrate.entities.get_mut(target_id).unwrap();
+        target.health.current = 30;
+        target.health.max = 1_000;
+        assert_eq!(
+            fate_weights(&sim, &rules, controller_id, target_id),
+            rules.general.ai_capture_normal,
+            "native divides f32-rounded current HP by type Strength, not runtime max HP",
+        );
+        sim.substrate.entities.get_mut(target_id).unwrap().health.current = 24;
+        assert_eq!(
+            fate_weights(&sim, &rules, controller_id, target_id),
+            rules.general.ai_capture_wounded,
+        );
+    }
+
+    #[test]
+    fn successful_sound_uses_mode_aware_human_player_identity() {
+        let (mut sim, mut rules, owners, [controller_id, target_id, _]) = capture_sim();
+        rules.general.yuri_mind_control_sound = Some("YuriCapture".to_string());
+        let controller = sim.houses.get_mut(&owners[0]).unwrap();
+        controller.is_human = true;
+        controller.player_control = false;
+
+        sim.session.game_mode_nonzero = true;
+        assert!(!is_human_player_exact(&sim, owners[0]));
+        emit_capture_sound_after_success(
+            &mut sim,
+            &rules,
+            controller_id,
+            target_id,
+            false,
+        );
+        assert!(sim.sound_events.is_empty());
+
+        sim.houses.get_mut(&owners[0]).unwrap().player_control = true;
+        assert!(is_human_player_exact(&sim, owners[0]));
+        emit_capture_sound_after_success(
+            &mut sim,
+            &rules,
+            controller_id,
+            target_id,
+            false,
+        );
+        assert!(matches!(
+            sim.sound_events.as_slice(),
+            [SimSoundEvent::MindControlSound { sound_id, .. }] if sound_id == "YuriCapture"
+        ));
+
+        sim.sound_events.clear();
+        sim.session.game_mode_nonzero = false;
+        sim.houses.get_mut(&owners[0]).unwrap().player_control = false;
+        assert!(is_human_player_exact(&sim, owners[0]));
+    }
+
+    #[test]
+    fn control_ring_uses_type_offset_and_building_art_height_factor() {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nControlledAnimationType=MINDANIM\n\
+             [VehicleTypes]\n0=TARGET\n\
+             [BuildingTypes]\n0=BTARGET\n\
+             [InfantryTypes]\n\
+             [AircraftTypes]\n\
+             [TARGET]\nStrength=100\nMindControlRingOffset=37\n\
+             [BTARGET]\nStrength=100\n",
+        ))
+        .expect("control-ring fixture rules");
+        let mut art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+            "[BTARGET]\nHeight=3\n\
+             [MINDANIM]\nEnd=1\nLoopEnd=1\nRate=1\n",
+        ));
+        art.bind_anim_frame_count_for_test("MINDANIM", 1);
+        rules.merge_art_data(&art);
+        rules.art_registry = art;
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Owner");
+        let unit_id = sim.allocate_stable_id();
+        let mut unit = GameEntity::test_default(unit_id, "TARGET", "Owner", 2, 3);
+        unit.owner = owner;
+        unit.type_ref = sim.interner.intern("TARGET");
+        sim.substrate.entities.insert(unit);
+        sim.substrate
+            .entities
+            .get_mut(unit_id)
+            .unwrap()
+            .position
+            .exact_z_leptons = Some(500);
+        create_control_ring(&mut sim, &rules, unit_id);
+        let unit_ring = sim.substrate.entities.get(unit_id).unwrap().mind_control_anim_id.unwrap();
+        assert_eq!(sim.anim_absolute_coord(unit_ring).unwrap().z, 537);
+        let unit_anim = sim.anim(unit_ring).unwrap();
+        assert_eq!(unit_anim.owner_entity, Some(unit_id));
+        assert_eq!(unit_anim.draw_flags, 0x600);
+        assert_eq!(unit_anim.z_adjust, 0);
+
+        let building_id = sim.allocate_stable_id();
+        let mut building = GameEntity::test_default(building_id, "BTARGET", "Owner", 5, 6);
+        building.owner = owner;
+        building.type_ref = sim.interner.intern("BTARGET");
+        building.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(building);
+        create_control_ring(&mut sim, &rules, building_id);
+        let building_ring = sim
+            .substrate
+            .entities
+            .get(building_id)
+            .unwrap()
+            .mind_control_anim_id
+            .unwrap();
+        assert_eq!(sim.anim_absolute_coord(building_ring).unwrap().z, 3 * 104);
+        assert_eq!(sim.anim(building_ring).unwrap().z_adjust, -1024);
+    }
+
+    #[test]
+    fn team_override_still_draws_rng_then_routes_grinder_and_bioreactor() {
+        for (decision, mission) in [(2, MissionType::Eaten), (3, MissionType::Enter)] {
+            let (mut sim, rules, controller_id, victim_id, _) = fate_facility_sim(decision);
+            let mut expected_rng = sim.scenario_rng.clone();
+            let _ = expected_rng.next_range_i32_inclusive(1, 100);
+            decide_unit_fate(
+                &mut sim,
+                &rules,
+                controller_id,
+                victim_id,
+                7,
+            );
+            assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+            let victim = sim.substrate.entities.get(victim_id).unwrap();
+            assert_eq!(victim.mission.current(), MissionId::from_known(mission));
+            assert!(matches!(
+                victim.navigation.nav_com,
+                Some(NavTargetRef::Building { .. })
+            ));
+            assert_eq!(victim.ai_absorb_enter_pending, decision == 3);
+        }
+    }
+
+    #[test]
+    fn team_override_actions_four_and_five_route_hunt_and_noop_after_rng() {
+        for (decision, expected) in [
+            (4, MissionId::from_known(MissionType::Hunt)),
+            (5, MissionId::from_known(MissionType::Guard)),
+        ] {
+            let (mut sim, rules, owners, [controller_id, victim_id, _]) = capture_sim();
+            set_raw_mission(
+                sim.substrate.entities.get_mut(victim_id).unwrap(),
+                MissionType::Guard as i32,
+            );
+            let _team = install_controller_decision(
+                &mut sim,
+                controller_id,
+                owners[0],
+                decision,
+            );
+            let mut expected_rng = sim.scenario_rng.clone();
+            let _ = expected_rng.next_range_i32_inclusive(1, 100);
+            decide_unit_fate(
+                &mut sim,
+                &rules,
+                controller_id,
+                victim_id,
+                8,
+            );
+            assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+            assert_eq!(sim.substrate.entities.get(victim_id).unwrap().mission.current(), expected);
+        }
+    }
+
+    #[test]
+    fn team_override_action_one_head_links_victim_without_hunt_or_count_change() {
+        let (mut sim, rules, owners, [controller_id, target_id, _]) = capture_sim();
+        let team_id = install_controller_decision(&mut sim, controller_id, owners[0], 1);
+        let counts_before = sim
+            .team_script_vm
+            .team(team_id)
+            .unwrap()
+            .member_type_counts()
+            .to_vec();
+        let mut expected_rng = sim.scenario_rng.clone();
+        let _ = expected_rng.next_range_i32_inclusive(1, 100);
+
+        assert!(capture_unit(&mut sim, &rules, controller_id, target_id, 41));
+
+        let team = sim.team_script_vm.team(team_id).unwrap();
+        assert_eq!(team.members(), &[target_id, controller_id]);
+        assert_eq!(team.member_type_counts(), counts_before);
+        assert_eq!(
+            sim.substrate.entities.get(target_id).unwrap().mission.current(),
+            MissionId::from_known(MissionType::Guard),
+            "successful forced AddMember returns without the Hunt fallback"
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+    }
+
+    #[test]
+    fn uncovered_authored_fate_vector_routes_default_hunt_after_one_draw() {
+        let (mut sim, mut rules, _, [controller_id, target_id, _]) = capture_sim();
+        rules.general.ai_capture_normal = vec![0];
+        rules.general.ai_capture_wounded = vec![0];
+        rules.general.ai_capture_low_power = vec![0];
+        rules.general.ai_capture_low_money = vec![0];
+        let mut expected_rng = sim.scenario_rng.clone();
+        let _ = expected_rng.next_range_i32_inclusive(1, 100);
+
+        decide_unit_fate(&mut sim, &rules, controller_id, target_id, 42);
+
+        assert_eq!(
+            sim.substrate.entities.get(target_id).unwrap().mission.current(),
+            MissionId::from_known(MissionType::Hunt),
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+    }
+
+    #[test]
+    fn absorber_radio_admission_preserves_every_active_retail_gate() {
+        assert!(absorber_gate_result("", "", |_, _, _, _| {}, |_| {}));
+        assert!(!absorber_gate_result(
+            "",
+            "",
+            |sim, _, victim_id, _| {
+                let outsider = sim.interner.intern("Outsider");
+                sim.substrate.entities.get_mut(victim_id).unwrap().owner = outsider;
+            },
+            |_| {},
+        ));
+        for raw in [0x12, 0x13] {
+            assert!(!absorber_gate_result(
+                "",
+                "",
+                |sim, _, _, building_id| {
+                    set_raw_mission(sim.substrate.entities.get_mut(building_id).unwrap(), raw);
+                },
+                |_| {},
+            ));
+        }
+        assert!(!absorber_gate_result(
+            "",
+            "",
+            |_, _, _, _| {},
+            |object| object.naval = true,
+        ));
+        assert!(absorber_gate_result(
+            "MovementZone=Amphibious\n",
+            "Naval=yes\n",
+            |_, _, _, _| {},
+            |_| {},
+        ));
+        assert!(!absorber_gate_result(
+            "BalloonHover=yes\n",
+            "",
+            |_, _, _, _| {},
+            |_| {},
+        ));
+        assert!(!absorber_gate_result(
+            "",
+            "Powered=yes\nPower=-1\n",
+            |sim, owner, _, _| {
+                sim.power_states.insert(
+                    owner,
+                    PowerState {
+                        is_low_power: true,
+                        ..PowerState::default()
+                    },
+                );
+            },
+            |_| {},
+        ));
+        assert!(!absorber_gate_result(
+            "",
+            "",
+            |_, _, _, _| {},
+            |object| object.infantry_absorb = false,
+        ));
+        assert!(!absorber_gate_result(
+            "",
+            "",
+            |sim, _, victim_id, _| {
+                sim.substrate.entities.get_mut(victim_id).unwrap().capture_manager =
+                    Some(CaptureManagerState {
+                        max_control: 0,
+                        infinite_mind_control: false,
+                        controlled_nodes: Vec::new(),
+                    });
+            },
+            |_| {},
+        ));
+        assert!(!absorber_gate_result(
+            "",
+            "",
+            |sim, _, _, building_id| {
+                sim.substrate
+                    .entities
+                    .get_mut(building_id)
+                    .unwrap()
+                    .passenger_role
+                    .cargo_mut()
+                    .unwrap()
+                    .capacity = 0;
+            },
+            |_| {},
+        ));
+        assert!(!absorber_gate_result(
+            "Size=2\n",
+            "SizeLimit=1\n",
+            |_, _, _, _| {},
+            |_| {},
+        ));
+    }
+
+    #[test]
+    fn facility_selection_uses_reverse_registration_and_native_3d_ties() {
+        let (mut sim, rules, _, victim_id, older_id) = absorber_gate_sim("", "");
+        let newer_id = sim
+            .spawn_object("BIO", "Owner", 4, 5, 0, &rules, &Default::default())
+            .unwrap();
+        let victim = sim.substrate.entities.get_mut(victim_id).unwrap();
+        victim.position.sub_x = crate::util::fixed_math::SimFixed::from_num(128);
+        victim.position.sub_y = crate::util::fixed_math::SimFixed::from_num(128);
+
+        assert_eq!(
+            nearest_owned_building(&sim, &rules, victim_id, |_, object, _, _| object.grinding),
+            Some(newer_id),
+            "strict-less ties preserve the first reverse-registration candidate"
+        );
+        assert_eq!(
+            nearest_owned_building(&sim, &rules, victim_id, |sim, object, victim, building| {
+                building_can_enter_absorber(sim, &rules, object, victim, building)
+            }),
+            Some(newer_id),
+        );
+
+        sim.substrate.entities.get_mut(newer_id).unwrap().position.exact_z_leptons = Some(2_000);
+        assert_eq!(
+            nearest_owned_building(&sim, &rules, victim_id, |_, object, _, _| object.grinding),
+            Some(older_id),
+            "native Distance3D includes Z before whole-lepton strict comparison"
+        );
+    }
+
+    #[test]
     fn capture_override_release_and_arbitrary_owner_change_preserve_reciprocals() {
         let (mut sim, rules, owners, [controller_id, first_id, second_id]) = capture_sim();
         assert!(capture_unit(&mut sim, &rules, controller_id, first_id, 0));
@@ -509,7 +1677,9 @@ mod tests {
                 .controlled_nodes,
             vec![CaptureNodeState {
                 victim_id: first_id,
-                original_owner: owners[1]
+                original_owner: owners[1],
+                capture_frame: 0,
+                link_visible_frames: 20,
             }]
         );
         assert!(
@@ -616,14 +1786,20 @@ mod tests {
             CaptureNodeState {
                 victim_id: target_id,
                 original_owner: owners[2],
+                capture_frame: 7,
+                link_visible_frames: 20,
             },
             CaptureNodeState {
                 victim_id: second_id,
                 original_owner: owners[1],
+                capture_frame: 8,
+                link_visible_frames: 20,
             },
             CaptureNodeState {
                 victim_id: target_id,
                 original_owner: owners[1],
+                capture_frame: 9,
+                link_visible_frames: 20,
             },
         ];
         sim.substrate
@@ -649,8 +1825,35 @@ mod tests {
             vec![CaptureNodeState {
                 victim_id: second_id,
                 original_owner: owners[1],
+                capture_frame: 8,
+                link_visible_frames: 20,
             }]
         );
+    }
+
+    #[test]
+    fn free_unit_prefers_per_type_cleared_sound_then_global_fallback() {
+        let (mut sim, rules, _, [controller_id, target_id, other_id]) = capture_sim();
+        assert_eq!(
+            rules.general.mind_cleared_sound.as_deref(),
+            Some("GlobalClear"),
+            "the fixture must bind the native AudioVisual fallback"
+        );
+        assert!(capture_unit(&mut sim, &rules, controller_id, target_id, 0));
+        sim.sound_events.clear();
+        assert!(free_unit(&mut sim, &rules, controller_id, target_id));
+        assert!(matches!(
+            sim.sound_events.as_slice(),
+            [SimSoundEvent::MindControlSound { sound_id, .. }] if sound_id == "TypeClear"
+        ), "unexpected per-type FreeUnit event vector: {:?}", sim.sound_events);
+
+        assert!(capture_unit(&mut sim, &rules, controller_id, other_id, 1));
+        sim.sound_events.clear();
+        assert!(free_unit(&mut sim, &rules, controller_id, other_id));
+        assert!(matches!(
+            sim.sound_events.as_slice(),
+            [SimSoundEvent::MindControlSound { sound_id, .. }] if sound_id == "GlobalClear"
+        ), "unexpected fallback FreeUnit event vector: {:?}", sim.sound_events);
     }
 
     #[test]

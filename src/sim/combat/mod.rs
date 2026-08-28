@@ -1733,6 +1733,9 @@ pub(crate) trait CombatInlineHooks {
         _entities: &mut EntityStore,
         _occupancy: &mut OccupancyGrid,
         _interner: &mut StringInterner,
+        _scenario_rng: &mut SimRng,
+        _houses: &mut BTreeMap<InternedId, HouseState>,
+        _sound_events: Option<&mut Vec<SimSoundEvent>>,
     ) -> bool {
         false
     }
@@ -4987,6 +4990,9 @@ fn commit_projectile_detonations_inline(
                 entities,
                 occupancy,
                 interner,
+                scenario_rng,
+                houses,
+                sound_sink.as_deref_mut(),
             );
         }
         let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);

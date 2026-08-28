@@ -322,6 +322,14 @@ pub struct ObjectType {
     /// Art.ini image reference. Defaults to the object's ID if not specified.
     /// Used to look up sprite/voxel filenames in art.ini.
     pub image: String,
+    /// Native `TechnoTypeClass+0x60C`, parsed from `MindControlRingOffset=`.
+    /// CaptureUnit adds this signed lepton offset to non-building victims'
+    /// object-coordinate Z before constructing the attached control ring.
+    pub mind_control_ring_offset: i32,
+    /// Per-type `MindClearedSound=` override (`TechnoTypeClass+0x5B0`). An
+    /// absent/empty/native `none` value keeps the invalid Voc sentinel and
+    /// makes FreeUnit use the global AudioVisual fallback.
+    pub mind_cleared_sound: Option<String>,
     /// Power generation (positive) or consumption (negative). Buildings only.
     pub power: i32,
     /// Extra power bonus per occupant for `InfantryAbsorb`/`UnitAbsorb`
@@ -825,6 +833,11 @@ pub struct ObjectType {
     /// Parsed from `OpenTopped=yes` in rules.ini.
     pub open_topped: bool,
 
+    /// UnitTypeClass `+0xE13`, parsed from `IsSimpleDeployer=`. CaptureUnit's
+    /// shared clear-order continuation skips a Unit on raw mission `0x10`
+    /// only when this exact byte is set.
+    pub is_simple_deployer: bool,
+
     /// Whether this transport uses the Gunner system (IFV weapon swap).
     /// Parsed from `Gunner=yes` in rules.ini. When a passenger enters, the
     /// transport's active weapon changes based on the passenger's IFVMode.
@@ -892,6 +905,11 @@ pub struct ObjectType {
     /// Whether this building absorbs vehicles.
     /// Parsed from `UnitAbsorb=yes` in rules.ini.
     pub unit_absorb: bool,
+
+    /// BuildingTypeClass `Grinding=` identity used by the AI capture-fate
+    /// Grinder search. This is distinct from the absorb flags used by the
+    /// Bio Reactor vector.
+    pub grinding: bool,
 
     /// Whether this techno type can enter a Tank Bunker.
     /// Parsed from `Bunkerable=` in rules.ini. UnitTypeClass entries default
@@ -1340,6 +1358,15 @@ impl ObjectType {
             elite_primary: section.get("ElitePrimary").map(|s| s.to_string()),
             elite_secondary: section.get("EliteSecondary").map(|s| s.to_string()),
             image: section.get("Image").unwrap_or(id).to_string(),
+            mind_control_ring_offset: section.get_i32("MindControlRingOffset").unwrap_or(140),
+            mind_cleared_sound: section
+                .get("MindClearedSound")
+                .map(str::trim)
+                .filter(|sound| {
+                    !sound.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(sound)
+                })
+                .map(str::to_string),
             power: section.get_i32("Power").unwrap_or(0),
             extra_power: section.get_i32("ExtraPower").unwrap_or(0),
             // The original resolves Foundation= through a fixed name table.
@@ -1601,6 +1628,7 @@ impl ObjectType {
                 })
                 .max(0) as u32,
             open_topped: section.get_bool("OpenTopped").unwrap_or(false),
+            is_simple_deployer: section.get_bool("IsSimpleDeployer").unwrap_or(false),
             gunner: section.get_bool("Gunner").unwrap_or(false),
             ifv_mode: section.get_i32("IFVMode").unwrap_or(0).max(0) as u32,
             open_transport_weapon: section.get_i32("OpenTransportWeapon").unwrap_or(-1),
@@ -1629,6 +1657,7 @@ impl ObjectType {
                 .unwrap_or_default(),
             infantry_absorb: section.get_bool("InfantryAbsorb").unwrap_or(false),
             unit_absorb: section.get_bool("UnitAbsorb").unwrap_or(false),
+            grinding: section.get_bool("Grinding").unwrap_or(false),
             bunkerable: section
                 .get_bool("Bunkerable")
                 .unwrap_or(category == ObjectCategory::Vehicle),

@@ -3001,7 +3001,7 @@ fn gsi_04_07_damage_full_capture_manager_blocks_retaliation() {
             controlled.lifecycle.in_limbo = false;
             controlled.lifecycle.cell_marked = true;
             entities.insert(controlled);
-            manager.link_controlled_entity(id, victim_owner);
+            manager.link_controlled_entity(id, victim_owner, 0, 20);
         }
         victim.capture_manager = Some(manager);
         entities.insert(victim);

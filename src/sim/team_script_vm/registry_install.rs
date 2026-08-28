@@ -114,6 +114,7 @@ impl TeamScriptVm {
                 task_force_id,
                 priority: team_type.read_int("Priority", 7),
                 is_base_defense: team_type.read_bool("IsBaseDefense", false),
+                mind_control_decision: team_type.read_int("MindControlDecision", 0),
                 combined_movement_zone: MovementZone::Fly,
                 base_zone_relation_enforced: true,
                 transport_crossing_required: false,

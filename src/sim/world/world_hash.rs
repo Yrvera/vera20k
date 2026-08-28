@@ -1696,6 +1696,13 @@ impl Simulation {
                 7u8.hash(hasher);
                 controller_id.hash(hasher);
             }
+            if let Some(anim_id) = entity.mind_control_anim_id {
+                13u8.hash(hasher);
+                anim_id.hash(hasher);
+            }
+            if entity.ai_absorb_enter_pending {
+                14u8.hash(hasher);
+            }
             // Techno+0x2CC marker and +0x2E0 source are independent House
             // pointers: ChangeOwner clears the latter but not the former.
             if let Some(marker) = entity.temporary_owner_transfer_marker {

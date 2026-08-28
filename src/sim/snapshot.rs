@@ -337,7 +337,10 @@ use crate::sim::world::Simulation;
 // original Houses, the two independent temporary-transfer House pointers, and
 // TemporalClass manager/warp/reciprocal-chain state. Bincode encodes every
 // GameEntity positionally, so a v114 record cannot safely supply these fields.
-const SNAPSHOT_VERSION: u32 = 115;
+// Bumped 115 -> 116: persist capture timing/presentation links, the victim AI
+// absorb-enter latch, and TeamType mind-control decision state. These additions
+// are positional, so a v115 record cannot safely supply them.
+const SNAPSHOT_VERSION: u32 = 116;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1198,6 +1201,27 @@ fn restore_object_references(
                 return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
                     entity_id,
                     reason: "victim controller lacks matching MCNode",
+                });
+            }
+        }
+        if let Some(anim_id) = entity.mind_control_anim_id {
+            require_resolved_reference(
+                anim_ids.contains(&anim_id),
+                "EntityStore",
+                entity_id,
+                "mind_control_anim_id",
+                "AnimStore",
+                anim_id,
+            )?;
+            if sim
+                .substrate
+                .anims
+                .get(anim_id)
+                .is_none_or(|anim| anim.owner_entity != Some(entity_id))
+            {
+                return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                    entity_id,
+                    reason: "mind-control anim lacks matching owner backlink",
                 });
             }
         }
@@ -3090,10 +3114,12 @@ mod tests {
     /// adds the active-retail crate/result authority and the local Tactical
     /// camera presentation adjunct envelope; 114 -> 115 adds the mind-control,
     /// temporary-transfer, and TemporalClass state required by native House-wide
-    /// destruction ownership and synchronous detachment.
+    /// destruction ownership and synchronous detachment; 115 -> 116 adds the
+    /// capture continuation timing, presentation links, AI absorb-enter latch,
+    /// and TeamType mind-control decision state.
     #[test]
-    fn phase3_combined_snapshot_version_is_115() {
-        assert_eq!(super::SNAPSHOT_VERSION, 115);
+    fn phase3_combined_snapshot_version_is_116() {
+        assert_eq!(super::SNAPSHOT_VERSION, 116);
     }
 
     #[test]
@@ -3629,6 +3655,7 @@ mod tests {
                 script_id,
                 task_force_id,
                 priority: 0,
+                mind_control_decision: 0,
                 is_base_defense: true,
                 combined_movement_zone: crate::rules::locomotor_type::MovementZone::Amphibious,
                 base_zone_relation_enforced: false,
@@ -4594,10 +4621,14 @@ mod tests {
                 crate::sim::capture_manager::CaptureNodeState {
                     victim_id: 3,
                     original_owner: owner,
+                    capture_frame: 111,
+                    link_visible_frames: 20,
                 },
                 crate::sim::capture_manager::CaptureNodeState {
                     victim_id: 4,
                     original_owner: owner,
+                    capture_frame: 222,
+                    link_visible_frames: 30,
                 },
             ],
         });
@@ -4812,10 +4843,14 @@ mod tests {
                     crate::sim::capture_manager::CaptureNodeState {
                         victim_id: 3,
                         original_owner: owner,
+                        capture_frame: 111,
+                        link_visible_frames: 20,
                     },
                     crate::sim::capture_manager::CaptureNodeState {
                         victim_id: 4,
                         original_owner: owner,
+                        capture_frame: 222,
+                        link_visible_frames: 30,
                     },
                 ]
                 .as_slice()
@@ -7420,6 +7455,8 @@ mod tests {
             controlled_nodes: vec![CaptureNodeState {
                 victim_id,
                 original_owner: original_house,
+                capture_frame: -7,
+                link_visible_frames: 20,
             }],
         });
         controller.temporal_manager = Some(TemporalManagerState {
@@ -7432,6 +7469,7 @@ mod tests {
         let mut victim = GameEntity::test_default(victim_id, "MTNK", "ControllerHouse", 6, 5);
         victim.owner = controller_house;
         victim.mind_control_controller_id = Some(controller_id);
+        victim.ai_absorb_enter_pending = true;
 
         let mut target = GameEntity::test_default(target_id, "HTNK", "ControllerHouse", 7, 5);
         target.owner = controller_house;
@@ -7508,6 +7546,28 @@ mod tests {
             .entities
             .get_mut(victim_id)
             .unwrap()
+            .ai_absorb_enter_pending = false;
+        assert_ne!(changed.state_hash(), baseline, "AI absorb-enter byte hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes[0]
+            .capture_frame = -8;
+        assert_ne!(changed.state_hash(), baseline, "MCNode capture frame hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
             .permanently_mind_controlled = true;
         assert_ne!(changed.state_hash(), baseline, "permanent-control byte hashes");
 
@@ -7572,7 +7632,7 @@ mod tests {
         assert_ne!(changed.state_hash(), baseline, "temporal warped byte hashes");
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "result_link_fixture", 0);
-        let mut restored = GameSnapshot::load(&bytes).expect("v115 link snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes).expect("v116 link snapshot").sim;
         restored
             .restore_after_snapshot_load()
             .expect("all reciprocal references resolve");
@@ -7589,6 +7649,7 @@ mod tests {
         );
         let restored_victim = restored.substrate.entities.get(victim_id).unwrap();
         assert_eq!(restored_victim.mind_control_controller_id, Some(controller_id));
+        assert!(restored_victim.ai_absorb_enter_pending);
         assert!(!restored_victim.permanently_mind_controlled);
         assert!(restored_victim.is_mind_controlled());
         assert_eq!(

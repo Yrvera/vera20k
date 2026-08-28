@@ -1105,6 +1105,13 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         sub_y,
                         world_z_leptons,
                     ),
+                    SimSoundEvent::MindControlSound { sound_id, world } => {
+                        let (sx, sy) = anim_world_sound_screen(world);
+                        GameSoundEvent::WeaponFired {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                     SimSoundEvent::BuildingComplete { owner } => {
                         // Only play EVA for the local player's production.
                         let owner_str = sim.interner.resolve(owner);
