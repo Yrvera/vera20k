@@ -331,23 +331,38 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
-            // **VERA-internal, gamemd equivalent UNCHECKED — this mapping is
-            // wrong and the arm is dead.** The "three byte latches, then
-            // `Assign_Mission(5, 0)`, then `return 1`" shape lives at
-            // `0x00740A90`, which is vtable `+0x22C` — the **Move** slot, not
-            // Guard — reads `[this+0x6E0]`/`+0x6E1`/`+0x6E2`, and queues
-            // **Guard**, not Harvest or Unload. `UnitClass`'s real Guard
-            // override `0x00740810` gates its `Queue_Mission(10)`/`return 1` on
-            // `UnitTypeClass+0xE0E`/`+0xE0F` plus house and refinery checks, and
-            // its `Queue_Mission(0x10)` path returns `ftol(Rate) + Rand(0, 2)`
-            // rather than 1.
-            //
-            // Trigger: none today — both latch bytes have only `#[cfg(test)]`
-            // writers (`sim::mission::leaf`), so production never reaches
-            // either arm. Player effect: none. Frequency: zero. Downstream
-            // risk: the wrong native mapping would be carried straight into any
-            // future deploy work; the shape belongs on the Move arm.
-            if input.unit_deploy_begin_active {
+            // `FootClass::Mission_Guard @ 0x004D5070`: persistent Foot
+            // `+0x68F` dispatches class vslot `+0x340` before every other
+            // Guard branch, then returns the plain Guard mission rate. The
+            // selector itself draws no RNG and this early return skips Guard's
+            // ordinary `(0, 2)` cadence jitter.
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.ai_absorb_enter_pending)
+            {
+                let _ = crate::sim::capture_manager::select_capture_fate_absorber(
+                    sim, rules, id, now,
+                );
+                MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Guard))
+            } else if input.unit_deploy_begin_active {
+                // **VERA-internal, gamemd equivalent UNCHECKED — this mapping is
+                // wrong and the arm is dead.** The "three byte latches, then
+                // `Assign_Mission(5, 0)`, then `return 1`" shape lives at
+                // `0x00740A90`, which is vtable `+0x22C` — the **Move** slot, not
+                // Guard — reads `[this+0x6E0]`/`+0x6E1`/`+0x6E2`, and queues
+                // **Guard**, not Harvest or Unload. `UnitClass`'s real Guard
+                // override `0x00740810` gates its `Queue_Mission(10)`/`return 1`
+                // on `UnitTypeClass+0xE0E`/`+0xE0F` plus house and refinery
+                // checks, and its `Queue_Mission(0x10)` path returns
+                // `ftol(Rate) + Rand(0, 2)` rather than 1.
+                //
+                // Trigger: none today — both latch bytes have only `#[cfg(test)]`
+                // writers (`sim::mission::leaf`), so production never reaches
+                // either arm. Player effect: none. Frequency: zero. Downstream
+                // risk: the wrong native mapping would be carried straight into
+                // any future deploy work; the shape belongs on the Move arm.
                 MissionHandlerEvaluation::queue(1, MissionType::Harvest)
             } else if input.unit_deploy_reverse_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Unload)
@@ -356,7 +371,19 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         (EntityCategory::Infantry, Some(MissionType::Guard)) => {
-            evaluate_foot_guard_cadence(sim, rules, MissionType::Guard, input.bunker_delegate)
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.ai_absorb_enter_pending)
+            {
+                let _ = crate::sim::capture_manager::select_capture_fate_absorber(
+                    sim, rules, id, now,
+                );
+                MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Guard))
+            } else {
+                evaluate_foot_guard_cadence(sim, rules, MissionType::Guard, input.bunker_delegate)
+            }
         }
         // Sticky dispatches through the SAME slot as Guard — one handler, two
         // selectors — so it runs the Guard body. The cadence still comes from
@@ -387,7 +414,25 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         //   Frequency: zero today (no slave miners), continuous once they land.
         // The Foot body's own slave-recall arm is absent for the same reason.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::AreaGuard)) => {
-            evaluate_foot_area_guard(sim, id, rules)
+            // `FootClass::Mission_AreaGuard @ 0x004D6AA0` owns the identical
+            // `+0x68F` head branch: vslot `+0x340`, then the plain Area Guard
+            // rate with no `(1, 5)` draw and none of the normal handler body.
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.ai_absorb_enter_pending)
+            {
+                let _ = crate::sim::capture_manager::select_capture_fate_absorber(
+                    sim, rules, id, now,
+                );
+                MissionHandlerEvaluation::cadence(mission_cadence(
+                    rules,
+                    MissionType::AreaGuard,
+                ))
+            } else {
+                evaluate_foot_area_guard(sim, id, rules)
+            }
         }
         // `FootClass::Mission_Hunt`: the observed Capture/Sabotage/Move routes
         // need an authoritative selector. Until one exists, retain its cadence

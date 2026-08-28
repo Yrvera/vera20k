@@ -175,6 +175,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
         &[TeamScriptMember {
             entity_id: 99,
             member_type: member_identity,
+            has_special_building_entry_intent: false,
         }],
         None,
         0,

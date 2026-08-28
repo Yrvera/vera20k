@@ -199,6 +199,12 @@ impl TeamAiInstallDiagnostic {
 pub struct TeamScriptMember {
     pub entity_id: u64,
     pub member_type: TeamMemberTypeIdentity,
+    /// `FootClass::HasSpecialBuildingEntryIntent @ 0x004E0080` as observed by
+    /// Team recruitment at `0x006EA79D`. Rust currently represents the active
+    /// `+0x68F` Bio Reactor intent; future `+0x690/+0x691` owners must feed the
+    /// same admission bit rather than widening TeamScriptVm state.
+    #[serde(default)]
+    pub has_special_building_entry_intent: bool,
 }
 
 /// Action-19 side effect emitted in TeamClass member-list order.
@@ -448,7 +454,9 @@ impl TeamScriptVm {
             for _ in 0..entry.count.max(0) {
                 let Some((index, candidate)) =
                     candidates.iter().enumerate().find(|(index, candidate)| {
-                        !used[*index] && candidate.member_type == entry.member_type
+                        !used[*index]
+                            && !candidate.has_special_building_entry_intent
+                            && candidate.member_type == entry.member_type
                     })
                 else {
                     break;
@@ -1057,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn task_force_admission_uses_entry_then_candidate_order() {
+    fn task_force_admission_uses_entry_order_and_rejects_special_building_intent() {
         let owner = InternedId::from_index(1);
         let script = InternedId::from_index(2);
         let task_force = InternedId::from_index(3);
@@ -1111,14 +1119,22 @@ mod tests {
                 TeamScriptMember {
                     entity_id: 10,
                     member_type: tank_identity,
+                    has_special_building_entry_intent: false,
                 },
                 TeamScriptMember {
                     entity_id: 20,
                     member_type: infantry_identity,
+                    has_special_building_entry_intent: true,
                 },
                 TeamScriptMember {
                     entity_id: 30,
                     member_type: infantry_identity,
+                    has_special_building_entry_intent: false,
+                },
+                TeamScriptMember {
+                    entity_id: 40,
+                    member_type: infantry_identity,
+                    has_special_building_entry_intent: false,
                 },
             ],
             None,
@@ -1126,7 +1142,7 @@ mod tests {
         );
 
         let state = vm.team(team).expect("team");
-        assert_eq!(state.members(), &[20, 30, 10]);
+        assert_eq!(state.members(), &[30, 40, 10]);
         assert!(state.member_type_counts().contains(&(infantry_identity, 2)));
         assert!(state.member_type_counts().contains(&(tank_identity, 1)));
     }
@@ -1173,6 +1189,7 @@ mod tests {
             &[TeamScriptMember {
                 entity_id: 10,
                 member_type: infantry,
+                has_special_building_entry_intent: false,
             }],
             None,
             0,
@@ -1183,6 +1200,7 @@ mod tests {
             TeamScriptMember {
                 entity_id: 20,
                 member_type: infantry,
+                has_special_building_entry_intent: false,
             },
         ));
         let state = vm.team(team).unwrap();
@@ -1240,10 +1258,12 @@ mod tests {
                 TeamScriptMember {
                     entity_id: 10,
                     member_type: vehicle_identity,
+                    has_special_building_entry_intent: false,
                 },
                 TeamScriptMember {
                     entity_id: 20,
                     member_type: infantry_identity,
+                    has_special_building_entry_intent: false,
                 },
             ],
             None,
@@ -1308,6 +1328,7 @@ mod tests {
                 .map(|entity_id| TeamScriptMember {
                     entity_id,
                     member_type: member_identity,
+                    has_special_building_entry_intent: false,
                 })
                 .collect::<Vec<_>>();
             vm.create_team_from_type(owner, team_type, &candidates, None, 0)
@@ -1478,6 +1499,7 @@ mod tests {
             &[TeamScriptMember {
                 entity_id: 10,
                 member_type: member_identity,
+                has_special_building_entry_intent: false,
             }],
             None,
             99,

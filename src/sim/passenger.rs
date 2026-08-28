@@ -951,6 +951,7 @@ fn is_can_be_occupied_unloading_transport(
 
 fn reveal_unloaded_passenger(
     sim: &mut Simulation,
+    rules: &RuleSet,
     transport_id: u64,
     passenger_id: u64,
     rx: u16,
@@ -972,7 +973,7 @@ fn reveal_unloaded_passenger(
         ));
         passenger.passenger_role = PassengerRole::None;
     }
-    sim.try_reveal_entity(
+    let outcome = sim.try_reveal_entity(
         passenger_id,
         RevealRequest {
             position: RevealPosition {
@@ -987,7 +988,45 @@ fn reveal_unloaded_passenger(
             placement: PlacementEvidence::MarkSucceeded,
             logic_eligible: true,
         },
-    )
+    );
+    if matches!(outcome, RevealOutcome::Revealed { .. }) {
+        clear_capture_fate_absorb_intent_after_exit(sim, rules, passenger_id, transport_id);
+    }
+    outcome
+}
+
+/// Building unload's Foot `+0x68F` exit write at `0x0044DBEA`.
+///
+/// The write is absorber-specific and tests the occupant House's raw human
+/// byte (`House+0x1EC`), not local-player control. AI occupants deliberately
+/// retain the intent so their later Guard/AreaGuard handler can redispatch the
+/// class `+0x340` absorber selector.
+pub(crate) fn clear_capture_fate_absorb_intent_after_exit(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    passenger_id: u64,
+    building_id: u64,
+) {
+    let is_absorber = sim
+        .substrate
+        .entities
+        .get(building_id)
+        .and_then(|building| sim.object_type(building.type_ref, rules))
+        .is_some_and(|object| object.infantry_absorb || object.unit_absorb);
+    if !is_absorber {
+        return;
+    }
+    let raw_human = sim
+        .substrate
+        .entities
+        .get(passenger_id)
+        .and_then(|passenger| sim.houses.get(&passenger.owner))
+        .is_some_and(|house| house.is_human);
+    if raw_human {
+        if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
+            passenger.ai_absorb_enter_pending = false;
+        }
+    }
 }
 
 fn restore_unloaded_passenger_after_reveal_failure(
@@ -1073,7 +1112,8 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
         .get(pax_id)
         .map(|e| sim.interner.resolve(e.type_ref).to_string())
         .unwrap_or_default();
-    let reveal_outcome = reveal_unloaded_passenger(sim, transport_id, pax_id, exit_rx, exit_ry, tz);
+    let reveal_outcome =
+        reveal_unloaded_passenger(sim, rules, transport_id, pax_id, exit_rx, exit_ry, tz);
     if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
         restore_unloaded_passenger_after_reveal_failure(
             sim,
@@ -1208,7 +1248,7 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             .map(|e| sim.interner.resolve(e.type_ref).to_string())
             .unwrap_or_default();
         let reveal_outcome =
-            reveal_unloaded_passenger(sim, transport_id, pax_id, exit_rx, exit_ry, tz);
+            reveal_unloaded_passenger(sim, rules, transport_id, pax_id, exit_rx, exit_ry, tz);
         if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
             restore_unloaded_passenger_after_reveal_failure(
                 sim,
@@ -1286,6 +1326,7 @@ mod tests {
     use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
+    use crate::sim::house_state::HouseState;
 
     fn garrison_test_rules() -> RuleSet {
         let ini_str = "\
@@ -1369,6 +1410,73 @@ ConditionYellow=50%
 ",
         );
         RuleSet::from_ini(&ini).expect("parse open-topped test rules")
+    }
+
+    fn capture_fate_absorber_exit_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=INF\n[BuildingTypes]\n0=BIO\n1=TRAN\n\
+             [INF]\nStrength=100\nSize=1\nSpeed=4\n\
+             [BIO]\nStrength=500\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=15\n\
+             [TRAN]\nStrength=500\nPassengers=5\nSizeLimit=15\n",
+        ))
+        .expect("capture-fate absorber exit rules")
+    }
+
+    fn absorber_unload_fixture(raw_human: bool, building_type: &str) -> (Simulation, RuleSet) {
+        let rules = capture_fate_absorber_exit_rules();
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Owner");
+        sim.houses.insert(
+            owner,
+            HouseState::new(owner, 0, None, raw_human, 0, 10),
+        );
+        let mut building = GameEntity::test_default(1, building_type, "Owner", 10, 10);
+        building.category = EntityCategory::Structure;
+        building.owner = owner;
+        building.type_ref = sim.interner.intern(building_type);
+        building.order_intent = Some(OrderIntent::Unloading);
+        building.passenger_role = PassengerRole::Transport {
+            cargo: PassengerCargo::new(5, 15),
+        };
+        building
+            .passenger_role
+            .cargo_mut()
+            .expect("fixture CargoClass")
+            .board_forced(2, 1);
+        sim.substrate.entities.insert(building);
+        let _ = sim.reveal(1);
+
+        let mut passenger = GameEntity::test_default(2, "INF", "Owner", 10, 10);
+        passenger.category = EntityCategory::Infantry;
+        passenger.owner = owner;
+        passenger.type_ref = sim.interner.intern("INF");
+        passenger.passenger_role = PassengerRole::Inside { transport_id: 1 };
+        passenger.ai_absorb_enter_pending = true;
+        sim.substrate.entities.insert(passenger);
+        (sim, rules)
+    }
+
+    #[test]
+    fn absorber_unload_clears_raw_human_intent_but_preserves_ai_and_nonabsorber() {
+        for (raw_human, expected) in [(true, false), (false, true)] {
+            let (mut sim, rules) = absorber_unload_fixture(raw_human, "BIO");
+            tick_passenger_system(&mut sim, &rules);
+            let passenger = sim.substrate.entities.get(2).expect("unloaded occupant");
+            assert!(!passenger.lifecycle.in_limbo);
+            assert_eq!(passenger.ai_absorb_enter_pending, expected);
+        }
+
+        let (mut transport, rules) = absorber_unload_fixture(true, "TRAN");
+        tick_passenger_system(&mut transport, &rules);
+        assert!(
+            transport
+                .substrate
+                .entities
+                .get(2)
+                .expect("ordinary transport occupant")
+                .ai_absorb_enter_pending,
+            "0x0044DBEA is absorber-specific, not a generic cargo-exit clear",
+        );
     }
 
     /// Spawn a CanBeOccupied building entity at (rx, ry) owned by `owner_str`.

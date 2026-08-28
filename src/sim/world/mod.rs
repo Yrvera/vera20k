@@ -1811,7 +1811,11 @@ impl Simulation {
                         .cargo()
                         .map(|cargo| cargo.passengers.clone())
                         .unwrap_or_default();
-                    if !object.can_be_occupied || passenger_ids.is_empty() {
+                    if !(object.can_be_occupied
+                        || object.infantry_absorb
+                        || object.unit_absorb)
+                        || passenger_ids.is_empty()
+                    {
                         return None;
                     }
                     let (foundation_w, foundation_h) =
