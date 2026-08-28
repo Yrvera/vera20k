@@ -60,7 +60,10 @@ and Main RNG objects from the match seed. The skirmish branch then reaches
 `ScenarioClass__Read_Scenario @ 0x00684620` reloads the seed/options and calls
 `0x00598960(0,0)` at `0x00684989`. Thus gameplay performs a second complete deterministic RMG
 run from the `.SED`, after the Scenario reseed. Preview-time Scenario draws do not carry into the
-match; launch-time constructor draws do.
+match; launch-time constructor draws do. “After the reseed” does not mean the first CABHUT sees
+the pristine seed cursor: launch-mode generator initialization calls `ScenarioClass__Full_Init`
+before bridge/tech placement, so the same Scenario object first carries the native Full-Init
+house/start/map-Fill prefix.
 
 ## 2. Authoritative State and Offsets
 
@@ -210,7 +213,7 @@ overwritten before gameplay scenario construction.
 There is no path from the retained dialog preview object to this branch and no “already generated”
 test. MapGen is reseeded/replaced again from the loaded `MapSeed+0x74`; the gameplay map is rebuilt
 in memory. During that rebuild, all Techno construction—including CABHUT and failed building
-attempts—draws from the freshly match-seeded Scenario RNG.
+attempts—draws from the match-seeded Scenario RNG after the generator's nested Full-Init prefix.
 
 ## 4. Same-Process Retail Trace
 
@@ -267,6 +270,7 @@ CABHUT constructor draw, and retail file behavior above were all independently v
 | `RandomMapGenerationRetention` | moves accepted preview `GeneratedMap` directly into loading | native persists seed/options and regenerates unconditionally from `.SED` after Start reseeds Scenario/Main |
 | `src/app/loading/init.rs::retained_random_map_initial` | explicitly claims no second generator is invoked and installs preview output/continuation | claim is contradicted by `0x00684620 -> 0x00597A10 -> 0x00598960(0,0)` |
 | ordinary `.SED` branch in `src/app/loading/init.rs` | regenerates from the seed file and carries MapGen continuation | closer to native, but bypassed by the retained-preview shortcut after UI acceptance |
+| `LoadingRequest::prepare_battle_start_plan` plus `load_map_from_initial` | prepares a second seed-built Scenario cursor, then constructs another `ScenarioBootstrapRng` later | there must be one match-seeded owner; a plan may retain outcomes but must not manufacture or replace its cursor |
 | `src/map/rmg/build.rs` / `pipeline.rs` | generator owns only MapGen RNG and emits successful terrain/structure records | cannot represent Scenario constructor draws, failed object attempts, CABHUT init words, or their order |
 | `src/map/rmg/phases/tech_buildings.rs` | records only successful placements | native consumes one Scenario raw word when the building is constructed before up to 100 attempts, even when later deleted |
 | `src/map/rmg/phases/carve_driver.rs` | water-class low-bridge branch returns without work and claims it consumes no random draws | active `.SED` maps of types 3/4 call `PlaceLowBridgeDeck`; it consumes MapGen seed-cell/end-coin draws and creates CABHUTs that consume Scenario RNG |
@@ -360,7 +364,7 @@ Asset role matrix:
 | Preview construction advances the process shell Scenario stream. | `0x006F3249..0x006F3259`; retail cursor trace | worker has no Scenario owner | Move/borrow the front-end Scenario cursor into preview generation and return it with ordered constructor effects, including failed attempts. | Two previews advance the shell cursor by their exact construction-event counts; Cancel/reopen continues it. | Do not infer draws from surviving emitted structures. |
 | CABHUT allocation is one ordered Scenario raw draw. | `0x005904B0 -> 0x0043B740 -> 0x006F3254` | low-bridge branch and huts absent | Emit/instantiate each hut at its native point in the RMG phase and consume/store the corresponding Scenario word. | Fixed map/Scenario seeds produce identical hut list, `+0x3C8` values, and post-generation cursor. | Do not create huts after all other structures or use MapGen for their init word. |
 | Cancel keeps advanced RNGs, writes temp image, and does not commit `.SED`. | `0x00595BC0`, `0x005E8590`; retail files | candidate cancellation drops pure generated data but has no Scenario result to retain | Preserve returned shell Scenario cursor; discard candidate/accepted map; keep `.SED`/selection unchanged; write the preview product when one exists. | Generate then Cancel: Scenario differs from pre-generate, `.img` changes, `.SED` and committed map do not. | Do not roll the shell RNG back transactionally. |
-| Successful Start reseeds Scenario/Main before `.SED` generation. | `0x0052E619` before `0x0052E745` | retained preview bypasses launch generator | Instantiate launch generator against the freshly seeded gameplay Scenario owner. | Preview draw count has no effect on post-launch Scenario cursor; match seed and `.SED` determine it. | Do not carry shell Scenario state into match. |
+| Successful Start reseeds Scenario/Main before `.SED` generation. | `0x0052E619` before `0x0052E745`; nested `0x00599650 -> 0x00686B20` | retained preview bypasses launch generator and loading constructs parallel seed-derived cursors | Create one gameplay `ScenarioBootstrapRng`; carry it through the Full-Init house/start/Fill prefix, ordered RMG construction events, Post-Map start work, projection, and final Simulation handoff. | Preview draw count has no effect on gameplay; the post-launch cursor matches the complete native nested order. | Do not carry shell Scenario state into match or start a second match-seeded cursor for preload. |
 | `.SED` reader success gates a new generator `(0,0)`. | `0x00684620`, `0x00684975..0x00684990` | UI accepted path uses `retained_random_map_initial` | Remove or bypass retained-map authority; regenerate from persisted options and retain `.SED` identity. | Accepted UI map and a fresh process launching the same `.SED` produce the same map, construction sequence, and RNG cursors. | Do not use `RandMap.img` or cached preview `MapFile` as gameplay terrain. |
 
 Suggested proof tests:
@@ -372,6 +376,9 @@ Suggested proof tests:
 - `rmg_launch_does_not_retain_preview_generated_map`
 - `rmg_cabhut_constructor_consumes_one_shared_scenario_word_in_generation_order`
 - `rmg_failed_building_attempts_still_advance_scenario_constructor_cursor`
+- `rmg_first_setup_entry_draws_seed_once_but_reentry_does_not`
+- `rmg_use_map_without_preview_runs_exactly_one_generation`
+- `rmg_generated_low_deck_projection_does_not_replay_overlay_mark`
 
 ## 11. Negative Facts / Evidence-Backed Exclusions
 
@@ -395,7 +402,93 @@ Suggested proof tests:
   with all other Techno construction and later gameplay consumers.
 - Do not use OpenTS control ids, state lifetimes, or generator retention as YR authority.
 
-## 12. Sources
+## 12. Design-Review Follow-up: One Launch Cursor and No Overlay Replay
+
+### 12.1 Native launch nesting fixes the cursor order
+
+The launch generator is not a pure call made against an otherwise untouched Scenario cursor.
+`RandomMapGenerator__Generate(0,0)` calls
+`RandomMapGenerator__InitMapFromSyntheticINI @ 0x00599650`. Its `preview == 0` branch calls
+`ScenarioClass__Full_Init @ 0x00686B20` before any water, connector, bridge, CABHUT,
+starting-point, or neutral-tech phase. `Full_Init` creates Houses, runs the selected-mode start
+callbacks, and reads the synthetic map/Fill on the same process Scenario object. Only after that
+call returns does the generator reach, in order:
+
+1. type-3/type-4 bridge and connector work, including CABHUT constructors;
+2. cell recalculation and generated starting points;
+3. neutral-tech construction attempts;
+4. remaining terrain and resource phases;
+5. return to `Read_Scenario`, followed by `Post_Map_Init` start-unit, crate, and later house work.
+
+The native owner is one match-seeded Scenario object spanning this nested call graph. A Rust port
+may precompute MapGen-only geometry earlier, because the constructor word does not choose whether
+an RMG placement succeeds, but it must replay every ordered construction attempt at the native
+point in that one cursor. It may not calculate the battle plan with a throwaway `SimRng`, start a
+second cursor for Fill, or replay constructors against a third cursor.
+
+For current Rust, `ScenarioBootstrapRng` is the correct owner but its lifetime begins too late.
+`LoadingRequest` must create and own it once from the launch seed. Battle-start preloading consumes
+that owner directly and retains resolved outcomes rather than a replacement cursor. The same owner
+moves into `load_map_from_initial`; terrain Fill continues the Full-Init prefix, then the ordered
+RMG construction trace advances it. `into_simulation` finally transfers that same cursor so
+Post-Map and gameplay consumers continue it.
+
+### 12.2 Required construction trace and binding contract
+
+Precomputed RMG geometry must return a stable ordered `RmgConstructionTrace`; it cannot return
+only surviving `MapEntity` rows. Each event identifies its ordinal, construction phase
+(`BridgeRepairHut` or `NeutralTech`), type identity, and outcome. The outcome is either
+`Discarded` or `Emitted { entity_index }`.
+
+Launch replay consumes exactly one raw Scenario draw for every event. A discarded event consumes
+and drops the low word. An emitted event consumes once and records that low word in a
+`GeneratedTechnoInitTable` keyed by the stable generated entity index. `MapLoadInitial` carries
+the trace into launch and the completed binding table into projection.
+
+`spawn_from_map_with_resolved` must accept the optional generated-init table, validate the entity
+index, type, and cell identity, and install the precomputed `techno_ctor_random_word` on the
+spawned `GameEntity` without another draw. That field belongs in deterministic snapshots/hashes.
+Authored-map Technos continue through the ordinary constructor-draw path; only a validated RMG
+binding suppresses that draw. This makes both rules explicit: failed generated attempts consume
+without a binding, while each successful generated entity consumes once and is never double-drawn.
+
+Preview generation returns the same ordered trace to the shell. The shell leases its existing
+front-end Scenario cursor, replays every event once, and keeps the resulting cursor even if the
+candidate is cancelled. Preview bindings are display-only and never become launch input.
+
+### 12.3 Generated low decks are already materialized
+
+`RandomMapGenerator__PlaceLowBridgeDeck @ 0x0058F2C0` directly writes every cell in the complete
+three-wide overlay rectangle. East-west endpoints are `0x5E` and `0x5C`, east-west body cells are
+`0x4A + (x % 4)`, north-south endpoints are `0x60` and `0x62`, north-south body cells are
+`0x53 + (y % 4)`, and the cross-section index is written to cell `+0x11E` for all three rows. The
+routine does not call `OverlayClass::Mark` and consumes no Scenario RNG.
+
+The successful `.SED` branch in `ScenarioClass__Read_Scenario @ 0x00684620` is exclusive with the
+ordinary scenario-INI reader and does not later call `ReadMapOverlayPacks`. Therefore the launch
+generator's low-deck rectangle is already the final materialized payload. Rust must tag the
+generated source explicitly and skip fixed-map procedural `OverlayClass::Mark` expansion for it.
+Fixed authored maps retain their ordinary endpoint-driven Mark path. Replaying Mark over generated
+deck cells would change variants and consume Scenario draws that native launch never makes.
+
+`0x005A6C10` is the direct RMG isometric tile/subtile/slope stamper and also consumes no RNG.
+The stale `0x00578E60` label is a cliff-level/face fixup, not a low-bridge Mark routine, and is
+excluded as authority for generated bridge overlays.
+
+### 12.4 Added acceptance gates
+
+- First RMG setup entry with `Seed == -1` consumes exactly one shell Scenario seed draw; reopening
+  with the now-valid global seed consumes zero seed draws.
+- Use Map without an existing preview runs exactly one preview-mode generation before acceptance.
+- One launch `ScenarioBootstrapRng` advances through battle preload, Fill, every RMG construction
+  event, projection, Post-Map work, and final Simulation ownership without reseeding or cursor
+  replacement.
+- A failed RMG construction event advances the cursor but creates no binding; an emitted event
+  advances once, binds its word, and projection performs no second draw.
+- Generated low-deck projection preserves all direct overlay ids/cross indices and performs no
+  fixed-map Mark replay or Scenario draw.
+
+## 13. Sources
 
 - Fresh read-only Ghidra decompile: `0x00596300`, `0x00595BC0`, `0x005E8590`,
   `0x005981F0`, `0x005904B0`, `0x00595400`, `0x005A6510`, `0x005A82E0`,
@@ -415,6 +508,9 @@ Suggested proof tests:
   `SKIRMISH_CREATE_RANDOM_MAP_0X583_ACCEPT_CANCEL_STATE_MACHINE_GHIDRA_REPORT.md`,
   `SKIRMISH_CREATE_RANDOM_MAP_0X583_BROAD_RECHECK_GHIDRA_REPORT.md`, and
   `SKIRMISH_RANDOM_COLOR_AND_SETTINGS_PERSISTENCE_TRIGGER_GHIDRA_REPORT.md`.
+- Design-review follow-up decompile/call-order census: `0x00599650`, `0x00686B20`,
+  `0x0058F2C0`, `0x005A6C10`, and `0x00686890`; reconciled against
+  `SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md`.
 - Current Rust: `src/app/frontend/skirmish_session.rs`, `src/app/shell_random_map.rs`,
   `src/app/loading/init.rs`, `src/map/rmg/build.rs`, `src/map/rmg/pipeline.rs`,
   `src/map/rmg/phases/tech_buildings.rs`, `src/map/rmg/phases/carve_driver.rs`, and
