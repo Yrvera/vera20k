@@ -2,12 +2,15 @@
 
 **Address(es):** `0x00595BC0`, `0x00596300`, `0x00598960`, `0x005904B0`,
 `0x006F3254`, `0x005E8590`, `0x0052FC20`, `0x0052E619`, `0x0052E745`,
-`0x00683AB0`, `0x00684620`, `0x00684989`
+`0x00683AB0`, `0x00684620`, `0x00684989`, `0x00686B20`, `0x00743270`,
+`0x0041B110`, `0x0051FB00`, `0x0044F820`
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** One-process retail YR random-map lifecycle as it affects active bridge
 generation: setup entry, repeated preview generation, setup Cancel, setup Use Map, `RandMap.img`
 and `RandMap.Sed`, launch-time `.SED` reload, `g_MapGenRng`, the front-end/gameplay Scenario
 RNG, and CABHUT construction in the shared RMG object-constructor sequence.
+The design-review follow-up also covers the minimum authored-Techno constructor ordering needed to
+keep that shared gameplay Scenario cursor exact before later bridge RNG consumers.
 **Non-Scope:** Full RMG terrain formulas, Main-RNG option-randomization formulas already owned by
 the RMG option reports, complete shell paint parity, malformed external `.SED` UX, and unrelated
 post-load gameplay RNG consumers.
@@ -145,12 +148,19 @@ for each end, trying a fallback rectangle only after a primary failure. Therefor
 CABHUT consumes exactly one raw Scenario word, in deck/end execution order, and a successful deck
 can contribute up to two such draws.
 
-The constructor call census prevents a false inference from cursor deltas. RMG-related callers of
-`BuildingClass__Constructor @ 0x0043B740` include `0x005904B0` (CABHUT),
-`0x00595400` and `0x005A95B0` (neutral tech placement), plus RMG building helpers
-`0x005A6510`, `0x005A82E0`, and `0x005A91E0`. Construction precedes some placement-attempt
-loops; a failed attempt may delete the object only after its Techno constructor already spent the
-Scenario word. Consequently:
+The complete `BuildingClass__Constructor @ 0x0043B740` caller census contains
+`0x005904B0` (CABHUT), `0x00595400` and `0x005A95B0` (neutral-tech placement), plus dormant
+RMG-shaped helpers `0x005A6510`, `0x005A82E0`, and `0x005A91E0`. Active generator reachability
+narrows the event set. `0x005A6510` and `0x005A82E0` are called only by `0x005A5020`, while
+`0x005A5020` has no code or data xref and its little-endian entry address does not occur as a
+pointer in the image. `0x005A91E0` likewise has no code/data xref or pointer occurrence. None is
+in the transitive call closure of `RandomMapGenerator__Generate @ 0x00598960`; they are therefore
+excluded from the active-retail construction trace. The active trace has only CABHUT and the two
+neutral-tech owners.
+
+Within the active neutral-tech owners, construction precedes some placement-attempt loops; a
+failed attempt may delete the object only after its Techno constructor already spent the Scenario
+word. Consequently:
 
 - the Scenario delta is not a MapGen decision input;
 - it is not equal to the final `[Structures]` count;
@@ -379,6 +389,8 @@ Suggested proof tests:
 - `rmg_first_setup_entry_draws_seed_once_but_reentry_does_not`
 - `rmg_use_map_without_preview_runs_exactly_one_generation`
 - `rmg_generated_low_deck_projection_does_not_replay_overlay_mark`
+- `authored_techno_constructors_consume_scenario_in_native_section_and_upgrade_order`
+- `generated_techno_projection_consumes_no_second_constructor_draw`
 
 ## 11. Negative Facts / Evidence-Backed Exclusions
 
@@ -401,6 +413,11 @@ Suggested proof tests:
 - Do not model CABHUT's constructor word with a bridge-private RNG. It is one shared Scenario stream
   with all other Techno construction and later gameplay consumers.
 - Do not use OpenTS control ids, state lifetimes, or generator retention as YR authority.
+- Do not add `0x005A6510`, `0x005A82E0`, or `0x005A91E0` phases to the active RMG trace. Their
+  RMG-shaped code has no active generator caller or stored function pointer in this executable.
+- Do not postpone authored-map Techno constructor draws until after fixed-map projection. Native
+  consumes at construction, before Unlimbo, in section/key order; later placement failure does not
+  roll the word back.
 
 ## 12. Design-Review Follow-up: One Launch Cursor and No Overlay Replay
 
@@ -438,15 +455,19 @@ Post-Map and gameplay consumers continue it.
 Precomputed RMG geometry must return a stable ordered `RmgConstructionTrace`; it cannot return
 only surviving `MapEntity` rows. Each event identifies its ordinal, construction phase
 (`BridgeRepairHut` or `NeutralTech`), type identity, and outcome. The outcome is either
-`Discarded` or `Emitted { entity_index }`.
+`Discarded` or `Emitted { entity_index, cell }`. A discarded neutral-Techno event has no required
+cell: both active neutral-tech owners construct before their placement-attempt loops, and a fully
+failed object has no native final construction cell. Inventing one would create a false validation
+key. CABHUT construction occurs after a qualifying candidate cell is found, but its discarded
+candidate still needs no projection binding.
 
 Launch replay consumes exactly one raw Scenario draw for every event. A discarded event consumes
 and drops the low word. An emitted event consumes once and records that low word in a
 `GeneratedTechnoInitTable` keyed by the stable generated entity index. `MapLoadInitial` carries
 the trace into launch and the completed binding table into projection.
 
-`spawn_from_map_with_resolved` must accept the optional generated-init table, validate the entity
-index, type, and cell identity, and install the precomputed `techno_ctor_random_word` on the
+`spawn_from_map_with_resolved` must accept the optional generated-init table, validate the emitted
+entity index, type, and cell identity, and install the precomputed `techno_ctor_random_word` on the
 spawned `GameEntity` without another draw. That field belongs in deterministic snapshots/hashes.
 Authored-map Technos continue through the ordinary constructor-draw path; only a validated RMG
 binding suppresses that draw. This makes both rules explicit: failed generated attempts consume
@@ -488,6 +509,53 @@ excluded as authority for generated bridge overlays.
 - Generated low-deck projection preserves all direct overlay ids/cross indices and performs no
   fixed-map Mark replay or Scenario draw.
 
+### 12.5 Authored-map Techno construction is a required cursor prerequisite
+
+The constructor word is not RMG-specific. `TechnoClass__Constructor @ 0x006F2B90` ends with the
+unconditional raw Scenario `Random__Next @ 0x006F3254`, storing the low word at `Techno+0x3C8`.
+`BuildingClass__Constructor @ 0x0043B740` calls it directly;
+`UnitClass__Constructor @ 0x007353C0`, `AircraftClass__Constructor @ 0x00413D20`, and
+`InfantryClass__Constructor @ 0x00517A50` reach it through
+`FootClass__Constructor @ 0x004D31E0`.
+
+For a fixed authored scenario, `ScenarioClass__Full_Init @ 0x00686B20` constructs Technos in
+hard-coded section order after terrain:
+
+1. `[Units]` through `ScenarioClass__Read_Units_Section @ 0x00743270`;
+2. `[Aircraft]` through `0x0041B110`;
+3. `[Infantry]` through `0x0051FB00`;
+4. `[Structures]` through `BuildingClass__ReadFromINI @ 0x0044F820`.
+
+Every reader walks INI keys upward from index zero. A valid house/type and successful allocation
+reach the derived constructor before Unlimbo, so an object that later fails Unlimbo has already
+consumed its one word. Malformed rows, unknown houses/types, and allocation failure do not reach
+the constructor and consume none.
+
+The Structures reader can also construct authored upgrades after a base building successfully
+Unlimbos. It reads the upgrade count and three type slots, then the loop at
+`0x0044FD50..0x0044FDC3` constructs each selected non-`-1` upgrade in slot order through the same
+Building/Techno constructor chain. Those side constructors therefore also consume one word each;
+they cannot be omitted from the cursor contract merely because current Rust `MapEntity` does not
+yet retain the upgrade payload.
+
+Current Rust already parses base `MapEntity` rows in native category order, and
+`construct_scenario` projects them in that slice order, but `spawn_from_map_with_resolved`
+currently spends no Scenario draw and `GameEntity` has no constructor-word field. Exact bridge RNG
+continuation therefore requires a small shared load prerequisite before the RMG unit:
+
+- keep one constructor cursor owner through the existing section-order projection;
+- consume/store one raw word for every native-valid base or upgrade constructor, including a
+  later failed placement;
+- give a fixed authored entity its directly consumed word;
+- give a generated emitted entity its validated preconsumed binding and draw zero at projection;
+- consume no word for a discarded generated event at projection, because it was already consumed
+  during trace replay.
+
+The production oracle is an interleaved fixed-map fixture with one valid row in each Techno section,
+one later-failed Unlimbo case, and a structure upgrade. It asserts word-to-object assignment and the
+post-load Scenario cursor in `[Units]`, `[Aircraft]`, `[Infantry]`, `[Structures]`, upgrade-slot
+order. A paired generated fixture asserts that projection leaves the cursor unchanged.
+
 ## 13. Sources
 
 - Fresh read-only Ghidra decompile: `0x00596300`, `0x00595BC0`, `0x005E8590`,
@@ -511,6 +579,11 @@ excluded as authority for generated bridge overlays.
 - Design-review follow-up decompile/call-order census: `0x00599650`, `0x00686B20`,
   `0x0058F2C0`, `0x005A6C10`, and `0x00686890`; reconciled against
   `SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md`.
+- Revision-5 follow-up: caller/xref and pointer-byte census for `0x005A5020`, `0x005A6510`,
+  `0x005A82E0`, and `0x005A91E0`; authored constructor/loader decompiles
+  `0x006F2B90`, `0x004D31E0`, `0x00743270`, `0x0041B110`, `0x0051FB00`, and
+  `0x0044F820`; structure-upgrade assembly `0x0044FD50..0x0044FDC3`; reconciled against
+  `ACTIVE_OBJECT_ORDER_SOURCE_LOAD_REVEAL_SPAWN_GHIDRA_REPORT.md`.
 - Current Rust: `src/app/frontend/skirmish_session.rs`, `src/app/shell_random_map.rs`,
   `src/app/loading/init.rs`, `src/map/rmg/build.rs`, `src/map/rmg/pipeline.rs`,
   `src/map/rmg/phases/tech_buildings.rs`, `src/map/rmg/phases/carve_driver.rs`, and
