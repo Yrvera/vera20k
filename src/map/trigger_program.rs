@@ -45,6 +45,10 @@ pub struct TagTypeDefinition {
     /// Forward TriggerType chain. Runtime construction appends these globally
     /// in this order and push-fronts them into the Tag-local list.
     pub trigger_type_chain: Vec<usize>,
+    /// Native `TagTypeClass::GetEventCategoryBitmask` projection across the
+    /// complete TriggerType chain. Initial runtime materialization uses bits
+    /// 4, 0x10, and 8 in three independent source-order postpasses.
+    pub category_bits: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +128,9 @@ impl TriggerProgram {
                 &trigger_type_index,
                 &id,
             )?;
+            let category_bits = trigger_type_chain.iter().fold(0, |bits, &trigger_index| {
+                bits | trigger_category_bits(&trigger_types[trigger_index])
+            });
             let index = tag_types.len();
             tag_type_index.insert(id.clone(), index);
             tag_types.push(TagTypeDefinition {
@@ -132,6 +139,7 @@ impl TriggerProgram {
                 name: tag.name.clone(),
                 trigger_type_head_id: tag.trigger_type_head_id.clone(),
                 trigger_type_chain,
+                category_bits,
             });
         }
 
@@ -150,6 +158,52 @@ impl TriggerProgram {
     pub fn tag_type_index(&self, id: &str) -> Option<usize> {
         self.tag_type_index.get(&id.to_ascii_uppercase()).copied()
     }
+}
+
+impl Default for TriggerProgram {
+    fn default() -> Self {
+        let ini = IniFile::from_str("");
+        Self::compile(
+            &ini,
+            &TagMap::new(),
+            &TriggerMap::new(),
+            &EventMap::new(),
+            &ActionMap::new(),
+        )
+        .expect("empty trigger program is valid")
+    }
+}
+
+/// `TriggerTypeClass::GetEventCategoryBitmask @ 0x007271E0` combines the
+/// exhaustive Event switch at `0x0071F680` with the Action switch at
+/// `0x006E3EE0`. The latter contributes only bit 2 and therefore cannot by
+/// itself enter any of the 4/0x10/8 materialization registries.
+fn trigger_category_bits(trigger: &TriggerTypeDefinition) -> u32 {
+    let event_bits = trigger.events.iter().fold(0, |bits, event| {
+        bits | match event.kind {
+            0 | 1 | 4 | 8 | 0x18 | 0x19 | 0x1A | 0x1F | 0x35 | 0x36 | 0x3B => 0x01,
+            _ => 0,
+        } | match event.kind {
+            0 | 1 | 2 | 4 | 6 | 7 | 8 | 0x1D | 0x21..=0x2C | 0x30 | 0x31 => 0x02,
+            _ => 0,
+        } | match event.kind {
+            8 | 0x18 => 0x04,
+            _ => 0,
+        } | match event.kind {
+            3 | 5 | 8..=0x16 | 0x1E | 0x20 | 0x34 | 0x37..=0x3A => 0x08,
+            _ => 0,
+        } | match event.kind {
+            8 | 0x0D | 0x0E | 0x17 | 0x1B | 0x1C | 0x24 | 0x25 | 0x2D..=0x2F
+            | 0x32 | 0x33 | 0x3C | 0x3D => 0x10,
+            _ => 0,
+        }
+    });
+    trigger.actions.iter().fold(event_bits, |bits, action| {
+        bits | match action.entry.kind {
+            0x0E | 0x20 | 0x3C | 0x3D | 0x3E | 0x5B | 0x6F => 0x02,
+            _ => 0,
+        }
+    })
 }
 
 fn source_order<T>(ini: &IniFile, section_name: &str, entries: &HashMap<String, T>) -> Vec<String> {
@@ -365,6 +419,7 @@ mod tests {
         );
         assert_eq!(program.tag_types[0].repeat_mode, 2);
         assert_eq!(program.tag_types[0].trigger_type_chain, vec![0, 1]);
+        assert_eq!(program.tag_types[0].category_bits, 0x10);
         assert_eq!(
             program.trigger_types[0]
                 .events
@@ -382,6 +437,25 @@ mod tests {
             vec![29, 56]
         );
         assert!(program.trigger_types[0].authored_enabled);
+    }
+
+    #[test]
+    fn native_category_classifier_aggregates_the_complete_tag_chain() {
+        let ini = IniFile::from_str(
+            "[Triggers]\nA=Neutral,B,A,1,1,1,1,0\nB=Neutral,<none>,B,1,1,1,1,0\n\
+             [Tags]\nG=0,G,A\n\
+             [Events]\nA=1,24,0,0\nB=2,13,0,0,3,0,0\n\
+             [Actions]\nB=1,14,0,0,0,0,0,0,A\n",
+        );
+        let program = TriggerProgram::compile(
+            &ini,
+            &tags::parse_tags(&ini),
+            &triggers::parse_triggers(&ini),
+            &events::parse_events(&ini),
+            &actions::parse_actions(&ini),
+        )
+        .expect("category program");
+        assert_eq!(program.tag_types[0].category_bits, 0x1F);
     }
 
     #[test]

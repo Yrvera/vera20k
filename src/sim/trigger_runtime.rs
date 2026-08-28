@@ -15,14 +15,17 @@
 //! The goal is to turn parsed trigger data into real runtime behavior without
 //! committing to a full mission-script system yet.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 
 use crate::map::actions::{ActionEntry, ActionMap};
 use crate::map::events::{EventCondition, EventMap};
 use crate::map::trigger_graph::{LinkedTrigger, TriggerGraph};
+use crate::map::trigger_program::TriggerProgram;
 use crate::map::triggers::TriggerMap;
 use crate::map::variable_names::LocalVariableMap;
+use crate::sim::intern::InternedId;
+use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
 
 const ACTION_FORCE_TRIGGER: i32 = 22;
@@ -63,6 +66,103 @@ enum MissionAnnouncementKind {
     Defeat,
 }
 
+/// Source-ordered attachment stream consumed by fresh trigger runtime
+/// construction. It is compiled from the raw `[CellTags]` section and the
+/// successfully spawned object registry; neither source is reconstructed from
+/// unordered compatibility maps.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TriggerAttachmentPlan {
+    pub cell_tag_types: Vec<(u32, (u16, u16))>,
+    pub object_tag_types: Vec<u32>,
+}
+
+impl TriggerAttachmentPlan {
+    pub(crate) fn from_loaded_map(
+        program: &TriggerProgram,
+        map: &crate::map::map_file::MapFile,
+        simulation: &Simulation,
+    ) -> Self {
+        let valid_cells: HashSet<(u16, u16)> =
+            map.cells.iter().map(|cell| (cell.rx, cell.ry)).collect();
+        let mut occupied_tag_cells = HashSet::new();
+        let mut cell_tag_types = Vec::new();
+        if let Some(section) = map.ini.section("CellTags") {
+            for key in section.keys() {
+                let Ok(packed) = key.trim().parse::<u32>() else {
+                    continue;
+                };
+                let cell = ((packed % 1000) as u16, (packed / 1000) as u16);
+                if !valid_cells.contains(&cell) || occupied_tag_cells.contains(&cell) {
+                    continue;
+                }
+                let Some(tag_type_index) = section
+                    .get(key)
+                    .and_then(|id| program.tag_type_index(id.trim()))
+                else {
+                    continue;
+                };
+                // The Cell setter marks the slot occupied only after resolving
+                // a valid TagType. A later numeric alias for a rejected row can
+                // therefore still become the first successful attachment.
+                occupied_tag_cells.insert(cell);
+                cell_tag_types.push((index_u32(tag_type_index), cell));
+            }
+        }
+
+        let object_tag_types = simulation
+            .entities()
+            .values()
+            .filter_map(|entity| entity.attached_tag_id)
+            .filter_map(|id| program.tag_type_index(simulation.interner.resolve(id)))
+            .map(index_u32)
+            .collect();
+
+        Self {
+            cell_tag_types,
+            object_tag_types,
+        }
+    }
+}
+
+/// One native TagClass runtime. `trigger_instances` is evaluation/list order,
+/// the reverse of construction order because each new TriggerClass is
+/// push-fronted into the Tag.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TagRuntime {
+    pub tag_type_index: u32,
+    pub trigger_instances: Vec<u32>,
+    pub attachment_count: i32,
+    pub attached_cell: Option<(u16, u16)>,
+    pub disabled_or_uninit: bool,
+    pub busy: bool,
+    pub registered: bool,
+    pub pending_finalization: bool,
+}
+
+/// Shared mutable state owned by one TriggerType definition. Two independent
+/// Tag instances of this TriggerType observe the same per-event owner slots.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TriggerTypeRuntime {
+    pub event_last_raising_owners: Vec<Option<InternedId>>,
+}
+
+/// Per-Tag TriggerClass state. The immutable Event/Action nodes remain in the
+/// source-ordered TriggerProgram and are referenced by `trigger_type_index`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TriggerInstance {
+    pub trigger_type_index: u32,
+    pub next: Option<u32>,
+    pub raising_house: Option<InternedId>,
+    pub pending_delete: bool,
+    pub timer_start_frame: i32,
+    /// Native +0x38 is uninitialized save residue with no semantic/CRC read.
+    /// Rust always normalizes it to zero and excludes it from state hashes.
+    pub opaque_timer_word: i32,
+    pub timer_duration: i32,
+    pub satisfied_mask: u32,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TriggerRuntime {
     /// `BTreeSet` (not `HashSet`) so save files have a deterministic iteration
@@ -72,6 +172,28 @@ pub struct TriggerRuntime {
     pub disabled_triggers: BTreeSet<String>,
     pub fired_one_shot_triggers: BTreeSet<String>,
     last_announcement: Option<MissionAnnouncementKind>,
+    /// Tag master registry in first-materialization order.
+    #[serde(default)]
+    pub tags: Vec<TagRuntime>,
+    /// TagType definition index -> first reusable Tag master entry.
+    #[serde(default)]
+    pub tag_by_type: Vec<Option<u32>>,
+    /// TriggerClass global registry in actual constructor order.
+    #[serde(default)]
+    pub trigger_instances: Vec<TriggerInstance>,
+    /// Shared TEvent owner memory, one entry per immutable TriggerType.
+    #[serde(default)]
+    pub trigger_types: Vec<TriggerTypeRuntime>,
+    /// Successful CellClass tag slots, used for exact detach/pointer expiry.
+    #[serde(default)]
+    pub cell_tags: BTreeMap<(u16, u16), u32>,
+    /// Three independent native category registries.
+    #[serde(default)]
+    pub destroyed_event_tags: Vec<u32>,
+    #[serde(default)]
+    pub polling_tags: Vec<u32>,
+    #[serde(default)]
+    pub proximity_event_tags: Vec<u32>,
 }
 
 impl TriggerRuntime {
@@ -105,6 +227,224 @@ impl TriggerRuntime {
             Some(MissionAnnouncementKind::Victory) => 1u8.hash(hasher),
             Some(MissionAnnouncementKind::Defeat) => 2u8.hash(hasher),
         }
+
+        self.tags.len().hash(hasher);
+        for tag in &self.tags {
+            tag.tag_type_index.hash(hasher);
+            tag.trigger_instances.hash(hasher);
+            tag.attachment_count.hash(hasher);
+            tag.attached_cell.hash(hasher);
+            tag.disabled_or_uninit.hash(hasher);
+            tag.busy.hash(hasher);
+            tag.registered.hash(hasher);
+            tag.pending_finalization.hash(hasher);
+        }
+        self.tag_by_type.hash(hasher);
+        self.trigger_instances.len().hash(hasher);
+        for instance in &self.trigger_instances {
+            instance.trigger_type_index.hash(hasher);
+            instance.next.hash(hasher);
+            instance.raising_house.hash(hasher);
+            instance.pending_delete.hash(hasher);
+            instance.timer_start_frame.hash(hasher);
+            // Deliberately omit inert native +0x38 residue.
+            instance.timer_duration.hash(hasher);
+            instance.satisfied_mask.hash(hasher);
+            instance.enabled.hash(hasher);
+        }
+        self.trigger_types.len().hash(hasher);
+        for trigger_type in &self.trigger_types {
+            trigger_type.event_last_raising_owners.hash(hasher);
+        }
+        self.cell_tags.hash(hasher);
+        self.destroyed_event_tags.hash(hasher);
+        self.polling_tags.hash(hasher);
+        self.proximity_event_tags.hash(hasher);
+    }
+
+    /// Fresh-load native Tag/Trigger runtime materialization.
+    ///
+    /// gamemd-derived from `ScenarioClass__Full_Init @ 0x00686B20`, the five
+    /// map attachment readers, `FUN_00684C30`'s 4/0x10/8 postpasses, and
+    /// `TriggerClass__Constructor @ 0x00725FA0`.
+    pub fn materialize_fresh(
+        program: &TriggerProgram,
+        local_variables: &LocalVariableMap,
+        attachments: &TriggerAttachmentPlan,
+        difficulty_raw: i32,
+        binary_frame: u32,
+        scenario_rng: &mut SimRng,
+    ) -> Self {
+        let mut runtime = Self {
+            tag_by_type: vec![None; program.tag_types.len()],
+            trigger_types: program
+                .trigger_types
+                .iter()
+                .map(|definition| TriggerTypeRuntime {
+                    event_last_raising_owners: vec![None; definition.events.len()],
+                })
+                .collect(),
+            ..Self::default()
+        };
+        for local in local_variables.values() {
+            if local.initially_set {
+                runtime.locals_set.insert(local.index);
+            }
+        }
+
+        // Successful Cell setters are first, in raw source order. Reusing a
+        // Tag increments one shared signed count and overwrites Tag+0x30.
+        for &(tag_type_index, cell) in &attachments.cell_tag_types {
+            let tag_index = runtime.ensure_tag(
+                program,
+                tag_type_index,
+                difficulty_raw,
+                binary_frame,
+                scenario_rng,
+            );
+            let tag = &mut runtime.tags[tag_index as usize];
+            tag.attachment_count = tag.attachment_count.wrapping_add(1);
+            tag.attached_cell = Some(cell);
+            runtime.cell_tags.insert(cell, tag_index);
+        }
+
+        // Successfully spawned Units/Aircraft/Infantry/Structures already
+        // occupy stable-id order in the exact section construction stream.
+        for &tag_type_index in &attachments.object_tag_types {
+            let tag_index = runtime.ensure_tag(
+                program,
+                tag_type_index,
+                difficulty_raw,
+                binary_frame,
+                scenario_rng,
+            );
+            let tag = &mut runtime.tags[tag_index as usize];
+            tag.attachment_count = tag.attachment_count.wrapping_add(1);
+        }
+
+        // These are three complete, independent `[Tags]` source-order walks.
+        for category_mask in [0x04u32, 0x10, 0x08] {
+            for (tag_type_index, definition) in program.tag_types.iter().enumerate() {
+                if definition.category_bits & category_mask == 0 {
+                    continue;
+                }
+                let tag_index = runtime.ensure_tag(
+                    program,
+                    index_u32(tag_type_index),
+                    difficulty_raw,
+                    binary_frame,
+                    scenario_rng,
+                );
+                match category_mask {
+                    0x04 => runtime.destroyed_event_tags.push(tag_index),
+                    0x10 => runtime.polling_tags.push(tag_index),
+                    0x08 => runtime.proximity_event_tags.push(tag_index),
+                    _ => unreachable!(),
+                }
+            }
+        }
+
+        runtime
+    }
+
+    fn ensure_tag(
+        &mut self,
+        program: &TriggerProgram,
+        tag_type_index: u32,
+        difficulty_raw: i32,
+        binary_frame: u32,
+        scenario_rng: &mut SimRng,
+    ) -> u32 {
+        if let Some(Some(tag_index)) = self.tag_by_type.get(tag_type_index as usize) {
+            return *tag_index;
+        }
+        self.construct_tag(
+            program,
+            tag_type_index,
+            difficulty_raw,
+            binary_frame,
+            scenario_rng,
+            true,
+        )
+    }
+
+    /// TeamType construction is the sole native no-reuse factory: every Team
+    /// gets a distinct Tag/Trigger group even when an ordinary map attachment
+    /// already materialized the same TagType.
+    pub fn materialize_team_tag(
+        &mut self,
+        program: &TriggerProgram,
+        tag_type_index: u32,
+        difficulty_raw: i32,
+        binary_frame: u32,
+        scenario_rng: &mut SimRng,
+    ) -> u32 {
+        self.construct_tag(
+            program,
+            tag_type_index,
+            difficulty_raw,
+            binary_frame,
+            scenario_rng,
+            false,
+        )
+    }
+
+    fn construct_tag(
+        &mut self,
+        program: &TriggerProgram,
+        tag_type_index: u32,
+        difficulty_raw: i32,
+        binary_frame: u32,
+        scenario_rng: &mut SimRng,
+        install_reuse_lookup: bool,
+    ) -> u32 {
+        let definition = &program.tag_types[tag_type_index as usize];
+        let tag_index = index_u32(self.tags.len());
+        // Native appends the Tag master before constructing its chain.
+        self.tags.push(TagRuntime {
+            tag_type_index,
+            registered: true,
+            ..TagRuntime::default()
+        });
+        if install_reuse_lookup {
+            self.tag_by_type[tag_type_index as usize] = Some(tag_index);
+        }
+
+        for &trigger_type_index in &definition.trigger_type_chain {
+            let trigger_definition = &program.trigger_types[trigger_type_index];
+            let instance_index = index_u32(self.trigger_instances.len());
+            let previous_head = self.tags[tag_index as usize]
+                .trigger_instances
+                .first()
+                .copied();
+            let mut instance = TriggerInstance {
+                trigger_type_index: index_u32(trigger_type_index),
+                next: previous_head,
+                enabled: true,
+                opaque_timer_word: 0,
+                ..TriggerInstance::default()
+            };
+            // Global append precedes timer reset and the final enable gate.
+            self.trigger_instances.push(instance.clone());
+            reset_trigger_timer(
+                &mut instance,
+                trigger_definition,
+                binary_frame,
+                scenario_rng,
+            );
+            instance.enabled = trigger_definition.authored_enabled
+                && match difficulty_raw {
+                    0 => trigger_definition.difficulty.easy,
+                    1 => trigger_definition.difficulty.medium,
+                    2 => trigger_definition.difficulty.hard,
+                    _ => true,
+                };
+            self.trigger_instances[instance_index as usize] = instance;
+            self.tags[tag_index as usize]
+                .trigger_instances
+                .insert(0, instance_index);
+        }
+        tag_index
     }
 
     pub fn from_map(triggers: &TriggerMap, local_variables: &LocalVariableMap) -> Self {
@@ -451,6 +791,34 @@ impl TriggerRuntime {
             _ => {}
         }
     }
+}
+
+fn reset_trigger_timer(
+    instance: &mut TriggerInstance,
+    definition: &crate::map::trigger_program::TriggerTypeDefinition,
+    binary_frame: u32,
+    scenario_rng: &mut SimRng,
+) {
+    for (event_index, event) in definition.events.iter().enumerate() {
+        let duration = match event.kind {
+            13 => Some(event.scalar().wrapping_mul(15)),
+            51 => {
+                let scalar = event.scalar();
+                let draw = scenario_rng.next_range_i32_inclusive(0, scalar);
+                Some(scalar.wrapping_div(2).wrapping_add(draw).wrapping_mul(15))
+            }
+            _ => None,
+        };
+        if let Some(duration) = duration {
+            instance.timer_start_frame = binary_frame as i32;
+            instance.timer_duration = duration;
+            instance.satisfied_mask &= !(1u32 << (event_index & 31));
+        }
+    }
+}
+
+fn index_u32(index: usize) -> u32 {
+    u32::try_from(index).expect("active retail trigger registry index fits u32")
 }
 
 fn enqueue_trigger(

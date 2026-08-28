@@ -36,6 +36,7 @@ pub struct SimResources {
     /// machine lives in the simulation, these are bound once (F07: the app
     /// no longer passes definitions each frame).
     pub trigger_graph: crate::map::trigger_graph::TriggerGraph,
+    pub trigger_program: crate::map::trigger_program::TriggerProgram,
     pub triggers: crate::map::triggers::TriggerMap,
     pub events: crate::map::events::EventMap,
     pub actions: crate::map::actions::ActionMap,
@@ -56,6 +57,7 @@ impl SimResources {
             .expect("empty rules parse"),
             terrain_template: None,
             trigger_graph: Default::default(),
+            trigger_program: Default::default(),
             triggers: Default::default(),
             events: Default::default(),
             actions: Default::default(),
