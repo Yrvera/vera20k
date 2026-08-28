@@ -54,11 +54,18 @@ const EVENT_TECHTYPE_EXISTS: i32 = 60;
 const EVENT_TECHTYPE_DOES_NOT_EXIST: i32 = 61;
 const LOGICAL_FRAMES_PER_SECOND: i32 = crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as i32;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TacticalCameraCommand {
+    Glide {
+        target: [i32; 2],
+        speed: crate::util::native_x87::NativeF32Bits,
+    },
+    Jump { target: [i32; 2] },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TriggerEffect {
-    CenterCameraAtWaypoint { waypoint: u32, immediate: bool },
-    MissionAnnouncement { text: String },
-    MissionResult { title: String, detail: String },
+    TacticalCamera(TacticalCameraCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,12 +108,6 @@ impl NativeTriggerEvent {
             editor_mode: false,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum MissionAnnouncementKind {
-    Victory,
-    Defeat,
 }
 
 /// Source-ordered attachment stream consumed by fresh trigger runtime
@@ -225,7 +226,6 @@ pub struct TriggerRuntime {
     pub locals_set: BTreeSet<u32>,
     pub disabled_triggers: BTreeSet<String>,
     pub fired_one_shot_triggers: BTreeSet<String>,
-    last_announcement: Option<MissionAnnouncementKind>,
     /// Tag master registry in first-materialization order.
     #[serde(default)]
     pub tags: Vec<TagRuntime>,
@@ -289,12 +289,6 @@ impl TriggerRuntime {
         self.fired_one_shot_triggers.len().hash(hasher);
         for value in &self.fired_one_shot_triggers {
             value.hash(hasher);
-        }
-
-        match self.last_announcement {
-            None => 0u8.hash(hasher),
-            Some(MissionAnnouncementKind::Victory) => 1u8.hash(hasher),
-            Some(MissionAnnouncementKind::Defeat) => 2u8.hash(hasher),
         }
 
         self.tags.len().hash(hasher);
@@ -784,19 +778,22 @@ impl TriggerRuntime {
                 }
             }
             ACTION_CENTER_CAMERA => {
-                if let Some(waypoint) = action.waypoint_index {
-                    effects.push(TriggerEffect::CenterCameraAtWaypoint {
-                        waypoint,
-                        immediate: false,
-                    });
+                if let (Some(sim), Some(waypoint)) = (simulation, action.waypoint_index)
+                    && let Some(target) = tactical_target_for_waypoint(sim, waypoints, waypoint)
+                    && let Some(speed) = camera_speed_from_legacy_action(action)
+                {
+                    effects.push(TriggerEffect::TacticalCamera(
+                        TacticalCameraCommand::Glide { target, speed },
+                    ));
                 }
             }
             ACTION_JUMP_CAMERA => {
-                if let Some(waypoint) = action.waypoint_index {
-                    effects.push(TriggerEffect::CenterCameraAtWaypoint {
-                        waypoint,
-                        immediate: true,
-                    });
+                if let (Some(sim), Some(waypoint)) = (simulation, action.waypoint_index)
+                    && let Some(target) = tactical_target_for_waypoint(sim, waypoints, waypoint)
+                {
+                    effects.push(TriggerEffect::TacticalCamera(
+                        TacticalCameraCommand::Jump { target },
+                    ));
                 }
             }
             ACTION_SET_ALTERNATE_BASE => {
@@ -835,35 +832,11 @@ impl TriggerRuntime {
                     house.alternate_base_center = (0, 0);
                 }
             }
-            ACTION_ANNOUNCE_WIN => {
-                self.last_announcement = Some(MissionAnnouncementKind::Victory);
-                effects.push(TriggerEffect::MissionAnnouncement {
-                    text: "Mission Accomplished".to_string(),
-                });
-            }
-            ACTION_ANNOUNCE_LOSE => {
-                self.last_announcement = Some(MissionAnnouncementKind::Defeat);
-                effects.push(TriggerEffect::MissionAnnouncement {
-                    text: "Mission Failed".to_string(),
-                });
-            }
-            ACTION_END_SCENARIO => {
-                let (title, detail) = match self.last_announcement {
-                    Some(MissionAnnouncementKind::Victory) => (
-                        "Mission Accomplished".to_string(),
-                        "The scenario ended after a victory announcement.".to_string(),
-                    ),
-                    Some(MissionAnnouncementKind::Defeat) => (
-                        "Mission Failed".to_string(),
-                        "The scenario ended after a defeat announcement.".to_string(),
-                    ),
-                    None => (
-                        "Scenario Ended".to_string(),
-                        "A map trigger ended the scenario.".to_string(),
-                    ),
-                };
-                effects.push(TriggerEffect::MissionResult { title, detail });
-            }
+            // The legacy aggregate executor has no app-pinned g_PlayerPtr.
+            // Production native programs use TriggerTransaction below; keeping
+            // inferred/hardcoded announcement state here would recreate the
+            // disproven owner.
+            ACTION_ANNOUNCE_WIN | ACTION_ANNOUNCE_LOSE | ACTION_END_SCENARIO => {}
             _ => {}
         }
     }
@@ -879,6 +852,7 @@ struct TriggerTransaction<'state, 'data> {
     rules: Option<&'data crate::rules::ruleset::RuleSet>,
     overlay_registry: Option<&'data crate::rules::overlay_types::OverlayTypeRegistry>,
     waypoints: &'data HashMap<u32, crate::map::waypoints::Waypoint>,
+    local_player_owner: Option<InternedId>,
     effects: Vec<TriggerEffect>,
 }
 
@@ -894,6 +868,25 @@ impl TriggerRuntime {
         overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
         waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
     ) -> Vec<TriggerEffect> {
+        self.advance_native_poll_for_client(
+            program,
+            simulation,
+            rules,
+            overlay_registry,
+            waypoints,
+            None,
+        )
+    }
+
+    pub(crate) fn advance_native_poll_for_client(
+        &mut self,
+        program: &TriggerProgram,
+        simulation: &mut Simulation,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+        overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
+        waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
+        local_player_owner: Option<InternedId>,
+    ) -> Vec<TriggerEffect> {
         let mut transaction = TriggerTransaction {
             runtime: self,
             program,
@@ -901,6 +894,7 @@ impl TriggerRuntime {
             rules,
             overlay_registry,
             waypoints,
+            local_player_owner,
             effects: Vec::new(),
         };
         transaction.poll();
@@ -926,6 +920,7 @@ impl TriggerRuntime {
             rules,
             overlay_registry,
             waypoints,
+            local_player_owner: None,
             effects: Vec::new(),
         };
         let fired = transaction.deliver_tag(tag_index, event);
@@ -1411,11 +1406,27 @@ impl TriggerTransaction<'_, '_> {
                 NativeActionResult::True
             }
             ACTION_CENTER_CAMERA | ACTION_JUMP_CAMERA => {
-                if let Some(waypoint) = action.entry.waypoint_index {
-                    self.effects.push(TriggerEffect::CenterCameraAtWaypoint {
-                        waypoint,
-                        immediate: action.entry.kind == ACTION_JUMP_CAMERA,
-                    });
+                let Some(waypoint) = action.entry.waypoint_index else {
+                    return NativeActionResult::False;
+                };
+                let Some(target) = tactical_target_for_waypoint(
+                    self.simulation,
+                    self.waypoints,
+                    waypoint,
+                ) else {
+                    return NativeActionResult::False;
+                };
+                if action.entry.kind == ACTION_JUMP_CAMERA {
+                    self.effects.push(TriggerEffect::TacticalCamera(
+                        TacticalCameraCommand::Jump { target },
+                    ));
+                } else {
+                    let Some(speed) = camera_speed_from_native_action(action) else {
+                        return NativeActionResult::False;
+                    };
+                    self.effects.push(TriggerEffect::TacticalCamera(
+                        TacticalCameraCommand::Glide { target, speed },
+                    ));
                 }
                 NativeActionResult::True
             }
@@ -1469,20 +1480,55 @@ impl TriggerTransaction<'_, '_> {
                 }
             }
             ACTION_ANNOUNCE_WIN => {
-                self.effects.push(TriggerEffect::MissionAnnouncement {
-                    text: "Mission Accomplished".to_string(),
-                });
+                self.apply_local_result_action(ACTION_ANNOUNCE_WIN);
                 NativeActionResult::True
             }
             ACTION_ANNOUNCE_LOSE => {
-                self.effects.push(TriggerEffect::MissionAnnouncement {
-                    text: "Mission Failed".to_string(),
-                });
+                self.apply_local_result_action(ACTION_ANNOUNCE_LOSE);
                 NativeActionResult::True
             }
-            ACTION_END_SCENARIO => NativeActionResult::True,
+            ACTION_END_SCENARIO => {
+                self.apply_local_result_action(ACTION_END_SCENARIO);
+                NativeActionResult::True
+            }
             _ => NativeActionResult::False,
         }
+    }
+
+    fn apply_local_result_action(&mut self, action_kind: i32) {
+        let Some(owner) = self.local_player_owner else {
+            return;
+        };
+        let current_frame = self.simulation.session.binary_frame as i32;
+        let savour_frames = crate::rules::ruleset::savour_delay_frames(
+            self.rules
+                .map(|rules| rules.general.savour_delay_minutes)
+                .unwrap_or(0.03),
+        ) as i32;
+        let Some(house) = self.simulation.houses.get_mut(&owner) else {
+            return;
+        };
+        let accepted = match action_kind {
+            ACTION_ANNOUNCE_WIN => house.flag_to_win_skip_timer(),
+            ACTION_ANNOUNCE_LOSE => house.flag_to_lose_skip_timer(),
+            ACTION_END_SCENARIO => house.end_scenario_result(current_frame, savour_frames),
+            _ => false,
+        };
+        // Action 69 owns only the synchronous House result/timer mutation. Its
+        // wrapper never posts a direct announcement or result screen; those
+        // remain House-update/result-routing authority. Actions 67/68 are the
+        // two immediate localized notice producers, and only on transition.
+        if !accepted || action_kind == ACTION_END_SCENARIO {
+            return;
+        }
+        let kind = if action_kind == ACTION_ANNOUNCE_LOSE {
+            crate::sim::house_state::HouseOutcomeKind::Defeat
+        } else {
+            crate::sim::house_state::HouseOutcomeKind::Victory
+        };
+        self.simulation
+            .sound_events
+            .push(crate::sim::world::SimSoundEvent::MatchOutcome { owner, kind });
     }
 
     fn write_variable(&mut self, global: bool, index: u32, set: bool) {
@@ -1647,6 +1693,86 @@ fn reset_trigger_timer(
             instance.satisfied_mask &= !(1u32 << (event_index & 31));
         }
     }
+}
+
+const CAMERA_WAYPOINT_SLOT_COUNT: u32 = 702;
+const CAMERA_GLIDE_SPEEDS: [crate::util::native_x87::NativeF32Bits; 5] = [
+    crate::util::native_x87::NativeF32Bits::from_bits(0x3ac4_9ba6),
+    crate::util::native_x87::NativeF32Bits::from_bits(0x3b44_9ba6),
+    crate::util::native_x87::NativeF32Bits::from_bits(0x3bf5_c28f),
+    crate::util::native_x87::NativeF32Bits::from_bits(0x3cf5_c28f),
+    crate::util::native_x87::NativeF32Bits::from_bits(0x3d75_c28f),
+];
+
+fn camera_speed_from_native_action(
+    action: &crate::map::trigger_program::TypedActionDefinition,
+) -> Option<crate::util::native_x87::NativeF32Bits> {
+    let selector = action
+        .entry
+        .params
+        .get(1)
+        .map(|value| crate::rules::ini_value::atoi_lenient(value.trim()))?;
+    usize::try_from(selector)
+        .ok()
+        .and_then(|index| CAMERA_GLIDE_SPEEDS.get(index).copied())
+}
+
+fn camera_speed_from_legacy_action(
+    action: &ActionEntry,
+) -> Option<crate::util::native_x87::NativeF32Bits> {
+    let selector = action
+        .params
+        .get(1)
+        .map(|value| crate::rules::ini_value::atoi_lenient(value.trim()))?;
+    usize::try_from(selector)
+        .ok()
+        .and_then(|index| CAMERA_GLIDE_SPEEDS.get(index).copied())
+}
+
+fn tactical_target_for_waypoint(
+    simulation: &Simulation,
+    waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
+    waypoint_index: u32,
+) -> Option<[i32; 2]> {
+    if waypoint_index >= CAMERA_WAYPOINT_SLOT_COUNT {
+        return None;
+    }
+    let (rx, ry) = waypoints
+        .get(&waypoint_index)
+        .map_or((0, 0), |waypoint| (waypoint.rx, waypoint.ry));
+    let world_x = i32::from(rx).wrapping_mul(256).wrapping_add(128);
+    let world_y = i32::from(ry).wrapping_mul(256).wrapping_add(128);
+    let mut world_z = simulation
+        .resolved_terrain
+        .as_ref()
+        .and_then(|terrain| terrain.cell(rx, ry))
+        .and_then(|cell| {
+            crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                world_x,
+                world_y,
+            )
+            .ok()
+        })
+        .unwrap_or(0);
+    // This camera path reads the live CellClass flag word, whose deck predicate
+    // is `0x100 | 0x400`. The existing serialized 0x1180 authority supplies
+    // the structural bit; ResolvedTerrain retains the independently modeled
+    // destroyed/ramp 0x400 bit. Either one adds the exact deck-height constant.
+    let live_cell_flags = simulation
+        .resolved_terrain
+        .as_ref()
+        .and_then(|terrain| terrain.cell(rx, ry))
+        .map_or(0, |cell| cell.bridge_facts.raw_flags)
+        | simulation.real_cell_bridge_flags_0x1180.flags_at((rx, ry));
+    if live_cell_flags & 0x500 != 0 {
+        world_z = world_z.wrapping_add(416);
+    }
+    let (screen_x, screen_y) = crate::util::lepton::absolute_leptons_to_screen(
+        world_x, world_y, world_z,
+    );
+    Some([screen_x as i32, screen_y as i32])
 }
 
 fn index_u32(index: usize) -> u32 {

@@ -21,6 +21,7 @@ use crate::match_bootstrap::{MatchCorrelationId, PreparedMatchStartup, RustL0Rec
 use crate::rules::ruleset::RuleSet;
 use crate::sim::snapshot::{
     GameSnapshot, GameSnapshotHeader, SnapshotError, SnapshotMapRestoreOutput, SnapshotRestoreError,
+    SnapshotPresentationState,
 };
 use crate::sim::world::Simulation;
 
@@ -81,6 +82,7 @@ pub(crate) struct PreparedLoad {
     simulation: Simulation,
     map_restore: SnapshotMapRestoreOutput,
     preserved_startup: MatchStartupStateSnapshot,
+    presentation: SnapshotPresentationState,
 }
 
 /// Immutable production input to an in-scenario load transaction.
@@ -184,7 +186,7 @@ impl PreparedLoad {
             .repository
             .read(path)
             .map_err(PreparedLoadError::ReadFile)?;
-        let (simulation, map_restore) = Self::prepare_candidate(
+        let (simulation, map_restore, presentation) = Self::prepare_candidate(
             &bytes,
             view.current_simulation,
             view.expected_map_hash,
@@ -196,6 +198,7 @@ impl PreparedLoad {
             simulation,
             map_restore,
             preserved_startup,
+            presentation,
         })
     }
 
@@ -209,7 +212,10 @@ impl PreparedLoad {
         rules: Option<&RuleSet>,
         terrain_template: Option<&ResolvedTerrainGrid>,
         overlay_registry: Option<&OverlayTypeRegistry>,
-    ) -> Result<(Simulation, SnapshotMapRestoreOutput), PreparedLoadError> {
+    ) -> Result<
+        (Simulation, SnapshotMapRestoreOutput, SnapshotPresentationState),
+        PreparedLoadError,
+    > {
         let current_simulation =
             current_simulation.ok_or(PreparedLoadError::MissingCurrentSimulation)?;
         let expected_map_hash = expected_map_hash.ok_or(PreparedLoadError::MissingMapHash)?;
@@ -229,6 +235,7 @@ impl PreparedLoad {
         let metallic_debris = current_simulation.metallic_debris.clone();
         let bridge_anim_sounds = current_simulation.bridge_anim_sounds.clone();
 
+        let presentation = snapshot.presentation;
         let mut simulation = snapshot.sim;
         // This is the in-scenario Load Game route: native load reseeds
         // Scenario->Random after reading ScenarioClass, while the process-global
@@ -249,13 +256,17 @@ impl PreparedLoad {
         simulation.resolve_type_handles(rules);
         simulation.restore_move_sound_handles_after_load(rules)?;
 
-        Ok((simulation, map_restore))
+        Ok((simulation, map_restore, presentation))
     }
 
     pub(crate) fn native_tiberium_stats(
         &self,
     ) -> crate::sim::ore_growth::NativeTiberiumRebuildStats {
         self.map_restore.native_tiberium_stats
+    }
+
+    pub(crate) fn presentation(&self) -> SnapshotPresentationState {
+        self.presentation
     }
 
     pub(crate) fn into_parts(
@@ -1108,7 +1119,7 @@ mod tests {
 
         let mut current = load_fixture_simulation(false);
         current.overlay_grid = Some(OverlayGrid::new(1, 1));
-        let (restored, _) = PreparedLoad::prepare_candidate(
+        let (restored, _, _) = PreparedLoad::prepare_candidate(
             &bytes,
             Some(&current),
             Some(LOAD_FIXTURE_MAP_HASH),

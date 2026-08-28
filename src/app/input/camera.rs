@@ -25,6 +25,211 @@ use crate::app::AppState;
 use crate::app::types::ScrollDir;
 use crate::map::terrain;
 
+/// App-owned native TacticalClass camera transaction. Exact float payloads
+/// remain raw bits so command replacement and save/load cannot normalize them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TacticalCameraMotion {
+    pub(crate) glide_start: [i32; 2],
+    pub(crate) glide_target: [i32; 2],
+    pub(crate) committed: [i32; 2],
+    pub(crate) requested: [i32; 2],
+    pub(crate) speed: crate::util::native_x87::NativeF32Bits,
+    pub(crate) progress: crate::util::native_x87::NativeF32Bits,
+    pub(crate) last_processed_frame: Option<u32>,
+}
+
+impl Default for TacticalCameraMotion {
+    fn default() -> Self {
+        Self {
+            glide_start: [0, 0],
+            glide_target: [0, 0],
+            committed: [0, 0],
+            requested: [0, 0],
+            speed: crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+            progress: crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+            last_processed_frame: None,
+        }
+    }
+}
+
+impl TacticalCameraMotion {
+    pub(crate) fn snapshot(self) -> crate::sim::snapshot::SnapshotTacticalCamera {
+        crate::sim::snapshot::SnapshotTacticalCamera {
+            glide_start: self.glide_start,
+            glide_target: self.glide_target,
+            committed: self.committed,
+            requested: self.requested,
+            speed_bits: self.speed.bits(),
+            progress_bits: self.progress.bits(),
+            last_processed_frame: self.last_processed_frame,
+        }
+    }
+
+    pub(crate) fn from_snapshot(
+        snapshot: crate::sim::snapshot::SnapshotTacticalCamera,
+    ) -> Self {
+        Self {
+            glide_start: snapshot.glide_start,
+            glide_target: snapshot.glide_target,
+            committed: snapshot.committed,
+            requested: snapshot.requested,
+            speed: crate::util::native_x87::NativeF32Bits::from_bits(snapshot.speed_bits),
+            progress: crate::util::native_x87::NativeF32Bits::from_bits(snapshot.progress_bits),
+            last_processed_frame: snapshot.last_processed_frame,
+        }
+    }
+}
+
+pub(crate) fn tactical_camera_presentation_snapshot(
+    state: &AppState,
+) -> crate::sim::snapshot::SnapshotPresentationState {
+    crate::sim::snapshot::SnapshotPresentationState {
+        tactical_camera: state.match_state.input.tactical_camera_motion.snapshot(),
+    }
+}
+
+pub(crate) fn restore_tactical_camera_presentation(
+    state: &mut AppState,
+    snapshot: crate::sim::snapshot::SnapshotPresentationState,
+) {
+    let restored = TacticalCameraMotion::from_snapshot(snapshot.tactical_camera);
+    state.match_state.input.tactical_camera_motion = restored;
+    // MapClass::Resize clamps the committed center on load. The requested
+    // center follows the accepted clamp; glide/timer state and the exact last
+    // processed frame remain the serialized transaction.
+    install_tactical_center(state, restored.committed);
+    let clamped = state.match_state.input.tactical_camera_motion.committed;
+    state.match_state.input.tactical_camera_motion = TacticalCameraMotion {
+        committed: clamped,
+        requested: clamped,
+        ..restored
+    };
+}
+
+fn tactical_camera_center(state: &AppState) -> [i32; 2] {
+    let (tactical_w, tactical_h) =
+        tactical_viewport_size_px(state.render_width(), state.render_height());
+    let zoom = state.match_state.input.zoom_level;
+    [
+        (state.match_state.input.camera_x + tactical_w as f32 / (2.0 * zoom)) as i32,
+        (state.match_state.input.camera_y + tactical_h as f32 / (2.0 * zoom)) as i32,
+    ]
+}
+
+fn install_tactical_center(state: &mut AppState, center: [i32; 2]) {
+    let render_width = state.render_width();
+    let render_height = state.render_height();
+    let (tactical_w, tactical_h) = tactical_viewport_size_px(render_width, render_height);
+    let (camera_x, camera_y) = tactical_camera_top_left(
+        (center[0] as f32, center[1] as f32),
+        tactical_w as f32,
+        tactical_h as f32,
+        state.match_state.input.zoom_level,
+    );
+    state.match_state.input.camera_x = camera_x;
+    state.match_state.input.camera_y = camera_y;
+    clamp_camera_to_playable_area(state, render_width as f32, render_height as f32);
+    let clamped = tactical_camera_center(state);
+    state.match_state.input.tactical_camera_motion.committed = clamped;
+    state.match_state.input.tactical_camera_motion.requested = clamped;
+}
+
+pub(crate) fn apply_tactical_camera_command(
+    state: &mut AppState,
+    command: crate::sim::trigger_runtime::TacticalCameraCommand,
+) {
+    let current = tactical_camera_center(state);
+    let jump = apply_tactical_camera_command_to_motion(
+        &mut state.match_state.input.tactical_camera_motion,
+        current,
+        command,
+    );
+    if let Some(target) = jump {
+        install_tactical_center(state, target);
+    }
+}
+
+fn apply_tactical_camera_command_to_motion(
+    motion: &mut TacticalCameraMotion,
+    current: [i32; 2],
+    command: crate::sim::trigger_runtime::TacticalCameraCommand,
+) -> Option<[i32; 2]> {
+    motion.committed = current;
+    motion.requested = current;
+    match command {
+        crate::sim::trigger_runtime::TacticalCameraCommand::Glide { target, speed } => {
+            motion.glide_start = current;
+            motion.glide_target = target;
+            motion.speed = speed;
+            motion.progress = crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO;
+            None
+        }
+        crate::sim::trigger_runtime::TacticalCameraCommand::Jump { target } => {
+            motion.committed = target;
+            motion.requested = target;
+            Some(target)
+        }
+    }
+}
+
+fn advance_tactical_camera_motion_state(
+    motion: &mut TacticalCameraMotion,
+    binary_frame: u32,
+    scenario_active: bool,
+    replay_active: bool,
+) -> Option<[i32; 2]> {
+    if !scenario_active || replay_active {
+        return None;
+    }
+    if motion.last_processed_frame == Some(binary_frame) {
+        return None;
+    }
+    motion.last_processed_frame = Some(binary_frame);
+    if motion.glide_target == [0, 0] {
+        return None;
+    }
+
+    let current_progress = f32::from_bits(motion.progress.bits());
+    let speed = f32::from_bits(motion.speed.bits());
+    let progress = (current_progress + speed).min(1.0);
+    motion.progress = crate::util::native_x87::NativeF32Bits::from_bits(progress.to_bits());
+    let point = [
+        (f64::from(motion.glide_start[0])
+            + f64::from(motion.glide_target[0] - motion.glide_start[0])
+                * f64::from(progress))
+        .trunc() as i32,
+        (f64::from(motion.glide_start[1])
+            + f64::from(motion.glide_target[1] - motion.glide_start[1])
+                * f64::from(progress))
+        .trunc() as i32,
+    ];
+    motion.committed = point;
+    motion.requested = point;
+    if progress >= 1.0 {
+        motion.glide_target = [0, 0];
+    }
+    Some(point)
+}
+
+/// Native TacticalClass AI step after trigger camera commands and before the
+/// follow-camera tail.
+pub(crate) fn advance_tactical_camera_motion(
+    state: &mut AppState,
+    binary_frame: u32,
+    scenario_active: bool,
+    replay_active: bool,
+) {
+    let point = advance_tactical_camera_motion_state(
+        &mut state.match_state.input.tactical_camera_motion,
+        binary_frame,
+        scenario_active,
+        replay_active,
+    );
+    if let Some(point) = point {
+        install_tactical_center(state, point);
+    }
+}
+
 /// Stock YR reserves a fixed 168-pixel right sidebar and a fixed 32-pixel
 /// bottom strip when it builds the tactical view rectangle.
 const TACTICAL_SIDEBAR_WIDTH_PX: u32 = 168;
@@ -1346,6 +1551,170 @@ mod tests {
     const SIDEBAR_W: f32 = 168.0;
     const TACTICAL_W: f32 = WINDOW_W - SIDEBAR_W;
     const TACTICAL_H: f32 = WINDOW_H - TACTICAL_BOTTOM_STRIP_HEIGHT_PX as f32;
+
+    fn glide(target: [i32; 2], speed_bits: u32) -> crate::sim::trigger_runtime::TacticalCameraCommand {
+        crate::sim::trigger_runtime::TacticalCameraCommand::Glide {
+            target,
+            speed: crate::util::native_x87::NativeF32Bits::from_bits(speed_bits),
+        }
+    }
+
+    #[test]
+    fn tactical_glide_uses_exact_speed_bits_and_completion_counts() {
+        for (speed_bits, expected_steps) in [
+            (0x3ac4_9ba6, 667),
+            (0x3b44_9ba6, 334),
+            (0x3bf5_c28f, 134),
+            (0x3cf5_c28f, 34),
+            (0x3d75_c28f, 17),
+        ] {
+            let mut motion = TacticalCameraMotion::default();
+            assert_eq!(
+                apply_tactical_camera_command_to_motion(
+                    &mut motion,
+                    [100, 200],
+                    glide([1_100, 700], speed_bits),
+                ),
+                None
+            );
+            let mut steps = 0_u32;
+            while motion.glide_target != [0, 0] {
+                assert!(
+                    advance_tactical_camera_motion_state(
+                        &mut motion,
+                        steps,
+                        true,
+                        false,
+                    )
+                    .is_some()
+                );
+                steps += 1;
+            }
+            assert_eq!(steps, expected_steps, "speed {speed_bits:#010x}");
+            assert_eq!(motion.committed, [1_100, 700]);
+        }
+    }
+
+    #[test]
+    fn tactical_commands_preserve_all_native_ordered_stack_cases() {
+        let slow = glide([1_000, 2_000], 0x3ac4_9ba6);
+        let fast = glide([3_000, 4_000], 0x3d75_c28f);
+        let jump_a = crate::sim::trigger_runtime::TacticalCameraCommand::Jump {
+            target: [500, 600],
+        };
+        let jump_b = crate::sim::trigger_runtime::TacticalCameraCommand::Jump {
+            target: [700, 800],
+        };
+
+        let mut glide_then_jump = TacticalCameraMotion::default();
+        apply_tactical_camera_command_to_motion(&mut glide_then_jump, [10, 20], slow);
+        assert_eq!(
+            apply_tactical_camera_command_to_motion(&mut glide_then_jump, [10, 20], jump_a),
+            Some([500, 600])
+        );
+        assert_eq!(glide_then_jump.glide_start, [10, 20]);
+        assert_eq!(glide_then_jump.glide_target, [1_000, 2_000]);
+        assert_eq!(glide_then_jump.committed, [500, 600]);
+        assert!(advance_tactical_camera_motion_state(
+            &mut glide_then_jump,
+            9,
+            true,
+            false,
+        )
+        .is_some());
+        assert_ne!(glide_then_jump.committed, [500, 600]);
+
+        let mut jump_then_glide = TacticalCameraMotion::default();
+        assert_eq!(
+            apply_tactical_camera_command_to_motion(&mut jump_then_glide, [10, 20], jump_a),
+            Some([500, 600])
+        );
+        apply_tactical_camera_command_to_motion(&mut jump_then_glide, [500, 600], slow);
+        assert_eq!(jump_then_glide.glide_start, [500, 600]);
+        assert_eq!(jump_then_glide.committed, [500, 600]);
+
+        let mut two_glides = TacticalCameraMotion::default();
+        apply_tactical_camera_command_to_motion(&mut two_glides, [10, 20], slow);
+        apply_tactical_camera_command_to_motion(&mut two_glides, [10, 20], fast);
+        assert_eq!(two_glides.glide_start, [10, 20]);
+        assert_eq!(two_glides.glide_target, [3_000, 4_000]);
+        assert_eq!(two_glides.speed.bits(), 0x3d75_c28f);
+        assert_eq!(two_glides.progress.bits(), 0);
+
+        let mut two_jumps = TacticalCameraMotion::default();
+        assert_eq!(
+            apply_tactical_camera_command_to_motion(&mut two_jumps, [10, 20], jump_a),
+            Some([500, 600])
+        );
+        assert_eq!(
+            apply_tactical_camera_command_to_motion(&mut two_jumps, [500, 600], jump_b),
+            Some([700, 800])
+        );
+        assert_eq!(two_jumps.committed, [700, 800]);
+    }
+
+    #[test]
+    fn tactical_ai_steps_once_per_precommit_frame_and_honors_scenario_replay_gates() {
+        let mut motion = TacticalCameraMotion::default();
+        apply_tactical_camera_command_to_motion(
+            &mut motion,
+            [-10, 7],
+            glide([991, -994], 0x3cf5_c28f),
+        );
+        assert_eq!(
+            advance_tactical_camera_motion_state(&mut motion, 77, false, false),
+            None
+        );
+        assert_eq!(motion.last_processed_frame, None);
+        assert_eq!(
+            advance_tactical_camera_motion_state(&mut motion, 77, true, true),
+            None
+        );
+        assert_eq!(motion.last_processed_frame, None);
+
+        let first = advance_tactical_camera_motion_state(&mut motion, 77, true, false)
+            .expect("first frame-N step");
+        assert_eq!(first, [20, -23], "f64 lerp truncates toward zero");
+        let progress = motion.progress.bits();
+        assert_eq!(
+            advance_tactical_camera_motion_state(&mut motion, 77, true, false),
+            None,
+            "the post-trigger AI gate observes pre-commit frame N"
+        );
+        assert_eq!(motion.progress.bits(), progress);
+        assert!(advance_tactical_camera_motion_state(&mut motion, 78, true, false).is_some());
+
+        let mut disabled = TacticalCameraMotion {
+            glide_target: [0, 0],
+            ..TacticalCameraMotion::default()
+        };
+        assert_eq!(
+            advance_tactical_camera_motion_state(&mut disabled, 4, true, false),
+            None
+        );
+        assert_eq!(disabled.last_processed_frame, Some(4));
+    }
+
+    #[test]
+    fn tactical_snapshot_preserves_raw_motion_and_prevents_same_frame_double_step() {
+        let mut before = TacticalCameraMotion::default();
+        apply_tactical_camera_command_to_motion(
+            &mut before,
+            [13, 17],
+            glide([8_000, -2_000], 0x3bf5_c28f),
+        );
+        assert!(advance_tactical_camera_motion_state(&mut before, 123, true, false).is_some());
+        let snapshot = before.snapshot();
+        let mut restored = TacticalCameraMotion::from_snapshot(snapshot);
+        assert_eq!(restored, before);
+        let progress = restored.progress.bits();
+        assert_eq!(
+            advance_tactical_camera_motion_state(&mut restored, 123, true, false),
+            None
+        );
+        assert_eq!(restored.progress.bits(), progress);
+        assert!(advance_tactical_camera_motion_state(&mut restored, 124, true, false).is_some());
+    }
 
     /// Screen position the batch shader gives a world point for a camera.
     fn screen_of(world: (f32, f32), camera: (f32, f32), zoom: f32) -> (f32, f32) {

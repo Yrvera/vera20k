@@ -61,16 +61,22 @@ pub enum HouseOutcomeKind {
     Defeat,
 }
 
-/// Persistent HouseClass result transition.
-///
-/// The absolute target keeps the remaining SavourDelay frame count stable
-/// across save/load. The wall-clock Vox drain that follows `exit_ready` belongs
-/// to the app and is deliberately not represented here.
+/// Derived view of one terminal House result. The serialized authority is the
+/// native trio of independent result bytes plus the shared signed timer on
+/// [`HouseState`]; this value is only the app-facing projection of that state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HouseOutcomeState {
     pub kind: HouseOutcomeKind,
     pub savour_until_tick: u64,
     pub exit_ready: bool,
+}
+
+/// One late House-result timer step. Pending expiry has a separate native tail
+/// from terminal routing, so callers must not collapse the two outcomes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct HouseResultAdvance {
+    pub pending_expired: bool,
+    pub terminal_ready: bool,
 }
 
 /// Persistent HouseClass strategy-emergency state.
@@ -284,10 +290,18 @@ pub struct HouseState {
     pub has_won: bool,
     /// Defeat flag. Note: Flag_To_Lose clears HasWon first.
     pub has_lost: bool,
-    /// Accepted win/loss transition plus the deterministic SavourDelay target.
-    /// App-owned wall waits and audio teardown are intentionally excluded.
+    /// Independent native pending-result byte. It may be set while neither
+    /// terminal byte is set, which is why no optional outcome enum can own the
+    /// authoritative representation.
     #[serde(default)]
-    pub outcome_state: Option<HouseOutcomeState>,
+    pub result_pending: bool,
+    /// Shared signed native result timer start. `-1` is the paused/unarmed
+    /// sentinel repaired by trigger Action 69.
+    #[serde(default)]
+    pub result_timer_start: i32,
+    /// Shared signed native result timer duration in logic frames.
+    #[serde(default)]
+    pub result_timer_duration: i32,
     /// HouseClass map-clear byte folded by the retail multiplayer checksum.
     ///
     /// Defeat/reveal paths set this independently of the win/loss flags, and
@@ -444,16 +458,24 @@ impl HouseState {
     /// gamemd provenance: HouseClass::Flag_To_Win @ `0x004FC9E0` accepts only
     /// while Win/Draw/Lose are clear, sets HasWon, announces victory, and sets
     /// the house timer to `ftol(SavourDelay * 900)`.
-    pub(crate) fn flag_to_win(&mut self, current_tick: u64, savour_frames: u64) -> bool {
-        if self.has_won || self.has_lost {
+    pub(crate) fn flag_to_win(&mut self, current_frame: i32, savour_frames: i32) -> bool {
+        if self.result_pending || self.has_won || self.has_lost {
             return false;
         }
         self.has_won = true;
-        self.outcome_state = Some(HouseOutcomeState {
-            kind: HouseOutcomeKind::Victory,
-            savour_until_tick: current_tick.saturating_add(savour_frames),
-            exit_ready: false,
-        });
+        self.result_timer_start = current_frame;
+        self.result_timer_duration = savour_frames;
+        true
+    }
+
+    /// Trigger Action 67 calls Flag_To_Win with the skip-timer argument. The
+    /// transition gate is identical, but the shared timer remains byte-for-byte
+    /// unchanged.
+    pub(crate) fn flag_to_win_skip_timer(&mut self) -> bool {
+        if self.result_pending || self.has_won || self.has_lost {
+            return false;
+        }
+        self.has_won = true;
         true
     }
 
@@ -462,32 +484,106 @@ impl HouseState {
     /// gamemd provenance: HouseClass::Flag_To_Lose @ `0x004FCBD0` clears
     /// HasWon unconditionally, then (unless already Draw/Lost) sets HasLost,
     /// announces defeat, and re-arms the full SavourDelay interval.
-    pub(crate) fn flag_to_lose(&mut self, current_tick: u64, savour_frames: u64) -> bool {
+    pub(crate) fn flag_to_lose(&mut self, current_frame: i32, savour_frames: i32) -> bool {
         self.has_won = false;
-        if self.has_lost {
+        if self.result_pending || self.has_lost {
             return false;
         }
         self.has_lost = true;
-        self.outcome_state = Some(HouseOutcomeState {
-            kind: HouseOutcomeKind::Defeat,
-            savour_until_tick: current_tick.saturating_add(savour_frames),
-            exit_ready: false,
-        });
+        self.result_timer_start = current_frame;
+        self.result_timer_duration = savour_frames;
         true
+    }
+
+    /// Trigger Action 68 clears Win unconditionally and then performs the
+    /// pending/loss gate without touching the shared result timer.
+    pub(crate) fn flag_to_lose_skip_timer(&mut self) -> bool {
+        self.has_won = false;
+        if self.result_pending || self.has_lost {
+            return false;
+        }
+        self.has_lost = true;
+        true
+    }
+
+    /// Trigger Action 69 invokes normal Win when no terminal byte is set. A
+    /// pending byte can still reject that call. If a terminal result already
+    /// exists, only the native paused-start sentinel is repaired.
+    pub(crate) fn end_scenario_result(
+        &mut self,
+        current_frame: i32,
+        savour_frames: i32,
+    ) -> bool {
+        if !self.has_won && !self.has_lost {
+            return self.flag_to_win(current_frame, savour_frames);
+        }
+        if self.result_timer_start == -1 {
+            self.result_timer_start = current_frame;
+        }
+        false
+    }
+
+    /// Native TimerClass-style signed remaining duration. A paused start keeps
+    /// the signed duration verbatim. Running timers use a signed comparison on
+    /// the wrapping elapsed value and otherwise return a wrapping subtraction.
+    ///
+    /// gamemd provenance: `CDTimerClass__GetTimeRemaining @ 0x00426630`;
+    /// `HouseClass__Update @ 0x004F87CC..0x004F87EF` inlines the same helper
+    /// before testing the result for exact zero.
+    pub(crate) fn result_time_remaining(&self, current_frame: i32) -> i32 {
+        if self.result_timer_start == -1 {
+            return self.result_timer_duration;
+        }
+        let elapsed = current_frame.wrapping_sub(self.result_timer_start);
+        if elapsed >= self.result_timer_duration {
+            0
+        } else {
+            self.result_timer_duration.wrapping_sub(elapsed)
+        }
+    }
+
+    /// App-facing terminal result projection. It is deliberately derived from
+    /// the independent native bytes/timer and never serialized as a second
+    /// source of truth.
+    pub(crate) fn outcome_state(&self, current_frame: i32) -> Option<HouseOutcomeState> {
+        let kind = if self.has_lost {
+            HouseOutcomeKind::Defeat
+        } else if self.has_won {
+            HouseOutcomeKind::Victory
+        } else {
+            return None;
+        };
+        let remaining = self.result_time_remaining(current_frame);
+        // Negative native durations are not ready: only exact zero expires.
+        // The app deadline is a derived convenience, so represent that
+        // non-ready signed state explicitly instead of widening it into an
+        // accidental near-future deadline.
+        let savour_until_tick = if remaining < 0 {
+            u64::MAX
+        } else {
+            u64::from(current_frame as u32).saturating_add(remaining as u64)
+        };
+        Some(HouseOutcomeState {
+            kind,
+            savour_until_tick,
+            exit_ready: remaining == 0,
+        })
     }
 
     /// Advance the HouseClass result timer at the late house-update boundary.
     ///
     /// gamemd provenance: HouseClass::Update @ `0x004F8440` keeps the scenario
     /// running until this timer expires, then enters the bounded Vox wait.
-    pub(crate) fn advance_outcome_savour(&mut self, current_tick: u64) -> bool {
-        let Some(outcome) = self.outcome_state.as_mut() else {
-            return false;
-        };
-        if current_tick >= outcome.savour_until_tick {
-            outcome.exit_ready = true;
+    pub(crate) fn advance_outcome_savour(&mut self, current_frame: i32) -> HouseResultAdvance {
+        let expired = self.result_time_remaining(current_frame) == 0;
+        let pending_expired = self.result_pending && expired;
+        if pending_expired {
+            self.result_pending = false;
         }
-        outcome.exit_ready
+        HouseResultAdvance {
+            pending_expired,
+            terminal_ready: (self.has_won || self.has_lost) && expired,
+        }
     }
 
     pub fn new(
@@ -511,7 +607,9 @@ impl HouseState {
             is_defeated: false,
             has_won: false,
             has_lost: false,
-            outcome_state: None,
+            result_pending: false,
+            result_timer_start: 0,
+            result_timer_duration: 0,
             map_is_clear: false,
             visionary: false,
             spy_sat_active: false,
@@ -944,8 +1042,8 @@ mod outcome_tests {
     fn gsi_01_04_savour_gates_exact_frame_and_defeat_restarts_pending_victory() {
         let mut house = HouseState::new(Default::default(), 0, None, true, 0, 10);
         assert!(house.flag_to_win(100, 90));
-        assert!(!house.advance_outcome_savour(189));
-        assert!(house.advance_outcome_savour(190));
+        assert!(!house.advance_outcome_savour(189).terminal_ready);
+        assert!(house.advance_outcome_savour(190).terminal_ready);
 
         let mut replaced = HouseState::new(Default::default(), 0, None, true, 0, 10);
         assert!(replaced.flag_to_win(100, 90));
@@ -953,12 +1051,12 @@ mod outcome_tests {
         assert!(!replaced.has_won);
         assert!(replaced.has_lost);
         assert_eq!(
-            replaced.outcome_state.expect("defeat outcome").kind,
+            replaced.outcome_state(150).expect("defeat outcome").kind,
             HouseOutcomeKind::Defeat
         );
         assert_eq!(
             replaced
-                .outcome_state
+                .outcome_state(150)
                 .expect("restarted defeat outcome")
                 .savour_until_tick,
             240
@@ -967,10 +1065,53 @@ mod outcome_tests {
         assert!(!replaced.flag_to_lose(170, 90));
         assert_eq!(
             replaced
-                .outcome_state
+                .outcome_state(170)
                 .expect("unchanged defeat outcome")
                 .savour_until_tick,
             240
+        );
+    }
+
+    #[test]
+    fn result_timer_uses_the_current_binary_frame_at_zero_and_one_frame_boundaries() {
+        let mut immediate = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        assert!(immediate.flag_to_win(77, 0));
+        assert!(immediate.advance_outcome_savour(77).terminal_ready);
+
+        let mut one_frame = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        assert!(one_frame.flag_to_win(77, 1));
+        assert!(!one_frame.advance_outcome_savour(77).terminal_ready);
+        assert!(one_frame.advance_outcome_savour(78).terminal_ready);
+    }
+
+    #[test]
+    fn result_timer_preserves_signed_wrapping_timerclass_edges() {
+        let mut paused_negative = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        paused_negative.has_won = true;
+        paused_negative.result_timer_start = -1;
+        paused_negative.result_timer_duration = -37;
+        assert_eq!(paused_negative.result_time_remaining(500), -37);
+        assert!(!paused_negative.advance_outcome_savour(500).terminal_ready);
+        let projection = paused_negative.outcome_state(500).expect("terminal projection");
+        assert_eq!(projection.savour_until_tick, u64::MAX);
+        assert!(!projection.exit_ready);
+
+        let mut wrapped_positive = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        wrapped_positive.result_timer_start = 10;
+        wrapped_positive.result_timer_duration = i32::MAX;
+        assert_eq!(
+            wrapped_positive.result_time_remaining(9),
+            i32::MIN,
+            "INT_MAX duration minus signed elapsed -1 wraps to INT_MIN",
+        );
+
+        let mut wrapped_negative = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        wrapped_negative.result_timer_start = 10;
+        wrapped_negative.result_timer_duration = i32::MIN;
+        assert_eq!(
+            wrapped_negative.result_time_remaining(11),
+            0,
+            "signed elapsed 1 is already >= INT_MIN duration",
         );
     }
 }

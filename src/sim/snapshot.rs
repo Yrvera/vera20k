@@ -328,7 +328,11 @@ use crate::sim::world::Simulation;
 // persistent Level and Slope without requiring a retained dummy projectile.
 // The wire shape remains unchanged, but older saves do not certify the same
 // future-affecting lockstep hash authority for those live process-global bytes.
-const SNAPSHOT_VERSION: u32 = 113;
+// Bumped 113 -> 114: the completed active-retail crate runtime persists its
+// slot/trigger state and replaces the derived House outcome enum with the
+// independent pending/win/loss bytes plus the shared signed result timer.
+// Bincode encodes these records positionally, so v113 cannot be admitted.
+const SNAPSHOT_VERSION: u32 = 114;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -355,8 +359,28 @@ pub struct GameSnapshot {
     pub save_timestamp: u64,
     /// Map name at save time — stored in header for quick preview.
     pub map_name: String,
+    /// App-local TacticalClass presentation adjunct. It is serialized for
+    /// in-scenario continuity but is deliberately outside `Simulation`, the
+    /// deterministic world hash, and the retail multiplayer checksum.
+    pub presentation: SnapshotPresentationState,
     /// The full authoritative simulation state (caches excluded via serde skip).
     pub sim: Simulation,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotPresentationState {
+    pub tactical_camera: SnapshotTacticalCamera,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotTacticalCamera {
+    pub glide_start: [i32; 2],
+    pub glide_target: [i32; 2],
+    pub committed: [i32; 2],
+    pub requested: [i32; 2],
+    pub speed_bits: u32,
+    pub progress_bits: u32,
+    pub last_processed_frame: Option<u32>,
 }
 
 /// Lightweight header extracted from a save file without deserializing the
@@ -546,6 +570,7 @@ struct GameSnapshotRef<'a> {
     tick: u64,
     save_timestamp: u64,
     map_name: String,
+    presentation: SnapshotPresentationState,
     sim: &'a Simulation,
 }
 
@@ -557,6 +582,7 @@ impl GameSnapshot {
         map_name: &str,
         description: &str,
         save_timestamp: u64,
+        presentation: SnapshotPresentationState,
     ) -> Vec<u8> {
         // Retail provenance: Save_Game_To_File @ 0x0067CEF0 supplies a distinct
         // outer file identity; Write_Savegame_Metadata_To_Storage @ 0x006812E0
@@ -574,6 +600,7 @@ impl GameSnapshot {
             tick: sim.session.tick,
             save_timestamp,
             map_name: map_name.to_string(),
+            presentation,
             sim,
         };
         bincode::serialize(&snapshot).expect("snapshot serialization should not fail")
@@ -599,6 +626,29 @@ impl GameSnapshot {
             &sim.session.map_name,
             description,
             save_timestamp,
+            SnapshotPresentationState::default(),
+        )
+    }
+
+    /// Serialize production simulation plus the app-owned TacticalClass save
+    /// adjunct. The adjunct resumes local presentation only; it is not part of
+    /// synchronized gameplay identity.
+    pub(crate) fn save_validated_with_presentation(
+        sim: &Simulation,
+        map_hash: u64,
+        rules_hash: u64,
+        description: &str,
+        save_timestamp: u64,
+        presentation: SnapshotPresentationState,
+    ) -> Vec<u8> {
+        Self::serialize(
+            sim,
+            map_hash,
+            rules_hash,
+            &sim.session.map_name,
+            description,
+            save_timestamp,
+            presentation,
         )
     }
 
@@ -618,6 +668,7 @@ impl GameSnapshot {
             map_name,
             map_name,
             save_timestamp,
+            SnapshotPresentationState::default(),
         )
     }
 
@@ -1477,39 +1528,13 @@ impl Simulation {
     /// order.
     pub(crate) fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
         for (&owner, house) in &self.houses {
-            let Some(outcome) = house.outcome_state else {
-                if house.is_defeated || house.has_won || house.has_lost {
-                    return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                        owner,
-                        reason: "terminal flags require serialized outcome authority",
-                    });
-                }
-                continue;
-            };
-            let flags_match = match outcome.kind {
-                crate::sim::house_state::HouseOutcomeKind::Victory => {
-                    house.has_won && !house.has_lost && !house.is_defeated
-                }
-                crate::sim::house_state::HouseOutcomeKind::Defeat => {
-                    house.has_lost && !house.has_won
-                }
-            };
-            if !flags_match {
+            // These are independent native HouseClass bytes, but the active
+            // writers can never leave both terminal bytes set: Lose clears Win
+            // before its own gate and Win rejects an existing Lose byte.
+            if house.has_won && house.has_lost {
                 return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
                     owner,
-                    reason: "kind disagrees with terminal house flags",
-                });
-            }
-            let next_tick = self.session.tick.saturating_add(1);
-            let timer_position_is_valid = if outcome.exit_ready {
-                outcome.savour_until_tick <= next_tick
-            } else {
-                outcome.savour_until_tick > self.session.tick
-            };
-            if !timer_position_is_valid {
-                return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                    owner,
-                    reason: "SavourDelay target disagrees with expiry latch",
+                    reason: "win and loss terminal bytes cannot both be set",
                 });
             }
         }
@@ -2806,10 +2831,12 @@ mod tests {
     /// 109 -> 110 adds House AutocreateAllowed; 110 -> 111 adds active/stashed
     /// Drive/Ship slope-transition state; 111 -> 112 adopts the corrected
     /// one-authority 104-lepton Cell ground formula; 112 -> 113 adds shared-
-    /// dummy level/slope hash authority for active Spark queries.
+    /// dummy level/slope hash authority for active Spark queries; 113 -> 114
+    /// adds the active-retail crate/result authority and the local Tactical
+    /// camera presentation adjunct envelope.
     #[test]
-    fn phase3_combined_snapshot_version_is_113() {
-        assert_eq!(super::SNAPSHOT_VERSION, 113);
+    fn phase3_combined_snapshot_version_is_114() {
+        assert_eq!(super::SNAPSHOT_VERSION, 114);
     }
 
     #[test]
@@ -3965,6 +3992,7 @@ mod tests {
 
         let mut original = Simulation::with_seed(0x104);
         original.session.tick = 145;
+        original.session.binary_frame = 145;
         let owner = original.interner.intern("Americans");
         original
             .houses
@@ -3986,9 +4014,8 @@ mod tests {
         original
             .houses
             .get_mut(&owner)
-            .and_then(|house| house.outcome_state.as_mut())
             .expect("outcome")
-            .savour_until_tick += 1;
+            .result_timer_duration += 1;
         assert_ne!(
             original.state_hash(),
             accepted_hash,
@@ -3997,9 +4024,8 @@ mod tests {
         original
             .houses
             .get_mut(&owner)
-            .and_then(|house| house.outcome_state.as_mut())
             .expect("outcome")
-            .savour_until_tick -= 1;
+            .result_timer_duration -= 1;
         original.sound_events.push(SimSoundEvent::MatchOutcome {
             owner,
             kind: HouseOutcomeKind::Victory,
@@ -4021,43 +4047,72 @@ mod tests {
         assert_eq!(restored.state_hash(), saved_hash);
 
         let restored_house = restored.houses.get(&owner).expect("restored house");
-        let outcome = restored_house.outcome_state.expect("accepted outcome");
+        let outcome = restored_house
+            .outcome_state(restored.session.binary_frame as i32)
+            .expect("accepted outcome");
         assert_eq!(outcome.kind, HouseOutcomeKind::Victory);
         assert!(!outcome.exit_ready);
         assert_eq!(outcome.savour_until_tick - restored.session.tick, 45);
 
         let mut boundary = restored_house.clone();
-        assert!(!boundary.advance_outcome_savour(189));
-        assert!(boundary.advance_outcome_savour(190));
+        assert!(!boundary.advance_outcome_savour(189).terminal_ready);
+        assert!(boundary.advance_outcome_savour(190).terminal_ready);
     }
 
     #[test]
-    fn gsi_01_04_malformed_current_snapshot_naked_terminal_flags_are_rejected() {
+    fn gsi_01_04_independent_result_bytes_and_timer_roundtrip_without_derived_authority() {
         use crate::sim::house_state::HouseState;
 
-        for terminal_flag in ["is_defeated", "has_won", "has_lost"] {
-            let mut malformed = Simulation::new();
-            let owner = malformed.interner.intern("Americans");
+        for terminal_flag in ["is_defeated", "result_pending", "has_won", "has_lost"] {
+            let mut original = Simulation::new();
+            let owner = original.interner.intern("Americans");
             let mut house = HouseState::new(owner, 0, None, true, 10_000, 10);
             match terminal_flag {
                 "is_defeated" => house.is_defeated = true,
+                "result_pending" => house.result_pending = true,
                 "has_won" => house.has_won = true,
                 "has_lost" => house.has_lost = true,
                 _ => unreachable!(),
             }
-            malformed.houses.insert(owner, house);
+            house.result_timer_start = -1;
+            house.result_timer_duration = -37;
+            original.houses.insert(owner, house.clone());
 
-            let bytes = GameSnapshot::save(&malformed, 11, 22, "", 33);
+            let bytes = GameSnapshot::save(&original, 11, 22, "", 33);
             let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
-            assert_eq!(
-                restored.restore_after_snapshot_load(),
-                Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                    owner,
-                    reason: "terminal flags require serialized outcome authority",
-                }),
-                "naked {terminal_flag} must not enter a world whose app bridge can only consume outcome_state"
-            );
+            restored
+                .restore_after_snapshot_load()
+                .expect("independent native result state");
+            let loaded = &restored.houses[&owner];
+            assert_eq!(loaded.is_defeated, house.is_defeated, "{terminal_flag}");
+            assert_eq!(loaded.result_pending, house.result_pending, "{terminal_flag}");
+            assert_eq!(loaded.has_won, house.has_won, "{terminal_flag}");
+            assert_eq!(loaded.has_lost, house.has_lost, "{terminal_flag}");
+            assert_eq!(loaded.result_timer_start, -1, "{terminal_flag}");
+            assert_eq!(loaded.result_timer_duration, -37, "{terminal_flag}");
         }
+    }
+
+    #[test]
+    fn gsi_01_04_malformed_current_snapshot_rejects_both_terminal_bytes() {
+        use crate::sim::house_state::HouseState;
+
+        let mut malformed = Simulation::new();
+        let owner = malformed.interner.intern("Americans");
+        let mut house = HouseState::new(owner, 0, None, true, 10_000, 10);
+        house.has_won = true;
+        house.has_lost = true;
+        malformed.houses.insert(owner, house);
+
+        let bytes = GameSnapshot::save(&malformed, 11, 22, "", 33);
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert_eq!(
+            restored.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseOutcomeState {
+                owner,
+                reason: "win and loss terminal bytes cannot both be set",
+            })
+        );
     }
 
     #[test]
@@ -5070,6 +5125,59 @@ mod tests {
             GameSnapshot::load_validated(&inconsistent_bytes, 0x11, 0x22, "MAP01.MAP"),
             Err(SnapshotError::MapNameMetadataMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn tactical_camera_adjunct_roundtrips_without_entering_simulation_hash() {
+        let mut sim = Simulation::new();
+        sim.session.map_name = "CAMERA.MAP".to_string();
+        // Full in-scenario load resets the serialized Scenario RNG to Seed0;
+        // isolate presentation exclusion on that canonical post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let hash = sim.state_hash();
+        let presentation = SnapshotPresentationState {
+            tactical_camera: SnapshotTacticalCamera {
+                glide_start: [-17, 29],
+                glide_target: [4_000, -2_000],
+                committed: [311, 727],
+                requested: [313, 733],
+                speed_bits: 0x3bf5_c28f,
+                progress_bits: 0x3e80_0000,
+                last_processed_frame: Some(71),
+            },
+        };
+        let bytes = GameSnapshot::save_validated_with_presentation(
+            &sim,
+            0x11,
+            0x22,
+            "camera adjunct",
+            0x33,
+            presentation,
+        );
+        let restored =
+            GameSnapshot::load_validated(&bytes, 0x11, 0x22, "CAMERA.MAP").unwrap();
+
+        assert_eq!(restored.presentation, presentation);
+        assert_eq!(restored.sim.state_hash(), hash);
+
+        let different = SnapshotPresentationState {
+            tactical_camera: SnapshotTacticalCamera {
+                committed: [999, 888],
+                ..presentation.tactical_camera
+            },
+        };
+        let different_bytes = GameSnapshot::save_validated_with_presentation(
+            &sim,
+            0x11,
+            0x22,
+            "camera adjunct",
+            0x33,
+            different,
+        );
+        let different_restored =
+            GameSnapshot::load_validated(&different_bytes, 0x11, 0x22, "CAMERA.MAP").unwrap();
+        assert_ne!(bytes, different_bytes);
+        assert_eq!(different_restored.sim.state_hash(), hash);
     }
 
     #[test]

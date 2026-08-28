@@ -3317,14 +3317,17 @@ fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
     let mut sim = Simulation::new();
     sim.session.game_options.short_game = false;
     sim.session.tick = 10;
+    sim.session.binary_frame = 10;
     let winner = insert_house_with_counts(&mut sim, "Americans", 1, 0);
     let loser = insert_house_with_counts(&mut sim, "Russians", 0, 0);
 
     sim.check_defeat(Some(&rules));
 
-    let winner_outcome = sim.houses[&winner].outcome_state.expect("victory accepted");
+    let winner_outcome = sim.houses[&winner]
+        .outcome_state(10)
+        .expect("victory accepted");
     assert_eq!(winner_outcome.kind, HouseOutcomeKind::Victory);
-    assert_eq!(winner_outcome.savour_until_tick, 38);
+    assert_eq!(winner_outcome.savour_until_tick, 37);
     assert!(!winner_outcome.exit_ready);
     assert_eq!(
         sim.sound_events
@@ -3337,15 +3340,17 @@ fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
 
     sim.sound_events.clear();
     sim.session.tick = 36;
+    sim.session.binary_frame = 36;
     sim.check_defeat(Some(&rules));
-    assert!(!sim.houses[&winner].outcome_state.unwrap().exit_ready);
+    assert!(!sim.houses[&winner].outcome_state(36).unwrap().exit_ready);
     assert!(!sim.termination_frame_requested());
     assert!(sim.sound_events.is_empty(), "accepted edges never replay");
 
     sim.session.tick = 37;
+    sim.session.binary_frame = 37;
     sim.check_defeat(Some(&rules));
-    assert!(sim.houses[&winner].outcome_state.unwrap().exit_ready);
-    assert!(sim.houses[&loser].outcome_state.unwrap().exit_ready);
+    assert!(sim.houses[&winner].outcome_state(37).unwrap().exit_ready);
+    assert!(sim.houses[&loser].outcome_state(37).unwrap().exit_ready);
     assert!(sim.termination_frame_requested());
     assert!(sim.sound_events.is_empty(), "expiry does not replay EVA");
 }
@@ -3484,7 +3489,7 @@ fn passive_houses_do_not_arm_the_termination_frame_for_a_tick_zero_win() {
     insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
     let player_house = sim.houses.get_mut(&player).expect("player house");
     assert!(player_house.flag_to_win(0, 0));
-    assert!(player_house.advance_outcome_savour(0));
+    assert!(player_house.advance_outcome_savour(0).terminal_ready);
 
     assert!(
         !sim.termination_frame_requested(),

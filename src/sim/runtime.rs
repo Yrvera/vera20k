@@ -210,6 +210,20 @@ impl SimRuntime {
         tick_ms: u32,
         lane: crate::sim::world::TickLane,
     ) -> crate::sim::world::SimFrameOutput {
+        self.advance_frame_for_client(commands, tick_ms, lane, None)
+    }
+
+    /// Production client frame. `local_player_owner` is the app-pinned launch
+    /// identity used only by native per-client trigger result actions.
+    pub(crate) fn advance_frame_for_client(
+        &mut self,
+        commands: &[crate::sim::command::CommandEnvelope],
+        tick_ms: u32,
+        lane: crate::sim::world::TickLane,
+        local_player_owner: Option<&str>,
+    ) -> crate::sim::world::SimFrameOutput {
+        let local_player_owner = local_player_owner
+            .and_then(|owner| self.simulation.interner.get(owner));
         self.simulation.advance_app_frame(
             commands,
             Some(&self.resources.rules),
@@ -226,6 +240,7 @@ impl SimRuntime {
                 waypoints: &self.resources.waypoints,
                 rules: Some(&self.resources.rules),
                 overlay_registry: Some(&self.resources.overlay_registry),
+                local_player_owner,
             }),
         )
     }
