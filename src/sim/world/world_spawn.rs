@@ -1289,15 +1289,56 @@ impl Simulation {
         if let Some(rules) = rules {
             self.commit_constructor_owned_techno_children(stable_id, rules);
         }
+        let placement = rules.map_or(PlacementEvidence::EvaluateMark, |rules| {
+            self.constructor_unlimbo_placement(stable_id, position, rules)
+        });
         let outcome = self.try_reveal_entity(
             stable_id,
             RevealRequest {
                 position,
-                placement: PlacementEvidence::EvaluateMark,
+                placement,
                 logic_eligible: true,
             },
         );
         (stable_id, outcome)
+    }
+
+    /// Collapse the concrete Techno `+0x1AC` return code at the same boundary
+    /// as `ObjectClass::Unlimbo @ 0x005F4F1B..0x005F4F49`: exact zero admits,
+    /// every nonzero code rejects before any object mutation. UnitClass owns
+    /// the first active constructor specialization promoted here; the shared
+    /// evaluator is the same `(cell,-1,-1,0,0)` body used by production.
+    fn constructor_unlimbo_placement(
+        &mut self,
+        stable_id: u64,
+        position: RevealPosition,
+        rules: &RuleSet,
+    ) -> PlacementEvidence {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return PlacementEvidence::RejectedEarly;
+        };
+        if entity.category != EntityCategory::Unit || self.resolved_terrain.is_none() {
+            return PlacementEvidence::EvaluateMark;
+        }
+        let owner = self.interner.resolve(entity.owner).to_string();
+        let type_id = self.interner.resolve(entity.type_ref).to_string();
+        let admission = crate::sim::production::produced_unit_unlimbo_entry_at_resolved_cell(
+            self,
+            rules,
+            &owner,
+            &type_id,
+            stable_id,
+            stable_id,
+            (position.rx, position.ry),
+            None,
+        );
+        let Some(layer) = admission.exact_zero_layer() else {
+            return PlacementEvidence::RejectedEarly;
+        };
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.on_bridge = layer == MovementLayer::Bridge;
+        }
+        PlacementEvidence::EvaluateMark
     }
 
     /// Materialize constructor-owned Technos in native manager order. The
@@ -1806,7 +1847,10 @@ fn stamp_building_cell_profile(
 #[cfg(test)]
 mod techno_constructor_tests {
     use super::*;
+    use crate::map::bridge_facts::BridgeCellFacts;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::rng::SimRng;
 
     fn constructor_rules() -> RuleSet {
@@ -1867,6 +1911,78 @@ mod techno_constructor_tests {
             off_104: 10,
             off_108: 10,
         });
+    }
+
+    fn install_constructor_flat_terrain(sim: &mut Simulation) {
+        let speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        let cells = (0..10)
+            .flat_map(|ry| {
+                (0..10).map(move |rx| ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: false,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    yr_cell_land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs,
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    allows_tiberium: false,
+                    height_in_pixels: 0,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    terrain_object_occupation: None,
+                    overlay_blocks: false,
+                    overlay_zone_type: None,
+                    outside_playfield: false,
+                    zone_type: zone_class::GROUND,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    base_land_type: 0,
+                    base_yr_cell_land_type: 0,
+                    base_terrain_class: TerrainClass::Clear,
+                    base_speed_costs: speed_costs,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: BridgeCellFacts::default(),
+                    tube_index: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                })
+            })
+            .collect();
+        sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(10, 10, cells));
     }
 
     #[test]
@@ -2123,6 +2239,53 @@ mod techno_constructor_tests {
             assert!(sim.production.slave_bindings.is_empty());
             assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
         }
+    }
+
+    #[test]
+    fn techno_constructor_unit_can_enter_rejection_discards_eager_pool_without_refunding_draws() {
+        let seed = 0xC701_0016;
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        install_constructor_test_playfield(&mut sim);
+        install_constructor_flat_terrain(&mut sim);
+        let mut expected = SimRng::new(seed);
+
+        let blocker_word = (expected.next_u32() & 0xFFFF) as u16;
+        // Parent construction and its three SpawnManager children all happen
+        // before ObjectClass::Unlimbo asks UnitClass::Can_Enter_Cell. The first
+        // authored Unit is already linked when the CARRIER row reaches that gate.
+        for _ in 0..4 {
+            let _ = expected.next_u32();
+        }
+        assert_eq!(
+            sim.spawn_from_map(
+                &[
+                    map_entity("MTNK", EntityCategory::Unit, (6, 5)),
+                    map_entity("CARRIER", EntityCategory::Unit, (6, 5)),
+                ],
+                Some(&rules),
+                &BTreeMap::new(),
+            ),
+            1
+        );
+        let blocker_id = 1;
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(blocker_id)
+                .unwrap()
+                .techno_ctor_random_word,
+            blocker_word
+        );
+
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+        assert_eq!(sim.substrate.next_stable_object_id, 6);
+        assert_eq!(sim.substrate.entities.len(), 1);
+        let blocker = sim.substrate.entities.get(blocker_id).unwrap();
+        assert!(blocker.lifecycle.cell_marked && !blocker.lifecycle.in_limbo);
+        assert!(sim.substrate.entities.values().all(|entity| {
+            !matches!(sim.interner.resolve(entity.type_ref), "CARRIER" | "HORN")
+        }));
     }
 
     #[test]

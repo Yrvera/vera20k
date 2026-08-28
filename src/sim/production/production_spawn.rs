@@ -540,7 +540,7 @@ fn nearby_query_for_naval_unit_delivery<'a>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ProductionUnitAdmission {
+pub(in crate::sim) enum ProductionUnitAdmission {
     /// Exact UnitClass::Can_Enter_Cell result zero. Crush victims are retained
     /// only as evidence for the selected occupation-plane tail; production
     /// Unlimbo does not execute the later movement-time crush here.
@@ -559,7 +559,7 @@ impl ProductionUnitAdmission {
         matches!(self, Self::ExactZero { .. })
     }
 
-    fn exact_zero_layer(&self) -> Option<MovementLayer> {
+    pub(in crate::sim) fn exact_zero_layer(&self) -> Option<MovementLayer> {
         match self {
             Self::ExactZero { layer, .. } => Some(*layer),
             Self::NonZero { .. } => None,
@@ -651,7 +651,7 @@ fn resolve_produced_unit_cell_coords(
     ))
 }
 
-fn produced_unit_unlimbo_entry_at_resolved_cell(
+pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
     sim: &Simulation,
     rules: &RuleSet,
     owner: &str,
