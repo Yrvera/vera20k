@@ -880,7 +880,10 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
     assert_eq!(drive.head_to, Some(head));
     assert_eq!(drive.track_index, 0x47);
     assert!(drive.track_valid);
-    assert_eq!(drive.owner_current_speed, 8);
+    assert_eq!(
+        drive.owner_current_speed, 0,
+        "Force_Track writes its locomotor target fraction, not Foot current speed"
+    );
     assert_eq!(drive.residual_budget, 5);
     assert_eq!(
         sim.substrate
@@ -909,6 +912,39 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
             .vehicle_bits(13, 12, MovementLayer::Ground),
         crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
     );
+
+    // `install_forced_drive_track` suspends at the exact ForceTrack crate
+    // caller.  Service it before entering Process_Drive_Track, just as the
+    // production Simulation owner does; the One continuation raw-applies the
+    // requested coordinate while the object-list relink remains deferred.
+    let probes = std::mem::take(
+        &mut sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .pending_movement_crate_probes,
+    );
+    assert_eq!(probes.len(), 1);
+    assert_eq!(
+        probes[0].callsite,
+        super::crate_callers::MovementCrateCallsite::DriveForceTrack
+    );
+    assert!(super::crate_callers::continue_after_pickup(
+        sim.substrate.entities.get_mut(1).unwrap(),
+        probes[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert_eq!(
+        (
+            sim.substrate.entities.get(1).unwrap().position.rx,
+            sim.substrate.entities.get(1).unwrap().position.ry,
+        ),
+        (13, 12),
+        "the raw ForceTrack callback coordinate is not an object-list relink"
+    );
+    assert!(sim.substrate.occupancy.contains_entity(13, 11, 1));
+    assert!(!sim.substrate.occupancy.contains_entity(13, 12, 1));
 
     gsi_04_05_tick_production_movement(&mut sim, None, 0);
     let after_paid_point = sim.substrate.entities.get(1).unwrap();
@@ -1779,6 +1815,7 @@ fn test_reissue_mid_curve_does_not_snap_position_backward() {
 
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", 2, 3);
     e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.lifecycle.in_limbo = false;
     e.facing = 64;
     // No rules are loaded, so `accel_factor` is 0 and the Accelerates= ramp
     // would hold the speed fraction at 0 forever; drive at constant speed.
@@ -2286,6 +2323,7 @@ fn blocked_override_fires_once_for(mover_kind: crate::rules::locomotor_type::Loc
 
     let mut mover = GameEntity::test_default(1, "E1", "Americans", 1, 1);
     mover.category = EntityCategory::Infantry;
+    mover.lifecycle.in_limbo = false;
     mover.mission_leaf = MissionLeafState::for_entity_category(EntityCategory::Infantry);
     mover.locomotor = Some(LocomotorState::for_test_kind(mover_kind));
     let timer = mover.mission.dispatch_timer();
@@ -2325,6 +2363,7 @@ fn blocked_override_fires_once_for(mover_kind: crate::rules::locomotor_type::Loc
     // cell-entry class 5, blocking-object arm.
     let mut blocker = GameEntity::test_default(2, "E1", "Soviets", 2, 1);
     blocker.category = EntityCategory::Infantry;
+    blocker.lifecycle.in_limbo = false;
     blocker.mission_leaf = MissionLeafState::for_entity_category(EntityCategory::Infantry);
     blocker.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
     entities.insert(blocker);
@@ -4354,7 +4393,12 @@ fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
         &grid,
         1,
         (40, 2),
-        SimFixed::from_num(15360), // very fast — exhausts segment quickly
+        // Keep the native frame budget below one cell.  The corrected
+        // ProcessMovement final continuation installs occupation only; it no
+        // longer teleports to each curve endpoint, so a huge legacy fixture
+        // speed can exhaust and consume the replacement segment in the same
+        // observed tick and hide the repath this test is meant to inspect.
+        SimFixed::from_num(1536),
         false,
         None,
         None,
@@ -4368,7 +4412,7 @@ fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
     let mut occupancy = OccupancyGrid::rebuild(&entities);
     let mut post_repath_path: Option<Vec<(u16, u16)>> = None;
     let mut lifecycle_requests = Vec::new();
-    for _ in 0..40 {
+    for _ in 0..160 {
         tick_movement_with_grid(
             &mut entities,
             Some(&grid),
@@ -4699,6 +4743,11 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
     e.facing = 0x40;
     e.bridge_occupancy = Some(BridgeOccupancy { deck_level: 4 });
     e.locomotor = Some(make_drive_loco(MovementLayer::Bridge));
+    // No RuleSet is installed in this bridge fixture, so use the exact
+    // Accelerates=no arm instead of a zero acceleration factor that would
+    // leave the Foot current-speed fraction at rest after track selection.
+    e.drive_accelerates = false;
+    e.lifecycle.in_limbo = false;
     e.movement_target = Some(MovementTarget {
         path: vec![(1, 1), (2, 1), (3, 1)],
         // body→ramp goes on Ground layer per is_at_bridge_level
@@ -4992,6 +5041,7 @@ fn make_hover_mover(path: Vec<(u16, u16)>, sub_x: i32) -> GameEntity {
         5,
         false,
     );
+    entity.lifecycle.in_limbo = false;
     entity.position.sub_x = SimFixed::from_num(sub_x);
     entity.position.sub_y = SimFixed::from_num(128);
     entity.locomotor = Some(
@@ -5431,6 +5481,13 @@ fn gsi_06_13_fixture_mover(
 ) -> GameEntity {
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", start.0, start.1);
     e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    // This fixture has no RuleSet, hence no native acceleration factor.  The
+    // real test subject is curve selection/paid-point continuity, not the
+    // independently covered Accelerates= ramp; request the native constant-
+    // fraction arm so the owner speed cannot be reset to zero after the first
+    // ProcessMovement pickup.
+    e.drive_accelerates = false;
+    e.lifecycle.in_limbo = false;
     e.facing = facing;
     let goal = *path.last().expect("non-empty path");
     let layers = vec![MovementLayer::Ground; path.len()];

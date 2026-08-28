@@ -188,7 +188,15 @@ fn tick_forced_drive_tracks(
             )
         };
 
-        let current_cell = (entity.position.rx, entity.position.ry);
+        // ForceTrack's successful crate continuation raw-applies the requested
+        // XYZ before this owner resumes, while the object's CellClass list
+        // remains at its pre-callback cell until the paid terminal relink.
+        // Query that independent list authority; deriving the old cell from
+        // Position would clear the head mark and make the terminal think no
+        // RemoveContent/AddContent transition is required.
+        let (current_cell, current_list_layer) = occupancy
+            .registered_mobile_cell_layer(entity_id)
+            .unwrap_or(((entity.position.rx, entity.position.ry), MovementLayer::Ground));
         if paid_point {
             // Forward progress on a forced curve clears the impatience flag
             // exactly as it does on an ordinary track — gamemd's paid-point
@@ -202,7 +210,7 @@ fn tick_forced_drive_tracks(
                     cell_occupation,
                     entity_id,
                     current_cell,
-                    MovementLayer::Ground,
+                    current_list_layer,
                 );
             }
         }
@@ -251,7 +259,7 @@ fn tick_forced_drive_tracks(
                 if let (Ok(target_rx), Ok(target_ry)) =
                     (u16::try_from(target_rx), u16::try_from(target_ry))
                 {
-                    let old_cell = (entity.position.rx, entity.position.ry);
+                    let old_cell = current_cell;
                     let target_cell = (target_rx, target_ry);
                     let cell_changed = old_cell != target_cell;
                     if cell_changed && entity.lifecycle.cell_marked {
@@ -261,13 +269,13 @@ fn tick_forced_drive_tracks(
                             old_cell.0,
                             old_cell.1,
                             entity_id,
-                            MovementLayer::Ground,
+                            current_list_layer,
                         );
                         cell_occupation.clear_vehicle_on_layer(
                             old_cell.0,
                             old_cell.1,
                             entity_id,
-                            MovementLayer::Ground,
+                            current_list_layer,
                         );
                     }
 
