@@ -703,6 +703,16 @@ pub struct GameEntity {
     /// from the RadioClass contact and destination pointers.
     #[serde(default)]
     pub ai_absorb_enter_pending: bool,
+    /// Native `InfantryClass+0x438`: this infantry currently contributes to
+    /// its owner's `HouseClass+0x2F4` tracking count. Bio Reactor PerCell clears
+    /// it after Limbo; successful Building unload restores it exactly once.
+    #[serde(default)]
+    pub infantry_house_tracked: bool,
+    /// Native `InfantryClass+0x439`: this infantry is a Bio Reactor occupant.
+    /// House Add_Tracking rejects while this byte is set, allowing the exit
+    /// helper to own the single counter restoration after successful Unlimbo.
+    #[serde(default)]
+    pub infantry_absorber_occupant: bool,
     /// Native temporary-transfer destination/current marker (`Techno+0x2CC`).
     /// Action 123 writes the destination House after ChangeOwner; ChangeOwner
     /// itself does not clear this pointer, so it is independent of `+0x2E0`.
@@ -1285,6 +1295,8 @@ impl GameEntity {
             mind_control_controller_id: None,
             mind_control_anim_id: None,
             ai_absorb_enter_pending: false,
+            infantry_house_tracked: false,
+            infantry_absorber_occupant: false,
             temporary_owner_transfer_marker: None,
             temporary_owner_transfer_source: None,
             parasite_manager: None,

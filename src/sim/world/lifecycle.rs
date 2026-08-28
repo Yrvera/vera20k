@@ -695,6 +695,10 @@ impl Simulation {
             }
             return RevealOutcome::Failed(RevealFailure::MarkFailed);
         }
+        // Native HouseClass::Add_Tracking suppresses this re-add while the
+        // Infantry absorber-occupant byte is set. Ordinary newly materialized
+        // infantry establish their +0x438/count contribution here.
+        self.add_infantry_tracking_once(stable_id);
         // FootClass::Unlimbo @ 0x004D7170 dispatches active Drive/Ship
         // Force_Slope at 0x004D71A9 only after TechnoClass placement succeeds.
         // This precedes display/Logic exposure and must not run on either
@@ -1887,6 +1891,7 @@ impl Simulation {
         if already_released {
             return;
         }
+        self.remove_infantry_tracking_once(stable_id);
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.owned_count_released = true;
         }

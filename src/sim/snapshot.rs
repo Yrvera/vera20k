@@ -346,7 +346,10 @@ use crate::sim::world::Simulation;
 // RawTrack handoff and endpoint installed by Apply_Track_Occupation_Mode plus
 // the paid-point current-cell-clear latch. The skipped owner-aware
 // CellOccupationGrid rebuilds those roles after load.
-const SNAPSHOT_VERSION: u32 = 118;
+// Bumped 118 -> 119: Infantry persists its independent House-tracked and Bio
+// Reactor occupant bytes; HouseState persists the distinct +0x2F4 Infantry
+// tracking count that absorber entry temporarily removes.
+const SNAPSHOT_VERSION: u32 = 119;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -532,6 +535,11 @@ pub enum SnapshotRestoreError {
         owner: crate::sim::intern::InternedId,
         field: &'static str,
         building_id: u64,
+        reason: &'static str,
+    },
+    #[error("entity {entity_id} has invalid Infantry tracking state: {reason}")]
+    InvalidInfantryTrackingState {
+        entity_id: u64,
         reason: &'static str,
     },
     #[error("entity {entity_id} has invalid temporal reciprocal state: {reason}")]
@@ -1106,6 +1114,52 @@ fn restore_object_references(
     // complete modeled pointer graph before mutating even weak references or
     // derived caches, so a failed restore remains an atomic rejection.
     for (entity_id, entity) in sim.substrate.entities.iter_sorted() {
+        if entity.infantry_house_tracked || entity.infantry_absorber_occupant {
+            if entity.category != crate::map::entities::EntityCategory::Infantry {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "tracking bytes are set on a non-Infantry entity",
+                });
+            }
+            if !house_ids.contains(&entity.owner) {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "tracked Infantry owner House does not resolve",
+                });
+            }
+        }
+        if entity.infantry_absorber_occupant {
+            if entity.infantry_house_tracked {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "absorber occupant still contributes to House tracking",
+                });
+            }
+            let Some(transport_id) = entity.passenger_role.inside_transport_id() else {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "absorber occupant has no enclosing Building",
+                });
+            };
+            let valid_absorber = sim
+                .substrate
+                .entities
+                .get(transport_id)
+                .is_some_and(|building| {
+                    building.category == crate::map::entities::EntityCategory::Structure
+                        && building.absorber_facility
+                        && building
+                            .passenger_role
+                            .cargo()
+                            .is_some_and(|cargo| cargo.passengers.contains(&entity_id))
+                });
+            if !valid_absorber {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "absorber occupant lacks reciprocal absorber cargo membership",
+                });
+            }
+        }
         for contact_id in entity.radio_contacts.iter_live() {
             require_resolved_reference(
                 entity_ids.contains(&contact_id),
@@ -3249,10 +3303,11 @@ mod tests {
     /// membership bits consumed by DecideUnitFate; 116 -> 117 adds WarpAttach
     /// Grinder-detach timer state and the independently nested CargoClass
     /// relation exercised by Unit Grinder/absorber continuations; 117 -> 118
-    /// adds Ship's RawTrack handoff/endpoint occupation pair.
+    /// adds Ship's RawTrack handoff/endpoint occupation pair; 118 -> 119 adds
+    /// Bio Reactor Infantry tracking/occupant bytes and House +0x2F4 count.
     #[test]
-    fn phase3_ship_track_occupation_snapshot_version_is_118() {
-        assert_eq!(super::SNAPSHOT_VERSION, 118);
+    fn phase3_absorber_infantry_tracking_snapshot_version_is_119() {
+        assert_eq!(super::SNAPSHOT_VERSION, 119);
     }
 
     #[test]

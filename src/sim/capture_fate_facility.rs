@@ -401,6 +401,14 @@ fn absorber(
     }
 
     let passenger_size = victim_object(sim, rules, arrival.victim_id).map_or(1, |object| object.size);
+    if arrival.category == EntityCategory::Infantry
+        && let Some(victim) = sim.substrate.entities.get_mut(arrival.victim_id)
+    {
+        // `InfantryClass::PerCell @ 0x00519630` sets +0x439 before Limbo.
+        // House Add_Tracking observes this byte and cannot re-add the infantry
+        // during the synchronous conceal/exit transaction.
+        victim.infantry_absorber_occupant = true;
+    }
     let conceal = sim.techno_limbo_with_rules(arrival.victim_id, rules);
     if !matches!(
         conceal,
@@ -408,6 +416,12 @@ fn absorber(
             | crate::sim::world::ConcealOutcome::AlreadyConcealed
     ) {
         return CaptureFatePerCellResult::None;
+    }
+    if arrival.category == EntityCategory::Infantry {
+        // The native conditional House+0x2F4 decrement and +0x438 clear occur
+        // only after Limbo returns. The absorber still owns the infantry as a
+        // Techno, so the aggregate owned-unit count is deliberately untouched.
+        sim.remove_infantry_tracking_once(arrival.victim_id);
     }
     if let Some(victim) = sim.substrate.entities.get_mut(arrival.victim_id) {
         victim
@@ -708,6 +722,14 @@ mod tests {
     fn infantry_absorber_uses_weak_0x15_head_boards_preserves_mission_and_adds_power() {
         let (mut sim, rules, victim_id, bio_id) = fixture("INF", "BIO");
         let victim_owner = sim.substrate.entities.get(victim_id).unwrap().owner;
+        assert_eq!(sim.houses[&victim_owner].tracked_infantry_count, 1);
+        assert!(
+            sim.substrate
+                .entities
+                .get(victim_id)
+                .unwrap()
+                .infantry_house_tracked
+        );
         assert_eq!(
             crate::sim::radio::transmit_pre_admitted_hello(&mut sim, victim_id, bio_id),
             RadioResponse::Roger,
@@ -745,6 +767,13 @@ mod tests {
         let victim = sim.substrate.entities.get(victim_id).unwrap();
         assert!(victim.lifecycle.in_limbo);
         assert!(victim.ai_absorb_enter_pending);
+        assert!(victim.infantry_absorber_occupant);
+        assert!(!victim.infantry_house_tracked);
+        assert_eq!(
+            sim.houses[&victim_owner].tracked_infantry_count,
+            0,
+            "PerCell removes House+0x2F4 only after successful Limbo",
+        );
         assert_eq!(victim.mission.current().known(), Some(MissionType::Enter));
         assert!(matches!(
             victim.passenger_role,
@@ -773,6 +802,26 @@ mod tests {
             event,
             SimSoundEvent::CaptureFateSound { sound_id, .. } if sound_id == "BioEnter"
         )));
+    }
+
+    #[test]
+    fn infantry_absorber_tracking_decrement_is_native_u32_wrapping() {
+        let (mut sim, rules, victim_id, bio_id) = fixture("INF", "BIO");
+        let owner = sim.substrate.entities.get(victim_id).unwrap().owner;
+        sim.houses.get_mut(&owner).unwrap().tracked_infantry_count = 0;
+        assert_eq!(
+            crate::sim::radio::transmit_pre_admitted_hello(&mut sim, victim_id, bio_id),
+            RadioResponse::Roger,
+        );
+        let (old, new) = commit_arrival(&mut sim, victim_id, bio_id, MissionType::Enter);
+        assert_eq!(
+            process_per_cell(&mut sim, victim_id, Some(old), Some(new), &rules, None),
+            CaptureFatePerCellResult::AbsorberBoarded,
+        );
+        assert_eq!(sim.houses[&owner].tracked_infantry_count, u32::MAX);
+        let victim = sim.substrate.entities.get(victim_id).unwrap();
+        assert!(!victim.infantry_house_tracked);
+        assert!(victim.infantry_absorber_occupant);
     }
 
     #[test]
@@ -842,6 +891,8 @@ mod tests {
         let victim = sim.substrate.entities.get(victim_id).unwrap();
         assert_eq!(victim.owner, original_owner, "FreeUnit restores first");
         assert_eq!(victim.mind_control_controller_id, None);
+        assert!(!victim.infantry_house_tracked);
+        assert!(!victim.infantry_absorber_occupant);
         assert_eq!(victim.mission.current(), MissionId::NONE);
         assert_eq!(victim.passenger_role.inside_transport_id(), Some(bio_id));
         assert_eq!(
@@ -1035,6 +1086,9 @@ mod tests {
         assert_eq!(victim.owner, original_owner, "FreeUnit precedes weak 0x15");
         assert_eq!(victim.mind_control_controller_id, None);
         assert!(victim.ai_absorb_enter_pending);
+        assert!(victim.infantry_absorber_occupant);
+        assert!(!victim.infantry_house_tracked);
+        assert_eq!(sim.houses[&original_owner].tracked_infantry_count, 0);
         assert_eq!(victim.passenger_role.inside_transport_id(), Some(bio_id));
         assert_eq!(
             sim.substrate
@@ -1054,6 +1108,94 @@ mod tests {
             &sim.interner,
         );
         assert_eq!(sim.power_states[&controller_owner].total_output, 250);
+
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let baseline_hash = sim.state_hash();
+        let bytes = crate::sim::snapshot::GameSnapshot::save(
+            &sim,
+            0,
+            0,
+            "absorbed-infantry-tracking",
+            0,
+        );
+        let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .expect("v119 absorbed Infantry snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("absorber cargo/tracking reciprocals restore");
+        assert_eq!(restored.state_hash(), baseline_hash);
+        let restored_victim = restored.substrate.entities.get(victim_id).unwrap();
+        assert!(restored_victim.infantry_absorber_occupant);
+        assert!(!restored_victim.infantry_house_tracked);
+        assert_eq!(restored.houses[&original_owner].tracked_infantry_count, 0);
+
+        let mut changed: Simulation = bincode::deserialize(
+            &bincode::serialize(&sim).expect("serialize tracking fixture"),
+        )
+        .expect("clone tracking fixture");
+        changed.houses.get_mut(&original_owner).unwrap().tracked_infantry_count = 1;
+        assert_ne!(changed.state_hash(), baseline_hash, "House +0x2F4 hashes");
+        let mut changed: Simulation = bincode::deserialize(
+            &bincode::serialize(&sim).expect("serialize tracking fixture"),
+        )
+        .expect("clone tracking fixture");
+        changed
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .infantry_absorber_occupant = false;
+        assert_ne!(changed.state_hash(), baseline_hash, "Infantry +0x439 hashes");
+        let mut corrupt: Simulation = bincode::deserialize(
+            &bincode::serialize(&sim).expect("serialize tracking fixture"),
+        )
+        .expect("clone tracking fixture");
+        corrupt
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .infantry_house_tracked = true;
+        assert_ne!(
+            corrupt.state_hash(),
+            baseline_hash,
+            "Infantry +0x438 hashes independently",
+        );
+        assert!(matches!(
+            corrupt.restore_after_snapshot_load(),
+            Err(crate::sim::snapshot::SnapshotRestoreError::InvalidInfantryTrackingState {
+                entity_id,
+                reason: "absorber occupant still contributes to House tracking",
+            }) if entity_id == victim_id
+        ));
+
+        let mut corrupt: Simulation = bincode::deserialize(
+            &bincode::serialize(&sim).expect("serialize tracking fixture"),
+        )
+        .expect("clone tracking fixture");
+        corrupt
+            .substrate
+            .entities
+            .get_mut(bio_id)
+            .unwrap()
+            .passenger_role
+            .cargo_mut()
+            .unwrap()
+            .clear_contents();
+        let restore_error = corrupt
+            .restore_after_snapshot_load()
+            .expect_err("missing reciprocal absorber cargo membership must be rejected");
+        assert!(
+            matches!(
+                restore_error,
+                crate::sim::snapshot::SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "absorber occupant lacks reciprocal absorber cargo membership",
+                } if entity_id == victim_id
+            ),
+            "unexpected first reciprocal-cargo rejection: {restore_error:?}",
+        );
     }
 
     #[test]

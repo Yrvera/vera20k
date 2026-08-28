@@ -142,6 +142,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
     );
     old_before.owned_building_count = 2;
     old_before.owned_unit_count = 4;
+    old_before.tracked_infantry_count = 3;
     old_before.build_const_order = vec![10, 20];
     old_before.grinder_building_order = vec![10, 20];
     old_before.absorber_building_order = vec![10, 20];
@@ -149,6 +150,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         new_owner, 1, None, false, 0, 10,
     );
     new_before.owned_building_count = 1;
+    new_before.tracked_infantry_count = 1;
     new_before.build_const_order = vec![30];
     new_before.grinder_building_order = vec![30];
     new_before.absorber_building_order = vec![30, 40];
@@ -161,6 +163,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         let old = staged_after.get_mut(&old_owner).unwrap();
         old.owned_building_count = 1;
         old.owned_unit_count = 3;
+        old.tracked_infantry_count = 2;
         old.build_const_order = vec![20];
         old.grinder_building_order = vec![20];
         old.absorber_building_order = vec![20];
@@ -170,6 +173,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         let new = staged_after.get_mut(&new_owner).unwrap();
         new.owned_building_count = 2;
         new.owned_unit_count = 1;
+        new.tracked_infantry_count = 2;
         new.build_const_order = vec![30, 10];
         new.grinder_building_order = vec![30, 10];
         // Stable remove/reappend of 30 deliberately changes the native tail
@@ -184,6 +188,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         let old = live.get_mut(&old_owner).unwrap();
         old.owned_building_count = 6;
         old.owned_unit_count = 9;
+        old.tracked_infantry_count = 8;
         old.build_const_order.push(99);
         old.grinder_building_order.push(99);
         old.absorber_building_order.push(99);
@@ -195,6 +200,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         let new = live.get_mut(&new_owner).unwrap();
         new.owned_building_count = 8;
         new.owned_unit_count = 6;
+        new.tracked_infantry_count = 5;
         new.build_const_order.push(77);
         new.grinder_building_order.push(77);
         new.absorber_building_order.push(77);
@@ -205,6 +211,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
     let old = &live[&old_owner];
     assert_eq!(old.owned_building_count, 5);
     assert_eq!(old.owned_unit_count, 8);
+    assert_eq!(old.tracked_infantry_count, 7);
     assert_eq!(old.build_const_order, vec![20, 99]);
     assert_eq!(old.grinder_building_order, vec![20, 99]);
     assert_eq!(old.absorber_building_order, vec![20, 99]);
@@ -214,6 +221,7 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
     let new = &live[&new_owner];
     assert_eq!(new.owned_building_count, 9);
     assert_eq!(new.owned_unit_count, 7);
+    assert_eq!(new.tracked_infantry_count, 6);
     assert_eq!(new.build_const_order, vec![30, 77, 10]);
     assert_eq!(new.grinder_building_order, vec![30, 77, 10]);
     assert_eq!(new.absorber_building_order, vec![40, 77, 30, 10]);
@@ -972,6 +980,50 @@ fn advance_tick_finishes_dying_infantry_from_rules_catalog() {
         "the headless adapter must use RuleSet timing and drain the finished death",
     );
     assert_eq!(second.state_hash, sim.state_hash());
+}
+
+#[test]
+fn infantry_house_tracking_follows_spawn_owner_transfer_and_uninit_once() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [E1]\nStrength=100\n",
+    ))
+    .expect("Infantry tracking lifecycle rules");
+    let mut sim = Simulation::new();
+    let americans = sim.interner.intern("Americans");
+    let soviet = sim.interner.intern("Soviet");
+    sim.houses.insert(
+        americans,
+        crate::sim::house_state::HouseState::new(americans, 0, None, false, 0, 10),
+    );
+    sim.houses.insert(
+        soviet,
+        crate::sim::house_state::HouseState::new(soviet, 1, None, false, 0, 10),
+    );
+    let id = sim
+        .spawn_object("E1", "Americans", 4, 4, 0, &rules, &empty_heights())
+        .expect("spawn tracked Infantry");
+
+    assert!(sim.substrate.entities.get(id).unwrap().infantry_house_tracked);
+    assert_eq!(sim.houses[&americans].tracked_infantry_count, 1);
+    assert_eq!(sim.houses[&soviet].tracked_infantry_count, 0);
+
+    sim.change_owner(id, soviet);
+    assert!(sim.substrate.entities.get(id).unwrap().infantry_house_tracked);
+    assert_eq!(sim.houses[&americans].tracked_infantry_count, 0);
+    assert_eq!(sim.houses[&soviet].tracked_infantry_count, 1);
+
+    sim.uninit_with_rules(id, &rules);
+    assert!(!sim.substrate.entities.get(id).unwrap().infantry_house_tracked);
+    assert_eq!(sim.houses[&soviet].tracked_infantry_count, 0);
+    sim.uninit_with_rules(id, &rules);
+    assert_eq!(
+        sim.houses[&soviet].tracked_infantry_count, 0,
+        "repeat UnInit must not subtract the native House count twice",
+    );
 }
 
 #[test]

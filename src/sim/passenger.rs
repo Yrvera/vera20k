@@ -995,7 +995,8 @@ fn reveal_unloaded_passenger(
     outcome
 }
 
-/// Building unload's Foot `+0x68F` exit write at `0x0044DBEA`.
+/// Building unload's absorber-occupant tracking restore plus Foot `+0x68F`
+/// exit write at `0x0044DBEA`.
 ///
 /// The write is absorber-specific and tests the occupant House's raw human
 /// byte (`House+0x1EC`), not local-player control. AI occupants deliberately
@@ -1015,6 +1016,40 @@ pub(crate) fn clear_capture_fate_absorb_intent_after_exit(
         .is_some_and(|object| object.infantry_absorb || object.unit_absorb);
     if !is_absorber {
         return;
+    }
+    let restore_tracking = sim
+        .substrate
+        .entities
+        .get(passenger_id)
+        .is_some_and(|passenger| {
+            passenger.category == crate::map::entities::EntityCategory::Infantry
+                && passenger.infantry_absorber_occupant
+        });
+    if restore_tracking {
+        // `FUN_0044DB00` restores House+0x2F4 only when +0x438 is clear,
+        // then sets +0x438 and clears +0x439. Add_Tracking was suppressed by
+        // +0x439 during the successful Reveal immediately above.
+        let tracked = sim
+            .substrate
+            .entities
+            .get(passenger_id)
+            .is_some_and(|passenger| passenger.infantry_house_tracked);
+        if !tracked {
+            let owner = sim
+                .substrate
+                .entities
+                .get(passenger_id)
+                .map(|passenger| passenger.owner);
+            if let Some(owner) = owner
+                && let Some(house) = sim.houses.get_mut(&owner)
+            {
+                house.tracked_infantry_count = house.tracked_infantry_count.wrapping_add(1);
+            }
+        }
+        if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
+            passenger.infantry_house_tracked = true;
+            passenger.infantry_absorber_occupant = false;
+        }
     }
     let raw_human = sim
         .substrate
@@ -1452,6 +1487,13 @@ ConditionYellow=50%
         passenger.type_ref = sim.interner.intern("INF");
         passenger.passenger_role = PassengerRole::Inside { transport_id: 1 };
         passenger.ai_absorb_enter_pending = true;
+        if building_type == "BIO" {
+            passenger.infantry_absorber_occupant = true;
+            passenger.infantry_house_tracked = false;
+        } else {
+            passenger.infantry_house_tracked = true;
+            sim.houses.get_mut(&owner).unwrap().tracked_infantry_count = 1;
+        }
         sim.substrate.entities.insert(passenger);
         (sim, rules)
     }
@@ -1464,6 +1506,17 @@ ConditionYellow=50%
             let passenger = sim.substrate.entities.get(2).expect("unloaded occupant");
             assert!(!passenger.lifecycle.in_limbo);
             assert_eq!(passenger.ai_absorb_enter_pending, expected);
+            assert!(passenger.infantry_house_tracked);
+            assert!(!passenger.infantry_absorber_occupant);
+            let owner = passenger.owner;
+            assert_eq!(sim.houses[&owner].tracked_infantry_count, 1);
+
+            clear_capture_fate_absorb_intent_after_exit(&mut sim, &rules, 2, 1);
+            assert_eq!(
+                sim.houses[&owner].tracked_infantry_count,
+                1,
+                "repeated successful-exit callback is idempotent",
+            );
         }
 
         let (mut transport, rules) = absorber_unload_fixture(true, "TRAN");
@@ -1477,6 +1530,46 @@ ConditionYellow=50%
                 .ai_absorb_enter_pending,
             "0x0044DBEA is absorber-specific, not a generic cargo-exit clear",
         );
+        let passenger = transport.substrate.entities.get(2).unwrap();
+        assert!(passenger.infantry_house_tracked);
+        assert!(!passenger.infantry_absorber_occupant);
+        assert_eq!(transport.houses[&passenger.owner].tracked_infantry_count, 1);
+    }
+
+    #[test]
+    fn failed_absorber_exit_preserves_untracked_occupant_then_retry_restores_once() {
+        let (mut sim, rules) = absorber_unload_fixture(false, "BIO");
+        let owner = sim.substrate.entities.get(2).unwrap().owner;
+        let mut blocker_ids = Vec::new();
+        for (index, (rx, ry)) in NEIGHBORS
+            .iter()
+            .map(|(dx, dy)| ((10i16 + dx) as u16, (10i16 + dy) as u16))
+            .enumerate()
+        {
+            let id = 100 + index as u64;
+            let mut blocker = GameEntity::test_default(id, "INF", "Owner", rx, ry);
+            blocker.owner = owner;
+            blocker.category = EntityCategory::Infantry;
+            sim.substrate.entities.insert(blocker);
+            blocker_ids.push(id);
+        }
+
+        tick_passenger_system(&mut sim, &rules);
+        let passenger = sim.substrate.entities.get(2).unwrap();
+        assert!(passenger.lifecycle.in_limbo);
+        assert!(passenger.infantry_absorber_occupant);
+        assert!(!passenger.infantry_house_tracked);
+        assert_eq!(sim.houses[&owner].tracked_infantry_count, 0);
+
+        for id in blocker_ids {
+            sim.substrate.entities.remove(id);
+        }
+        tick_passenger_system(&mut sim, &rules);
+        let passenger = sim.substrate.entities.get(2).unwrap();
+        assert!(!passenger.lifecycle.in_limbo);
+        assert!(!passenger.infantry_absorber_occupant);
+        assert!(passenger.infantry_house_tracked);
+        assert_eq!(sim.houses[&owner].tracked_infantry_count, 1);
     }
 
     /// Spawn a CanBeOccupied building entity at (rx, ry) owned by `owner_str`.
