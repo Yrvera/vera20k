@@ -503,6 +503,9 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
         .is_some_and(|cargo| cargo.can_accept(pax_size));
 
     if can_board {
+        // BuildingClass::EnterTransport releases every victim controlled by
+        // the entering Foot before Conceal/Cargo linkage.
+        crate::sim::capture_manager::free_all(sim, rules, pax_id);
         // CargoClass::AddPassenger conceals the passenger before splicing it
         // into the cargo chain. Techno Limbo owns BREAK, Mark removal, and
         // LogicVector removal in that order.
@@ -784,6 +787,7 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                 .is_some_and(|cargo| cargo.can_accept(pax_size));
 
             if can_board {
+                crate::sim::capture_manager::free_all(sim, rules, pax_id);
                 if sim.techno_limbo_with_rules(pax_id, rules) != ConcealOutcome::Concealed {
                     continue;
                 }
