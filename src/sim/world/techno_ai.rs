@@ -874,7 +874,7 @@ fn can_acquire_target(sim: &Simulation, id: u64, rules: &RuleSet) -> bool {
     {
         return false;
     }
-    if entity.mind_controlled {
+    if entity.is_mind_controlled() {
         return false;
     }
     obj.primary.is_some() || obj.secondary.is_some()

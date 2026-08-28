@@ -307,7 +307,7 @@ pub fn can_dock_occupier_garrison(
     ) {
         return false;
     }
-    if building.mind_controlled {
+    if building.is_mind_controlled() {
         return false;
     }
     true
@@ -2079,7 +2079,7 @@ ConditionYellow=50%
             .entities
             .get_mut(bldg)
             .unwrap()
-            .mind_controlled = true;
+            .permanently_mind_controlled = true;
 
         assert!(
             !can_enter_garrison_fixture(&sim, &rules, pax, bldg),

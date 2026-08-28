@@ -630,7 +630,7 @@ pub(crate) fn should_retaliate_from_damage(
     };
     if !victim_type.can_retaliate
         || victim.bunker_link.installed_in().is_some()
-        || victim.mind_controlled
+        || victim.is_mind_controlled()
         || victim
             .capture_manager
             .as_ref()

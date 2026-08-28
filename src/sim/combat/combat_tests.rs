@@ -2995,11 +2995,11 @@ fn gsi_04_07_damage_full_capture_manager_blocks_retaliation() {
             let mut controlled = make_entity(id, "LINK", 10 + offset as u16, 5, 100);
             controlled.owner = victim_owner;
             controlled.type_ref = link_type;
-            controlled.mind_controlled = true;
+            controlled.mind_control_controller_id = Some(2);
             controlled.lifecycle.in_limbo = false;
             controlled.lifecycle.cell_marked = true;
             entities.insert(controlled);
-            manager.link_controlled_entity(id);
+            manager.link_controlled_entity(id, victim_owner);
         }
         victim.capture_manager = Some(manager);
         entities.insert(victim);
@@ -3044,8 +3044,10 @@ fn gsi_04_07_damage_full_capture_manager_blocks_retaliation() {
                 .capture_manager
                 .as_ref()
                 .expect("manager retained")
-                .controlled_entity_ids
-                .clone(),
+                .controlled_nodes
+                .iter()
+                .map(|node| node.victim_id)
+                .collect(),
         }
     }
 
