@@ -556,6 +556,72 @@ one later-failed Unlimbo case, and a structure upgrade. It asserts word-to-objec
 post-load Scenario cursor in `[Units]`, `[Aircraft]`, `[Infantry]`, `[Structures]`, upgrade-slot
 order. A paired generated fixture asserts that projection leaves the cursor unchanged.
 
+### 12.6 The constructor invariant continues through Post-Map and runtime creation
+
+The authored-map prerequisite is not the end of the shared cursor obligation.
+`ScenarioClass__Post_Map_Init @ 0x00686890` invokes
+`MultiplayerGameMode__Generate_Starting_Units @ 0x005D6D80` after scenario load. Its game-mode
+callback at vtable `+0xC8` is
+`MultiplayerGameMode__Create_Starting_Base_Unit @ 0x005D7030`: the active Bases path allocates a
+`UnitClass`, calls `UnitClass__Constructor @ 0x007353C0` from `0x005D7079`, then tries exact Unlimbo
+and the radius-one fallback. Total placement failure deletes the already-constructed object, so its
+unconditional Techno constructor word remains spent.
+
+The companion game-mode callback at vtable `+0xCC` is the active routine at `0x005D70F0`. It builds
+eligible UnitType/InfantryType candidate arrays, selects candidates with the same Scenario owner,
+and calls the chosen type's `CreateObject` virtual at `0x005D7393` before placement. The concrete
+factories are `UnitTypeClass` vtable `+0x8C -> 0x00747560` and
+`InfantryTypeClass__CreateObject @ 0x00523B10`; they allocate and call
+`UnitClass__Constructor @ 0x007353C0` or `InfantryClass__Constructor @ 0x00517A50`, respectively.
+Those paths therefore reach the same unconditional base draw before their later placement result.
+
+The decisive boundary is class-level rather than a list of favored callers: every active derived
+Techno construction reaches `TechnoClass__Constructor @ 0x006F2B90`, whose final raw Scenario draw
+and `Techno+0x3C8` store are unconditional. Ordinary production, free units, sell survivors,
+Post-Map starting forces, paradrop cargo, spawn-manager children and other runtime constructors must
+therefore use the same fresh-word path. A later Unlimbo/placement failure does not refund the draw.
+Snapshot restore is not construction and must restore the serialized word without drawing again.
+
+The stored word is persistent gameplay state, not disposable cursor padding. Two independent active
+readers use it to select a report sound:
+
+- `DiskLaserClass__AI @ 0x004A7340`, at `0x004A76CC`, loads the source
+  `Techno+0x3C8`, divides by `WeaponType+0xCC` report count, and uses the remainder to select the
+  report entry before `VocClass__PlayAt`;
+- `TechnoClassFireAtSpawnsBullet @ 0x006FDD50`, at `0x006FF36B`, performs the same unsigned-word
+  modulo selection for an ordinary firing Techno's report list.
+
+An authored structure upgrade is itself a live `BuildingClass`/`TechnoClass` object, so its word
+cannot be represented by a cursor-only discard or by an ephemeral parser side effect. The minimum
+faithful Rust owner is a distinct `GameEntity` carrying `techno_ctor_random_word` plus a stable
+`StructureUpgradeLink { parent_stable_id, slot }`. The link does not claim that the broader upgrade
+behavior backlog is closed; it gives the native constructor object a persistent deterministic
+identity and preserves the word for later Techno consumers, snapshots, and hashes.
+
+The current Rust construction census is small enough to enforce one funnel. Outside tests,
+`GameEntity::new_at_frame` is called only at the three construction sites in
+`src/sim/world/world_spawn.rs`: authored/generated map projection,
+`spawn_object_at_height`, and `spawn_object_limbo_at_height`. `spawn_object` delegates to the
+height-aware path. Active scenario-bootstrap, production, sell-survivor, refinery free-unit,
+slave-miner, spawn-manager and superweapon paths all route through those runtime entry points.
+Snapshot load restores serialized `GameEntity` state and is a non-drawing path.
+
+The implementation handoff must therefore expose one internal constructor initialization mode and
+assign the field exactly once:
+
+- `FreshScenario`: draw/store before any Unlimbo or placement decision; use for fixed authored map,
+  Post-Map and runtime construction;
+- `PreconsumedGenerated`: validate the RMG stable-index/type/cell binding, install its word and draw
+  zero;
+- `Restored`: reinstate the serialized word under the existing native-verified restore cursor
+  contract, drawing zero.
+
+Direct production use of `GameEntity::new_at_frame` outside that funnel must become impossible or
+be guarded by a source-boundary test. In addition to the fixed-map and generated fixtures above,
+acceptance requires (1) Post-Map starting MCV and extra-unit word/cursor assertions, including a
+later placement failure, (2) an ordinary runtime production/spawn assertion, and (3) a snapshot
+round trip proving the installed word persists without an extra draw.
+
 ## 13. Sources
 
 - Fresh read-only Ghidra decompile: `0x00596300`, `0x00595BC0`, `0x005E8590`,
@@ -584,8 +650,14 @@ order. A paired generated fixture asserts that projection leaves the cursor unch
   `0x006F2B90`, `0x004D31E0`, `0x00743270`, `0x0041B110`, `0x0051FB00`, and
   `0x0044F820`; structure-upgrade assembly `0x0044FD50..0x0044FDC3`; reconciled against
   `ACTIVE_OBJECT_ORDER_SOURCE_LOAD_REVEAL_SPAWN_GHIDRA_REPORT.md`.
+- Revision-6 follow-up: `ScenarioClass__Post_Map_Init @ 0x00686890`,
+  `MultiplayerGameMode__Generate_Starting_Units @ 0x005D6D80`, starting-base callback
+  `0x005D7030`, active extra-unit callback assembly `0x005D70F0..0x005D7498`, concrete
+  Unit/Infantry type factories `0x00747560` and `0x00523B10`, plus persistent constructor-word
+  readers `0x004A76CC` and `0x006FF36B`.
 - Current Rust: `src/app/frontend/skirmish_session.rs`, `src/app/shell_random_map.rs`,
   `src/app/loading/init.rs`, `src/map/rmg/build.rs`, `src/map/rmg/pipeline.rs`,
-  `src/map/rmg/phases/tech_buildings.rs`, `src/map/rmg/phases/carve_driver.rs`, and
+  `src/map/rmg/phases/tech_buildings.rs`, `src/map/rmg/phases/carve_driver.rs`,
+  `src/map/entities.rs`, `src/sim/world/world_spawn.rs`, `src/sim/scenario_bootstrap.rs`, and
   `src/rng_continuation.rs`.
 - OpenTS: readable secondary navigation reference only; no material conclusion above relies on it.
