@@ -206,6 +206,14 @@ pub struct ObjectType {
     /// experience award entirely for an untrainable killer. 82 stock sections
     /// set `Trainable=no`. Default true.
     pub trainable: bool,
+    /// `CrateGoodie=yes` admits this UnitType to random Unit-crate selection.
+    pub crate_goodie: bool,
+    /// `CarriesCrate=yes` participates in the Truck/Train death producer gate.
+    pub carries_crate: bool,
+    /// `CrateBeneath=yes` drops a specific crate after fatal Building UnInit.
+    pub crate_beneath: bool,
+    /// `CrateBeneathIsMoney=yes` passes data zero instead of random sentinel 20.
+    pub crate_beneath_is_money: bool,
     /// Hit points (health). 0 = invincible or not applicable.
     pub strength: i32,
     /// `DontScore=` — this object's destruction is invisible to the end-of-match
@@ -1214,6 +1222,12 @@ impl ObjectType {
                 .map(|entry| entry.to_string())
                 .collect(),
             trainable: section.get_bool("Trainable").unwrap_or(true),
+            crate_goodie: section.get_bool("CrateGoodie").unwrap_or(false),
+            carries_crate: section.get_bool("CarriesCrate").unwrap_or(false),
+            crate_beneath: section.get_bool("CrateBeneath").unwrap_or(false),
+            crate_beneath_is_money: section
+                .get_bool("CrateBeneathIsMoney")
+                .unwrap_or(false),
             strength: section.get_i32("Strength").unwrap_or(0),
             dont_score: section.get_bool("DontScore").unwrap_or(false),
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),

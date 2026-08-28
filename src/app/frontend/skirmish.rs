@@ -1095,6 +1095,7 @@ mod tests {
                 mission: None,
                 recruitable_a: true,
                 recruitable_b: true,
+                attached_tag_id: None,
             }],
             Some(&rules),
             &BTreeMap::new(),

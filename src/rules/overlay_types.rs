@@ -121,6 +121,8 @@ pub struct OverlayTypeFlags {
     pub crushable: bool,
     /// Crate=yes — gets -12px Y offset.
     pub crate_type: bool,
+    /// `CrateTrigger=yes` raises the collector's Event 49 before pickup.
+    pub crate_trigger: bool,
     /// `Overrides=yes` protects an existing overlay from ordinary runtime placement.
     pub overrides: bool,
     /// Parsed `CellAnim=` AnimType identity (`OverlayTypeClass+0x29C`).
@@ -184,6 +186,7 @@ impl Default for OverlayTypeFlags {
             is_gate: false,
             crushable: false,
             crate_type: false,
+            crate_trigger: false,
             overrides: false,
             cell_anim: None,
             is_rubble: false,
@@ -344,6 +347,7 @@ impl OverlayTypeRegistry {
                     is_gate: type_section.get_bool("Gate").unwrap_or(false),
                     crushable: type_section.get_bool("Crushable").unwrap_or(false),
                     crate_type: type_section.get_bool("Crate").unwrap_or(false),
+                    crate_trigger: type_section.get_bool("CrateTrigger").unwrap_or(false),
                     overrides: type_section.get_bool("Overrides").unwrap_or(false),
                     cell_anim: type_section
                         .get("CellAnim")

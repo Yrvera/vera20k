@@ -461,6 +461,7 @@ mod tests {
                 mission: None,
                 recruitable_a: true,
                 recruitable_b: true,
+                attached_tag_id: None,
             };
             sim.spawn_from_map(&[entity], None, &BTreeMap::new());
             sim
