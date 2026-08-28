@@ -26,6 +26,9 @@ pub struct MapTrigger {
     pub name: Option<String>,
     pub enabled: bool,
     pub difficulty: TriggerDifficulty,
+    /// Compatibility-only fixture projection for the retiring aggregate
+    /// runtime. Production parsing never derives this from Trigger field
+    /// seven; repetition is owned exclusively by `MapTag::repeat_mode`.
     pub repeating: bool,
 }
 
@@ -58,13 +61,13 @@ pub fn parse_triggers(ini: &IniFile) -> TriggerMap {
                 owner: parse_owner(&fields),
                 linked_trigger_id: parse_linked_trigger(&fields),
                 name: parse_name(&fields),
-                enabled: parse_bool_slot(&fields, 3, true),
+                enabled: parse_nonzero_slot(&fields, 3, true),
                 difficulty: TriggerDifficulty {
-                    easy: parse_bool_slot(&fields, 4, true),
-                    medium: parse_bool_slot(&fields, 5, true),
-                    hard: parse_bool_slot(&fields, 6, true),
+                    easy: parse_nonzero_slot(&fields, 4, true),
+                    medium: parse_nonzero_slot(&fields, 5, true),
+                    hard: parse_nonzero_slot(&fields, 6, true),
                 },
-                repeating: parse_repeat_mode(&fields),
+                repeating: false,
                 fields,
             },
         );
@@ -95,18 +98,11 @@ fn parse_name(fields: &[String]) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-fn parse_bool_slot(fields: &[String], index: usize, default: bool) -> bool {
+fn parse_nonzero_slot(fields: &[String], index: usize, default: bool) -> bool {
     fields
         .get(index)
-        .map(|value| value.trim() == "1")
+        .map(|value| crate::rules::ini_value::atoi_lenient(value) != 0)
         .unwrap_or(default)
-}
-
-fn parse_repeat_mode(fields: &[String]) -> bool {
-    fields
-        .get(7)
-        .map(|value| value.trim() == "2")
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -68,12 +68,7 @@ pub fn build_trigger_graph(
     for trigger in triggers.values() {
         let mut tag_ids: Vec<String> = Vec::new();
         for tag in tags.values() {
-            let trigger_ref = tag.fields.get(2).map(|s| s.trim()).unwrap_or("");
-            if trigger_ref.is_empty() {
-                continue;
-            }
-            let normalized = trigger_ref.to_ascii_uppercase();
-            if normalized == trigger.id {
+            if tag.trigger_type_head_id.as_deref() == Some(trigger.id.as_str()) {
                 tag_ids.push(tag.id.clone());
             }
         }
@@ -102,12 +97,10 @@ pub fn build_trigger_graph(
     }
 
     for tag in tags.values() {
-        let trigger_ref = tag.fields.get(2).map(|s| s.trim()).unwrap_or("");
-        if trigger_ref.is_empty() {
+        let Some(normalized) = tag.trigger_type_head_id.as_deref() else {
             continue;
-        }
-        let normalized = trigger_ref.to_ascii_uppercase();
-        if !triggers.contains_key(&normalized) {
+        };
+        if !triggers.contains_key(normalized) {
             dangling_tag_trigger_refs.push(format!("{} -> {}", tag.id, normalized));
         }
     }
@@ -154,13 +147,11 @@ pub fn analyze_trigger_graph(
     diag.dangling_cell_tags = graph.dangling_cell_tags;
 
     for tag in tags.values() {
-        let trigger_ref = tag.fields.get(2).map(|s| s.trim()).unwrap_or("");
-        if trigger_ref.is_empty() {
+        let Some(normalized) = tag.trigger_type_head_id.as_deref() else {
             continue;
-        }
+        };
         diag.tags_with_trigger_ref += 1;
-        let normalized = trigger_ref.to_ascii_uppercase();
-        if triggers.contains_key(&normalized) {
+        if triggers.contains_key(normalized) {
             diag.tags_resolved_to_triggers += 1;
         } else {
             diag.dangling_tag_trigger_refs
@@ -236,6 +227,9 @@ mod tests {
                 MapTag {
                     id: "TAG_A".to_string(),
                     fields: vec!["0".to_string(), "1".to_string(), "TRIG_A".to_string()],
+                    repeat_mode: 0,
+                    name: "1".to_string(),
+                    trigger_type_head_id: Some("TRIG_A".to_string()),
                 },
             ),
             (
@@ -243,6 +237,9 @@ mod tests {
                 MapTag {
                     id: "TAG_B".to_string(),
                     fields: vec!["0".to_string(), "1".to_string(), "TRIG_B".to_string()],
+                    repeat_mode: 0,
+                    name: "1".to_string(),
+                    trigger_type_head_id: Some("TRIG_B".to_string()),
                 },
             ),
         ]
@@ -294,6 +291,9 @@ mod tests {
                 MapTag {
                     id: "TAG_A".to_string(),
                     fields: vec!["0".to_string(), "1".to_string(), "TRIG_A".to_string()],
+                    repeat_mode: 0,
+                    name: "1".to_string(),
+                    trigger_type_head_id: Some("TRIG_A".to_string()),
                 },
             ),
             (
@@ -301,6 +301,9 @@ mod tests {
                 MapTag {
                     id: "TAG_B".to_string(),
                     fields: vec!["0".to_string(), "1".to_string(), "TRIG_MISSING".to_string()],
+                    repeat_mode: 0,
+                    name: "1".to_string(),
+                    trigger_type_head_id: Some("TRIG_MISSING".to_string()),
                 },
             ),
         ]
