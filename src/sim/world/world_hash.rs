@@ -930,6 +930,32 @@ impl Simulation {
                 entity.techno_ctor_random_word.hash(hasher);
                 entity.structure_upgrade_link.hash(hasher);
             }
+            if include_techno_constructor_v104 {
+                // Constructor-owned SlaveManager identities live in the
+                // transitional ProductionState registry until the manager is
+                // promoted to its own component. Both the ordered pool and
+                // each child's active harvest cursor affect future simulation.
+                if let Some(slave_ids) = self.production.slave_bindings.get(&entity.stable_id) {
+                    b"constructor-slave-pool-v1".hash(hasher);
+                    slave_ids.len().hash(hasher);
+                    for slave_id in slave_ids {
+                        slave_id.hash(hasher);
+                    }
+                }
+                if let Some(slave) = entity.slave_harvester.as_ref() {
+                    b"slave-harvester-v1".hash(hasher);
+                    slave.master_id.hash(hasher);
+                    (slave.state as u8).hash(hasher);
+                    slave.cargo.len().hash(hasher);
+                    for bale in &slave.cargo {
+                        (bale.resource_type as u8).hash(hasher);
+                        bale.value.hash(hasher);
+                    }
+                    slave.capacity.hash(hasher);
+                    slave.harvest_timer.hash(hasher);
+                    slave.target_cell.hash(hasher);
+                }
+            }
             entity.occupancy_enter_order.hash(hasher);
             entity.air_spatial_bucket.hash(hasher);
             entity.air_spatial_enter_order.hash(hasher);

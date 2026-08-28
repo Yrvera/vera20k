@@ -481,8 +481,7 @@ impl Simulation {
                     self.session.binary_frame,
                 );
             }
-            let has_spawn_manager = ge.spawn_manager.is_some();
-            let (stable_id, outcome) = self.unlimbo(ge);
+            let (stable_id, outcome) = self.unlimbo_after_constructor_managers(ge, rules);
             if !matches!(outcome, RevealOutcome::Revealed { .. }) {
                 self.discard_constructed_limbo(stable_id);
                 continue;
@@ -491,9 +490,6 @@ impl Simulation {
                 self.initialize_cloak_after_unlimbo(stable_id, ruleset);
                 self.add_unit_sensor_after_unlimbo(stable_id, ruleset);
                 self.add_building_sensor_array_if_powered(stable_id, ruleset);
-            }
-            if has_spawn_manager && let Some(ruleset) = rules {
-                crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, ruleset);
             }
             self.commit_map_placement_mission(stable_id, map_ent.mission);
             count += 1;
@@ -851,8 +847,8 @@ impl Simulation {
         }
 
         stamp_building_cell_profile(&mut ge, Some(obj));
-        // TechnoClass::Init_Managers — the spawn pool exists iff `Spawns=`
-        // resolves. Children are created right after placement, below.
+        // TechnoClass::Init_Managers — manager-owned children are committed
+        // after this parent enters the limbo store and before its Unlimbo.
         ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
         ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
             obj,
@@ -860,8 +856,7 @@ impl Simulation {
             &mut self.interner,
             self.session.binary_frame,
         );
-        let has_spawn_manager = ge.spawn_manager.is_some();
-        let (stable_id, outcome) = self.unlimbo(ge);
+        let (stable_id, outcome) = self.unlimbo_after_constructor_managers(ge, Some(rules));
         if !matches!(outcome, RevealOutcome::Revealed { .. }) {
             // This convenience path owns its transient constructor result.
             // Held production objects use the separate limbo/retry boundary.
@@ -870,9 +865,6 @@ impl Simulation {
         }
         self.initialize_cloak_after_unlimbo(stable_id, rules);
         self.add_unit_sensor_after_unlimbo(stable_id, rules);
-        if has_spawn_manager {
-            crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, rules);
-        }
         self.commit_spawn_harvest_mission(stable_id);
         Ok(Some(stable_id))
     }
@@ -1041,17 +1033,23 @@ impl Simulation {
         stamp_building_cell_profile(&mut ge, Some(obj));
 
         ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
+        ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
+            obj,
+            rules,
+            &mut self.interner,
+            self.session.binary_frame,
+        );
 
         let stable_id = self.create_limbo(ge);
+        self.commit_constructor_owned_techno_children(stable_id, rules);
         self.commit_spawn_harvest_mission(stable_id);
         Ok(Some(stable_id))
     }
 
     /// Compatibility name for constructing and accounting the Techno identity
     /// held from `FactoryClass::StartProduction @ 0x004C9C70` through delivery.
-    /// Unlike the paradrop limbo path, production also initializes the parent
-    /// spawn manager now; its child pool is committed only after successful
-    /// Unlimbo.
+    /// Production and other limbo constructors share the same manager/child
+    /// transaction; later delivery only Unlimbos this retained identity.
     pub(crate) fn create_production_object_limbo_at_height(
         &mut self,
         type_id: &str,
@@ -1078,17 +1076,7 @@ impl Simulation {
         z: u8,
         rules: &RuleSet,
     ) -> Option<u64> {
-        let stable_id =
-            self.spawn_object_limbo_at_height(type_id, owner, rx, ry, facing, z, rules)?;
-        let object = rules.object(type_id)?;
-        let spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
-            object,
-            rules,
-            &mut self.interner,
-            self.session.binary_frame,
-        );
-        self.substrate.entities.get_mut(stable_id)?.spawn_manager = spawn_manager;
-        Some(stable_id)
+        self.spawn_object_limbo_at_height(type_id, owner, rx, ry, facing, z, rules)
     }
 
     /// Run one result-bearing Unlimbo transaction against an already stored
@@ -1136,7 +1124,7 @@ impl Simulation {
             .get(stable_id)
             .is_some_and(|entity| entity.category == EntityCategory::Infantry);
         let infantry_sub_cell = is_infantry.then(|| self.allocate_infantry_sub_cell(rx, ry));
-        let (sub_x, sub_y, has_spawn_manager) = {
+        let (sub_x, sub_y) = {
             let entity = self.substrate.entities.get_mut(stable_id)?;
             entity.facing = facing;
             if let Some(sub_cell) = infantry_sub_cell {
@@ -1145,11 +1133,7 @@ impl Simulation {
                 entity.position.sub_x = offsets.0;
                 entity.position.sub_y = offsets.1;
             }
-            (
-                entity.position.sub_x,
-                entity.position.sub_y,
-                entity.spawn_manager.is_some(),
-            )
+            (entity.position.sub_x, entity.position.sub_y)
         };
         let outcome = self.try_reveal_entity(
             stable_id,
@@ -1170,9 +1154,6 @@ impl Simulation {
         }
         self.initialize_cloak_after_unlimbo(stable_id, rules);
         self.add_unit_sensor_after_unlimbo(stable_id, rules);
-        if has_spawn_manager {
-            crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, rules);
-        }
         self.commit_spawn_harvest_mission(stable_id);
         Some(stable_id)
     }
@@ -1201,11 +1182,58 @@ impl Simulation {
     /// limbo. The stable ID and constructor RNG draw stay spent, while the
     /// transient store and owned-count effects are undone exactly once.
     pub(crate) fn discard_constructed_limbo(&mut self, stable_id: u64) -> bool {
-        let Some(entity) = self.substrate.entities.remove(stable_id) else {
+        if !self.substrate.entities.contains(stable_id) {
             return false;
-        };
+        }
+        let spawn_children = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|entity| entity.spawn_manager.as_ref())
+            .map(|manager| {
+                manager
+                    .slots
+                    .iter()
+                    .filter_map(|slot| slot.spawn)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let slave_children = self
+            .production
+            .slave_bindings
+            .remove(&stable_id)
+            .unwrap_or_default();
+        let entity = self
+            .substrate
+            .entities
+            .remove(stable_id)
+            .expect("constructor object existence checked above");
+        debug_assert!(entity.lifecycle.in_limbo && !entity.lifecycle.cell_marked);
         let owner = self.interner.resolve(entity.owner).to_string();
         self.decrement_owned_count(&owner, entity.category);
+        for child_id in spawn_children.into_iter().chain(slave_children) {
+            if self.substrate.entities.contains(child_id) {
+                let discarded = self.discard_constructed_limbo(child_id);
+                debug_assert!(discarded, "constructor-owned child must remain in limbo");
+            }
+        }
+        true
+    }
+
+    /// Remove only the freshly constructed slave pool owned by `master_id`.
+    /// `PowerUp_Cleanup @ 0x006AF580` uses this while transplanting an older
+    /// SMIN/YAREFN manager into a newly constructed counterpart: the new
+    /// pool's constructor draws remain spent, but none of its children survive.
+    pub(crate) fn discard_constructor_owned_slave_pool(&mut self, master_id: u64) -> bool {
+        let Some(slave_ids) = self.production.slave_bindings.remove(&master_id) else {
+            return false;
+        };
+        for slave_id in slave_ids {
+            if self.substrate.entities.contains(slave_id) {
+                let discarded = self.discard_constructed_limbo(slave_id);
+                debug_assert!(discarded, "fresh slave-manager child must remain in limbo");
+            }
+        }
         true
     }
 
@@ -1239,6 +1267,100 @@ impl Simulation {
             },
         );
         (stable_id, outcome)
+    }
+
+    /// Complete `TechnoClass::Init_Managers @ 0x006F3F40` while the freshly
+    /// constructed parent is still in limbo, then attempt the parent's first
+    /// Unlimbo. Both SpawnManagerClass @ 0x006B6C90 and SlaveManagerClass
+    /// @ 0x006AF1A0 construct their child Technos before parent placement.
+    fn unlimbo_after_constructor_managers(
+        &mut self,
+        ge: GameEntity,
+        rules: Option<&RuleSet>,
+    ) -> (u64, RevealOutcome) {
+        let position = RevealPosition {
+            rx: ge.position.rx,
+            ry: ge.position.ry,
+            z: ge.position.z,
+            sub_x: ge.position.sub_x,
+            sub_y: ge.position.sub_y,
+        };
+        let stable_id = self.store_spawned_limbo(ge);
+        if let Some(rules) = rules {
+            self.commit_constructor_owned_techno_children(stable_id, rules);
+        }
+        let outcome = self.try_reveal_entity(
+            stable_id,
+            RevealRequest {
+                position,
+                placement: PlacementEvidence::EvaluateMark,
+                logic_eligible: true,
+            },
+        );
+        (stable_id, outcome)
+    }
+
+    /// Materialize constructor-owned Technos in native manager order. The
+    /// parent has already consumed its own constructor word; every child uses
+    /// the same FreshScenario funnel and remains a stable limbo identity.
+    fn commit_constructor_owned_techno_children(&mut self, parent_id: u64, rules: &RuleSet) {
+        crate::sim::spawn_manager::commit_spawn_manager_pool(self, parent_id, rules);
+
+        if self.production.slave_bindings.contains_key(&parent_id) {
+            return;
+        }
+        let Some((slave_type, slave_count, owner, rx, ry, z, facing, capacity)) = self
+            .substrate
+            .entities
+            .get(parent_id)
+            .and_then(|parent| {
+                let parent_type = self.interner.resolve(parent.type_ref);
+                let object = rules.object_case_insensitive(parent_type)?;
+                let slave_type = object.enslaves.as_deref()?;
+                let slave_object = rules.object_case_insensitive(slave_type)?;
+                if object.slaves_number <= 0
+                    || slave_object.category != ObjectCategory::Infantry
+                {
+                    return None;
+                }
+                Some((
+                    slave_type.to_string(),
+                    object.slaves_number as usize,
+                    self.interner.resolve(parent.owner).to_string(),
+                    parent.position.rx,
+                    parent.position.ry,
+                    parent.position.z,
+                    parent.facing,
+                    slave_object.storage.max(1) as u16,
+                ))
+            })
+        else {
+            return;
+        };
+
+        let mut slave_ids = Vec::with_capacity(slave_count);
+        for _ in 0..slave_count {
+            let Some(slave_id) = self.construct_object_limbo_at_height(
+                &slave_type,
+                &owner,
+                rx,
+                ry,
+                facing,
+                z,
+                rules,
+            ) else {
+                continue;
+            };
+            if let Some(slave) = self.substrate.entities.get_mut(slave_id) {
+                slave.slave_harvester = Some(crate::sim::slave_miner::SlaveHarvester::new(
+                    parent_id, capacity,
+                ));
+            }
+            slave_ids.push(slave_id);
+        }
+        self.production
+            .slave_bindings
+            .insert(parent_id, slave_ids);
     }
 
     /// Unit/Infantry constructor cloak ability plus UnitClass::Unlimbo's
@@ -1689,16 +1811,21 @@ mod techno_constructor_tests {
 
     fn constructor_rules() -> RuleSet {
         RuleSet::from_ini(&IniFile::from_str(
-            "[InfantryTypes]\n0=E1\n\n\
-             [VehicleTypes]\n0=MTNK\n\n\
-             [AircraftTypes]\n0=ORCA\n\n\
-             [BuildingTypes]\n0=BASE\n1=UP1\n2=UP2\n\n\
+            "[InfantryTypes]\n0=E1\n1=SLAV\n\n\
+             [VehicleTypes]\n0=MTNK\n1=CARRIER\n2=SMIN\n\n\
+             [AircraftTypes]\n0=ORCA\n1=HORN\n\n\
+             [BuildingTypes]\n0=BASE\n1=UP1\n2=UP2\n3=YAREFN\n\n\
              [E1]\nStrength=100\nSpeed=4\n\n\
+             [SLAV]\nStrength=125\nSpeed=4\nStorage=4\n\n\
              [MTNK]\nStrength=300\nSpeed=6\n\n\
+             [CARRIER]\nStrength=800\nSpeed=4\nSpawns=HORN\nSpawnsNumber=3\nSpawnRegenRate=600\nSpawnReloadRate=25\n\n\
+             [SMIN]\nStrength=2000\nSpeed=3\nEnslaves=SLAV\nSlavesNumber=2\nSlaveRegenRate=500\nSlaveReloadRate=25\n\n\
              [ORCA]\nStrength=200\nSpeed=8\n\n\
+             [HORN]\nStrength=75\nSpeed=14\nAmmo=1\n\n\
              [BASE]\nStrength=500\nFoundation=2x2\n\n\
              [UP1]\nStrength=100\nFoundation=1x1\n\n\
-             [UP2]\nStrength=100\nFoundation=1x1\n",
+             [UP2]\nStrength=100\nFoundation=1x1\n\n\
+             [YAREFN]\nStrength=2000\nFoundation=2x2\nEnslaves=SLAV\nSlavesNumber=2\nSlaveRegenRate=500\nSlaveReloadRate=25\n",
         ))
         .expect("constructor fixture rules parse")
     }
@@ -1818,6 +1945,184 @@ mod techno_constructor_tests {
         assert_eq!(limbo_entity.techno_ctor_random_word, limbo_word);
         assert!(limbo_entity.lifecycle.in_limbo);
         assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_spawn_manager_pool_draws_parent_then_children_and_cancels_as_one_graph() {
+        let seed = 0xC701_0010;
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        install_american_house(&mut sim);
+        let mut expected = SimRng::new(seed);
+        let words = (0..4)
+            .map(|_| (expected.next_u32() & 0xFFFF) as u16)
+            .collect::<Vec<_>>();
+
+        let parent_id = sim
+            .construct_object_limbo_at_height("CARRIER", "Americans", 0, 0, 0, 0, &rules)
+            .expect("factory-held carrier constructor");
+        let parent = sim.substrate.entities.get(parent_id).expect("carrier parent");
+        assert_eq!(parent.techno_ctor_random_word, words[0]);
+        let child_ids = parent
+            .spawn_manager
+            .as_ref()
+            .expect("constructor spawn manager")
+            .slots
+            .iter()
+            .map(|slot| slot.spawn.expect("constructor-filled spawn slot"))
+            .collect::<Vec<_>>();
+        assert_eq!(child_ids, vec![2, 3, 4]);
+        for (index, child_id) in child_ids.iter().copied().enumerate() {
+            let child = sim.substrate.entities.get(child_id).expect("spawn child");
+            assert_eq!(child.techno_ctor_random_word, words[index + 1]);
+            assert_eq!(child.spawn_owner_id, Some(parent_id));
+            assert!(child.lifecycle.in_limbo && !child.lifecycle.cell_marked);
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+
+        let after_constructor = sim.scenario_rng.logical_state();
+        assert!(sim.discard_constructed_limbo(parent_id));
+        assert!(sim.substrate.entities.is_empty());
+        assert_eq!(sim.scenario_rng.logical_state(), after_constructor);
+    }
+
+    #[test]
+    fn techno_constructor_slave_manager_pool_draws_parent_then_children_and_cancels_as_one_graph() {
+        let seed = 0xC701_0011;
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        install_american_house(&mut sim);
+        let mut expected = SimRng::new(seed);
+        let words = (0..3)
+            .map(|_| (expected.next_u32() & 0xFFFF) as u16)
+            .collect::<Vec<_>>();
+
+        let parent_id = sim
+            .construct_object_limbo_at_height("SMIN", "Americans", 0, 0, 0, 0, &rules)
+            .expect("factory-held slave miner constructor");
+        let slave_ids = sim
+            .production
+            .slave_bindings
+            .get(&parent_id)
+            .expect("constructor slave manager")
+            .clone();
+        assert_eq!(slave_ids, vec![2, 3]);
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(parent_id)
+                .unwrap()
+                .techno_ctor_random_word,
+            words[0]
+        );
+        for (index, slave_id) in slave_ids.iter().copied().enumerate() {
+            let slave = sim.substrate.entities.get(slave_id).expect("slave child");
+            assert_eq!(slave.techno_ctor_random_word, words[index + 1]);
+            assert_eq!(
+                slave.slave_harvester.as_ref().map(|slave| slave.master_id),
+                Some(parent_id)
+            );
+            assert!(slave.lifecycle.in_limbo && !slave.lifecycle.cell_marked);
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+
+        let after_constructor = sim.scenario_rng.logical_state();
+        assert!(sim.discard_constructed_limbo(parent_id));
+        assert!(sim.substrate.entities.is_empty());
+        assert!(sim.production.slave_bindings.is_empty());
+        assert_eq!(sim.scenario_rng.logical_state(), after_constructor);
+    }
+
+    #[test]
+    fn techno_constructor_manager_pools_survive_delivery_without_reconstruction() {
+        let rules = constructor_rules();
+        for (seed, parent_type, expected_child_count) in
+            [(0xC701_0012, "CARRIER", 3usize), (0xC701_0013, "SMIN", 2usize)]
+        {
+            let mut sim = Simulation::with_seed(seed);
+            install_constructor_test_playfield(&mut sim);
+            let parent_id = sim
+                .construct_object_limbo_at_height(
+                    parent_type,
+                    "Americans",
+                    0,
+                    0,
+                    0,
+                    0,
+                    &rules,
+                )
+                .expect("held manager parent");
+            let child_ids = if parent_type == "CARRIER" {
+                sim.substrate
+                    .entities
+                    .get(parent_id)
+                    .unwrap()
+                    .spawn_manager
+                    .as_ref()
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .filter_map(|slot| slot.spawn)
+                    .collect::<Vec<_>>()
+            } else {
+                sim.production.slave_bindings[&parent_id].clone()
+            };
+            assert_eq!(child_ids.len(), expected_child_count);
+            let after_constructor = sim.scenario_rng.logical_state();
+
+            assert_eq!(
+                sim.unlimbo_held_production_object(
+                    parent_id,
+                    6,
+                    5,
+                    0,
+                    0,
+                    PlacementEvidence::EvaluateMark,
+                    &rules,
+                ),
+                Some(parent_id)
+            );
+            assert_eq!(sim.scenario_rng.logical_state(), after_constructor);
+            let retained_ids = if parent_type == "CARRIER" {
+                sim.substrate
+                    .entities
+                    .get(parent_id)
+                    .unwrap()
+                    .spawn_manager
+                    .as_ref()
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .filter_map(|slot| slot.spawn)
+                    .collect::<Vec<_>>()
+            } else {
+                sim.production.slave_bindings[&parent_id].clone()
+            };
+            assert_eq!(retained_ids, child_ids);
+        }
+    }
+
+    #[test]
+    fn techno_constructor_failed_parent_placement_discards_both_manager_pool_kinds_without_rewind() {
+        let rules = constructor_rules();
+        for (seed, parent_type, draw_count) in
+            [(0xC701_0014, "CARRIER", 4usize), (0xC701_0015, "SMIN", 3usize)]
+        {
+            let mut sim = Simulation::with_seed(seed);
+            install_constructor_test_playfield(&mut sim);
+            let mut expected = SimRng::new(seed);
+            for _ in 0..draw_count {
+                let _ = expected.next_u32();
+            }
+
+            assert!(
+                sim.spawn_object_at_height(parent_type, "Americans", 1, 1, 0, 0, &rules)
+                    .is_none()
+            );
+            assert!(sim.substrate.entities.is_empty());
+            assert!(sim.production.slave_bindings.is_empty());
+            assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+        }
     }
 
     #[test]

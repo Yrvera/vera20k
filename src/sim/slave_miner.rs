@@ -29,7 +29,7 @@ use crate::sim::miner::{CargoBale, MinerConfig};
 use crate::sim::miner::{extract_bale, search_local_ore};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_entry_for_owner;
-use crate::sim::world::Simulation;
+use crate::sim::world::{PlacementEvidence, Simulation};
 
 /// Deployed state of a Slave Miner (SMIN vehicle ↔ YAREFN building).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -464,12 +464,9 @@ impl SlaveMinerConfig {
 
 /// Deploy a Slave Miner (SMIN) vehicle into its refinery form (YAREFN).
 ///
-/// Follows the same pattern as `deploy_mcv()` in world_spawn.rs:
-/// 1. Read deploy data from the SMIN entity
-/// 2. Despawn the SMIN vehicle
-/// 3. Spawn the YAREFN building at the same cell
-/// 4. Spawn `SlavesNumber` SLAV infantry around the building
-/// 5. Register slave bindings in ProductionState
+/// The newly constructed YAREFN first creates its own slave pool. Native
+/// `PowerUp_Cleanup @ 0x006AF580` then destroys that temporary manager and
+/// transfers the SMIN's existing pool, retaining every constructor RNG draw.
 ///
 /// Returns the new YAREFN stable_id, or None if deploy failed.
 pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
@@ -502,11 +499,7 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
 
     // Preserve any existing manager/bindings when this is a redeploy after a
     // retail-style YAREFN -> SMIN reverse conversion.
-    let existing_slave_ids = sim
-        .production
-        .slave_bindings
-        .remove(&stable_id)
-        .unwrap_or_default();
+    let existing_slave_ids = sim.production.slave_bindings.remove(&stable_id);
 
     // Despawn the SMIN vehicle.
     sim.uninit_with_rules(stable_id, rules);
@@ -523,34 +516,60 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
         .map(|obj| obj.storage.max(1) as u16)
         .unwrap_or(4);
 
-    let mut slave_ids: Vec<u64> = Vec::with_capacity(slaves_number as usize);
-    for slave_sid in existing_slave_ids {
-        if let Some(slave_entity) = sim.substrate.entities.get_mut(slave_sid) {
-            slave_entity.slave_harvester = Some(SlaveHarvester::new(new_sid, slave_capacity));
-            slave_ids.push(slave_sid);
-        }
-    }
+    let slave_ids = if let Some(existing_slave_ids) = existing_slave_ids {
+        // The YAREFN constructor has already created and drawn for this pool.
+        // Destroy it before installing the old manager, exactly as the native
+        // brain-transplant helper does.
+        let discarded = sim.discard_constructor_owned_slave_pool(new_sid);
+        debug_assert!(discarded, "YAREFN constructor must own a fresh slave pool");
 
-    // Spawn missing slave infantry around the building.
-    for i in slave_ids.len() as i32..slaves_number {
-        // Spread slaves around the building.
-        let offset_x: i32 = (i % 3) - 1; // -1, 0, 1, -1, 0
-        let offset_y: i32 = (i / 3) - 1; // -1, -1, -1, 0, 0
-        let sx: u16 = (rx as i32 + offset_x).clamp(0, u16::MAX as i32) as u16;
-        let sy: u16 = (ry as i32 + offset_y).clamp(0, u16::MAX as i32) as u16;
-
-        if let Some(slave_sid) =
-            sim.spawn_object_at_height(&slave_type, &owner, sx, sy, 0, z, rules)
-        {
+        let mut live_slave_ids = Vec::with_capacity(existing_slave_ids.len());
+        for slave_sid in existing_slave_ids {
             if let Some(slave_entity) = sim.substrate.entities.get_mut(slave_sid) {
-                slave_entity.slave_harvester = Some(SlaveHarvester::new(new_sid, slave_capacity));
+                slave_entity.slave_harvester =
+                    Some(SlaveHarvester::new(new_sid, slave_capacity));
+                live_slave_ids.push(slave_sid);
             }
-            slave_ids.push(slave_sid);
         }
-    }
+        sim.production
+            .slave_bindings
+            .insert(new_sid, live_slave_ids.clone());
+        live_slave_ids
+    } else {
+        // A legacy/source object without a represented manager cannot donate
+        // one. Keep the manager the target constructor just created.
+        sim.production
+            .slave_bindings
+            .get(&new_sid)
+            .cloned()
+            .unwrap_or_default()
+    };
 
-    // Register slave bindings.
-    sim.production.slave_bindings.insert(new_sid, slave_ids);
+    // Preserve the existing Rust timing: once the building form exists, wake
+    // its retained limbo slaves around it without reconstructing them.
+    for (i, slave_sid) in slave_ids.into_iter().enumerate().take(slaves_number as usize) {
+        let in_limbo = sim
+            .substrate
+            .entities
+            .get(slave_sid)
+            .is_some_and(|slave| slave.lifecycle.in_limbo);
+        if !in_limbo {
+            continue;
+        }
+        let offset_x = (i as i32 % 3) - 1;
+        let offset_y = (i as i32 / 3) - 1;
+        let sx = (rx as i32 + offset_x).clamp(0, u16::MAX as i32) as u16;
+        let sy = (ry as i32 + offset_y).clamp(0, u16::MAX as i32) as u16;
+        let _ = sim.unlimbo_held_production_object(
+            slave_sid,
+            sx,
+            sy,
+            0,
+            z,
+            PlacementEvidence::EvaluateMark,
+            rules,
+        );
+    }
 
     Some(new_sid)
 }
@@ -584,11 +603,7 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
 
     let (owner, rx, ry, z, was_selected, target_type) = undeploy_data;
 
-    let slave_ids = sim
-        .production
-        .slave_bindings
-        .remove(&stable_id)
-        .unwrap_or_default();
+    let slave_ids = sim.production.slave_bindings.remove(&stable_id);
 
     // Despawn the YAREFN building.
     sim.uninit_with_rules(stable_id, rules);
@@ -600,16 +615,21 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
         ge.selected = was_selected;
     }
 
-    let mut live_slave_ids = Vec::with_capacity(slave_ids.len());
-    for slave_id in slave_ids {
-        if let Some(slave) = sim.substrate.entities.get_mut(slave_id) {
-            if let Some(ref mut harvester) = slave.slave_harvester {
-                harvester.master_id = new_sid;
+    if let Some(slave_ids) = slave_ids {
+        // The SMIN constructor's own fresh pool and its draws already exist;
+        // PowerUp_Cleanup destroys that pool before transferring the YAREFN
+        // manager and rewriting every surviving child's master pointer.
+        let discarded = sim.discard_constructor_owned_slave_pool(new_sid);
+        debug_assert!(discarded, "SMIN constructor must own a fresh slave pool");
+        let mut live_slave_ids = Vec::with_capacity(slave_ids.len());
+        for slave_id in slave_ids {
+            if let Some(slave) = sim.substrate.entities.get_mut(slave_id) {
+                if let Some(ref mut harvester) = slave.slave_harvester {
+                    harvester.master_id = new_sid;
+                }
+                live_slave_ids.push(slave_id);
             }
-            live_slave_ids.push(slave_id);
         }
-    }
-    if !live_slave_ids.is_empty() {
         sim.production
             .slave_bindings
             .insert(new_sid, live_slave_ids);
@@ -797,6 +817,7 @@ fn manhattan_distance(ax: u16, ay: u16, bx: u16, by: u16) -> u16 {
 mod tests {
     use super::*;
     use crate::sim::miner::ResourceType;
+    use crate::sim::rng::SimRng;
 
     #[test]
     fn slave_harvester_capacity_and_value() {
@@ -823,20 +844,41 @@ mod tests {
     #[test]
     fn undeploy_transfers_slave_manager_to_new_smin() {
         let rules = make_test_rules();
-        let mut sim = Simulation::new();
+        let seed = 0x51A7_E001;
+        let mut sim = Simulation::with_seed(seed);
+        let mut expected = SimRng::new(seed);
         let sm_bld = sim
             .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0, 0, &rules)
             .expect("spawn SMIN");
+        for _ in 0..6 {
+            let _ = expected.next_u32();
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
         let yarefn = deploy_slave_miner(&mut sim, sm_bld, &rules).expect("deploy to YAREFN");
+        for _ in 0..6 {
+            let _ = expected.next_u32();
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
         let slave_ids = sim
             .production
             .slave_bindings
             .get(&yarefn)
             .cloned()
             .expect("YAREFN should own slave manager");
-        assert!(!slave_ids.is_empty());
+        assert_eq!(slave_ids, vec![2, 3, 4, 5, 6]);
+        for discarded_id in 8..=12 {
+            assert!(sim.substrate.entities.get(discarded_id).is_none());
+        }
 
         let smin = undeploy_slave_miner(&mut sim, yarefn, &rules).expect("undeploy to SMIN");
+        for _ in 0..6 {
+            let _ = expected.next_u32();
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+        assert_eq!(smin, 13);
+        for discarded_id in 14..=18 {
+            assert!(sim.substrate.entities.get(discarded_id).is_none());
+        }
         assert!(sim.production.slave_bindings.get(&yarefn).is_none());
         assert_eq!(sim.production.slave_bindings.get(&smin), Some(&slave_ids));
         for slave_id in slave_ids {

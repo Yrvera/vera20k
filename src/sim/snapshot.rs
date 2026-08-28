@@ -2773,6 +2773,71 @@ mod tests {
     }
 
     #[test]
+    fn techno_constructor_manager_owned_slave_pool_roundtrips_and_hashes_identity_order() {
+        let mut sim = Simulation::new();
+        let mut parent = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "SMIN",
+            "Americans",
+            4,
+            5,
+        );
+        parent.techno_ctor_random_word = 0x1111;
+        sim.substrate.entities.insert(parent);
+        for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
+            let mut slave = crate::sim::game_entity::GameEntity::test_default(
+                stable_id,
+                "SLAV",
+                "Americans",
+                4,
+                5,
+            );
+            slave.techno_ctor_random_word = word;
+            slave.slave_harvester = Some(crate::sim::slave_miner::SlaveHarvester::new(1, 4));
+            sim.substrate.entities.insert(slave);
+        }
+        sim.production.slave_bindings.insert(1, vec![2, 3]);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let source_rng = sim.scenario_rng.logical_state();
+        let source_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "techno-constructor-manager-pool", 0);
+        let restored = GameSnapshot::load(&bytes).unwrap().sim;
+        assert_eq!(restored.scenario_rng.logical_state(), source_rng);
+        assert_eq!(restored.production.slave_bindings.get(&1), Some(&vec![2, 3]));
+        for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
+            let slave = restored.substrate.entities.get(stable_id).unwrap();
+            assert_eq!(slave.techno_ctor_random_word, word);
+            assert_eq!(
+                slave.slave_harvester.as_ref().map(|slave| slave.master_id),
+                Some(1)
+            );
+        }
+        assert_eq!(restored.state_hash(), source_hash);
+
+        let mut changed_order = GameSnapshot::load(&bytes).unwrap().sim;
+        changed_order
+            .production
+            .slave_bindings
+            .get_mut(&1)
+            .unwrap()
+            .reverse();
+        assert_ne!(changed_order.state_hash(), source_hash);
+
+        let mut changed_master = restored;
+        changed_master
+            .substrate
+            .entities
+            .get_mut(2)
+            .unwrap()
+            .slave_harvester
+            .as_mut()
+            .unwrap()
+            .master_id = 3;
+        assert_ne!(changed_master.state_hash(), source_hash);
+    }
+
+    #[test]
     fn gsi_04_05_house_and_techno_base_defense_state_roundtrip_with_hash() {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Computer1");
