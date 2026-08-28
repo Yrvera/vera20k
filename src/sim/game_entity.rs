@@ -289,6 +289,35 @@ fn veterancy_raw_default() -> crate::util::native_x87::NativeF32Bits {
     crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO
 }
 
+/// Constructor state captured while a generated-map Techno still owns the
+/// launch-time Scenario cursor. Projection validates all identity fields
+/// before installing the already-consumed word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GeneratedTechnoInit {
+    pub entity_index: usize,
+    pub techno_type: String,
+    pub cell: (u16, u16),
+    pub techno_ctor_random_word: u16,
+}
+
+/// The three evidence-backed ways a live Techno obtains its persistent
+/// constructor word. Only `FreshScenario` is allowed to advance Scenario RNG.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TechnoConstructorInit {
+    FreshScenario,
+    PreconsumedGenerated(GeneratedTechnoInit),
+    Restored(u16),
+}
+
+/// Authored Building upgrades construct as distinct Technos, then Unlimbo at
+/// their host location. The host/slot association is persistent identity; the
+/// upgrade does not own a competing building footprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct StructureUpgradeLink {
+    pub parent_stable_id: u64,
+    pub slot: u8,
+}
+
 /// Core fields are always present; optional subsystems use `Option<T>`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameEntity {
@@ -296,6 +325,13 @@ pub struct GameEntity {
     /// Deterministic stable ID — primary key, used for cross-entity references,
     /// replay logs, state hashing, and networking. Never reused.
     pub stable_id: u64,
+    /// Low word of the one raw Scenario RNG draw performed by the active-retail
+    /// `TechnoClass` constructor (`0x006F3254`, stored at native `+0x3C8`).
+    /// Later report-selection consumers read this persistent value; placement
+    /// failure never refunds the draw.
+    pub techno_ctor_random_word: u16,
+    /// Authored structure-upgrade identity. `None` for ordinary Technos.
+    pub structure_upgrade_link: Option<StructureUpgradeLink>,
     /// World position in isometric cell coordinates + cached screen position.
     pub position: Position,
     /// Body facing direction (0–255, RA2 convention: 0=N, 64=E, 128=S, 192=W).
@@ -1000,6 +1036,7 @@ impl GameEntity {
         vision_range: u16,
         is_voxel: bool,
         construction_frame: u32,
+        techno_ctor_random_word: u16,
     ) -> Self {
         // Infantry spawn at sub-cell 2 (top of diamond) instead of cell center
         // so they don't overlap with other units at the same position.
@@ -1016,6 +1053,8 @@ impl GameEntity {
             kill_award_points: 0,
             dont_score: false,
             stable_id,
+            techno_ctor_random_word,
+            structure_upgrade_link: None,
             position: Position {
                 rx,
                 ry,
@@ -1193,6 +1232,7 @@ impl GameEntity {
             veterancy,
             vision_range,
             is_voxel,
+            0,
             0,
         )
     }

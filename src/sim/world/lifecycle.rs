@@ -76,6 +76,10 @@ pub(crate) enum PlacementEvidence {
     RejectedEarly,
     MarkFailed,
     MarkSucceeded,
+    /// BuildingClass map-reader upgrade construction reaches virtual Unlimbo
+    /// at the host coordinate, but the distinct upgrade object attaches to its
+    /// parent rather than competing for the parent's footprint.
+    AttachedUpgrade,
     /// Run the modeled Mark(PUT) transaction and consume its result. Production
     /// Unit Unlimbo uses this after exact-zero CanEnter admission instead of
     /// asserting or caller-hardcoding Mark success.
@@ -657,6 +661,11 @@ impl Simulation {
         if entity.lifecycle.cell_marked || request.placement == PlacementEvidence::RejectedEarly {
             return RevealOutcome::Failed(RevealFailure::RejectedEarly);
         }
+        if request.placement == PlacementEvidence::AttachedUpgrade
+            && entity.structure_upgrade_link.is_none()
+        {
+            return RevealOutcome::Failed(RevealFailure::RejectedEarly);
+        }
 
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.in_limbo = false;
@@ -689,22 +698,25 @@ impl Simulation {
             return RevealOutcome::Failed(RevealFailure::MarkFailed);
         }
 
-        if !self.mark_entity_put(stable_id) {
-            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-                entity.lifecycle.in_limbo = true;
+        let attached_upgrade = request.placement == PlacementEvidence::AttachedUpgrade;
+        if !attached_upgrade {
+            if !self.mark_entity_put(stable_id) {
+                if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                    entity.lifecycle.in_limbo = true;
+                }
+                return RevealOutcome::Failed(RevealFailure::MarkFailed);
             }
-            return RevealOutcome::Failed(RevealFailure::MarkFailed);
-        }
-        if let Some(entity) = self.substrate.entities.get_mut(stable_id)
-            && entity.spotlight_capable
-            && entity.category == crate::map::entities::EntityCategory::Structure
-            && entity.building_light.is_none()
-        {
-            // `BuildingClass::Unlimbo @ 0x00441187` constructs after placement succeeds.
-            entity.building_light = Some(crate::sim::game_entity::BuildingLightRuntime {
-                behavior: 1,
-                target_id: None,
-            });
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id)
+                && entity.spotlight_capable
+                && entity.category == crate::map::entities::EntityCategory::Structure
+                && entity.building_light.is_none()
+            {
+                // `BuildingClass::Unlimbo @ 0x00441187` constructs after placement succeeds.
+                entity.building_light = Some(crate::sim::game_entity::BuildingLightRuntime {
+                    behavior: 1,
+                    target_id: None,
+                });
+            }
         }
         if !self
             .substrate
@@ -716,8 +728,10 @@ impl Simulation {
                 logic_registered: false,
             };
         }
-        self.refresh_waypoint_edge_from_committed_structure(stable_id);
-        self.mark_building_base_reservation(stable_id);
+        if !attached_upgrade {
+            self.refresh_waypoint_edge_from_committed_structure(stable_id);
+            self.mark_building_base_reservation(stable_id);
+        }
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
         #[cfg(test)]

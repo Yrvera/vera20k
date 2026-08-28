@@ -7,6 +7,7 @@
 //! Dependency rules: same as sim/ (depends on rules/, map/; never render/ui/audio/net).
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use super::{
     PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent, Simulation,
@@ -19,11 +20,120 @@ use crate::sim::animation::{Animation, SequenceKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingDown, BuildingUp, HarvestOverlay, Health, VoxelAnimation,
 };
-use crate::sim::game_entity::GameEntity;
+use crate::sim::game_entity::{
+    GameEntity, GeneratedTechnoInit, StructureUpgradeLink, TechnoConstructorInit,
+};
 use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::production::{ProductionCategory, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
+
+/// Exact generated-object constructor handoff. The later RMG lifecycle owner
+/// supplies this table after replaying all successful and discarded native
+/// constructor events on the launch Scenario cursor.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GeneratedTechnoInitTable {
+    entries: BTreeMap<usize, GeneratedTechnoInit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GeneratedTechnoInitError {
+    DuplicateEntityIndex(usize),
+    MissingEntityIndex(usize),
+    UnexpectedEntityIndex(usize),
+    IdentityMismatch {
+        entity_index: usize,
+        expected_type: String,
+        found_type: String,
+        expected_cell: (u16, u16),
+        found_cell: (u16, u16),
+    },
+    UnresolvableEntity {
+        entity_index: usize,
+        techno_type: String,
+        owner: String,
+    },
+}
+
+impl fmt::Display for GeneratedTechnoInitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateEntityIndex(index) => {
+                write!(f, "duplicate generated Techno binding for entity index {index}")
+            }
+            Self::MissingEntityIndex(index) => {
+                write!(f, "missing generated Techno binding for entity index {index}")
+            }
+            Self::UnexpectedEntityIndex(index) => {
+                write!(f, "unexpected generated Techno binding for entity index {index}")
+            }
+            Self::IdentityMismatch {
+                entity_index,
+                expected_type,
+                found_type,
+                expected_cell,
+                found_cell,
+            } => write!(
+                f,
+                "generated Techno binding {entity_index} expected {expected_type} at {expected_cell:?}, found {found_type} at {found_cell:?}"
+            ),
+            Self::UnresolvableEntity {
+                entity_index,
+                techno_type,
+                owner,
+            } => write!(
+                f,
+                "generated Techno {entity_index} cannot resolve type {techno_type} or owner {owner}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GeneratedTechnoInitError {}
+
+impl GeneratedTechnoInitTable {
+    pub(crate) fn try_new(
+        entries: impl IntoIterator<Item = GeneratedTechnoInit>,
+    ) -> Result<Self, GeneratedTechnoInitError> {
+        let mut by_index = BTreeMap::new();
+        for entry in entries {
+            let index = entry.entity_index;
+            if by_index.insert(index, entry).is_some() {
+                return Err(GeneratedTechnoInitError::DuplicateEntityIndex(index));
+            }
+        }
+        Ok(Self { entries: by_index })
+    }
+
+    fn validate<'a>(
+        &'a self,
+        entities: &[MapEntity],
+    ) -> Result<Vec<&'a GeneratedTechnoInit>, GeneratedTechnoInitError> {
+        if let Some((&index, _)) = self.entries.iter().find(|(index, _)| **index >= entities.len()) {
+            return Err(GeneratedTechnoInitError::UnexpectedEntityIndex(index));
+        }
+        let mut ordered = Vec::with_capacity(entities.len());
+        for (entity_index, entity) in entities.iter().enumerate() {
+            let init = self
+                .entries
+                .get(&entity_index)
+                .ok_or(GeneratedTechnoInitError::MissingEntityIndex(entity_index))?;
+            if !init.techno_type.eq_ignore_ascii_case(&entity.type_id)
+                || init.cell != (entity.cell_x, entity.cell_y)
+            {
+                return Err(GeneratedTechnoInitError::IdentityMismatch {
+                    entity_index,
+                    expected_type: init.techno_type.clone(),
+                    found_type: entity.type_id.clone(),
+                    expected_cell: init.cell,
+                    found_cell: (entity.cell_x, entity.cell_y),
+                });
+            }
+            ordered.push(init);
+        }
+        Ok(ordered)
+    }
+}
 
 fn object_uses_voxel(type_id: &str, object: &ObjectType, rules: &RuleSet) -> bool {
     rules
@@ -34,6 +144,41 @@ fn object_uses_voxel(type_id: &str, object: &ObjectType, rules: &RuleSet) -> boo
             object.category,
             ObjectCategory::Vehicle | ObjectCategory::Aircraft
         ))
+}
+
+impl Simulation {
+    fn resolve_techno_constructor_word(
+        &mut self,
+        init: TechnoConstructorInit,
+        expected_generated_identity: Option<(usize, &str, (u16, u16))>,
+    ) -> Result<u16, GeneratedTechnoInitError> {
+        match init {
+            TechnoConstructorInit::FreshScenario => {
+                Ok((self.scenario_rng.next_u32() & 0xFFFF) as u16)
+            }
+            TechnoConstructorInit::Restored(word) => Ok(word),
+            TechnoConstructorInit::PreconsumedGenerated(generated) => {
+                let Some((entity_index, techno_type, cell)) = expected_generated_identity else {
+                    return Err(GeneratedTechnoInitError::UnexpectedEntityIndex(
+                        generated.entity_index,
+                    ));
+                };
+                if generated.entity_index != entity_index
+                    || !generated.techno_type.eq_ignore_ascii_case(techno_type)
+                    || generated.cell != cell
+                {
+                    return Err(GeneratedTechnoInitError::IdentityMismatch {
+                        entity_index,
+                        expected_type: generated.techno_type,
+                        found_type: techno_type.to_string(),
+                        expected_cell: generated.cell,
+                        found_cell: cell,
+                    });
+                }
+                Ok(generated.techno_ctor_random_word)
+            }
+        }
+    }
 }
 
 impl Simulation {
@@ -54,9 +199,76 @@ impl Simulation {
         height_map: &BTreeMap<(u16, u16), u8>,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
     ) -> u32 {
+        self.spawn_from_map_with_constructor_inits(
+            entities,
+            rules,
+            height_map,
+            resolved_terrain,
+            None,
+        )
+        .expect("fresh fixed-map Techno constructor initialization cannot fail")
+    }
+
+    /// Project generated-map Technos using constructor words already consumed
+    /// by the launch-time generation cursor. The whole identity table is
+    /// validated before the first entity mutates the simulation.
+    pub(crate) fn spawn_generated_from_map_with_resolved(
+        &mut self,
+        entities: &[MapEntity],
+        rules: &RuleSet,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        constructor_inits: &GeneratedTechnoInitTable,
+    ) -> Result<u32, GeneratedTechnoInitError> {
+        self.spawn_from_map_with_constructor_inits(
+            entities,
+            Some(rules),
+            height_map,
+            resolved_terrain,
+            Some(constructor_inits),
+        )
+    }
+
+    fn spawn_from_map_with_constructor_inits(
+        &mut self,
+        entities: &[MapEntity],
+        rules: Option<&RuleSet>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        constructor_inits: Option<&GeneratedTechnoInitTable>,
+    ) -> Result<u32, GeneratedTechnoInitError> {
+        let generated_inits = constructor_inits
+            .map(|table| table.validate(entities))
+            .transpose()?;
+
+        if generated_inits.is_some() {
+            let rules = rules.expect("generated-map projection requires rules");
+            for (entity_index, entity) in entities.iter().enumerate() {
+                if !self.map_entity_resolves_before_constructor(entity, Some(rules), true) {
+                    return Err(GeneratedTechnoInitError::UnresolvableEntity {
+                        entity_index,
+                        techno_type: entity.type_id.clone(),
+                        owner: entity.owner.clone(),
+                    });
+                }
+            }
+        }
+
         let mut count: u32 = 0;
 
-        for map_ent in entities {
+        for (entity_index, map_ent) in entities.iter().enumerate() {
+            if !self.map_entity_resolves_before_constructor(
+                map_ent,
+                rules,
+                generated_inits.is_some(),
+            ) {
+                log::warn!(
+                    "Skipping map Techno {} owned by {} before constructor resolution",
+                    map_ent.type_id,
+                    map_ent.owner
+                );
+                continue;
+            }
             let bridge_spawn = map_ent
                 .high
                 .then(|| {
@@ -120,6 +332,16 @@ impl Simulation {
             let stable_id = self.allocate_stable_id();
             let owner_id = self.interner.intern(&map_ent.owner);
             let type_id = self.interner.intern(&map_ent.type_id);
+            let constructor_init = generated_inits.as_ref().map_or(
+                TechnoConstructorInit::FreshScenario,
+                |inits| TechnoConstructorInit::PreconsumedGenerated((*inits[entity_index]).clone()),
+            );
+            let techno_ctor_random_word = self.resolve_techno_constructor_word(
+                constructor_init,
+                generated_inits
+                    .as_ref()
+                    .map(|_| (entity_index, map_ent.type_id.as_str(), (map_ent.cell_x, map_ent.cell_y))),
+            )?;
 
             // Build the GameEntity with all required fields.
             let mut ge = GameEntity::new_at_frame(
@@ -136,6 +358,7 @@ impl Simulation {
                 sight_range,
                 uses_voxel,
                 self.session.binary_frame,
+                techno_ctor_random_word,
             );
             ge.base_defense_response.recruitable_a = map_ent.recruitable_a;
             ge.base_defense_response.recruitable_b = map_ent.recruitable_b;
@@ -260,7 +483,10 @@ impl Simulation {
             }
             let has_spawn_manager = ge.spawn_manager.is_some();
             let (stable_id, outcome) = self.unlimbo(ge);
-            debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+            if !matches!(outcome, RevealOutcome::Revealed { .. }) {
+                self.discard_constructed_limbo(stable_id);
+                continue;
+            }
             if let Some(ruleset) = rules {
                 self.initialize_cloak_after_unlimbo(stable_id, ruleset);
                 self.add_unit_sensor_after_unlimbo(stable_id, ruleset);
@@ -271,10 +497,116 @@ impl Simulation {
             }
             self.commit_map_placement_mission(stable_id, map_ent.mission);
             count += 1;
+
+            if map_ent.category == EntityCategory::Structure
+                && let Some(ruleset) = rules
+            {
+                for (slot, upgrade_type) in map_ent.structure_upgrades.iter().enumerate() {
+                    let Some(upgrade_type) = upgrade_type.as_deref() else {
+                        continue;
+                    };
+                    let valid_upgrade = ruleset
+                        .object(upgrade_type)
+                        .is_some_and(|object| object.category == ObjectCategory::Building);
+                    if !valid_upgrade {
+                        log::warn!(
+                            "Skipping unresolved authored upgrade {} in slot {} on {}",
+                            upgrade_type,
+                            slot,
+                            map_ent.type_id
+                        );
+                        continue;
+                    }
+                    if self
+                        .spawn_attached_map_upgrade(
+                            stable_id,
+                            slot as u8,
+                            upgrade_type,
+                            &map_ent.owner,
+                            map_ent.cell_x,
+                            map_ent.cell_y,
+                            z,
+                            map_ent.facing,
+                            ruleset,
+                        )
+                        .is_some()
+                    {
+                        count += 1;
+                    }
+                }
+            }
         }
 
         log::info!("Spawned {} entities", count);
-        count
+        Ok(count)
+    }
+
+    fn map_entity_resolves_before_constructor(
+        &self,
+        map_ent: &MapEntity,
+        rules: Option<&RuleSet>,
+        require_owner: bool,
+    ) -> bool {
+        let type_resolves = rules.map_or(true, |rules| {
+            rules.object(&map_ent.type_id).is_some_and(|object| {
+                matches!(
+                    (map_ent.category, object.category),
+                    (EntityCategory::Unit, ObjectCategory::Vehicle)
+                        | (EntityCategory::Aircraft, ObjectCategory::Aircraft)
+                        | (EntityCategory::Infantry, ObjectCategory::Infantry)
+                        | (EntityCategory::Structure, ObjectCategory::Building)
+                )
+            })
+        });
+        let owner_resolves = (!require_owner && self.houses.is_empty())
+            || crate::sim::house_state::house_state_for_owner(
+                &self.houses,
+                &map_ent.owner,
+                &self.interner,
+            )
+            .is_some();
+        type_resolves && owner_resolves
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_attached_map_upgrade(
+        &mut self,
+        parent_stable_id: u64,
+        slot: u8,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        z: u8,
+        facing: u8,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        let stable_id = self.construct_object_limbo_at_height(
+            type_id, owner, rx, ry, facing, z, rules,
+        )?;
+        {
+            let upgrade = self.substrate.entities.get_mut(stable_id)?;
+            upgrade.structure_upgrade_link = Some(StructureUpgradeLink {
+                parent_stable_id,
+                slot,
+            });
+        }
+        if self
+            .reveal_constructed_object_at_height(
+                stable_id,
+                rx,
+                ry,
+                facing,
+                z,
+                PlacementEvidence::AttachedUpgrade,
+                rules,
+            )
+            .is_none()
+        {
+            self.discard_constructed_limbo(stable_id);
+            return None;
+        }
+        Some(stable_id)
     }
 
     /// Commit the `MISSION=` column a map placement authored, at the position
@@ -365,7 +697,34 @@ impl Simulation {
         z: u8,
         rules: &RuleSet,
     ) -> Option<u64> {
-        let obj = rules.object(type_id)?;
+        self.spawn_object_at_height_with_init(
+            type_id,
+            owner,
+            rx,
+            ry,
+            facing,
+            z,
+            rules,
+            TechnoConstructorInit::FreshScenario,
+        )
+        .expect("fresh Techno constructor initialization cannot fail")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_object_at_height_with_init(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+        init: TechnoConstructorInit,
+    ) -> Result<Option<u64>, GeneratedTechnoInitError> {
+        let Some(obj) = rules.object(type_id) else {
+            return Ok(None);
+        };
         let health = Health {
             current: obj.strength.max(1) as u16,
             max: obj.strength.max(1) as u16,
@@ -381,6 +740,7 @@ impl Simulation {
         let stable_id = self.allocate_stable_id();
         let owner_iid = self.interner.intern(owner);
         let type_iid = self.interner.intern(type_id);
+        let techno_ctor_random_word = self.resolve_techno_constructor_word(init, None)?;
 
         let mut ge = GameEntity::new_at_frame(
             stable_id,
@@ -396,6 +756,7 @@ impl Simulation {
             sight_range,
             uses_voxel,
             self.session.binary_frame,
+            techno_ctor_random_word,
         );
 
         if self.debug_event_logging {
@@ -502,9 +863,10 @@ impl Simulation {
         let has_spawn_manager = ge.spawn_manager.is_some();
         let (stable_id, outcome) = self.unlimbo(ge);
         if !matches!(outcome, RevealOutcome::Revealed { .. }) {
-            // Callers own the failed placement outcome; production delivery,
-            // in particular, retains its completed queue item.
-            return None;
+            // This convenience path owns its transient constructor result.
+            // Held production objects use the separate limbo/retry boundary.
+            self.discard_constructed_limbo(stable_id);
+            return Ok(None);
         }
         self.initialize_cloak_after_unlimbo(stable_id, rules);
         self.add_unit_sensor_after_unlimbo(stable_id, rules);
@@ -512,7 +874,7 @@ impl Simulation {
             crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, rules);
         }
         self.commit_spawn_harvest_mission(stable_id);
-        Some(stable_id)
+        Ok(Some(stable_id))
     }
 
     /// Create an object in limbo: stored in EntityStore and owner counts, but
@@ -528,7 +890,34 @@ impl Simulation {
         z: u8,
         rules: &RuleSet,
     ) -> Option<u64> {
-        let obj = rules.object(type_id)?;
+        self.spawn_object_limbo_at_height_with_init(
+            type_id,
+            owner,
+            rx,
+            ry,
+            facing,
+            z,
+            rules,
+            TechnoConstructorInit::FreshScenario,
+        )
+        .expect("fresh Techno constructor initialization cannot fail")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_object_limbo_at_height_with_init(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+        init: TechnoConstructorInit,
+    ) -> Result<Option<u64>, GeneratedTechnoInitError> {
+        let Some(obj) = rules.object(type_id) else {
+            return Ok(None);
+        };
         let health = Health {
             current: obj.strength.max(1) as u16,
             max: obj.strength.max(1) as u16,
@@ -544,6 +933,7 @@ impl Simulation {
         let stable_id = self.allocate_stable_id();
         let owner_iid = self.interner.intern(owner);
         let type_iid = self.interner.intern(type_id);
+        let techno_ctor_random_word = self.resolve_techno_constructor_word(init, None)?;
 
         let mut ge = GameEntity::new_at_frame(
             stable_id,
@@ -559,6 +949,7 @@ impl Simulation {
             sight_range,
             uses_voxel,
             self.session.binary_frame,
+            techno_ctor_random_word,
         );
 
         if self.debug_event_logging {
@@ -653,7 +1044,7 @@ impl Simulation {
 
         let stable_id = self.create_limbo(ge);
         self.commit_spawn_harvest_mission(stable_id);
-        Some(stable_id)
+        Ok(Some(stable_id))
     }
 
     /// Construct and account for the one Unit identity held by a completed
@@ -661,6 +1052,22 @@ impl Simulation {
     /// paradrop limbo path, production also initializes the parent spawn
     /// manager now; its child pool is committed only after successful Unlimbo.
     pub(crate) fn create_production_object_limbo_at_height(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        self.construct_object_limbo_at_height(type_id, owner, rx, ry, facing, z, rules)
+    }
+
+    /// Construct one fully initialized runtime Techno and retain it in limbo
+    /// for one or more placement attempts. Starting-force creation and held
+    /// production both use this identity-preserving boundary.
+    pub(crate) fn construct_object_limbo_at_height(
         &mut self,
         type_id: &str,
         owner: &str,
@@ -697,9 +1104,46 @@ impl Simulation {
         placement: PlacementEvidence,
         rules: &RuleSet,
     ) -> Option<u64> {
+        self.reveal_constructed_object_at_height(
+            stable_id,
+            rx,
+            ry,
+            facing,
+            z,
+            placement,
+            rules,
+        )
+    }
+
+    /// Place an already constructed limbo Techno without repeating its
+    /// constructor draw or manager initialization. Failure restores this same
+    /// identity to limbo so a caller may try another coordinate.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reveal_constructed_object_at_height(
+        &mut self,
+        stable_id: u64,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        placement: PlacementEvidence,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        let is_infantry = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.category == EntityCategory::Infantry);
+        let infantry_sub_cell = is_infantry.then(|| self.allocate_infantry_sub_cell(rx, ry));
         let (sub_x, sub_y, has_spawn_manager) = {
             let entity = self.substrate.entities.get_mut(stable_id)?;
             entity.facing = facing;
+            if let Some(sub_cell) = infantry_sub_cell {
+                entity.sub_cell = Some(sub_cell);
+                let offsets = crate::util::lepton::subcell_lepton_offset(Some(sub_cell));
+                entity.position.sub_x = offsets.0;
+                entity.position.sub_y = offsets.1;
+            }
             (
                 entity.position.sub_x,
                 entity.position.sub_y,
@@ -750,6 +1194,18 @@ impl Simulation {
         self.substrate.entities.insert(ge);
         self.increment_owned_count(&owner, category);
         stable_id
+    }
+
+    /// Delete a constructor-complete object that never successfully left
+    /// limbo. The stable ID and constructor RNG draw stay spent, while the
+    /// transient store and owned-count effects are undone exactly once.
+    pub(crate) fn discard_constructed_limbo(&mut self, stable_id: u64) -> bool {
+        let Some(entity) = self.substrate.entities.remove(stable_id) else {
+            return false;
+        };
+        let owner = self.interner.resolve(entity.owner).to_string();
+        self.decrement_owned_count(&owner, entity.category);
+        true
     }
 
     /// Spawn an object directly into limbo: stored in EntityStore and owner counts
@@ -1218,5 +1674,293 @@ fn stamp_building_cell_profile(
         ge.building_hidden_occupancy = Some(obj.hidden_occupancy);
         ge.base_reservation_spacing = obj.base_reservation_spacing;
         ge.determines_waypoint_edge = obj.factory == Some(FactoryType::BuildingType);
+    }
+}
+
+#[cfg(test)]
+mod techno_constructor_tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::rng::SimRng;
+
+    fn constructor_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n\n\
+             [VehicleTypes]\n0=MTNK\n\n\
+             [AircraftTypes]\n0=ORCA\n\n\
+             [BuildingTypes]\n0=BASE\n1=UP1\n2=UP2\n\n\
+             [E1]\nStrength=100\nSpeed=4\n\n\
+             [MTNK]\nStrength=300\nSpeed=6\n\n\
+             [ORCA]\nStrength=200\nSpeed=8\n\n\
+             [BASE]\nStrength=500\nFoundation=2x2\n\n\
+             [UP1]\nStrength=100\nFoundation=1x1\n\n\
+             [UP2]\nStrength=100\nFoundation=1x1\n",
+        ))
+        .expect("constructor fixture rules parse")
+    }
+
+    fn map_entity(type_id: &str, category: EntityCategory, cell: (u16, u16)) -> MapEntity {
+        MapEntity {
+            owner: "Americans".to_string(),
+            type_id: type_id.to_string(),
+            health: 256,
+            cell_x: cell.0,
+            cell_y: cell.1,
+            facing: 0,
+            category,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+            mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
+            structure_upgrades: [None, None, None],
+        }
+    }
+
+    fn install_american_house(sim: &mut Simulation) {
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+        );
+    }
+
+    #[test]
+    fn techno_constructor_runtime_fresh_paths_draw_once_after_type_resolution() {
+        let seed = 0xC701_0001;
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        let mut expected = SimRng::new(seed);
+
+        let before_invalid = sim.scenario_rng.logical_state();
+        assert!(
+            sim.spawn_object("MISSING", "Americans", 1, 1, 0, &rules, &BTreeMap::new())
+                .is_none()
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_invalid);
+
+        let placed_word = (expected.next_u32() & 0xFFFF) as u16;
+        let placed = sim
+            .spawn_object("MTNK", "Americans", 4, 4, 0, &rules, &BTreeMap::new())
+            .expect("placed runtime Techno");
+        assert_eq!(
+            sim.substrate.entities.get(placed).unwrap().techno_ctor_random_word,
+            placed_word
+        );
+
+        let limbo_word = (expected.next_u32() & 0xFFFF) as u16;
+        let limbo = sim
+            .spawn_object_limbo_at_height("E1", "Americans", 6, 6, 0, 0, &rules)
+            .expect("limbo runtime Techno");
+        let limbo_entity = sim.substrate.entities.get(limbo).unwrap();
+        assert_eq!(limbo_entity.techno_ctor_random_word, limbo_word);
+        assert!(limbo_entity.lifecycle.in_limbo);
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_fixed_map_uses_native_category_order_after_prior_mark_draw() {
+        let seed = 0xC701_0002;
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        install_american_house(&mut sim);
+        let mut expected = SimRng::new(seed);
+        assert_eq!(sim.scenario_rng.next_u32(), expected.next_u32());
+        let mut invalid_owner = map_entity("MTNK", EntityCategory::Unit, (1, 3));
+        invalid_owner.owner = "UnresolvableHouse".to_string();
+        let entities = vec![
+            map_entity("MISSING", EntityCategory::Unit, (1, 2)),
+            invalid_owner,
+            map_entity("MTNK", EntityCategory::Unit, (2, 2)),
+            map_entity("ORCA", EntityCategory::Aircraft, (4, 2)),
+            map_entity("E1", EntityCategory::Infantry, (6, 2)),
+            map_entity("BASE", EntityCategory::Structure, (8, 2)),
+        ];
+        let expected_words: Vec<u16> = (0..4)
+            .map(|_| (expected.next_u32() & 0xFFFF) as u16)
+            .collect();
+
+        assert_eq!(
+            sim.spawn_from_map(&entities, Some(&rules), &BTreeMap::new()),
+            4
+        );
+        let actual_words: Vec<u16> = sim
+            .substrate
+            .entities
+            .values()
+            .map(|entity| entity.techno_ctor_random_word)
+            .collect();
+        assert_eq!(actual_words, expected_words);
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_generated_projection_installs_without_a_second_draw() {
+        let rules = constructor_rules();
+        let entity = map_entity("MTNK", EntityCategory::Unit, (7, 9));
+        let table = GeneratedTechnoInitTable::try_new([GeneratedTechnoInit {
+            entity_index: 0,
+            techno_type: "MTNK".to_string(),
+            cell: (7, 9),
+            techno_ctor_random_word: 0xA55A,
+        }])
+        .unwrap();
+        let mut sim = Simulation::with_seed(0xC701_0003);
+        install_american_house(&mut sim);
+        let before = sim.scenario_rng.logical_state();
+
+        assert_eq!(
+            sim.spawn_generated_from_map_with_resolved(
+                &[entity.clone()],
+                &rules,
+                &BTreeMap::new(),
+                None,
+                &table,
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().techno_ctor_random_word,
+            0xA55A
+        );
+
+        assert!(matches!(
+            GeneratedTechnoInitTable::try_new([
+                GeneratedTechnoInit {
+                    entity_index: 0,
+                    techno_type: "MTNK".to_string(),
+                    cell: (7, 9),
+                    techno_ctor_random_word: 1,
+                },
+                GeneratedTechnoInit {
+                    entity_index: 0,
+                    techno_type: "MTNK".to_string(),
+                    cell: (7, 9),
+                    techno_ctor_random_word: 2,
+                },
+            ]),
+            Err(GeneratedTechnoInitError::DuplicateEntityIndex(0))
+        ));
+
+        let missing = GeneratedTechnoInitTable::default();
+        let mut rejected = Simulation::with_seed(0xC701_0004);
+        install_american_house(&mut rejected);
+        let rejected_before = rejected.scenario_rng.logical_state();
+        assert!(matches!(
+            rejected.spawn_generated_from_map_with_resolved(
+                &[entity],
+                &rules,
+                &BTreeMap::new(),
+                None,
+                &missing,
+            ),
+            Err(GeneratedTechnoInitError::MissingEntityIndex(0))
+        ));
+        assert_eq!(rejected.scenario_rng.logical_state(), rejected_before);
+        assert!(rejected.substrate.entities.is_empty());
+
+        let mismatched = GeneratedTechnoInitTable::try_new([GeneratedTechnoInit {
+            entity_index: 0,
+            techno_type: "HTNK".to_string(),
+            cell: (7, 9),
+            techno_ctor_random_word: 0x2468,
+        }])
+        .unwrap();
+        let mut rejected = Simulation::with_seed(0xC701_0007);
+        install_american_house(&mut rejected);
+        let rejected_before = rejected.scenario_rng.logical_state();
+        assert!(matches!(
+            rejected.spawn_generated_from_map_with_resolved(
+                &[map_entity("MTNK", EntityCategory::Unit, (7, 9))],
+                &rules,
+                &BTreeMap::new(),
+                None,
+                &mismatched,
+            ),
+            Err(GeneratedTechnoInitError::IdentityMismatch { entity_index: 0, .. })
+        ));
+        assert_eq!(rejected.scenario_rng.logical_state(), rejected_before);
+        assert!(rejected.substrate.entities.is_empty());
+    }
+
+    #[test]
+    fn techno_constructor_authored_upgrades_are_distinct_attached_live_entities() {
+        let seed = 0xC701_0005;
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        let mut expected = SimRng::new(seed);
+        let mut base = map_entity("BASE", EntityCategory::Structure, (10, 12));
+        base.structure_upgrades = [Some("UP1".to_string()), Some("UP2".to_string()), None];
+        let words = [
+            (expected.next_u32() & 0xFFFF) as u16,
+            (expected.next_u32() & 0xFFFF) as u16,
+            (expected.next_u32() & 0xFFFF) as u16,
+        ];
+
+        assert_eq!(
+            sim.spawn_from_map(&[base], Some(&rules), &BTreeMap::new()),
+            3
+        );
+        let parent = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(parent.techno_ctor_random_word, words[0]);
+        assert!(parent.lifecycle.cell_marked);
+        for (stable_id, slot) in [(2, 0), (3, 1)] {
+            let upgrade = sim.substrate.entities.get(stable_id).unwrap();
+            assert_eq!(upgrade.techno_ctor_random_word, words[slot + 1]);
+            assert_eq!(
+                upgrade.structure_upgrade_link,
+                Some(StructureUpgradeLink {
+                    parent_stable_id: 1,
+                    slot: slot as u8,
+                })
+            );
+            assert!(!upgrade.lifecycle.in_limbo);
+            assert!(!upgrade.lifecycle.cell_marked);
+            assert!(upgrade.in_logic_vector);
+            assert_eq!((upgrade.position.rx, upgrade.position.ry), (10, 12));
+        }
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_failed_reveal_keeps_one_draw_and_reuses_identity() {
+        let seed = 0xC701_0006;
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        let mut expected = SimRng::new(seed);
+        let word = (expected.next_u32() & 0xFFFF) as u16;
+        let stable_id = sim
+            .construct_object_limbo_at_height("MTNK", "Americans", 3, 3, 0, 0, &rules)
+            .unwrap();
+
+        assert!(
+            sim.reveal_constructed_object_at_height(
+                stable_id,
+                3,
+                3,
+                0,
+                0,
+                PlacementEvidence::MarkFailed,
+                &rules,
+            )
+            .is_none()
+        );
+        let held = sim.substrate.entities.get(stable_id).unwrap();
+        assert!(held.lifecycle.in_limbo);
+        assert_eq!(held.techno_ctor_random_word, word);
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+        assert!(sim.discard_constructed_limbo(stable_id));
+        assert!(sim.substrate.entities.get(stable_id).is_none());
+
+        let before_restore = sim.scenario_rng.logical_state();
+        assert_eq!(
+            sim.resolve_techno_constructor_word(TechnoConstructorInit::Restored(0x1357), None)
+                .unwrap(),
+            0x1357
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_restore);
     }
 }

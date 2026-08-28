@@ -26,7 +26,7 @@ use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_ed
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::rng::{SimRng, SimRngLogicalState};
 use crate::sim::scenario_session::ScenarioDescriptor;
-use crate::sim::world::Simulation;
+use crate::sim::world::{PlacementEvidence, Simulation};
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
 };
@@ -1211,8 +1211,34 @@ fn place_starting_object_near_base(
     resolved_terrain: &ResolvedTerrainGrid,
 ) -> Option<u64> {
     let category = rules.object(type_id)?.category;
+    let initial_z = height_map.get(&(base_rx, base_ry)).copied().unwrap_or(0);
+    // Active retail constructs one Techno before exact/fallback Unlimbo. The
+    // one constructor draw therefore precedes every placement-search draw and
+    // remains spent even when every attempt fails.
+    let stable_id = sim.construct_object_limbo_at_height(
+        type_id,
+        owner,
+        base_rx,
+        base_ry,
+        facing,
+        initial_z,
+        rules,
+    )?;
     if starting_object_cell_placeable(sim, resolved_terrain, base_rx, base_ry, category) {
-        return sim.spawn_object(type_id, owner, base_rx, base_ry, facing, rules, height_map);
+        if sim
+            .reveal_constructed_object_at_height(
+                stable_id,
+                base_rx,
+                base_ry,
+                facing,
+                initial_z,
+                PlacementEvidence::EvaluateMark,
+                rules,
+            )
+            .is_some()
+        {
+            return Some(stable_id);
+        }
     }
 
     for radius in start_radius..=STARTING_MCV_FALLBACK_MAX_RADIUS {
@@ -1244,15 +1270,26 @@ fn place_starting_object_near_base(
                 {
                     continue;
                 }
-                if let Some(id) =
-                    sim.spawn_object(type_id, owner, rx, ry, facing, rules, height_map)
+                let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
+                if sim
+                    .reveal_constructed_object_at_height(
+                        stable_id,
+                        rx,
+                        ry,
+                        facing,
+                        z,
+                        PlacementEvidence::EvaluateMark,
+                        rules,
+                    )
+                    .is_some()
                 {
-                    return Some(id);
+                    return Some(stable_id);
                 }
             }
         }
     }
 
+    sim.discard_constructed_limbo(stable_id);
     None
 }
 
@@ -1820,12 +1857,290 @@ pub(crate) fn initialize_map_roster_houses(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::bridge_facts::BridgeCellFacts;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
 
     fn descriptor(seed: u32) -> ScenarioDescriptor {
         ScenarioDescriptor {
             seed,
             ..ScenarioDescriptor::default()
         }
+    }
+
+    fn techno_constructor_start_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n\n\
+             [VehicleTypes]\n0=MTNK\n1=HTNK\n\n\
+             [AircraftTypes]\n\n\
+             [BuildingTypes]\n\n\
+             [MTNK]\nStrength=300\nSpeed=6\nCost=100\nTechLevel=1\nOwner=Americans\nAllowedToStartInMultiplayer=yes\n\n\
+             [HTNK]\nStrength=400\nSpeed=5\nCost=100\nTechLevel=1\nOwner=Americans\nAllowedToStartInMultiplayer=yes\n",
+        ))
+        .expect("starting-object constructor rules")
+    }
+
+    fn techno_constructor_flat_start_terrain(size: u16) -> ResolvedTerrainGrid {
+        let land_type = LandType::Clear.as_index();
+        let speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        let mut cells = Vec::with_capacity(usize::from(size) * usize::from(size));
+        for ry in 0..size {
+            for rx in 0..size {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: false,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type,
+                    yr_cell_land_type: land_type,
+                    slope_type: 0,
+                    template_height: 0,
+                    height_in_pixels: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs,
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: true,
+                    allows_tiberium: true,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    terrain_object_occupation: None,
+                    overlay_blocks: false,
+                    overlay_zone_type: None,
+                    outside_playfield: false,
+                    zone_type: zone_class::GROUND,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    base_land_type: land_type,
+                    base_yr_cell_land_type: land_type,
+                    base_terrain_class: TerrainClass::Clear,
+                    base_speed_costs: speed_costs,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: BridgeCellFacts::default(),
+                    tube_index: None,
+                    radar_left: [0; 3],
+                    radar_right: [0; 3],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(size, size, cells)
+    }
+
+    fn techno_constructor_start_sim(seed: u64, size: u16) -> Simulation {
+        let mut sim = Simulation::with_seed(seed);
+        sim.session.map_width = size;
+        sim.session.map_height = size;
+        sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+            base: i32::from(size),
+            off_fc: 0,
+            off_100: 0,
+            off_104: i32::from(size),
+            off_108: i32::from(size),
+        });
+        sim
+    }
+
+    #[test]
+    fn techno_constructor_postmap_exact_and_fallback_place_one_constructed_identity() {
+        let seed = 0xC701_1001;
+        let rules = techno_constructor_start_rules();
+        let terrain = techno_constructor_flat_start_terrain(10);
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+
+        let mut exact = techno_constructor_start_sim(seed, 10);
+        let mut exact_expected = SimRng::new(seed);
+        let exact_word = (exact_expected.next_u32() & 0xFFFF) as u16;
+        let exact_id = place_starting_object_near_base(
+            &mut exact,
+            "MTNK",
+            "Americans",
+            6,
+            5,
+            STARTING_MCV_FACING,
+            1,
+            bounds,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+        )
+        .expect("exact PostMap placement");
+        let exact_entity = exact.substrate.entities.get(exact_id).unwrap();
+        assert_eq!(exact_entity.techno_ctor_random_word, exact_word);
+        assert_eq!((exact_entity.position.rx, exact_entity.position.ry), (6, 5));
+        assert_eq!(exact.scenario_rng.logical_state(), exact_expected.logical_state());
+
+        let mut fallback = techno_constructor_start_sim(seed, 10);
+        let mut fallback_expected = SimRng::new(seed);
+        let blocker_word = (fallback_expected.next_u32() & 0xFFFF) as u16;
+        let blocker = fallback
+            .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            fallback.substrate.entities.get(blocker).unwrap().techno_ctor_random_word,
+            blocker_word
+        );
+        let fallback_word = (fallback_expected.next_u32() & 0xFFFF) as u16;
+        let _start_direction = fallback_expected.next_range_u32_inclusive(0, 7);
+        let fallback_id = place_starting_object_near_base(
+            &mut fallback,
+            "MTNK",
+            "Americans",
+            6,
+            5,
+            STARTING_MCV_FACING,
+            1,
+            bounds,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+        )
+        .expect("fallback PostMap placement");
+        let fallback_entity = fallback.substrate.entities.get(fallback_id).unwrap();
+        assert_eq!(fallback_entity.techno_ctor_random_word, fallback_word);
+        assert_ne!((fallback_entity.position.rx, fallback_entity.position.ry), (6, 5));
+        assert_eq!(fallback.scenario_rng.logical_state(), fallback_expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_postmap_total_failure_deletes_object_but_keeps_draw_first() {
+        let seed = 0xC701_1002;
+        let rules = techno_constructor_start_rules();
+        let terrain = ResolvedTerrainGrid::from_cells(10, 10, Vec::new());
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+        let mut sim = techno_constructor_start_sim(seed, 10);
+        let mut expected = SimRng::new(seed);
+        let _constructor_word = expected.next_u32();
+        for _radius in 1..=STARTING_MCV_FALLBACK_MAX_RADIUS {
+            let _ = expected.next_range_u32_inclusive(0, 7);
+            for jitter_pass in 0..2 {
+                for _offset in 0..8 {
+                    if jitter_pass != 0 {
+                        let _ = expected.next_range_u32_inclusive(0, 1);
+                        let _ = expected.next_range_u32_inclusive(0, 99);
+                        let _ = expected.next_range_u32_inclusive(0, 1);
+                        let _ = expected.next_range_u32_inclusive(0, 99);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            place_starting_object_near_base(
+                &mut sim,
+                "MTNK",
+                "Americans",
+                5,
+                5,
+                STARTING_MCV_FACING,
+                1,
+                bounds,
+                &rules,
+                &BTreeMap::new(),
+                &terrain,
+            )
+            .is_none()
+        );
+        assert!(sim.substrate.entities.is_empty());
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_extra_unit_selection_precedes_constructor_word() {
+        let seed = 0xC701_1003;
+        let rules = techno_constructor_start_rules();
+        let terrain = techno_constructor_flat_start_terrain(10);
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+        let mut sim = techno_constructor_start_sim(seed, 10);
+        sim.session.game_options.tech_level = 10;
+        let owner = sim.interner.intern("Americans");
+        let mut house = HouseState::new(owner, 0, None, true, 0, 10);
+        house.base_center = Some((6, 5));
+        sim.houses.insert(owner, house);
+        let slots = [NormalizedSkirmishSlot {
+            owner_name: "Americans".to_string(),
+            country: LaunchCountry::America,
+            color_index: 0,
+            start_position: LaunchStartPosition::Auto,
+            team: LaunchTeam::None,
+            is_human: true,
+            difficulty: HouseDifficulty::Normal,
+        }];
+        let mut expected = SimRng::new(seed);
+        let blocker_word = (expected.next_u32() & 0xFFFF) as u16;
+        let blocker = sim
+            .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
+            .expect("starting-cell blocker");
+        assert_eq!(
+            sim.substrate.entities.get(blocker).unwrap().techno_ctor_random_word,
+            blocker_word
+        );
+        let candidate_index = expected.next_range_u32_inclusive(0, 1) as usize;
+        let expected_type = ["MTNK", "HTNK"][candidate_index];
+        let expected_word = (expected.next_u32() & 0xFFFF) as u16;
+        let _fallback_start_direction = expected.next_range_u32_inclusive(0, 7);
+
+        assert_eq!(
+            seed_starting_extra_units(
+                &mut sim,
+                &slots,
+                &rules,
+                &BTreeMap::new(),
+                &terrain,
+                bounds,
+                1,
+                false,
+            ),
+            1
+        );
+        let entity = sim.substrate.entities.get(2).unwrap();
+        assert_eq!(sim.interner.resolve(entity.type_ref), expected_type);
+        assert_eq!(entity.techno_ctor_random_word, expected_word);
+        assert_ne!((entity.position.rx, entity.position.ry), (6, 5));
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
     }
 
     #[test]

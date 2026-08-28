@@ -251,7 +251,7 @@ impl Simulation {
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -262,7 +262,7 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
-            true, false, false, false, false, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -273,7 +273,7 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
-            false, false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -290,6 +290,7 @@ impl Simulation {
         include_sensor_deposit_v88: bool,
         include_real_cell_bridge_flags_v90: bool,
         include_base_defense_response_v97: bool,
+        include_techno_constructor_v104: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -385,6 +386,7 @@ impl Simulation {
             include_techno_playfield_v87,
             include_sensor_deposit_v88,
             include_base_defense_response_v97,
+            include_techno_constructor_v104,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -916,9 +918,18 @@ impl Simulation {
         include_techno_playfield_v87: bool,
         include_sensor_deposit_v88: bool,
         include_base_defense_response_v97: bool,
+        include_techno_constructor_v104: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
+            if include_techno_constructor_v104
+                && (entity.techno_ctor_random_word != 0
+                    || entity.structure_upgrade_link.is_some())
+            {
+                b"techno-constructor-v1".hash(hasher);
+                entity.techno_ctor_random_word.hash(hasher);
+                entity.structure_upgrade_link.hash(hasher);
+            }
             entity.occupancy_enter_order.hash(hasher);
             entity.air_spatial_bucket.hash(hasher);
             entity.air_spatial_enter_order.hash(hasher);

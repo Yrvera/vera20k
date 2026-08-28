@@ -461,6 +461,7 @@ mod tests {
                 mission: None,
                 recruitable_a: true,
                 recruitable_b: true,
+                structure_upgrades: [None, None, None],
             };
             sim.spawn_from_map(&[entity], None, &BTreeMap::new());
             sim

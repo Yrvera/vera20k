@@ -117,6 +117,7 @@ fn build_synthetic_simulation(seed: u32) -> Simulation {
                 6,
                 false,
                 0,
+                0,
             );
             sim.entities_mut().insert(entity);
         }
