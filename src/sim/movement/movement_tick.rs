@@ -2287,7 +2287,7 @@ fn tick_movement_with_grids_scoped(
                                     Some(pg),
                                     (old_rx, old_ry),
                                     (nx, ny),
-                                    next_layer,
+                                    entity.on_bridge,
                                 );
                             pending_bridge_update = bridge_update;
                             let new_on_bridge = super::movement_bridge::projected_on_bridge(

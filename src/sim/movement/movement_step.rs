@@ -39,6 +39,7 @@ use crate::util::fixed_math::{
 };
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
+use super::movement_occupancy::BRIDGE_DECK_LEVEL_DELTA;
 use super::{
     CLIFF_HEIGHT_THRESHOLD, MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT,
     PathfindingContext,
@@ -65,16 +66,32 @@ fn path_window_to_delta(target: &MovementTarget) -> Option<(i32, i32)> {
     ))
 }
 
+/// Z of a drive-track endpoint, in the native height model.
+///
+/// `DriveLocomotionClass` commits a track endpoint Z that already folded
+/// `g_BridgeZOffset_Drive` `[0x008A07C4]` in at `0x004B2196`, and that global is
+/// initialised as `4 * LevelStep` by `DriveLocomotionClass::ComputeBridgeZOffset`
+/// `0x004AF4A0` — the same delta, from the same terrain base, as
+/// `FootClass::Set_Height_On_Bridge` `0x005F5FA0`. The offset is gated on the
+/// mover's own OnBridge state and on nothing else, so this must not consult the
+/// A* layer or a cell-side deck value: the terminal commit writes this number
+/// straight into `position.z`, and a layer-derived one re-dropped a tank that had
+/// just been placed correctly by the cell-transition resolver.
 fn resolved_track_endpoint(
     path_grid: Option<&PathGrid>,
     cell: (u16, u16),
-    layer: MovementLayer,
+    on_bridge: bool,
     fallback_z: u8,
 ) -> DriveCoord {
     let z = path_grid
         .and_then(|grid| grid.cell(cell.0, cell.1))
         .map_or(fallback_z, |path_cell| {
-            path_cell.effective_cell_z_for_layer(layer)
+            (path_cell.signed_level()
+                + if on_bridge {
+                    BRIDGE_DECK_LEVEL_DELTA
+                } else {
+                    0
+                }) as u8
         });
     DriveCoord::cell(cell.0, cell.1, i32::from(z as i8))
 }
@@ -212,6 +229,7 @@ pub(super) fn configure_motion_after_transition(
     current_sub: (SimFixed, SimFixed),
     path_grid: Option<&PathGrid>,
     current_z: u8,
+    on_bridge: bool,
 ) {
     target.next_index += 1;
     if target.next_index < target.path.len() {
@@ -256,13 +274,12 @@ pub(super) fn configure_motion_after_transition(
                     (i32::from(current_cell.1) + plan.head_dy) as i16,
                 );
                 let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
-                let endpoint_layer = target.layer_at(target.next_index + plan.nodes - 1);
                 accept_shared_track(
                     kind,
                     drive_locomotion,
                     ship_locomotion,
                     endpoint,
-                    resolved_track_endpoint(path_grid, endpoint_cell, endpoint_layer, current_z),
+                    resolved_track_endpoint(path_grid, endpoint_cell, on_bridge, current_z),
                     plan.nodes,
                 );
             }
@@ -1318,7 +1335,12 @@ fn select_fresh_drive_track_at_current_cell(
         drive_locomotion,
         ship_locomotion,
         endpoint,
-        resolved_track_endpoint(path_grid, endpoint_cell, endpoint_layer, position.z),
+        resolved_track_endpoint(
+            path_grid,
+            endpoint_cell,
+            current_occupation_layer == MovementLayer::Bridge,
+            position.z,
+        ),
         plan.nodes,
     );
     let next_occupation = (endpoint_layer == MovementLayer::Ground)
@@ -2029,8 +2051,22 @@ pub(super) fn process_cell_crossings(
             if let Some(next_cell) = pg.cell(nx, ny) {
                 let next_level = next_cell.effective_cell_z_for_layer(next_layer);
                 let diff = (position.z as i16 - next_level as i16).unsigned_abs();
-                let is_bridge_ramp =
-                    next_cell.is_bridge_transition_cell() || next_cell.is_elevated_bridge_cell();
+                // `is_elevated_bridge_cell` keys on the walkable permission bit, so a
+                // structural deck cell whose permission is clear — a damaged span, or
+                // one carrying a terrain object — reads as ordinary terrain here. A
+                // mover on the deck now carries `ground + 4` (the native height model,
+                // `FootClass::Set_Height_On_Bridge` 0x005F5FA0), so against that cell's
+                // terrain level the difference is exactly the deck delta and the mover
+                // is stopped mid-span as if it had walked off a cliff. Reading the
+                // structural flag as well keeps the deck a deck regardless of the
+                // permission bit.
+                //
+                // VERA-internal, gamemd equivalent UNCHECKED: `CLIFF_HEIGHT_THRESHOLD`
+                // itself has no identified native owner (`sim::movement::mod.rs`), so
+                // this widens a VERA-only gate rather than porting a native one.
+                let is_bridge_ramp = next_cell.is_bridge_transition_cell()
+                    || next_cell.is_elevated_bridge_cell()
+                    || next_cell.has_structural_bridge();
                 if diff >= CLIFF_HEIGHT_THRESHOLD && !is_bridge_ramp {
                     position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
                     position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
@@ -2128,7 +2164,7 @@ pub(super) fn process_cell_crossings(
             path_grid,
             (old_rx, old_ry),
             (nx, ny),
-            next_layer,
+            projected_on_bridge_state,
         );
         projected_on_bridge_state =
             super::movement_bridge::projected_on_bridge(projected_on_bridge_state, bridge_update);
@@ -2209,6 +2245,7 @@ pub(super) fn process_cell_crossings(
             (position.sub_x, position.sub_y),
             path_grid,
             position.z,
+            projected_on_bridge_state,
         );
 
         // Pre-allocate subcell in the NEXT path cell for infantry direction targeting.

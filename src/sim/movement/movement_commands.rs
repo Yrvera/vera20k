@@ -33,14 +33,26 @@ use crate::sim::game_entity::GameEntity;
 use super::drive_track;
 use super::teleport_movement;
 
+/// Z of a freshly accepted track endpoint, in the native height model.
+///
+/// Same rule as the twin in `movement_step`: terrain level of the endpoint cell
+/// plus the deck delta exactly when the mover's own OnBridge state is set
+/// (`DriveLocomotionClass::ComputeBridgeZOffset` `0x004AF4A0` →
+/// `g_BridgeZOffset_Drive` `[0x008A07C4]`, folded in at `0x004B2196`). The A*
+/// layer is not an input to height in gamemd and must not be one here.
 fn resolved_track_endpoint(
     grid: &PathGrid,
     cell: (u16, u16),
-    layer: crate::sim::movement::locomotor::MovementLayer,
+    on_bridge: bool,
     fallback_z: u8,
 ) -> DriveCoord {
     let z = grid.cell(cell.0, cell.1).map_or(fallback_z, |path_cell| {
-        path_cell.effective_cell_z_for_layer(layer)
+        (path_cell.signed_level()
+            + if on_bridge {
+                super::movement_occupancy::BRIDGE_DECK_LEVEL_DELTA
+            } else {
+                0
+            }) as u8
     });
     DriveCoord::cell(cell.0, cell.1, i32::from(z as i8))
 }
@@ -867,6 +879,7 @@ pub(crate) fn issue_move_command_with_layered(
             }
         } else if uses_ship_locomotor && !keep_in_flight_curve {
             let fallback_z = entity_mut.position.z;
+            let mover_on_bridge = entity_mut.on_bridge;
             if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
                 if let Some(reference) = accepted_path_reference {
                     super::path_markers::accept_path_replay(
@@ -875,12 +888,12 @@ pub(crate) fn issue_move_command_with_layered(
                         accepted_path_nodes,
                     );
                     let endpoint = (reference.0 as u16, reference.1 as u16);
-                    let layer = movement
-                        .path
-                        .iter()
-                        .position(|&cell| cell == endpoint)
-                        .map_or(current_layer, |index| movement.layer_at(index));
-                    ship.head_to = Some(resolved_track_endpoint(grid, endpoint, layer, fallback_z));
+                    ship.head_to = Some(resolved_track_endpoint(
+                        grid,
+                        endpoint,
+                        mover_on_bridge,
+                        fallback_z,
+                    ));
                 } else {
                     ship.head_to = None;
                 }

@@ -65,21 +65,82 @@ const NEAREST_REACHABLE_SEARCH_RADIUS: u16 = 10;
 /// the zero-size grid sentinel below. `FootClass::Find_Path` @ `0x004D3920`
 /// gates on `vtable+0x2CC`, not on locomotor kind.
 ///
-/// The whitelist is `Drive | Walk | Mech`, so it also excludes **Hover** — a
-/// ground mover with no state machine of its own. Stock YR gives the Hover
-/// CLSID to `[LCRF]`, `[ROBO]`, `[SAPC]` and `[YHVR]`: the Robot Tank and all
-/// three amphibious transports. Those four never reach the layered path
-/// builder, and because `is_bridge_only_goal` is only consulted on the
-/// non-layered branch, the two gates compose: a Hover mover not already on a
-/// bridge has a bridge-deck click dropped outright.
+/// **Hover was added 2026-08-27 (matrix row T1-01).** The exclusion was the
+/// whole of that defect: a Hover mover never reached the layered builder, so
+/// `build_flat_fallback_layers` stamped `Ground` on every node of its path
+/// including the deck ones, and the crossing loop's terrain test then read the
+/// deck cell's raw ground-walkability — the riverbed under the span — and
+/// refused. The order was never dropped, so a Robot Tank ordered across a high
+/// bridge accelerated into the abutment and was snapped back to cell centre
+/// about thirteen times a second, indefinitely. The bridge legality check
+/// itself passed every time; it was never consulted about the right plane.
+/// Measured on BayOPigs.mmx: seven refusals, every one `layer_walkable`, zero
+/// `bridge_traversal`.
 ///
-/// Trigger: any path build by one of those four types, and any bridge-deck
-/// click by one of them. Player effect: a Robot Tank or an amphibious
-/// transport refuses an order retail accepts. Frequency: the layered exclusion
-/// is every path build for those units; the order-drop needs a high bridge, so
-/// a few times a match on maps that have one. Downstream risk: adding Hover
-/// here puts it through the layered builder, which is the bridge-parity
-/// boundary recorded at the top of this module.
+/// Stock YR gives the Hover CLSID to `[LCRF]`, `[ROBO]`, `[SAPC]` and `[YHVR]`
+/// — the Robot Tank and all three amphibious transports. (`ROBO` also carries
+/// `TooBigToFitUnderBridge=true`, but that flag gates nothing in movement:
+/// `merge_path_blocks` above records it as draw-pipeline-only, its parameter is
+/// unused, and `Can_Enter_Cell` never reads it. It is not why a Robot Tank
+/// could not use a span, and it did not stop one driving under one either.)
+///
+/// **What the one native gate on this path actually does.** VERIFIED 2026-08-27
+/// by direct reads, with one stated premise rather than a read:
+///   - *Premise (not a Ghidra read):* the movers this predicate admits are all
+///     `[VehicleTypes]` — `ROBO`, `LCRF`, `SAPC`, `YHVR` alongside `MTNK`,
+///     checked in `ini/rulesmd.ini` — hence `UnitClass` instances. That is what
+///     makes the vtable read below the same slot the `CALL [EDX + 0x2CC]`
+///     dispatches through for them: the read is at a fixed vtable, the call is
+///     through the mover's own. Named because reading an offset is not the same
+///     as proving a slot, and conflating the two has produced a wrong label in
+///     this project before.
+///   - `UnitClass`'s vtable is `0x007F5C70` — installed by
+///     `UnitClass::Constructor` @ `0x0073543A`, and by its destructor and
+///     `Load`. Identity rests on that existing Ghidra label; **UNCHECKED**
+///     against RTTI/COL, which is the reliable route here.
+///   - `0x007F5C70 + 0x2CC` = `0x007F5F3C`, which holds `0x004D3810`. Slot read
+///     directly; not inferred from a callee offset, which is the trap that has
+///     produced a wrong label in this project before.
+///   - `FootClass::Find_Path` calls that slot at `0x004D397F`
+///     (`CALL dword ptr [EDX + 0x2CC]`), and on a false return takes the
+///     clear-and-return-0 exit at `0x004D3989`.
+///   - `0x004D3810` (`CanReachDestination`) reads the type class through
+///     `vtable+0x84`, takes `TechnoTypeClass+0x5B4` (**MovementZone**), returns
+///     1 at once when that is `-1`, and otherwise tail-calls
+///     `MapClass::Can_Reach_Zone` with it.
+///
+/// So the gate is a zone **reachability abort** — should the search run at all —
+/// keyed on MovementZone, with no locomotor term. **Scoped claim:** at this
+/// gate, nothing selects a pathing plane by locomotor kind. Whether anything
+/// elsewhere in the binary does is UNCHECKED, and this comment does not assert
+/// a binary-wide negative.
+///
+/// That is enough, because the change here **deletes** a VERA gate rather than
+/// adding one: removing a restriction needs the absence of a verified native
+/// gate demanding it, not an affirmative native proof. The fix's positive
+/// evidence is production — two ordinary undisabled crossings on two retail
+/// maps with different span axes.
+///
+/// Do NOT reason "same vtable slot, therefore same answer": a shared virtual
+/// that reads type data answers differently per type, and this one does exactly
+/// that. `ROBO` is `MovementZone=AmphibiousDestroyer` and `MTNK` is `Normal`, so
+/// `0x004D3810` genuinely can separate them — it just separates them by zone,
+/// not by locomotor, and never by pathing plane. An earlier draft of this
+/// comment argued from `[VehicleTypes]` membership to a shared slot value to a
+/// shared answer; the middle step is true and the last does not follow.
+///
+/// `Can_Enter_Cell` @ `0x0073F0A0`, `CheckBridgeTraversal` @ `0x004D9C60` and
+/// the `ILocomotion+0x1C` slot are **UNCHECKED here** — reported as corroboration
+/// that the downstream legality path is locomotor-agnostic, not re-read at this
+/// callsite, and not the gate. Do not cite them as if they resolved `+0x2CC`.
+///
+/// The remaining `Drive | Walk | Mech | Hover` list stays VERA-internal. Of
+/// `LocomotorKind`'s twelve variants the other eight — Ship, Fly, Teleport,
+/// Jumpjet, Rocket, Tunnel, DropPod and Parachute — are excluded because
+/// admitting them is a separate question with its own blast radius, not because
+/// the gate above excludes them; it excludes nothing by kind. `Mech` is a dead
+/// arm: its CLSID is deliberately absent from `INSTALLED_CLSID_KIND_TABLE`
+/// (`locomotor_type.rs`), so no stock type reaches it.
 pub(super) fn supports_layered_bridge_pathing(
     loco: &LocomotorState,
     grid: &PathGrid,
@@ -90,7 +151,7 @@ pub(super) fn supports_layered_bridge_pathing(
     }
     matches!(
         loco.kind,
-        LocomotorKind::Drive | LocomotorKind::Walk | LocomotorKind::Mech
+        LocomotorKind::Drive | LocomotorKind::Walk | LocomotorKind::Mech | LocomotorKind::Hover
     ) || on_bridge
 }
 
