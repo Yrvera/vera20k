@@ -64,11 +64,14 @@ pub(crate) struct ProcessMovementPickupResume {
     pub(crate) stage: ProcessMovementPickupStage,
     pub(crate) plan: super::drive_track::DriveTrackPlan,
     pub(crate) shared_kind: LocomotorKind,
-    pub(crate) origin_cell: (u16, u16),
     pub(crate) origin_layer: MovementLayer,
     pub(crate) endpoint: (i16, i16),
     pub(crate) endpoint_layer: MovementLayer,
     pub(crate) endpoint_coord: DriveCoord,
+    /// Original RawTrack handoff retained across the synchronous callback.
+    /// Callback repath/retarget must not make the final native occupation call
+    /// derive a different track role.
+    pub(crate) handoff_occupation: Option<crate::sim::components::DriveOccupationFootprint>,
     pub(crate) saved_current_speed_fraction: NativeF64Bits,
     pub(crate) admitted: bool,
 }

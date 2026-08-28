@@ -385,11 +385,12 @@ pub struct DrivePathQueue {
     pub reference_cell: Option<(i16, i16)>,
 }
 
-/// ShipLocomotion-owned destination, committed head, speed, and path replay state.
+/// ShipLocomotion-owned destination, committed head, speed, path replay, and
+/// track-occupation state.
 ///
 /// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
-/// fractions, and cached owner-speed result with Drive, but do not own Drive's
-/// tube, forced-track, or raw-occupation state.
+/// fractions, cached owner-speed result, and RawTrack occupation pair with
+/// Drive, but do not own Drive's tube or forced-track state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShipLocomotionRuntime {
     #[serde(default)]
@@ -410,6 +411,21 @@ pub struct ShipLocomotionRuntime {
     /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
     #[serde(default)]
     pub owner_current_speed: i32,
+    /// Ship's forward RawTrack handoff occupation. Active
+    /// `ShipLocomotionClass::Process_Movement` reaches
+    /// `Apply_Track_Occupation_Mode @ 0x006A01A0` at `0x006A3D34`; that
+    /// helper applies mode 1 to this transformed RawTrack point before the
+    /// supplied endpoint.
+    #[serde(default)]
+    pub occupation_handoff: Option<DriveOccupationFootprint>,
+    /// Ship's independently marked track endpoint. It is not an object
+    /// coordinate write: the RawTrack moves the body on later paid points.
+    #[serde(default)]
+    pub occupation_head_to: Option<DriveOccupationFootprint>,
+    /// A paid Ship RawTrack point clears the standing cell's vehicle bit before
+    /// coordinate commit; AddContent at the next crossing restores it.
+    #[serde(default)]
+    pub current_occupation_cleared: bool,
 }
 
 impl Default for ShipLocomotionRuntime {
@@ -422,6 +438,9 @@ impl Default for ShipLocomotionRuntime {
             track_index: -1,
             target_speed_fraction: NativeF64Bits::POSITIVE_ZERO,
             owner_current_speed: 0,
+            occupation_handoff: None,
+            occupation_head_to: None,
+            current_occupation_cleared: false,
         }
     }
 }

@@ -397,6 +397,9 @@ mod tests {
             track_index: -1,
             target_speed_fraction: NativeF64Bits::ONE,
             owner_current_speed: 10,
+            occupation_handoff: None,
+            occupation_head_to: None,
+            current_occupation_cleared: false,
         });
 
         set_destination_internal_null(&mut entity);
@@ -441,6 +444,9 @@ mod tests {
             track_index: -1,
             target_speed_fraction: NativeF64Bits::ONE,
             owner_current_speed: 10,
+            occupation_handoff: None,
+            occupation_head_to: None,
+            current_occupation_cleared: false,
         });
 
         finish_drive_navigation(&mut entity, None);

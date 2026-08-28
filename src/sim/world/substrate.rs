@@ -98,7 +98,7 @@ pub(crate) struct ObjectSubstrate {
     #[serde(skip)]
     pub(crate) occupancy: OccupancyGrid,
     /// Independent ground/deck vehicle-occupation bit planes. Rebuilt from
-    /// entity lifecycle and serialized Drive footprint state after load.
+    /// entity lifecycle and serialized Drive/Ship footprint state after load.
     #[serde(skip)]
     pub(crate) cell_occupation: CellOccupationGrid,
     /// Authoritative raw CellClass occupation bytes. Unlike the owner-aware

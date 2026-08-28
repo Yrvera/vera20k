@@ -2702,6 +2702,16 @@ fn tick_movement_with_grids_scoped(
                                 (nx, ny),
                                 new_occupancy_layer,
                             );
+                        } else if entity.category == EntityCategory::Unit
+                            && let Some(ship) = entity.ship_locomotion.as_mut()
+                        {
+                            cell_occupation.mark_vehicle_on_layer(
+                                nx,
+                                ny,
+                                entity_id,
+                                new_occupancy_layer,
+                            );
+                            ship.current_occupation_cleared = false;
                         }
                         // Reserve destination cell.
                         super::movement_reservation::reserve_destination_after_transition(
@@ -3345,6 +3355,16 @@ fn finalize_finished_entities(
             {
                 crate::sim::occupancy::finish_drive_head_to_occupation(
                     drive,
+                    cell_occupation,
+                    entity_id,
+                    current_cell,
+                    current_layer,
+                );
+            } else if entity.category == EntityCategory::Unit
+                && let Some(ship) = entity.ship_locomotion.as_mut()
+            {
+                crate::sim::occupancy::finish_ship_track_occupation(
+                    ship,
                     cell_occupation,
                     entity_id,
                     current_cell,
