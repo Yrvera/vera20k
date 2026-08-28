@@ -3,7 +3,7 @@
 **Status: FROZEN.** This is the ledger of an active autonomous program. Adopt it; do not rebuild it.
 
 Freeze point: the three inventory lanes read the tree at HEAD `cf91caa3` on
-`feature/opents-cross-verify`. Every `file:line` below is that HEAD. Every citation in this
+`feature/bridge-movement-parity`. Every `file:line` below is that HEAD. Every citation in this
 document is **second-hand from those three lanes** — no line was re-opened while writing the
 ledger, and **no lane ran a crossing**. Where a lane wrote "pinned by", it had read an assertion
 body, not observed a pass.

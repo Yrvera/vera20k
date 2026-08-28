@@ -6,9 +6,9 @@ bottom, or through it. Normal driving, no collapse.
 **Evidence weighting used here.** The `gamemd` lane read live Ghidra disassembly of the shipped
 Yuri's Revenge binary and outranks everything else; its claims are marked VERIFIED with an address.
 The three VERA lanes read current Rust; their `file:line` claims that are load-bearing below were
-re-read directly in this worktree and are marked VERIFIED-in-repo. The `opents` lane read a
-Tiberian Sun reconstruction — it is a **shape guide only** and settles nothing about YR; agreement
-with it is not evidence. All five lane reports were present and read.
+re-read directly in this worktree and are marked VERIFIED-in-repo. The `reference` lane read an
+external reconstruction of the predecessor engine — it is a **shape guide only** and settles
+nothing about YR; agreement with it is not evidence. All five lane reports were present and read.
 
 ---
 
