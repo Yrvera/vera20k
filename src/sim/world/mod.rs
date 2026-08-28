@@ -320,6 +320,9 @@ pub(crate) enum TickLane {
 /// state and evaluates it in the master-frame spine.
 #[derive(Clone, Copy)]
 pub(crate) struct TriggerInputs<'a> {
+    /// Source-ordered native program. `None` is retained only for legacy unit
+    /// fixtures that exercise the pre-migration aggregate executor directly.
+    pub program: Option<&'a crate::map::trigger_program::TriggerProgram>,
     pub graph: &'a TriggerGraph,
     pub triggers: &'a TriggerMap,
     pub events: &'a EventMap,
@@ -328,6 +331,7 @@ pub(crate) struct TriggerInputs<'a> {
     /// Bound match rules used by action callbacks that share ordinary Techno
     /// runtime calculations (not reparsed or substituted by trigger data).
     pub rules: Option<&'a RuleSet>,
+    pub overlay_registry: Option<&'a crate::rules::overlay_types::OverlayTypeRegistry>,
 }
 
 #[cfg(test)]
@@ -3645,24 +3649,30 @@ impl Simulation {
     /// self-borrow conflict while actions read and mutate Simulation authority.
     fn advance_triggers(
         &mut self,
+        program: Option<&crate::map::trigger_program::TriggerProgram>,
         graph: &TriggerGraph,
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
         waypoints: &std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
         rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
     ) -> Vec<TriggerEffect> {
         let mut rt = std::mem::take(&mut self.trigger_runtime);
-        let effects = rt.advance_at_frame_with_waypoints(
-            self.session.binary_frame,
-            graph,
-            triggers,
-            events,
-            actions,
-            Some(self),
-            rules,
-            waypoints,
-        );
+        let effects = if let Some(program) = program {
+            rt.advance_native_poll(program, self, rules, overlay_registry, waypoints)
+        } else {
+            rt.advance_at_frame_with_waypoints(
+                self.session.binary_frame,
+                graph,
+                triggers,
+                events,
+                actions,
+                Some(self),
+                rules,
+                waypoints,
+            )
+        };
         self.trigger_runtime = rt;
         effects
     }
@@ -3884,12 +3894,14 @@ impl Simulation {
     fn poll_triggers_for_master_frame(&mut self, inputs: TriggerInputs<'_>) {
         // YR LogicClass::Update polls scenario triggers before the live-object walk.
         let effects = self.advance_triggers(
+            inputs.program,
             inputs.graph,
             inputs.triggers,
             inputs.events,
             inputs.actions,
             inputs.waypoints,
             inputs.rules,
+            inputs.overlay_registry,
         );
         self.trigger_effects.extend(effects);
     }
@@ -6290,6 +6302,7 @@ impl Simulation {
         // collapse and physically finalize exactly once.
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::PendingDelete);
+        self.trigger_runtime.finalize_pending_tags();
         self.process_pending_delete();
 
         // Debug-mode safety net: rebuild occupancy after the drain so dead

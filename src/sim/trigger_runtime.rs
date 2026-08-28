@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 
-use crate::map::actions::{ActionEntry, ActionMap};
+use crate::map::actions::{ActionEntry, ActionMap, MaterializedActionOperand};
 use crate::map::events::{EventCondition, EventMap};
 use crate::map::trigger_graph::{LinkedTrigger, TriggerGraph};
 use crate::map::trigger_program::TriggerProgram;
@@ -40,6 +40,7 @@ const ACTION_CLEAR_LOCAL: i32 = 57;
 const ACTION_ANNOUNCE_WIN: i32 = 67;
 const ACTION_ANNOUNCE_LOSE: i32 = 68;
 const ACTION_END_SCENARIO: i32 = 69;
+const ACTION_CREATE_CRATE: i32 = 108;
 const ACTION_JUMP_CAMERA: i32 = 112;
 const ACTION_SET_ALTERNATE_BASE: i32 = 137;
 const ACTION_CLEAR_ALTERNATE_BASE: i32 = 138;
@@ -60,6 +61,48 @@ pub enum TriggerEffect {
     MissionResult { title: String, detail: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeActionResult {
+    False,
+    True,
+}
+
+impl NativeActionResult {
+    fn or(self, other: Self) -> Self {
+        if self == Self::True || other == Self::True {
+            Self::True
+        } else {
+            Self::False
+        }
+    }
+}
+
+/// Exact synchronous delivery payload used by TagClass-style callers. Object
+/// and cell identities are stable handles so repeat cleanup can re-fetch and
+/// detach only references that still point at the same live Tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeTriggerEvent {
+    pub event_id: i32,
+    pub object_id: Option<u64>,
+    pub cell: Option<(u16, u16)>,
+    pub raising_owner: Option<InternedId>,
+    pub data: i32,
+    pub editor_mode: bool,
+}
+
+impl NativeTriggerEvent {
+    fn polling(event_id: i32, data: i32) -> Self {
+        Self {
+            event_id,
+            object_id: None,
+            cell: None,
+            raising_owner: None,
+            data,
+            editor_mode: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum MissionAnnouncementKind {
     Victory,
@@ -73,7 +116,11 @@ enum MissionAnnouncementKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TriggerAttachmentPlan {
     pub cell_tag_types: Vec<(u32, (u16, u16))>,
-    pub object_tag_types: Vec<u32>,
+    /// Stable object identity paired with its resolved TagType. Native stores
+    /// the resulting Tag pointer on the object; retaining the stable id here
+    /// lets the typed runtime reproduce that pointer without reconstructing it
+    /// from the definition-only `attached_tag_id` later.
+    pub object_tag_types: Vec<(u64, u32)>,
 }
 
 impl TriggerAttachmentPlan {
@@ -112,9 +159,11 @@ impl TriggerAttachmentPlan {
         let object_tag_types = simulation
             .entities()
             .values()
-            .filter_map(|entity| entity.attached_tag_id)
-            .filter_map(|id| program.tag_type_index(simulation.interner.resolve(id)))
-            .map(index_u32)
+            .filter_map(|entity| {
+                let id = entity.attached_tag_id?;
+                let tag_type_index = program.tag_type_index(simulation.interner.resolve(id))?;
+                Some((entity.stable_id, index_u32(tag_type_index)))
+            })
             .collect();
 
         Self {
@@ -130,6 +179,11 @@ impl TriggerAttachmentPlan {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TagRuntime {
     pub tag_type_index: u32,
+    /// Ordinary ensure/reuse Tags participate in TagType lookup. Runtime Team
+    /// construction explicitly creates no-reuse Tags and must never become the
+    /// replacement lookup owner when an ordinary Tag expires.
+    #[serde(default)]
+    pub reusable: bool,
     pub trigger_instances: Vec<u32>,
     pub attachment_count: i32,
     pub attached_cell: Option<(u16, u16)>,
@@ -187,6 +241,21 @@ pub struct TriggerRuntime {
     /// Successful CellClass tag slots, used for exact detach/pointer expiry.
     #[serde(default)]
     pub cell_tags: BTreeMap<(u16, u16), u32>,
+    /// ObjectClass stable id -> live Tag master entry. This is the typed owner
+    /// for native AttachedTag pointer identity after fresh materialization.
+    #[serde(default)]
+    pub object_tags: BTreeMap<u64, u32>,
+    /// Native variable-change delivery bytes represented as exact typed index
+    /// sets. They remain asserted for the complete source-ordered poll walk so
+    /// later Tags observe synchronous Action writes in the same pass.
+    #[serde(default)]
+    pub dirty_globals: BTreeSet<u32>,
+    #[serde(default)]
+    pub dirty_locals: BTreeSet<u32>,
+    /// Logical destruction is synchronous; physical compaction occurs at the
+    /// late main-tick finalizer in this recorded queue order.
+    #[serde(default)]
+    pub pending_tag_finalization: Vec<u32>,
     /// Three independent native category registries.
     #[serde(default)]
     pub destroyed_event_tags: Vec<u32>,
@@ -231,6 +300,7 @@ impl TriggerRuntime {
         self.tags.len().hash(hasher);
         for tag in &self.tags {
             tag.tag_type_index.hash(hasher);
+            tag.reusable.hash(hasher);
             tag.trigger_instances.hash(hasher);
             tag.attachment_count.hash(hasher);
             tag.attached_cell.hash(hasher);
@@ -257,6 +327,10 @@ impl TriggerRuntime {
             trigger_type.event_last_raising_owners.hash(hasher);
         }
         self.cell_tags.hash(hasher);
+        self.object_tags.hash(hasher);
+        self.dirty_globals.hash(hasher);
+        self.dirty_locals.hash(hasher);
+        self.pending_tag_finalization.hash(hasher);
         self.destroyed_event_tags.hash(hasher);
         self.polling_tags.hash(hasher);
         self.proximity_event_tags.hash(hasher);
@@ -310,7 +384,7 @@ impl TriggerRuntime {
 
         // Successfully spawned Units/Aircraft/Infantry/Structures already
         // occupy stable-id order in the exact section construction stream.
-        for &tag_type_index in &attachments.object_tag_types {
+        for &(stable_id, tag_type_index) in &attachments.object_tag_types {
             let tag_index = runtime.ensure_tag(
                 program,
                 tag_type_index,
@@ -320,6 +394,7 @@ impl TriggerRuntime {
             );
             let tag = &mut runtime.tags[tag_index as usize];
             tag.attachment_count = tag.attachment_count.wrapping_add(1);
+            runtime.object_tags.insert(stable_id, tag_index);
         }
 
         // These are three complete, independent `[Tags]` source-order walks.
@@ -403,6 +478,7 @@ impl TriggerRuntime {
         // Native appends the Tag master before constructing its chain.
         self.tags.push(TagRuntime {
             tag_type_index,
+            reusable: install_reuse_lookup,
             registered: true,
             ..TagRuntime::default()
         });
@@ -791,6 +867,762 @@ impl TriggerRuntime {
             _ => {}
         }
     }
+}
+
+/// One moved-runtime transaction for the native ordered owner. Recursive
+/// Force/event paths reuse this same value, so no callback can observe the
+/// placeholder `Simulation.trigger_runtime` while it is temporarily taken.
+struct TriggerTransaction<'state, 'data> {
+    runtime: &'state mut TriggerRuntime,
+    program: &'data TriggerProgram,
+    simulation: &'state mut Simulation,
+    rules: Option<&'data crate::rules::ruleset::RuleSet>,
+    overlay_registry: Option<&'data crate::rules::overlay_types::OverlayTypeRegistry>,
+    waypoints: &'data HashMap<u32, crate::map::waypoints::Waypoint>,
+    effects: Vec<TriggerEffect>,
+}
+
+impl TriggerRuntime {
+    /// Native leading Logic trigger rung. Global Tag iteration deliberately
+    /// increments after a synchronous stable erase, preserving retail's
+    /// ordinary `[A,B,C] -> A retires -> C runs` cursor behavior.
+    pub(crate) fn advance_native_poll(
+        &mut self,
+        program: &TriggerProgram,
+        simulation: &mut Simulation,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+        overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
+        waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
+    ) -> Vec<TriggerEffect> {
+        let mut transaction = TriggerTransaction {
+            runtime: self,
+            program,
+            simulation,
+            rules,
+            overlay_registry,
+            waypoints,
+            effects: Vec::new(),
+        };
+        transaction.poll();
+        transaction.effects
+    }
+
+    /// Execute one exact synchronous object/cell/capture/crate delivery against
+    /// an already-resolved live Tag index.
+    pub(crate) fn dispatch_native_event(
+        &mut self,
+        program: &TriggerProgram,
+        simulation: &mut Simulation,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+        overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
+        waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
+        tag_index: u32,
+        event: NativeTriggerEvent,
+    ) -> (bool, Vec<TriggerEffect>) {
+        let mut transaction = TriggerTransaction {
+            runtime: self,
+            program,
+            simulation,
+            rules,
+            overlay_registry,
+            waypoints,
+            effects: Vec::new(),
+        };
+        let fired = transaction.deliver_tag(tag_index, event);
+        (fired, transaction.effects)
+    }
+
+    /// Late physical Tag/Trigger release. Logical unregister and pointer expiry
+    /// happened synchronously at delivery; this stable compaction rewrites every
+    /// surviving registry handle in one deterministic pass.
+    pub(crate) fn finalize_pending_tags(&mut self) {
+        if self.pending_tag_finalization.is_empty() {
+            return;
+        }
+        let removed_tags: BTreeSet<u32> = self.pending_tag_finalization.iter().copied().collect();
+        let mut removed_instances = BTreeSet::new();
+        for &tag_index in &removed_tags {
+            if let Some(tag) = self.tags.get(tag_index as usize) {
+                removed_instances.extend(tag.trigger_instances.iter().copied());
+            }
+        }
+
+        let mut instance_remap = vec![None; self.trigger_instances.len()];
+        let mut compact_instances = Vec::with_capacity(
+            self.trigger_instances.len().saturating_sub(removed_instances.len()),
+        );
+        for (old_index, instance) in self.trigger_instances.drain(..).enumerate() {
+            if removed_instances.contains(&index_u32(old_index)) {
+                continue;
+            }
+            let new_index = index_u32(compact_instances.len());
+            instance_remap[old_index] = Some(new_index);
+            compact_instances.push(instance);
+        }
+        for instance in &mut compact_instances {
+            instance.next = instance
+                .next
+                .and_then(|old| instance_remap.get(old as usize).copied().flatten());
+        }
+        self.trigger_instances = compact_instances;
+
+        let mut tag_remap = vec![None; self.tags.len()];
+        let mut compact_tags = Vec::with_capacity(self.tags.len().saturating_sub(removed_tags.len()));
+        for (old_index, mut tag) in self.tags.drain(..).enumerate() {
+            if removed_tags.contains(&index_u32(old_index)) {
+                continue;
+            }
+            tag.trigger_instances = tag
+                .trigger_instances
+                .into_iter()
+                .filter_map(|old| instance_remap.get(old as usize).copied().flatten())
+                .collect();
+            let new_index = index_u32(compact_tags.len());
+            tag_remap[old_index] = Some(new_index);
+            compact_tags.push(tag);
+        }
+        self.tags = compact_tags;
+
+        let remap_tag = |old: u32| tag_remap.get(old as usize).copied().flatten();
+        for slot in &mut self.tag_by_type {
+            *slot = slot.and_then(remap_tag);
+        }
+        self.cell_tags.retain(|_, tag| {
+            if let Some(new) = remap_tag(*tag) {
+                *tag = new;
+                true
+            } else {
+                false
+            }
+        });
+        self.object_tags.retain(|_, tag| {
+            if let Some(new) = remap_tag(*tag) {
+                *tag = new;
+                true
+            } else {
+                false
+            }
+        });
+        for registry in [
+            &mut self.destroyed_event_tags,
+            &mut self.polling_tags,
+            &mut self.proximity_event_tags,
+        ] {
+            *registry = registry
+                .drain(..)
+                .filter_map(remap_tag)
+                .collect::<Vec<_>>();
+        }
+        self.pending_tag_finalization.clear();
+    }
+}
+
+impl TriggerTransaction<'_, '_> {
+    fn poll(&mut self) {
+        let pickup_any_latch = self.simulation.crate_authority.pickup_any_latch;
+        let mut index = 0usize;
+        while index < self.runtime.polling_tags.len() {
+            let tag_index = self.runtime.polling_tags[index];
+            let mut fired = pickup_any_latch
+                && self.deliver_tag(tag_index, NativeTriggerEvent::polling(50, 0));
+
+            if !fired {
+                let globals = self.runtime.dirty_globals.iter().copied().collect::<Vec<_>>();
+                for variable in globals {
+                    let event_id = if self.runtime.globals_set.contains(&variable) {
+                        EVENT_GLOBAL_IS_SET
+                    } else {
+                        EVENT_GLOBAL_IS_CLEAR
+                    };
+                    if self.deliver_tag(
+                        tag_index,
+                        NativeTriggerEvent::polling(event_id, variable as i32),
+                    ) {
+                        fired = true;
+                        break;
+                    }
+                }
+            }
+            if !fired {
+                let locals = self.runtime.dirty_locals.iter().copied().collect::<Vec<_>>();
+                for variable in locals {
+                    let event_id = if self.runtime.locals_set.contains(&variable) {
+                        EVENT_LOCAL_IS_SET
+                    } else {
+                        EVENT_LOCAL_IS_CLEAR
+                    };
+                    if self.deliver_tag(
+                        tag_index,
+                        NativeTriggerEvent::polling(event_id, variable as i32),
+                    ) {
+                        fired = true;
+                        break;
+                    }
+                }
+            }
+            // The unconditional Event-13 attempt is the ordinary active-retail
+            // entry that also lets Event 8 and state/timer conditions evaluate.
+            if !fired {
+                fired = self.deliver_tag(tag_index, NativeTriggerEvent::polling(13, 0));
+            }
+            if !fired {
+                fired = self.deliver_tag(tag_index, NativeTriggerEvent::polling(51, 0));
+            }
+            if !fired {
+                let _ = self.deliver_tag(tag_index, NativeTriggerEvent::polling(14, 0));
+            }
+            // Native increments unconditionally even if delivery erased the
+            // current stable-list member.
+            index += 1;
+        }
+        self.simulation.crate_authority.pickup_any_latch = false;
+        self.runtime.dirty_globals.clear();
+        self.runtime.dirty_locals.clear();
+    }
+
+    fn deliver_tag(&mut self, tag_index: u32, event: NativeTriggerEvent) -> bool {
+        let Some(tag) = self.runtime.tags.get(tag_index as usize) else {
+            return false;
+        };
+        if event.editor_mode
+            || tag.busy
+            || tag.disabled_or_uninit
+            || !tag.registered
+            || self
+                .program
+                .tag_types
+                .get(tag.tag_type_index as usize)
+                .is_none()
+        {
+            return false;
+        }
+        let tag_type_index = tag.tag_type_index;
+        let repeat_mode = self.program.tag_types[tag_type_index as usize].repeat_mode;
+        let instances = tag.trigger_instances.clone();
+        let attachment_count = tag.attachment_count;
+        self.runtime.tags[tag_index as usize].busy = true;
+
+        let mut sprung = false;
+        let mut satisfied_any = false;
+        for instance_index in instances {
+            if !self.evaluate_instance(instance_index, repeat_mode, event) {
+                continue;
+            }
+            satisfied_any = true;
+            if repeat_mode == 1 && attachment_count != 1 {
+                continue;
+            }
+            let _ = self.spring_instance(instance_index);
+            sprung = true;
+            if repeat_mode != 2 {
+                if let Some(instance) = self.runtime.trigger_instances.get_mut(instance_index as usize)
+                {
+                    instance.pending_delete = true;
+                }
+            }
+        }
+        if let Some(tag) = self.runtime.tags.get_mut(tag_index as usize) {
+            tag.busy = false;
+        }
+
+        if !satisfied_any || repeat_mode == 2 {
+            return sprung;
+        }
+        if repeat_mode == 1 && attachment_count != 1 {
+            self.detach_supplied_sources(tag_index, event);
+            return false;
+        }
+
+        self.detach_supplied_sources(tag_index, event);
+        self.expire_tag(tag_index);
+        sprung
+    }
+
+    fn evaluate_instance(
+        &mut self,
+        instance_index: u32,
+        repeat_mode: i32,
+        raised: NativeTriggerEvent,
+    ) -> bool {
+        let Some(instance) = self.runtime.trigger_instances.get(instance_index as usize) else {
+            return false;
+        };
+        if !instance.enabled || instance.pending_delete {
+            return false;
+        }
+        if repeat_mode == 2 {
+            return true;
+        }
+        let trigger_type_index = instance.trigger_type_index as usize;
+        let Some(definition) = self.program.trigger_types.get(trigger_type_index) else {
+            return false;
+        };
+        let events = definition.events.clone();
+        if events.is_empty() {
+            return false;
+        }
+        let mut all_true = true;
+        let mut persistence = repeat_mode == 2;
+        let mut last_owner = None;
+        for (event_index, event) in events.iter().enumerate() {
+            let bit = 1u32 << (event_index & 31);
+            let prelatched = self.runtime.trigger_instances[instance_index as usize]
+                .satisfied_mask
+                & bit
+                != 0;
+            let event_true = if prelatched {
+                true
+            } else {
+                self.evaluate_event_value(instance_index, event_index, event, raised)
+            };
+            if event.kind == 1 && event_true {
+                persistence = true;
+            }
+            if event_true && event_sets_persistence(event.kind) {
+                persistence = true;
+            }
+            if event_true && persistence && event_is_latch_eligible(event.kind) {
+                self.runtime.trigger_instances[instance_index as usize].satisfied_mask |= bit;
+            }
+            if event_true
+                && let Some(owner) = self.runtime.trigger_types[trigger_type_index]
+                    .event_last_raising_owners[event_index]
+            {
+                last_owner = Some(owner);
+            }
+            all_true &= event_true;
+        }
+        if let Some(owner) = last_owner {
+            self.runtime.trigger_instances[instance_index as usize].raising_house = Some(owner);
+        }
+        if all_true && persistence {
+            let instance = &mut self.runtime.trigger_instances[instance_index as usize];
+            reset_trigger_timer(
+                instance,
+                definition,
+                self.simulation.session.binary_frame,
+                &mut self.simulation.scenario_rng,
+            );
+        }
+        all_true
+    }
+
+    fn evaluate_event_value(
+        &mut self,
+        instance_index: u32,
+        event_index: usize,
+        event: &EventCondition,
+        raised: NativeTriggerEvent,
+    ) -> bool {
+        let trigger_type_index = self.runtime.trigger_instances[instance_index as usize]
+            .trigger_type_index as usize;
+        match event.kind {
+            1 => {
+                let owner_matches = event.scalar() == -1
+                    || raised.raising_owner.is_some_and(|owner| {
+                        let Some(rules) = self.rules else {
+                            return false;
+                        };
+                        self.simulation
+                            .houses
+                            .get(&owner)
+                            .and_then(|house| house.country)
+                            .and_then(|country| {
+                                rules.country_index(self.simulation.interner.resolve(country))
+                            })
+                            .is_some_and(|country| i32::from(country.0) == event.scalar())
+                    });
+                let accepted = raised.event_id == 1
+                    && raised.object_id.is_some()
+                    && owner_matches;
+                if accepted && let Some(owner) = raised.raising_owner {
+                    self.runtime.trigger_types[trigger_type_index]
+                        .event_last_raising_owners[event_index] = Some(owner);
+                }
+                accepted
+            }
+            8 => true,
+            13 | 51 => {
+                let instance = &self.runtime.trigger_instances[instance_index as usize];
+                (self.simulation.session.binary_frame as i32)
+                    .wrapping_sub(instance.timer_start_frame)
+                    >= instance.timer_duration
+            }
+            14 => false,
+            EVENT_GLOBAL_IS_SET => {
+                let index = event.scalar();
+                (0..=49).contains(&index) && self.runtime.globals_set.contains(&(index as u32))
+            }
+            EVENT_GLOBAL_IS_CLEAR => {
+                let index = event.scalar();
+                (0..=49).contains(&index) && !self.runtime.globals_set.contains(&(index as u32))
+            }
+            EVENT_LOCAL_IS_SET => {
+                let index = event.scalar();
+                (0..=99).contains(&index) && self.runtime.locals_set.contains(&(index as u32))
+            }
+            EVENT_LOCAL_IS_CLEAR => {
+                let index = event.scalar();
+                (0..=99).contains(&index) && !self.runtime.locals_set.contains(&(index as u32))
+            }
+            EVENT_ELAPSED_SCENARIO_TIME => {
+                event.scalar()
+                    <= (self.simulation.session.binary_frame as i32)
+                        / LOGICAL_FRAMES_PER_SECOND
+            }
+            EVENT_TECHTYPE_EXISTS => event.type_name().is_some_and(|type_id| {
+                count_techtype_exact(self.simulation, self.rules, type_id)
+                    .is_some_and(|count| count >= event.scalar())
+            }),
+            EVENT_TECHTYPE_DOES_NOT_EXIST => event.type_name().is_some_and(|type_id| {
+                count_techtype_exact(self.simulation, self.rules, type_id) == Some(0)
+            }),
+            49 | 50 => raised.event_id == event.kind,
+            _ => false,
+        }
+    }
+
+    fn spring_instance(&mut self, instance_index: u32) -> NativeActionResult {
+        let Some(instance) = self.runtime.trigger_instances.get(instance_index as usize) else {
+            return NativeActionResult::False;
+        };
+        if !instance.enabled || instance.pending_delete {
+            return NativeActionResult::False;
+        }
+        let trigger_type_index = instance.trigger_type_index as usize;
+        let actions = self.program.trigger_types[trigger_type_index].actions.clone();
+        let mut result = NativeActionResult::False;
+        for action in &actions {
+            result = result.or(self.execute_action(trigger_type_index, action));
+        }
+        result
+    }
+
+    fn execute_action(
+        &mut self,
+        trigger_type_index: usize,
+        action: &crate::map::trigger_program::TypedActionDefinition,
+    ) -> NativeActionResult {
+        let scalar = match &action.materialized_operand {
+            MaterializedActionOperand::Value(value) => Some(*value),
+            MaterializedActionOperand::UnresolvedRegistry { .. } => None,
+        };
+        match action.entry.kind {
+            ACTION_FORCE_TRIGGER => {
+                let Some(target) = action
+                    .trigger_type_target
+                    .as_deref()
+                    .and_then(|id| self.program.trigger_type_index(id))
+                else {
+                    return NativeActionResult::False;
+                };
+                if self.runtime.trigger_instances.is_empty() {
+                    return NativeActionResult::False;
+                }
+                let matches = self
+                    .runtime
+                    .trigger_instances
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, instance)| {
+                        (instance.trigger_type_index as usize == target).then(|| index_u32(index))
+                    })
+                    .collect::<Vec<_>>();
+                for instance_index in matches {
+                    let _ = self.spring_instance(instance_index);
+                }
+                NativeActionResult::True
+            }
+            ACTION_SET_GLOBAL | ACTION_CLEAR_GLOBAL => {
+                let Some(index) = scalar.filter(|value| (0..=49).contains(value)) else {
+                    return NativeActionResult::False;
+                };
+                self.write_variable(true, index as u32, action.entry.kind == ACTION_SET_GLOBAL);
+                NativeActionResult::True
+            }
+            ACTION_SET_LOCAL | ACTION_CLEAR_LOCAL => {
+                let Some(index) = scalar.filter(|value| (0..=99).contains(value)) else {
+                    return NativeActionResult::False;
+                };
+                self.write_variable(false, index as u32, action.entry.kind == ACTION_SET_LOCAL);
+                NativeActionResult::True
+            }
+            ACTION_CHANGE_VISIBLE_MAP_AREA => {
+                if let Some(raw_local_size) = parse_visible_map_area(&action.entry.params) {
+                    let _ = self
+                        .simulation
+                        .change_visible_map_area(raw_local_size, self.rules);
+                }
+                NativeActionResult::True
+            }
+            ACTION_ENABLE_TRIGGER => {
+                if let Some(target) = action
+                    .trigger_type_target
+                    .as_deref()
+                    .and_then(|id| self.program.trigger_type_index(id))
+                {
+                    let difficulty = self.simulation.session.trigger_difficulty_raw;
+                    let matches = self
+                        .runtime
+                        .trigger_instances
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instance)| {
+                            (instance.trigger_type_index as usize == target)
+                                .then(|| index_u32(index))
+                        })
+                        .collect::<Vec<_>>();
+                    for instance_index in matches {
+                        let definition = &self.program.trigger_types[target];
+                        let admitted = match difficulty {
+                            0 => definition.difficulty.easy,
+                            1 => definition.difficulty.medium,
+                            2 => definition.difficulty.hard,
+                            _ => true,
+                        };
+                        if !admitted {
+                            continue;
+                        }
+                        let instance =
+                            &mut self.runtime.trigger_instances[instance_index as usize];
+                        instance.enabled = true;
+                        reset_trigger_timer(
+                            instance,
+                            definition,
+                            self.simulation.session.binary_frame,
+                            &mut self.simulation.scenario_rng,
+                        );
+                    }
+                }
+                NativeActionResult::True
+            }
+            ACTION_DISABLE_TRIGGER => {
+                if let Some(target) = action
+                    .trigger_type_target
+                    .as_deref()
+                    .and_then(|id| self.program.trigger_type_index(id))
+                {
+                    for instance in &mut self.runtime.trigger_instances {
+                        if instance.trigger_type_index as usize == target {
+                            instance.enabled = false;
+                        }
+                    }
+                }
+                NativeActionResult::True
+            }
+            ACTION_CENTER_CAMERA | ACTION_JUMP_CAMERA => {
+                if let Some(waypoint) = action.entry.waypoint_index {
+                    self.effects.push(TriggerEffect::CenterCameraAtWaypoint {
+                        waypoint,
+                        immediate: action.entry.kind == ACTION_JUMP_CAMERA,
+                    });
+                }
+                NativeActionResult::True
+            }
+            ACTION_CREATE_CRATE => {
+                let Some(data) = scalar else {
+                    return NativeActionResult::False;
+                };
+                let Some(waypoint_index) = action.entry.waypoint_index else {
+                    return NativeActionResult::False;
+                };
+                let Some(waypoint) = self.waypoints.get(&waypoint_index) else {
+                    return NativeActionResult::False;
+                };
+                let (Some(rules), Some(overlays)) = (self.rules, self.overlay_registry) else {
+                    return NativeActionResult::False;
+                };
+                let path_grid = self.simulation.path_grid_snapshot();
+                if self.simulation.place_specific_crate(
+                    rules,
+                    overlays,
+                    path_grid.as_deref(),
+                    (waypoint.rx, waypoint.ry),
+                    data,
+                ) {
+                    NativeActionResult::True
+                } else {
+                    NativeActionResult::False
+                }
+            }
+            ACTION_SET_ALTERNATE_BASE | ACTION_CLEAR_ALTERNATE_BASE => {
+                let owner = self.program.trigger_types[trigger_type_index].owner.as_deref();
+                let Some(house_id) = resolve_trigger_house(self.simulation, owner, self.rules) else {
+                    return NativeActionResult::False;
+                };
+                let cell = if action.entry.kind == ACTION_CLEAR_ALTERNATE_BASE {
+                    Some((0, 0))
+                } else {
+                    action
+                        .entry
+                        .waypoint_index
+                        .and_then(|index| self.waypoints.get(&index))
+                        .map(|waypoint| (waypoint.rx, waypoint.ry))
+                        .filter(|cell| *cell != (0, 0))
+                };
+                if let (Some(cell), Some(house)) = (cell, self.simulation.houses.get_mut(&house_id))
+                {
+                    house.alternate_base_center = cell;
+                    NativeActionResult::True
+                } else {
+                    NativeActionResult::False
+                }
+            }
+            ACTION_ANNOUNCE_WIN => {
+                self.effects.push(TriggerEffect::MissionAnnouncement {
+                    text: "Mission Accomplished".to_string(),
+                });
+                NativeActionResult::True
+            }
+            ACTION_ANNOUNCE_LOSE => {
+                self.effects.push(TriggerEffect::MissionAnnouncement {
+                    text: "Mission Failed".to_string(),
+                });
+                NativeActionResult::True
+            }
+            ACTION_END_SCENARIO => NativeActionResult::True,
+            _ => NativeActionResult::False,
+        }
+    }
+
+    fn write_variable(&mut self, global: bool, index: u32, set: bool) {
+        let changed = if global {
+            if set {
+                self.runtime.globals_set.insert(index)
+            } else {
+                self.runtime.globals_set.remove(&index)
+            }
+        } else if set {
+            self.runtime.locals_set.insert(index)
+        } else {
+            self.runtime.locals_set.remove(&index)
+        };
+        if !changed {
+            return;
+        }
+        if global {
+            self.runtime.dirty_globals.insert(index);
+        } else {
+            self.runtime.dirty_locals.insert(index);
+        }
+        let timer_instances = self
+            .runtime
+            .trigger_instances
+            .iter()
+            .enumerate()
+            .filter_map(|(instance_index, instance)| {
+                self.program.trigger_types[instance.trigger_type_index as usize]
+                    .events
+                    .iter()
+                    .any(|event| {
+                        if global {
+                            matches!(event.kind, EVENT_GLOBAL_IS_SET | EVENT_GLOBAL_IS_CLEAR)
+                                && event.scalar() == index as i32
+                        } else {
+                            matches!(event.kind, EVENT_LOCAL_IS_SET | EVENT_LOCAL_IS_CLEAR)
+                                && event.scalar() == index as i32
+                        }
+                    })
+                    .then(|| index_u32(instance_index))
+            })
+            .collect::<Vec<_>>();
+        for instance_index in timer_instances {
+            let instance = &mut self.runtime.trigger_instances[instance_index as usize];
+            let definition = &self.program.trigger_types[instance.trigger_type_index as usize];
+            reset_trigger_timer(
+                instance,
+                definition,
+                self.simulation.session.binary_frame,
+                &mut self.simulation.scenario_rng,
+            );
+        }
+    }
+
+    fn detach_supplied_sources(&mut self, tag_index: u32, event: NativeTriggerEvent) {
+        if let Some(object_id) = event.object_id
+            && self.runtime.object_tags.get(&object_id) == Some(&tag_index)
+        {
+            self.runtime.object_tags.remove(&object_id);
+            self.runtime.tags[tag_index as usize].attachment_count = self.runtime.tags
+                [tag_index as usize]
+                .attachment_count
+                .wrapping_sub(1);
+        }
+        if let Some(cell) = event.cell
+            && self.runtime.cell_tags.get(&cell) == Some(&tag_index)
+        {
+            self.runtime.cell_tags.remove(&cell);
+            let tag = &mut self.runtime.tags[tag_index as usize];
+            tag.attachment_count = tag.attachment_count.wrapping_sub(1);
+            if tag.attached_cell == Some(cell) {
+                tag.attached_cell = None;
+            }
+        }
+    }
+
+    fn expire_tag(&mut self, tag_index: u32) {
+        let tag_type_index = self.runtime.tags[tag_index as usize].tag_type_index;
+        self.runtime.object_tags.retain(|_, tag| *tag != tag_index);
+        self.runtime.cell_tags.retain(|_, tag| *tag != tag_index);
+        self.runtime.destroyed_event_tags.retain(|tag| *tag != tag_index);
+        self.runtime.polling_tags.retain(|tag| *tag != tag_index);
+        self.runtime.proximity_event_tags.retain(|tag| *tag != tag_index);
+        let tag = &mut self.runtime.tags[tag_index as usize];
+        tag.attachment_count = 0;
+        tag.attached_cell = None;
+        tag.registered = false;
+        tag.pending_finalization = true;
+        if !self.runtime.pending_tag_finalization.contains(&tag_index) {
+            self.runtime.pending_tag_finalization.push(tag_index);
+        }
+        if self.runtime.tag_by_type.get(tag_type_index as usize) == Some(&Some(tag_index)) {
+            self.runtime.tag_by_type[tag_type_index as usize] = self
+                .runtime
+                .tags
+                .iter()
+                .enumerate()
+                .find_map(|(index, tag)| {
+                    (tag.registered && tag.reusable && tag.tag_type_index == tag_type_index)
+                        .then(|| index_u32(index))
+                });
+        }
+    }
+}
+
+fn event_is_latch_eligible(kind: i32) -> bool {
+    !matches!(kind, 1 | 8 | 27 | 28 | 36 | 37 | 47 | 60 | 61)
+}
+
+fn event_sets_persistence(kind: i32) -> bool {
+    matches!(kind, 13 | 14 | 51)
+}
+
+fn count_techtype_exact(
+    sim: &Simulation,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    type_id: &str,
+) -> Option<i32> {
+    if let Some(rules) = rules {
+        let handle = rules.type_handle(type_id)?;
+        if rules.object_by_handle(handle).id != type_id {
+            return None;
+        }
+    } else if !sim
+        .substrate
+        .entities
+        .values()
+        .any(|entity| sim.interner.resolve(entity.type_ref) == type_id)
+    {
+        return None;
+    }
+    Some(sim.substrate
+        .entities
+        .keys_sorted()
+        .into_iter()
+        .rev()
+        .filter_map(|stable_id| sim.substrate.entities.get(stable_id))
+        .filter(|entity| sim.interner.resolve(entity.type_ref) == type_id)
+        .count() as i32)
 }
 
 fn reset_trigger_timer(

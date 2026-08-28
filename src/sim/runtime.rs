@@ -218,12 +218,14 @@ impl SimRuntime {
             tick_ms,
             lane,
             Some(crate::sim::world::TriggerInputs {
+                program: Some(&self.resources.trigger_program),
                 graph: &self.resources.trigger_graph,
                 triggers: &self.resources.triggers,
                 events: &self.resources.events,
                 actions: &self.resources.actions,
                 waypoints: &self.resources.waypoints,
                 rules: Some(&self.resources.rules),
+                overlay_registry: Some(&self.resources.overlay_registry),
             }),
         )
     }
