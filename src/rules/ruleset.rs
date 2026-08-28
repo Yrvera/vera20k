@@ -479,6 +479,28 @@ pub struct GeneralRules {
     /// `NavalUnitEmerge`; the native constructor's invalid Voc index is silence
     /// when the key is absent or cannot resolve.
     pub cloak_sound: Option<String>,
+    /// `[AudioVisual] YuriMindControlSound=`. The detonation caller emits it
+    /// only after a successful CaptureUnit and only when the old victim House
+    /// or controller House passes `HouseClass::IsHumanPlayer`.
+    pub yuri_mind_control_sound: Option<String>,
+    /// Global `[AudioVisual] MindClearedSound=` fallback used when the victim
+    /// type has no valid per-type override.
+    pub mind_cleared_sound: Option<String>,
+    /// `[General] ControlledAnimationType=` attached to reversible victims.
+    pub controlled_animation_type: Option<String>,
+    /// Signed `[CombatDamage] MindControlAttackLineFrames=` copied into each
+    /// native MCNode at construction.
+    pub mind_control_attack_line_frames: i32,
+    /// Source-width AI-capture fate weights. Native accepts custom vectors and
+    /// walks them in authored order rather than normalizing to four entries.
+    pub ai_capture_normal: Vec<i32>,
+    pub ai_capture_wounded: Vec<i32>,
+    pub ai_capture_low_power: Vec<i32>,
+    pub ai_capture_low_money: Vec<i32>,
+    /// Signed `[General] AICaptureLowMoneyMark=`.
+    pub ai_capture_low_money_mark: i32,
+    /// Raw binary32 `[General] AICaptureWoundedMark=` comparison threshold.
+    pub ai_capture_wounded_mark: NativeF32Bits,
     /// `IdleActionFrequency=` from `[AudioVisual]`, pre-scaled to integer ×1000.
     ///
     /// Scales how long an idle infantryman waits between fidgets: the wait is
@@ -1047,6 +1069,16 @@ impl Default for GeneralRules {
             cloaking_stages: 9,
             cloak_delay_frames: 18,
             cloak_sound: None,
+            yuri_mind_control_sound: None,
+            mind_cleared_sound: None,
+            controlled_animation_type: None,
+            mind_control_attack_line_frames: 20,
+            ai_capture_normal: vec![75, 5, 5, 15],
+            ai_capture_wounded: vec![15, 40, 40, 5],
+            ai_capture_low_power: vec![15, 5, 75, 5],
+            ai_capture_low_money: vec![15, 75, 5, 5],
+            ai_capture_low_money_mark: 2000,
+            ai_capture_wounded_mark: NativeF32Bits::from_bits(0x3e80_0000),
             idle_action_frequency_x1000: STOCK_IDLE_ACTION_FREQUENCY_X1000,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
@@ -1513,6 +1545,18 @@ impl GeneralRules {
         // and the consumer's ftol boundary chops toward zero.
         let ambient_change_rate = general.read_double("AmbientChangeRate", 0.2);
         let ambient_change_step = general.read_double("AmbientChangeStep", 0.2);
+        let parse_capture_weights = |key: &str, fallback: &[i32]| {
+            general
+                .get_list(key)
+                .map(|values| {
+                    values
+                        .into_iter()
+                        .filter_map(|value| value.trim().parse::<i32>().ok())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|values| !values.is_empty())
+                .unwrap_or_else(|| fallback.to_vec())
+        };
         Self {
             scroll_multiplier: audio_visual
                 .and_then(|s| s.get_f64("ScrollMultiplier"))
@@ -1727,6 +1771,59 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            yuri_mind_control_sound: audio_visual
+                .and_then(|s| s.get("YuriMindControlSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            mind_cleared_sound: audio_visual
+                .and_then(|s| s.get("MindClearedSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            controlled_animation_type: general
+                .get("ControlledAnimationType")
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(|s| s.to_ascii_uppercase()),
+            mind_control_attack_line_frames: combat_damage
+                .and_then(|s| s.get_i32("MindControlAttackLineFrames"))
+                .unwrap_or(defaults.mind_control_attack_line_frames),
+            ai_capture_normal: parse_capture_weights(
+                "AICaptureNormal",
+                &defaults.ai_capture_normal,
+            ),
+            ai_capture_wounded: parse_capture_weights(
+                "AICaptureWounded",
+                &defaults.ai_capture_wounded,
+            ),
+            ai_capture_low_power: parse_capture_weights(
+                "AICaptureLowPower",
+                &defaults.ai_capture_low_power,
+            ),
+            ai_capture_low_money: parse_capture_weights(
+                "AICaptureLowMoney",
+                &defaults.ai_capture_low_money,
+            ),
+            ai_capture_low_money_mark: general
+                .get_i32("AICaptureLowMoneyMark")
+                .unwrap_or(defaults.ai_capture_low_money_mark),
+            ai_capture_wounded_mark: NativeF32Bits::from_bits(
+                (general.read_double(
+                    "AICaptureWoundedMark",
+                    f32::from_bits(defaults.ai_capture_wounded_mark.bits()).into(),
+                ) as f32)
+                    .to_bits(),
+            ),
             idle_action_frequency_x1000: (audio_visual
                 .map(|s| {
                     s.read_double(

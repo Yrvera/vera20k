@@ -133,8 +133,10 @@ fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
 
 #[test]
 fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
-    let rules = RuleSet::from_ini(&IniFile::from_str(
-        "[VehicleTypes]\n0=CTRL\n1=TARGET\n\
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[General]\nControlledAnimationType=MINDANIM\n\
+         [AudioVisual]\nYuriMindControlSound=YuriCapture\nMindClearedSound=MindCleared\n\
+         [VehicleTypes]\n0=CTRL\n1=TARGET\n\
          [InfantryTypes]\n\
          [AircraftTypes]\n\
          [BuildingTypes]\n\
@@ -145,6 +147,12 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
          [CONTROLLER]\nMindControl=yes\n",
     ))
     .expect("active mind-control detonation rules");
+    let mut art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+        "[MINDANIM]\nEnd=1\nLoopEnd=1\nRate=1\n",
+    ));
+    art.bind_anim_frame_count_for_test("MINDANIM", 1);
+    rules.merge_art_data(&art);
+    rules.art_registry = art;
     let mut sim = Simulation::new();
     let controller_house = sim.interner.intern("Controller");
     let allied_house = sim.interner.intern("AlliedTarget");
@@ -164,6 +172,8 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         crate::sim::house_state::HouseState::new(allied_house, 1, None, false, 0, 10),
     );
     sim.session.house_order = vec![controller_house, allied_house];
+    sim.session.game_mode_nonzero = true;
+    sim.houses.get_mut(&controller_house).unwrap().player_control = true;
     sim.house_alliances
         .entry("CONTROLLER".to_string())
         .or_default()
@@ -215,8 +225,31 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
     assert_eq!(target.owner, controller_house);
     assert_eq!(target.health.current, target.health.max, "MC does no ordinary damage");
     assert_eq!(target.mind_control_controller_id, Some(controller_id));
+    let ring_id = target.mind_control_anim_id.expect("capture attaches MINDANIM");
+    assert_eq!(sim.anim(ring_id).unwrap().owner_entity, Some(target_id));
+    assert!(matches!(
+        sim.sound_events.as_slice(),
+        [SimSoundEvent::MindControlSound { sound_id, .. }] if sound_id == "YuriCapture"
+    ));
+    let bytes = crate::sim::snapshot::GameSnapshot::save(
+        &sim,
+        0,
+        0,
+        "mind-control-ring.map",
+        0,
+    );
+    let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+        .expect("v115 capture snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("ring reciprocal references restore");
+    let restored_target = restored.substrate.entities.get(target_id).unwrap();
+    assert_eq!(restored_target.mind_control_anim_id, Some(ring_id));
+    assert_eq!(restored.anim(ring_id).unwrap().owner_entity, Some(target_id));
     assert_eq!(
-        sim.substrate
+        restored
+            .substrate
             .entities
             .get(controller_id)
             .unwrap()
@@ -227,6 +260,8 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         vec![crate::sim::capture_manager::CaptureNodeState {
             victim_id: target_id,
             original_owner: allied_house,
+            capture_frame: 0,
+            link_visible_frames: 20,
         }]
     );
 
@@ -240,6 +275,19 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
     let released = sim.substrate.entities.get(target_id).unwrap();
     assert_eq!(released.owner, allied_house);
     assert_eq!(released.mind_control_controller_id, None);
+    assert!(released.mind_control_anim_id.is_none());
+    assert!(sim.anim(ring_id).unwrap().runtime.inactive);
+    assert!(sim.substrate.pending_delete.contains(&ring_id));
+    assert!(matches!(
+        sim.sound_events.as_slice(),
+        [
+            SimSoundEvent::MindControlSound { sound_id: capture, .. },
+            SimSoundEvent::AnimationStopped { anim_id, .. },
+            SimSoundEvent::MindControlSound { sound_id: cleared, .. },
+        ] if capture == "YuriCapture" && *anim_id == ring_id && cleared == "MindCleared"
+    ));
+    sim.process_pending_delete();
+    assert!(sim.anim(ring_id).is_none());
     assert!(
         sim.substrate
             .entities

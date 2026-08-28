@@ -987,24 +987,12 @@ impl Simulation {
     /// `world/lifecycle.rs`'s `object_get_coords_cell` and `combat`'s
     /// `target_coords` use.
     ///
-    /// Z deliberately uses the anim height-level scale
-    /// (`ANIM_HEIGHT_LEVEL_LEPTONS`, 128), NOT `Position::exact_z_leptons` and
-    /// NOT the 104-lepton `LevelHeight` the locomotor and combat use. Native
-    /// has one Z frame and this engine has two: an anim's own Z is stored in
-    /// 128-per-level units (see [`AnimWorldCoord::to_cell_sub_z`] and the anim
-    /// constructor), so the owner's Z must be converted into that same frame or
-    /// the subtraction native performs would compare two different scales.
-    /// Feeding `exact_z_leptons` in here would look more faithful and be wrong.
-    ///
-    /// The consequence, recorded rather than hidden: this reads the owner's
-    /// coarse height level only. An owner with a non-zero locomotor altitude —
-    /// a flying or falling attach target — would contribute no altitude to the
-    /// delta. No attach producer in this engine targets a moving or airborne
-    /// owner (the sole producer is building damage fire), so the term has zero
-    /// occurrences today; the first airborne-owner producer must reconcile the
-    /// two Z frames before relying on it. The attach/detach round trip is exact
-    /// regardless, because the same value is subtracted and added back.
-    fn anim_owner_coords(&self, owner_id: u64) -> Option<AnimWorldCoord> {
+    /// Z is native ObjectClass coordinate leptons. Descriptor construction from
+    /// an authored AnimType height level uses 128 per level at that separate
+    /// boundary, but owner attachment subtracts the owner's exact live Object
+    /// coordinate. This distinction becomes active for CaptureUnit rings on
+    /// airborne/moving victims.
+    pub(crate) fn anim_owner_coords(&self, owner_id: u64) -> Option<AnimWorldCoord> {
         let owner = self.substrate.entities.get(owner_id)?;
         let mut x = i32::from(owner.position.rx)
             .wrapping_mul(LEPTONS_PER_CELL)
@@ -1025,7 +1013,10 @@ impl Simulation {
         Some(AnimWorldCoord {
             x,
             y,
-            z: i32::from(owner.position.z).wrapping_mul(ANIM_HEIGHT_LEVEL_LEPTONS),
+            z: owner.position.exact_z_leptons.unwrap_or_else(|| {
+                i32::from(owner.position.z)
+                    .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
+            }),
         })
     }
 
@@ -1041,6 +1032,9 @@ impl Simulation {
                 if *slot == Some(id) {
                     *slot = None;
                 }
+            }
+            if owner.mind_control_anim_id == Some(id) {
+                owner.mind_control_anim_id = None;
             }
         }
         self.set_anim_owner_object(id, None);

@@ -662,6 +662,16 @@ pub struct GameEntity {
     /// Victim-side reciprocal controller identity (`Techno+0x2C0`).
     #[serde(default)]
     pub mind_control_controller_id: Option<u64>,
+    /// Victim-owned attached control-ring pointer (`Techno+0x2C8`). The Anim
+    /// carries the reciprocal `owner_entity`; snapshot admission validates both
+    /// sides so FreeUnit removes exactly this ring rather than searching by type.
+    #[serde(default)]
+    pub mind_control_anim_id: Option<crate::sim::anim_class::AnimId>,
+    /// FootClass `+0x68F`, written by AI capture fate action 3 before the
+    /// Bio-Reactor Enter mission. A failed search clears it. This is separate
+    /// from the RadioClass contact and destination pointers.
+    #[serde(default)]
+    pub ai_absorb_enter_pending: bool,
     /// Native temporary-transfer destination/current marker (`Techno+0x2CC`).
     /// Action 123 writes the destination House after ChangeOwner; ChangeOwner
     /// itself does not clear this pointer, so it is independent of `+0x2E0`.
@@ -1240,6 +1250,8 @@ impl GameEntity {
             being_temporally_warped_out: false,
             capture_manager: None,
             mind_control_controller_id: None,
+            mind_control_anim_id: None,
+            ai_absorb_enter_pending: false,
             temporary_owner_transfer_marker: None,
             temporary_owner_transfer_source: None,
             parasite_manager: None,

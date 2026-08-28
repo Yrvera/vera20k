@@ -470,6 +470,13 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         world_z_leptons: i32,
     },
+    /// CaptureManager positional sound. Capture success is local-human gated
+    /// by either pre-capture victim House or post-capture controller House;
+    /// FreeUnit's cleared sound is not gated.
+    MindControlSound {
+        sound_id: String,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// A base structure / harvester took enemy damage — the radar ping is
     /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
     /// result (the BridgeRepaired pattern). App gates the EVA voice to the
@@ -1178,10 +1185,27 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         borrowed_entities: &mut EntityStore,
         borrowed_occupancy: &mut OccupancyGrid,
         borrowed_interner: &mut StringInterner,
+        borrowed_scenario_rng: &mut SimRng,
+        borrowed_houses: &mut BTreeMap<InternedId, HouseState>,
+        borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
     ) -> bool {
         std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
         std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
         std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(&mut self.sim.houses, borrowed_houses);
+        let mut borrowed_sound_events = borrowed_sound_events;
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+        let target_was_human = self
+            .sim
+            .substrate
+            .entities
+            .get(target_id)
+            .is_some_and(|target| {
+                crate::sim::capture_manager::is_human_player_exact(self.sim, target.owner)
+            });
         let captured = crate::sim::capture_manager::capture_unit(
             self.sim,
             rules,
@@ -1189,6 +1213,20 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
             target_id,
             current_frame,
         );
+        if captured {
+            crate::sim::capture_manager::emit_capture_sound_after_success(
+                self.sim,
+                rules,
+                controller_id,
+                target_id,
+                target_was_human,
+            );
+        }
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+        std::mem::swap(&mut self.sim.houses, borrowed_houses);
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
         std::mem::swap(&mut self.sim.interner, borrowed_interner);
         std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
         std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);

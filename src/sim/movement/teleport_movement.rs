@@ -836,6 +836,10 @@ mod tests {
             refinery_smoke_frames: 0,
             gap_radius_in_cells: 0,
             super_gap_radius_in_cells: 0,
+            mind_control_ring_offset: 140,
+            mind_cleared_sound: None,
+            is_simple_deployer: false,
+            grinding: false,
         }
     }
 
