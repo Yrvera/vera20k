@@ -166,6 +166,386 @@ fn compile_program(body: &str) -> (crate::rules::ini_parser::IniFile, TriggerPro
 }
 
 #[test]
+fn native_executor_keeps_unowned_trigger_types_inert() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT=Neutral,<none>,T,1,1,1,1,0\n\
+         [Events]\nT=1,8,0,0\n\
+         [Actions]\nT=1,28,0,7,0,0,0,0,A\n",
+    );
+    let mut sim = Simulation::new();
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+
+    assert!(runtime.tags.is_empty());
+    assert!(runtime.trigger_instances.is_empty());
+    assert!(runtime
+        .advance_native_poll(&program, &mut sim, None, None, &HashMap::new())
+        .is_empty());
+    assert!(runtime.globals_set.is_empty());
+}
+
+#[test]
+fn false_event_one_and_events_49_50_do_not_create_persistence_or_owner() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT=Neutral,<none>,T,1,1,1,1,0\n\
+         [Tags]\nG=1,G,T\n\
+         [Events]\nT=3,1,0,-1,49,0,0,50,0,0\n",
+    );
+    let mut sim = Simulation::new();
+    let owner = sim.interner.intern("OWNER");
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan {
+            object_tag_types: vec![(10, 0), (11, 0)],
+            ..Default::default()
+        },
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let instance = runtime.tags[0].trigger_instances[0];
+
+    for event_id in [49, 50] {
+        let (fired, _) = runtime.dispatch_native_event(
+            &program,
+            &mut sim,
+            None,
+            None,
+            &HashMap::new(),
+            0,
+            NativeTriggerEvent {
+                event_id,
+                object_id: Some(10),
+                cell: None,
+                raising_owner: Some(owner),
+                data: 0,
+                editor_mode: false,
+            },
+        );
+        assert!(!fired);
+    }
+    assert_eq!(runtime.trigger_instances[instance as usize].satisfied_mask, 0);
+    assert_eq!(
+        runtime.trigger_types[0].event_last_raising_owners,
+        vec![None, None, None]
+    );
+    assert_eq!(runtime.tags[0].attachment_count, 2);
+}
+
+#[test]
+fn successful_event_one_owner_is_shared_across_distinct_tags() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT=Neutral,<none>,T,1,1,1,1,0\n\
+         [Tags]\nA=1,A,T\nB=1,B,T\n\
+         [Events]\nT=1,1,0,-1\n",
+    );
+    let mut sim = Simulation::new();
+    let owner = sim.interner.intern("OWNER");
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan {
+            object_tag_types: vec![(10, 0), (11, 0), (20, 1), (21, 1)],
+            ..Default::default()
+        },
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let event = |object_id, raising_owner| NativeTriggerEvent {
+        event_id: 1,
+        object_id: Some(object_id),
+        cell: None,
+        raising_owner,
+        data: -1,
+        editor_mode: false,
+    };
+
+    let _ = runtime.dispatch_native_event(
+        &program,
+        &mut sim,
+        None,
+        None,
+        &HashMap::new(),
+        0,
+        event(10, Some(owner)),
+    );
+    let _ = runtime.dispatch_native_event(
+        &program,
+        &mut sim,
+        None,
+        None,
+        &HashMap::new(),
+        1,
+        event(20, None),
+    );
+
+    let a_instance = runtime.tags[0].trigger_instances[0] as usize;
+    let b_instance = runtime.tags[1].trigger_instances[0] as usize;
+    assert_eq!(runtime.trigger_types[0].event_last_raising_owners, vec![Some(owner)]);
+    assert_eq!(runtime.trigger_instances[a_instance].raising_house, Some(owner));
+    assert_eq!(runtime.trigger_instances[b_instance].raising_house, Some(owner));
+    assert_eq!(runtime.tags[0].attachment_count, 1);
+    assert_eq!(runtime.tags[1].attachment_count, 1);
+}
+
+#[test]
+fn variable_write_rearms_only_instances_referencing_that_exact_index() {
+    let (_, program) = compile_program(
+        "[Triggers]\nW=Neutral,<none>,W,1,1,1,1,0\n\
+         M=Neutral,<none>,M,1,1,1,1,0\n\
+         U=Neutral,<none>,U,1,1,1,1,0\n\
+         [Tags]\nW_TAG=2,W,W\nM_TAG=2,M,M\nU_TAG=2,U,U\n\
+         [Events]\nW=1,8,0,0\nM=2,27,0,3,51,0,7\nU=2,27,0,4,51,0,7\n\
+         [Actions]\nW=1,28,0,3,0,0,0,0,A\n",
+    );
+    let mut sim = Simulation::new();
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let mut expected = sim.scenario_rng.clone();
+    let _ = expected.next_range_i32_inclusive(0, 7);
+
+    let _ = runtime.advance_native_poll(&program, &mut sim, None, None, &HashMap::new());
+    assert!(runtime.globals_set.contains(&3));
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    let after_change = sim.scenario_rng.logical_state();
+    let _ = runtime.advance_native_poll(&program, &mut sim, None, None, &HashMap::new());
+    assert_eq!(sim.scenario_rng.logical_state(), after_change);
+}
+
+#[test]
+fn repeat_zero_one_two_own_distinct_detach_and_expiry_paths() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT0=Neutral,<none>,T0,1,1,1,1,0\n\
+         T1=Neutral,<none>,T1,1,1,1,1,0\n\
+         T2=Neutral,<none>,T2,1,1,1,1,0\n\
+         [Tags]\nR0=0,R0,T0\nR1=1,R1,T1\nR2=2,R2,T2\n\
+         [Events]\nT0=1,8,0,0\nT1=1,8,0,0\nT2=1,8,0,0\n\
+         [Actions]\nT0=1,28,0,0,0,0,0,0,A\n\
+         T1=1,28,0,1,0,0,0,0,A\n\
+         T2=1,28,0,2,0,0,0,0,A\n",
+    );
+    let mut sim = Simulation::new();
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan {
+            object_tag_types: vec![(10, 0), (20, 1), (21, 1), (30, 2)],
+            ..Default::default()
+        },
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let event = |object_id| NativeTriggerEvent {
+        event_id: 13,
+        object_id: Some(object_id),
+        cell: None,
+        raising_owner: None,
+        data: 0,
+        editor_mode: false,
+    };
+
+    assert!(runtime
+        .dispatch_native_event(&program, &mut sim, None, None, &HashMap::new(), 0, event(10))
+        .0);
+    assert!(!runtime.tags[0].registered);
+    assert!(!runtime.object_tags.contains_key(&10));
+    assert!(runtime.globals_set.contains(&0));
+
+    assert!(!runtime
+        .dispatch_native_event(&program, &mut sim, None, None, &HashMap::new(), 1, event(20))
+        .0);
+    assert_eq!(runtime.tags[1].attachment_count, 1);
+    assert!(!runtime.globals_set.contains(&1));
+    assert!(runtime
+        .dispatch_native_event(&program, &mut sim, None, None, &HashMap::new(), 1, event(21))
+        .0);
+    assert!(!runtime.tags[1].registered);
+    assert!(runtime.globals_set.contains(&1));
+
+    assert!(runtime
+        .dispatch_native_event(&program, &mut sim, None, None, &HashMap::new(), 2, event(30))
+        .0);
+    assert!(runtime.tags[2].registered);
+    assert_eq!(runtime.object_tags.get(&30), Some(&2));
+    assert!(runtime.globals_set.contains(&2));
+}
+
+#[test]
+fn polling_erase_skip_and_late_finalizer_stably_remap_every_registry() {
+    let (_, program) = compile_program(
+        "[Triggers]\nA=Neutral,<none>,A,1,1,1,1,0\n\
+         B=Neutral,<none>,B,1,1,1,1,0\n\
+         C=Neutral,<none>,C,1,1,1,1,0\n\
+         [Tags]\nA_TAG=0,A,A\nB_TAG=0,B,B\nC_TAG=0,C,C\n\
+         [Events]\nA=1,8,0,0\nB=1,8,0,0\nC=1,8,0,0\n",
+    );
+    let mut sim = Simulation::new();
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+
+    let _ = runtime.advance_native_poll(&program, &mut sim, None, None, &HashMap::new());
+    assert_eq!(runtime.polling_tags, vec![1]);
+    assert_eq!(runtime.pending_tag_finalization, vec![0, 2]);
+    assert!(!runtime.tags[0].registered);
+    assert!(runtime.tags[1].registered);
+    assert!(!runtime.tags[2].registered);
+
+    runtime.finalize_pending_tags();
+    assert_eq!(runtime.tags.len(), 1);
+    assert_eq!(runtime.trigger_instances.len(), 1);
+    assert_eq!(runtime.polling_tags, vec![0]);
+    assert_eq!(runtime.tag_by_type, vec![None, Some(0), None]);
+    assert_eq!(runtime.tags[0].trigger_instances, vec![0]);
+    assert!(runtime.pending_tag_finalization.is_empty());
+}
+
+#[test]
+fn expiring_reusable_tag_never_promotes_team_no_reuse_duplicate() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT=Neutral,<none>,T,1,1,1,1,0\n\
+         [Tags]\nG=0,G,T\n\
+         [Events]\nT=1,8,0,0\n",
+    );
+    let mut sim = Simulation::new();
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let team = runtime.materialize_team_tag(
+        &program,
+        0,
+        1,
+        sim.session.binary_frame,
+        &mut sim.scenario_rng,
+    );
+    assert_eq!(team, 1);
+    assert!(!runtime.tags[team as usize].reusable);
+
+    assert!(runtime
+        .dispatch_native_event(
+            &program,
+            &mut sim,
+            None,
+            None,
+            &HashMap::new(),
+            0,
+            NativeTriggerEvent::polling(13, 0),
+        )
+        .0);
+    assert_eq!(runtime.tag_by_type[0], None);
+    runtime.finalize_pending_tags();
+    assert_eq!(runtime.tags.len(), 1);
+    assert!(!runtime.tags[0].reusable);
+    assert_eq!(runtime.tag_by_type[0], None);
+}
+
+#[test]
+fn action_22_springs_all_matching_instances_without_conditions_or_repeat_cleanup() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT=Neutral,<none>,T,1,1,1,1,0\n\
+         C=Neutral,<none>,C,1,1,1,1,0\n\
+         [Tags]\nTARGET=0,Target,T\nCONTROLLER=2,Controller,C\n\
+         [Events]\nT=1,1,0,-1\nC=1,8,0,0\n\
+         [Actions]\nT=1,28,0,9,0,0,0,0,A\n\
+         C=1,22,0,T,0,0,0,0,A\n",
+    );
+    let mut sim = Simulation::new();
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan {
+            object_tag_types: vec![(10, 0)],
+            ..Default::default()
+        },
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let target_instance = runtime.tags[0].trigger_instances[0] as usize;
+
+    let _ = runtime.advance_native_poll(&program, &mut sim, None, None, &HashMap::new());
+    assert!(runtime.globals_set.contains(&9));
+    assert!(!runtime.trigger_instances[target_instance].pending_delete);
+    assert!(runtime.tags[0].registered);
+    assert_eq!(runtime.object_tags.get(&10), Some(&0));
+}
+
+#[test]
+fn actions_53_and_54_scan_pending_instances_with_exact_timer_and_rng_rules() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT=Neutral,<none>,T,0,1,0,0,0\n\
+         E=Neutral,<none>,E,1,1,1,1,0\n\
+         D=Neutral,<none>,D,1,1,1,1,0\n\
+         [Tags]\nENABLE=2,Enable,E\nDISABLE=2,Disable,D\nX=1,X,T\nY=1,Y,T\n\
+         [Events]\nT=2,27,0,5,51,0,7\nE=1,8,0,0\nD=1,8,0,0\n\
+         [Actions]\nE=1,53,0,T,0,0,0,0,A\n\
+         D=1,54,0,T,0,0,0,0,A\n",
+    );
+    let mut sim = Simulation::new();
+    sim.session.trigger_difficulty_raw = 0;
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan {
+            object_tag_types: vec![(10, 2), (20, 3)],
+            ..Default::default()
+        },
+        0,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let targets = runtime
+        .trigger_instances
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instance)| (instance.trigger_type_index == 0).then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(targets.len(), 2);
+    runtime.trigger_instances[targets[0]].pending_delete = true;
+    for &index in &targets {
+        runtime.trigger_instances[index].satisfied_mask = u32::MAX;
+        assert!(!runtime.trigger_instances[index].enabled);
+    }
+    let mut expected = sim.scenario_rng.clone();
+    let _ = expected.next_range_i32_inclusive(0, 7);
+    let _ = expected.next_range_i32_inclusive(0, 7);
+
+    let _ = runtime.advance_native_poll(&program, &mut sim, None, None, &HashMap::new());
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    for &index in &targets {
+        let instance = &runtime.trigger_instances[index];
+        assert!(!instance.enabled, "Action54 must run after Action53");
+        assert_eq!(instance.satisfied_mask & 1, 0);
+    }
+    assert!(runtime.trigger_instances[targets[0]].pending_delete);
+}
+
+#[test]
 fn fresh_materialization_preserves_reuse_and_all_three_native_orders() {
     let (_, program) = compile_program(
         "[Triggers]\n\
@@ -188,7 +568,7 @@ fn fresh_materialization_preserves_reuse_and_all_three_native_orders() {
         // B is first and the repeated Cell setter overwrites Tag+0x30.
         cell_tag_types: vec![(2, (4, 5)), (2, (6, 7))],
         // Z then C share TriggerType definitions but own distinct instances.
-        object_tag_types: vec![0, 0, 3],
+        object_tag_types: vec![(10, 0), (11, 0), (12, 3)],
     };
     let mut rng = SimRng::new(9);
     let mut runtime = TriggerRuntime::materialize_fresh(
@@ -212,6 +592,9 @@ fn fresh_materialization_preserves_reuse_and_all_three_native_orders() {
     assert_eq!(runtime.tags[0].attached_cell, Some((6, 7)));
     assert_eq!(runtime.tags[1].attachment_count, 2);
     assert_eq!(runtime.tags[2].attachment_count, 1);
+    assert_eq!(runtime.object_tags.get(&10), Some(&1));
+    assert_eq!(runtime.object_tags.get(&11), Some(&1));
+    assert_eq!(runtime.object_tags.get(&12), Some(&2));
     assert_eq!(
         runtime.tag_by_type,
         vec![Some(1), Some(3), Some(0), Some(2), None]
@@ -274,7 +657,7 @@ fn timer_construction_spends_rng_before_explicit_difficulty_gate() {
          [Events]\nT=3,13,0,5,51,0,7,13,0,9\n",
     );
     let plan = TriggerAttachmentPlan {
-        object_tag_types: vec![0],
+        object_tag_types: vec![(1, 0)],
         ..Default::default()
     };
     let mut rng = SimRng::new(0x1234);
@@ -355,7 +738,7 @@ fn raw_celltag_plan_is_source_ordered_first_successful_and_object_order_is_spawn
 
     let plan = TriggerAttachmentPlan::from_loaded_map(&program, &map, &sim);
     assert_eq!(plan.cell_tag_types, vec![(0, (1, 1)), (1, (2, 1))]);
-    assert_eq!(plan.object_tag_types, vec![1, 0]);
+    assert_eq!(plan.object_tag_types, vec![(later_id, 1), (earlier_id, 0)]);
 }
 
 #[test]
@@ -369,7 +752,7 @@ fn mutable_native_runtime_state_hashes_but_opaque_residue_does_not() {
         &program,
         &LocalVariableMap::new(),
         &TriggerAttachmentPlan {
-            object_tag_types: vec![0],
+            object_tag_types: vec![(1, 0)],
             ..Default::default()
         },
         1,
@@ -505,12 +888,14 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
         67,
         TickLane::Ordinary,
         Some(TriggerInputs {
+            program: None,
             graph: &graph,
             triggers: &triggers,
             events: &events,
             actions: &actions,
             waypoints: &HashMap::new(),
             rules: None,
+            overlay_registry: None,
         }),
     );
 
@@ -843,12 +1228,14 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
         67,
         TickLane::Ordinary,
         Some(TriggerInputs {
+            program: None,
             graph: &graph,
             triggers: &triggers,
             events: &events,
             actions: &actions,
             waypoints: &HashMap::new(),
             rules: None,
+            overlay_registry: None,
         }),
     );
 
@@ -919,12 +1306,14 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
     let height_map = BTreeMap::new();
     let waypoints = HashMap::new();
     let trigger_inputs = TriggerInputs {
+        program: None,
         graph: &graph,
         triggers: &triggers,
         events: &events,
         actions: &actions,
         waypoints: &waypoints,
         rules: None,
+        overlay_registry: None,
     };
 
     let mut original = Simulation::new();
