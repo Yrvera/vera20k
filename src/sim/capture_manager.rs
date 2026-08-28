@@ -476,6 +476,100 @@ fn health_below_wounded_mark(
     X87Chop53::compare(ratio, mark) == X87Ordering::Less
 }
 
+fn x87_mul_f32(lhs: NativeF32Bits, rhs: NativeF32Bits) -> NativeF32Bits {
+    let lhs = X87Chop53::load_f32(lhs).expect("rules f32 multiplier is finite");
+    let rhs = X87Chop53::load_f32(rhs).expect("rules f32 multiplier is finite");
+    X87Chop53::store_f32(X87Chop53::mul(lhs, rhs))
+        .expect("active-retail cost multiplier product fits f32")
+}
+
+fn x87_ftol_i32_product(base: i32, factors: &[NativeF32Bits]) -> i32 {
+    let mut value = X87Chop53::load_i32(base);
+    for factor in factors {
+        value = X87Chop53::mul(
+            value,
+            X87Chop53::load_f32(*factor).expect("rules f32 multiplier is finite"),
+        );
+    }
+    X87Chop53::ftol_i64(value).expect("active-retail refund fits signed i32") as i32
+}
+
+/// Active-retail projection of the f32 slots rebuilt by
+/// `HouseClass::CalculateCostMultipliers @ 0x0050BF60`.
+///
+/// Retail has exactly one FactoryPlant type (`NAINDP`, UnitsCostBonus=.75), so
+/// the live owner/type filter is order-independent. Multiple custom
+/// FactoryPlant types would need the native House-owned FactoryPlant vector
+/// before their intermediate f32 stores can be claimed; tactical/BuildConst
+/// order is deliberately not substituted here.
+fn active_retail_factory_plant_bonus(
+    sim: &Simulation,
+    rules: &RuleSet,
+    owner: InternedId,
+    refunded: &ObjectType,
+) -> NativeF32Bits {
+    let mut accumulated = NativeF32Bits::ONE;
+    for &stable_id in sim.tactical_registration_order() {
+        let Some(entity) = sim.substrate.entities.get(stable_id) else {
+            continue;
+        };
+        if entity.owner != owner
+            || entity.category != EntityCategory::Structure
+            || !entity.is_object_alive()
+            || entity.lifecycle.in_limbo
+        {
+            continue;
+        }
+        let Some(factory_plant) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+            continue;
+        };
+        if factory_plant.factory_plant {
+            accumulated = x87_mul_f32(
+                accumulated,
+                factory_plant.factory_cost_bonus_for(refunded),
+            );
+        }
+    }
+    accumulated
+}
+
+/// Exact active Grinder refund leaf (`TechnoTypeClass` wrapper `0x0070ADA0`,
+/// leaf `0x00711F60`). The returned signed credits are applied to the
+/// facility's *current* House by the per-cell transaction.
+fn grinder_refund_value(
+    sim: &Simulation,
+    rules: &RuleSet,
+    refunded: &ObjectType,
+    refund_house: Option<InternedId>,
+) -> i32 {
+    let refund_percent = X87Chop53::store_f32(
+        X87Chop53::load_f64(rules.general.refund_percent)
+            .expect("Rules RefundPercent is finite binary64"),
+    )
+    .expect("Rules RefundPercent narrows to finite binary32");
+    let Some(owner) = refund_house else {
+        return x87_ftol_i32_product(refunded.cost, &[refund_percent]);
+    };
+    let Some(house) = sim.houses.get(&owner) else {
+        return x87_ftol_i32_product(refunded.cost, &[refund_percent]);
+    };
+    let country_bonus = house
+        .country
+        .map(|country| rules.country_cost_bonus(sim.interner.resolve(country), refunded))
+        .unwrap_or(NativeF32Bits::ONE);
+    if refunded.soylent != 0 {
+        return x87_ftol_i32_product(refunded.soylent, &[country_bonus]);
+    }
+
+    let accumulated = active_retail_factory_plant_bonus(sim, rules, owner, refunded);
+    let value = x87_ftol_i32_product(refunded.cost, &[accumulated, country_bonus]);
+    if house.is_controlled_by_human(sim.session.game_mode_nonzero) {
+        x87_ftol_i32_product(value, &[refund_percent])
+    } else {
+        value
+    }
+}
+
 fn fate_weights<'a>(
     sim: &Simulation,
     rules: &'a RuleSet,
@@ -961,6 +1055,124 @@ mod tests {
              [CONTROLLER]\nMindControl=yes\n",
         ))
         .expect("mind-control fixture rules")
+    }
+
+    #[test]
+    fn grinder_refund_uses_native_soylent_country_factory_and_human_branches() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[Countries]\n0=TestCountry\n[TestCountry]\nCostUnitsMult=.8\n[General]\nRefundPercent=50%\n[VehicleTypes]\n0=ZERO\n1=SOYL\n[BuildingTypes]\n0=NAINDP\n[ZERO]\nCost=1000\nSoylent=0\n[SOYL]\nCost=1000\nSoylent=250\n[NAINDP]\nFactoryPlant=yes\nUnitsCostBonus=.75\nStrength=100\n",
+        ))
+        .expect("refund fixture rules");
+        let mut sim = Simulation::new();
+        sim.session.game_mode_nonzero = true;
+        let owner = sim.interner.intern("Owner");
+        let country = sim.interner.intern("TestCountry");
+        sim.houses.insert(
+            owner,
+            HouseState::new(owner, 0, Some(country), true, 0, 10),
+        );
+        sim.session.house_order.push(owner);
+
+        let plant_id = sim.allocate_stable_id();
+        let mut plant = GameEntity::test_default(plant_id, "NAINDP", "Owner", 5, 5);
+        plant.owner = owner;
+        plant.type_ref = sim.interner.intern("NAINDP");
+        plant.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(plant);
+        let _ = sim.reveal(plant_id);
+        assert!(sim.tactical_registration_order().contains(&plant_id));
+
+        let zero = rules.object("ZERO").expect("zero-soylent type");
+        let soylent = rules.object("SOYL").expect("nonzero-soylent type");
+        assert_eq!(
+            grinder_refund_value(&sim, &rules, zero, Some(owner)),
+            300,
+            "ftol(1000 * .75 * .8)=600, then human ftol(600 * .5)=300",
+        );
+        assert_eq!(
+            grinder_refund_value(&sim, &rules, soylent, Some(owner)),
+            200,
+            "nonzero Soylent ignores FactoryPlant and RefundPercent: ftol(250 * .8)",
+        );
+        assert_eq!(
+            grinder_refund_value(&sim, &rules, zero, None),
+            500,
+            "null House uses only base Cost and narrowed RefundPercent",
+        );
+
+        let second_plant_id = sim.allocate_stable_id();
+        let mut second_plant =
+            GameEntity::test_default(second_plant_id, "NAINDP", "Owner", 6, 5);
+        second_plant.owner = owner;
+        second_plant.type_ref = sim.interner.intern("NAINDP");
+        second_plant.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(second_plant);
+        let _ = sim.reveal(second_plant_id);
+        assert!(sim.tactical_registration_order().contains(&second_plant_id));
+        assert_eq!(
+            grinder_refund_value(&sim, &rules, zero, Some(owner)),
+            225,
+            "two live NAINDP instances store .75*.75 in f32 before cost/country/refund",
+        );
+        sim.substrate
+            .entities
+            .get_mut(second_plant_id)
+            .expect("second plant")
+            .lifecycle
+            .in_limbo = true;
+
+        sim.houses.get_mut(&owner).expect("owner").is_human = false;
+        assert_eq!(
+            grinder_refund_value(&sim, &rules, zero, Some(owner)),
+            600,
+            "AI House does not apply RefundPercent",
+        );
+        sim.substrate
+            .entities
+            .get_mut(plant_id)
+            .expect("plant")
+            .lifecycle
+            .in_limbo = true;
+        assert_eq!(
+            grinder_refund_value(&sim, &rules, zero, Some(owner)),
+            800,
+            "limbo FactoryPlant is excluded from the live accumulated slot",
+        );
+    }
+
+    #[test]
+    fn grinder_refund_two_stage_ftol_preserves_native_rounding_edge() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[Countries]\n0=EdgeCountry\n[EdgeCountry]\nCostUnitsMult=.77\n[General]\nRefundPercent=91%\n[VehicleTypes]\n0=EDGE\n[BuildingTypes]\n0=EDGEPLANT\n[EDGE]\nCost=2\n[EDGEPLANT]\nFactoryPlant=yes\nUnitsCostBonus=.73\nStrength=100\n",
+        ))
+        .expect("rounding fixture rules");
+        let mut sim = Simulation::new();
+        sim.session.game_mode_nonzero = true;
+        let owner = sim.interner.intern("Owner");
+        let country = sim.interner.intern("EdgeCountry");
+        sim.houses.insert(
+            owner,
+            HouseState::new(owner, 0, Some(country), true, 0, 10),
+        );
+        let plant_id = sim.allocate_stable_id();
+        let mut plant = GameEntity::test_default(plant_id, "EDGEPLANT", "Owner", 5, 5);
+        plant.owner = owner;
+        plant.type_ref = sim.interner.intern("EDGEPLANT");
+        plant.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(plant);
+        let _ = sim.reveal(plant_id);
+        assert!(sim.tactical_registration_order().contains(&plant_id));
+
+        assert_eq!(
+            grinder_refund_value(
+                &sim,
+                &rules,
+                rules.object("EDGE").expect("edge type"),
+                Some(owner),
+            ),
+            0,
+            "ftol(2*.73*.77)=1 then ftol(1*.91)=0; one combined ftol would be 1",
+        );
     }
 
     fn capture_sim() -> (Simulation, RuleSet, [InternedId; 3], [u64; 3]) {

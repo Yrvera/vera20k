@@ -32,7 +32,7 @@ use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::terrain_rules::LandType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
-use crate::util::native_x87::NativeF64Bits;
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 
 /// Which type registry an object belongs to.
 ///
@@ -188,6 +188,10 @@ pub struct ObjectType {
     pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
+    /// Signed `TechnoTypeClass::Soylent=` refund override. Nonzero values take
+    /// the native dedicated Grinder branch and bypass both FactoryPlant and
+    /// global RefundPercent multipliers.
+    pub soylent: i32,
     /// `Explosion=` — the type's OWN death animations, one chosen at random.
     ///
     /// gamemd-derived: `UnitClass::Death_Explosion @ 0x00738680` picks
@@ -759,6 +763,14 @@ pub struct ObjectType {
     /// None for non-factory buildings/units. Data-driven replacement for
     /// hardcoded building-name checks in production queue logic.
     pub factory: Option<FactoryType>,
+    /// `FactoryPlant=yes` contributes the five category cost multipliers to
+    /// its live owner's accumulated f32 cost slots.
+    pub factory_plant: bool,
+    pub infantry_cost_bonus: NativeF32Bits,
+    pub units_cost_bonus: NativeF32Bits,
+    pub aircraft_cost_bonus: NativeF32Bits,
+    pub buildings_cost_bonus: NativeF32Bits,
+    pub defenses_cost_bonus: NativeF32Bits,
     /// Native BuildingType `WeaponsFactory=` classification used by Unit
     /// ReadyToCommence. Independent from `Factory=` and `Naval=`.
     pub weapons_factory: bool,
@@ -1203,6 +1215,22 @@ impl ObjectType {
             || self.cloning
     }
 
+    /// FactoryPlant f32 slot selected by
+    /// `HouseClass::CalculateCostMultipliers @ 0x0050BF60` for a refunded
+    /// TechnoType. The defense split is the native Unit+SpeedType::Float leaf;
+    /// Buildings always use the ordinary building slot.
+    pub(crate) fn factory_cost_bonus_for(&self, refunded: &ObjectType) -> NativeF32Bits {
+        match refunded.category {
+            ObjectCategory::Infantry => self.infantry_cost_bonus,
+            ObjectCategory::Vehicle if refunded.speed_type == SpeedType::Float => {
+                self.defenses_cost_bonus
+            }
+            ObjectCategory::Vehicle => self.units_cost_bonus,
+            ObjectCategory::Aircraft => self.aircraft_cost_bonus,
+            ObjectCategory::Building => self.buildings_cost_bonus,
+        }
+    }
+
     /// Parse an ObjectType from a rules.ini section.
     ///
     /// Missing keys get sensible defaults matching RA2's behavior.
@@ -1260,6 +1288,7 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
+            soylent: section.get_i32("Soylent").unwrap_or(0),
             explosion_anims: section
                 .get_list("Explosion")
                 .unwrap_or_default()
@@ -1602,6 +1631,22 @@ impl ObjectType {
             // `IsBaseDefense=` to BuildingType+0x1706; constructor default false.
             is_base_defense: section.get_bool("IsBaseDefense").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
+            factory_plant: section.get_bool("FactoryPlant").unwrap_or(false),
+            infantry_cost_bonus: NativeF32Bits::from_bits(
+                section.get_f32("InfantryCostBonus").unwrap_or(1.0).to_bits(),
+            ),
+            units_cost_bonus: NativeF32Bits::from_bits(
+                section.get_f32("UnitsCostBonus").unwrap_or(1.0).to_bits(),
+            ),
+            aircraft_cost_bonus: NativeF32Bits::from_bits(
+                section.get_f32("AircraftCostBonus").unwrap_or(1.0).to_bits(),
+            ),
+            buildings_cost_bonus: NativeF32Bits::from_bits(
+                section.get_f32("BuildingsCostBonus").unwrap_or(1.0).to_bits(),
+            ),
+            defenses_cost_bonus: NativeF32Bits::from_bits(
+                section.get_f32("DefensesCostBonus").unwrap_or(1.0).to_bits(),
+            ),
             weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),
             exit_coord: parse_exit_coord(section.get("ExitCoord")),
@@ -2618,6 +2663,54 @@ mod tests {
         let section: &IniSection = ini.section("GAPOWR").unwrap();
         let obj = ObjectType::from_ini_section("GAPOWR", section, ObjectCategory::Building);
         assert_eq!(obj.extra_power, 0);
+    }
+
+    #[test]
+    fn capture_fate_refund_type_inputs_parse_as_native_widths() {
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[FP]\nCost=1000\nSoylent=-17\nFactoryPlant=yes\nInfantryCostBonus=.9\nUnitsCostBonus=.75\nAircraftCostBonus=1.25\nBuildingsCostBonus=.8\nDefensesCostBonus=.6\n[INF]\nName=Infantry\n[UNIT]\nSpeedType=Track\n[DEFENSE]\nSpeedType=Float\n[AIR]\nName=Aircraft\n[BUILDING]\nName=Building\n",
+        );
+        let object = ObjectType::from_ini_section(
+            "FP",
+            ini.section("FP").expect("fixture section"),
+            ObjectCategory::Building,
+        );
+
+        assert_eq!(object.soylent, -17);
+        assert!(object.factory_plant);
+        assert_eq!(object.infantry_cost_bonus.bits(), 0.9_f32.to_bits());
+        assert_eq!(object.units_cost_bonus.bits(), 0.75_f32.to_bits());
+        assert_eq!(object.aircraft_cost_bonus.bits(), 1.25_f32.to_bits());
+        assert_eq!(object.buildings_cost_bonus.bits(), 0.8_f32.to_bits());
+        assert_eq!(object.defenses_cost_bonus.bits(), 0.6_f32.to_bits());
+        for (id, category, expected) in [
+            ("INF", ObjectCategory::Infantry, 0.9_f32),
+            ("UNIT", ObjectCategory::Vehicle, 0.75_f32),
+            ("DEFENSE", ObjectCategory::Vehicle, 0.6_f32),
+            ("AIR", ObjectCategory::Aircraft, 1.25_f32),
+            ("BUILDING", ObjectCategory::Building, 0.8_f32),
+        ] {
+            let refunded = ObjectType::from_ini_section(
+                id,
+                ini.section(id).expect("refunded fixture section"),
+                category,
+            );
+            assert_eq!(
+                object.factory_cost_bonus_for(&refunded).bits(),
+                expected.to_bits(),
+                "native FactoryPlant cost slot for {id}",
+            );
+        }
+
+        let missing = crate::rules::ini_parser::IniFile::from_str("[DEFAULT]\nName=Default\n");
+        let object = ObjectType::from_ini_section(
+            "DEFAULT",
+            missing.section("DEFAULT").expect("fixture section"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(object.soylent, 0);
+        assert!(!object.factory_plant);
+        assert_eq!(object.units_cost_bonus, NativeF32Bits::ONE);
     }
 
     #[test]

@@ -101,6 +101,19 @@ impl PassengerCargo {
         self.total_size += passenger_size;
     }
 
+    /// Native `CargoClass::AddPassenger @ 0x004733A0` single-object insertion.
+    ///
+    /// The capture-fate absorber calls this after its own Limbo transaction.
+    /// Native head-links the incoming Foot before the previous cargo head; it
+    /// does not change the FIFO convention used by unrelated Rust transport
+    /// entry. Normal capacity/SizeLimit admission has already been performed
+    /// by Building radio `0x0F`/the arrival recheck.
+    pub(crate) fn board_native_head(&mut self, stable_id: u64, passenger_size: u32) {
+        self.passengers.insert(0, stable_id);
+        self.passenger_sizes.insert(0, passenger_size);
+        self.total_size = self.total_size.saturating_add(passenger_size);
+    }
+
     /// Remove a specific passenger. Returns true if found and removed.
     pub fn disembark(&mut self, stable_id: u64) -> bool {
         if let Some(pos) = self.passengers.iter().position(|&id| id == stable_id) {
@@ -1929,6 +1942,21 @@ ConditionYellow=50%
             pax,
             "re-appended at the tail, not in sorted id position"
         );
+    }
+
+    #[test]
+    fn native_add_passenger_head_insert_does_not_change_fifo_boarding() {
+        let mut cargo = PassengerCargo::new(5, 10);
+        assert!(cargo.board(10, 1));
+        assert!(cargo.board(20, 2));
+        cargo.board_native_head(30, 3);
+
+        assert_eq!(cargo.passengers, vec![30, 10, 20]);
+        assert_eq!(cargo.passenger_sizes, vec![3, 1, 2]);
+        assert_eq!(cargo.total_size, 6);
+        assert_eq!(cargo.unload_first(), Some((30, 3)));
+        assert_eq!(cargo.unload_first(), Some((10, 1)));
+        assert_eq!(cargo.unload_first(), Some((20, 2)));
     }
 
     #[test]
