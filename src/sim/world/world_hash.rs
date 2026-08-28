@@ -854,6 +854,19 @@ impl Simulation {
                     stable_id.hash(hasher);
                 }
             }
+            if !house.grinder_building_order.is_empty()
+                || !house.absorber_building_order.is_empty()
+            {
+                b"capture-facility-house-v1".hash(hasher);
+                house.grinder_building_order.len().hash(hasher);
+                for stable_id in &house.grinder_building_order {
+                    stable_id.hash(hasher);
+                }
+                house.absorber_building_order.len().hash(hasher);
+                for stable_id in &house.absorber_building_order {
+                    stable_id.hash(hasher);
+                }
+            }
             if include_base_plan_v107 {
                 house.base_plan.percent_built.hash(hasher);
                 house.base_plan.nodes.len().hash(hasher);
@@ -1319,6 +1332,11 @@ impl Simulation {
             entity.determines_waypoint_edge.hash(hasher);
             if include_naval_build_const_v106 {
                 entity.build_const_eligible.hash(hasher);
+            }
+            if entity.grinding_facility || entity.absorber_facility {
+                b"capture-facility-profile-v1".hash(hasher);
+                entity.grinding_facility.hash(hasher);
+                entity.absorber_facility.hash(hasher);
             }
             if include_base_plan_v107 {
                 entity.base_plan_type_index.hash(hasher);

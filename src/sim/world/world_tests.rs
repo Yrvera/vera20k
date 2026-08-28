@@ -144,11 +144,15 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
     old_before.owned_building_count = 2;
     old_before.owned_unit_count = 4;
     old_before.build_const_order = vec![10, 20];
+    old_before.grinder_building_order = vec![10, 20];
+    old_before.absorber_building_order = vec![10, 20];
     let mut new_before = crate::sim::house_state::HouseState::new(
         new_owner, 1, None, false, 0, 10,
     );
     new_before.owned_building_count = 1;
     new_before.build_const_order = vec![30];
+    new_before.grinder_building_order = vec![30];
+    new_before.absorber_building_order = vec![30, 40];
     staged_before.insert(old_owner, old_before);
     staged_before.insert(new_owner, new_before);
     let ownership_before = capture_house_ownership_transaction_state(&staged_before);
@@ -159,6 +163,8 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         old.owned_building_count = 1;
         old.owned_unit_count = 3;
         old.build_const_order = vec![20];
+        old.grinder_building_order = vec![20];
+        old.absorber_building_order = vec![20];
         old.credits = -1;
     }
     {
@@ -166,6 +172,11 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         new.owned_building_count = 2;
         new.owned_unit_count = 1;
         new.build_const_order = vec![30, 10];
+        new.grinder_building_order = vec![30, 10];
+        // Stable remove/reappend of 30 deliberately changes the native tail
+        // order while transferring 10, so the combat replay must preserve
+        // both order operations rather than diffing membership alone.
+        new.absorber_building_order = vec![40, 30, 10];
         new.waypoint_edge = 3;
     }
 
@@ -175,6 +186,8 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         old.owned_building_count = 6;
         old.owned_unit_count = 9;
         old.build_const_order.push(99);
+        old.grinder_building_order.push(99);
+        old.absorber_building_order.push(99);
         old.credits = 777;
         old.grudge_scores.insert(new_owner, 42);
         old.strategy_emergency.set_state_four();
@@ -184,6 +197,8 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
         new.owned_building_count = 8;
         new.owned_unit_count = 6;
         new.build_const_order.push(77);
+        new.grinder_building_order.push(77);
+        new.absorber_building_order.push(77);
     }
 
     apply_house_ownership_transaction_delta(&mut live, &ownership_before, &staged_after);
@@ -192,6 +207,8 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
     assert_eq!(old.owned_building_count, 5);
     assert_eq!(old.owned_unit_count, 8);
     assert_eq!(old.build_const_order, vec![20, 99]);
+    assert_eq!(old.grinder_building_order, vec![20, 99]);
+    assert_eq!(old.absorber_building_order, vec![20, 99]);
     assert_eq!(old.credits, 777, "staged House replacement is forbidden");
     assert_eq!(old.grudge_scores.get(&new_owner), Some(&42));
     assert_eq!(old.strategy_emergency.mode(), 4);
@@ -199,6 +216,8 @@ fn mind_control_house_delta_preserves_independent_live_mutations() {
     assert_eq!(new.owned_building_count, 9);
     assert_eq!(new.owned_unit_count, 7);
     assert_eq!(new.build_const_order, vec![30, 77, 10]);
+    assert_eq!(new.grinder_building_order, vec![30, 77, 10]);
+    assert_eq!(new.absorber_building_order, vec![40, 77, 30, 10]);
     assert_eq!(new.waypoint_edge, 3);
 }
 
@@ -214,8 +233,8 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
          [AI]\nBuildConst=TARGET,TARGET2\n\
          [Warheads]\n0=CONTROLLER\n\
          [CTRL]\nStrength=100\nPrimary=MIND\n\
-         [TARGET]\nStrength=100\nFoundation=1x1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
-         [TARGET2]\nStrength=100\nFoundation=1x1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
+         [TARGET]\nStrength=100\nFoundation=1x1\nGrinding=yes\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
+         [TARGET2]\nStrength=100\nFoundation=1x1\nGrinding=yes\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
          [MIND]\nDamage=1\nROF=10\nRange=8\nSpeed=100\nProjectile=Invisible\nWarhead=CONTROLLER\n\
          [CONTROLLER]\nMindControl=yes\n",
     ))
@@ -286,6 +305,14 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         sim.houses[&allied_house].build_const_order,
         vec![target_id, replacement_target_id]
     );
+    assert_eq!(
+        sim.houses[&allied_house].grinder_building_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(
+        sim.houses[&allied_house].absorber_building_order,
+        vec![target_id, replacement_target_id]
+    );
     let detonation = crate::sim::projectile::ProjectileDetonation {
         projectile_id: 100,
         source_id: controller_id,
@@ -326,6 +353,16 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         vec![replacement_target_id]
     );
     assert_eq!(sim.houses[&controller_house].build_const_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&allied_house].grinder_building_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&controller_house].grinder_building_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&allied_house].absorber_building_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&controller_house].absorber_building_order, vec![target_id]);
     assert_eq!(target.health.current, target.health.max, "MC does no ordinary damage");
     assert_eq!(target.mind_control_controller_id, Some(controller_id));
     let ring_id = target.mind_control_anim_id.expect("capture attaches MINDANIM");
@@ -342,7 +379,7 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         0,
     );
     let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
-        .expect("v115 capture snapshot")
+        .expect("v116 capture snapshot")
         .sim;
     restored
         .restore_after_snapshot_load()
@@ -416,6 +453,16 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
         sim.houses[&controller_house].build_const_order,
         vec![replacement_target_id]
     );
+    assert_eq!(sim.houses[&allied_house].grinder_building_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&controller_house].grinder_building_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&allied_house].absorber_building_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&controller_house].absorber_building_order,
+        vec![replacement_target_id]
+    );
     assert_eq!(
         sim.substrate
             .entities
@@ -453,6 +500,14 @@ fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
     assert!(sim.houses[&controller_house].build_const_order.is_empty());
     assert_eq!(
         sim.houses[&allied_house].build_const_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(
+        sim.houses[&allied_house].grinder_building_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(
+        sim.houses[&allied_house].absorber_building_order,
         vec![target_id, replacement_target_id]
     );
     assert_eq!(released.mind_control_controller_id, None);

@@ -291,16 +291,28 @@ fn entity_distance(sim: &Simulation, lhs: u64, rhs: u64) -> Option<i32> {
     ))
 }
 
+#[derive(Clone, Copy)]
+enum HouseCaptureFacilityVector {
+    Grinder,
+    Absorber,
+}
+
 fn nearest_owned_building(
     sim: &Simulation,
     rules: &RuleSet,
     victim_id: u64,
+    vector: HouseCaptureFacilityVector,
     accepts: impl Fn(&Simulation, &ObjectType, u64, u64) -> bool,
 ) -> Option<u64> {
     let owner = sim.substrate.entities.get(victim_id)?.owner;
+    let house = sim.houses.get(&owner)?;
+    let facility_order = match vector {
+        HouseCaptureFacilityVector::Grinder => &house.grinder_building_order,
+        HouseCaptureFacilityVector::Absorber => &house.absorber_building_order,
+    };
     let mut best = None;
     let mut best_distance = i32::MAX;
-    for &candidate_id in sim.tactical_registration_order().iter().rev() {
+    for &candidate_id in facility_order.iter().rev() {
         let Some(candidate) = sim.substrate.entities.get(candidate_id) else {
             continue;
         };
@@ -611,7 +623,13 @@ fn decide_unit_fate(
             hunt(sim, victim_id, current_frame);
         }
         2 if victim_category != EntityCategory::Structure => {
-            let grinder = nearest_owned_building(sim, rules, victim_id, |_, object, _, _| object.grinding);
+            let grinder = nearest_owned_building(
+                sim,
+                rules,
+                victim_id,
+                HouseCaptureFacilityVector::Grinder,
+                |_, object, _, _| object.grinding,
+            );
             if let Some(grinder_id) = grinder {
                 if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
                     crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
@@ -625,9 +643,15 @@ fn decide_unit_fate(
             }
         }
         3 if victim_category != EntityCategory::Structure => {
-            let absorber = nearest_owned_building(sim, rules, victim_id, |sim, object, victim, building| {
-                building_can_enter_absorber(sim, rules, object, victim, building)
-            });
+            let absorber = nearest_owned_building(
+                sim,
+                rules,
+                victim_id,
+                HouseCaptureFacilityVector::Absorber,
+                |sim, object, victim, building| {
+                    building_can_enter_absorber(sim, rules, object, victim, building)
+                },
+            );
             if let Some(absorber_id) = absorber {
                 let should_retarget = sim.substrate.entities.get(victim_id).is_some_and(|victim| {
                     victim.radio_contacts.slot(0) != Some(absorber_id)
@@ -1621,7 +1645,7 @@ mod tests {
     }
 
     #[test]
-    fn facility_selection_uses_reverse_registration_and_native_3d_ties() {
+    fn facility_selection_uses_house_vector_tail_and_native_3d_ties() {
         let (mut sim, rules, _, victim_id, older_id) = absorber_gate_sim("", "");
         let newer_id = sim
             .spawn_object("BIO", "Owner", 4, 5, 0, &rules, &Default::default())
@@ -1631,23 +1655,91 @@ mod tests {
         victim.position.sub_y = crate::util::fixed_math::SimFixed::from_num(128);
 
         assert_eq!(
-            nearest_owned_building(&sim, &rules, victim_id, |_, object, _, _| object.grinding),
-            Some(newer_id),
-            "strict-less ties preserve the first reverse-registration candidate"
+            sim.houses[&victim.owner].grinder_building_order,
+            vec![older_id, newer_id]
         );
         assert_eq!(
-            nearest_owned_building(&sim, &rules, victim_id, |sim, object, victim, building| {
-                building_can_enter_absorber(sim, &rules, object, victim, building)
-            }),
+            sim.houses[&victim.owner].absorber_building_order,
+            vec![older_id, newer_id]
+        );
+        // Native does not consume the global Logic/Techno registration order
+        // here. Deliberately make its reverse order choose `older_id`; the
+        // House's separate facility-vector tail must still win the exact tie.
+        sim.set_logic_order_for_test(vec![victim_id, newer_id, older_id]);
+
+        assert_eq!(
+            nearest_owned_building(
+                &sim,
+                &rules,
+                victim_id,
+                HouseCaptureFacilityVector::Grinder,
+                |_, object, _, _| object.grinding,
+            ),
+            Some(newer_id),
+            "strict-less ties preserve the first House-vector tail candidate"
+        );
+        assert_eq!(
+            nearest_owned_building(
+                &sim,
+                &rules,
+                victim_id,
+                HouseCaptureFacilityVector::Absorber,
+                |sim, object, victim, building| {
+                    building_can_enter_absorber(sim, &rules, object, victim, building)
+                },
+            ),
             Some(newer_id),
         );
 
         sim.substrate.entities.get_mut(newer_id).unwrap().position.exact_z_leptons = Some(2_000);
         assert_eq!(
-            nearest_owned_building(&sim, &rules, victim_id, |_, object, _, _| object.grinding),
+            nearest_owned_building(
+                &sim,
+                &rules,
+                victim_id,
+                HouseCaptureFacilityVector::Grinder,
+                |_, object, _, _| object.grinding,
+            ),
             Some(older_id),
             "native Distance3D includes Z before whole-lepton strict comparison"
         );
+    }
+
+    #[test]
+    fn capture_facility_vectors_follow_limbo_reveal_and_change_owner() {
+        let (mut sim, rules, owner, _victim_id, older_id) = absorber_gate_sim("", "");
+        let newer_id = sim
+            .spawn_object("BIO", "Owner", 4, 5, 0, &rules, &Default::default())
+            .unwrap();
+        let other_owner = sim.interner.intern("OtherOwner");
+        sim.houses.insert(
+            other_owner,
+            crate::sim::house_state::HouseState::new(other_owner, 1, None, false, 0, 10),
+        );
+
+        assert_eq!(sim.houses[&owner].grinder_building_order, vec![older_id, newer_id]);
+        assert_eq!(sim.techno_limbo(older_id), crate::sim::world::ConcealOutcome::Concealed);
+        assert_eq!(sim.houses[&owner].grinder_building_order, vec![newer_id]);
+        assert_eq!(sim.houses[&owner].absorber_building_order, vec![newer_id]);
+
+        assert!(matches!(
+            sim.reveal(older_id),
+            crate::sim::world::RevealOutcome::Revealed { .. }
+        ));
+        assert_eq!(sim.houses[&owner].grinder_building_order, vec![newer_id, older_id]);
+        assert_eq!(sim.houses[&owner].absorber_building_order, vec![newer_id, older_id]);
+
+        sim.change_owner_with_rules(older_id, other_owner, &rules);
+        assert_eq!(sim.houses[&owner].grinder_building_order, vec![newer_id]);
+        assert_eq!(sim.houses[&owner].absorber_building_order, vec![newer_id]);
+        assert_eq!(sim.houses[&other_owner].grinder_building_order, vec![older_id]);
+        assert_eq!(sim.houses[&other_owner].absorber_building_order, vec![older_id]);
+
+        sim.change_owner_with_rules(older_id, owner, &rules);
+        assert!(sim.houses[&other_owner].grinder_building_order.is_empty());
+        assert!(sim.houses[&other_owner].absorber_building_order.is_empty());
+        assert_eq!(sim.houses[&owner].grinder_building_order, vec![newer_id, older_id]);
+        assert_eq!(sim.houses[&owner].absorber_building_order, vec![newer_id, older_id]);
     }
 
     #[test]
