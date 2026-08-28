@@ -5,6 +5,7 @@ use crate::map::actions::MapAction;
 use crate::map::entities::EntityCategory;
 use crate::map::events::MapEvent;
 use crate::map::trigger_graph::build_trigger_graph;
+use crate::map::trigger_program::TriggerProgram;
 use crate::map::triggers::{MapTrigger, TriggerDifficulty};
 use crate::map::variable_names::{LocalVariable, LocalVariableMap};
 use crate::sim::game_entity::GameEntity;
@@ -148,6 +149,243 @@ fn spawn_type(sim: &mut Simulation, type_id: &str) -> u64 {
     );
     sim.substrate.entities.insert(ge);
     sid
+}
+
+fn compile_program(body: &str) -> (crate::rules::ini_parser::IniFile, TriggerProgram) {
+    use crate::map::{actions, events, tags, triggers};
+    let ini = crate::rules::ini_parser::IniFile::from_str(body);
+    let program = TriggerProgram::compile(
+        &ini,
+        &tags::parse_tags(&ini),
+        &triggers::parse_triggers(&ini),
+        &events::parse_events(&ini),
+        &actions::parse_actions(&ini),
+    )
+    .expect("typed trigger program");
+    (ini, program)
+}
+
+#[test]
+fn fresh_materialization_preserves_reuse_and_all_three_native_orders() {
+    let (_, program) = compile_program(
+        "[Triggers]\n\
+         T0=Neutral,T1,T0,1,1,1,1,0\n\
+         T1=Neutral,<none>,T1,1,1,1,1,0\n\
+         TB=Neutral,<none>,TB,1,1,1,1,0\n\
+         TA=Neutral,<none>,TA,1,1,1,1,0\n\
+         [Tags]\n\
+         Z=0,Z,T0\n\
+         A=0,A,TA\n\
+         B=0,B,TB\n\
+         C=0,C,T0\n\
+         D=0,D,<none>\n\
+         [Events]\n\
+         T0=1,29,0,0\n\
+         TB=1,13,0,3\n\
+         TA=1,8,0,0\n",
+    );
+    let plan = TriggerAttachmentPlan {
+        // B is first and the repeated Cell setter overwrites Tag+0x30.
+        cell_tag_types: vec![(2, (4, 5)), (2, (6, 7))],
+        // Z then C share TriggerType definitions but own distinct instances.
+        object_tag_types: vec![0, 0, 3],
+    };
+    let mut rng = SimRng::new(9);
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &plan,
+        1,
+        77,
+        &mut rng,
+    );
+
+    assert_eq!(
+        runtime
+            .tags
+            .iter()
+            .map(|tag| program.tag_types[tag.tag_type_index as usize].id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["B", "Z", "C", "A"]
+    );
+    assert_eq!(runtime.tags[0].attachment_count, 2);
+    assert_eq!(runtime.tags[0].attached_cell, Some((6, 7)));
+    assert_eq!(runtime.tags[1].attachment_count, 2);
+    assert_eq!(runtime.tags[2].attachment_count, 1);
+    assert_eq!(
+        runtime.tag_by_type,
+        vec![Some(1), Some(3), Some(0), Some(2), None]
+    );
+
+    assert_eq!(
+        runtime
+            .trigger_instances
+            .iter()
+            .map(|instance| {
+                program.trigger_types[instance.trigger_type_index as usize]
+                    .id
+                    .as_str()
+            })
+            .collect::<Vec<_>>(),
+        vec!["TB", "T0", "T1", "T0", "T1", "TA"]
+    );
+    assert_eq!(runtime.tags[1].trigger_instances, vec![2, 1]);
+    assert_eq!(runtime.trigger_instances[2].next, Some(1));
+    assert_eq!(runtime.tags[2].trigger_instances, vec![4, 3]);
+    assert_eq!(runtime.destroyed_event_tags, vec![3]);
+    assert_eq!(runtime.polling_tags, vec![3, 0]);
+    assert_eq!(runtime.proximity_event_tags, vec![3, 0]);
+    assert_eq!(runtime.cell_tags.get(&(4, 5)), Some(&0));
+    assert_eq!(runtime.cell_tags.get(&(6, 7)), Some(&0));
+    assert_eq!(runtime.trigger_types[0].event_last_raising_owners.len(), 1);
+    assert_eq!(runtime.trigger_instances[1].trigger_type_index, 0);
+    assert_eq!(runtime.trigger_instances[3].trigger_type_index, 0);
+    let shared_owner = InternedId::from_index(9);
+    runtime.trigger_types[0].event_last_raising_owners[0] = Some(shared_owner);
+    assert_eq!(
+        runtime.trigger_types[runtime.trigger_instances[1].trigger_type_index as usize]
+            .event_last_raising_owners[0],
+        Some(shared_owner)
+    );
+    assert_eq!(
+        runtime.trigger_types[runtime.trigger_instances[3].trigger_type_index as usize]
+            .event_last_raising_owners[0],
+        Some(shared_owner)
+    );
+
+    let team_tag = runtime.materialize_team_tag(&program, 0, 1, 77, &mut rng);
+    assert_eq!(team_tag, 4);
+    assert_eq!(
+        runtime.tag_by_type[0],
+        Some(1),
+        "Team must not replace reuse owner"
+    );
+    assert_eq!(
+        runtime.tags[team_tag as usize].trigger_instances,
+        vec![7, 6]
+    );
+}
+
+#[test]
+fn timer_construction_spends_rng_before_explicit_difficulty_gate() {
+    let (_, program) = compile_program(
+        "[Triggers]\nT=Neutral,<none>,T,1,0,1,0,0\n\
+         [Tags]\nG=0,G,T\n\
+         [Events]\nT=3,13,0,5,51,0,7,13,0,9\n",
+    );
+    let plan = TriggerAttachmentPlan {
+        object_tag_types: vec![0],
+        ..Default::default()
+    };
+    let mut rng = SimRng::new(0x1234);
+    let mut expected = rng.clone();
+    let _ = expected.next_range_i32_inclusive(0, 7);
+    let runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &plan,
+        0,
+        0x8000_0001,
+        &mut rng,
+    );
+    let instance = &runtime.trigger_instances[0];
+    assert_eq!(rng.logical_state(), expected.logical_state());
+    assert!(!instance.enabled, "raw Easy uses the explicit Easy flag");
+    assert_eq!(instance.timer_start_frame, 0x8000_0001u32 as i32);
+    // Runtime Event order is reverse textual order: 13(9), 51(7), 13(5).
+    assert_eq!(instance.timer_duration, 75);
+    assert_eq!(instance.opaque_timer_word, 0);
+
+    for (raw, enabled) in [(1, true), (2, false), (-1, true), (3, true)] {
+        let mut candidate_rng = SimRng::new(0x1234);
+        let candidate = TriggerRuntime::materialize_fresh(
+            &program,
+            &LocalVariableMap::new(),
+            &plan,
+            raw,
+            0,
+            &mut candidate_rng,
+        );
+        assert_eq!(candidate.trigger_instances[0].enabled, enabled, "raw {raw}");
+    }
+}
+
+#[test]
+fn raw_celltag_plan_is_source_ordered_first_successful_and_object_order_is_spawned() {
+    use crate::map::map_file::MapCell;
+    use crate::map::rmg::{emit::empty_map_file, options::RmgOptions};
+
+    let body = "[Triggers]\nTA=Neutral,<none>,TA,1,1,1,1,0\nTB=Neutral,<none>,TB,1,1,1,1,0\n\
+                [Tags]\nA=0,A,TA\nB=0,B,TB\n\
+                [CellTags]\n0001001=MISSING\n1001=A\n1002=B\n1003=A\n";
+    let (ini, program) = compile_program(body);
+    let mut map = empty_map_file(&RmgOptions::default(), 2, 2);
+    map.ini = ini;
+    map.cells = vec![
+        MapCell {
+            rx: 1,
+            ry: 1,
+            tile_index: 0,
+            sub_tile: 0,
+            z: 0,
+        },
+        MapCell {
+            rx: 2,
+            ry: 1,
+            tile_index: 0,
+            sub_tile: 0,
+            z: 0,
+        },
+    ];
+    let mut sim = Simulation::new();
+    let later_id = spawn_type(&mut sim, "LATER");
+    let earlier_id = spawn_type(&mut sim, "EARLIER");
+    let tag_b = sim.interner.intern("B");
+    let tag_a = sim.interner.intern("A");
+    sim.substrate
+        .entities
+        .get_mut(later_id)
+        .unwrap()
+        .attached_tag_id = Some(tag_b);
+    sim.substrate
+        .entities
+        .get_mut(earlier_id)
+        .unwrap()
+        .attached_tag_id = Some(tag_a);
+
+    let plan = TriggerAttachmentPlan::from_loaded_map(&program, &map, &sim);
+    assert_eq!(plan.cell_tag_types, vec![(0, (1, 1)), (1, (2, 1))]);
+    assert_eq!(plan.object_tag_types, vec![1, 0]);
+}
+
+#[test]
+fn mutable_native_runtime_state_hashes_but_opaque_residue_does_not() {
+    use std::collections::hash_map::DefaultHasher;
+
+    let (_, program) =
+        compile_program("[Triggers]\nT=Neutral,<none>,T,1,1,1,1,0\n[Tags]\nG=0,G,T\n");
+    let mut rng = SimRng::new(1);
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan {
+            object_tag_types: vec![0],
+            ..Default::default()
+        },
+        1,
+        0,
+        &mut rng,
+    );
+    let hash = |runtime: &TriggerRuntime| {
+        let mut hasher = DefaultHasher::new();
+        runtime.hash_state(&mut hasher);
+        hasher.finish()
+    };
+    let baseline = hash(&runtime);
+    runtime.trigger_instances[0].opaque_timer_word = i32::MIN;
+    assert_eq!(hash(&runtime), baseline);
+    runtime.trigger_instances[0].satisfied_mask = 1;
+    assert_ne!(hash(&runtime), baseline);
 }
 
 #[test]

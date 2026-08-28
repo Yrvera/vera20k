@@ -86,6 +86,12 @@ pub enum LoadingStartup {
     Generic {
         selected_map_file: String,
     },
+    /// Campaign launch authority. The signed value is the exact DAT_A8EB64
+    /// word copied into ScenarioClass+0x60C; no normalization occurs here.
+    Campaign {
+        selected_map_file: String,
+        trigger_difficulty_raw: i32,
+    },
 }
 
 impl LoadingStartup {
@@ -96,6 +102,9 @@ impl LoadingStartup {
                 session.selected_map_file.as_deref().unwrap_or("auto")
             }
             Self::Generic { selected_map_file } => selected_map_file,
+            Self::Campaign {
+                selected_map_file, ..
+            } => selected_map_file,
         }
     }
 
@@ -103,14 +112,14 @@ impl LoadingStartup {
         match self {
             Self::Accepted(startup) => Some(startup.session.launch_session()),
             Self::UnverifiedLegacy { session, .. } => Some(session),
-            Self::Generic { .. } => None,
+            Self::Generic { .. } | Self::Campaign { .. } => None,
         }
     }
 
     pub fn accepted(&self) -> Option<&PreparedMatchStartup> {
         match self {
             Self::Accepted(startup) => Some(startup),
-            Self::UnverifiedLegacy { .. } | Self::Generic { .. } => None,
+            Self::UnverifiedLegacy { .. } | Self::Generic { .. } | Self::Campaign { .. } => None,
         }
     }
 
@@ -118,7 +127,28 @@ impl LoadingStartup {
         match self {
             Self::Accepted(startup) => startup.seed.value,
             Self::UnverifiedLegacy { seed, .. } => seed.value,
-            Self::Generic { .. } => unverified_fallback(),
+            Self::Generic { .. } | Self::Campaign { .. } => unverified_fallback(),
+        }
+    }
+
+    /// Exact signed Scenario Trigger difficulty selected before sim bootstrap.
+    pub fn trigger_difficulty_raw(&self) -> i32 {
+        match self {
+            Self::Accepted(startup) => {
+                startup
+                    .session
+                    .launch_session()
+                    .options
+                    .default_ai_difficulty
+            }
+            Self::UnverifiedLegacy { session, .. } => session.options.default_ai_difficulty,
+            Self::Campaign {
+                trigger_difficulty_raw,
+                ..
+            } => *trigger_difficulty_raw,
+            // Internal/debug generic loading has no launch owner and retains
+            // ScenarioClass::Set_Defaults' Medium word.
+            Self::Generic { .. } => 1,
         }
     }
 
@@ -656,6 +686,38 @@ mod tests {
             assert_eq!(simulation.rng_state().main, expected_rng);
             assert_eq!(simulation.rng_state().mapgen, expected_mapgen);
         }
+    }
+
+    #[test]
+    fn trigger_difficulty_bootstrap_preserves_offline_and_campaign_raw_authorities() {
+        for raw in [0, 1, 2, -7, i32::MAX, i32::MIN] {
+            let mut session = explicit_session();
+            session.options.default_ai_difficulty = raw;
+            let offline = LoadingStartup::UnverifiedLegacy {
+                session,
+                seed: MatchSeed {
+                    value: 1,
+                    source: MatchSeedSource::Controlled,
+                    seed_authority_certifying: true,
+                },
+            };
+            assert_eq!(offline.trigger_difficulty_raw(), raw);
+        }
+
+        for raw in [0, 1, 2] {
+            let campaign = LoadingStartup::Campaign {
+                selected_map_file: "ALL01UMD.MAP".to_string(),
+                trigger_difficulty_raw: raw,
+            };
+            assert_eq!(campaign.trigger_difficulty_raw(), raw);
+        }
+        assert_eq!(
+            LoadingStartup::Generic {
+                selected_map_file: "fixture.map".to_string(),
+            }
+            .trigger_difficulty_raw(),
+            1,
+        );
     }
 
     #[test]

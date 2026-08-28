@@ -66,6 +66,7 @@ pub(crate) fn fallback_map_load_result() -> init::MapLoadResult {
             events: HashMap::new(),
             actions: HashMap::new(),
             trigger_graph: TriggerGraph::default(),
+            trigger_program: Default::default(),
             trigger_runtime: TriggerRuntime::default(),
             overlay_registry: OverlayTypeRegistry::empty(),
             house_roster: HouseRoster::default(),
@@ -135,6 +136,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             terrain_template: result.scenario.resolved_terrain,
             rules,
             trigger_graph: result.scenario.trigger_graph,
+            trigger_program: result.scenario.trigger_program,
             triggers: result.scenario.triggers,
             events: result.scenario.events,
             actions: result.scenario.actions,
@@ -481,7 +483,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                 }
             }
             crate::match_bootstrap::LoadingStartup::UnverifiedLegacy { .. }
-            | crate::match_bootstrap::LoadingStartup::Generic { .. } => {
+            | crate::match_bootstrap::LoadingStartup::Generic { .. }
+            | crate::match_bootstrap::LoadingStartup::Campaign { .. } => {
                 state.frontend.active_loading_correlation = None;
                 state.frontend.loaded_startup = None;
                 state.frontend.rust_l0_receipt = None;
