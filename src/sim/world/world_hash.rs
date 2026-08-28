@@ -808,6 +808,10 @@ impl Simulation {
             house.spy_sat_active.hash(hasher);
             house.owned_building_count.hash(hasher);
             house.owned_unit_count.hash(hasher);
+            if house.tracked_infantry_count != 0 {
+                b"house-tracked-infantry-v1".hash(hasher);
+                house.tracked_infantry_count.hash(hasher);
+            }
             house.tech_level.hash(hasher);
             hash_house_ai_activation_fields(
                 house,
@@ -1737,6 +1741,12 @@ impl Simulation {
             }
             if entity.ai_absorb_enter_pending {
                 14u8.hash(hasher);
+            }
+            if entity.infantry_house_tracked {
+                15u8.hash(hasher);
+            }
+            if entity.infantry_absorber_occupant {
+                16u8.hash(hasher);
             }
             // Techno+0x2CC marker and +0x2E0 source are independent House
             // pointers: ChangeOwner clears the latter but not the former.

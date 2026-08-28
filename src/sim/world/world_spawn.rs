@@ -1463,6 +1463,7 @@ impl Simulation {
 
         self.substrate.entities.insert(ge);
         self.increment_owned_count(&owner, category);
+        self.add_infantry_tracking_once(stable_id);
         stable_id
     }
 

@@ -1172,6 +1172,7 @@ fn dispatch_smudge_inline(
 struct HouseOwnershipTransactionState {
     owned_building_count: u32,
     owned_unit_count: u32,
+    tracked_infantry_count: u32,
     build_const_order: Vec<u64>,
     grinder_building_order: Vec<u64>,
     absorber_building_order: Vec<u64>,
@@ -1189,6 +1190,7 @@ fn capture_house_ownership_transaction_state(
                 HouseOwnershipTransactionState {
                     owned_building_count: house.owned_building_count,
                     owned_unit_count: house.owned_unit_count,
+                    tracked_infantry_count: house.tracked_infantry_count,
                     build_const_order: house.build_const_order.clone(),
                     grinder_building_order: house.grinder_building_order.clone(),
                     absorber_building_order: house.absorber_building_order.clone(),
@@ -1266,6 +1268,11 @@ fn apply_house_ownership_transaction_delta(
             &mut live_house.owned_unit_count,
             before_house.owned_unit_count,
             after_house.owned_unit_count,
+        );
+        apply_owned_count_delta(
+            &mut live_house.tracked_infantry_count,
+            before_house.tracked_infantry_count,
+            after_house.tracked_infantry_count,
         );
 
         apply_stable_order_delta(
@@ -4790,6 +4797,48 @@ impl Simulation {
         }
     }
 
+    /// HouseClass::Add_Tracking's Infantry-count leaf. The distinct absorber
+    /// occupant byte suppresses re-add even while the object has successfully
+    /// returned from Limbo; Building unload owns the later one-shot restore.
+    pub(crate) fn add_infantry_tracking_once(&mut self, stable_id: u64) -> bool {
+        let Some(owner) = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Infantry
+                && !entity.infantry_house_tracked
+                && !entity.infantry_absorber_occupant)
+                .then_some(entity.owner)
+        }) else {
+            return false;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return false;
+        };
+        house.tracked_infantry_count = house.tracked_infantry_count.wrapping_add(1);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.infantry_house_tracked = true;
+        }
+        true
+    }
+
+    /// Remove one Infantry tracking contribution without changing Techno
+    /// ownership. Bio Reactor PerCell runs this only after its Limbo call.
+    pub(crate) fn remove_infantry_tracking_once(&mut self, stable_id: u64) -> bool {
+        let Some(owner) = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Infantry && entity.infantry_house_tracked)
+                .then_some(entity.owner)
+        }) else {
+            return false;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return false;
+        };
+        // Native is a 32-bit SUB, not a saturating bookkeeping operation.
+        house.tracked_infantry_count = house.tracked_infantry_count.wrapping_sub(1);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.infantry_house_tracked = false;
+        }
+        true
+    }
+
     /// Append one successfully placed special Building to the exact native
     /// House vectors consumed by CaptureManager DecideUnitFate. The immutable
     /// type-membership bits live on GameEntity so rule-less re-entry can
@@ -4897,13 +4946,14 @@ impl Simulation {
         rules: Option<&RuleSet>,
         transient_capture_controller: Option<u64>,
     ) {
-        let Some((old_owner, category, has_spawn_manager, build_const_eligible)) =
+        let Some((old_owner, category, has_spawn_manager, build_const_eligible, infantry_tracked)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.owner,
                     entity.category,
                     entity.spawn_manager.is_some(),
                     entity.build_const_eligible,
+                    entity.infantry_house_tracked,
                 )
             })
         else {
@@ -4945,6 +4995,9 @@ impl Simulation {
         }
         self.remove_capture_facilities_from_owner(stable_id);
         self.decrement_owned_count(&old_owner_name, category);
+        if infantry_tracked && let Some(house) = self.houses.get_mut(&old_owner) {
+            house.tracked_infantry_count = house.tracked_infantry_count.wrapping_sub(1);
+        }
         // `TechnoClass::ChangeOwner` runs the live-detach targeting sweep next,
         // before the house swap: everything shooting at this object is released
         // while the object still belongs to its old house. Engineer capture and
@@ -4962,6 +5015,9 @@ impl Simulation {
             entity.temporary_owner_transfer_source = None;
         }
         self.increment_owned_count(&new_owner_name, category);
+        if infantry_tracked && let Some(house) = self.houses.get_mut(&new_owner) {
+            house.tracked_infantry_count = house.tracked_infantry_count.wrapping_add(1);
+        }
         if build_const_eligible
             && let Some(house) = self.houses.get_mut(&new_owner)
             && !house.build_const_order.contains(&stable_id)

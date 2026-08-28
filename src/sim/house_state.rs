@@ -324,6 +324,11 @@ pub struct HouseState {
     pub owned_building_count: u32,
     /// Running count of owned non-building units. Updated on spawn/despawn.
     pub owned_unit_count: u32,
+    /// Native `HouseClass+0x2F4` Infantry tracking count. This is independent
+    /// of the aggregate non-building ownership count above: Bio Reactor
+    /// occupants temporarily leave this count while remaining owned Techno.
+    #[serde(default)]
+    pub tracked_infantry_count: u32,
     /// Initial base location (MCV deploy point or first ConYard).
     pub base_center: Option<(u16, u16)>,
     /// Alternate base-placement cell written by trigger actions 137/138.
@@ -625,6 +630,7 @@ impl HouseState {
             spy_sat_active: false,
             owned_building_count: 0,
             owned_unit_count: 0,
+            tracked_infantry_count: 0,
             base_center: None,
             alternate_base_center: (0, 0),
             build_const_order: Vec::new(),

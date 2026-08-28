@@ -1056,6 +1056,7 @@ mod tests {
         building.foundation = "2x2".to_string();
         building.owner = facility_owner;
         building.type_ref = sim.interner.intern("BIO");
+        building.absorber_facility = true;
         building.passenger_role = PassengerRole::Transport {
             cargo: crate::sim::passenger::PassengerCargo::new(5, 15),
         };
@@ -1077,6 +1078,8 @@ mod tests {
             transport_id: building_id,
         };
         passenger.ai_absorb_enter_pending = true;
+        passenger.infantry_absorber_occupant = true;
+        passenger.infantry_house_tracked = false;
         sim.substrate.entities.insert(passenger);
 
         (facility_owner, passenger_owner)
@@ -1366,6 +1369,9 @@ mod tests {
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
         assert!(!passenger.lifecycle.in_limbo);
         assert!(!passenger.ai_absorb_enter_pending);
+        assert!(!passenger.infantry_absorber_occupant);
+        assert!(passenger.infantry_house_tracked);
+        assert_eq!(sim.houses[&passenger_owner].tracked_infantry_count, 1);
     }
 
     #[test]
@@ -1408,6 +1414,16 @@ mod tests {
         assert!(
             passenger.ai_absorb_enter_pending,
             "raw AI House retains Foot+0x68F after absorber exit",
+        );
+        assert!(!passenger.infantry_absorber_occupant);
+        assert!(passenger.infantry_house_tracked);
+        assert_eq!(sim.houses[&passenger_owner].tracked_infantry_count, 1);
+
+        sim.uninit_with_rules(building_id, &rules);
+        assert_eq!(
+            sim.houses[&passenger_owner].tracked_infantry_count,
+            1,
+            "destruction releases the absorber occupant before Building UnInit",
         );
     }
 

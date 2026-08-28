@@ -722,6 +722,10 @@ impl Simulation {
                 }
                 return RevealOutcome::Failed(RevealFailure::MarkFailed);
             }
+            // Native HouseClass::Add_Tracking suppresses this re-add while the
+            // Infantry absorber-occupant byte is set. Ordinary newly materialized
+            // infantry establish their +0x438/count contribution here.
+            self.add_infantry_tracking_once(stable_id);
             if let Some(entity) = self.substrate.entities.get_mut(stable_id)
                 && entity.spotlight_capable
                 && entity.category == crate::map::entities::EntityCategory::Structure
@@ -1932,6 +1936,7 @@ impl Simulation {
         if already_released {
             return;
         }
+        self.remove_infantry_tracking_once(stable_id);
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.owned_count_released = true;
         }
