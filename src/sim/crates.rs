@@ -67,7 +67,11 @@ pub struct CratePlacement {
 /// below `CrateMinimum` wins — the clamp is not symmetric and must not be
 /// rewritten as a single `clamp()` call with the arguments in rules order.
 pub fn scenario_start_crate_count(rules: &CrateRules, player_count: u32) -> u32 {
-    rules.maximum.min(rules.minimum.max(player_count))
+    let human_count = player_count as i32;
+    rules
+        .maximum
+        .min(rules.minimum.max(human_count))
+        .max(0) as u32
 }
 
 /// The human seat count the crate clamp is applied to.
@@ -118,12 +122,20 @@ pub fn place_scenario_start_crates(
             placed: 0,
         };
     }
-    let land_overlay_id = overlay_registry.id_for_name(&rules.crate_rules.wood_crate_img);
-    let water_overlay_id = overlay_registry.id_for_name(&rules.crate_rules.water_crate_img);
+    let land_overlay_id = rules
+        .crate_rules
+        .wood_crate_img
+        .as_deref()
+        .and_then(|name| overlay_registry.id_for_name(name));
+    let water_overlay_id = rules
+        .crate_rules
+        .water_crate_img
+        .as_deref()
+        .and_then(|name| overlay_registry.id_for_name(name));
     if land_overlay_id.is_none() {
         log::warn!(
             "No overlay type named '{}' ([CrateRules] WoodCrateImg)",
-            rules.crate_rules.wood_crate_img
+            rules.crate_rules.wood_crate_img.as_deref().unwrap_or("<none>")
         );
     }
     if sim.overlay_grid.is_none() {
@@ -403,9 +415,9 @@ mod tests {
         let rules = crate_ruleset("CrateMinimum=2\nCrateMaximum=9\n");
         assert_eq!(rules.crate_rules.minimum, 2);
         assert_eq!(rules.crate_rules.maximum, 9);
-        assert_eq!(rules.crate_rules.crate_img, "SILVER");
-        assert_eq!(rules.crate_rules.wood_crate_img, "WOOD");
-        assert_eq!(rules.crate_rules.water_crate_img, "WATER");
+        assert_eq!(rules.crate_rules.crate_img.as_deref(), Some("SILVER"));
+        assert_eq!(rules.crate_rules.wood_crate_img.as_deref(), Some("WOOD"));
+        assert_eq!(rules.crate_rules.water_crate_img.as_deref(), Some("WATER"));
 
         let defaults = crate_ruleset("");
         assert_eq!(defaults.crate_rules.minimum, 1);

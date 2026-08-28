@@ -32,6 +32,10 @@ pub struct BasicSection {
     pub new_ini_format: Option<i32>,
     /// Whether tiberium/ore growth is enabled for this map (TiberiumGrowthEnabled=).
     pub tiberium_growth_enabled: Option<bool>,
+    /// `TruckCrate=` producer gate; missing resolves false at session bootstrap.
+    pub truck_crate: Option<bool>,
+    /// `TrainCrate=` producer gate; missing resolves false at session bootstrap.
+    pub train_crate: Option<bool>,
 }
 
 /// Parsed flags from a map's `[SpecialFlags]` section.
@@ -79,6 +83,8 @@ pub fn parse_basic_section(ini: &IniFile) -> BasicSection {
         theme: section.get("Theme").map(str::to_string),
         new_ini_format: section.get_i32("NewINIFormat"),
         tiberium_growth_enabled: section.get_bool("TiberiumGrowthEnabled"),
+        truck_crate: section.get_bool("TruckCrate"),
+        train_crate: section.get_bool("TrainCrate"),
     }
 }
 
@@ -117,6 +123,17 @@ mod tests {
         assert_eq!(basic.briefing.as_deref(), Some("TXT_M01BRIEF"));
         assert_eq!(basic.theme.as_deref(), Some("BIGF226M"));
         assert_eq!(basic.new_ini_format, Some(4));
+    }
+
+    #[test]
+    fn crate_producer_flags_are_optional_basic_authority() {
+        let basic = parse_basic_section(&IniFile::from_str(
+            "[Basic]\nTruckCrate=yes\nTrainCrate=no\n",
+        ));
+        assert_eq!(basic.truck_crate, Some(true));
+        assert_eq!(basic.train_crate, Some(false));
+        let absent = parse_basic_section(&IniFile::from_str("[Basic]\nName=X\n"));
+        assert_eq!((absent.truck_crate, absent.train_crate), (None, None));
     }
 
     #[test]

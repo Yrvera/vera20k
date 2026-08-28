@@ -7,6 +7,13 @@
 use std::collections::HashMap;
 
 use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_value::atoi_lenient;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaterializedActionOperand {
+    Value(i32),
+    UnresolvedRegistry { param_type: i32, token: String },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionEntry {
@@ -18,6 +25,29 @@ pub struct ActionEntry {
     /// and parameter types 5/9/11. `None` safely represents native `-1` from
     /// a present non-alphabetic token.
     pub waypoint_index: Option<u32>,
+}
+
+impl ActionEntry {
+    pub fn param_type(&self) -> i32 {
+        self.params.first().map_or(0, |value| atoi_lenient(value))
+    }
+
+    pub fn materialized_operand(&self) -> MaterializedActionOperand {
+        let param_type = self.param_type();
+        match param_type {
+            0 | 11 => MaterializedActionOperand::Value(
+                self.params.get(1).map_or(0, |value| atoi_lenient(value)),
+            ),
+            5 | 9 => MaterializedActionOperand::Value(
+                self.params.get(6).map_or(0, |value| atoi_lenient(value)),
+            ),
+            6 | 7 | 8 => MaterializedActionOperand::UnresolvedRegistry {
+                param_type,
+                token: self.params.get(1).cloned().unwrap_or_default(),
+            },
+            _ => MaterializedActionOperand::Value(0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,24 +151,42 @@ fn parse_action_entries(fields: &[String], raw_fields: &[&str]) -> Vec<ActionEnt
                 .is_some_and(|kind| kind.parse::<i32>().is_ok())
         {
             let raw_payload = &raw_fields[1..];
-            return payload
-                .chunks(chunk_len)
-                .zip(raw_payload.chunks(chunk_len))
-                .take(count)
-                .filter_map(|(chunk, raw_chunk)| {
-                    let kind = chunk[0].trim().parse::<i32>().ok()?;
-                    let params = chunk[1..].to_vec();
-                    let waypoint_index = materialize_waypoint_index(
-                        chunk.get(1).map(String::as_str),
-                        raw_chunk.get(7).copied(),
-                    );
-                    Some(ActionEntry {
-                        kind,
-                        params,
-                        waypoint_index,
-                    })
-                })
-                .collect();
+            let mut cursor = 0usize;
+            let mut parsed = Vec::with_capacity(count);
+            for index in 0..count {
+                let remaining_actions = count - index - 1;
+                let remaining = payload.len().saturating_sub(cursor);
+                if remaining < 7 {
+                    break;
+                }
+                // Only a trailing-final empty/missing waypoint can disappear
+                // through strtok. Earlier chunks must retain all eight tokens
+                // so the next ActionID is not consumed as their waypoint.
+                let take = if remaining >= chunk_len + remaining_actions * chunk_len {
+                    chunk_len
+                } else if remaining_actions == 0 {
+                    7
+                } else {
+                    break;
+                };
+                let chunk = &payload[cursor..cursor + take];
+                let raw_chunk = &raw_payload[cursor..cursor + take];
+                cursor += take;
+                let Some(kind) = chunk[0].trim().parse::<i32>().ok() else {
+                    break;
+                };
+                let params = chunk[1..].to_vec();
+                let waypoint_index = materialize_waypoint_index(
+                    chunk.get(1).map(String::as_str),
+                    raw_chunk.get(7).copied(),
+                );
+                parsed.push(ActionEntry {
+                    kind,
+                    params,
+                    waypoint_index,
+                });
+            }
+            return parsed;
         }
     }
 
@@ -304,6 +352,26 @@ mod tests {
                 .map(|entry| (entry.kind, entry.waypoint_index))
                 .collect::<Vec<_>>(),
             vec![(48, Some(0)), (112, Some(0)), (137, Some(0))]
+        );
+    }
+
+    #[test]
+    fn action_108_materializes_full_signed_operand_before_byte_use() {
+        let actions = parse_actions(&IniFile::from_str(
+            "[Actions]\nA=2,108,0,276,0,0,0,0,CA,108,7,SoundName,0,0,0,0,CB\n",
+        ));
+        let entries = &actions["A"].entries;
+        assert_eq!(
+            entries[0].materialized_operand(),
+            MaterializedActionOperand::Value(276)
+        );
+        assert_eq!(entries[0].waypoint_index, Some(78));
+        assert_eq!(
+            entries[1].materialized_operand(),
+            MaterializedActionOperand::UnresolvedRegistry {
+                param_type: 7,
+                token: "SoundName".to_string(),
+            }
         );
     }
 }

@@ -22,6 +22,7 @@ pub mod bridge_warheads;
 pub mod color_add;
 pub mod color_scheme;
 pub mod combat_damage;
+pub mod crate_rules;
 pub mod error;
 pub mod effect_asset_catalog;
 pub mod flh;

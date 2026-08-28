@@ -75,6 +75,8 @@ pub struct MapEntity {
     /// `-1` entries remain empty. Non-structure categories always hold three
     /// empty slots.
     pub structure_upgrades: [Option<String>; 3],
+    /// Category-specific authored TAG column, normalized to uppercase.
+    pub attached_tag_id: Option<String>,
 }
 
 /// Field index of the `MISSION=` column in `[Units]`, `[Infantry]` and
@@ -223,6 +225,7 @@ fn parse_infantry_section(
             recruitable_a: parse_recruitment_field(fields.get(12).copied()),
             recruitable_b: parse_recruitment_field(fields.get(13).copied()),
             structure_upgrades: [None, None, None],
+            attached_tag_id: parse_attached_tag(fields.get(8).copied()),
         });
     }
 }
@@ -343,6 +346,15 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
         recruitable_b: matches!(category, EntityCategory::Structure)
             || parse_recruitment_field(fields.get(13).copied()),
         structure_upgrades: [None, None, None],
+        attached_tag_id: parse_attached_tag(
+            fields
+                .get(match category {
+                    EntityCategory::Unit | EntityCategory::Aircraft => 7,
+                    EntityCategory::Structure => 6,
+                    EntityCategory::Infantry => 8,
+                })
+                .copied(),
+        ),
     })
 }
 
@@ -367,6 +379,13 @@ fn parse_structure_upgrades(fields: &[&str]) -> [Option<String>; 3] {
             Some(value.to_string())
         }
     })
+}
+
+fn parse_attached_tag(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"))
+        .map(str::to_ascii_uppercase)
 }
 
 fn parse_atoi_bool_field(value: Option<&str>) -> bool {
@@ -496,6 +515,29 @@ mod tests {
         assert!(!entities[0].high);
         assert!(entities[0].recruitable_a);
         assert!(entities[0].recruitable_b);
+    }
+
+    #[test]
+    fn category_specific_tag_columns_are_preserved() {
+        let ini = IniFile::from_str(
+            "[Units]\n0=A,TANK,256,1,2,0,Guard,unit_tag\n\
+             [Aircraft]\n0=A,PLANE,256,2,3,0,Guard,air_tag\n\
+             [Infantry]\n0=A,E1,256,3,4,0,Guard,0,inf_tag\n\
+             [Structures]\n0=A,BLDG,256,4,5,0,building_tag\n",
+        );
+        let entities = parse_map_entities(&ini);
+        assert_eq!(
+            entities
+                .iter()
+                .map(|entity| entity.attached_tag_id.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("UNIT_TAG"),
+                Some("AIR_TAG"),
+                Some("INF_TAG"),
+                Some("BUILDING_TAG")
+            ]
+        );
     }
 
     #[test]
