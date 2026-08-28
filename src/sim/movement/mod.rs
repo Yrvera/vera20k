@@ -62,6 +62,7 @@ mod movement_occupancy;
 mod movement_path;
 mod movement_reservation;
 mod movement_step;
+pub(crate) use movement_step::complete_process_movement_final_pickup;
 mod movement_tick;
 mod navcom;
 mod path_markers;
@@ -118,6 +119,7 @@ pub(crate) use movement_tick::{
 // Legacy batch tick used by focused movement fixtures.
 #[cfg(test)]
 pub(crate) use movement_tick::tick_movement_with_grids;
+pub(crate) use navcom::resolve_entity_nav_target_drive_coord;
 
 /// Install the active-YR `DriveLocomotion::Force_Track` state for a flat-ground
 /// unit. The caller supplies head offsets from the unit's current cell origin;
@@ -516,7 +518,8 @@ pub(crate) fn tick_movement_with_grid(
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let mut cell_occupation = crate::sim::occupancy::CellOccupationGrid::rebuild(entities);
     let mut raw_cell_occupation = crate::sim::occupancy::RawCellOccupationGrid::new();
-    tick_movement_with_grids(
+    let empty_houses = BTreeMap::new();
+    let mut stats = tick_movement_with_grids(
         entities,
         None,
         path_grid,
@@ -537,10 +540,76 @@ pub(crate) fn tick_movement_with_grid(
         9,        // Default PathDelay
         60,       // Default BlockagePathDelay
         interner,
-        None, // No RuleSet in legacy wrapper — crush sounds suppressed
+        None, // No RuleSet: deterministic native no-crate return One
         &mut sound_events,
         lifecycle_requests,
-    )
+    );
+    let entity_order = entities.keys_sorted();
+
+    // This wrapper predates the synchronous movement-crate call stream.  Run
+    // the same suspend/drain/resume transaction as Simulation's production
+    // owner so older movement fixtures remain valid no-crate shells instead of
+    // re-entering an unadmitted continuation on the next test tick.  Keep the
+    // legacy batch as the initial pass: several old multi-object fixtures rely
+    // on its deferred crush/finished-target commit after the full Logic order.
+    for entity_id in entity_order {
+        loop {
+            let probes = entities
+                .get_mut(entity_id)
+                .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                .unwrap_or_default();
+            if probes.is_empty() {
+                break;
+            }
+            for probe in probes {
+                if let Some(entity) = entities.get_mut(entity_id) {
+                    let _ = crate_callers::continue_after_pickup(
+                        entity,
+                        probe,
+                        crate::sim::crates::NativePickupReturn::One,
+                    );
+                    let _ = complete_process_movement_final_pickup(entity, &mut cell_occupation);
+                }
+            }
+            if !entities.get(entity_id).is_some_and(|entity| {
+                entity.pending_drive_track_crate_resume.is_some()
+                    || entity.pending_process_movement_crate_resume.is_some()
+                    || entity.pending_ground_crossing_crate_resume.is_some()
+            }) {
+                break;
+            }
+            stats.merge(tick_movement_object_with_grids(
+                entities,
+                entity_id,
+                path_grid,
+                terrain_costs,
+                alliances,
+                occupancy,
+                &mut cell_occupation,
+                &mut raw_cell_occupation,
+                &mut next_occupancy_enter_order,
+                rng,
+                sim_tick,
+                sim_tick as u32,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &TerrainSpeedConfig::default(),
+                SIM_ZERO,
+                9,
+                60,
+                interner,
+                None,
+                &empty_houses,
+                &mut sound_events,
+                lifecycle_requests,
+                true,
+            ));
+        }
+    }
+    stats
 }
 
 // ---------------------------------------------------------------------------

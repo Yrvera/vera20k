@@ -7002,9 +7002,7 @@ impl Simulation {
                                 event_49: None,
                             },
                         );
-                    } else if let Some(entity) =
-                        sim.substrate.entities.get_mut(stable_id)
-                    {
+                    } else if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
                         // A runtime without parsed rules/overlay types cannot
                         // contain an active crate. The native dispatch is thus
                         // the deterministic no-crate `One` path, but the exact
@@ -7014,6 +7012,10 @@ impl Simulation {
                             entity,
                             probe,
                             crate::sim::crates::NativePickupReturn::One,
+                        );
+                        let _ = movement::complete_process_movement_final_pickup(
+                            entity,
+                            &mut sim.substrate.cell_occupation,
                         );
                     }
                 }

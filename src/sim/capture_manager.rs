@@ -357,7 +357,9 @@ fn building_can_enter_absorber(
     let Some(building) = sim.substrate.entities.get(building_id) else {
         return false;
     };
-    if !crate::map::houses::is_allied_with(
+    if building.dying
+        || building.health.current <= 0
+        || !crate::map::houses::is_allied_with(
         &sim.house_alliances,
         sim.interner.resolve(building.owner),
         sim.interner.resolve(victim.owner),
@@ -730,6 +732,7 @@ fn decide_unit_fate(
                         victim,
                         Some(NavTargetRef::building(grinder_id)),
                     );
+                    victim.navigation.pending_arrival_clear = true;
                 }
                 assign_mission(sim, victim_id, MissionType::Eaten, current_frame);
             } else {
@@ -762,6 +765,10 @@ fn decide_unit_fate(
                             Some(NavTargetRef::building(absorber_id)),
                         );
                     }
+                    establish_capture_fate_contact(sim, victim_id, absorber_id);
+                    if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
+                        victim.navigation.pending_arrival_clear = true;
+                    }
                 }
             } else {
                 if let Some(victim) = sim.substrate.entities.get_mut(victim_id) {
@@ -773,6 +780,23 @@ fn decide_unit_fate(
         5 => {}
         _ => hunt(sim, victim_id, current_frame),
     }
+}
+
+/// The HELLO/contact side effect inside `FootClass::Set_Destination_Internal`
+/// for Mission Enter. Action 3 assigns mission 7 first, then calls the setter;
+/// action 2's mission 9 setter path deliberately never comes here.
+fn establish_capture_fate_contact(sim: &mut Simulation, victim_id: u64, building_id: u64) {
+    let _ = crate::sim::radio::transmit_pre_admitted_hello(sim, victim_id, building_id);
+}
+
+pub(crate) fn capture_fate_force_enter(sim: &Simulation, victim_id: u64) -> bool {
+    // `FootClass::Mission_Enter @ 0x004D9290` tests the class-common byte at
+    // Techno+0x418 after radio 0x0E. Rust's exact represented owner is the
+    // dock-entered link, and the gate is not Unit-only.
+    sim.substrate
+        .entities
+        .get(victim_id)
+        .is_some_and(|victim| victim.dock_entered_with.is_some())
 }
 
 fn create_control_ring(sim: &mut Simulation, rules: &RuleSet, victim_id: u64) {
@@ -1681,6 +1705,205 @@ mod tests {
                 Some(NavTargetRef::Building { .. })
             ));
             assert_eq!(victim.ai_absorb_enter_pending, decision == 3);
+            assert!(victim.navigation.pending_arrival_clear);
+            if decision == 3 {
+                let facility_id = match victim.navigation.nav_com {
+                    Some(NavTargetRef::Building { id }) => id,
+                    _ => unreachable!("asserted Building target"),
+                };
+                assert_eq!(victim.radio_contacts.slot(0), Some(facility_id));
+                assert!(
+                    sim.substrate
+                        .entities
+                        .get(facility_id)
+                        .unwrap()
+                        .radio_contacts
+                        .contains(victim_id)
+                );
+            } else {
+                assert!(victim.radio_contacts.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn capture_fate_hello_is_idempotent_and_receiver_saturation_refuses_without_sender_write() {
+        let (mut sim, _rules, _controller_id, victim_id, facility_id) = fate_facility_sim(3);
+        let blocker_id = sim.allocate_stable_id();
+        sim.substrate.entities.insert(GameEntity::test_default(
+            blocker_id, "TARGET", "Owner", 1, 1,
+        ));
+        sim.substrate
+            .entities
+            .get_mut(facility_id)
+            .unwrap()
+            .radio_contacts
+            .insert(blocker_id);
+
+        establish_capture_fate_contact(&mut sim, victim_id, facility_id);
+        assert!(
+            !sim.substrate
+                .entities
+                .get(victim_id)
+                .unwrap()
+                .radio_contacts
+                .contains(facility_id)
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(facility_id)
+                .unwrap()
+                .radio_contacts
+                .slot(0),
+            Some(blocker_id)
+        );
+
+        sim.substrate
+            .entities
+            .get_mut(facility_id)
+            .unwrap()
+            .radio_contacts
+            .remove(blocker_id);
+        establish_capture_fate_contact(&mut sim, victim_id, facility_id);
+        let first = sim.substrate.entities.get(victim_id).unwrap().radio_contacts.clone();
+        establish_capture_fate_contact(&mut sim, victim_id, facility_id);
+        assert_eq!(sim.substrate.entities.get(victim_id).unwrap().radio_contacts, first);
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(facility_id)
+                .unwrap()
+                .radio_contacts
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn capture_fate_grinder_approach_physically_crosses_to_foundation_center_over_multiple_ticks() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=CTRL\n1=TARGET\n\
+             [InfantryTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n0=GRINDER\n\
+             [CTRL]\nStrength=100\n\
+             [TARGET]\nStrength=100\nSpeed=8\nROT=5\nMovementZone=Normal\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n\
+             [GRINDER]\nStrength=500\nGrinding=yes\nFoundation=3x3\n\
+             [Eaten]\nRate=.016\n",
+        ))
+        .expect("capture-fate movement rules");
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Owner");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, false, 10_000, 10));
+        sim.session.house_order.push(owner);
+        let controller_id = sim
+            .spawn_object("CTRL", "Owner", 1, 3, 0, &rules, &Default::default())
+            .unwrap();
+        let victim_id = sim
+            .spawn_object("TARGET", "Owner", 2, 3, 0, &rules, &Default::default())
+            .unwrap();
+        let facility_id = sim
+            .spawn_object("GRINDER", "Owner", 9, 3, 0, &rules, &Default::default())
+            .unwrap();
+        let _team = install_controller_decision(&mut sim, controller_id, owner, 2);
+
+        decide_unit_fate(&mut sim, &rules, controller_id, victim_id, 0);
+        let initial = {
+            let victim = sim.substrate.entities.get(victim_id).unwrap();
+            assert_eq!(victim.mission.current(), MissionId::from_known(MissionType::Eaten));
+            assert_eq!(
+                victim.navigation.nav_com,
+                Some(NavTargetRef::building(facility_id))
+            );
+            (victim.position.rx, victim.position.ry)
+        };
+        let footprint = {
+            let facility = sim.substrate.entities.get(facility_id).unwrap();
+            crate::sim::production::building_base_foundation_cells(
+                facility.position.rx,
+                facility.position.ry,
+                &facility.foundation,
+            )
+        };
+        assert_eq!(footprint.len(), 9, "fixture must exercise a blocked 3x3 foundation");
+        let expected_coord = crate::sim::movement::resolve_entity_nav_target_drive_coord(
+            NavTargetRef::building(facility_id),
+            &sim.substrate.entities,
+        )
+        .expect("Building GetCoords projection");
+        let expected_goal = (
+            u16::try_from(expected_coord.x.div_euclid(256)).unwrap(),
+            u16::try_from(expected_coord.y.div_euclid(256)).unwrap(),
+        );
+        assert!(footprint.contains(&expected_goal));
+        let mut grid = crate::sim::pathfinding::PathGrid::new(20, 10);
+        for &(rx, ry) in &footprint {
+            grid.set_blocked(rx, ry, true);
+        }
+
+        let mut first_arrival_frame = None;
+        let mut consumed_on_arrival = false;
+        let mut distinct_positions = std::collections::BTreeSet::new();
+        distinct_positions.insert(initial);
+        for frame in 0..240u32 {
+            sim.advance_tick(
+                &[],
+                Some(&rules),
+                &Default::default(),
+                Some(&grid),
+                None,
+                16,
+            );
+            let Some(victim) = sim.substrate.entities.get(victim_id) else {
+                // Slice C's synchronous PerCell continuation is allowed to
+                // consume on the first selected-Building foundation cell. The
+                // approach contract is still proved by the multi-frame live
+                // positions and center-aimed path observed before this frame.
+                first_arrival_frame = Some(frame);
+                consumed_on_arrival = true;
+                break;
+            };
+            let position = (victim.position.rx, victim.position.ry);
+            distinct_positions.insert(position);
+            if frame == 0 {
+                assert_ne!(
+                    position, expected_goal,
+                    "selector/first process frame must not teleport to the facility"
+                );
+                assert_eq!(
+                    victim
+                        .movement_target
+                        .as_ref()
+                        .and_then(|target| target.final_goal),
+                    Some(expected_goal),
+                    "the physical path must aim at Building GetCoords, not its north-west anchor"
+                );
+            }
+            if footprint.contains(&position) {
+                first_arrival_frame = Some(frame);
+                break;
+            }
+            assert_eq!(
+                victim.navigation.nav_com,
+                Some(NavTargetRef::building(facility_id)),
+                "pre-arrival frames must preserve the selected Building target"
+            );
+        }
+
+        let arrival_frame = first_arrival_frame.expect("mover must physically enter the selected facility");
+        assert!(arrival_frame > 0, "arrival must require more than one native frame");
+        assert!(
+            distinct_positions.len() > 2,
+            "the approach must traverse intermediate cells rather than teleport"
+        );
+        if !consumed_on_arrival {
+            let victim = sim.substrate.entities.get(victim_id).unwrap();
+            assert!(
+                footprint.contains(&(victim.position.rx, victim.position.ry)),
+                "without the per-cell consumer, the mover stops on a selected-Building footprint cell"
+            );
         }
     }
 

@@ -721,6 +721,22 @@ fn process_pending_drive_arrivals(
         return;
     };
     for &entity_id in entity_order {
+        let capture_fate_footprint =
+            super::movement_occupancy::capture_fate_target_footprint(
+                entities,
+                entity_id,
+                interner,
+                rules,
+            );
+        let object_destination = entities.get(entity_id).and_then(|entity| {
+            entity
+                .navigation
+                .nav_com
+                .filter(|target| matches!(target, NavTargetRef::Building { .. }))
+                .and_then(|target| {
+                    super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
+                })
+        });
         let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
@@ -736,7 +752,16 @@ fn process_pending_drive_arrivals(
         // the drive locomotor's no-track process-entry position. Entities
         // deferred with a non-cell owner target fall back to the queue
         // advance, then to the owner-null clear.
-        let (rx, ry) = if let Some(NavTargetRef::Cell { rx, ry }) = entity.navigation.nav_com {
+        let (rx, ry) = if let Some(destination) = object_destination {
+            let rx = u16::try_from(destination.x.div_euclid(256)).ok();
+            let ry = u16::try_from(destination.y.div_euclid(256)).ok();
+            let Some((rx, ry)) = rx.zip(ry) else {
+                super::navcom::set_destination_internal_null(entity);
+                continue;
+            };
+            super::navcom::set_destination_internal_object_coord(entity, destination);
+            (rx, ry)
+        } else if let Some(NavTargetRef::Cell { rx, ry }) = entity.navigation.nav_com {
             (rx, ry)
         } else if let Some(NavTargetRef::Cell { rx, ry }) =
             entity.navigation.nav_queue.first().copied()
@@ -747,8 +772,10 @@ fn process_pending_drive_arrivals(
             super::navcom::set_destination_internal_null(entity);
             continue;
         };
-        super::navcom::foot_stop_moving(entity);
-        super::navcom::set_destination_internal_cell(entity, (rx, ry), ctx.resolved_terrain);
+        if object_destination.is_none() {
+            super::navcom::foot_stop_moving(entity);
+            super::navcom::set_destination_internal_cell(entity, (rx, ry), ctx.resolved_terrain);
+        }
 
         let current = (entity.position.rx, entity.position.ry);
         let current_layer = entity.movement_layer_or_ground();
@@ -773,9 +800,25 @@ fn process_pending_drive_arrivals(
         let mut occupied_blocks = entity_blocks.cloned().unwrap_or_default();
         occupied_blocks
             .extend(cell_occupation.occupied_cells_ignoring(MovementLayer::Ground, entity_id));
+        if let Some(footprint) = capture_fate_footprint.as_ref() {
+            for cell in footprint {
+                occupied_blocks.remove(cell);
+            }
+        }
         let occupied_blocks_ref = (!occupied_blocks.is_empty()).then_some(&occupied_blocks);
+        let capture_path_grid = capture_fate_footprint.as_ref().map(|footprint| {
+            let mut grid = grid.clone();
+            for &(rx, ry) in footprint {
+                grid.set_blocked(rx, ry, false);
+            }
+            grid
+        });
+        let search_ctx = PathfindingContext {
+            path_grid: capture_path_grid.as_ref().map_or(ctx.path_grid, |grid| Some(grid)),
+            ..ctx
+        };
         let Some((path, path_layers)) = find_move_path(
-            ctx,
+            search_ctx,
             layered_pathing,
             current,
             current_layer,
@@ -1856,6 +1899,29 @@ fn tick_movement_with_grids_scoped(
         let Some(snap) = snapshot_mover(entities, entity_id, playfield_bounds) else {
             continue;
         };
+        // Mission Enter/Eaten reaches the selected facility through ordinary
+        // locomotion.  The map cache marks every Building foundation cell as
+        // statically blocked, but the native Unit/Infantry Can_Enter_Cell leaf
+        // admits the *selected* matching grinder/absorber Building.  Give this
+        // mover the same narrow view for both runtime transition tests and any
+        // same-invocation repath.  Occupant admission remains independently
+        // constrained by `live_building_entry_skips`; this does not open any
+        // unrelated Building or terrain cell.
+        let capture_fate_footprint =
+            super::movement_occupancy::capture_fate_target_footprint(
+                entities, entity_id, interner, rules,
+            );
+        let capture_path_grid = path_grid.and_then(|grid| {
+            capture_fate_footprint.as_ref().map(|footprint| {
+                let mut mover_grid = grid.clone();
+                for &(rx, ry) in footprint {
+                    mover_grid.set_blocked(rx, ry, false);
+                }
+                mover_grid
+            })
+        });
+        let path_grid = capture_path_grid.as_ref().or(path_grid);
+        let ctx = PathfindingContext { path_grid, ..ctx };
         let prone_crawls = entities.get(entity_id).and_then(|entity| {
             if !infantry::is_prone_for_damage(entity) {
                 return None;

@@ -397,6 +397,7 @@ pub(super) fn build_live_building_entry_skip_map(
             && building
                 .building_gate
                 .is_some_and(|state| state.can_garrison_passable());
+        let capture_fate_skip = capture_fate_target_building(mover, building, obj);
         let infantry_entry_target = mover.category == EntityCategory::Infantry
             && (mover.capture_target == Some(building.stable_id)
                 || mover
@@ -405,7 +406,11 @@ pub(super) fn build_live_building_entry_skip_map(
         let has_contact = vehicle_row_helpers && mover.has_live_contact_with(building.stable_id);
         let has_vehicle_exception =
             vehicle_row_helpers && (has_contact || obj.unit_repair || obj.bunker || obj.bib);
-        if !has_vehicle_exception && !gate_skip && !infantry_entry_target {
+        if !has_vehicle_exception
+            && !gate_skip
+            && !infantry_entry_target
+            && !capture_fate_skip
+        {
             continue;
         }
         let is_bunker_occupied = obj.bunker
@@ -462,6 +467,7 @@ pub(super) fn build_live_building_entry_skip_map(
                 || bib_skip
                 || gate_skip
                 || infantry_entry_target
+                || capture_fate_skip
             {
                 skips
                     .entry((cx, cy))
@@ -471,6 +477,56 @@ pub(super) fn build_live_building_entry_skip_map(
         }
     }
     skips
+}
+
+/// Exact mission-7/8/9 target-Building exception in Unit/Infantry
+/// `Can_Enter_Cell` (`0x0073F0A0` / `0x0051BF90`). It admits only the Building
+/// stored in the mover's current `NavCom`, only for the matching facility type,
+/// and never while that Building is being temporally erased. The per-cell leaf
+/// remains the owner of consumption; this merely stops that selected Building
+/// from blocking its own arrival cells.
+fn capture_fate_target_building(
+    mover: &crate::sim::game_entity::GameEntity,
+    building: &crate::sim::game_entity::GameEntity,
+    object: &crate::rules::object_type::ObjectType,
+) -> bool {
+    if mover.navigation.nav_com != Some(crate::sim::components::NavTargetRef::building(
+        building.stable_id,
+    )) || building.being_temporally_warped_out
+    {
+        return false;
+    }
+    match (mover.category, mover.mission.current().known()) {
+        (EntityCategory::Unit, Some(crate::sim::mission::MissionType::Enter)) => object.unit_absorb,
+        (EntityCategory::Unit, Some(crate::sim::mission::MissionType::Eaten)) => object.grinding,
+        (EntityCategory::Infantry, Some(crate::sim::mission::MissionType::Enter)) => {
+            object.infantry_absorb
+        }
+        (EntityCategory::Infantry, Some(crate::sim::mission::MissionType::Eaten)) => object.grinding,
+        _ => false,
+    }
+}
+
+pub(super) fn capture_fate_target_footprint(
+    entities: &crate::sim::entity_store::EntityStore,
+    mover_id: u64,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> Option<Vec<(u16, u16)>> {
+    let rules = rules?;
+    let mover = entities.get(mover_id)?;
+    let crate::sim::components::NavTargetRef::Building { id } = mover.navigation.nav_com? else {
+        return None;
+    };
+    let building = entities.get(id)?;
+    let object = rules.object(interner.resolve(building.type_ref))?;
+    capture_fate_target_building(mover, building, object).then(|| {
+        crate::sim::production::building_base_foundation_cells(
+            building.position.rx,
+            building.position.ry,
+            &building.foundation,
+        )
+    })
 }
 
 pub(super) fn snap_motion_to_cell_center(

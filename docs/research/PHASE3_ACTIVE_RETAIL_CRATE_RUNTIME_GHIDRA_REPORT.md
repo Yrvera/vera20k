@@ -1446,12 +1446,17 @@ stop/recurse continuation.
 Drive ProcessMovement final pickup `0x004B46E6` and Ship `0x006A3D15` occur
 after `Foot+0x63C=-1`, packed endpoint `+0x558`, `+0x68A=0`, and locomotor
 `+0x5C=0` are written and a non-null local endpoint is installed. Return one
-plus unlimbo performs no alive check, raw-applies the original endpoint, and
-returns immediately without resetting selector/path or stopping speed;
-callback retarget survives and death still raw-applies. Return zero or limbo
-clears destination only while alive, then regardless of alive writes
-locomotor `+0x58=-1`, `Foot+0x5E0=-1`, speed `0.0`, and returns. A null endpoint
-skips dispatch and performs that cleanup.
+plus unlimbo performs no alive check and applies occupation mode 1 to the
+original endpoint, then returns immediately without moving the object,
+resetting selector/path, or stopping speed. The exact live sequences are
+`PickupDispatch @ 0x004B46E6 -> Drive Apply_Track_Occupation_Mode @
+0x004B4705` (callee `0x004B0AD0`) and `PickupDispatch @ 0x006A3D15 -> Ship
+Apply_Track_Occupation_Mode @ 0x006A3D34` (callee `0x006A01A0`). Callback
+retarget and callback movement survive; death still receives the raw
+occupation-mode call. Return zero or limbo clears destination only while
+alive, then regardless of alive writes locomotor `+0x58=-1`,
+`Foot+0x5E0=-1`, speed `0.0`, and returns. A null endpoint skips dispatch and
+performs that cleanup.
 
 Hover helper `0x00514F70/@0x005153E9` installs resolved next-cell center and
 ground/bridge Z before dispatch. Zero plus unlimbo, while alive and status

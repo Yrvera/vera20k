@@ -102,6 +102,51 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         return;
     }
 
+    // `FootClass::Mission_Enter @ 0x004D9290` sends directed radio 0x0E on
+    // every due dispatch. ROGER continues; the common Foot +0x418 force-enter
+    // state may also continue after a hard reply. Every remaining refusal sends BREAK before
+    // clearing the destination. This is intentionally separate from arrival:
+    // Unit arrival repeats full 0x0F while Infantry later sends contact-only
+    // 0x15, and those class-asymmetric callbacks live in the per-cell adapter.
+    let capture_fate_enter = input.mission == Some(MissionType::Enter)
+        && sim
+            .substrate
+            .entities
+            .get(id)
+            .is_some_and(|entity| entity.ai_absorb_enter_pending);
+    if capture_fate_enter {
+        let target = sim.substrate.entities.get(id).and_then(|entity| {
+            match entity.navigation.nav_com {
+                Some(crate::sim::components::NavTargetRef::Building { id }) => Some(id),
+                _ => None,
+            }
+        });
+        if let Some(target) = target {
+            let response = crate::sim::radio::transmit(
+                sim,
+                id,
+                target,
+                crate::sim::radio::RadioMessage::CanDock,
+                crate::sim::radio::RadioPayload::default(),
+            );
+            let force_enter = crate::sim::capture_manager::capture_fate_force_enter(sim, id);
+            if response != crate::sim::radio::RadioResponse::Roger && !force_enter {
+                crate::sim::radio::transmit(
+                    sim,
+                    id,
+                    target,
+                    crate::sim::radio::RadioMessage::Break,
+                    crate::sim::radio::RadioPayload::default(),
+                );
+                if let Some(entity) = sim.substrate.entities.get_mut(id) {
+                    crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                        entity, None,
+                    );
+                }
+            }
+        }
+    }
+
     let evaluation = match (input.category, input.mission) {
         // `FootClass::Mission_Move` is the native named location for this
         // handler-return cadence; movement execution remains in movement/.
@@ -385,6 +430,15 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         (EntityCategory::Unit, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
             jittered_mission_cadence(sim, rules, MissionType::Hunt),
         ),
+        // `FootClass::Mission_Eaten @ 0x004D4CB0` and
+        // `FootClass::Mission_Enter @ 0x004D9290` both return
+        // `ftol([Mission]Rate * 900.0) + RandomRanged(0,2)`. Capture-fate
+        // arrival remains independent in the per-cell owner; this dispatch only
+        // owns the due retry/radio cadence and therefore draws exactly once.
+        (
+            EntityCategory::Unit | EntityCategory::Infantry,
+            Some(mission @ (MissionType::Eaten | MissionType::Enter)),
+        ) => MissionHandlerEvaluation::cadence(jittered_mission_cadence(sim, rules, mission)),
         // Everything else: the object still reaches a handler and still re-arms
         // its timer. Where that handler is the un-overridden base one, the
         // return value is a verified constant and no RNG is drawn; where the

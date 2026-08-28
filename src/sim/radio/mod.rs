@@ -27,6 +27,11 @@ use std::cell::RefCell;
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RadioTestEvent {
+    Transmit {
+        sender_sid: u64,
+        target_sid: u64,
+        message: RadioMessage,
+    },
     BroadcastSlotRead {
         sender_sid: u64,
         slot: usize,
@@ -123,6 +128,12 @@ pub fn transmit(
     msg: RadioMessage,
     payload: RadioPayload,
 ) -> RadioResponse {
+    #[cfg(test)]
+    record_test_event(RadioTestEvent::Transmit {
+        sender_sid,
+        target_sid,
+        message: msg,
+    });
     let filtered = filtered_techno_sender(sim, sender_sid);
     match msg {
         RadioMessage::Hello => transmit_hello(sim, sender_sid, target_sid, filtered),
@@ -171,16 +182,73 @@ fn transmit_hello(
         RadioMessage::Hello,
         RadioPayload::default(),
     );
-    if response == RadioResponse::Roger {
-        if let Some(sender) = sim.substrate.entities.get_mut(sender_sid) {
-            // A non-building sender holds capacity 1; the refinery FSM always
-            // BREAKs a prior dock before HELLOing a new one, so the self-evict
-            // path is dormant here (the evicted partner's BREAK cascade is a
-            // later-slice refinement, tracked with the broadcast-BREAK work).
-            let _ = sender.radio_contacts.insert_evicting(target_sid);
-        }
+    finish_hello_sender_contact(sim, sender_sid, target_sid, response)
+}
+
+fn finish_hello_sender_contact(
+    sim: &mut Simulation,
+    sender_sid: u64,
+    target_sid: u64,
+    response: RadioResponse,
+) -> RadioResponse {
+    if response == RadioResponse::Roger
+        && let Some(sender) = sim.substrate.entities.get_mut(sender_sid)
+    {
+        // A non-building sender holds capacity 1. Native HELLO writes the
+        // receiver first, then self-evicts sender slot zero when needed.
+        let _ = sender.radio_contacts.insert_evicting(target_sid);
     }
     response
+}
+
+/// Capture-fate Mission Enter's `Set_Destination` HELLO boundary. The preceding
+/// directed 0x0F already proved the absorber-specific gates; HELLO itself still
+/// owns the live/directional-ally/receiver-capacity transaction and the shared
+/// sender-side slot-zero replacement.
+pub(crate) fn transmit_pre_admitted_hello(
+    sim: &mut Simulation,
+    sender_sid: u64,
+    target_sid: u64,
+) -> RadioResponse {
+    if sim
+        .substrate
+        .entities
+        .get(sender_sid)
+        .is_some_and(|sender| sender.radio_contacts.contains(target_sid))
+    {
+        return RadioResponse::Roger;
+    }
+    let Some((sender_owner, target_owner, target_live)) = sim
+        .substrate
+        .entities
+        .get(sender_sid)
+        .zip(sim.substrate.entities.get(target_sid))
+        .map(|(sender, target)| {
+            (
+                sender.owner,
+                target.owner,
+                !target.dying && target.health.current > 0,
+            )
+        })
+    else {
+        return RadioResponse::None;
+    };
+    if !target_live
+        || !crate::map::houses::is_allied_with(
+            &sim.house_alliances,
+            sim.interner.resolve(target_owner),
+            sim.interner.resolve(sender_owner),
+        )
+    {
+        return RadioResponse::Negatory;
+    }
+    let response = sim
+        .substrate
+        .entities
+        .get_mut(target_sid)
+        .and_then(|target| target.radio_contacts.insert(sender_sid))
+        .map_or(RadioResponse::Negatory, |_| RadioResponse::Roger);
+    finish_hello_sender_contact(sim, sender_sid, target_sid, response)
 }
 
 /// BREAK sender side (§5.2.5): null EVERY sender slot matching the target, then

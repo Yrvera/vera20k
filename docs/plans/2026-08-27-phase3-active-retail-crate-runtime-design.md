@@ -1641,10 +1641,13 @@ Drive `@0x004B46E6` and Ship `@0x006A3D15` first write
 `+0x5C=0`. They clear a non-null live destination/validity; a non-null local
 endpoint is then installed, resolved, and dispatched.
 
-- `One` and unlimbo: no alive test. Raw-apply the original local endpoint and
-  return zero immediately; do not reset `+0x58/+0x5E0`, stop speed, or rewrite
-  destination. Callback retarget survives and callback movement does not
-  change the applied endpoint. Death still raw-applies.
+- `One` and unlimbo: no alive test. Apply track-occupation mode 1 to the
+  original local endpoint and return zero immediately; do not move the object,
+  reset `+0x58/+0x5E0`, stop speed, or rewrite destination. The exact live
+  calls are Drive `0x004B4705 -> 0x004B0AD0` and Ship
+  `0x006A3D34 -> 0x006A01A0`, immediately after their pickup dispatches.
+  Callback retarget and callback movement survive. Death still receives the
+  occupation-mode call.
 - `Zero` or limbo: alive clears destination/validity; dead retains installed
   or callback state. Regardless of alive, write locomotor `+0x58=-1`,
   `Foot+0x5E0=-1`, call the speed vcall with `0.0`, and return zero.
@@ -2114,10 +2117,11 @@ certification run, not this mechanism loop.
   `{Zero,One} x {alive,dead} x {unlimbo,limbo}`, with retarget on both Zero
   cases and independent move/retarget scripts on One/unlimbo;
 - callback move and retarget fixtures prove which adapters use post-callback
-  XYZ, which raw-apply the original endpoint, and which preserve/discard the
-  retarget;
+  XYZ, which raw-apply the original coordinate, which only apply endpoint
+  occupation, and which preserve/discard the retarget;
 - dead/unlimbo `One` fixtures prove the native no-alive-check raw writes for
-  ForceTrack, ProcessDriveTrack, ProcessMovement final, and Jumpjet;
+  ForceTrack, ProcessDriveTrack, and Jumpjet, plus the no-alive-check
+  ProcessMovement-final occupation call;
 - ignored-return Jumpjet-descend and Teleport fixtures prove every postwrite,
   including Teleport's post-callback animation coordinate;
 - SQD event49 death, Explosion death, Unit success, moved/unlimboed callback,

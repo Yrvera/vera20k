@@ -267,7 +267,15 @@ pub(crate) fn continue_after_pickup(
         | MovementCrateCallsite::ShipProcessMovementFinal => {
             let ship = probe.callsite == MovementCrateCallsite::ShipProcessMovementFinal;
             if pickup == NativePickupReturn::One && !limbo {
-                raw_apply_requested(entity, probe.requested);
+                // The post-pickup call at Drive 0x004B4705 / Ship 0x006A3D34
+                // is Apply_Track_Occupation_Mode, not Object::SetCoords.  Keep
+                // the immutable endpoint in the staged resume and let the
+                // Simulation owner apply the vehicle occupation mark after
+                // this stable-ID re-fetch.  Moving Position here teleports a
+                // fresh curve to its head and leaves OccupancyGrid behind.
+                if let Some(resume) = entity.pending_process_movement_crate_resume.as_mut() {
+                    resume.admitted = true;
+                }
             } else {
                 if alive {
                     clear_drive_destination(entity, ship);
@@ -284,8 +292,8 @@ pub(crate) fn continue_after_pickup(
                 if let Some(target) = entity.movement_target.as_mut() {
                     target.current_speed = SIM_ZERO;
                 }
+                entity.pending_process_movement_crate_resume = None;
             }
-            entity.pending_process_movement_crate_resume = None;
             false
         }
         MovementCrateCallsite::HoverMovement => {
