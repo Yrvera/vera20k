@@ -1166,6 +1166,8 @@ struct HouseOwnershipTransactionState {
     owned_building_count: u32,
     owned_unit_count: u32,
     build_const_order: Vec<u64>,
+    grinder_building_order: Vec<u64>,
+    absorber_building_order: Vec<u64>,
     waypoint_edge: u8,
 }
 
@@ -1181,6 +1183,8 @@ fn capture_house_ownership_transaction_state(
                     owned_building_count: house.owned_building_count,
                     owned_unit_count: house.owned_unit_count,
                     build_const_order: house.build_const_order.clone(),
+                    grinder_building_order: house.grinder_building_order.clone(),
+                    absorber_building_order: house.absorber_building_order.clone(),
                     waypoint_edge: house.waypoint_edge,
                 },
             )
@@ -1193,6 +1197,38 @@ fn apply_owned_count_delta(live: &mut u32, before: u32, after: u32) {
         *live += after - before;
     } else {
         *live = live.saturating_sub(before - after);
+    }
+}
+
+fn apply_stable_order_delta(live: &mut Vec<u64>, before: &[u64], after: &[u64]) {
+    // These native vectors mutate only by stable removal and tail append. Find
+    // the longest `after` prefix that is still an ordered subsequence of the
+    // pre-transaction vector; it is the untouched spine. Every other old ID
+    // was removed (possibly to be re-appended), and every remaining after ID
+    // was appended in this transaction. Replaying that operation delta keeps
+    // independent live entries in their real relative position.
+    let mut before_cursor = 0;
+    let mut retained_prefix_len = 0;
+    for stable_id in after {
+        let Some(relative_index) = before[before_cursor..]
+            .iter()
+            .position(|candidate| candidate == stable_id)
+        else {
+            break;
+        };
+        before_cursor += relative_index + 1;
+        retained_prefix_len += 1;
+    }
+    let retained = &after[..retained_prefix_len];
+    for stable_id in before.iter().filter(|stable_id| !retained.contains(stable_id)) {
+        if let Some(index) = live.iter().position(|candidate| candidate == stable_id) {
+            live.remove(index);
+        }
+    }
+    for &stable_id in &after[retained_prefix_len..] {
+        if !live.contains(&stable_id) {
+            live.push(stable_id);
+        }
     }
 }
 
@@ -1225,28 +1261,21 @@ fn apply_house_ownership_transaction_delta(
             after_house.owned_unit_count,
         );
 
-        for stable_id in before_house
-            .build_const_order
-            .iter()
-            .filter(|stable_id| !after_house.build_const_order.contains(stable_id))
-        {
-            if let Some(index) = live_house
-                .build_const_order
-                .iter()
-                .position(|candidate| candidate == stable_id)
-            {
-                live_house.build_const_order.remove(index);
-            }
-        }
-        for &stable_id in after_house
-            .build_const_order
-            .iter()
-            .filter(|stable_id| !before_house.build_const_order.contains(stable_id))
-        {
-            if !live_house.build_const_order.contains(&stable_id) {
-                live_house.build_const_order.push(stable_id);
-            }
-        }
+        apply_stable_order_delta(
+            &mut live_house.build_const_order,
+            &before_house.build_const_order,
+            &after_house.build_const_order,
+        );
+        apply_stable_order_delta(
+            &mut live_house.grinder_building_order,
+            &before_house.grinder_building_order,
+            &after_house.grinder_building_order,
+        );
+        apply_stable_order_delta(
+            &mut live_house.absorber_building_order,
+            &before_house.absorber_building_order,
+            &after_house.absorber_building_order,
+        );
 
         if after_house.waypoint_edge != before_house.waypoint_edge {
             live_house.waypoint_edge = after_house.waypoint_edge;
@@ -4704,6 +4733,75 @@ impl Simulation {
         }
     }
 
+    /// Append one successfully placed special Building to the exact native
+    /// House vectors consumed by CaptureManager DecideUnitFate. The immutable
+    /// type-membership bits live on GameEntity so rule-less re-entry can
+    /// preserve acquisition order.
+    pub(crate) fn append_live_capture_facilities(&mut self, stable_id: u64) {
+        let Some((owner, grinding, absorbing)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
+                (entity.category == EntityCategory::Structure
+                    && entity.lifecycle.object_alive
+                    && !entity.lifecycle.in_limbo
+                    && entity.lifecycle.cell_marked)
+                    .then_some((
+                        entity.owner,
+                        entity.grinding_facility,
+                        entity.absorber_facility,
+                    ))
+            })
+        else {
+            return;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return;
+        };
+        if grinding && !house.grinder_building_order.contains(&stable_id) {
+            house.grinder_building_order.push(stable_id);
+        }
+        if absorbing && !house.absorber_building_order.contains(&stable_id) {
+            house.absorber_building_order.push(stable_id);
+        }
+    }
+
+    /// Stable-remove a special Building from both possible House vectors while
+    /// its old owner and immutable BuildingType profile remain resolvable.
+    pub(crate) fn remove_capture_facilities_from_owner(&mut self, stable_id: u64) {
+        let Some((owner, grinding, absorbing)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .map(|entity| {
+                (
+                    entity.owner,
+                    entity.grinding_facility,
+                    entity.absorber_facility,
+                )
+            })
+        else {
+            return;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return;
+        };
+        if grinding
+            && let Some(index) = house
+                .grinder_building_order
+                .iter()
+                .position(|&id| id == stable_id)
+        {
+            house.grinder_building_order.remove(index);
+        }
+        if absorbing
+            && let Some(index) = house
+                .absorber_building_order
+                .iter()
+                .position(|&id| id == stable_id)
+        {
+            house.absorber_building_order.remove(index);
+        }
+    }
+
     /// Change an entity's owner through the authoritative ownership chokepoint.
     /// House counts, the `by_owner` index, and the entity owner move exactly once
     /// for every live transfer, regardless of whether capture or garrison code
@@ -4788,6 +4886,7 @@ impl Simulation {
         if build_const_eligible {
             self.remove_build_const_from_owner(stable_id);
         }
+        self.remove_capture_facilities_from_owner(stable_id);
         self.decrement_owned_count(&old_owner_name, category);
         // `TechnoClass::ChangeOwner` runs the live-detach targeting sweep next,
         // before the house swap: everything shooting at this object is released
@@ -4812,6 +4911,7 @@ impl Simulation {
         {
             house.build_const_order.push(stable_id);
         }
+        self.append_live_capture_facilities(stable_id);
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
     }
 

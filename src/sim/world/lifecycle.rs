@@ -737,6 +737,7 @@ impl Simulation {
             };
         }
         self.append_live_build_const(stable_id);
+        self.append_live_capture_facilities(stable_id);
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
         self.mark_building_base_reservation(stable_id);
         self.lifecycle_outputs
@@ -2472,6 +2473,7 @@ impl Simulation {
         // at this callback boundary also covers direct UnInit/destruction;
         // Conceal's already-limbo return never reaches it.
         self.remove_build_const_from_owner(expired_id);
+        self.remove_capture_facilities_from_owner(expired_id);
 
         // `BulletClass::PointerExpired @ 0x004684E0` performs the packed
         // `MapClass::Get_CellClass @ 0x005657A0` lookup only for a matching

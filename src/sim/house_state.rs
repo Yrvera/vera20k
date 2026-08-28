@@ -338,6 +338,16 @@ pub struct HouseState {
     /// append at the tail; Limbo and old-owner transfer stable-remove in place.
     #[serde(default)]
     pub build_const_order: Vec<u64>,
+    /// Native `HouseClass+0x9C` Grinding Building vector in successful
+    /// Unlimbo/capture acquisition order. DecideUnitFate action 2 scans this
+    /// tail-to-head; it is independent of BuildConst and global Logic order.
+    #[serde(default)]
+    pub grinder_building_order: Vec<u64>,
+    /// Native `HouseClass+0xB4` combined UnitAbsorb/InfantryAbsorb Building
+    /// vector. DecideUnitFate action 3 scans this independent vector
+    /// tail-to-head.
+    #[serde(default)]
+    pub absorber_building_order: Vec<u64>,
     /// Ordered native `BaseClass` plan authority. Scenario nodes are installed
     /// before map-object Unlimbo; later ordinary planning remains disconnected.
     #[serde(default)]
@@ -617,6 +627,8 @@ impl HouseState {
             base_center: None,
             alternate_base_center: (0, 0),
             build_const_order: Vec::new(),
+            grinder_building_order: Vec::new(),
+            absorber_building_order: Vec::new(),
             base_plan: crate::sim::base_plan::BasePlanState::default(),
             base_plan_center: (0, 0),
             base_reservation: BaseReservationState::default(),

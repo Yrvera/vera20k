@@ -335,7 +335,12 @@ use crate::sim::world::Simulation;
 // original Houses, the two independent temporary-transfer House pointers, and
 // TemporalClass manager/warp/reciprocal-chain state. Bincode encodes every
 // GameEntity positionally, so a v113 record cannot safely supply these fields.
-const SNAPSHOT_VERSION: u32 = 115;
+// Bumped 114 -> 115: GameEntity persists the CaptureManager presentation and
+// continuation state required by exact CaptureUnit/FreeUnit transactions.
+// Bumped 115 -> 116: HouseState persists the two distinct acquisition-ordered
+// Grinder/Absorber Building vectors, and GameEntity persists their immutable
+// type-membership bits. DecideUnitFate consumes vector order after load.
+const SNAPSHOT_VERSION: u32 = 116;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -514,6 +519,13 @@ pub enum SnapshotRestoreError {
     #[error("entity {entity_id} has invalid mind-control reciprocal state: {reason}")]
     InvalidMindControlReciprocalState {
         entity_id: u64,
+        reason: &'static str,
+    },
+    #[error("House {owner} field {field} has invalid Building {building_id}: {reason}")]
+    InvalidHouseFacilityReference {
+        owner: crate::sim::intern::InternedId,
+        field: &'static str,
+        building_id: u64,
         reason: &'static str,
     },
     #[error("entity {entity_id} has invalid temporal reciprocal state: {reason}")]
@@ -951,6 +963,57 @@ fn validate_passenger_size_tables(sim: &Simulation) -> Result<(), SnapshotRestor
     Ok(())
 }
 
+fn validate_house_capture_facility_vector(
+    sim: &Simulation,
+    owner: crate::sim::intern::InternedId,
+    field: &'static str,
+    building_ids: &[u64],
+    is_member: impl Fn(&crate::sim::game_entity::GameEntity) -> bool,
+) -> Result<(), SnapshotRestoreError> {
+    let mut seen = BTreeSet::new();
+    for &building_id in building_ids {
+        if !seen.insert(building_id) {
+            return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                owner,
+                field,
+                building_id,
+                reason: "duplicate identity",
+            });
+        }
+        let Some(building) = sim.substrate.entities.get(building_id) else {
+            return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                owner,
+                field,
+                building_id,
+                reason: "identity does not resolve",
+            });
+        };
+        let reason = if building.category != crate::map::entities::EntityCategory::Structure {
+            Some("identity is not a Building")
+        } else if building.owner != owner {
+            Some("Building owner does not match House")
+        } else if !building.lifecycle.object_alive
+            || building.lifecycle.in_limbo
+            || !building.lifecycle.cell_marked
+        {
+            Some("Building is not live and placed")
+        } else if !is_member(building) {
+            Some("Building type lacks vector membership")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                owner,
+                field,
+                building_id,
+                reason,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn restore_object_references(
     sim: &mut Simulation,
     identities: &BTreeMap<u64, &'static str>,
@@ -971,6 +1034,68 @@ fn restore_object_references(
         .iter()
         .map(|(&id, _)| id)
         .collect();
+
+    for (&owner, house) in &sim.houses {
+        validate_house_capture_facility_vector(
+            sim,
+            owner,
+            "grinder_building_order",
+            &house.grinder_building_order,
+            |building| building.grinding_facility,
+        )?;
+        validate_house_capture_facility_vector(
+            sim,
+            owner,
+            "absorber_building_order",
+            &house.absorber_building_order,
+            |building| building.absorber_facility,
+        )?;
+    }
+    for (building_id, building) in sim.substrate.entities.iter_sorted() {
+        if building.category != crate::map::entities::EntityCategory::Structure
+            || !building.lifecycle.object_alive
+            || building.lifecycle.in_limbo
+            || !building.lifecycle.cell_marked
+        {
+            continue;
+        }
+        let Some(house) = sim.houses.get(&building.owner) else {
+            if building.grinding_facility || building.absorber_facility {
+                return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                    owner: building.owner,
+                    field: if building.grinding_facility {
+                        "grinder_building_order"
+                    } else {
+                        "absorber_building_order"
+                    },
+                    building_id,
+                    reason: "owning House does not resolve",
+                });
+            }
+            continue;
+        };
+        for (enabled, field, vector) in [
+            (
+                building.grinding_facility,
+                "grinder_building_order",
+                &house.grinder_building_order,
+            ),
+            (
+                building.absorber_facility,
+                "absorber_building_order",
+                &house.absorber_building_order,
+            ),
+        ] {
+            if enabled && !vector.contains(&building_id) {
+                return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                    owner: building.owner,
+                    field,
+                    building_id,
+                    reason: "live placed member is absent from House vector",
+                });
+            }
+        }
+    }
 
     // Swizzle::Apply has no unmatched-reference recovery path. Validate the
     // complete modeled pointer graph before mutating even weak references or
@@ -3110,10 +3235,13 @@ mod tests {
     /// 112 -> 113 adds the active-retail crate/result authority and the local
     /// Tactical camera presentation adjunct envelope; 113 -> 114 adds the
     /// mind-control, temporary-transfer, and TemporalClass state required by
-    /// native House-wide destruction ownership and synchronous detachment.
+    /// native House-wide destruction ownership and synchronous detachment;
+    /// 114 -> 115 adds CaptureManager transaction continuations; 115 -> 116
+    /// adds the distinct House Grinder/Absorber vectors and immutable entity
+    /// membership bits consumed by DecideUnitFate.
     #[test]
-    fn phase3_result_destruction_prerequisite_snapshot_version_is_115() {
-        assert_eq!(super::SNAPSHOT_VERSION, 115);
+    fn phase3_capture_facility_snapshot_version_is_116() {
+        assert_eq!(super::SNAPSHOT_VERSION, 116);
     }
 
     #[test]
@@ -3408,6 +3536,153 @@ mod tests {
                 .build_const_eligible
         );
         assert_eq!(restored.state_hash(), ordered_hash);
+    }
+
+    #[test]
+    fn capture_facility_vectors_roundtrip_hash_order_and_reject_bad_references() {
+        let rules = crate::rules::ruleset::RuleSet::from_ini(
+            &crate::rules::ini_parser::IniFile::from_str(
+                "[VehicleTypes]\n\
+                 [InfantryTypes]\n\
+                 [AircraftTypes]\n\
+                 [BuildingTypes]\n0=FACILITY\n\
+                 [FACILITY]\nStrength=500\nGrinding=yes\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\n",
+            ),
+        )
+        .unwrap();
+        let mut sim = Simulation::with_seed(0);
+        let owner = sim.interner.intern("Owner");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 10),
+        );
+        sim.session.house_order.push(owner);
+        let older_id = sim
+            .spawn_object("FACILITY", "Owner", 4, 4, 0, &rules, &Default::default())
+            .unwrap();
+        let newer_id = sim
+            .spawn_object("FACILITY", "Owner", 5, 4, 0, &rules, &Default::default())
+            .unwrap();
+        assert_eq!(
+            sim.houses[&owner].grinder_building_order,
+            vec![older_id, newer_id]
+        );
+        assert_eq!(
+            sim.houses[&owner].absorber_building_order,
+            vec![older_id, newer_id]
+        );
+
+        let ordered_hash = sim.state_hash();
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .swap(0, 1);
+        assert_ne!(sim.state_hash(), ordered_hash, "House vector order hashes");
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .swap(0, 1);
+        sim.substrate
+            .entities
+            .get_mut(older_id)
+            .unwrap()
+            .grinding_facility = false;
+        assert_ne!(sim.state_hash(), ordered_hash, "immutable membership hashes");
+        sim.substrate
+            .entities
+            .get_mut(older_id)
+            .unwrap()
+            .grinding_facility = true;
+        assert_eq!(sim.state_hash(), ordered_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "capture-facilities", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("v116 facility references resolve");
+        assert_eq!(
+            restored.houses[&owner].grinder_building_order,
+            vec![older_id, newer_id]
+        );
+        assert_eq!(
+            restored.houses[&owner].absorber_building_order,
+            vec![older_id, newer_id]
+        );
+        assert_eq!(restored.state_hash(), ordered_hash);
+
+        let mut duplicate = GameSnapshot::load(&bytes).unwrap().sim;
+        duplicate
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .push(older_id);
+        assert!(matches!(
+            duplicate.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "grinder_building_order",
+                building_id,
+                reason: "duplicate identity",
+                ..
+            }) if building_id == older_id
+        ));
+
+        let mut missing = GameSnapshot::load(&bytes).unwrap().sim;
+        missing
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .retain(|&building_id| building_id != older_id);
+        assert!(matches!(
+            missing.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "grinder_building_order",
+                building_id,
+                reason: "live placed member is absent from House vector",
+                ..
+            }) if building_id == older_id
+        ));
+
+        let mut foreign = GameSnapshot::load(&bytes).unwrap().sim;
+        let other = foreign.interner.intern("OtherOwner");
+        foreign.houses.insert(
+            other,
+            crate::sim::house_state::HouseState::new(other, 1, None, false, 0, 10),
+        );
+        foreign.substrate.entities.get_mut(older_id).unwrap().owner = other;
+        assert!(matches!(
+            foreign.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "grinder_building_order",
+                building_id,
+                reason: "Building owner does not match House",
+                ..
+            }) if building_id == older_id
+        ));
+
+        let mut wrong_profile = GameSnapshot::load(&bytes).unwrap().sim;
+        wrong_profile
+            .substrate
+            .entities
+            .get_mut(older_id)
+            .unwrap()
+            .absorber_facility = false;
+        assert!(matches!(
+            wrong_profile.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "absorber_building_order",
+                building_id,
+                reason: "Building type lacks vector membership",
+                ..
+            }) if building_id == older_id
+        ));
     }
 
     #[test]

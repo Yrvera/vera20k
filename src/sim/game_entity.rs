@@ -382,6 +382,14 @@ pub struct GameEntity {
     /// native acquisition order exactly.
     #[serde(default)]
     pub build_const_eligible: bool,
+    /// Immutable BuildingType `Grinding=` membership used by the rule-less
+    /// House special-building vector lifecycle.
+    #[serde(default)]
+    pub grinding_facility: bool,
+    /// Immutable combined BuildingType `UnitAbsorb=`/`InfantryAbsorb=`
+    /// membership used by the rule-less House absorber-vector lifecycle.
+    #[serde(default)]
+    pub absorber_facility: bool,
     /// Immutable native BuildingType registry index for BasePlan lifecycle writers.
     #[serde(default = "default_base_plan_type_index")]
     pub base_plan_type_index: i32,
@@ -1184,6 +1192,8 @@ impl GameEntity {
             base_reservation_spacing: None,
             determines_waypoint_edge: false,
             build_const_eligible: false,
+            grinding_facility: false,
+            absorber_facility: false,
             base_plan_type_index: -1,
             base_plan_is_defense: false,
             base_plan_has_undeploy_target: false,
