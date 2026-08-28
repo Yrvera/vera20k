@@ -130,20 +130,80 @@ Rows are ordered by expected player-visibility × frequency within the tier.
 
 | ID | Loc | Kind | Rel | Src | Disp | Fixture | Open | The one check that settles it |
 |---|---|---|---|---|---|---|---|---|
-| T2-01 | Drive | high intact | onto | atk-mv | UNCHECKED | BayOPigs.mmx x=111 span | OI-15 | Attack-move a group across the span and assert (a) it crosses, (b) it does **not** select a bridge repair hut as a path obstacle. VERA has four consumers of `bridge_repair_hut` and none is a passability or A* cost test; gamemd returns `MOVE_NO` unconditionally (`0x0051C62F` / `0x0073FC00`). If VERA prices the hut as ordinary destroyable, an attack-moving force cuts its own bridge. Stands for Walk. |
-| T2-02 | Drive | high intact | along | AI | UNCHECKED | Hills.mmx y=74 span | OI-08 | Scripted team move across the span. `ObjectClass::ShouldBeOnBridge 0x005F6A70` feeds zone reachability from the **destination** height; VERA passes the raw mover layer (`movement_bridge.rs:1105-1108`, `#[ignore]`d, panics "unimplemented"). A team goal on the far side is exactly the ≥4-level destination that triggers it. |
-| T2-03 | Drive | high intact | along | bump | UNCHECKED | BayOPigs.mmx x=111, block the span mid-crossing with a second unit | — | Block a deck cell in front of a crossing tank and let `try_repath_after_block` (`movement_path.rs:561`) run. It is untested on a deck anywhere in the tree. Assert the repath stays on the Bridge layer instead of dropping to Ground. |
-| T2-04 | Hover | high intact | onto | atk-mv | UNCHECKED — **rationale rewritten** | BayOPigs.mmx x=111 | OI-06 closed | **The reason this row was separate is gone.** It read "Hover takes the flat branch, where `is_bridge_only_goal` can drop the order outright". `is_bridge_only_goal` is reachable only when `layered_pathing == false`, and since `3687cc94` Hover is layered, so that predicate no longer sees a Hover mover at all. The row stays UNCHECKED on its *other* half, which is still real: an attack-move's goal selection is a different code path from a plain move, and no attack-move across a span has ever been run by any locomotor. Fold into T2-01 if a Drive attack-move settles the goal-selection question; keep separate only if it does not. |
-| T2-05 | Drive | high ramp/bridgehead | onto | move | UNCHECKED | BayOPigs.mmx `(111,151)` and `(111,135)`; Hills.mmx `(97,74)`/`(76,74)` — the anchor / F1 / Opposite slots that carry `0x200` | OI-11, OI-12, OI-04 | Log `rejected_reason` for a step onto a bridgehead cell. Three separate ports converge here: `cell_entry.rs:442-452` short-circuits the object-list and speed-row half of the entry test on any transition cell; `core.rs:638-644` makes whole-deck `0x200` load-bearing for the diff-0 arm; `is_at_bridge_level` reads `bridge_walkable` where native reads `0x100`. |
-| T2-06 | Walk | high ramp/bridgehead | onto | move | UNCHECKED | Hills.mmx `(97,74)` | OI-12 | Same as T2-05 with an `E1`; infantry additionally carry the sub-cell reservation across the transition cell. |
+| T2-01 | Drive | high intact | onto | atk-mv | **KNOWN-BROKEN** — attack-move is dropped, and not for a bridge reason | BayOPigs.mmx x=111 span | OI-15 | Attack-move a group across the span and assert (a) it crosses, (b) it does **not** select a bridge repair hut as a path obstacle. VERA has four consumers of `bridge_repair_hut` and none is a passability or A* cost test; gamemd returns `MOVE_NO` unconditionally (`0x0051C62F` / `0x0073FC00`). If VERA prices the hut as ordinary destroyable, an attack-moving force cuts its own bridge. Stands for Walk. |
+| T2-02 | Drive | high intact | along | AI | **RESIDUAL** — blocked behind T2-01 | Hills.mmx y=74 span | OI-08 | Scripted team move across the span. `ObjectClass::ShouldBeOnBridge 0x005F6A70` feeds zone reachability from the **destination** height; VERA passes the raw mover layer (`movement_bridge.rs:1105-1108`, `#[ignore]`d, panics "unimplemented"). A team goal on the far side is exactly the ≥4-level destination that triggers it. |
+| T2-03 | Drive | high intact | along | bump | **VERIFIED-OK** | BayOPigs.mmx x=111, block the span mid-crossing with a second unit | — | Block a deck cell in front of a crossing tank and let `try_repath_after_block` (`movement_path.rs:561`) run. It is untested on a deck anywhere in the tree. Assert the repath stays on the Bridge layer instead of dropping to Ground. |
+| T2-04 | Hover | high intact | onto | atk-mv | **KNOWN-BROKEN** — same drop as T2-01, measured not assumed | BayOPigs.mmx x=111 | OI-06 closed | **The reason this row was separate is gone.** It read "Hover takes the flat branch, where `is_bridge_only_goal` can drop the order outright". `is_bridge_only_goal` is reachable only when `layered_pathing == false`, and since `3687cc94` Hover is layered, so that predicate no longer sees a Hover mover at all. The row stays UNCHECKED on its *other* half, which is still real: an attack-move's goal selection is a different code path from a plain move, and no attack-move across a span has ever been run by any locomotor. Fold into T2-01 if a Drive attack-move settles the goal-selection question; keep separate only if it does not. |
+| T2-05 | Drive | high ramp/bridgehead | onto | move | **RESIDUAL** — ramp traversed in all 7 high crossings, `rejected_reason` unasserted | BayOPigs.mmx `(111,151)` and `(111,135)`; Hills.mmx `(97,74)`/`(76,74)` — the anchor / F1 / Opposite slots that carry `0x200` | OI-11, OI-12, OI-04 | Log `rejected_reason` for a step onto a bridgehead cell. Three separate ports converge here: `cell_entry.rs:442-452` short-circuits the object-list and speed-row half of the entry test on any transition cell; `core.rs:638-644` makes whole-deck `0x200` load-bearing for the diff-0 arm; `is_at_bridge_level` reads `bridge_walkable` where native reads `0x100`. |
+| T2-06 | Walk | high ramp/bridgehead | onto | move | **RESIDUAL** — same as T2-05, infantry arm | Hills.mmx `(97,74)` | OI-12 | Same as T2-05 with an `E1`; infantry additionally carry the sub-cell reservation across the transition cell. |
 | T2-07 | Drive | low intact | along | AI | **KNOWN-BROKEN** | Lostlake.mmx y=117; any map with an authored `[Tubes]` section | OI-07 | `tube_hierarchy_pairs_are_unregistered` (`zone_build.rs:3041-3045`) `panic!`s "unimplemented: tube branch of `RegisterBridgeOrTubeHierarchyPairs 0x00582D70`". The high-bridge half of the same function **is** ported. Settled by implementing the tube branch and asserting a long cross-map order routes through the tube instead of around it. |
-| T2-08 | Drive | high damaged (body byte 6) | along | move | UNCHECKED | **MIX**: `all06umd.map` `(37,34)-(41,34)`, `c3y01md.map` `(59,99)-(65,99)`, `xmp04t8.map` `(163,192)-(167,192)`. No loose map carries byte 6. | — | Extract one MIX map to the retail root, then order a crossing over the damaged body cell. `Damaged(NS)` is 7 cells across the whole 184-map corpus — rare but author-placed and real. |
-| T2-09 | Drive | high partially collapsed | onto | move | UNCHECKED | Deadman.mmx y=41: intact `(55,41)`, collapse stub `(56,41)` state 8, gap x=57..60, stub `(61,41)` state 7. LOOSE | OI-28 | Order across the gap. Correct behaviour is a refusal or a route around, never a drive into the gap. Deadman and YuriPlot are the only loose maps with author-placed collapse states. |
-| T2-10 | Drive | low damaged/destroyed | along | move | UNCHECKED | Shrapnel.mmx `(106..108, 46..48)` and `(114..116, 58..60)` — ids 82/100/81 and 90/101/91, where `0x64/0x65` are the terminal sinks of the wood damage table. LOOSE | OI-29e | Order a crossing through the destroyed middle strip. This is the only loose map in the corpus with author-placed non-pristine low-bridge ids. |
+| T2-08 | Drive | high damaged (body byte 6) | along | move | **RESIDUAL** — no loose damaged-high fixture | **MIX**: `all06umd.map` `(37,34)-(41,34)`, `c3y01md.map` `(59,99)-(65,99)`, `xmp04t8.map` `(163,192)-(167,192)`. No loose map carries byte 6. | — | Extract one MIX map to the retail root, then order a crossing over the damaged body cell. `Damaged(NS)` is 7 cells across the whole 184-map corpus — rare but author-placed and real. |
+| T2-09 | Drive | high partially collapsed | onto | move | **VERIFIED-OK** | Deadman.mmx y=41: intact `(55,41)`, collapse stub `(56,41)` state 8, gap x=57..60, stub `(61,41)` state 7. LOOSE | OI-28 | Order across the gap. Correct behaviour is a refusal or a route around, never a drive into the gap. Deadman and YuriPlot are the only loose maps with author-placed collapse states. |
+| T2-10 | Drive | low damaged/destroyed | along | move | **VERIFIED-OK** | Shrapnel.mmx `(106..108, 46..48)` and `(114..116, 58..60)` — ids 82/100/81 and 90/101/91, where `0x64/0x65` are the terminal sinks of the wood damage table. LOOSE | OI-29e | Order a crossing through the destroyed middle strip. This is the only loose map in the corpus with author-placed non-pristine low-bridge ids. |
 | T2-11 | Drive | high repaired | along | move | **KNOWN-BROKEN** | Any high-wood map with a CABHUT; Hills.mmx or Carville.mmx | OI-29 | `bridge_repair_terrain_restoration_is_unported` (`bridge_state/tests.rs:2708-2712`) is `#[ignore]`d: `cell+0x11B += 4` is never re-applied and `ValidateBridgeZones 0x0056DB70` + `RebuildZoneConnectivity` never run. Repairs are uncommon per match but the effect **persists for the rest of the game** and both players then path over that span. Blocked: the branch selectors are runtime BSS theater constants that cannot be read statically — recorded rather than guessed. |
-| T2-12 | Drive | high intact | off | retreat | UNCHECKED | BayOPigs.mmx `(111,135)` under fire | — | Damage a unit mid-span so it takes the retreat mission and observe the exit. The concern is not the order source itself but that a mission-driven repath re-enters `movement_commands.rs:288-289`, which hardcodes `path_layers: vec![current_layer, current_layer]` for direct two-node targets (OI-24). |
-| T2-13 | Drive | high intact | along | guard | UNCHECKED | Hills.mmx y=74 | — | Put a unit on guard beside a span and give it a target across; assert the pursuit crosses rather than stalling at the bridgehead. No observation exists for any order source other than a single ordinary Move. |
+| T2-12 | Drive | high intact | off | retreat | **RESIDUAL** — order source unexercised | BayOPigs.mmx `(111,135)` under fire | — | Damage a unit mid-span so it takes the retreat mission and observe the exit. The concern is not the order source itself but that a mission-driven repath re-enters `movement_commands.rs:288-289`, which hardcodes `path_layers: vec![current_layer, current_layer]` for direct two-node targets (OI-24). |
+| T2-13 | Drive | high intact | along | guard | **RESIDUAL** — order source unexercised | Hills.mmx y=74 | — | Put a unit on guard beside a span and give it a target across; assert the pursuit crosses rather than stalling at the bridgehead. No observation exists for any order source other than a single ordinary Move. |
 | T2-14 | Drive+Walk | high intact | alongside | move | **RESIDUAL** | BayOPigs.mmx `x ∈ {109,110,112,113}` at `y=143` — the F2/Opposite structural slots that are stamped but off the drive line | OI-30c | **Trigger:** any ground unit standing on a structural bridge cell that is not the deck drive line. **Player effect:** the under-bridge SHP pass writes depth (`merge_passes.rs:215`, `LessEqual`, write ON) where the ordinary ground pass does not (`Always`, no write), so an infantryman one cell inside the structural band can clip later voxel units while the same man one cell outside does not. **Frequency:** uncommon, but gated on nothing rare — any bridged map, any unit walking past the abutment. Render-side; deliberately not fixed while sim rows are open. |
+
+#### Tier 2 settlement, 2026-08-28
+
+Every Tier 2 row is now dispositioned. Eight new retail tests; the whole retail module runs
+`test result: ok. 29 passed; 0 failed`, full suite `7509 passed; 0 failed`.
+
+**The headline is not a bridge bug.** `T2-01`/`T2-04`: an **attack-move across a span is
+dropped on the tick after it is issued** — for Drive, Walk and Hover, on both map geometries.
+The order is admitted and a complete 19-node route across the deck *is* built, so the planner,
+the zone hierarchy and the bridge-deck exemption all behave correctly; the `MovementTarget` is
+then simply gone by the next committed frame and the mover never leaves its cell. So the bridge
+half of these rows is fine and the defect is in attack-move itself. *Trigger:* any attack-move
+whose route crosses a span. *Player effect:* the standard way players advance an army across a
+bridge does nothing. *Frequency:* every attack-move over a bridge — high, since attack-move is
+the ordinary way to move a combat group. Pinned by four `..._attack_moved_..._is_currently_dropped`
+characterization tests that go red when it is fixed. **This should be re-scoped out of the
+bridge program**: it is an order-source defect that a bridge merely revealed.
+
+**`T2-02` (AI team) — RESIDUAL, blocked behind T2-01.** An AI team's cross-bridge movement is
+issued through the same non-player order machinery; measuring it before attack-move works would
+only re-measure T2-01's drop. *Trigger:* any AI team routed over a span. *Player effect:*
+AI armies fail to use bridges. *Frequency:* every skirmish against AI on a bridge map — but the
+AI opponent is deferred project-wide, so nobody sees it yet. *Settling check:* re-run after
+T2-01 is fixed.
+
+**`T2-03` (bump / repath) — VERIFIED-OK.** Two tanks, one span: the first is parked mid-deck,
+the second ordered across into it. Asserted that the blocker genuinely reached the deck and
+stopped at deck height, that every frame of the crosser obeys the native height model, and that
+no node of the crosser's live `path_layers` landing on a structural cell is `Ground` — i.e. the
+repath stays on the bridge plane instead of dropping to ground. This is also the project's only
+observation of a drive track that *terminates* on a deck cell, which is residual R-T105's
+trigger.
+
+**`T2-09` (partially collapsed) — VERIFIED-OK.** Ordered onto the stamped stub on the far side
+of a collapse gap, where every bridge-line route crosses cells whose deck is missing and whose
+ground is four levels down. The mover never drives into the gap.
+
+**`T2-10` (low destroyed) — VERIFIED-OK.** A destroyed low span is not crossable.
+
+**`T2-05`/`T2-06` (ramp / bridgehead) — RESIDUAL.** Every one of the seven high crossings
+traverses a ramp at both ends, so the geometry is exercised on every run — but the rows' named
+check is the `rejected_reason` on a bridgehead step, and no test asserts a rejection reason.
+*Trigger:* every bridge approach. *Player effect:* none observed; three separate ports converge
+on these cells and a divergence would show as a refused or mis-planed approach step.
+*Frequency:* constant on bridge maps. *Settling check:* assert `rejected_reason` on a
+bridgehead step — an instrument change, not another run.
+
+**`T2-08` (damaged high span) — RESIDUAL, fixture gap.** `retail_damaged_bridge_inventory`
+found no loose retail map carrying a *damaged* high span; damage is a runtime state, not map
+data. *Settling check:* damage a span in-scenario and re-run a crossing, or extract a fixture
+from MIX. Named as a fixture gap rather than a silent skip.
+
+**`T2-12`/`T2-13` (retreat, guard) — RESIDUAL.** Neither order source has ever been exercised
+over a span. §2 records that order source is selected *above* the planner entry the locomotors
+share, so a plain Move crossing is evidence about the planner but not about these. *Trigger:*
+a retreating or guarding unit whose route crosses a span. *Player effect:* unknown; T2-01 shows
+an order source can be dropped entirely while the route builds fine, so this family is not
+safely collapsible onto the Move rows. *Frequency:* retreat is common under fire; guard-area
+pursuit is common on defensive lines. *Settling check:* one probe each, same shape as the
+attack-move probe.
 
 ### Tier 3 — Ship, Teleport, and destroyed-span edges
 
