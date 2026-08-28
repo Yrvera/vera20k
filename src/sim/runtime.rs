@@ -554,26 +554,6 @@ where
     sim
 }
 
-/// BuildingClass::GetCoords projects the stored north-west anchor to the
-/// foundation centre before distance consumers receive it.
-fn project_building_get_coords_xy(
-    northwest_x: i32,
-    northwest_y: i32,
-    foundation_width: u16,
-    foundation_height: u16,
-) -> (i32, i32) {
-    let x_offset = i32::from(foundation_width)
-        .wrapping_sub(1)
-        .wrapping_mul(128);
-    let y_offset = i32::from(foundation_height)
-        .wrapping_sub(1)
-        .wrapping_mul(128);
-    (
-        northwest_x.wrapping_add(x_offset),
-        northwest_y.wrapping_add(y_offset),
-    )
-}
-
 pub(crate) fn map_wall_owner_candidate_from_building(
     entity: &crate::sim::game_entity::GameEntity,
     resolved_terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
@@ -599,7 +579,7 @@ pub(crate) fn map_wall_owner_candidate_from_building(
         .unwrap_or(i32::from(entity.position.z) * crate::util::lepton::LEPTONS_PER_LEVEL as i32);
     let (foundation_width, foundation_height) =
         crate::sim::production::foundation_dimensions(&entity.foundation);
-    let (world_x, world_y) = project_building_get_coords_xy(
+    let (world_x, world_y) = crate::sim::game_entity::project_building_get_coords_xy(
         northwest_x,
         northwest_y,
         foundation_width,

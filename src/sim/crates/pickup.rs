@@ -161,6 +161,14 @@ impl Simulation {
                 result,
             );
         }
+        if result == NativePickupReturn::One
+            && let Some(entity) = self.substrate.entities.get_mut(collector_id)
+        {
+            let _ = crate::sim::movement::complete_process_movement_final_pickup(
+                entity,
+                &mut self.substrate.cell_occupation,
+            );
+        }
         result
     }
 

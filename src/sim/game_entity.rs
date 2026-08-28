@@ -53,6 +53,29 @@ use crate::util::native_x87::NativeF64Bits;
 /// targeting delays.
 pub const PASSIVE_SCAN_CONSTRUCTION_DELAY_FRAMES: u32 = 45;
 
+/// Shared `BuildingClass::GetCoords @ 0x00447AC0` X/Y projection. Both live
+/// object-coordinate consumers (map-wall reconstruction and object NavCom)
+/// must shift the stored north-west anchor by the same foundation-center term.
+pub(crate) fn project_building_get_coords_xy(
+    northwest_x: i32,
+    northwest_y: i32,
+    foundation_width: u16,
+    foundation_height: u16,
+) -> (i32, i32) {
+    (
+        northwest_x.wrapping_add(
+            i32::from(foundation_width)
+                .wrapping_sub(1)
+                .wrapping_mul(128),
+        ),
+        northwest_y.wrapping_add(
+            i32::from(foundation_height)
+                .wrapping_sub(1)
+                .wrapping_mul(128),
+        ),
+    )
+}
+
 /// Infantry-only runtime fear/prone state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InfantryRuntime {

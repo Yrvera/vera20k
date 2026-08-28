@@ -54,7 +54,9 @@ pub fn receive_radio(
             // TODO(BLOCKED parity): BuildingClass runs GrandOpening before its
             // Techno/base BREAK tail. No exact represented animation authority
             // exists here yet, so do not approximate that effect.
-            if is_bunker_building(sim, target_sid) {
+            if is_absorber_building(sim, target_sid) {
+                absorber_receive(sim, target_sid, sender_sid, msg)
+            } else if is_bunker_building(sim, target_sid) {
                 bunker_receive(sim, target_sid, sender_sid, msg)
             } else {
                 refinery_receive(sim, target_sid, sender_sid, msg)
@@ -92,6 +94,47 @@ pub fn receive_radio(
     }
 
     response
+}
+
+fn is_absorber_building(sim: &Simulation, sid: u64) -> bool {
+    sim.substrate
+        .entities
+        .get(sid)
+        .is_some_and(|building| building.absorber_facility)
+}
+
+/// Capture-fate Mission Enter's directed 0x0E leaf. Direct radio messages do
+/// not create a contact: an existing HELLO relationship ROGERs, while a missing
+/// relationship is the hard-refusal response. Unit's separate force-enter
+/// virtual is evaluated by the Mission handler after this exact reply.
+fn absorber_receive(
+    sim: &mut Simulation,
+    building_id: u64,
+    sender: Option<u64>,
+    msg: RadioMessage,
+) -> RadioResponse {
+    let Some(sender_id) = sender else {
+        return RadioResponse::None;
+    };
+    match msg {
+        RadioMessage::CanDock => {
+            if sim
+                .substrate
+                .entities
+                .get(building_id)
+                .is_some_and(|building| {
+                    !building.dying
+                        && building.health.current > 0
+                        && building.radio_contacts.contains(sender_id)
+                })
+            {
+                RadioResponse::Roger
+            } else {
+                RadioResponse::Negatory
+            }
+        }
+        _ => RadioResponse::None,
+    }
 }
 
 /// Common `RadioClass::Receive_Radio(BREAK)` tail. Class-specific receiver work
@@ -615,6 +658,11 @@ mod tests {
         assert_eq!(
             take_test_trace(),
             vec![
+                RadioTestEvent::Transmit {
+                    sender_sid: 1,
+                    target_sid: 2,
+                    message: RadioMessage::Break,
+                },
                 RadioTestEvent::SenderBreakCleared {
                     sender_sid: 1,
                     target_sid: 2,

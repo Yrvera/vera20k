@@ -1159,11 +1159,8 @@ impl DriveCellAdmission<'_> {
 
 #[allow(clippy::too_many_arguments)]
 fn finish_fresh_track_after_first_pickup(
-    drive_track_state: &mut Option<DriveTrackState>,
     drive_locomotion: &mut Option<DriveLocomotionRuntime>,
     ship_locomotion: &mut Option<ShipLocomotionRuntime>,
-    cell_occupation: &mut Option<&mut CellOccupationGrid>,
-    entity_id: u64,
     crate_probes: &mut Vec<super::crate_callers::MovementCrateProbe>,
     process_crate_resume: &mut Option<super::crate_callers::ProcessMovementPickupResume>,
     mut resume: super::crate_callers::ProcessMovementPickupResume,
@@ -1195,27 +1192,6 @@ fn finish_fresh_track_after_first_pickup(
         resume.endpoint_coord,
         resume.plan.nodes,
     );
-    let next_occupation = (resume.endpoint_layer == MovementLayer::Ground)
-        .then(|| {
-            Some(DriveOccupationFootprint {
-                rx: u16::try_from(resume.endpoint.0).ok()?,
-                ry: u16::try_from(resume.endpoint.1).ok()?,
-                layer: MovementLayer::Ground,
-            })
-        })
-        .flatten();
-    let handoff_occupation = drive_track_state.as_ref().and_then(|track| {
-        drive_track_handoff_footprint(track, resume.origin_cell, resume.endpoint_layer)
-    });
-    install_drive_head_to_occupation(
-        drive_locomotion,
-        cell_occupation,
-        entity_id,
-        resume.origin_cell,
-        resume.origin_layer,
-        next_occupation,
-        handoff_occupation,
-    );
     crate_probes.push(super::crate_callers::MovementCrateProbe {
         callsite: if resume.shared_kind == LocomotorKind::Ship {
             super::crate_callers::MovementCrateCallsite::ShipProcessMovementFinal
@@ -1229,6 +1205,62 @@ fn finish_fresh_track_after_first_pickup(
     resume.admitted = false;
     *process_crate_resume = Some(resume);
     FreshTrackOutcome::CrateSuspended
+}
+
+/// Resume the successful second/final ProcessMovement crate caller after the
+/// synchronous callback has released every Simulation borrow.
+///
+/// Active `gamemd.exe` does **not** move the object to the installed endpoint
+/// here.  `DriveLocomotionClass::Process_Movement @ 0x004B46E6` dispatches the
+/// pickup and, on `One` plus unlimbo, calls
+/// `Apply_Track_Occupation_Mode(endpoint, 1) @ 0x004B4705`.  The object remains
+/// at its current coordinate and the already-installed RawTrack advances it on
+/// later paid points.  Keeping this tail on `CellOccupationGrid` also preserves
+/// the required callback-before-mark order without splitting Position from the
+/// object-list occupancy owner.
+pub(crate) fn complete_process_movement_final_pickup(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    cell_occupation: &mut CellOccupationGrid,
+) -> bool {
+    let Some(resume) = entity.pending_process_movement_crate_resume.take() else {
+        return false;
+    };
+    if resume.stage != super::crate_callers::ProcessMovementPickupStage::Final {
+        entity.pending_process_movement_crate_resume = Some(resume);
+        return false;
+    }
+    debug_assert!(resume.admitted, "only an admitted final pickup tail may resume");
+
+    let next_occupation = (resume.endpoint_layer == MovementLayer::Ground)
+        .then(|| {
+            Some(DriveOccupationFootprint {
+                rx: u16::try_from(resume.endpoint.0).ok()?,
+                ry: u16::try_from(resume.endpoint.1).ok()?,
+                layer: MovementLayer::Ground,
+            })
+        })
+        .flatten();
+    let handoff_occupation = entity.drive_track.as_ref().and_then(|track| {
+        drive_track_handoff_footprint(track, resume.origin_cell, resume.endpoint_layer)
+    });
+    // The callback may have moved the object without changing the immutable
+    // RawTrack selection.  Apply_Track_Occupation_Mode still uses that
+    // original track endpoint/handoff, but replacement bookkeeping must
+    // preserve a coincident *live post-callback* body claim rather than the
+    // cell ProcessMovement occupied before dispatch.
+    let current_cell = (entity.position.rx, entity.position.ry);
+    let current_layer = entity.occupancy_list_layer().unwrap_or(resume.origin_layer);
+    let mut occupation = Some(cell_occupation);
+    install_drive_head_to_occupation(
+        &mut entity.drive_locomotion,
+        &mut occupation,
+        entity.stable_id,
+        current_cell,
+        current_layer,
+        next_occupation,
+        handoff_occupation,
+    );
+    true
 }
 
 /// Run the fresh Drive/Ship curve selection for a mover standing on its own
@@ -1446,11 +1478,8 @@ fn select_fresh_drive_track_at_current_cell(
     // independently verified final call after endpoint installation.
     resume.admitted = true;
     finish_fresh_track_after_first_pickup(
-        drive_track_state,
         drive_locomotion,
         ship_locomotion,
-        cell_occupation,
-        entity_id,
         crate_probes,
         process_crate_resume,
         resume,
@@ -1630,11 +1659,8 @@ pub(super) fn advance_lepton_position_with_crate_probes(
         );
         debug_assert!(resume.admitted, "only an admitted first-candidate tail may resume");
         return match finish_fresh_track_after_first_pickup(
-            drive_track_state,
             drive_locomotion,
             ship_locomotion,
-            &mut cell_occupation,
-            entity_id,
             crate_probes,
             process_crate_resume,
             resume,

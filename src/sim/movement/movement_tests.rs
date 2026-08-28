@@ -230,12 +230,15 @@ fn gsi_04_05_tick_production_movement(
     let live_order = [1];
     let mut sound_events = Vec::new();
     let mut lifecycle_requests = Vec::new();
+    let terrain_costs = Default::default();
+    let alliances = Default::default();
+    let empty_houses = Default::default();
     tick_movement_with_grids(
         &mut sim.substrate.entities,
         Some(&live_order),
         path_grid,
-        &Default::default(),
-        &Default::default(),
+        &terrain_costs,
+        &alliances,
         &mut sim.substrate.occupancy,
         &mut sim.substrate.cell_occupation,
         &mut sim.substrate.raw_cell_occupation,
@@ -255,6 +258,66 @@ fn gsi_04_05_tick_production_movement(
         &mut sound_events,
         &mut lifecycle_requests,
     );
+    loop {
+        let probes = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+            .unwrap_or_default();
+        if probes.is_empty() {
+            break;
+        }
+        for probe in probes {
+            if let Some(entity) = sim.substrate.entities.get_mut(1) {
+                let _ = super::crate_callers::continue_after_pickup(
+                    entity,
+                    probe,
+                    crate::sim::crates::NativePickupReturn::One,
+                );
+                let _ = super::complete_process_movement_final_pickup(
+                    entity,
+                    &mut sim.substrate.cell_occupation,
+                );
+            }
+        }
+        if !sim.substrate.entities.get(1).is_some_and(|entity| {
+            entity.pending_drive_track_crate_resume.is_some()
+                || entity.pending_process_movement_crate_resume.is_some()
+                || entity.pending_ground_crossing_crate_resume.is_some()
+        }) {
+            break;
+        }
+        let _ = tick_movement_object_with_grids(
+            &mut sim.substrate.entities,
+            1,
+            path_grid,
+            &terrain_costs,
+            &alliances,
+            &mut sim.substrate.occupancy,
+            &mut sim.substrate.cell_occupation,
+            &mut sim.substrate.raw_cell_occupation,
+            &mut sim.substrate.next_occupancy_enter_order,
+            &mut sim.scenario_rng,
+            u64::from(native_frame),
+            native_frame,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            SIM_ZERO,
+            9,
+            60,
+            &mut sim.interner,
+            None,
+            &empty_houses,
+            &mut sound_events,
+            &mut lifecycle_requests,
+            true,
+        );
+    }
 }
 
 fn drive_ship_slope_process_tick(
@@ -4029,8 +4092,9 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
             .as_ref()
             .expect("still moving")
             .current_speed,
-        SimFixed::from_num(50),
-        "Drive current speed should be raw speed scaled by current fraction"
+        SimFixed::from_num(45),
+        "the no-rules fallback preserves Foot::GetCurrentSpeed's integer type-speed boundary: \
+         floor(100/15) * 0.5 -> 3, then 3 * 15"
     );
 }
 
@@ -4099,8 +4163,10 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
     assert_eq!(drive.target_speed_fraction, NativeF64Bits::ONE);
     assert_eq!(
-        f64::from_bits(entity.current_speed_fraction.bits()),
-        0.03
+        entity.current_speed_fraction,
+        super::drive_locomotion::native_fraction_from_sim(SimFixed::lit("0.03")),
+        "a no-rules unit-test harness uses the explicitly quantized SimFixed fallback; \
+         production rules supply the parsed NativeF64Bits value"
     );
     assert_eq!(
         entity
@@ -4108,7 +4174,9 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
             .as_ref()
             .expect("still moving")
             .current_speed,
-        SimFixed::from_num(100) * SimFixed::lit("0.03"),
+        SIM_ZERO,
+        "the no-rules fallback retains the native integer speed boundary before restoring \
+         the per-second unit: floor((100 * quantized 0.03) / 15) * 15"
     );
 }
 
@@ -4997,11 +5065,16 @@ fn tick_hover_world(
         .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
         .unwrap_or_default();
     for probe in probes {
-        assert!(super::crate_callers::continue_after_pickup(
+        // The caller-specific boolean is part of the native leaf contract, not
+        // a generic "pickup succeeded" flag.  In particular Hover may return
+        // false while the staged continuation still owns the normal refusal /
+        // falling tail.  Production drains that tail regardless, so this
+        // legacy movement harness must do the same.
+        let _ = super::crate_callers::continue_after_pickup(
             entities.get_mut(1).expect("hover mover"),
             probe,
             crate::sim::crates::NativePickupReturn::One,
-        ));
+        );
     }
     if entities.get(1).is_some_and(|entity| {
         entity.pending_ground_crossing_crate_resume.is_some()
@@ -5777,11 +5850,140 @@ fn process_movement_descriptor_first_and_final_are_two_synchronous_suspensions()
             Some(final_probe[0].requested),
             "the final xref sees the immutable original endpoint installed"
         );
+        let endpoint_cell = final_probe[0].cell().expect("track endpoint cell");
+        if kind == LocomotorKind::Drive {
+            assert_eq!(
+                occupation.vehicle_bits(
+                    endpoint_cell.0,
+                    endpoint_cell.1,
+                    MovementLayer::Ground,
+                ),
+                0,
+                "ProcessMovement final applies the endpoint occupation only after pickup"
+            );
+
+            // Model an event-49 callback that moved the collector and left an
+            // older auxiliary claim aliased with its new body cell.  The
+            // immutable RawTrack endpoint does not change, but replacement
+            // must compare the old claim to the post-callback body rather than
+            // ProcessMovement's pre-dispatch origin.
+            mover.position.rx = 14;
+            mover.position.ry = 13;
+            mover.lifecycle.cell_marked = true;
+            mover
+                .drive_locomotion
+                .as_mut()
+                .expect("Drive runtime")
+                .current_occupation_cleared = false;
+            occupation.reconcile_entity(&mover);
+            let callback_body = crate::sim::components::DriveOccupationFootprint {
+                rx: mover.position.rx,
+                ry: mover.position.ry,
+                layer: MovementLayer::Ground,
+            };
+            mover
+                .drive_locomotion
+                .as_mut()
+                .expect("Drive runtime")
+                .occupation_head_to = Some(callback_body);
+            occupation.reconcile_entity(&mover);
+            assert_eq!(
+                occupation.vehicle_bits(14, 13, MovementLayer::Ground),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "the callback-moved body owns its new cell before the native tail"
+            );
+
+            let mut dead_unlimbo = mover.clone();
+            let mut dead_occupation = occupation.clone();
+            dead_unlimbo.lifecycle.object_alive = false;
+            dead_unlimbo.lifecycle.cell_marked = false;
+            dead_unlimbo
+                .drive_locomotion
+                .as_mut()
+                .expect("Drive runtime")
+                .current_occupation_cleared = true;
+            dead_occupation.reconcile_entity(&dead_unlimbo);
+            let dead_position = (
+                dead_unlimbo.position.rx,
+                dead_unlimbo.position.ry,
+                dead_unlimbo.position.sub_x,
+                dead_unlimbo.position.sub_y,
+            );
+            assert!(!super::crate_callers::continue_after_pickup(
+                &mut dead_unlimbo,
+                final_probe[0],
+                crate::sim::crates::NativePickupReturn::One,
+            ));
+            assert!(super::complete_process_movement_final_pickup(
+                &mut dead_unlimbo,
+                &mut dead_occupation,
+            ));
+            assert_eq!(
+                dead_occupation.vehicle_bits(
+                    endpoint_cell.0,
+                    endpoint_cell.1,
+                    MovementLayer::Ground,
+                ),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "dead/unlimbo One still calls Apply_Track_Occupation_Mode"
+            );
+            assert_eq!(
+                dead_occupation.vehicle_bits(14, 13, MovementLayer::Ground),
+                0,
+                "an unmarked tombstone has no current-body claim to preserve"
+            );
+            assert_eq!(
+                (
+                    dead_unlimbo.position.rx,
+                    dead_unlimbo.position.ry,
+                    dead_unlimbo.position.sub_x,
+                    dead_unlimbo.position.sub_y,
+                ),
+                dead_position,
+                "the no-alive-check occupation call still does not move the tombstone"
+            );
+        }
+        let position_before_tail = (
+            mover.position.rx,
+            mover.position.ry,
+            mover.position.sub_x,
+            mover.position.sub_y,
+        );
         assert!(!super::crate_callers::continue_after_pickup(
             &mut mover,
             final_probe[0],
             crate::sim::crates::NativePickupReturn::One,
         ));
+        assert_eq!(
+            (
+                mover.position.rx,
+                mover.position.ry,
+                mover.position.sub_x,
+                mover.position.sub_y,
+            ),
+            position_before_tail,
+            "0x004B4705/0x006A3D34 applies track occupation; it must not teleport the object"
+        );
+        assert!(super::complete_process_movement_final_pickup(
+            &mut mover,
+            &mut occupation,
+        ));
+        if kind == LocomotorKind::Drive {
+            assert_eq!(
+                occupation.vehicle_bits(
+                    endpoint_cell.0,
+                    endpoint_cell.1,
+                    MovementLayer::Ground,
+                ),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "successful final pickup resumes Apply_Track_Occupation_Mode(endpoint, 1)"
+            );
+            assert_eq!(
+                occupation.vehicle_bits(14, 13, MovementLayer::Ground),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "replacing the old auxiliary claim preserves the live post-callback body"
+            );
+        }
         assert!(mover.pending_process_movement_crate_resume.is_none());
     }
 }

@@ -48,22 +48,56 @@ fn target_cell_coord(
     DriveCoord::cell(rx, ry, z)
 }
 
-pub(super) fn resolve_entity_nav_target_drive_coord(
+pub(crate) fn resolve_entity_nav_target_drive_coord(
     target: NavTargetRef,
     entities: &EntityStore,
 ) -> Option<DriveCoord> {
     match target {
-        NavTargetRef::Entity { id } => entities.get(id).map(|entity| {
-            let pos = &entity.position;
-            DriveCoord {
-                x: i32::from(pos.rx) * 256 + pos.sub_x.to_num::<i32>(),
-                y: i32::from(pos.ry) * 256 + pos.sub_y.to_num::<i32>(),
-                z: i32::from(pos.z),
-            }
+        NavTargetRef::Entity { id } => entities.get(id).map(entity_object_get_coords),
+        NavTargetRef::Building { id } => entities.get(id).and_then(|entity| {
+            (entity.category == crate::map::entities::EntityCategory::Structure)
+                .then(|| entity_object_get_coords(entity))
         }),
-        NavTargetRef::Cell { .. } | NavTargetRef::Object { .. } | NavTargetRef::Building { .. } => {
-            None
-        }
+        NavTargetRef::Cell { .. } | NavTargetRef::Object { .. } => None,
+    }
+}
+
+/// `ObjectClass::GetCoords` projected into the Drive head-to coordinate frame.
+///
+/// `BuildingClass::GetCoords @ 0x00447AC0` shifts the stored north-west anchor
+/// by `(FoundationWidth-1)*128, (FoundationHeight-1)*128`. CaptureManager fate
+/// actions 2/3 store the Building pointer itself, so resolving that pointer to
+/// its anchor cell strands every multi-cell Grinder/Bio Reactor on the wrong
+/// head-to coordinate.
+fn entity_object_get_coords(entity: &GameEntity) -> DriveCoord {
+    let mut x = i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>();
+    let mut y = i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>();
+    if entity.category == crate::map::entities::EntityCategory::Structure {
+        let (width, height) = crate::rules::foundation::foundation_dimensions(&entity.foundation);
+        (x, y) = crate::sim::game_entity::project_building_get_coords_xy(
+            x, y, width, height,
+        );
+    }
+    DriveCoord {
+        x,
+        y,
+        z: i32::from(entity.position.z),
+    }
+}
+
+/// Install a live object destination coordinate without replacing the owning
+/// `NavCom` object reference. The latter is required by the mission 7/9
+/// terminal-cell predicate and the synchronous arrival transaction.
+pub(super) fn set_destination_internal_object_coord(
+    entity: &mut GameEntity,
+    destination: DriveCoord,
+) {
+    entity.navigation.nav_com_aux = None;
+    entity.navigation.pending_arrival_clear = false;
+    if is_drive_locomotor(entity) {
+        drive_set_destination(entity, destination);
+    } else if is_ship_locomotor(entity) {
+        ship_set_destination(entity, destination);
     }
 }
 
@@ -492,12 +526,42 @@ mod tests {
     }
 
     #[test]
-    fn resolve_nav_target_drive_coord_does_not_guess_building_anchor() {
-        let entities = EntityStore::new();
+    fn resolve_nav_target_drive_coord_uses_building_foundation_center() {
+        let mut entities = EntityStore::new();
+        let mut building = GameEntity::test_default(7, "YAGRND", "Yuri", 10, 20);
+        building.category = crate::map::entities::EntityCategory::Structure;
+        building.foundation = "3x2".to_string();
+        entities.insert(building);
 
+        let nav_coord = resolve_entity_nav_target_drive_coord(
+            NavTargetRef::Building { id: 7 },
+            &entities,
+        )
+        .expect("Building NavCom resolves");
         assert_eq!(
-            resolve_entity_nav_target_drive_coord(NavTargetRef::Building { id: 7 }, &entities),
-            None
+            nav_coord,
+            DriveCoord {
+                // test_default starts at the cell-center subcell (128,128).
+                x: 10 * 256 + 128 + 256,
+                y: 20 * 256 + 128 + 128,
+                z: 0,
+            }
+        );
+
+        let empty_terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+            0,
+            0,
+            Vec::new(),
+        );
+        let wall_candidate = crate::sim::runtime::map_wall_owner_candidate_from_building(
+            entities.get(7).unwrap(),
+            &empty_terrain,
+            true,
+        );
+        assert_eq!(
+            (nav_coord.x, nav_coord.y),
+            (wall_candidate.world_x, wall_candidate.world_y),
+            "NavCom and map-wall reconstruction share the exact Building GetCoords projection"
         );
     }
 }
