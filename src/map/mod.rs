@@ -41,6 +41,7 @@ pub mod terrain;
 pub mod theater;
 pub mod tile_variant_selector;
 pub mod trigger_graph;
+pub mod trigger_program;
 pub mod triggers;
 pub mod tube_facts;
 pub mod tubes;

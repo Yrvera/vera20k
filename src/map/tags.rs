@@ -7,11 +7,20 @@
 use std::collections::HashMap;
 
 use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_value::atoi_lenient;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapTag {
     pub id: String,
     pub fields: Vec<String>,
+    /// Native TagType field zero. Repetition belongs to the Tag, not to any
+    /// TriggerType in its linked chain.
+    pub repeat_mode: i32,
+    /// Native TagType field one. This is presentation/diagnostic identity;
+    /// execution links through `trigger_type_head_id`.
+    pub name: String,
+    /// Native TagType field two, the first TriggerType in the forward chain.
+    pub trigger_type_head_id: Option<String>,
 }
 
 pub type TagMap = HashMap<String, MapTag>;
@@ -36,7 +45,23 @@ pub fn parse_tags(ini: &IniFile) -> TagMap {
             .split(',')
             .map(|part| part.trim().to_string())
             .collect();
-        tags.insert(id.clone(), MapTag { id, fields });
+        let repeat_mode = fields.first().map_or(0, |value| atoi_lenient(value));
+        let name = fields.get(1).cloned().unwrap_or_default();
+        let trigger_type_head_id = fields
+            .get(2)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("<none>"))
+            .map(str::to_ascii_uppercase);
+        tags.insert(
+            id.clone(),
+            MapTag {
+                id,
+                fields,
+                repeat_mode,
+                name,
+                trigger_type_head_id,
+            },
+        );
     }
 
     if !tags.is_empty() {
@@ -59,6 +84,9 @@ mod tests {
             Some(&MapTag {
                 id: "TRIG_A".to_string(),
                 fields: vec!["0".to_string(), "1".to_string(), "SomeName".to_string()],
+                repeat_mode: 0,
+                name: "1".to_string(),
+                trigger_type_head_id: Some("SOMENAME".to_string()),
             })
         );
         assert_eq!(
