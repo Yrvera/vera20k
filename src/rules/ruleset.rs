@@ -66,6 +66,13 @@ pub struct CountryRules {
     pub speed_infantry_mult: NativeF32Bits,
     pub speed_units_mult: NativeF32Bits,
     pub speed_aircraft_mult: NativeF32Bits,
+    /// HouseType category cost multipliers consumed by
+    /// `HouseClass::GetCostBonus @ 0x0050BDF0`. Native stores each as f32.
+    pub cost_infantry_mult: NativeF32Bits,
+    pub cost_units_mult: NativeF32Bits,
+    pub cost_aircraft_mult: NativeF32Bits,
+    pub cost_buildings_mult: NativeF32Bits,
+    pub cost_defenses_mult: NativeF32Bits,
     /// Per-target category armor multipliers. Native stores these as f32 and
     /// reads the selected slot live for every receiver call.
     pub armor_infantry_mult: f32,
@@ -99,6 +106,11 @@ impl Default for CountryRules {
             speed_infantry_mult: NativeF32Bits::ONE,
             speed_units_mult: NativeF32Bits::ONE,
             speed_aircraft_mult: NativeF32Bits::ONE,
+            cost_infantry_mult: NativeF32Bits::ONE,
+            cost_units_mult: NativeF32Bits::ONE,
+            cost_aircraft_mult: NativeF32Bits::ONE,
+            cost_buildings_mult: NativeF32Bits::ONE,
+            cost_defenses_mult: NativeF32Bits::ONE,
             armor_infantry_mult: 1.0,
             armor_units_mult: 1.0,
             armor_aircraft_mult: 1.0,
@@ -131,6 +143,21 @@ impl CountryRules {
             ),
             speed_aircraft_mult: NativeF32Bits::from_bits(
                 section.get_f32("SpeedAircraftMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_infantry_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostInfantryMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_units_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostUnitsMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_aircraft_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostAircraftMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_buildings_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostBuildingsMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_defenses_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostDefensesMult").unwrap_or(1.0).to_bits(),
             ),
             armor_infantry_mult: section.get_f32("ArmorInfantryMult").unwrap_or(1.0),
             armor_units_mult: section.get_f32("ArmorUnitsMult").unwrap_or(1.0),
@@ -486,6 +513,12 @@ pub struct GeneralRules {
     /// Global `[AudioVisual] MindClearedSound=` fallback used when the victim
     /// type has no valid per-type override.
     pub mind_cleared_sound: Option<String>,
+    /// `[AudioVisual] EnterGrinderSound=` emitted by the Grinder per-cell
+    /// transaction immediately before the victim's synchronous UnInit.
+    pub enter_grinder_sound: Option<String>,
+    /// `[General] RefundPercent=`. RulesClass stores this as binary64; the
+    /// refund leaf narrows it once to f32 before multiplying a human refund.
+    pub refund_percent: NativeF64Bits,
     /// `[General] ControlledAnimationType=` attached to reversible victims.
     pub controlled_animation_type: Option<String>,
     /// Signed `[CombatDamage] MindControlAttackLineFrames=` copied into each
@@ -1071,6 +1104,8 @@ impl Default for GeneralRules {
             cloak_sound: None,
             yuri_mind_control_sound: None,
             mind_cleared_sound: None,
+            enter_grinder_sound: None,
+            refund_percent: NativeF64Bits::HALF,
             controlled_animation_type: None,
             mind_control_attack_line_frames: 20,
             ai_capture_normal: vec![75, 5, 5, 15],
@@ -1787,6 +1822,22 @@ impl GeneralRules {
                         && !crate::rules::ini_parser::is_native_none_type_name(s)
                 })
                 .map(str::to_string),
+            enter_grinder_sound: audio_visual
+                .and_then(|s| s.get("EnterGrinderSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            refund_percent: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "RefundPercent",
+                        f64::from_bits(defaults.refund_percent.bits()),
+                    )
+                    .to_bits(),
+            ),
             controlled_animation_type: general
                 .get("ControlledAnimationType")
                 .map(str::trim)
@@ -3556,6 +3607,31 @@ impl RuleSet {
         }
     }
 
+    /// Raw HouseType f32 selected by `HouseClass::GetCostBonus @ 0x0050BDF0`.
+    /// Native's Unit RTTI branch uses SpeedType enum 5 (`Float`) for its
+    /// defense slot; other Units use the unit slot and every Building uses the
+    /// ordinary building slot.
+    pub(crate) fn country_cost_bonus(
+        &self,
+        id: &str,
+        object: &ObjectType,
+    ) -> NativeF32Bits {
+        let Some(country) = self.country_rules(id) else {
+            return NativeF32Bits::ONE;
+        };
+        match object.category {
+            ObjectCategory::Infantry => country.cost_infantry_mult,
+            ObjectCategory::Vehicle
+                if object.speed_type == crate::rules::locomotor_type::SpeedType::Float =>
+            {
+                country.cost_defenses_mult
+            }
+            ObjectCategory::Vehicle => country.cost_units_mult,
+            ObjectCategory::Aircraft => country.cost_aircraft_mult,
+            ObjectCategory::Building => country.cost_buildings_mult,
+        }
+    }
+
     /// Resolve a country name to its stable `[Countries]` registration index.
     pub fn country_index(&self, id: &str) -> Option<CountryIdx> {
         self.country_indices.get(&id.to_ascii_uppercase()).copied()
@@ -4563,6 +4639,50 @@ CellSpread=0
         assert_eq!(rules.country_income_ppm("Russia"), INCOME_PPM_SCALE);
         assert_eq!(rules.country_income_ppm("Nonexistent"), INCOME_PPM_SCALE);
         assert_eq!(rules.country_income_ppm("americans"), 1_200_000); // case-insensitive
+    }
+
+    #[test]
+    fn capture_fate_refund_country_and_global_inputs_preserve_native_widths() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=TestCountry\n[General]\nRefundPercent=33.3%\n[AudioVisual]\nEnterGrinderSound=GrinderEnter\n[TestCountry]\nCostInfantryMult=.9\nCostUnitsMult=.75\nCostAircraftMult=1.25\nCostBuildingsMult=.8\nCostDefensesMult=.6\n[InfantryTypes]\n0=INF\n[VehicleTypes]\n0=UNIT\n1=DEFENSE\n[AircraftTypes]\n0=AIR\n[BuildingTypes]\n0=BUILDING\n[INF]\nName=Infantry\n[UNIT]\nSpeedType=Track\n[DEFENSE]\nSpeedType=Float\n[AIR]\nName=Aircraft\n[BUILDING]\nName=Building\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("capture refund rules parse");
+        let country = rules.country_rules("testcountry").expect("country exists");
+
+        assert_eq!(country.cost_infantry_mult.bits(), 0.9_f32.to_bits());
+        assert_eq!(country.cost_units_mult.bits(), 0.75_f32.to_bits());
+        assert_eq!(country.cost_aircraft_mult.bits(), 1.25_f32.to_bits());
+        assert_eq!(country.cost_buildings_mult.bits(), 0.8_f32.to_bits());
+        assert_eq!(country.cost_defenses_mult.bits(), 0.6_f32.to_bits());
+        for (id, expected) in [
+            ("INF", 0.9_f32),
+            ("UNIT", 0.75_f32),
+            ("DEFENSE", 0.6_f32),
+            ("AIR", 1.25_f32),
+            ("BUILDING", 0.8_f32),
+        ] {
+            assert_eq!(
+                rules
+                    .country_cost_bonus("TestCountry", rules.object(id).expect("fixture object"))
+                    .bits(),
+                expected.to_bits(),
+                "native country cost slot for {id}",
+            );
+        }
+        assert_eq!(
+            rules.general.refund_percent.bits(),
+            (33.3_f32 as f64 * 0.01).to_bits(),
+            "ReadDouble parses f32, applies percent scaling, and stores binary64",
+        );
+        assert_eq!(
+            rules.general.enter_grinder_sound.as_deref(),
+            Some("GrinderEnter")
+        );
+
+        let defaults = RuleSet::from_ini(&IniFile::from_str("[General]\n"))
+            .expect("default capture refund rules parse");
+        assert_eq!(defaults.general.refund_percent, NativeF64Bits::HALF);
+        assert!(defaults.general.enter_grinder_sound.is_none());
     }
 
     #[test]
