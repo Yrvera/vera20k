@@ -1169,6 +1169,32 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
             });
     }
 
+    fn commit_mind_control_detonation(
+        &mut self,
+        rules: &RuleSet,
+        controller_id: u64,
+        target_id: u64,
+        current_frame: u32,
+        borrowed_entities: &mut EntityStore,
+        borrowed_occupancy: &mut OccupancyGrid,
+        borrowed_interner: &mut StringInterner,
+    ) -> bool {
+        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        let captured = crate::sim::capture_manager::capture_unit(
+            self.sim,
+            rules,
+            controller_id,
+            target_id,
+            current_frame,
+        );
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
+        captured
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn commit_wave_fire_event(
         &mut self,
@@ -1594,6 +1620,11 @@ impl Simulation {
                 );
             }
             crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects => {
+                // TechnoClass::ReceiveDamage releases a controller's victims
+                // synchronously before its category death postlude. FreeAll's
+                // owner changes mutate the same live registry before any
+                // carried-object teardown or nested DeathWeapon can observe it.
+                crate::sim::capture_manager::free_all(self, rules, stable_id);
                 if !matches!(category, EntityCategory::Unit | EntityCategory::Structure) {
                     return;
                 }
@@ -4541,7 +4572,7 @@ impl Simulation {
     /// for every live transfer, regardless of whether capture or garrison code
     /// requested it.
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
-        self.change_owner_impl(stable_id, new_owner, None);
+        self.change_owner_impl(stable_id, new_owner, None, None);
     }
 
     pub(crate) fn change_owner_with_rules(
@@ -4550,7 +4581,21 @@ impl Simulation {
         new_owner: InternedId,
         rules: &RuleSet,
     ) {
-        self.change_owner_impl(stable_id, new_owner, Some(rules));
+        self.change_owner_impl(stable_id, new_owner, Some(rules), None);
+    }
+
+    /// CaptureManagerClass::CaptureUnit's owner-change call carries a transient
+    /// manager target before the successful transfer creates its persistent
+    /// MCNode. Preserve that one controller through the detach sweep without
+    /// fabricating the node early.
+    pub(crate) fn change_owner_for_mind_control(
+        &mut self,
+        stable_id: u64,
+        new_owner: InternedId,
+        rules: &RuleSet,
+        controller_id: u64,
+    ) {
+        self.change_owner_impl(stable_id, new_owner, Some(rules), Some(controller_id));
     }
 
     fn change_owner_impl(
@@ -4558,6 +4603,7 @@ impl Simulation {
         stable_id: u64,
         new_owner: InternedId,
         rules: Option<&RuleSet>,
+        transient_capture_controller: Option<u64>,
     ) {
         let Some((old_owner, category, has_spawn_manager, build_const_eligible)) =
             self.substrate.entities.get(stable_id).map(|entity| {
@@ -4612,8 +4658,16 @@ impl Simulation {
         // garrison transfer both come through here, so a squad that was firing
         // at a building stops the instant the building changes hands instead of
         // shooting at what is now its own structure.
-        self.stop_all_targeting_on_detach(stable_id);
+        self.stop_all_targeting_on_detach_except(stable_id, transient_capture_controller);
         self.substrate.entities.change_owner(stable_id, new_owner);
+        // TechnoClass::ChangeOwner clears the independent saved-source House
+        // at +0x2E0 but leaves the +0x2CC destination/current marker intact.
+        // Trigger Action123 samples the old House before this call and writes
+        // the source back afterward; ordinary owner changes therefore retain
+        // marker-with-null-source as a valid native state.
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.temporary_owner_transfer_source = None;
+        }
         self.increment_owned_count(&new_owner_name, category);
         if build_const_eligible
             && let Some(house) = self.houses.get_mut(&new_owner)

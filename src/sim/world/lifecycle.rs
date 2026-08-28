@@ -2165,17 +2165,10 @@ impl Simulation {
     /// went through a blocked-step Override.
     ///
     /// RESIDUALS, recorded rather than guessed:
-    /// - The native suppression clause skips the whole block for a listener
-    ///   whose manager sub-object points at the detaching object while that
-    ///   object is still alive and active — a mind-control / capture link
-    ///   holding its live victim as its target. It exists precisely so that the
-    ///   owner change *performed by* mind control does not make the controller
-    ///   drop its own new victim. VERA models mind control as a per-entity flag
-    ///   with no controller-to-victim link, so the clause cannot be evaluated
-    ///   and is omitted. Consequence: once VERA gives mind control a controller
-    ///   link, a controller will lose its target here where the original keeps
-    ///   it — every control event. Today the arm is unreachable because no
-    ///   controller link exists to hold the victim as a target.
+    /// - The native manager suppression clause is represented: while the
+    ///   detaching target is alive and active, a controller whose reciprocal
+    ///   MCNode owns that victim skips the whole restore/clear block. This is
+    ///   what lets CaptureUnit's owner change preserve its own new target.
     /// - The aircraft-Patrol arm, which clears two patrol-cursor fields on an
     ///   aircraft whose committed mission is Patrol. Neither field is
     ///   represented; the arm is a no-op for every ground object.
@@ -2183,10 +2176,44 @@ impl Simulation {
     ///   pointer slots that match the detaching object. Its element class is
     ///   UNKNOWN, so it is not modelled.
     pub(crate) fn stop_all_targeting_on_detach(&mut self, detach_id: u64) {
+        self.stop_all_targeting_on_detach_except(detach_id, None);
+    }
+
+    /// CaptureUnit holds the not-yet-linked target in its manager transaction
+    /// while ChangeOwner runs. That transient native pointer is stack-local in
+    /// Rust, so the mind-control caller supplies the controller identity here;
+    /// established MCNodes continue to suppress through persistent state.
+    pub(crate) fn stop_all_targeting_on_detach_except(
+        &mut self,
+        detach_id: u64,
+        transient_capture_controller: Option<u64>,
+    ) {
         let mut listeners = self.substrate.entities.keys_sorted();
         listeners.reverse();
 
+        let detach_is_live_and_active = self
+            .substrate
+            .entities
+            .get(detach_id)
+            .is_some_and(|target| target.is_object_alive() && target.in_logic_vector);
+
         for listener_id in listeners {
+            let manager_owns_detaching_target = detach_is_live_and_active
+                && (transient_capture_controller == Some(listener_id)
+                    || self
+                        .substrate
+                        .entities
+                        .get(listener_id)
+                        .and_then(|listener| listener.capture_manager.as_ref())
+                        .is_some_and(|manager| {
+                            manager
+                                .controlled_nodes
+                                .iter()
+                                .any(|node| node.victim_id == detach_id)
+                        }));
+            if manager_owns_detaching_target {
+                continue;
+            }
             if !self.listener_targets(listener_id, detach_id) {
                 continue;
             }
@@ -2600,6 +2627,20 @@ impl Simulation {
     pub(crate) fn uninit_with_context(&mut self, stable_id: u64, context: UninitContext<'_>) {
         if !self.substrate.entities.contains(stable_id) {
             return;
+        }
+
+        // FootClass::UnInit releases every reversible mind-control victim
+        // before ObjectClass pointer expiry. Fatal paths already enter the same
+        // idempotent transaction at the ReceiveDamage pre-death rung; direct
+        // represented UnInit (transport/sell/script teardown) reaches it here.
+        if let Some(rules) = context.rules()
+            && self
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| entity.capture_manager.is_some())
+        {
+            crate::sim::capture_manager::free_all(self, rules, stable_id);
         }
 
         self.run_represented_uninit_pre_hook(stable_id);

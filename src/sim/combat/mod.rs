@@ -1721,6 +1721,22 @@ pub(crate) trait CombatInlineHooks {
     #[cfg(test)]
     fn trace_wave_receiver(&mut self, _wave_id: u64, _target_id: u64, _scenario_rng_state: u64) {}
 
+    /// `WarheadTypeClass::Detonate @ 0x0046920B` enters CaptureUnit
+    /// synchronously. The world hook lends Simulation the staged combat stores
+    /// so the ownership/link transaction completes before the next projectile.
+    fn commit_mind_control_detonation(
+        &mut self,
+        _rules: &RuleSet,
+        _controller_id: u64,
+        _target_id: u64,
+        _current_frame: u32,
+        _entities: &mut EntityStore,
+        _occupancy: &mut OccupancyGrid,
+        _interner: &mut StringInterner,
+    ) -> bool {
+        false
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn commit_wave_fire_event(
         &mut self,
@@ -4300,14 +4316,17 @@ fn emit_one_projectile_detonation(
         nuke_maker: warhead.nuke_maker,
     });
     if special_action != SpecialDetonationAction::OrdinaryDamage {
-        // Effect bodies remain explicit residuals. Native else-if ownership is
-        // authoritative, so an earlier unsupported predicate still shadows
-        // Shrapnel and ordinary DamageArea.
-        log::debug!(
-            "Projectile {} selected unsupported special detonation {:?}",
-            detonation.projectile_id,
-            special_action
-        );
+        // MindControl is committed synchronously by the world hook after this
+        // emitter returns. Other effect bodies remain explicit residuals.
+        // Native else-if ownership is authoritative, so every earlier special
+        // still shadows Shrapnel and ordinary DamageArea.
+        if special_action != SpecialDetonationAction::MindControl {
+            log::debug!(
+                "Projectile {} selected unsupported special detonation {:?}",
+                detonation.projectile_id,
+                special_action
+            );
+        }
         return;
     }
 
@@ -4939,6 +4958,37 @@ fn commit_projectile_detonations_inline(
             inline_hooks,
             emit,
         );
+        let special_action = rules
+            .warhead(interner.resolve(detonation.payload.warhead))
+            .map(|warhead| {
+                projectile_special_detonation_action(SpecialDetonationFlags {
+                    mind_control: warhead.mind_control,
+                    ivan_bomb: warhead.ivan_bomb,
+                    electric_assault: warhead.electric_assault,
+                    parasite: warhead.parasite,
+                    temporal: warhead.temporal,
+                    is_locomotor: warhead.is_locomotor,
+                    airstrike: warhead.airstrike,
+                    raw_335: warhead.raw_335,
+                    bomb_disarm: warhead.bomb_disarm,
+                    makes_disguise: warhead.makes_disguise,
+                    nuke_maker: warhead.nuke_maker,
+                })
+            });
+        if special_action == Some(SpecialDetonationAction::MindControl)
+            && let ProjectileTarget::Entity(target_id) = detonation.target
+            && let Some(hooks) = inline_hooks.as_deref_mut()
+        {
+            let _ = hooks.commit_mind_control_detonation(
+                rules,
+                detonation.source_id,
+                target_id,
+                current_tick as u32,
+                entities,
+                occupancy,
+                interner,
+            );
+        }
         let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
         let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
         let (inline_death, mut pings) = commit_area_damage_receivers_with_scenario(

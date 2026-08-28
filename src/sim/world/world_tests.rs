@@ -132,6 +132,129 @@ fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
 }
 
 #[test]
+fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=CTRL\n1=TARGET\n\
+         [InfantryTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [Warheads]\n0=CONTROLLER\n\
+         [CTRL]\nStrength=100\nPrimary=MIND\n\
+         [TARGET]\nStrength=100\n\
+         [MIND]\nDamage=1\nROF=10\nRange=8\nSpeed=100\nProjectile=Invisible\nWarhead=CONTROLLER\n\
+         [CONTROLLER]\nMindControl=yes\n",
+    ))
+    .expect("active mind-control detonation rules");
+    let mut sim = Simulation::new();
+    let controller_house = sim.interner.intern("Controller");
+    let allied_house = sim.interner.intern("AlliedTarget");
+    sim.houses.insert(
+        controller_house,
+        crate::sim::house_state::HouseState::new(
+            controller_house,
+            0,
+            None,
+            false,
+            0,
+            10,
+        ),
+    );
+    sim.houses.insert(
+        allied_house,
+        crate::sim::house_state::HouseState::new(allied_house, 1, None, false, 0, 10),
+    );
+    sim.session.house_order = vec![controller_house, allied_house];
+    sim.house_alliances
+        .entry("CONTROLLER".to_string())
+        .or_default()
+        .insert("ALLIEDTARGET".to_string());
+    sim.house_alliances
+        .entry("ALLIEDTARGET".to_string())
+        .or_default()
+        .insert("CONTROLLER".to_string());
+    let controller_id = sim
+        .spawn_object("CTRL", "Controller", 5, 5, 0, &rules, &empty_heights())
+        .expect("controller reveals with its primary-derived CaptureManager");
+    let target_id = sim
+        .spawn_object(
+            "TARGET",
+            "AlliedTarget",
+            7,
+            5,
+            0,
+            &rules,
+            &empty_heights(),
+        )
+        .expect("allied target reveals");
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 100,
+        source_id: controller_id,
+        target: crate::sim::projectile::ProjectileTarget::Entity(target_id),
+        impact: crate::sim::projectile::ProjectileCoord::new(7 * 256 + 128, 5 * 256 + 128, 0),
+        payload: crate::sim::projectile::ProjectilePayload {
+            base_damage: 1,
+            warhead: sim.interner.intern("CONTROLLER"),
+            weapon: sim.interner.intern("MIND"),
+            owner: controller_house,
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+
+    let result = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        None,
+        100,
+        &[controller_id, target_id],
+        &BTreeSet::new(),
+        &[detonation],
+        &[],
+    );
+
+    assert!(result.immediate_uninit_ids.is_empty());
+    let target = sim.substrate.entities.get(target_id).unwrap();
+    assert_eq!(target.owner, controller_house);
+    assert_eq!(target.health.current, target.health.max, "MC does no ordinary damage");
+    assert_eq!(target.mind_control_controller_id, Some(controller_id));
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_ref()
+            .unwrap()
+            .controlled_nodes,
+        vec![crate::sim::capture_manager::CaptureNodeState {
+            victim_id: target_id,
+            original_owner: allied_house,
+        }]
+    );
+
+    sim.apply_fatal_lifecycle_stage(
+        &rules,
+        crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects,
+        controller_id,
+        EntityCategory::Unit,
+        None,
+    );
+    let released = sim.substrate.entities.get(target_id).unwrap();
+    assert_eq!(released.owner, allied_house);
+    assert_eq!(released.mind_control_controller_id, None);
+    assert!(
+        sim.substrate
+            .entities
+            .get(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_ref()
+            .unwrap()
+            .controlled_nodes
+            .is_empty(),
+        "fatal ReceiveDamage prelude mutates the live registry through FreeAll"
+    );
+}
+
+#[test]
 fn invalid_or_unknown_game_speed_transition_is_consumed_without_state_effect() {
     let (mut invalid, owner) = game_speed_command_sim();
     let (mut invalid_control, _) = game_speed_command_sim();
