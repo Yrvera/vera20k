@@ -5466,7 +5466,7 @@ mod tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("MTNK");
-        let entity = GameEntity::new_at_frame(
+        let entity = GameEntity::new_at_frame_for_test(
             1,
             5,
             5,
@@ -5483,7 +5483,6 @@ mod tests {
             5,
             true,
             37,
-            0,
         );
         sim.substrate.entities.insert(entity);
 

@@ -346,10 +346,10 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
     })
 }
 
-/// Retail `[Structures]` layout stores the declared installed-upgrade count at
-/// field 10 and the three resolved type selectors at fields 12..14. The native
-/// reader iterates only the declared prefix and skips selectors that resolve to
-/// `-1` before entering the Building constructor.
+/// Active `BuildingClass::ReadFromINI @ 0x0044F820` stores the declared
+/// installed-upgrade count at retail `[Structures]` field 10; its loop at
+/// `0x0044FD50..0x0044FDC3` visits type selectors 12..14 only within that
+/// prefix and skips selectors resolving to `-1` before construction.
 fn parse_structure_upgrades(fields: &[&str]) -> [Option<String>; 3] {
     let declared = fields
         .get(10)

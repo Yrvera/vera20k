@@ -78,11 +78,13 @@ pub(crate) enum PlacementEvidence {
     MarkSucceeded,
     /// BuildingClass map-reader upgrade construction reaches virtual Unlimbo
     /// at the host coordinate, but the distinct upgrade object attaches to its
-    /// parent rather than competing for the parent's footprint.
+    /// parent rather than competing for the parent's footprint. Native:
+    /// `BuildingClass::ReadFromINI @ 0x0044F820`, call at `0x0044FDB9`.
     AttachedUpgrade,
-    /// Run the modeled Mark(PUT) transaction and consume its result. Production
-    /// Unit Unlimbo uses this after exact-zero CanEnter admission instead of
-    /// asserting or caller-hardcoding Mark success.
+    /// Run the modeled `ObjectClass::Reveal @ 0x005F4EC0` playfield admission
+    /// and Mark(PUT) transaction. Production Unit Unlimbo uses this after its
+    /// class-specific exact-zero CanEnter admission; fixed/runtime constructors
+    /// use it so a later placement rejection can retain the spent constructor.
     EvaluateMark,
 }
 
@@ -666,6 +668,11 @@ impl Simulation {
         {
             return RevealOutcome::Failed(RevealFailure::RejectedEarly);
         }
+        if request.placement == PlacementEvidence::EvaluateMark
+            && !self.reveal_position_is_in_playfield(request.position)
+        {
+            return RevealOutcome::Failed(RevealFailure::RejectedEarly);
+        }
 
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.in_limbo = false;
@@ -901,6 +908,21 @@ impl Simulation {
             .entities
             .get(stable_id)
             .is_some_and(|entity| entity.lifecycle.cell_marked)
+    }
+
+    /// Shared mode-one playfield gate from active
+    /// `ObjectClass::Reveal @ 0x005F4EC0` before Mark(PUT). A normal constructed
+    /// scenario always has MapClass bounds; unbounded synthetic fixtures retain
+    /// their historical permissive behavior.
+    fn reveal_position_is_in_playfield(&self, position: RevealPosition) -> bool {
+        let Some(bounds) = self.playfield_bounds else {
+            return true;
+        };
+        crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+            (i32::from(position.rx), i32::from(position.ry)),
+            Some(bounds),
+            self.resolved_terrain.as_ref(),
+        )
     }
 
     pub(crate) fn base_reservation_house_index(&self, owner: InternedId) -> Option<i32> {

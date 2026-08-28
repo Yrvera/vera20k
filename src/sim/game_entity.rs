@@ -1021,8 +1021,10 @@ impl GameEntity {
         (MissionType::None, 0)
     }
 
-    /// Create a new entity with all required fields. Optional fields default to None/false.
-    pub fn new_at_frame(
+    /// Construct after the owning world funnel has resolved the explicit
+    /// `TechnoConstructorInit` capability. Kept inside `sim` so ordinary app,
+    /// render, and diagnostic code cannot silently invent the native word.
+    pub(in crate::sim) fn new_at_frame_from_constructor_word(
         stable_id: u64,
         rx: u16,
         ry: u16,
@@ -1202,6 +1204,42 @@ impl GameEntity {
         }
     }
 
+    /// Explicit zero-word constructor for tests that exercise construction
+    /// frame anchoring without participating in gameplay RNG ownership.
+    #[cfg(test)]
+    pub fn new_at_frame_for_test(
+        stable_id: u64,
+        rx: u16,
+        ry: u16,
+        z: u8,
+        facing: u8,
+        owner: InternedId,
+        health: Health,
+        type_ref: InternedId,
+        category: EntityCategory,
+        veterancy: u16,
+        vision_range: u16,
+        is_voxel: bool,
+        construction_frame: u32,
+    ) -> Self {
+        Self::new_at_frame_from_constructor_word(
+            stable_id,
+            rx,
+            ry,
+            z,
+            facing,
+            owner,
+            health,
+            type_ref,
+            category,
+            veterancy,
+            vision_range,
+            is_voxel,
+            construction_frame,
+            0,
+        )
+    }
+
     /// Explicit frame-zero constructor for tests that do not exercise
     /// construction-time Mission timer anchoring.
     #[cfg(test)]
@@ -1219,7 +1257,7 @@ impl GameEntity {
         vision_range: u16,
         is_voxel: bool,
     ) -> Self {
-        Self::new_at_frame(
+        Self::new_at_frame_for_test(
             stable_id,
             rx,
             ry,
@@ -1233,6 +1271,42 @@ impl GameEntity {
             vision_range,
             is_voxel,
             0,
+        )
+    }
+
+    /// Explicit zero-word constructor for the parity-digest's synthetic,
+    /// non-gameplay entities. Gameplay construction must use Simulation's
+    /// `TechnoConstructorInit` funnel instead.
+    #[doc(hidden)]
+    pub fn new_at_frame_zero_for_diagnostics(
+        stable_id: u64,
+        rx: u16,
+        ry: u16,
+        z: u8,
+        facing: u8,
+        owner: InternedId,
+        health: Health,
+        type_ref: InternedId,
+        category: EntityCategory,
+        veterancy: u16,
+        vision_range: u16,
+        is_voxel: bool,
+        construction_frame: u32,
+    ) -> Self {
+        Self::new_at_frame_from_constructor_word(
+            stable_id,
+            rx,
+            ry,
+            z,
+            facing,
+            owner,
+            health,
+            type_ref,
+            category,
+            veterancy,
+            vision_range,
+            is_voxel,
+            construction_frame,
             0,
         )
     }

@@ -100,7 +100,7 @@ fn build_synthetic_simulation(seed: u32) -> Simulation {
         let type_ref = sim.interner.intern("GACNST");
         let base_x = 10 + (index as u16) * 20;
         for slot in 0..3u16 {
-            let entity = GameEntity::new_at_frame(
+            let entity = GameEntity::new_at_frame_zero_for_diagnostics(
                 (index as u64) * 10 + slot as u64 + 1,
                 base_x + slot * 2,
                 12,
@@ -116,7 +116,6 @@ fn build_synthetic_simulation(seed: u32) -> Simulation {
                 0,
                 6,
                 false,
-                0,
                 0,
             );
             sim.entities_mut().insert(entity);

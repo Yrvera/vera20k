@@ -344,7 +344,7 @@ impl Simulation {
             )?;
 
             // Build the GameEntity with all required fields.
-            let mut ge = GameEntity::new_at_frame(
+            let mut ge = GameEntity::new_at_frame_from_constructor_word(
                 stable_id,
                 map_ent.cell_x,
                 map_ent.cell_y,
@@ -742,7 +742,7 @@ impl Simulation {
         let type_iid = self.interner.intern(type_id);
         let techno_ctor_random_word = self.resolve_techno_constructor_word(init, None)?;
 
-        let mut ge = GameEntity::new_at_frame(
+        let mut ge = GameEntity::new_at_frame_from_constructor_word(
             stable_id,
             rx,
             ry,
@@ -935,7 +935,7 @@ impl Simulation {
         let type_iid = self.interner.intern(type_id);
         let techno_ctor_random_word = self.resolve_techno_constructor_word(init, None)?;
 
-        let mut ge = GameEntity::new_at_frame(
+        let mut ge = GameEntity::new_at_frame_from_constructor_word(
             stable_id,
             rx,
             ry,
@@ -1215,10 +1215,11 @@ impl Simulation {
         self.store_spawned_limbo(ge)
     }
 
-    /// Store a new object, then place it through ObjectClass-style Reveal:
-    /// coordinates commit, Mark(PUT) owns occupancy, and eligible logic
-    /// registration happens last. The stored object remains addressable if a
-    /// future caller-supplied placement result makes Reveal fail.
+    /// Store a new object, then place it through active
+    /// `ObjectClass::Reveal @ 0x005F4EC0`: coordinates commit, the mode-one
+    /// playfield gate and Mark(PUT) own the result, and eligible logic
+    /// registration happens last. A failed attempt keeps the constructed
+    /// identity in limbo for its caller to retain or discard.
     pub(crate) fn unlimbo(&mut self, ge: GameEntity) -> (u64, RevealOutcome) {
         let position = RevealPosition {
             rx: ge.position.rx,
@@ -1232,7 +1233,7 @@ impl Simulation {
             stable_id,
             RevealRequest {
                 position,
-                placement: PlacementEvidence::MarkSucceeded,
+                placement: PlacementEvidence::EvaluateMark,
                 logic_eligible: true,
             },
         );
@@ -1726,11 +1727,61 @@ mod techno_constructor_tests {
         );
     }
 
+    fn install_constructor_test_playfield(sim: &mut Simulation) {
+        sim.session.map_width = 10;
+        sim.session.map_height = 10;
+        sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+            base: 10,
+            off_fc: 0,
+            off_100: 0,
+            off_104: 10,
+            off_108: 10,
+        });
+    }
+
+    #[test]
+    fn techno_constructor_raw_entity_constructor_is_world_spawn_only() {
+        fn collect_rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read source directory") {
+                let path = entry.expect("read source entry").path();
+                if path.is_dir() {
+                    collect_rust_files(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rust_files(&root.join("src"), &mut files);
+        let needle = ["GameEntity::", "new_at_frame_from_constructor_word("].concat();
+        let mut owners = Vec::new();
+        for path in files {
+            let source = std::fs::read_to_string(&path).expect("read Rust source");
+            let count = source.matches(&needle).count();
+            if count != 0 {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("source under manifest root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                owners.push((relative, count));
+            }
+        }
+        owners.sort();
+        assert_eq!(
+            owners,
+            vec![("src/sim/world/world_spawn.rs".to_string(), 3)]
+        );
+    }
+
     #[test]
     fn techno_constructor_runtime_fresh_paths_draw_once_after_type_resolution() {
         let seed = 0xC701_0001;
         let rules = constructor_rules();
         let mut sim = Simulation::with_seed(seed);
+        install_constructor_test_playfield(&mut sim);
         let mut expected = SimRng::new(seed);
 
         let before_invalid = sim.scenario_rng.logical_state();
@@ -1742,12 +1793,19 @@ mod techno_constructor_tests {
 
         let placed_word = (expected.next_u32() & 0xFFFF) as u16;
         let placed = sim
-            .spawn_object("MTNK", "Americans", 4, 4, 0, &rules, &BTreeMap::new())
+            .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
             .expect("placed runtime Techno");
         assert_eq!(
             sim.substrate.entities.get(placed).unwrap().techno_ctor_random_word,
             placed_word
         );
+
+        let _failed_word = (expected.next_u32() & 0xFFFF) as u16;
+        assert!(
+            sim.spawn_object("BASE", "Americans", 1, 1, 0, &rules, &BTreeMap::new())
+                .is_none()
+        );
+        assert!(sim.substrate.entities.get(2).is_none());
 
         let limbo_word = (expected.next_u32() & 0xFFFF) as u16;
         let limbo = sim
@@ -1764,20 +1822,22 @@ mod techno_constructor_tests {
         let seed = 0xC701_0002;
         let rules = constructor_rules();
         let mut sim = Simulation::with_seed(seed);
+        install_constructor_test_playfield(&mut sim);
         install_american_house(&mut sim);
         let mut expected = SimRng::new(seed);
         assert_eq!(sim.scenario_rng.next_u32(), expected.next_u32());
-        let mut invalid_owner = map_entity("MTNK", EntityCategory::Unit, (1, 3));
+        let mut invalid_owner = map_entity("MTNK", EntityCategory::Unit, (3, 3));
         invalid_owner.owner = "UnresolvableHouse".to_string();
         let entities = vec![
-            map_entity("MISSING", EntityCategory::Unit, (1, 2)),
+            map_entity("MISSING", EntityCategory::Unit, (2, 2)),
             invalid_owner,
-            map_entity("MTNK", EntityCategory::Unit, (2, 2)),
-            map_entity("ORCA", EntityCategory::Aircraft, (4, 2)),
-            map_entity("E1", EntityCategory::Infantry, (6, 2)),
-            map_entity("BASE", EntityCategory::Structure, (8, 2)),
+            map_entity("MTNK", EntityCategory::Unit, (6, 5)),
+            map_entity("ORCA", EntityCategory::Aircraft, (7, 5)),
+            map_entity("E1", EntityCategory::Infantry, (8, 5)),
+            map_entity("BASE", EntityCategory::Structure, (9, 5)),
+            map_entity("BASE", EntityCategory::Structure, (1, 1)),
         ];
-        let expected_words: Vec<u16> = (0..4)
+        let expected_words: Vec<u16> = (0..5)
             .map(|_| (expected.next_u32() & 0xFFFF) as u16)
             .collect();
 
@@ -1791,7 +1851,8 @@ mod techno_constructor_tests {
             .values()
             .map(|entity| entity.techno_ctor_random_word)
             .collect();
-        assert_eq!(actual_words, expected_words);
+        assert_eq!(actual_words.as_slice(), &expected_words[..4]);
+        assert!(sim.substrate.entities.get(5).is_none());
         assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
     }
 
