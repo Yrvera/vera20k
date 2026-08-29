@@ -252,7 +252,9 @@ impl CombatLightRenderer {
                         compilation_options: Default::default(),
                     }),
                     primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
+                    // Native shadow flags 0x601 Z-test at the depth computed
+                    // by AnimClass::DrawIt but never write the Z surface.
+                    depth_stencil: Some(anim_shadow_depth_stencil_state()),
                     multisample: Default::default(),
                     multiview: None,
                     cache: None,
@@ -355,6 +357,7 @@ impl CombatLightRenderer {
     pub(crate) fn draw_anim_shadow_run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
+        depth_view: &wgpu::TextureView,
         batch: &crate::render::batch::BatchRenderer,
         stencil: &crate::render::batch::BatchTexture,
         buffer: &wgpu::Buffer,
@@ -394,7 +397,16 @@ impl CombatLightRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        // The pipeline disables depth writes, and Store keeps
+                        // the loaded tactical surface intact for later draws.
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
@@ -489,6 +501,16 @@ impl CombatLightRenderer {
 
 fn anim_shadow_instance_indices(start: u32, count: u32) -> std::ops::Range<u32> {
     start..start.saturating_add(count)
+}
+
+fn anim_shadow_depth_stencil_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: false,
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    }
 }
 
 /// Native `CoordsToClient2` projects the planar terms with signed integer
@@ -915,5 +937,35 @@ mod tests {
             "each instance gets its own copy-then-edit iteration",
         );
         assert!(anim_shadow_instance_indices(4, 0).is_empty());
+    }
+
+    #[test]
+    fn phase3_anim_shadow_depth_tests_less_and_never_writes() {
+        fn apply_depth(
+            state: &wgpu::DepthStencilState,
+            incoming: f32,
+            stored: &mut f32,
+        ) -> bool {
+            let accepted = match state.depth_compare {
+                wgpu::CompareFunction::Less => incoming < *stored,
+                other => panic!("unexpected AnimClass shadow depth compare {other:?}"),
+            };
+            if accepted && state.depth_write_enabled {
+                *stored = incoming;
+            }
+            accepted
+        }
+
+        let state = anim_shadow_depth_stencil_state();
+        assert_eq!(state.format, wgpu::TextureFormat::Depth32Float);
+        assert_eq!(state.depth_compare, wgpu::CompareFunction::Less);
+        assert!(!state.depth_write_enabled, "native flags 0x601 are Z-test-only");
+
+        let mut stored = 0.5;
+        assert!(apply_depth(&state, 0.499, &mut stored));
+        assert_eq!(stored, 0.5, "an accepted shadow must not replace tactical Z");
+        assert!(!apply_depth(&state, 0.5, &mut stored));
+        assert!(!apply_depth(&state, 0.501, &mut stored));
+        assert_eq!(stored, 0.5, "rejected shadows must also leave tactical Z intact");
     }
 }
