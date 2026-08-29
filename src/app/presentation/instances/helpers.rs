@@ -48,10 +48,7 @@ pub(crate) fn tactical_entity_encounter_order(
         .enumerate()
         .filter_map(|(registration, id)| {
             let entity = sim.entities().get(*id)?;
-            let layer = match entity_draw_band(entity) {
-                EntityDrawBand::Ground => 2,
-                EntityDrawBand::Top => 4,
-            };
+            let layer = entity_draw_layer(entity);
             let location = TacticalCoord {
                 x: i32::from(entity.position.rx) * 256
                     + crate::util::fixed_math::sim_to_i32(entity.position.sub_x),
@@ -264,19 +261,51 @@ pub(crate) enum CellVisibilityState {
 /// * A parachuting infantryman keeps its Walk locomotor, so it stays Ground
 ///   despite hanging in the air — its altitude changes only where it is drawn.
 ///
-/// Only layer 2 is kept sorted; the rest append and render in submission order,
-/// and every layer above 2 is drawn after all of layer 2. Air and Top are
-/// therefore indistinguishable as far as ground objects are concerned, and we
-/// have no separate Air object band, so both collapse into [`EntityDrawBand::Top`]
-/// here. The only ordering that collapse can disturb is Air-vs-Top against the
-/// layer-3 particle stream, which in stock YR is a takeoff's worth of frames.
+/// Only layer 2 is kept sorted; layers 3 and 4 append independently and native
+/// traverses them in numeric order. [`EntityDrawBand`] selects the sorted or
+/// flat storage family; [`entity_draw_layer`] retains the exact flat layer for
+/// cross-pipeline submission ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntityDrawBand {
     /// gamemd layer 2 — the single Y-sorted band that holds buildings,
     /// vehicles, infantry on foot and landed aircraft.
     Ground,
-    /// gamemd layers 3 and 4 — drawn after every Ground object.
+    /// gamemd layers 3 and 4 — drawn after every Ground object, but retained
+    /// as distinct numeric layers by [`entity_draw_layer`].
     Top,
+}
+
+pub(crate) const NATIVE_GROUND_LAYER: u8 = 2;
+pub(crate) const NATIVE_AIR_LAYER: u8 = 3;
+pub(crate) const NATIVE_TOP_LAYER: u8 = 4;
+
+/// Exact display-layer number returned by the active locomotor.
+///
+/// `JumpjetLocomotionClass::In_Which_Layer` returns Air while its current
+/// height is below its configured hover height and Top once that height is
+/// reached. Descending jumpjets therefore return to Air before landing.
+pub(crate) fn entity_draw_layer(entity: &GameEntity) -> u8 {
+    if entity.parachute_state.is_some() {
+        return NATIVE_GROUND_LAYER;
+    }
+    if entity.rocket_state.is_some() {
+        return NATIVE_AIR_LAYER;
+    }
+    let Some(loco) = entity.locomotor.as_ref() else {
+        return NATIVE_GROUND_LAYER;
+    };
+    match loco.kind {
+        LocomotorKind::Rocket => NATIVE_AIR_LAYER,
+        LocomotorKind::Fly if loco.altitude > SIM_ZERO => NATIVE_TOP_LAYER,
+        LocomotorKind::Jumpjet if loco.altitude > SIM_ZERO => {
+            if loco.altitude >= loco.target_altitude {
+                NATIVE_TOP_LAYER
+            } else {
+                NATIVE_AIR_LAYER
+            }
+        }
+        _ => NATIVE_GROUND_LAYER,
+    }
 }
 
 /// Which band this entity's body belongs to, per gamemd's per-locomotor answer.
@@ -285,34 +314,10 @@ pub(crate) enum EntityDrawBand {
 /// what is holding the entity up, because that is the same question: an entity
 /// is above the Ground band exactly when something has lifted it off the floor.
 pub(crate) fn entity_draw_band(entity: &GameEntity) -> EntityDrawBand {
-    // Object-level falling. The locomotor underneath is still Walk or Drive,
-    // both of which answer Ground, so a paradrop never leaves layer 2.
-    if entity.parachute_state.is_some() {
-        return EntityDrawBand::Ground;
-    }
-    // Scripted missiles fly on the Rocket locomotor, which answers Air.
-    if entity.rocket_state.is_some() {
-        return EntityDrawBand::Top;
-    }
-    let Some(loco) = entity.locomotor.as_ref() else {
-        return EntityDrawBand::Ground;
-    };
-    match loco.kind {
-        // The Rocket slot answers Air unconditionally — it has no height test
-        // of its own. Reachable only if a missile is ever built locomotor-first,
-        // since `rocket_state` answers above.
-        LocomotorKind::Rocket => EntityDrawBand::Top,
-        // The two flying locomotors gate on height, not on the locomotor's
-        // nominal layer: `MovementLayer::Air` is fixed at construction for these
-        // kinds, so a Harrier parked on its pad still carries it.
-        LocomotorKind::Fly | LocomotorKind::Jumpjet => {
-            if loco.altitude > SIM_ZERO {
-                EntityDrawBand::Top
-            } else {
-                EntityDrawBand::Ground
-            }
-        }
-        _ => EntityDrawBand::Ground,
+    if entity_draw_layer(entity) == NATIVE_GROUND_LAYER {
+        EntityDrawBand::Ground
+    } else {
+        EntityDrawBand::Top
     }
 }
 
@@ -799,6 +804,7 @@ mod tests {
             40,
         );
         assert_eq!(entity_draw_band(&beag), EntityDrawBand::Top);
+        assert_eq!(entity_draw_layer(&beag), NATIVE_TOP_LAYER);
     }
 
     #[test]
@@ -813,6 +819,7 @@ mod tests {
             "the nominal layer stays Air even parked; it must not be the predicate"
         );
         assert_eq!(entity_draw_band(&parked), EntityDrawBand::Ground);
+        assert_eq!(entity_draw_layer(&parked), NATIVE_GROUND_LAYER);
     }
 
     #[test]
@@ -821,7 +828,16 @@ mod tests {
         let hovering = entity_with_locomotor("ROCK", LocomotorKind::Jumpjet, 500, 12, 12);
         let landed = entity_with_locomotor("ROCK", LocomotorKind::Jumpjet, 0, 12, 12);
         assert_eq!(entity_draw_band(&hovering), EntityDrawBand::Top);
+        assert_eq!(entity_draw_layer(&hovering), NATIVE_TOP_LAYER);
         assert_eq!(entity_draw_band(&landed), EntityDrawBand::Ground);
+
+        let mut climbing = entity_with_locomotor("ROCK", LocomotorKind::Jumpjet, 250, 12, 12);
+        climbing.locomotor.as_mut().unwrap().target_altitude = SimFixed::from_num(500);
+        assert_eq!(entity_draw_band(&climbing), EntityDrawBand::Top);
+        assert_eq!(entity_draw_layer(&climbing), NATIVE_AIR_LAYER);
+
+        let rocket = entity_with_locomotor("V3ROCKET", LocomotorKind::Rocket, 500, 12, 12);
+        assert_eq!(entity_draw_layer(&rocket), NATIVE_AIR_LAYER);
     }
 
     #[test]

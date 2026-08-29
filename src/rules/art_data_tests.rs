@@ -18,7 +18,7 @@ fn phase3_missing_building_anim_art_installs_native_constructor_defaults() {
     assert_eq!(power.end, 29);
     assert_eq!(power.loop_end, 29);
     assert_eq!(power.make_infantry, -1);
-    assert_eq!(power.layer, AnimLayer::Top);
+    assert_eq!(power.layer, AnimLayer::Air);
     assert!(!power.shadow);
     assert!(registry.get("GTPOWEXP").is_none());
 

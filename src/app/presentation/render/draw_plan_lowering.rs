@@ -56,6 +56,26 @@ pub(crate) enum ShpCompositeMode {
     AnimShadowDestinationHalve,
 }
 
+/// One draw from an unsorted native flat display layer. Buffer index and atlas
+/// page stay payload; neither may reorder the layer's append vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlatDrawTarget {
+    Unit { page: usize, index: u32 },
+    Shp {
+        page: usize,
+        index: u32,
+        mode: ShpCompositeMode,
+    },
+}
+
+/// Cross-pipeline lowering of native display layers 3 and 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FlatLayerDraw {
+    pub layer: u8,
+    pub owner: DrawId,
+    pub target: FlatDrawTarget,
+}
+
 /// One already-resolved sprite owned by one Ground-layer parent object.
 pub(crate) struct GroundPieceInstance {
     pub target: GroundTexture,

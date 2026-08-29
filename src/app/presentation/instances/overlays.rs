@@ -237,7 +237,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnimRenderDestination {
     Ground(ObjectDraw),
-    Top,
+    Flat(u8),
     Existing,
 }
 
@@ -365,8 +365,8 @@ fn lower_anim_class_draw_pieces(
                     // The encoded compositor ignores this alpha. Keeping 0.5
                     // here preserves the pre-existing approximate fallback for
                     // unverified non-retail `Layer=other` shadow anims; every
-                    // scoped retail DestroyAnim routes to an exact Ground or
-                    // Top destination instead.
+                    // scoped retail DestroyAnim routes to an exact Ground,
+                    // Air, or Top destination instead.
                     alpha: if is_shadow { 0.5 } else { body_material.alpha },
                     ..Default::default()
                 },
@@ -384,6 +384,7 @@ fn emit_anim_class_rendered_pieces(
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
+    top_layers: &mut Vec<u8>,
     top_modes: &mut Vec<
         crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode,
     >,
@@ -415,11 +416,12 @@ fn emit_anim_class_rendered_pieces(
                 ),
             );
         }
-        Some(AnimRenderDestination::Top) => {
+        Some(AnimRenderDestination::Flat(layer)) => {
             for piece in rendered_pieces {
                 top_instances.push(piece.instance);
                 top_pages.push(piece.page);
                 top_ids.push(stable_id);
+                top_layers.push(layer);
                 top_modes.push(match piece.kind {
                     AnimClassDrawPieceKind::Body => {
                         crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard
@@ -448,8 +450,8 @@ fn anim_render_destination(
 ) -> Option<AnimRenderDestination> {
     // gamemd-derived: `AnimClass::GetLayer @ 0x00424CB0` forces layer 2
     // (Ground) for ANY anim carrying an owner at `Anim+0xCC`, ahead of both the
-    // AnimType `Layer=` read and the Top default — so an attached anim joins the
-    // sorted ground layer whatever its type asked for. Layer 2 is the only
+    // AnimType `Layer=` read and the numeric layer-3 default — so an attached
+    // anim joins the sorted ground layer whatever its type asked for. Layer 2 is the only
     // sorted `DisplayClass` layer: `Submit_Object @ 0x004A9720` sets the sorted
     // flag with `CMP EDI,0x2` at `0x004A9747` / `SETZ CL` at `0x004A974D`, and every other layer
     // plain-appends, so a layer-2 member is inserted in ascending y-sort against
@@ -488,7 +490,12 @@ fn anim_render_destination(
                 config.y_sort_adjust,
             )
             .map(AnimRenderDestination::Ground),
-        AnimLayer::Top => Some(AnimRenderDestination::Top),
+        AnimLayer::Air => Some(AnimRenderDestination::Flat(
+            super::helpers::NATIVE_AIR_LAYER,
+        )),
+        AnimLayer::Top => Some(AnimRenderDestination::Flat(
+            super::helpers::NATIVE_TOP_LAYER,
+        )),
         AnimLayer::Other(_) => Some(AnimRenderDestination::Existing),
     }
 }
@@ -500,6 +507,7 @@ pub(crate) fn build_anim_class_instances(
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
+    top_layers: &mut Vec<u8>,
     top_modes: &mut Vec<
         crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode,
     >,
@@ -641,6 +649,7 @@ pub(crate) fn build_anim_class_instances(
             top_instances,
             top_pages,
             top_ids,
+            top_layers,
             top_modes,
             ground_objects,
         );
@@ -1611,8 +1620,8 @@ mod tests {
     fn gsi_05_12_owner_attached_anim_is_forced_onto_the_sorted_ground_layer() {
         // `AnimClass::GetLayer @ 0x00424CB0` tests the owner at `Anim+0xCC`
         // FIRST and returns 2 (Ground); only an ownerless anim reaches the
-        // AnimType `Layer=` read or the Top default. Layer 2 is the one sorted
-        // `DisplayClass` layer (`Submit_Object @ 0x004A9720`,
+        // AnimType `Layer=` read or the numeric layer-3 default. Layer 2 is the
+        // one sorted `DisplayClass` layer (`Submit_Object @ 0x004A9720`,
         // `CMP EDI,0x2` at `0x004A9747` / `SETZ CL` at `0x004A974D`), so an attached anim is
         // y-sorted against ordinary ground objects rather than appended.
         let art = ArtRegistry::from_ini(&IniFile::from_str(
@@ -1636,7 +1645,9 @@ mod tests {
         let top_config = art.anim_runtime_config("FIRE_TOP");
         assert_eq!(
             anim_render_destination(10, None, resolved, top_config, &order),
-            Some(AnimRenderDestination::Top),
+            Some(AnimRenderDestination::Flat(
+                crate::app::presentation::instances::helpers::NATIVE_TOP_LAYER,
+            )),
             "without an owner the type's Layer=top still wins"
         );
 
@@ -1693,7 +1704,9 @@ mod tests {
 
         assert_eq!(
             anim_render_destination(10, None, world, wa, &order),
-            Some(AnimRenderDestination::Top)
+            Some(AnimRenderDestination::Flat(
+                crate::app::presentation::instances::helpers::NATIVE_AIR_LAYER,
+            ))
         );
         let Some(AnimRenderDestination::Ground(tunnel_draw)) =
             anim_render_destination(20, None, world, tuntop, &order)
@@ -2132,6 +2145,7 @@ mod tests {
         let mut top_instances = Vec::new();
         let mut top_pages = Vec::new();
         let mut top_ids = Vec::new();
+        let mut top_layers = Vec::new();
         let mut top_modes = Vec::new();
         let mut ground_objects = Vec::new();
         emit_anim_class_rendered_pieces(
@@ -2142,6 +2156,7 @@ mod tests {
             &mut top_instances,
             &mut top_pages,
             &mut top_ids,
+            &mut top_layers,
             &mut top_modes,
             &mut ground_objects,
         );
@@ -2162,18 +2177,22 @@ mod tests {
 
         emit_anim_class_rendered_pieces(
             77,
-            Some(AnimRenderDestination::Top),
+            Some(AnimRenderDestination::Flat(
+                crate::app::presentation::instances::helpers::NATIVE_AIR_LAYER,
+            )),
             lowered,
             &mut paged,
             &mut top_instances,
             &mut top_pages,
             &mut top_ids,
+            &mut top_layers,
             &mut top_modes,
             &mut ground_objects,
         );
         assert_eq!(top_instances.len(), 2);
         assert_eq!(top_pages, vec![0, 1]);
         assert_eq!(top_ids, vec![77, 77]);
+        assert_eq!(top_layers, vec![3, 3]);
         assert_eq!(top_instances[0].uv_origin[0], 0.02);
         assert_eq!(top_instances[1].uv_origin[0], 0.08);
         assert_eq!(
