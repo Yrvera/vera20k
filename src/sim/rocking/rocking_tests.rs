@@ -5,8 +5,8 @@
 use crate::sim::components::RockingState;
 use crate::sim::rocking::impulse::apply_rocker_impulse;
 use crate::sim::rocking::rocking_system::{
-    IMPULSE_VEL_CAP, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10, SLOPE_TRANSITION_TICKS,
-    TILT_DEADBAND, advance_axis, advance_ship_rocking, update_slope_transition,
+    IMPULSE_VEL_CAP, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10, TILT_DEADBAND,
+    advance_axis, advance_ship_rocking,
 };
 use crate::util::fixed_math::SimFixed;
 
@@ -405,6 +405,8 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
     for y in 0..height {
         for x in 0..width {

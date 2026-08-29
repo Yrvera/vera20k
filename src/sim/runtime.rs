@@ -343,6 +343,7 @@ mod tests {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         };
         let inits = GeneratedTechnoInitTable::try_new([GeneratedTechnoInit {
             entity_index: 0,

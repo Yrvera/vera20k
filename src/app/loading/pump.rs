@@ -290,7 +290,7 @@ impl LoadingRequest {
                 trigger_difficulty_raw,
             }),
             preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
-            retained_random_map: None,
+            random_map_preview: None,
             presentation: LoadingPresentation::GenericMapLoad,
             fallback_skirmish_settings,
         }

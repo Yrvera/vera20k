@@ -2799,6 +2799,8 @@ fn water_terrain_with_land_type(
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
     let mut cells = Vec::new();
     for y in 0..height {
@@ -3004,6 +3006,8 @@ fn ew_high_bridge_strip_for_dispatch(
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
 
     let mut cells = Vec::with_capacity(width as usize * height as usize);
@@ -7511,6 +7515,8 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
     ResolvedTerrainCell {
         rx,

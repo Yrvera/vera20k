@@ -2264,6 +2264,7 @@ mod techno_constructor_tests {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }
     }
 
@@ -2296,6 +2297,8 @@ mod techno_constructor_tests {
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
         };
         let cells = (0..10)
             .flat_map(|ry| {

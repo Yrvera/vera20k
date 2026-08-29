@@ -2041,6 +2041,8 @@ mod tests {
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
         };
         let mut cells = Vec::with_capacity(usize::from(size) * usize::from(size));
         for ry in 0..size {

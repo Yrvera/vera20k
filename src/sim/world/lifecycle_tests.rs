@@ -675,6 +675,7 @@ fn zero_speed_foot_drive_ship_payloads_survive_all_world_spawn_paths() {
         mission: None,
         recruitable_a: true,
         recruitable_b: true,
+        structure_upgrades: [None, None, None],
         attached_tag_id: None,
     };
     assert_eq!(

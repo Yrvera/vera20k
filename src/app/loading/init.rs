@@ -1099,7 +1099,8 @@ impl MapLoadInitial {
             &rules,
             &overlay_registry,
         );
-        let house_roster = houses::parse_house_roster(&map_data.ini, &rules.color_schemes);
+        let house_roster =
+            houses::parse_house_roster(&map_data.ini, &rules.color_schemes, Some(&rules));
         let height_map = resolved_terrain.build_height_map();
         let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
         let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
@@ -1113,6 +1114,7 @@ impl MapLoadInitial {
             theater: map_data.header.theater.clone(),
             game_mode_nonzero: true,
             no_damage: false,
+            trigger_difficulty_raw: 1,
             map_width: resolved_terrain.width(),
             map_height: resolved_terrain.height(),
             local_left: map_data.header.local_left as u16,

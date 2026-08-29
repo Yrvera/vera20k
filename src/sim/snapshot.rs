@@ -3783,6 +3783,9 @@ mod tests {
             vec![older_id, newer_id]
         );
 
+        // Native load reconstructs Scenario RNG at Seed(0). This fixture is
+        // proving facility persistence, not the separate constructor draws.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let ordered_hash = sim.state_hash();
         sim.houses
             .get_mut(&owner)
