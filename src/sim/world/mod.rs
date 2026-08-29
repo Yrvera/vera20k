@@ -3389,6 +3389,24 @@ impl Simulation {
         self.substrate.logic.as_slice()
     }
 
+    /// Current native `TechnoClass` construction registry length.
+    ///
+    /// gamemd-derived: `HouseClass` destructive sweep @ `0x004FC6D0` reads
+    /// `g_TechnoClass_Array` at `0x004FC6EC` and reloads its count at
+    /// `0x004FC771`; it does not walk `LogicClass`. The EntityStore projection
+    /// preserves that independent lifecycle without duplicating persisted
+    /// authority. See [`EntityStore::techno_registration_id_at`].
+    pub(crate) fn techno_registration_len(&self) -> usize {
+        self.substrate.entities.techno_registration_len()
+    }
+
+    /// Resolve one live `TechnoClass` construction-registry slot. This is
+    /// deliberately an indexed re-read rather than a borrowed slice because
+    /// synchronous receivers may compact the registry or append new Technos.
+    pub(crate) fn techno_registration_id_at(&self, index: usize) -> Option<u64> {
+        self.substrate.entities.techno_registration_id_at(index)
+    }
+
     /// Mutable entity-store access for above-sim callers.
     pub fn entities_mut(&mut self) -> &mut EntityStore {
         &mut self.substrate.entities

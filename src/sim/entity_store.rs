@@ -130,6 +130,32 @@ impl EntityStore {
         self.entities.keys().copied().collect()
     }
 
+    /// Current native-style `TechnoClass` registry length.
+    ///
+    /// `EntityStore` contains only the four `TechnoClass` analogues. Stable
+    /// IDs are assigned monotonically at construction, so the live
+    /// `object_alive` projection is the Rust-native equivalent of the active
+    /// YR global Techno vector: constructor insertion is ordered even while an
+    /// object is in limbo, Conceal does not remove it, and UnInit compacts it
+    /// immediately even though physical Rust storage deletion is deferred.
+    pub(crate) fn techno_registration_len(&self) -> usize {
+        self.entities
+            .values()
+            .filter(|entity| entity.lifecycle.object_alive)
+            .count()
+    }
+
+    /// Stable identity at one current native-style `TechnoClass` registry
+    /// index. Callers that model a mutating native cursor must invoke this
+    /// again after every synchronous callback rather than retaining a snapshot.
+    pub(crate) fn techno_registration_id_at(&self, index: usize) -> Option<u64> {
+        self.entities
+            .values()
+            .filter(|entity| entity.lifecycle.object_alive)
+            .nth(index)
+            .map(|entity| entity.stable_id)
+    }
+
     /// Iterate all entities in deterministic stable_id order (immutable).
     pub fn iter_sorted(&self) -> impl Iterator<Item = (u64, &GameEntity)> {
         self.entities.iter().map(|(&k, v)| (k, v))
