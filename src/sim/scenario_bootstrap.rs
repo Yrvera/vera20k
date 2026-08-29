@@ -2563,6 +2563,286 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_12_generated_trace_continues_into_starting_techno_and_post_map_crate() {
+        use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
+        use crate::sim::scenario_post_map::ScenarioPostMapInput;
+        use crate::skirmish_launch::{
+            SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLocalSlot,
+        };
+
+        const SIZE: u16 = 80;
+        let seed = 0x51C0_100B;
+        let ini = IniFile::from_str(
+            "[General]\n\
+             BaseUnit=MTNK\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=MTNK\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=CABHUT\n\
+             1=CATHOSP\n\
+             [MTNK]\n\
+             Strength=300\n\
+             Speed=6\n\
+             Cost=100\n\
+             TechLevel=1\n\
+             Owner=Americans\n\
+             [CABHUT]\n\
+             Strength=100\n\
+             Foundation=1x1\n\
+             Owner=Neutral\n\
+             [CATHOSP]\n\
+             Strength=100\n\
+             Foundation=1x1\n\
+             Owner=Neutral\n\
+             [OverlayTypes]\n\
+             0=WOOD\n\
+             1=WATER\n\
+             [WOOD]\n\
+             Crate=yes\n\
+             [WATER]\n\
+             Crate=yes\n\
+             [CrateRules]\n\
+             CrateImg=WOOD\n\
+             WoodCrateImg=WOOD\n\
+             WaterCrateImg=WATER\n\
+             CrateMinimum=1\n\
+             CrateMaximum=1\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("single-owner launch rules");
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let map = MapFile::from_bytes(
+            b"[Map]\nTheater=TEMPERATE\nSize=0,0,40,40\nLocalSize=2,2,36,32\n\
+              [Basic]\nName=GSI 04.12 owner fixture\n\
+              [Structures]\n\
+              0=Neutral,CABHUT,256,30,30,0,None\n\
+              1=Neutral,CATHOSP,256,32,32,0,None\n\
+              [IsoMapPack5]\n1=CAAEABUAAAAAEQAA\n",
+        )
+        .expect("minimal generated-map-shaped input");
+        let session = SkirmishLaunchSession {
+            mode: SkirmishLaunchMode {
+                id: 1,
+                ui_name_key: "GUI:Battle".to_string(),
+                tooltip_key: "STT:ModeBattle".to_string(),
+                override_file: "MPBattleMD.ini".to_string(),
+                map_filter: "standard".to_string(),
+                random_maps_allowed: true,
+                allies_allowed: true,
+                must_ally: false,
+            },
+            selected_map_file: Some("RandMap.SED".to_string()),
+            player_name: "Player".to_string(),
+            local: SkirmishLocalSlot {
+                country: LaunchCountry::America,
+                country_random: false,
+                color_index: 0,
+                color_random: false,
+                start_position: LaunchStartPosition::Position(1),
+                team: LaunchTeam::None,
+            },
+            opponents: Vec::new(),
+            options: SkirmishLaunchOptions {
+                unit_count: 0,
+                bases: true,
+                crates: true,
+                ..SkirmishLaunchOptions::default()
+            },
+        };
+        let launch = MatchLaunchDescriptor::from_resolved(session)
+            .expect("fixture contains no unresolved shell choices");
+
+        let before = SimRng::new(u64::from(seed));
+        let mut reference = before.clone();
+        // One participant, then Neutral and Special, in native House order.
+        for _ in 0..3 {
+            let _ = reference
+                .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
+        }
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
+        };
+        let plan = PreloadedBattleStartPlan {
+            gathered_starts: vec![start],
+            assignment: NativeStartAssignment {
+                placements: vec![(0, start)],
+                start_table: vec![Some(0)],
+            },
+            scenario_rng_before: before.logical_state(),
+            scenario_rng_before_fingerprint: before.state(),
+            scenario_rng_after: reference.logical_state(),
+            scenario_rng_after_cursor: reference.clone(),
+        };
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        owner
+            .install_preloaded_battle_plan(&plan)
+            .expect("one authoritative Full-Init prefix");
+        {
+            let (mut scenario_fill, main) = owner.terrain_draws();
+            let actual = scenario_fill.next_range_u32_inclusive(5, 17);
+            let expected = reference.next_range_u32_inclusive(5, 17);
+            assert_eq!(actual, expected, "terrain Fill continues the prefix");
+            drop(main);
+        }
+
+        let mut trace = RmgConstructionTrace::default();
+        trace.push_emitted(
+            RmgConstructionPhase::BridgeRepairHut,
+            "CABHUT".to_string(),
+            0,
+            (30, 30),
+        );
+        trace.push_discarded(RmgConstructionPhase::NeutralTech, "CAOILD".to_string());
+        trace.push_emitted(
+            RmgConstructionPhase::NeutralTech,
+            "CATHOSP".to_string(),
+            1,
+            (32, 32),
+        );
+        let first_trace_word = (reference.next_u32() & 0xFFFF) as u16;
+        let _discarded_trace_word = reference.next_u32();
+        let second_trace_word = (reference.next_u32() & 0xFFFF) as u16;
+        let bindings = owner
+            .replay_generated_construction_trace(&trace)
+            .expect("ordered trace binds emitted constructors");
+        assert_eq!(
+            bindings.entry(0).unwrap().techno_ctor_random_word,
+            first_trace_word
+        );
+        assert_eq!(
+            bindings.entry(1).unwrap().techno_ctor_random_word,
+            second_trace_word
+        );
+        assert!(bindings.entry(2).is_none());
+        assert_eq!(
+            owner.logical_states_for_test().0,
+            reference.logical_state(),
+            "the independently walked intermediate cursor must match after replay"
+        );
+
+        let mut scenario = descriptor(seed);
+        scenario.map_name = "RandMap.SED".to_string();
+        scenario.theater = "TEMPERATE".to_string();
+        scenario.game_mode_nonzero = true;
+        scenario.map_width = SIZE;
+        scenario.map_height = SIZE;
+        scenario.local_left = 2;
+        scenario.local_top = 2;
+        scenario.local_width = 36;
+        scenario.local_height = 32;
+        scenario.mp_start_waypoints.insert(0, (start.rx, start.ry));
+        let terrain = techno_constructor_flat_start_terrain(SIZE);
+        let mut sim = owner.into_simulation(&scenario);
+        sim.install_resolved_terrain_for_new_map(terrain.clone());
+        sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(SIZE, SIZE));
+        sim.install_playfield_from_map_header(&map.header);
+        let house_roster = HouseRoster::default();
+        initialize_skirmish_launch_houses(&mut sim, &house_roster, &rules, &launch);
+        let before_projection = sim.scenario_rng.logical_state();
+        assert_eq!(
+            sim.spawn_generated_from_map_with_resolved(
+                &map.entities,
+                &rules,
+                &BTreeMap::new(),
+                Some(&terrain),
+                &bindings,
+            )
+            .expect("generated projection validates the replay bindings"),
+            2
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            before_projection,
+            "generated projection must install preconsumed words without drawing"
+        );
+        let installed_words = [("CABHUT", first_trace_word), ("CATHOSP", second_trace_word)];
+        for (type_id, expected_word) in installed_words {
+            let entity = sim
+                .entities()
+                .values()
+                .find(|entity| sim.interner.resolve(entity.type_ref) == type_id)
+                .unwrap_or_else(|| panic!("generated {type_id} reached Simulation"));
+            assert_eq!(entity.techno_ctor_random_word, expected_word);
+        }
+
+        let starting_techno_word = (reference.next_u32() & 0xFFFF) as u16;
+        let _starting_force_tail = reference.next_range_u32_inclusive(0, 0xFFFF);
+        let launch_result = apply_preloaded_battle_launch_session_with_overlay_registry(
+            &mut sim,
+            &map,
+            &house_roster,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+            &launch,
+            &overlays,
+            &plan,
+        );
+        assert_eq!(launch_result.spawned_mcvs, 1);
+        let starting_techno = sim
+            .entities()
+            .values()
+            .find(|entity| sim.interner.resolve(entity.type_ref) == "MTNK")
+            .expect("the production launch constructs its starting MCV");
+        assert_eq!(
+            starting_techno.techno_ctor_random_word, starting_techno_word,
+            "the first post-trace Techno constructor continues the same cursor"
+        );
+
+        let expected_crate_cell = (
+            reference.next_range_u32_inclusive(1, u32::from(SIZE - 1)) as u16,
+            reference.next_range_u32_inclusive(1, u32::from(SIZE - 1)) as u16,
+        );
+        assert!(
+            crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                (
+                    i32::from(expected_crate_cell.0),
+                    i32::from(expected_crate_cell.1),
+                ),
+                sim.playfield_bounds,
+                Some(&terrain),
+            ),
+            "controlled first crate draw must need no FNPC displacement"
+        );
+        let _crate_timer = reference.next_range_u32_inclusive(0, 0x7FFF_FFFE);
+        let output = sim.finalize_scenario_post_map(ScenarioPostMapInput {
+            map_width: SIZE,
+            map_height: SIZE,
+            basic: &map.basic,
+            special_flags: &map.special_flags,
+            rules: &rules,
+            overlay_registry: &overlays,
+            house_roster: &house_roster,
+            skirmish_session: Some(&launch),
+        });
+        assert_eq!(
+            output.crates,
+            Some(crate::sim::crates::CratePlacement {
+                requested: 1,
+                placed: 1,
+            })
+        );
+        let wood = overlays.id_for_name("WOOD").expect("WOOD crate overlay");
+        let crate_cells = sim
+            .overlay_grid
+            .as_ref()
+            .expect("post-map overlay authority")
+            .iter_occupied()
+            .filter_map(|(rx, ry, cell)| (cell.overlay_id == Some(wood)).then_some((rx, ry)))
+            .collect::<Vec<_>>();
+        assert_eq!(crate_cells, vec![expected_crate_cell]);
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            reference.logical_state(),
+            "prefix, Fill, trace, starting Techno, and crate draws must form one stream"
+        );
+        assert_eq!(sim.main_rng.logical_state(), before.logical_state());
+    }
+
+    #[test]
     fn generated_trace_rejects_bad_ordinal_before_spending_scenario() {
         let seed = 0x51C0_1007;
         let mut owner = ScenarioBootstrapRng::new(seed);
@@ -2575,10 +2855,12 @@ mod tests {
 
         assert!(matches!(
             owner.replay_generated_construction_trace(&trace),
-            Err(crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
-                expected: 0,
-                found: 4,
-            })
+            Err(
+                crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
+                    expected: 0,
+                    found: 4,
+                }
+            )
         ));
         let actual = owner.into_simulation(&descriptor(seed)).rng_state();
         assert_eq!(
