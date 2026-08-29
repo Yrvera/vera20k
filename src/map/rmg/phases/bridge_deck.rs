@@ -643,6 +643,195 @@ mod tests {
         }
     }
 
+    struct EndMatrixBlock(TileBlock);
+
+    impl EndMatrixBlock {
+        fn new() -> Self {
+            Self(TileBlock {
+                width: 2,
+                height: 2,
+                subtiles: vec![
+                    Some(SubTile {
+                        height: 2,
+                        terrain: 0,
+                        slope: 7,
+                    }),
+                    None,
+                    Some(SubTile {
+                        height: 5,
+                        terrain: 0,
+                        slope: 3,
+                    }),
+                    Some(SubTile {
+                        height: 8,
+                        terrain: 0,
+                        slope: 6,
+                    }),
+                ],
+            })
+        }
+    }
+
+    impl TileBlocks for EndMatrixBlock {
+        fn block(&self, _tile: i32) -> Option<&TileBlock> {
+            Some(&self.0)
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum MatrixEnd {
+        East,
+        West,
+        North,
+        South,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum MatrixPath {
+        AreaFalse,
+        CoinFalse,
+        CoinTrue,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MatrixEndSpec {
+        axis: DeckAxis,
+        deck_rect: (i32, i32, i32, i32),
+        validator: (i32, i32, i32, i32),
+        alternate: (i32, (i32, i32)),
+        default: (i32, (i32, i32)),
+        coin_index: usize,
+    }
+
+    fn matrix_end_spec(end: MatrixEnd) -> MatrixEndSpec {
+        match end {
+            MatrixEnd::East => MatrixEndSpec {
+                axis: DeckAxis::EastWest,
+                deck_rect: (40, 48, 6, 3),
+                validator: (46, 46, 6, 6),
+                alternate: (PAVED_ROAD + 10, (46, 48)),
+                default: (PAVED_ROAD_END, (46, 48)),
+                coin_index: 0,
+            },
+            MatrixEnd::West => MatrixEndSpec {
+                axis: DeckAxis::EastWest,
+                deck_rect: (40, 48, 6, 3),
+                validator: (34, 46, 6, 6),
+                alternate: (PAVED_ROAD + 9, (36, 48)),
+                default: (PAVED_ROAD_END + 2, (39, 48)),
+                coin_index: 1,
+            },
+            MatrixEnd::North => MatrixEndSpec {
+                axis: DeckAxis::NorthSouth,
+                deck_rect: (40, 48, 3, 6),
+                validator: (38, 42, 7, 6),
+                alternate: (PAVED_ROAD + 13, (40, 44)),
+                default: (PAVED_ROAD_END + 1, (40, 47)),
+                coin_index: 0,
+            },
+            MatrixEnd::South => MatrixEndSpec {
+                axis: DeckAxis::NorthSouth,
+                deck_rect: (40, 48, 3, 6),
+                validator: (38, 54, 7, 6),
+                alternate: (PAVED_ROAD + 12, (40, 54)),
+                default: (PAVED_ROAD_END + 3, (40, 54)),
+                coin_index: 1,
+            },
+        }
+    }
+
+    fn seed_for_ordered_end_coins(target_index: usize, target_value: bool) -> u16 {
+        let mut wanted = [false; 2];
+        wanted[target_index] = target_value;
+        wanted[1 - target_index] = !target_value;
+        (0..=u16::MAX)
+            .find(|seed| {
+                let mut probe = RmgRng::new(*seed);
+                [probe.uniform(0, 1) != 0, probe.uniform(0, 1) != 0] == wanted
+            })
+            .expect("the retail MapGen stream reaches both ordered coin patterns")
+    }
+
+    fn prepare_end_footprint(
+        grid: &mut RmgGrid,
+        scratch: &mut RmgScratch,
+        block: &TileBlock,
+        origin: (i32, i32),
+    ) {
+        for row in 0..block.height {
+            for col in 0..block.width {
+                let (x, y) = (origin.0 + col, origin.1 + row);
+                let cell = grid.get_mut(x, y).expect("matrix end footprint");
+                cell.tile = 0;
+                cell.sub_tile = 201;
+                cell.slope = 202;
+                cell.level = 4;
+                let record = scratch.get_mut(x, y);
+                record.region = 17;
+                record.stamp = 29;
+            }
+        }
+    }
+
+    fn assert_stamped_end_footprint(
+        grid: &RmgGrid,
+        scratch: &RmgScratch,
+        block: &TileBlock,
+        origin: (i32, i32),
+        expected_tile: i32,
+        label: &str,
+    ) {
+        for (index, sub) in block.subtiles.iter().copied().enumerate() {
+            let x = origin.0 + index as i32 % block.width;
+            let y = origin.1 + index as i32 / block.width;
+            let cell = grid.get(x, y).expect("stamped matrix end footprint");
+            let record = scratch.get(x, y);
+            if let Some(sub) = sub {
+                assert_eq!(
+                    (cell.tile, cell.sub_tile, cell.slope),
+                    (expected_tile, index as u8, sub.slope),
+                    "{label}: exact tile id, TMP index, and slope at subcell {index}"
+                );
+                assert_eq!(cell.level, 4, "{label}: level preserved at subcell {index}");
+                assert_eq!(
+                    (record.region, record.stamp),
+                    (-1, 29),
+                    "{label}: region clears but independent stamp survives at subcell {index}"
+                );
+            } else {
+                assert_eq!(
+                    (cell.tile, cell.sub_tile, cell.slope, cell.level),
+                    (0, 201, 202, 4),
+                    "{label}: a null TMP subcell stays untouched at index {index}"
+                );
+                assert_eq!((record.region, record.stamp), (17, 29));
+            }
+        }
+    }
+
+    fn assert_untouched_end_footprint(
+        grid: &RmgGrid,
+        scratch: &RmgScratch,
+        block: &TileBlock,
+        origin: (i32, i32),
+        label: &str,
+    ) {
+        for index in 0..block.subtiles.len() {
+            let x = origin.0 + index as i32 % block.width;
+            let y = origin.1 + index as i32 / block.width;
+            let cell = grid.get(x, y).expect("unstamped matrix end footprint");
+            assert_eq!(
+                (cell.tile, cell.sub_tile, cell.slope, cell.level),
+                (0, 201, 202, 4),
+                "{label}: unselected anchor stays untouched at subcell {index}"
+            );
+            assert_eq!(
+                (scratch.get(x, y).region, scratch.get(x, y).stamp),
+                (17, 29)
+            );
+        }
+    }
+
     fn playfield() -> Playfield {
         Playfield::from_local_size(74, 2, 5, 70, 70)
     }
@@ -1235,6 +1424,141 @@ mod tests {
             expected_rng.next_u32(),
             "a failed end validator spends no coin"
         );
+    }
+
+    #[test]
+    fn four_end_coin_and_stamp_matrix_matches_native_production_owner() {
+        for end in [
+            MatrixEnd::East,
+            MatrixEnd::West,
+            MatrixEnd::North,
+            MatrixEnd::South,
+        ] {
+            for path in [
+                MatrixPath::AreaFalse,
+                MatrixPath::CoinFalse,
+                MatrixPath::CoinTrue,
+            ] {
+                let spec = matrix_end_spec(end);
+                let target_alternate = matches!(path, MatrixPath::CoinTrue);
+                let seed = match path {
+                    MatrixPath::AreaFalse => match end {
+                        MatrixEnd::East => 0xE101,
+                        MatrixEnd::West => 0xE102,
+                        MatrixEnd::North => 0xE103,
+                        MatrixEnd::South => 0xE104,
+                    },
+                    MatrixPath::CoinFalse | MatrixPath::CoinTrue => {
+                        seed_for_ordered_end_coins(spec.coin_index, target_alternate)
+                    }
+                };
+                let label = format!("{end:?}/{path:?}");
+                let (mut grid, mut scratch) = harness();
+                for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+                    grid.get_mut(x, y).expect("native matrix cell").occupied = true;
+                }
+                let blocks = EndMatrixBlock::new();
+                prepare_end_footprint(&mut grid, &mut scratch, &blocks.0, spec.alternate.1);
+                if spec.default.1 != spec.alternate.1 {
+                    prepare_end_footprint(&mut grid, &mut scratch, &blocks.0, spec.default.1);
+                }
+                if matches!(path, MatrixPath::AreaFalse) {
+                    let (x, y, w, h) = spec.validator;
+                    grid.get_mut(x + w - 1, y + h - 1)
+                        .expect("exact native end-area far corner")
+                        .tile = GREEN;
+                }
+
+                let mut rng = RmgRng::new(seed);
+                let mut expected_rng = RmgRng::new(seed);
+                match path {
+                    MatrixPath::AreaFalse => {
+                        let _other_end_coin = expected_rng.uniform(0, 1);
+                    }
+                    MatrixPath::CoinFalse | MatrixPath::CoinTrue => {
+                        let ordered_coins = [
+                            expected_rng.uniform(0, 1) != 0,
+                            expected_rng.uniform(0, 1) != 0,
+                        ];
+                        assert_eq!(
+                            ordered_coins[spec.coin_index], target_alternate,
+                            "{label}: target coin fixture"
+                        );
+                        assert_ne!(
+                            ordered_coins[1 - spec.coin_index],
+                            target_alternate,
+                            "{label}: the opposite coin must distinguish native end order"
+                        );
+                    }
+                }
+
+                let playfield = playfield();
+                let identity = ids();
+                let mut structures = Vec::new();
+                let mut trace = RmgConstructionTrace::default();
+                {
+                    let mut ctx = CarveCtx {
+                        grid: &mut grid,
+                        scratch: &mut scratch,
+                        ids: &identity,
+                        blocks: &blocks,
+                        rng: &mut rng,
+                        playfield: &playfield,
+                        ramp_end_block: -1,
+                    };
+                    assert!(
+                        commit_candidate(
+                            &mut ctx,
+                            DeckCandidate {
+                                axis: spec.axis,
+                                rect: spec.deck_rect,
+                                span: 5,
+                            },
+                            &mut structures,
+                            &mut trace,
+                        ),
+                        "{label}: production candidate commits"
+                    );
+                }
+                assert!(structures.is_empty(), "{label}: occupied hut fixture");
+                assert!(trace.events.is_empty(), "{label}: no hut constructors");
+
+                let expected_end = if target_alternate {
+                    spec.alternate
+                } else {
+                    spec.default
+                };
+                assert_stamped_end_footprint(
+                    &grid,
+                    &scratch,
+                    &blocks.0,
+                    expected_end.1,
+                    expected_end.0,
+                    &label,
+                );
+                if spec.alternate.1 != spec.default.1 {
+                    let unselected_origin = if target_alternate {
+                        spec.default.1
+                    } else {
+                        spec.alternate.1
+                    };
+                    assert_untouched_end_footprint(
+                        &grid,
+                        &scratch,
+                        &blocks.0,
+                        unselected_origin,
+                        &label,
+                    );
+                }
+                for continuation_draw in 0..8 {
+                    assert_eq!(
+                        rng.next_u32(),
+                        expected_rng.next_u32(),
+                        "{label}: conditional coin cursor at continuation draw {continuation_draw}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
