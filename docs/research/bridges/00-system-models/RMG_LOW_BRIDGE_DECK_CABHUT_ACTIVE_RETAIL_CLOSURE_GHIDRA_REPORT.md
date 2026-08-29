@@ -284,8 +284,8 @@ PavedRoadEnds block. The four ends execute in the order shown by their axis bran
 
 All eight tile-block calls pass scratch id `-1` and level base `-1` to
 `StampIsometricTileBlock @ 0x005A6C10`. For each non-null TMP subcell it writes tile id, sub-tile,
-slope byte, and scratch tag `-1`. It does not change the cell level because level base is `-1`.
-It consumes no RNG.
+slope byte, and scratch region id `-1` at record `+0x38`; it does not alter the independent stamp
+field at `+0x3C`. It does not change the cell level because level base is `-1`. It consumes no RNG.
 
 ### 7.3 Retail theater data
 

@@ -18,7 +18,7 @@
 //! a sweep between them would judge the wrong cells in both directions.
 
 use crate::map::rmg::grid::RmgGrid;
-use crate::map::rmg::phases::carve::CarveCtx;
+use crate::map::rmg::phases::carve::{CarveCtx, stamp_iso_block};
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
 use crate::map::rmg::scratch::RmgScratch;
 use crate::map::rmg::tiles::TileIds;
@@ -341,31 +341,6 @@ fn stamp_deck(ctx: &mut CarveCtx<'_>, candidate: DeckCandidate) {
     }
 }
 
-/// Low-deck ends use the native unconditional tile-block stamper with both
-/// metadata arguments -1: scratch stamp changes, cell level does not.
-fn stamp_end_block(ctx: &mut CarveCtx<'_>, tile: i32, origin: (i32, i32)) {
-    let Some(block) = ctx.blocks.block(tile).cloned() else {
-        return;
-    };
-    for row in 0..block.height {
-        for col in 0..block.width {
-            let (x, y) = (origin.0 + col, origin.1 + row);
-            if !ctx.scratch.in_diamond(x, y) {
-                continue;
-            }
-            let index = (block.width * row + col) as usize;
-            let Some(sub) = block.subtiles.get(index).copied().flatten() else {
-                continue;
-            };
-            let cell = ctx.grid.cell_native_mut(x, y);
-            cell.tile = tile;
-            cell.sub_tile = index as u8;
-            cell.slope = sub.slope;
-            ctx.scratch.get_mut(x, y).stamp = -1;
-        }
-    }
-}
-
 fn stamp_end(
     ctx: &mut CarveCtx<'_>,
     validator: (i32, i32, i32, i32),
@@ -375,7 +350,10 @@ fn stamp_end(
     let use_alternate = end_area_is_placeable(ctx.grid, ctx.scratch, ctx.ids, validator)
         && ctx.rng.uniform(0, 1) != 0;
     let (tile, origin) = if use_alternate { alternate } else { default };
-    stamp_end_block(ctx, tile, origin);
+    // Native passes scratch id -1 and level base -1 to the unconditional
+    // block stamper: every present TMP subcell clears its region owner while
+    // preserving the existing cell level.
+    stamp_iso_block(ctx, tile, origin, -1, None);
 }
 
 fn place_hut_in_rect(
@@ -791,6 +769,104 @@ mod tests {
     }
 
     #[test]
+    fn low_end_stamper_writes_multicell_tmp_fields_and_clears_region_only() {
+        let (mut grid, mut scratch) = harness();
+        let origin = (40, 48);
+        let end_tile = PAVED_ROAD_END;
+        let blocks = OneByOne(TileBlock {
+            width: 3,
+            height: 2,
+            subtiles: vec![
+                Some(SubTile {
+                    height: 2,
+                    terrain: 0,
+                    slope: 7,
+                }),
+                None,
+                Some(SubTile {
+                    height: 5,
+                    terrain: 0,
+                    slope: 3,
+                }),
+                Some(SubTile {
+                    height: 8,
+                    terrain: 0,
+                    slope: 0,
+                }),
+                None,
+                Some(SubTile {
+                    height: 11,
+                    terrain: 0,
+                    slope: 6,
+                }),
+            ],
+        });
+        for row in 0..2 {
+            for col in 0..3 {
+                let (x, y) = (origin.0 + col, origin.1 + row);
+                let cell = grid.get_mut(x, y).expect("fixture footprint");
+                cell.tile = 321;
+                cell.sub_tile = 201;
+                cell.slope = 202;
+                cell.level = 13;
+                let record = scratch.get_mut(x, y);
+                record.region = 17;
+                record.stamp = 29;
+            }
+        }
+
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(19);
+        let mut expected_rng = RmgRng::new(19);
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            // This validator hangs outside the diamond, forcing the default
+            // end without a coin while still exercising the production owner.
+            stamp_end(
+                &mut ctx,
+                (16, 16, 6, 6),
+                (PAVED_ROAD, origin),
+                (end_tile, origin),
+            );
+        }
+
+        for (index, sub) in blocks.0.subtiles.iter().copied().enumerate() {
+            let x = origin.0 + index as i32 % blocks.0.width;
+            let y = origin.1 + index as i32 / blocks.0.width;
+            let cell = grid.get(x, y).expect("fixture footprint");
+            let record = scratch.get(x, y);
+            if let Some(sub) = sub {
+                assert_eq!((cell.tile, cell.sub_tile), (end_tile, index as u8));
+                assert_eq!(cell.slope, sub.slope, "TMP slope at subcell {index}");
+                assert_eq!(cell.level, 13, "level is preserved at subcell {index}");
+                assert_eq!(record.region, -1, "region clears at subcell {index}");
+                assert_eq!(record.stamp, 29, "stamp survives at subcell {index}");
+            } else {
+                assert_eq!(
+                    (cell.tile, cell.sub_tile, cell.slope, cell.level),
+                    (321, 201, 202, 13),
+                    "TMP hole stays untouched at subcell {index}"
+                );
+                assert_eq!((record.region, record.stamp), (17, 29));
+            }
+        }
+        assert_eq!(
+            rng.next_u32(),
+            expected_rng.next_u32(),
+            "a failed end validator spends no coin"
+        );
+    }
+
+    #[test]
     fn an_empty_region_gives_up_where_the_original_would_spin_forever() {
         let scratch = scratch_owning(&[], 7);
         let mut rng = RmgRng::new(2);
@@ -968,7 +1044,8 @@ mod tests {
             west_tile
         );
         assert_eq!(grid.get(east_anchor.0, east_anchor.1).unwrap().level, 4);
-        assert_eq!(scratch.get(east_anchor.0, east_anchor.1).stamp, -1);
+        assert_eq!(scratch.get(east_anchor.0, east_anchor.1).region, -1);
+        assert_eq!(scratch.get(east_anchor.0, east_anchor.1).stamp, 0);
         assert_eq!(
             rng.next_u32(),
             expected_rng.next_u32(),
@@ -1426,5 +1503,143 @@ mod tests {
         // placer and an end piece off the edge of the map.
         let (rect, mut grid, scratch) = off_diamond_rect();
         assert!(!end_area_is_placeable(&mut grid, &scratch, &ids(), rect));
+    }
+
+    #[test]
+    #[ignore = "requires RA2_DIR with installed active-retail YR assets"]
+    fn active_retail_low_end_tmp_blocks_stamp_native_fields() {
+        use std::path::PathBuf;
+
+        use crate::assets::asset_manager::AssetManager;
+        use crate::map::rmg::theater_blocks::TheaterTileBlocks;
+
+        let retail_dir = std::env::var_os("RA2_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                crate::util::config::GameConfig::load()
+                    .ok()
+                    .map(|config| config.paths.ra2_dir)
+            })
+            .expect("set RA2_DIR to the installed active-retail YR directory");
+        let mut assets = AssetManager::new(&retail_dir).expect("load retail MIX stack");
+        let mut saw_multicell = false;
+        let mut saw_hole = false;
+        let mut saw_nonzero_slope = false;
+        let mut corpus = Vec::new();
+        for theater_name in ["TEMPERATE", "SNOW", "URBAN", "NEWURBAN", "DESERT"] {
+            let theater = crate::map::theater::load_theater(&mut assets, theater_name)
+                .unwrap_or_else(|| panic!("load active-retail {theater_name} theater"));
+            let identity = TileIds::resolve(&theater);
+            let blocks = TheaterTileBlocks::build(&theater.lookup, |name| assets.get(name));
+            let end_tiles = [
+                identity.paved_roads + 10,
+                identity.paved_roads + 9,
+                identity.paved_roads + 13,
+                identity.paved_roads + 12,
+                identity.paved_road_ends,
+                identity.paved_road_ends + 2,
+                identity.paved_road_ends + 1,
+                identity.paved_road_ends + 3,
+            ];
+            assert!(identity.paved_roads >= 0 && identity.paved_road_ends >= 0);
+
+            for tile in end_tiles {
+                let block = blocks
+                    .block(tile)
+                    .unwrap_or_else(|| {
+                        panic!("retail {theater_name} end tile {tile} has a TMP block")
+                    })
+                    .clone();
+                let present = block.subtiles.iter().flatten().count();
+                let holes = block.subtiles.len() - present;
+                let slopes = block
+                    .subtiles
+                    .iter()
+                    .flatten()
+                    .filter(|sub| sub.slope != 0)
+                    .count();
+                saw_multicell |= block.width * block.height > 1;
+                saw_hole |= holes > 0;
+                saw_nonzero_slope |= slopes > 0;
+                corpus.push((
+                    theater_name,
+                    tile,
+                    block.width,
+                    block.height,
+                    present,
+                    holes,
+                    slopes,
+                ));
+
+                let (mut grid, mut scratch) = harness();
+                let origin = (40, 48);
+                for (index, _) in block.subtiles.iter().enumerate() {
+                    let x = origin.0 + index as i32 % block.width;
+                    let y = origin.1 + index as i32 / block.width;
+                    let cell = grid.get_mut(x, y).expect("retail TMP fixture footprint");
+                    cell.tile = 321;
+                    cell.sub_tile = 201;
+                    cell.slope = 202;
+                    cell.level = 13 + (index % 5) as u8;
+                    let record = scratch.get_mut(x, y);
+                    record.region = 17;
+                    record.stamp = 29;
+                }
+
+                let playfield = playfield();
+                let mut rng = RmgRng::new(19);
+                {
+                    let mut ctx = CarveCtx {
+                        grid: &mut grid,
+                        scratch: &mut scratch,
+                        ids: &identity,
+                        blocks: &blocks,
+                        rng: &mut rng,
+                        playfield: &playfield,
+                        ramp_end_block: -1,
+                    };
+                    stamp_end(&mut ctx, (16, 16, 6, 6), (tile, origin), (tile, origin));
+                }
+
+                for (index, sub) in block.subtiles.iter().copied().enumerate() {
+                    let x = origin.0 + index as i32 % block.width;
+                    let y = origin.1 + index as i32 / block.width;
+                    let cell = grid.get(x, y).expect("retail TMP fixture footprint");
+                    let record = scratch.get(x, y);
+                    let original_level = 13 + (index % 5) as u8;
+                    if let Some(sub) = sub {
+                        assert_eq!((cell.tile, cell.sub_tile), (tile, index as u8));
+                        assert_eq!(
+                            cell.slope, sub.slope,
+                            "retail {theater_name} tile {tile} subcell {index}"
+                        );
+                        assert_eq!(
+                            cell.level, original_level,
+                            "retail {theater_name} tile {tile} level"
+                        );
+                        assert_eq!(
+                            record.region, -1,
+                            "retail {theater_name} tile {tile} region"
+                        );
+                        assert_eq!(record.stamp, 29, "retail {theater_name} tile {tile} stamp");
+                    } else {
+                        assert_eq!(
+                            (cell.tile, cell.sub_tile, cell.slope, cell.level),
+                            (321, 201, 202, original_level),
+                            "retail {theater_name} tile {tile} hole {index} stays untouched"
+                        );
+                        assert_eq!((record.region, record.stamp), (17, 29));
+                    }
+                }
+            }
+        }
+
+        assert!(saw_multicell, "retail low-end TMP corpus: {corpus:?}");
+        // The complete populated retail end corpus is rectangular and flat.
+        // The non-ignored synthetic fixture above pins the same native helper's
+        // hole and nonzero-slope behavior without inventing those properties
+        // for the stock data.
+        assert!(!saw_hole, "retail low-end TMP corpus: {corpus:?}");
+        assert!(!saw_nonzero_slope, "retail low-end TMP corpus: {corpus:?}");
     }
 }
