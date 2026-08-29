@@ -1947,6 +1947,8 @@ mod tests {
         grid.get_mut(40, 47).unwrap().overlay = 1;
         grid.get_mut(41, 47).unwrap().tile = GREEN;
         grid.get_mut(42, 47).unwrap().occupied = true;
+        grid.get_mut(40, 51).unwrap().occupied = true;
+        grid.get_mut(41, 51).unwrap().occupied = true;
         let blocks = OneByOne::new();
         let playfield = playfield();
         let identity = ids();
@@ -1980,16 +1982,71 @@ mod tests {
 
         assert_eq!(
             structures,
-            vec![(CABHUT.to_string(), 40, 51), (CABHUT.to_string(), 44, 47)]
+            vec![(CABHUT.to_string(), 42, 51), (CABHUT.to_string(), 44, 47)]
         );
         assert_bridge_hut_trace(&structures, &trace);
-        assert!(grid.get(40, 51).unwrap().occupied);
+        assert!(grid.get(42, 51).unwrap().occupied);
         assert!(grid.get(44, 47).unwrap().occupied);
         for continuation_draw in 0..8 {
             assert_eq!(
                 rng.next_u32(),
                 expected_rng.next_u32(),
                 "hut scans spend no MapGen word at continuation draw {continuation_draw}"
+            );
+        }
+    }
+
+    #[test]
+    fn committed_hut_primary_scan_reaches_its_inclusive_maximum_y() {
+        let (mut grid, mut scratch) = harness();
+        for y in 47..=51 {
+            for x in 40..=42 {
+                grid.get_mut(x, y).unwrap().occupied = true;
+            }
+        }
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(0xC134);
+        let mut expected_rng = RmgRng::new(0xC134);
+        let _east_end_coin = expected_rng.uniform(0, 1);
+        let _west_end_coin = expected_rng.uniform(0, 1);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(commit_candidate(
+                &mut ctx,
+                DeckCandidate {
+                    axis: DeckAxis::EastWest,
+                    rect: (40, 48, 6, 3),
+                    span: 5,
+                },
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        assert_eq!(
+            structures,
+            vec![(CABHUT.to_string(), 40, 52), (CABHUT.to_string(), 44, 47)]
+        );
+        assert_bridge_hut_trace(&structures, &trace);
+        assert!(grid.get(40, 52).unwrap().occupied);
+        assert!(grid.get(44, 47).unwrap().occupied);
+        for continuation_draw in 0..8 {
+            assert_eq!(
+                rng.next_u32(),
+                expected_rng.next_u32(),
+                "inclusive maximum-Y hut scan spends no MapGen word at continuation draw {continuation_draw}"
             );
         }
     }
