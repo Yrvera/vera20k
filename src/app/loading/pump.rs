@@ -280,6 +280,24 @@ impl LoadingRequest {
         self.startup().selected_map_file()
     }
 
+    /// Run the request's authoritative initial-map entry. The retained random
+    /// preview is intentionally not an argument: active retail's `.SED` reader
+    /// regenerates gameplay after Start, while the preview remains a loading-
+    /// composition fallback only.
+    pub(crate) fn load_initial_with_assets(
+        &self,
+        ra2_dir: std::path::PathBuf,
+        asset_manager: &mut AssetManager,
+        progress: &mut dyn LoadingProgressSink,
+    ) -> anyhow::Result<MapLoadInitial> {
+        init::load_map_initial_with_assets(
+            ra2_dir,
+            asset_manager,
+            Some(self.selected_map_file()),
+            progress,
+        )
+    }
+
     fn skirmish_launch_session(&self) -> Option<&SkirmishLaunchSession> {
         self.startup().launch_session()
     }
@@ -637,7 +655,6 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
     let phase = std::mem::replace(&mut session.job.phase, LoadingJobPhase::InitialMapSelection);
     let result = match phase {
         LoadingJobPhase::InitialMapSelection => {
-            let requested_map_file = session.request.selected_map_file().to_string();
             let initial = match ensure_session_job_asset_manager(state, &mut session) {
                 Ok(()) => {
                     let ra2_dir = session
@@ -658,17 +675,15 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                                 progress: &mut native.progress,
                                 cadence,
                             };
-                            init::load_map_initial_with_assets(
+                            session.request.load_initial_with_assets(
                                 ra2_dir,
                                 asset_manager,
-                                Some(requested_map_file.as_str()),
                                 &mut sink,
                             )
                         }
-                        None => init::load_map_initial_with_assets(
+                        None => session.request.load_initial_with_assets(
                             ra2_dir,
                             asset_manager,
-                            Some(requested_map_file.as_str()),
                             &mut NoopProgressSink,
                         ),
                     }
@@ -939,7 +954,6 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
     let Some(mut session) = state.frontend.loading_session.take() else {
         return Ok(());
     };
-    let requested_map_file = session.request.selected_map_file().to_string();
     let result = ensure_session_job_asset_manager(state, &mut session).and_then(|()| {
         let ra2_dir = session
             .job
@@ -951,12 +965,9 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
             .asset_manager
             .as_mut()
             .expect("asset-manager setup stores the manager");
-        init::load_map_initial_with_assets(
-            ra2_dir,
-            asset_manager,
-            Some(requested_map_file.as_str()),
-            &mut NoopProgressSink,
-        )
+        session
+            .request
+            .load_initial_with_assets(ra2_dir, asset_manager, &mut NoopProgressSink)
     });
     match result {
         Ok(initial) => {

@@ -525,6 +525,13 @@ impl OfflineSkirmishRuntime {
     fn scenario_rng_state(&self) -> u64 {
         self.scenario_rng.state()
     }
+
+    #[cfg(test)]
+    pub(crate) fn scenario_rng_logical_state_for_test(
+        &self,
+    ) -> crate::sim::rng::SimRngLogicalState {
+        self.scenario_rng.logical_state()
+    }
 }
 
 fn pack_snapshot_selection(

@@ -57,6 +57,8 @@ pub(crate) mod renderer_state;
 pub(crate) mod scenario_catalog;
 mod shell_main_menu;
 mod shell_random_map;
+#[cfg(test)]
+mod random_map_lifecycle_tests;
 pub(crate) mod shell_route;
 mod shell_skirmish;
 pub(crate) mod sidebar_projection;

@@ -25,6 +25,25 @@ use super::{
     GeneratedMap, MapGeometry, RmgOptions, RmgSettings, Stage, emit, executed_stages, grid,
 };
 
+#[cfg(test)]
+std::thread_local! {
+    /// Per-test-thread observation of the real generator entry. Keeping the
+    /// probe thread-local prevents unrelated parallel tests from changing a
+    /// lifecycle count while still recording every synchronous production
+    /// entry used by the acceptance harness.
+    static TEST_GENERATOR_ENTRY_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_generator_entry_count() {
+    TEST_GENERATOR_ENTRY_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn test_generator_entry_count() -> usize {
+    TEST_GENERATOR_ENTRY_COUNT.with(std::cell::Cell::get)
+}
+
 /// Land type → rules section, the RA2 `LandType` enum order (verified against
 /// the zone classifier's `LAND_WATER == 2` / `LAND_BEACH == 6`).
 const LAND_TYPE_SECTIONS: [Option<&str>; LAND_TYPES] = [
@@ -206,6 +225,9 @@ pub fn generate_map_observed(
     tech_types: &[TechType],
     observe: &mut dyn FnMut(GenerationPointView<'_>),
 ) -> GeneratedMap {
+    #[cfg(test)]
+    TEST_GENERATOR_ENTRY_COUNT.with(|count| count.set(count.get() + 1));
+
     let mut options = options.clone();
     options.normalize();
 

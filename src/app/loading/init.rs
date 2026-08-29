@@ -823,6 +823,235 @@ impl MapLoadInitial {
     }
 }
 
+fn replay_launch_generated_construction(
+    bootstrap_rng: &mut ScenarioBootstrapRng,
+    trace: Option<&crate::map::rmg::RmgConstructionTrace>,
+) -> Result<
+    Option<crate::sim::world::GeneratedTechnoInitTable>,
+    crate::sim::world::GeneratedTechnoInitError,
+> {
+    trace
+        .map(|trace| bootstrap_rng.replay_generated_construction_trace(trace))
+        .transpose()
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RandomMapEntityProjection {
+    owner: String,
+    type_id: String,
+    health: u16,
+    cell: (u16, u16),
+    facing: u8,
+    category: crate::map::entities::EntityCategory,
+    sub_cell: u8,
+    veterancy: u16,
+    high: bool,
+    mission: Option<crate::rules::mission_data::MissionType>,
+    recruitable: (bool, bool),
+    structure_upgrades: [Option<String>; 3],
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RandomMapProjection {
+    source_seed: String,
+    pub(crate) header: (String, String, i32, u32, u32, u32, u32, u32, u32),
+    cells: Vec<(u16, u16, i32, u8, u8)>,
+    entities: Vec<RandomMapEntityProjection>,
+    overlays: Vec<(u16, u16, u8, u8, u8)>,
+    smudges: Vec<(String, u16, u16)>,
+    terrain_objects: Vec<(String, u16, u16)>,
+    waypoints: Vec<(u32, u16, u16)>,
+    explicit_tubes: Vec<crate::map::tube_facts::TubeFact>,
+    ini_content_hash: u64,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RandomMapLaunchSnapshot {
+    pub(crate) map: RandomMapProjection,
+    pub(crate) trace: crate::map::rmg::RmgConstructionTrace,
+    pub(crate) emitted_constructor_words: Vec<(usize, u16)>,
+    pub(crate) scenario_after_trace: crate::sim::rng::SimRngLogicalState,
+    pub(crate) mapgen_continuation: crate::sim::rng::SimRngLogicalState,
+}
+
+#[cfg(test)]
+impl MapLoadInitial {
+    /// Consume the same initial-map receipt and generated-constructor replay
+    /// seam used by the remaining production load. This intentionally omits
+    /// rendering-only data and preserves every generated gameplay surface in
+    /// exact ordered projections for lifecycle convergence tests.
+    pub(crate) fn into_random_map_launch_snapshot(
+        self,
+        asset_manager: &mut AssetManager,
+        match_seed: u32,
+        preloaded_battle_start_plan: Option<&PreloadedBattleStartPlan>,
+    ) -> RandomMapLaunchSnapshot {
+        let MapLoadInitial {
+            map_data,
+            map_source,
+            mapgen_rng_continuation,
+            generated_construction_trace,
+        } = self;
+        let source_seed = match map_source {
+            LoadedMapSource::Generated { seed_name } => seed_name,
+            other => panic!("random-map lifecycle fixture loaded {other:?}"),
+        };
+        let mut waypoints: Vec<_> = map_data
+            .waypoints
+            .iter()
+            .map(|(&index, waypoint)| (index, waypoint.rx, waypoint.ry))
+            .collect();
+        waypoints.sort_unstable();
+        let map = RandomMapProjection {
+            source_seed,
+            header: (
+                map_data.header.theater.clone(),
+                map_data.header.fill.clone(),
+                map_data.header.level,
+                map_data.header.width,
+                map_data.header.height,
+                map_data.header.local_left,
+                map_data.header.local_top,
+                map_data.header.local_width,
+                map_data.header.local_height,
+            ),
+            cells: map_data
+                .cells
+                .iter()
+                .map(|cell| (cell.rx, cell.ry, cell.tile_index, cell.sub_tile, cell.z))
+                .collect(),
+            entities: map_data
+                .entities
+                .iter()
+                .map(|entity| RandomMapEntityProjection {
+                    owner: entity.owner.clone(),
+                    type_id: entity.type_id.clone(),
+                    health: entity.health,
+                    cell: (entity.cell_x, entity.cell_y),
+                    facing: entity.facing,
+                    category: entity.category,
+                    sub_cell: entity.sub_cell,
+                    veterancy: entity.veterancy,
+                    high: entity.high,
+                    mission: entity.mission,
+                    recruitable: (entity.recruitable_a, entity.recruitable_b),
+                    structure_upgrades: entity.structure_upgrades.clone(),
+                })
+                .collect(),
+            overlays: map_data
+                .overlays
+                .iter()
+                .map(|overlay| {
+                    (
+                        overlay.rx,
+                        overlay.ry,
+                        overlay.overlay_id,
+                        overlay.frame,
+                        map_data.overlay_data_at(overlay.rx, overlay.ry),
+                    )
+                })
+                .collect(),
+            smudges: map_data
+                .smudges
+                .iter()
+                .map(|smudge| (smudge.type_name.clone(), smudge.rx, smudge.ry))
+                .collect(),
+            terrain_objects: map_data
+                .terrain_objects
+                .iter()
+                .map(|object| (object.name.clone(), object.rx, object.ry))
+                .collect(),
+            waypoints,
+            explicit_tubes: map_data.explicit_tubes.clone(),
+            ini_content_hash: map_data.ini.content_hash(),
+        };
+        let trace = generated_construction_trace
+            .expect("random-map initial receipt carries a construction trace");
+        let mut bootstrap_rng = ScenarioBootstrapRng::new(match_seed);
+        bootstrap_rng.install_generated_mapgen_continuation(
+            mapgen_rng_continuation.expect("random-map initial receipt carries MapGen"),
+        );
+        if let Some(plan) = preloaded_battle_start_plan {
+            bootstrap_rng
+                .install_preloaded_battle_plan(plan)
+                .expect("matching preloaded Battle prefix");
+        }
+        let mapgen_continuation = bootstrap_rng
+            .logical_states_for_test()
+            .2
+            .expect("installed generated MapGen continuation");
+
+        // Drive the exact production terrain-Fill consumers before replaying
+        // the launch construction trace. This makes `scenario_after_trace` a
+        // post-map boundary proof rather than an isolated trace-only oracle.
+        let theater_result = theater::load_theater(asset_manager, &map_data.header.theater);
+        let (rules, rules_ini) = load_rules_with_merged_ini(
+            asset_manager,
+            None,
+            Some(&map_data.ini),
+        )
+        .expect("retail generated-map rules")
+        .into_parts();
+        let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, None);
+        let mut selector_cache =
+            crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let (mut scenario_fill_rng, mut variant_main_rng) = bootstrap_rng.terrain_draws();
+        let mut scenario_fill_ranged =
+            |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
+        let mut variant_draw = || variant_main_rng.next_u32();
+        let mut variant_selector = selector_cache.begin_load(&mut variant_draw);
+        let _resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
+            &map_data,
+            theater_result.as_ref(),
+            Some(asset_manager),
+            Some(&rules.terrain_rules),
+            Some(&overlay_registry),
+            Some(&rules.terrain_object_types),
+            true,
+            rules.general.cliff_back_impassability,
+            &mut scenario_fill_ranged,
+            &mut variant_selector,
+            crate::map::resolved_terrain::SharedCellDummy::fresh(),
+            crate::map::resolved_terrain::OverlayLoadSource::GeneratedMaterialized,
+        );
+        drop(variant_selector);
+        drop(variant_draw);
+        drop(scenario_fill_ranged);
+        drop(variant_main_rng);
+        drop(scenario_fill_rng);
+        let table = replay_launch_generated_construction(&mut bootstrap_rng, Some(&trace))
+            .expect("valid generated construction trace")
+            .expect("generated trace produces a binding table");
+        let emitted_constructor_words = trace
+            .events
+            .iter()
+            .filter_map(|event| match &event.outcome {
+                crate::map::rmg::RmgConstructionOutcome::Discarded => None,
+                crate::map::rmg::RmgConstructionOutcome::Emitted { entity_index, .. } => {
+                    Some((
+                        *entity_index,
+                        table
+                            .entry(*entity_index)
+                            .expect("emitted trace row has an exact binding")
+                            .techno_ctor_random_word,
+                    ))
+                }
+            })
+            .collect();
+        let scenario_after_trace = bootstrap_rng.logical_states_for_test().0;
+        RandomMapLaunchSnapshot {
+            map,
+            trace,
+            emitted_constructor_words,
+            scenario_after_trace,
+            mapgen_continuation,
+        }
+    }
+}
+
 pub(crate) fn load_csf(
     asset_manager: &AssetManager,
 ) -> anyhow::Result<crate::assets::csf_file::CsfFile> {
@@ -1461,10 +1690,10 @@ pub(crate) fn load_map_from_initial(
     // Launch-time `.SED` generation already chose all geometry. Replay only
     // its Techno constructor effects now, after the Full-Init/Battle prefix and
     // terrain Fill, on the one Scenario owner later moved into Simulation.
-    let generated_techno_inits = generated_construction_trace
-        .as_ref()
-        .map(|trace| bootstrap_rng.replay_generated_construction_trace(trace))
-        .transpose()?;
+    let generated_techno_inits = replay_launch_generated_construction(
+        &mut bootstrap_rng,
+        generated_construction_trace.as_ref(),
+    )?;
     // Native Fill snapshots prior process-global ClearTile/WaterSet values
     // before the current theater registry reload. Rust loads assets earlier,
     // so defer publishing current results until materialization is complete.

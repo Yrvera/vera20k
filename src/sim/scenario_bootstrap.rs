@@ -1823,6 +1823,21 @@ impl ScenarioBootstrapRng {
         crate::sim::world::GeneratedTechnoInitTable::try_new(emitted)
     }
 
+    #[cfg(test)]
+    pub(crate) fn logical_states_for_test(
+        &self,
+    ) -> (
+        crate::sim::rng::SimRngLogicalState,
+        crate::sim::rng::SimRngLogicalState,
+        Option<crate::sim::rng::SimRngLogicalState>,
+    ) {
+        (
+            self.scenario.logical_state(),
+            self.main.logical_state(),
+            self.mapgen.as_ref().map(SimRng::logical_state),
+        )
+    }
+
     /// Finish the app-to-sim construction handoff with every bound cursor.
     pub(crate) fn into_simulation(self, descriptor: &ScenarioDescriptor) -> Simulation {
         let mut sim = Simulation::from_descriptor(descriptor);

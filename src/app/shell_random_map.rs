@@ -24,7 +24,7 @@ const RANDMAP_PREVIEW_FILE: &str = "RandMap.img";
 /// Execute an accepted caller only after the setup runner's common teardown.
 /// Keeping this boundary explicit prevents `.SED`/sentinel work from moving
 /// ahead of the teardown-owned `RandMap.img` serialization.
-fn teardown_then<S, T>(
+pub(super) fn teardown_then<S, T>(
     state: &mut S,
     teardown: impl FnOnce(&mut S),
     after: impl FnOnce(&mut S) -> T,
@@ -160,7 +160,7 @@ impl RandomMapGenerationRetention {
         self.map_storage_key = Some(decision.key);
     }
 
-    fn destroy_map_storage(&mut self) {
+    pub(super) fn destroy_map_storage(&mut self) {
         // RandomMapSetupDialog__Run @ 0x00595BC0 destroys DAT_00ABE150 and
         // nulls it at 0x00595CB2..0x00595CC2 whenever the modal returns.
         self.map_storage_key = None;
@@ -171,7 +171,7 @@ impl RandomMapGenerationRetention {
         self.accepted_preview = None;
     }
 
-    fn finish_generation(&mut self, generated: crate::map::rmg::GeneratedMap) {
+    pub(super) fn finish_generation(&mut self, generated: crate::map::rmg::GeneratedMap) {
         self.candidate = Some(generated);
     }
 
@@ -180,7 +180,7 @@ impl RandomMapGenerationRetention {
         self.accepted_preview = None;
     }
 
-    fn accept_setup(&mut self, selected_map_file: &str) {
+    pub(super) fn accept_setup(&mut self, selected_map_file: &str) {
         self.accepted_preview = self
             .candidate
             .take()
