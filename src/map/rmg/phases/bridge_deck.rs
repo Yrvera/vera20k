@@ -832,6 +832,24 @@ mod tests {
         }
     }
 
+    fn assert_bridge_hut_trace(structures: &[(String, i16, i16)], trace: &RmgConstructionTrace) {
+        assert_eq!(trace.events.len(), structures.len());
+        for (ordinal, (event, structure)) in trace.events.iter().zip(structures.iter()).enumerate()
+        {
+            assert_eq!(event.ordinal, ordinal);
+            assert_eq!(event.phase, RmgConstructionPhase::BridgeRepairHut);
+            assert_eq!(event.techno_type, CABHUT);
+            assert_eq!(structure.0, CABHUT);
+            assert_eq!(
+                event.outcome,
+                crate::map::rmg::RmgConstructionOutcome::Emitted {
+                    entity_index: ordinal,
+                    cell: (structure.1 as u16, structure.2 as u16),
+                }
+            );
+        }
+    }
+
     fn playfield() -> Playfield {
         Playfield::from_local_size(74, 2, 5, 70, 70)
     }
@@ -1921,6 +1939,170 @@ mod tests {
         assert!(structures.is_empty());
         assert!(trace.events.is_empty());
         assert_eq!(ctx.grid.get(40, 48).unwrap().overlay, 0x5E);
+    }
+
+    #[test]
+    fn committed_hut_primary_scan_takes_the_first_later_y_major_cell() {
+        let (mut grid, mut scratch) = harness();
+        grid.get_mut(40, 47).unwrap().overlay = 1;
+        grid.get_mut(41, 47).unwrap().tile = GREEN;
+        grid.get_mut(42, 47).unwrap().occupied = true;
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(0xC131);
+        let mut expected_rng = RmgRng::new(0xC131);
+        let _east_end_coin = expected_rng.uniform(0, 1);
+        let _west_end_coin = expected_rng.uniform(0, 1);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(commit_candidate(
+                &mut ctx,
+                DeckCandidate {
+                    axis: DeckAxis::EastWest,
+                    rect: (40, 48, 6, 3),
+                    span: 5,
+                },
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        assert_eq!(
+            structures,
+            vec![(CABHUT.to_string(), 40, 51), (CABHUT.to_string(), 44, 47)]
+        );
+        assert_bridge_hut_trace(&structures, &trace);
+        assert!(grid.get(40, 51).unwrap().occupied);
+        assert!(grid.get(44, 47).unwrap().occupied);
+        for continuation_draw in 0..8 {
+            assert_eq!(
+                rng.next_u32(),
+                expected_rng.next_u32(),
+                "hut scans spend no MapGen word at continuation draw {continuation_draw}"
+            );
+        }
+    }
+
+    #[test]
+    fn committed_hut_fallback_takes_its_first_cell_after_primary_failure() {
+        let (mut grid, mut scratch) = harness();
+        for y in 47..=52 {
+            for x in 40..=42 {
+                grid.get_mut(x, y).unwrap().occupied = true;
+            }
+        }
+        for y in 46..=53 {
+            for x in 44..=47 {
+                grid.get_mut(x, y).unwrap().occupied = true;
+            }
+        }
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(0xC132);
+        let mut expected_rng = RmgRng::new(0xC132);
+        let _east_end_coin = expected_rng.uniform(0, 1);
+        let _west_end_coin = expected_rng.uniform(0, 1);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(commit_candidate(
+                &mut ctx,
+                DeckCandidate {
+                    axis: DeckAxis::EastWest,
+                    rect: (40, 48, 6, 3),
+                    span: 5,
+                },
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        assert_eq!(structures, vec![(CABHUT.to_string(), 39, 46)]);
+        assert_bridge_hut_trace(&structures, &trace);
+        assert!(grid.get(39, 46).unwrap().occupied);
+        for continuation_draw in 0..8 {
+            assert_eq!(
+                rng.next_u32(),
+                expected_rng.next_u32(),
+                "fallback search spends no MapGen word at continuation draw {continuation_draw}"
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_committed_hut_searches_skip_the_prior_occupied_cell() {
+        assert!(
+            span_allowed(0, 2),
+            "the overlap fixture is admitted by the first production attempt band"
+        );
+        let (mut grid, mut scratch) = harness();
+        grid.get_mut(40, 47).unwrap().overlay = 1;
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(0xC133);
+        let mut expected_rng = RmgRng::new(0xC133);
+        let _east_end_coin = expected_rng.uniform(0, 1);
+        let _west_end_coin = expected_rng.uniform(0, 1);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(commit_candidate(
+                &mut ctx,
+                DeckCandidate {
+                    axis: DeckAxis::EastWest,
+                    rect: (40, 48, 3, 3),
+                    span: 2,
+                },
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        assert_eq!(
+            structures,
+            vec![(CABHUT.to_string(), 41, 47), (CABHUT.to_string(), 42, 47)]
+        );
+        assert_bridge_hut_trace(&structures, &trace);
+        assert!(grid.get(41, 47).unwrap().occupied);
+        assert!(grid.get(42, 47).unwrap().occupied);
+        for continuation_draw in 0..8 {
+            assert_eq!(
+                rng.next_u32(),
+                expected_rng.next_u32(),
+                "overlapping hut scans spend no MapGen word at continuation draw {continuation_draw}"
+            );
+        }
     }
 
     #[test]
