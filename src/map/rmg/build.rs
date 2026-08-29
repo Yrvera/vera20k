@@ -176,12 +176,12 @@ pub fn generate_map(
     generate_map_observed(options, settings, resolved, blocks, tech_types, &mut |_| {})
 }
 
-/// Chance that a map is even allowed to grow a river bridge.
+/// Chance that a map is allowed to attempt a river waterfall crossing.
 const BRIDGE_ENABLE_CHANCE: f32 = 0.25;
 
 /// The generation's first random draw, taken during map bring-up.
 ///
-/// It decides one thing — whether a river on this map may carry a bridge — and
+/// It decides one thing — whether a river may attempt waterfall terrain — and
 /// only the river reads the answer. The **draw itself** is what matters to every
 /// other map type: it happens before any terrain work, unconditionally, whatever
 /// the map type or the water amount, so a generator that skips it starts every
@@ -858,9 +858,8 @@ mod tests {
     /// leave a mark on map types 3 and 4, and must still leave none on the
     /// ordinary types (which do not reach the stage at all).
     ///
-    /// The connector/bridge carving inside the pass is not modelled yet, so
-    /// this asserts the pass runs and reshapes terrain — not that the result
-    /// matches the original.
+    /// The connector/low-deck construction now runs after the rebuilt region
+    /// list; this test isolates the earlier destroy-and-rebuild terrain effect.
     #[test]
     fn island_passes_reshape_only_the_island_map_types() {
         for (map_type, expect_change) in [(3, true), (4, true), (0, false), (2, false)] {

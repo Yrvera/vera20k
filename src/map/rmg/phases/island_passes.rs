@@ -10,12 +10,9 @@
 //! one piece.** Porting the raise alone would leave every later phase (starts,
 //! tech buildings, tiberium) reading region ids the raise had stomped.
 //!
-//! Not modelled yet, and recorded rather than hidden: the connector and bridge
-//! carving that the original runs after the rebuild, over each region's
-//! neighbour list. That is the pass's randomness — everything in this module
-//! draws **exactly one** uniform, in one narrow case (see [`flood_build`]).
-//! Until the carving lands, plateaus on these map types are rebuilt but never
-//! linked by ramps.
+//! After this rebuild the pipeline hands the refreshed region-neighbour list to
+//! the active connector/low-deck owner in `carve_driver`; that separation keeps
+//! this module's only draw in the narrow dissolve case (see [`flood_build`]).
 
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::RmgRng;

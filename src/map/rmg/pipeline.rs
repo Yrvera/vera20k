@@ -94,9 +94,9 @@ pub struct PipelineInputs<'a> {
     pub width: i32,
     /// `MaxTrees` (`MapSeed+0x2FC`; 0 disables trees).
     pub max_trees: i32,
-    /// Whether a river on this map may allow a bridge, decided by the
-    /// generation's very first draw. Only the river carver reads the value; the
-    /// draw that produces it is stream-relevant to every map type.
+    /// Whether a river may attempt waterfall terrain, decided by the
+    /// generation's very first draw. Only the river carver reads the value;
+    /// the draw that produces it is stream-relevant to every map type.
     pub bridge_enabled: bool,
 }
 

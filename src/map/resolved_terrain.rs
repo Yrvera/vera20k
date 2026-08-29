@@ -1810,6 +1810,26 @@ impl ResolvedTerrainGrid {
         )
     }
 
+    /// Selector-free generated-map load seam for focused construction tests.
+    /// Production generated maps use `build_with_variant_selector_and_shared_dummy`.
+    #[cfg(test)]
+    pub(crate) fn build_generated_materialized_for_test(map: &MapFile) -> Self {
+        Self::build_inner(
+            map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            0,
+            OverlayLoadSource::GeneratedMaterialized,
+            None,
+            None,
+            None,
+        )
+    }
+
     /// Production map-load path with the process-owned native variant selector.
     pub fn build_with_variant_selector(
         map: &MapFile,

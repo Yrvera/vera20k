@@ -588,6 +588,7 @@ fn write_subtile(
         cell.tile = new_tile;
         cell.sub_tile = (j * block.width + i) as u8;
         cell.level = sub.height.wrapping_add(level);
+        cell.slope = sub.slope;
     }
 }
 

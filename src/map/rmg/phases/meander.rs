@@ -7,9 +7,9 @@
 //! drifts by a Gaussian every step, so the claimed area wanders rather than
 //! running straight — hence the name.
 //!
-//! Two callers exist in the original. This module serves the canyon: the river's
-//! region is grown across the whole map, and the level change that follows is
-//! what drops the river into a canyon. The bridge-plateau caller is not ported.
+//! The active callers are the canyon and the waterfall plateau: the former
+//! grows across the whole map, while the latter clamps growth behind the
+//! waterfall-terrain crossing.
 //!
 //! **This arm paints nothing.** It writes only the working grid's region id, its
 //! per-pass stamp and the water/region flag. Every tile, level and slope change
@@ -417,13 +417,13 @@ fn in_rect(rect: [i32; 4], x: i32, y: i32) -> bool {
 ///
 /// Passing a level also widens what counts as claimable: cells belonging to the
 /// immediately preceding region are taken as well as unowned ones. The
-/// original's bridge-overlay escape on that arm is not modelled — the deck
-/// tiles it would match are not stamped yet.
+/// The active waterfall caller carries terrain only. Low-deck overlay
+/// construction is owned separately by `bridge_deck` and never enters this arm.
 ///
 /// `rect` clamps which neighbours may be claimed at all: an out-of-rect
 /// neighbour is skipped silently, exactly like an out-of-diamond one. The
 /// river and canyon pass the whole map, which makes it a no-op there; the
-/// bridge passes the half-plane behind itself.
+/// waterfall crossing passes the half-plane behind itself.
 ///
 /// Returns false the moment it meets a cell owned by another region. Cells
 /// already claimed at that point stay claimed — the original does not unwind

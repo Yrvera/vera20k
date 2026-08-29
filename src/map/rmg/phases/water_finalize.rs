@@ -11,8 +11,10 @@
 //! 0x00579B70 sits in the same band and is called only from
 //! `RaisePinchedCliffCell` 0x00579010, `SelectAndStampCliffFaceTile`
 //! 0x00579620 and `RandomMapGenerator::JitterCliffEdges` 0x005A19E0.
-//! `CellClass::HasBridgeOverlay` 0x004865D0 belongs to the same generator
-//! family. Reached by stock Create Random Map/`.SED` generation.
+//! Despite its inherited label, `CellClass::HasBridgeOverlay` 0x004865D0 is a
+//! tile-family range predicate: it does not read overlay `Cell+0x44`. The
+//! active low-deck validator uses it to admit waterfall families. This cluster
+//! is reached by stock Create Random Map/`.SED` generation.
 //!
 //! For 2x2 all-water clusters (anchor + E/S/SE, none sub-tiled yet) a large
 //! multi-cell variant may be placed; single cells get one of six band

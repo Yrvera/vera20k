@@ -91,9 +91,8 @@ pub(crate) fn border_cells_of(scratch: &RmgScratch, region: i32) -> Vec<(i32, i3
 /// playable diamond on every real map, so the exclusion does no work in
 /// practice; it is kept because a count that silently differs by one is exactly
 /// the sort of thing that surfaces much later as an off-by-one somewhere else.
-/// Not yet called: the land branch does not need it, but the bridge branch
-/// does — it gates a region as "substantial" on this count. Kept verified and
-/// ready rather than deleted and re-derived when the bridge work lands.
+/// The active connector/low-deck driver uses this to gate whether a region is
+/// substantial enough for its candidate search.
 #[allow(dead_code)]
 pub(crate) fn region_cell_count(scratch: &RmgScratch, region: i32) -> i32 {
     let width = scratch.width() as i32;
