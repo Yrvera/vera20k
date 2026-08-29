@@ -177,7 +177,7 @@ const SHADOW_DARKEN_ALPHA: u8 = 128;
 /// Index 0 is the stencil's "no shadow here" value and stays fully transparent;
 /// every other index is a shadow pixel. The blitter never looks at the actual
 /// index value, so neither does this.
-fn shadow_stencil_to_rgba(stencil: &[u8]) -> Vec<u8> {
+pub(crate) fn shadow_stencil_to_rgba(stencil: &[u8]) -> Vec<u8> {
     let mut rgba: Vec<u8> = Vec::with_capacity(stencil.len() * 4);
     for &index in stencil {
         let alpha: u8 = if index == 0 { 0 } else { SHADOW_DARKEN_ALPHA };

@@ -259,6 +259,49 @@ fn gsi_13_08_effect_frame_count_halves_only_shadowed_non_scheduler_assets() {
 }
 
 #[test]
+fn phase3_scheduler_shadow_anim_registers_and_classifies_the_raw_shadow_half() {
+    let mut art = ArtRegistry::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[DEST]\nShadow=yes\nAltPalette=yes\nLayer=ground\n",
+    ));
+    art.bind_anim_frame_count_for_test("DEST", 12);
+
+    let mut needed = HashSet::new();
+    let mut counts = HashMap::new();
+    let count = register_effect_anim_frames(
+        &mut needed,
+        &mut counts,
+        "DEST",
+        12,
+        art.scheduler_anim_types().contains("DEST"),
+        art.anim_runtime_config("DEST").unwrap().shadow,
+    );
+
+    assert_eq!(count, 12, "the scheduler needs body and shadow SHP halves");
+    assert_eq!(counts["DEST"], 12);
+    for frame in 0..12 {
+        assert!(needed.contains(&ShpSpriteKey {
+            type_id: "DEST".to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(0),
+        }));
+        assert_eq!(
+            is_scheduler_anim_shadow_frame(Some(&art), "DEST", frame as usize, 12),
+            frame >= 6,
+            "raw frame {frame} must retain its body/shadow role",
+        );
+    }
+
+    assert!(!is_scheduler_anim_shadow_frame(
+        Some(&art),
+        "DEST",
+        5,
+        12,
+    ));
+    assert!(!is_scheduler_anim_shadow_frame(None, "DEST", 6, 12));
+}
+
+#[test]
 fn gsi_13_08_warpout_keeps_all_frames_and_drives_the_progressive_alpha_ladder() {
     let ini = crate::rules::ini_parser::IniFile::from_str("[WARPOUT]\nTranslucent=yes\nRate=120\n");
     let art = ArtRegistry::from_ini(&ini);

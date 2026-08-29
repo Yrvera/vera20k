@@ -57,6 +57,30 @@ fn register_effect_anim_frames(
     count
 }
 
+/// Whether one resident scheduler frame is the SHP's shadow-half payload.
+///
+/// gamemd-derived: `AnimClass::DrawIt @ 0x00422CA0`, assembly
+/// `0x00423832..0x0042389E`, selects `body_frame + raw_count / 2` only when
+/// the AnimType has `Shadow=yes`. Non-scheduler effect consumers still retain
+/// their established body-only registration policy.
+fn is_scheduler_anim_shadow_frame(
+    art: Option<&ArtRegistry>,
+    anim_type: &str,
+    frame: usize,
+    raw_count: usize,
+) -> bool {
+    let Some(art) = art else {
+        return false;
+    };
+    let canonical = anim_type.to_ascii_uppercase();
+    raw_count >= 2
+        && art.scheduler_anim_types().contains(&canonical)
+        && art
+            .anim_runtime_config(anim_type)
+            .is_some_and(|config| config.shadow)
+        && frame >= raw_count / 2
+}
+
 fn effect_anim_shp_candidates(
     anim_type: &str,
     art: Option<&ArtRegistry>,
@@ -190,9 +214,10 @@ pub struct SpriteAtlas {
     /// Building type → number of make (build-up) animation frames.
     /// Key is the base type_id (e.g., "GACNST"), not the "_MAKE" suffixed key.
     pub make_frame_counts: HashMap<String, u16>,
-    /// Building/world-animation type → available non-shadow frame count.
-    /// Building consumers use this only to ensure their live animation frame is
-    /// resident; world-effect systems also consume the same established map.
+    /// Building/world-animation type → resident frame count. Scheduler-owned
+    /// `Shadow=yes` AnimTypes retain the complete raw range so DrawIt can select
+    /// the second half; legacy non-scheduler consumers retain their established
+    /// body-only count.
     pub active_anim_frame_counts: HashMap<String, u16>,
     /// Per-building-type bounding boxes for selection brackets and click picking.
     /// Computed by unioning all SHP frame rects for each building type.
@@ -1341,16 +1366,27 @@ fn render_shp_sprite(
         &remapped_pal
     };
 
-    let frame_rgba: Vec<u8> = match shp.frame_to_rgba(frame_idx, render_pal) {
-        Ok(rgba) => rgba,
-        Err(e) => {
-            log::warn!(
-                "Failed to convert {} frame {}: {}",
-                found_name,
-                frame_idx,
-                e
-            );
-            return None;
+    let frame_rgba: Vec<u8> = if is_scheduler_anim_shadow_frame(
+        art,
+        base_type_id,
+        frame_idx,
+        shp.frames.len(),
+    ) {
+        // Native 0x601 is the shadow blitter: every nonzero stencil byte
+        // darkens the destination and the palette index itself is ignored.
+        crate::render::bridge_atlas::shadow_stencil_to_rgba(&frame.pixels)
+    } else {
+        match shp.frame_to_rgba(frame_idx, render_pal) {
+            Ok(rgba) => rgba,
+            Err(e) => {
+                log::warn!(
+                    "Failed to convert {} frame {}: {}",
+                    found_name,
+                    frame_idx,
+                    e
+                );
+                return None;
+            }
         }
     };
 
