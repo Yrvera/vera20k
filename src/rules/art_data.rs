@@ -311,7 +311,9 @@ impl Default for AnimTypeRuntimeConfig {
             y_draw_offset: 0,
             z_adjust: 0,
             y_sort_adjust: 0,
-            layer: AnimLayer::Top,
+            // `AnimTypeClass::AnimTypeClass` initializes the numeric display
+            // layer field to 3. Only an authored `Layer=Top` promotes it to 4.
+            layer: AnimLayer::Air,
             flat: false,
             tiled: false,
             translucency: 0,
@@ -355,6 +357,8 @@ pub enum AnimAssetBindError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimLayer {
     Ground,
+    /// Native display layer 3. This is the constructor/default value.
+    Air,
     Top,
     Other(i32),
 }
@@ -364,8 +368,14 @@ impl AnimLayer {
         match value.map(|v| v.trim().to_ascii_lowercase()) {
             Some(v) if v == "ground" => Self::Ground,
             Some(v) if v == "top" => Self::Top,
-            Some(v) => v.parse::<i32>().map(Self::Other).unwrap_or(Self::Top),
-            None => Self::Top,
+            Some(v) => match v.parse::<i32>() {
+                Ok(2) => Self::Ground,
+                Ok(3) => Self::Air,
+                Ok(4) => Self::Top,
+                Ok(layer) => Self::Other(layer),
+                Err(_) => Self::Air,
+            },
+            None => Self::Air,
         }
     }
 }

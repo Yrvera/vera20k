@@ -8,7 +8,8 @@
 
 use super::helpers::{
     EntityDrawBand, apply_bridge_depth_bias, compute_sprite_depth, entity_draw_band,
-    ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
+    entity_draw_layer, ground_sort_row, in_view, is_under_bridge_render_state,
+    tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -250,6 +251,8 @@ pub(crate) fn build_unit_instances(
     instance_pages: &mut Vec<usize>,
     top_instances: &mut Vec<SpriteInstance>,
     top_instance_pages: &mut Vec<usize>,
+    top_instance_ids: &mut Vec<u64>,
+    top_instance_layers: &mut Vec<u8>,
     bridge_instances: &mut Vec<SpriteInstance>,
     bridge_instance_pages: &mut Vec<usize>,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
@@ -396,6 +399,7 @@ pub(crate) fn build_unit_instances(
             band == EntityDrawBand::Ground && is_under_bridge_render_state(state, entity);
         let collect_ground = band == EntityDrawBand::Ground && !is_bridge_unit;
         let mut ground_pieces = Vec::new();
+        let top_start = top_instances.len();
         let (target_instances, target_instance_pages) = match band {
             EntityDrawBand::Top => (&mut *top_instances, &mut *top_instance_pages),
             EntityDrawBand::Ground if is_bridge_unit => {
@@ -474,6 +478,12 @@ pub(crate) fn build_unit_instances(
                     &mut ground_pieces,
                 );
             }
+        }
+
+        if band == EntityDrawBand::Top {
+            let emitted = top_instances.len() - top_start;
+            top_instance_ids.extend(std::iter::repeat(entity.stable_id).take(emitted));
+            top_instance_layers.extend(std::iter::repeat(entity_draw_layer(entity)).take(emitted));
         }
 
         // Emit harvest overlay (oregath.shp) if the miner is actively harvesting.
