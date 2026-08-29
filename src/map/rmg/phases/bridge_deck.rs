@@ -569,6 +569,7 @@ pub fn end_area_is_placeable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::phases::carve_driver::{ConnectorRegion, carve_connectors_for_region};
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::preview::Playfield;
     use crate::map::rmg::tiles::SpecialTerrain;
@@ -718,6 +719,45 @@ mod tests {
         scratch
     }
 
+    /// Independently walk the seed acceptance condition while retaining the
+    /// exact native index reducer. This deliberately does not call
+    /// `pick_seed_cell`: production-entry tests use it as their cursor oracle.
+    fn walk_accepted_seeds(
+        rng: &mut RmgRng,
+        scratch: &RmgScratch,
+        region: i32,
+        accepted_count: usize,
+    ) -> usize {
+        let span = (scratch.width() * scratch.width()) as i32;
+        let mut rejections = 0;
+        for _ in 0..accepted_count {
+            loop {
+                let cell = scratch.cells()[draw_cell_index(rng, span) as usize];
+                if cell.region == region && (cell.x != 0 || cell.y != 0) {
+                    break;
+                }
+                rejections += 1;
+            }
+        }
+        rejections
+    }
+
+    fn connector_region(
+        id: i32,
+        level: u8,
+        waterish: bool,
+        cell_count: i32,
+        neighbours: &[i32],
+    ) -> ConnectorRegion {
+        ConnectorRegion {
+            id,
+            level,
+            waterish,
+            cell_count,
+            neighbours: neighbours.to_vec(),
+        }
+    }
+
     #[test]
     fn the_seed_cell_is_always_one_the_region_owns() {
         let owned = [(40, 48), (41, 48), (42, 49)];
@@ -797,6 +837,293 @@ mod tests {
 
         assert_eq!(picked, Some((40, 48)));
         assert_eq!(draws, FORMER_SPIN_LIMIT + 1);
+    }
+
+    #[test]
+    fn production_ew_placer_spends_rejections_reaches_attempt_25_and_uses_6x6_ends() {
+        let (mut grid, mut scratch) = harness();
+        for y in 49..=51 {
+            for x in 47..=53 {
+                grid.get_mut(x, y).unwrap().tile = WATER;
+            }
+        }
+        for cell in scratch.cells_mut() {
+            cell.region = -1;
+        }
+        scratch.get_mut(50, 50).region = 0;
+        scratch.get_mut(46, 49).region = 1;
+        scratch.get_mut(54, 49).region = 2;
+
+        // Candidate rect is (46,49,9,3). The east validator is exactly
+        // (55,47,6,6), so its far corner must suppress that end's coin while
+        // remaining outside the deck's inclusive clearance margin.
+        grid.get_mut(60, 52).unwrap().tile = GREEN;
+
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(9);
+        let mut probe = RmgRng::new(9);
+        let rejections = walk_accepted_seeds(&mut probe, &scratch, 0, 26);
+        let west_alternate = probe.uniform(0, 1) != 0;
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(place_low_bridge_deck(
+                &mut ctx,
+                0,
+                1,
+                2,
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        assert!(
+            rejections > 0,
+            "the production picker must reject before accepting"
+        );
+        assert_eq!(grid.get(46, 49).unwrap().overlay, 0x5E);
+        assert_eq!(grid.get(54, 49).unwrap().overlay, 0x5C);
+        assert_eq!(
+            grid.get(55, 49).unwrap().tile,
+            PAVED_ROAD_END,
+            "blocked east 6x6 validator uses the default without a coin"
+        );
+        assert_eq!(
+            grid.get(if west_alternate { 42 } else { 45 }, 49)
+                .unwrap()
+                .tile,
+            if west_alternate {
+                PAVED_ROAD + 9
+            } else {
+                PAVED_ROAD_END + 2
+            }
+        );
+        assert_eq!(
+            rng.next_u32(),
+            probe.next_u32(),
+            "25 rejected length-band attempts, attempt 25, and one live end coin"
+        );
+    }
+
+    #[test]
+    fn production_ns_placer_selects_ns_and_uses_7x6_ends() {
+        let (mut grid, mut scratch) = harness();
+        for y in 48..=52 {
+            for x in 49..=51 {
+                grid.get_mut(x, y).unwrap().tile = WATER;
+            }
+        }
+        for cell in scratch.cells_mut() {
+            cell.region = -1;
+        }
+        scratch.get_mut(50, 50).region = 0;
+        scratch.get_mut(49, 47).region = 1;
+        scratch.get_mut(49, 53).region = 2;
+
+        // Candidate rect is (49,47,3,7). The north validator is exactly
+        // (47,41,7,6); its far corner suppresses only the north coin.
+        grid.get_mut(53, 46).unwrap().tile = GREEN;
+
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(17);
+        let mut probe = RmgRng::new(17);
+        let rejections = walk_accepted_seeds(&mut probe, &scratch, 0, 1);
+        let south_alternate = probe.uniform(0, 1) != 0;
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(place_low_bridge_deck(
+                &mut ctx,
+                0,
+                1,
+                2,
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        assert!(
+            rejections > 0,
+            "the production picker must reject before accepting"
+        );
+        assert_eq!(grid.get(49, 47).unwrap().overlay, 0x60);
+        assert_eq!(grid.get(49, 53).unwrap().overlay, 0x62);
+        assert_eq!(
+            grid.get(49, 46).unwrap().tile,
+            PAVED_ROAD_END + 1,
+            "blocked north 7x6 validator uses the default without a coin"
+        );
+        assert_eq!(
+            grid.get(49, 54).unwrap().tile,
+            if south_alternate {
+                PAVED_ROAD + 12
+            } else {
+                PAVED_ROAD_END + 3
+            }
+        );
+        assert_eq!(
+            rng.next_u32(),
+            probe.next_u32(),
+            "one accepted seed and one live south-end coin"
+        );
+    }
+
+    #[test]
+    fn production_placer_exhausts_exactly_200_attempts_at_span_15() {
+        let (mut grid, mut scratch) = harness();
+        for y in 49..=51 {
+            for x in 44..=57 {
+                grid.get_mut(x, y).unwrap().tile = WATER;
+            }
+        }
+        for cell in scratch.cells_mut() {
+            cell.region = -1;
+        }
+        scratch.get_mut(50, 50).region = 0;
+        scratch.get_mut(43, 49).region = 1;
+        scratch.get_mut(58, 49).region = 2;
+
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(29);
+        let mut probe = RmgRng::new(29);
+        let rejections = walk_accepted_seeds(&mut probe, &scratch, 0, MAX_DECK_ATTEMPTS as usize);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        let placed = {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            place_low_bridge_deck(&mut ctx, 0, 1, 2, &mut structures, &mut trace)
+        };
+
+        assert!(
+            !placed,
+            "span 15 is still refused at zero-based attempt 199"
+        );
+        assert!(rejections > 0);
+        assert!(structures.is_empty() && trace.events.is_empty());
+        assert_eq!(grid.get(43, 49).unwrap().overlay, -1);
+        assert_eq!(
+            rng.next_u32(),
+            probe.next_u32(),
+            "the real placer must stop after exactly 200 accepted seed attempts"
+        );
+    }
+
+    #[test]
+    fn production_flood_driver_dispatches_every_pair_once_and_ineligible_pairs_draw_nothing() {
+        let flood = connector_region(0, 4, true, 90, &[1, 2, 3]);
+        let qualified = vec![
+            flood.clone(),
+            connector_region(1, 4, false, 90, &[0, 9]),
+            connector_region(2, 4, false, 90, &[0, 9]),
+            connector_region(3, 4, false, 90, &[0, 9]),
+        ];
+        let (mut grid, mut scratch) = harness();
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(41);
+        let mut probe = RmgRng::new(41);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        let placed = {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            carve_connectors_for_region(
+                &mut ctx,
+                &qualified,
+                &flood,
+                0,
+                &mut structures,
+                &mut trace,
+            )
+        };
+
+        assert!(!placed);
+        assert!(structures.is_empty() && trace.events.is_empty());
+        walk_accepted_seeds(&mut probe, &scratch, 0, 3 * MAX_DECK_ATTEMPTS as usize);
+        assert_eq!(
+            rng.next_u32(),
+            probe.next_u32(),
+            "three qualified unordered pairs must each enter the real 200-attempt placer once"
+        );
+
+        let ineligible_flood = connector_region(0, 4, true, 90, &[1, 2, 3]);
+        let ineligible = vec![
+            ineligible_flood.clone(),
+            connector_region(1, 4, false, 50, &[0]),
+            connector_region(2, 4, true, 90, &[0, 9]),
+            connector_region(3, 5, false, 90, &[0, 9]),
+        ];
+        let (mut grid, mut scratch) = harness();
+        let mut rng = RmgRng::new(43);
+        let mut unchanged = RmgRng::new(43);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        let placed = {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            carve_connectors_for_region(
+                &mut ctx,
+                &ineligible,
+                &ineligible_flood,
+                0,
+                &mut structures,
+                &mut trace,
+            )
+        };
+        assert!(!placed);
+        assert!(structures.is_empty() && trace.events.is_empty());
+        assert_eq!(
+            rng.next_u32(),
+            unchanged.next_u32(),
+            "pair gates run before the placer and spend no MapGen draw"
+        );
     }
 
     #[test]
