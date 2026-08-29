@@ -51,7 +51,8 @@ impl App {
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
-        let combat_light_renderer = crate::render::combat_light::CombatLightRenderer::new(&gpu);
+        let combat_light_renderer =
+            crate::render::combat_light::CombatLightRenderer::new(&gpu, &batch_renderer);
         let mut bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
         let shell_surface_presenter =

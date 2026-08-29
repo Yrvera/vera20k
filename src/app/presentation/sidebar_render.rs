@@ -501,7 +501,7 @@ pub(crate) fn begin_main_load_pass<'a>(
     depth_view: &'a wgpu::TextureView,
 ) -> wgpu::RenderPass<'a> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Main Pass (resume after combat lights)"),
+        label: Some("Main Pass (resume after encoded surface edit)"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,

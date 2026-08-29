@@ -41,6 +41,19 @@ pub(crate) enum GroundTexture {
     UnitAtlasPage(usize),
     UnitTransitionPage(usize),
     ShpPage(usize),
+    /// Scheduler `AnimClass::DrawIt` shadow half. This must interrupt the
+    /// ordinary sRGB pass and edit the encoded tactical destination through
+    /// the native 0x601 compositor.
+    AnimShadowShpPage(usize),
+}
+
+/// Material carried alongside the flat Top-layer SHP stream. The shadow mode
+/// selects an encoded destination edit rather than ordinary source-alpha
+/// sampling; atlas page remains payload, never an ordering authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShpCompositeMode {
+    Standard,
+    AnimShadowDestinationHalve,
 }
 
 /// One already-resolved sprite owned by one Ground-layer parent object.

@@ -157,6 +157,7 @@ pub(crate) fn render_game(
             shp_paged: &world.shp_paged,
             top_unit_pages: &world.top_unit_pages,
             top_shp_pages: &world.top_shp_pages,
+            top_shp_modes: &world.top_shp_modes,
             ghost_page: ui.ghost_page,
         },
     );

@@ -14,7 +14,7 @@ use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::unit_atlas::UnitAtlas;
 use crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache;
 
-use super::draw_plan_lowering::{GroundObjectPass, GroundTexture};
+use super::draw_plan_lowering::GroundTexture;
 
 /// Which pipeline a `DrawGroup` should dispatch through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,85 +222,75 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
     }
 }
 
-/// Dispatch the already-lowered native Ground sequence without re-sorting it.
-///
-/// Every run is a contiguous slice of one flat instance buffer. Texture page,
-/// atlas family, and `SpriteInstance.depth` select only GPU state; none can
-/// change the signed integer parent order established by `TacticalDrawPlan`.
+/// Dispatch one ordinary Ground run. Exact AnimClass shadow runs are rejected:
+/// they require ending the sRGB pass and are handled by `draw_passes` against
+/// the encoded tactical view.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn draw_native_ground_object_pass<'a>(
+pub(super) fn draw_native_ground_object_standard_run<'a>(
     pass: &mut wgpu::RenderPass<'a>,
     batch: &'a BatchRenderer,
-    pool: &'a InstanceBufferPool,
-    ground: &GroundObjectPass,
+    run: &super::draw_plan_lowering::GroundDrawRun,
+    buffer: &'a wgpu::Buffer,
     overlay_atlas: Option<&'a OverlayAtlas>,
     unit_atlas: Option<&'a UnitAtlas>,
     transition_cache: &'a VxlSlopeTransitionCache,
     sprite_atlas: Option<&'a SpriteAtlas>,
     palette_set: Option<&'a PaletteSet>,
 ) {
-    let Some((buffer, count)) = pool.get("ground_objects") else {
-        return;
-    };
-    assert_eq!(
-        count as usize,
-        ground.instances.len(),
-        "native Ground upload must preserve every lowered instance"
-    );
-
-    for run in &ground.runs {
-        match run.target {
-            GroundTexture::OverlayAtlas => {
-                if let Some(atlas) = overlay_atlas {
-                    batch.draw_passthrough_range(
-                        pass,
-                        &atlas.texture,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
-                }
+    match run.target {
+        GroundTexture::OverlayAtlas => {
+            if let Some(atlas) = overlay_atlas {
+                batch.draw_passthrough_range(
+                    pass,
+                    &atlas.texture,
+                    buffer,
+                    run.start,
+                    run.count,
+                );
             }
-            GroundTexture::UnitAtlasPage(page) => {
-                if let (Some(palette), Some(texture)) = (
-                    palette_set,
-                    unit_atlas.and_then(|atlas| atlas.page_texture(page)),
-                ) {
-                    batch.draw_voxel_sprites_range(
-                        pass,
-                        texture,
-                        &palette.bind_group,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
-                }
+        }
+        GroundTexture::UnitAtlasPage(page) => {
+            if let (Some(palette), Some(texture)) = (
+                palette_set,
+                unit_atlas.and_then(|atlas| atlas.page_texture(page)),
+            ) {
+                batch.draw_voxel_sprites_range(
+                    pass,
+                    texture,
+                    &palette.bind_group,
+                    buffer,
+                    run.start,
+                    run.count,
+                );
             }
-            GroundTexture::UnitTransitionPage(page) => {
-                if let (Some(texture), Some(palette)) =
-                    (transition_cache.page_texture(page), palette_set)
-                {
-                    batch.draw_voxel_sprites_range(
-                        pass,
-                        texture,
-                        &palette.bind_group,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
-                }
+        }
+        GroundTexture::UnitTransitionPage(page) => {
+            if let (Some(texture), Some(palette)) =
+                (transition_cache.page_texture(page), palette_set)
+            {
+                batch.draw_voxel_sprites_range(
+                    pass,
+                    texture,
+                    &palette.bind_group,
+                    buffer,
+                    run.start,
+                    run.count,
+                );
             }
-            GroundTexture::ShpPage(page) => {
-                if let Some(texture) = sprite_atlas.and_then(|atlas| atlas.page(page)) {
-                    batch.draw_passthrough_range(
-                        pass,
-                        &texture.texture,
-                        buffer,
-                        run.start,
-                        run.count,
-                    );
-                }
+        }
+        GroundTexture::ShpPage(page) => {
+            if let Some(texture) = sprite_atlas.and_then(|atlas| atlas.page(page)) {
+                batch.draw_passthrough_range(
+                    pass,
+                    &texture.texture,
+                    buffer,
+                    run.start,
+                    run.count,
+                );
             }
+        }
+        GroundTexture::AnimShadowShpPage(_) => {
+            unreachable!("AnimClass shadow runs require the encoded destination compositor")
         }
     }
 }
@@ -447,6 +437,42 @@ struct UnitPageRun {
     count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ShpCompositeRun {
+    pub page: usize,
+    pub mode: super::draw_plan_lowering::ShpCompositeMode,
+    pub start: u32,
+    pub count: u32,
+}
+
+/// Contiguous Top-layer SHP runs without reordering either atlas pages or the
+/// body -> encoded-shadow material transition.
+pub(super) fn shp_composite_runs(
+    pages: &[usize],
+    modes: &[super::draw_plan_lowering::ShpCompositeMode],
+) -> Vec<ShpCompositeRun> {
+    assert_eq!(pages.len(), modes.len(), "Top SHP page/mode tags must align");
+    let mut runs: Vec<ShpCompositeRun> = Vec::new();
+    for (index, (&page, &mode)) in pages.iter().zip(modes).enumerate() {
+        let start = index as u32;
+        if let Some(run) = runs.last_mut()
+            && run.page == page
+            && run.mode == mode
+            && run.start + run.count == start
+        {
+            run.count += 1;
+            continue;
+        }
+        runs.push(ShpCompositeRun {
+            page,
+            mode,
+            start,
+            count: 1,
+        });
+    }
+    runs
+}
+
 struct UnitPageRuns<'a> {
     pages: &'a [usize],
     cursor: usize,
@@ -518,31 +544,6 @@ pub(super) fn draw_unit_atlas_page_runs<'a>(
             run.start,
             run.count,
         );
-    }
-}
-
-/// Draw one flat SHP stream without regrouping it by atlas page.
-///
-/// Contiguous page changes only rebind the texture; the instance range remains
-/// the native Top-layer append sequence.
-pub(super) fn draw_shp_atlas_page_runs<'a>(
-    pass: &mut wgpu::RenderPass<'a>,
-    batch: &'a BatchRenderer,
-    atlas: &'a SpriteAtlas,
-    buffer: &'a wgpu::Buffer,
-    pages: &[usize],
-    start: u32,
-    count: u32,
-) {
-    for run in unit_page_runs(pages, start, count) {
-        let texture = atlas.page(run.page).unwrap_or_else(|| {
-            panic!(
-                "SpriteAtlas instance references missing page {} of {}",
-                run.page,
-                atlas.page_count()
-            )
-        });
-        batch.draw_passthrough_range(pass, &texture.texture, buffer, run.start, run.count);
     }
 }
 
@@ -682,6 +683,44 @@ mod tests {
                     count: 1,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn phase3_top_anim_shadow_material_interrupts_body_order_without_page_sorting() {
+        use super::super::draw_plan_lowering::ShpCompositeMode;
+
+        let runs = shp_composite_runs(
+            &[2, 0, 0, 1],
+            &[
+                ShpCompositeMode::Standard,
+                ShpCompositeMode::AnimShadowDestinationHalve,
+                ShpCompositeMode::AnimShadowDestinationHalve,
+                ShpCompositeMode::Standard,
+            ],
+        );
+        assert_eq!(
+            runs,
+            vec![
+                ShpCompositeRun {
+                    page: 2,
+                    mode: ShpCompositeMode::Standard,
+                    start: 0,
+                    count: 1,
+                },
+                ShpCompositeRun {
+                    page: 0,
+                    mode: ShpCompositeMode::AnimShadowDestinationHalve,
+                    start: 1,
+                    count: 2,
+                },
+                ShpCompositeRun {
+                    page: 1,
+                    mode: ShpCompositeMode::Standard,
+                    start: 3,
+                    count: 1,
+                },
+            ],
         );
     }
 }

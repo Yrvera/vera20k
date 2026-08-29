@@ -36,6 +36,7 @@ pub(super) struct DrawPassData<'a> {
     pub shp_paged: &'a [Vec<SpriteInstance>],
     pub top_unit_pages: &'a [usize],
     pub top_shp_pages: &'a [usize],
+    pub top_shp_modes: &'a [super::draw_plan_lowering::ShpCompositeMode],
     pub ghost_page: u8,
 }
 
@@ -218,17 +219,52 @@ pub(super) fn dispatch_draw_passes(
     // Terrain, units, infantry, and building-owned pieces share the exact
     // signed X+Y + stable-registration order. Atlas bindings dispatch only
     // after the parent slot has been selected.
-    merge_passes::draw_native_ground_object_pass(
-        &mut pass,
-        &state.renderer.batch_renderer,
-        pool,
-        data.ground,
-        state.match_state.match_presentation.overlay_atlas.as_ref(),
-        state.match_state.match_presentation.unit_atlas.as_ref(),
-        &transition_cache,
-        state.match_state.match_presentation.sprite_atlas.as_ref(),
-        state.match_state.match_presentation.palette_set.as_ref(),
-    );
+    if let Some((ground_buffer, ground_count)) = pool.get("ground_objects") {
+        assert_eq!(
+            ground_count as usize,
+            data.ground.instances.len(),
+            "native Ground upload must preserve every lowered instance",
+        );
+        for run in &data.ground.runs {
+            if let super::draw_plan_lowering::GroundTexture::AnimShadowShpPage(page) = run.target {
+                // Native DrawIt submits this immediately after its body. End
+                // the sRGB pass, edit the aliased encoded destination once per
+                // stencil instance, then resume both colour and depth state.
+                drop(pass);
+                if let Some(texture) = state
+                    .match_state
+                    .match_presentation
+                    .sprite_atlas
+                    .as_ref()
+                    .and_then(|atlas| atlas.page(page))
+                {
+                    state.renderer.combat_light_renderer.draw_anim_shadow_run(
+                        encoder,
+                        &state.renderer.batch_renderer,
+                        &texture.texture,
+                        ground_buffer,
+                        run.start,
+                        run.count,
+                        [tac_x, tac_y, tac_w, tac_h],
+                    );
+                }
+                pass = begin_main_load_pass(encoder, view, &state.renderer.depth_view);
+                pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
+            } else {
+                merge_passes::draw_native_ground_object_standard_run(
+                    &mut pass,
+                    &state.renderer.batch_renderer,
+                    run,
+                    ground_buffer,
+                    state.match_state.match_presentation.overlay_atlas.as_ref(),
+                    state.match_state.match_presentation.unit_atlas.as_ref(),
+                    &transition_cache,
+                    state.match_state.match_presentation.sprite_atlas.as_ref(),
+                    state.match_state.match_presentation.palette_set.as_ref(),
+                );
+            }
+        }
+    }
 
     // Scheduler-owned effects not yet carrying verified class-specific
     // YSortAdjust remain in the pre-existing residual SHP stream.
@@ -343,18 +379,47 @@ pub(super) fn dispatch_draw_passes(
             }
         }
     }
-    if let (Some(atlas), Some((buffer, count))) = (state.match_state.match_presentation.sprite_atlas.as_ref(), pool.get("shp_top"))
-        && count > 0
+    if let (Some(atlas), Some((buffer, count))) = (
+        state.match_state.match_presentation.sprite_atlas.as_ref(),
+        pool.get("shp_top"),
+    ) && count > 0
     {
-        merge_passes::draw_shp_atlas_page_runs(
-            &mut pass,
-            &state.renderer.batch_renderer,
-            atlas,
-            buffer,
-            data.top_shp_pages,
-            0,
-            count,
-        );
+        assert_eq!(count as usize, data.top_shp_pages.len());
+        assert_eq!(count as usize, data.top_shp_modes.len());
+        for run in merge_passes::shp_composite_runs(data.top_shp_pages, data.top_shp_modes) {
+            let texture = atlas.page(run.page).unwrap_or_else(|| {
+                panic!(
+                    "Top AnimClass references missing SpriteAtlas page {} of {}",
+                    run.page,
+                    atlas.page_count(),
+                )
+            });
+            match run.mode {
+                super::draw_plan_lowering::ShpCompositeMode::Standard => {
+                    state.renderer.batch_renderer.draw_passthrough_range(
+                        &mut pass,
+                        &texture.texture,
+                        buffer,
+                        run.start,
+                        run.count,
+                    );
+                }
+                super::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve => {
+                    drop(pass);
+                    state.renderer.combat_light_renderer.draw_anim_shadow_run(
+                        encoder,
+                        &state.renderer.batch_renderer,
+                        &texture.texture,
+                        buffer,
+                        run.start,
+                        run.count,
+                        [tac_x, tac_y, tac_w, tac_h],
+                    );
+                    pass = begin_main_load_pass(encoder, view, &state.renderer.depth_view);
+                    pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
+                }
+            }
+        }
     }
 
     // --- Step 7.8: Persistent combat-light vector ---

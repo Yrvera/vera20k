@@ -81,6 +81,18 @@ fn is_scheduler_anim_shadow_frame(
         && frame >= raw_count / 2
 }
 
+/// Convert the second SHP half into a binary mask for the dedicated encoded
+/// AnimClass shadow compositor. Unlike the bridge atlas's explicitly
+/// approximate source-alpha texture, nonzero bytes are fully opaque here; the
+/// compositor performs the native destination halve itself.
+fn anim_shadow_stencil_to_rgba(stencil: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(stencil.len() * 4);
+    for &index in stencil {
+        rgba.extend_from_slice(&[0, 0, 0, if index == 0 { 0 } else { 255 }]);
+    }
+    rgba
+}
+
 fn effect_anim_shp_candidates(
     anim_type: &str,
     art: Option<&ArtRegistry>,
@@ -1373,8 +1385,10 @@ fn render_shp_sprite(
         shp.frames.len(),
     ) {
         // Native 0x601 is the shadow blitter: every nonzero stencil byte
-        // darkens the destination and the palette index itself is ignored.
-        crate::render::bridge_atlas::shadow_stencil_to_rgba(&frame.pixels)
+        // selects an encoded-destination halve and the palette index itself is
+        // ignored. The atlas carries only a binary mask; compositing happens
+        // later through the dedicated non-sRGB AnimClass shadow destination.
+        anim_shadow_stencil_to_rgba(&frame.pixels)
     } else {
         match shp.frame_to_rgba(frame_idx, render_pal) {
             Ok(rgba) => rgba,
