@@ -240,6 +240,7 @@ pub(super) fn dispatch_draw_passes(
                 {
                     state.renderer.combat_light_renderer.draw_anim_shadow_run(
                         encoder,
+                        &state.renderer.depth_view,
                         &state.renderer.batch_renderer,
                         &texture.texture,
                         ground_buffer,
@@ -408,6 +409,7 @@ pub(super) fn dispatch_draw_passes(
                     drop(pass);
                     state.renderer.combat_light_renderer.draw_anim_shadow_run(
                         encoder,
+                        &state.renderer.depth_view,
                         &state.renderer.batch_renderer,
                         &texture.texture,
                         buffer,
