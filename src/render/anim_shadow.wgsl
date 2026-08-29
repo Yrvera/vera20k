@@ -63,6 +63,26 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     if (textureSample(t_stencil, s_stencil, input.uv).a < 0.5) {
         discard;
     }
-    let destination = textureLoad(destination_snapshot, vec2i(input.position.xy), 0);
-    return vec4f(destination.rgb * 0.5, destination.a);
+    let destination = vec4u(round(
+        textureLoad(destination_snapshot, vec2i(input.position.xy), 0) * 255.0
+    ));
+
+    // The native 0x601 blitter edits the packed RGB565 destination word. Its
+    // `(word >> 1) & 0x7bef` operation halves each R5/G6/B5 integer with
+    // truncation while preventing component bits from crossing boundaries.
+    // Unpacking zero-fills the discarded low bits, matching the active retail
+    // DirectDraw storage round trip rather than a floating RGBA8 multiply.
+    let packed = (
+        ((destination.r >> 3u) << 11u)
+        | ((destination.g >> 2u) << 5u)
+        | (destination.b >> 3u)
+    );
+    let halved = (packed >> 1u) & 0x7befu;
+    let stored = vec4u(
+        ((halved >> 11u) & 0x1fu) << 3u,
+        ((halved >> 5u) & 0x3fu) << 2u,
+        (halved & 0x1fu) << 3u,
+        destination.a,
+    );
+    return vec4f(stored) / 255.0;
 }
