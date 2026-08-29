@@ -21,6 +21,18 @@ const RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY: u8 = 2;
 /// back, so writing it is what makes the random-map thumbnail appear there.
 const RANDMAP_PREVIEW_FILE: &str = "RandMap.img";
 
+/// Execute an accepted caller only after the setup runner's common teardown.
+/// Keeping this boundary explicit prevents `.SED`/sentinel work from moving
+/// ahead of the teardown-owned `RandMap.img` serialization.
+fn teardown_then<S, T>(
+    state: &mut S,
+    teardown: impl FnOnce(&mut S),
+    after: impl FnOnce(&mut S) -> T,
+) -> T {
+    teardown(state);
+    after(state)
+}
+
 /// Native RMG map-storage identity used by its guarded Resize predicate.
 ///
 /// `RandomMapGenerator @ 0x00599D48` compares the normalized current theater,
@@ -437,11 +449,23 @@ impl App {
         true
     }
 
-    /// Remove the setup dialog and any in-flight worker without changing the
-    /// preview disposition already chosen by accept or cancel. The cached
-    /// RMG map storage has the dialog's lifetime and is destroyed here on both
-    /// return paths.
+    /// Run the setup dialog's common teardown. A valid completed preview is
+    /// serialized here, before the modal and cached RMG storage are destroyed,
+    /// on both Cancel and OK.
+    ///
+    /// gamemd provenance: `RandomMapSetupDialog__Run @ 0x00595BC0` writes
+    /// `RandMap.img` during common teardown, before accepted caller 0x005E8590
+    /// writes `RandMap.Sed` and commits the chooser sentinel.
     fn dismiss_random_map_setup(state: &mut AppState) {
+        let completed_preview = state
+            .frontend
+            .skirmish_shell_state
+            .random_map_setup_modal
+            .as_ref()
+            .and_then(|modal| modal.generated_preview.clone());
+        if let Some(preview) = completed_preview.as_ref() {
+            Self::write_random_map_preview_file(state, preview);
+        }
         state.frontend.skirmish_shell_state.random_map_setup_modal = None;
         state.frontend.random_map_generation = None;
         state.frontend.random_map_retention.destroy_map_storage();
@@ -468,7 +492,7 @@ impl App {
                 .offline_skirmish_runtime
                 .remember_random_map_options(&options);
         }
-        Self::dismiss_random_map_setup(state);
+        teardown_then(state, Self::dismiss_random_map_setup, |_| ());
         state.frontend.random_map_retention.cancel_setup();
     }
 
@@ -487,34 +511,35 @@ impl App {
             .frontend
             .offline_skirmish_runtime
             .remember_random_map_options(&options);
-        match Self::commit_random_map_setup(state, &options) {
+        state
+            .frontend
+            .random_map_retention
+            .accept_setup(RANDMAP_SED_FILE);
+        match teardown_then(state, Self::dismiss_random_map_setup, |state| {
+            Self::commit_random_map_setup(state, &options)
+        }) {
             Ok(()) => {
-                state.frontend.random_map_retention.accept_setup(RANDMAP_SED_FILE);
-                // Successful OK already chose the retained result; dialog
-                // teardown must not run the cancellation invalidation path.
-                Self::dismiss_random_map_setup(state);
+                // Teardown retained only the accepted presentation preview;
+                // launch remains owned by the `.SED` reader.
             }
             Err(err) => {
-                // Staying open is deliberate: a missing seed file makes the
-                // launch path fall back to defaults, which would silently
-                // start a different map than the one configured.
+                // The native dialog has already torn down at this point. Do
+                // not leave an accepted preview attached when the seed/options
+                // commit failed and no random-map selection was installed.
+                state.frontend.random_map_retention.cancel_setup();
                 log::error!("random map: could not write {RANDMAP_SED_FILE}: {err}");
             }
         }
     }
 
-    /// Rasterise the finished map and persist it as the chooser's thumbnail.
+    /// Rasterise the finished map into the dialog-owned preview surface.
+    /// Persistence belongs to common teardown, not generation completion.
     fn rasterise_generated_map(
         state: &mut AppState,
         job: &RandomMapGenerationJob,
         generated: &crate::map::rmg::GeneratedMap,
     ) -> Option<crate::map::rmg::preview::PreviewImage> {
-        let preview =
-            Self::rasterise_map(state, job, &generated.map_file, &generated.start_waypoints)?;
-        // Only the finished map is written out: the file is what the chooser
-        // row shows later, and a half-built map is not that map.
-        Self::write_random_map_preview_file(state, &preview);
-        Some(preview)
+        Self::rasterise_map(state, job, &generated.map_file, &generated.start_waypoints)
     }
 
     /// Colour and rasterise a map. Main thread only: the resolver reads theater
@@ -581,7 +606,8 @@ impl App {
         crate::map::rmg::preview::render_preview(&cells, &waypoints)
     }
 
-    /// Persist the generated preview so the chooser's random-map row can show it.
+    /// Persist the generated preview during common dialog teardown so the
+    /// chooser's random-map row can show it.
     ///
     /// Failure is logged rather than propagated: the dialog's own preview box
     /// draws from memory, so a write failure costs the chooser thumbnail and
@@ -1087,6 +1113,82 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gsi_04_12_preview_file_is_teardown_owned_and_precedes_accepted_commit() {
+        #[derive(Debug)]
+        struct TransactionState {
+            img_path: std::path::PathBuf,
+            sed_path: std::path::PathBuf,
+            completed_preview: Vec<u8>,
+            sentinel_committed: bool,
+        }
+
+        fn persist_completed_preview(state: &mut TransactionState) {
+            std::fs::write(&state.img_path, &state.completed_preview)
+                .expect("persist teardown preview");
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "vera20k-rmg-teardown-{}-{unique}",
+            std::process::id()
+        ));
+        let img_path = base.with_extension("img");
+        let sed_path = base.with_extension("sed");
+        std::fs::write(&img_path, b"prior-preview").expect("seed prior preview");
+        let mut accepted = TransactionState {
+            img_path: img_path.clone(),
+            sed_path: sed_path.clone(),
+            completed_preview: b"completed-preview".to_vec(),
+            sentinel_committed: false,
+        };
+
+        // Worker completion only fills dialog memory. Until common teardown,
+        // the chooser file remains the prior accepted preview.
+        assert_eq!(
+            std::fs::read(&img_path).expect("read pre-teardown preview"),
+            b"prior-preview"
+        );
+        teardown_then(&mut accepted, persist_completed_preview, |state| {
+            assert_eq!(
+                std::fs::read(&state.img_path).expect("read teardown preview"),
+                b"completed-preview",
+                "common teardown must publish .img before accepted caller work"
+            );
+            assert!(
+                !state.sed_path.exists() && !state.sentinel_committed,
+                ".SED and sentinel cannot precede common teardown"
+            );
+            std::fs::write(&state.sed_path, b"accepted-options").expect("write accepted seed");
+            state.sentinel_committed = true;
+        });
+        assert!(accepted.sed_path.exists());
+        assert!(accepted.sentinel_committed);
+
+        // Cancel runs the same teardown writer but never reaches the accepted
+        // caller, so it updates only .img.
+        std::fs::write(&img_path, b"prior-preview").expect("reset prior preview");
+        std::fs::remove_file(&sed_path).expect("remove accepted seed fixture");
+        let mut cancelled = TransactionState {
+            img_path: img_path.clone(),
+            sed_path: sed_path.clone(),
+            completed_preview: b"cancelled-preview".to_vec(),
+            sentinel_committed: false,
+        };
+        teardown_then(&mut cancelled, persist_completed_preview, |_| ());
+        assert_eq!(
+            std::fs::read(&img_path).expect("read cancelled preview"),
+            b"cancelled-preview"
+        );
+        assert!(!sed_path.exists());
+        assert!(!cancelled.sentinel_committed);
+
+        std::fs::remove_file(&img_path).expect("remove preview fixture");
+    }
 
     #[test]
     fn six_preview_boundaries_cover_the_originals_eight_redraws() {
