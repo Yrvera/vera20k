@@ -800,48 +800,110 @@ mod tests {
     }
 
     #[test]
-    fn phase3_anim_shadow_pipeline_halves_encoded_destination_per_nonzero_stencil() {
+    fn phase3_anim_shadow_pipeline_halves_packed_rgb565_destination_per_nonzero_stencil() {
         wgpu::naga::front::wgsl::parse_str(ANIM_SHADOW_SHADER)
             .expect("the production encoded-shadow WGSL must validate");
 
-        fn encoded_edit(destination: f32, stencil: u8) -> f32 {
-            if stencil == 0 {
-                destination
-            } else {
-                destination * 0.5
-            }
+        fn pack_rgb565(rgba: [u8; 4]) -> u16 {
+            use crate::render::native_surface_format::RGB565;
+
+            ((u16::from(rgba[0]) >> RGB565.red_loss) << RGB565.red_shift)
+                | ((u16::from(rgba[1]) >> RGB565.green_loss) << RGB565.green_shift)
+                | ((u16::from(rgba[2]) >> RGB565.blue_loss) << RGB565.blue_shift)
         }
-        fn srgb_to_linear(c: f32) -> f32 {
-            if c <= 0.04045 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
+
+        // Machine-derived oracle for the native packed-word operation. Keeping
+        // it word-shaped makes it independent from the shader's channel path.
+        fn native_word_halve(rgba: [u8; 4]) -> [u8; 4] {
+            let word = (pack_rgb565(rgba) >> 1) & 0x7bef;
+            [
+                (((word >> 11) & 0x1f) << 3) as u8,
+                (((word >> 5) & 0x3f) << 2) as u8,
+                ((word & 0x1f) << 3) as u8,
+                rgba[3],
+            ]
         }
-        fn linear_to_srgb(c: f32) -> f32 {
-            if c <= 0.0031308 {
-                12.92 * c
-            } else {
-                1.055 * c.powf(1.0 / 2.4) - 0.055
+
+        // CPU mirror of the production shader's explicit R5/G6/B5 channel
+        // extraction, integer halve, and zero-filled storage expansion.
+        fn shader_channel_model(rgba: [u8; 4]) -> [u8; 4] {
+            [
+                ((rgba[0] >> 3) >> 1) << 3,
+                ((rgba[1] >> 2) >> 1) << 2,
+                ((rgba[2] >> 3) >> 1) << 3,
+                rgba[3],
+            ]
+        }
+
+        // Exhaust every incoming byte of every active-retail component bin.
+        // The packed-word oracle catches both component bleed and rounding.
+        for channel in u8::MIN..=u8::MAX {
+            for destination in [
+                [channel, 0xa7, 0x5b, 0x6d],
+                [0xc3, channel, 0x5b, 0x6d],
+                [0xc3, 0xa7, channel, 0x6d],
+            ] {
+                assert_eq!(
+                    shader_channel_model(destination),
+                    native_word_halve(destination)
+                );
             }
         }
 
-        let destination = 0.5;
-        let native = encoded_edit(destination, 1);
-        let approximate = linear_to_srgb(0.5 * srgb_to_linear(destination));
-        assert_eq!(native, 0.25);
-        assert!((approximate - 0.36078).abs() < 0.001);
-        assert!(
-            (native - approximate).abs() > 0.1,
-            "the exact encoded edit must remain distinguishable from source-alpha sRGB blending",
+        assert_eq!(
+            native_word_halve([255, 255, 255, 0xa5]),
+            [120, 124, 120, 0xa5]
         );
-        assert_eq!(encoded_edit(destination, 0), destination);
 
-        let repeated = encoded_edit(encoded_edit(destination, 9), 4);
-        assert_eq!(repeated, 0.125, "overlap must halve the already-halved destination");
+        // Every overlap is a fresh packed-surface edit. Compare independent
+        // formulations across multiple colors and repeated shadow counts.
+        for (destination, expected_overlaps) in [
+            (
+                [255, 255, 255, 0xa5],
+                [
+                    [120, 124, 120, 0xa5],
+                    [56, 60, 56, 0xa5],
+                    [24, 28, 24, 0xa5],
+                    [8, 12, 8, 0xa5],
+                    [0, 4, 0, 0xa5],
+                ],
+            ),
+            (
+                [128, 128, 128, 0x33],
+                [
+                    [64, 64, 64, 0x33],
+                    [32, 32, 32, 0x33],
+                    [16, 16, 16, 0x33],
+                    [8, 8, 8, 0x33],
+                    [0, 4, 0, 0x33],
+                ],
+            ),
+            (
+                [17, 101, 249, 0xff],
+                [
+                    [8, 48, 120, 0xff],
+                    [0, 24, 56, 0xff],
+                    [0, 12, 24, 0xff],
+                    [0, 4, 8, 0xff],
+                    [0, 0, 0, 0xff],
+                ],
+            ),
+            ([7, 3, 7, 0x00], [[0, 0, 0, 0x00]; 5]),
+        ] {
+            let mut oracle = destination;
+            let mut shader = destination;
+            for expected in expected_overlaps {
+                oracle = native_word_halve(oracle);
+                shader = shader_channel_model(shader);
+                assert_eq!(oracle, expected);
+                assert_eq!(shader, oracle);
+                assert_eq!(shader[3], destination[3], "shadow edits must preserve alpha");
+            }
+        }
 
         assert!(ANIM_SHADOW_SHADER.contains("textureLoad(destination_snapshot"));
-        assert!(ANIM_SHADOW_SHADER.contains("destination.rgb * 0.5"));
+        assert!(ANIM_SHADOW_SHADER.contains("(packed >> 1u) & 0x7befu"));
+        assert!(!ANIM_SHADOW_SHADER.contains("destination.rgb * 0.5"));
         assert!(ANIM_SHADOW_SHADER.contains("discard"));
     }
 
