@@ -2,8 +2,9 @@
 
 Date: 2026-08-29
 Scope: PR #170 (`feature/bridge-movement-parity`) only
-Compared revisions: `origin/main@0a6e6742` and branch `d2b7d4ac`
-Verdict: **FIX_REQUIRED**
+Compared revisions: `origin/main@0a6e6742`, branch `440a4900`, and the reviewed
+merge-readiness working tree
+Verdict: **RESOLVED_PENDING_FINAL_SUITE**
 
 ## Question
 
@@ -29,27 +30,40 @@ production rollback.
 - `docs/research/bridges/00-system-models/RMG_BRIDGE_DUAL_RNG_LIFECYCLE_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/contracts/2026-08-28-techno-constructor-scenario-rng-implementation-contract.md`
 - `docs/contracts/2026-08-29-rmg-low-bridge-launch-construction-implementation-contract.md`
-- Direct branch/source comparison against `origin/main`, plus complete focused reruns of every
-  owning module represented in the previous failure list.
+- Active-retail Object reveal/unlimbo at `0x005F4EC0`, Unit cell admission at
+  `0x0073F0A0`, and the Factory production paths at `0x004C9C70`, `0x004CA0E0`,
+  `0x004CA5A0`, and `0x004CA1A0`.
+- Active-retail paradrop spawner `FUN_0065E660`, edge helper `FUN_004AA440`, and
+  criterion-4 outside-playfield acceptance at `0x004AAB3D..0x004AAB4B`, with the
+  call-order evidence in `PDPLANE_SPAWNER_EDGE_SILENT_PATH_GHIDRA_REPORT.md` and
+  `PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`.
+- Direct branch/source comparison against `origin/main`, serial reproduction of all owning
+  modules represented in the failure list, and focused reruns after each bounded correction.
 
 The research-index preflight could not open its SQLite database, so this scan used the cited
 primary reports and direct source inspection rather than index-derived claims.
 
 ## Failure classification
 
-The prior branch-wide run reported 163 failures. At the unchanged branch head, complete focused
-reruns of the owning modules reduce that set to eight reproducible failures. The remaining 155
-are not reproducible at this head and require no expectation suppression or source change; the
-final full-library run is the recurrence check.
+The reported 163 failures occurred in two branch-wide stages. The first eight were corrected in
+commits `c012136e` and `440a4900`. A subsequent exact full-library run at `440a4900` exposed 155
+additional failures. All 152 simulation failures reproduced serially, disproving the initial
+parallel-state/interner hypothesis. Their exact partition, plus the three non-simulation
+failures, is below. No default lifecycle, production gate, or test scheduler was weakened.
 
 | Classification | Count | Current evidence | Required action |
 |---|---:|---|---|
-| Stale constructor/placement RNG expectations | 4 | All four reproduce in `app::frontend::skirmish::tests`; `origin/main` uses the old placement-first assumption, while the branch now implements the verified constructor-first Scenario draw. | Re-step expected Scenario RNG once per constructed Techno before fallback placement draws. Preserve production order. |
-| Generator/simulation ownership violation | 1 | `map::rmg::emit::tests::sim_does_not_reference_the_generator` names `src/sim/scenario_bootstrap.rs`, which consumes RMG-owned construction-trace DTOs. | Move the shared trace DTO to neutral map ownership; keep the dependency guard. |
-| Evidence-backed deterministic baseline drift | 3 | Slice-6, bridge-parity, and global-parity tripwires pass until their stored hashes/stream state. Only Scenario state changes in the global stream tuple; that is the stream used by the verified constructor draw. | Rebaseline only the affected constants, after preserving record/replay and per-stage tripwires. |
-| Non-reproducible prior failures | 155 | Complete owning-module reruns pass at the same source head. No branch-added mutable global, environment mutation, or test suppressor was found. | No code change. Require the final full-library run to prove non-recurrence. |
+| Stale constructor/placement RNG expectations | 4 | `origin/main` retained the old placement-first assumption; active retail draws in the Techno constructor first. | Closed in `c012136e`; production order preserved. |
+| Generator/simulation ownership violation | 1 | Simulation consumed RMG-owned construction-trace DTOs. | Closed in `440a4900` by moving the DTOs to neutral map ownership while retaining the dependency guard. |
+| Evidence-backed deterministic baseline drift | 3 | Only the verified constructor draw changed the affected Scenario stream/hash baselines. | Closed in `c012136e`; record/replay and stage tripwires retained. |
+| Active-object fixture lifecycle | 93 | Branch-added native `!in_limbo` gates correctly rejected test objects left at `ObjectLifecycle::default()`. | Fixtures now explicitly model revealed/live objects; defaults and production gates are unchanged. |
+| Placed-structure fixture marking | 5 | Five of the live structure fixtures also omitted the native placed-cell mark. | Fixtures now set both `in_limbo = false` and `cell_marked = true`. |
+| Unit-Unlimbo admission authority | 48 | Fixtures invoked the real constructor/Unlimbo route without valid playfield bounds, terrain speed rows, bridge facts, or an admitted cell. | Fixtures now provide the smallest real map/terrain authority required by `0x0073F0A0`; no admission bypass was added. |
+| Paradrop carrier spawn integration | 6 | The old shared rectangular fog-array edge contradicted `FUN_004AA440`, per-carrier call order, and the isometric playfield gate. | Production now uses the exact per-carrier native spawn-edge helper, outside-playfield criterion-4 admission, and verified constructor/helper/Unlimbo RNG order. Stock Open/Rescue mission behavior remains outside this branch-failure repair. |
+| Stale deterministic RMG witness | 2 | Seed 4242 stopped witnessing the asserted condition after the verified water-family correction. | The tests now select from fixed `MATRIX_SEEDS` and preserve the same deterministic property. |
+| Radar same-cell Unit stacking | 1 | The fixture depended on two Units occupying one admitted cell, which exact Unit CanEnter rejects. | The fixture separates the Units and marks the adjacent observed cell; lifecycle behavior remains under test. |
 
-### Reproducible test inventory
+### Original eight-test inventory
 
 1. `all_eight_nearoref_mcvs_spawn_on_authored_waypoints_without_fallback_rng`
 2. `nearoref_blocked_start_fallback_uses_full_cell_array_clamp`
@@ -60,29 +74,30 @@ final full-library run is the recurrence check.
 7. `sim::world::bridge_parity_harness_tests::bridge_parity_harness_is_deterministic`
 8. `sim::world::global_parity_harness_tests::global_parity_harness_is_deterministic`
 
-### Non-reproducible clusters
+### Closure validation before final certification
 
-Complete focused reruns passed for RMG build, radar lifecycle, AI, combat, turret facing,
-miner and outbound drive, movement occupancy, pathfinding zone search, power, production queue,
-radar, rocking, sensor lifecycle, spawn manager, lightning storm, paradrop, vision, production
-shadow, cloak lifecycle, and the general world tests. The RMG build failures from the prior run
-also do not reproduce. These results classify the 155 tests as transient-at-that-run, not as
-permission to delete, ignore, weaken, or rebaseline them.
+- `cargo test -p vera20k --lib paradrop`: 27 passed, 0 failed.
+- `cargo test -p vera20k --lib 'sim::'`: 3,802 passed, 0 failed, 51 ignored.
+- `cargo test -p vera20k --lib 'map::rmg::build::tests::'`: 17 passed, 0 failed.
+- `cargo test -p vera20k --lib radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle`:
+  1 passed, 0 failed.
+
+The exact full-library command remains the final recurrence and merge-readiness gate.
 
 ## Verified gaps
 
 ### U2-20 — waterfall terrain no-topology boundary
 
-**Status:** open, test-only, compounding.
+**Status:** closed in `85ddabba`, evidence-backed.
 
 `src/map/rmg/phases/bridge.rs::build` owns the Rust `BuildRiverBridge @ 0x0059E740`
-correspondence. Existing tests either call the lower-level deck stamper or sweep river seeds;
-none pins a deterministic successful direct `build` call and its complete negative boundary.
-The direct characterization also exposes a material write-set omission: both the waterfall block
-stamper and the shore block stamper copy tile/subtile/level but omit the TMP subtile slope that
-the native tile-block callee writes.
+correspondence. Before closure, tests either called the lower-level stamper or swept river seeds;
+none pinned a deterministic successful direct `build` call and its complete negative boundary.
+The direct characterization also exposed a material write-set omission: both the waterfall block
+stamper and the shore block stamper copied tile/subtile/level but omitted the TMP subtile slope
+that the native tile-block callee writes.
 
-Required closure:
+Implemented closure:
 
 - Use one fixed successful seed and call `build` directly.
 - Prove the allowed tile/subtile/slope/level/scratch terrain change and waterfall appearance.
@@ -96,26 +111,22 @@ No other production change is indicated by current native/source comparison.
 
 ### U2-21 — active/dormant naming boundary
 
-**Status:** open, documentation-only, compounding.
+**Status:** closed in `85ddabba`, documentation-only.
 
-Comments and test names across `src/map/rmg/build.rs`, `pipeline.rs`, `phases/water.rs`,
-`island_passes.rs`, `adjacency.rs`, `lake.rs`, `meander.rs`, `river.rs`, `bridge.rs`, and
-`water_finalize.rs` still conflate the conditionally active RMG path with dormant behavior or
-describe waterfall terrain construction as an active low bridge. The smallest correction is
-wording/test-name repair: distinguish waterfall/river terrain `0x0059E740` from the active
+Comments and test names now distinguish waterfall/river terrain `0x0059E740` from the active
 low-deck branch `0x0058F2C0`, while retaining established Rust identifiers where renaming would
-create churn. No excluded `TrainBridgeSet` surface should be introduced.
+create churn. No excluded `TrainBridgeSet` surface was introduced.
 
 ## Ranked fix list
 
 | Rank | Fix | Player visibility / trigger frequency | Evidence status |
 |---:|---|---|---|
-| 1 | Restore TMP slope writes in the two waterfall/shore stampers | Generated river/waterfall maps whenever non-flat TMP subtiles are selected | Verified `0x0059E740` callee write census |
-| 2 | Correct constructor-before-placement test expectations | Launches with starting units; ordinary skirmish path | Verified active-retail call order |
-| 3 | Rebaseline affected deterministic hashes/Scenario stream | Test certification only, but protects all replayed bridge/launch paths | Verified draw plus passing tripwires |
-| 4 | Move construction-trace DTO to neutral map ownership | Architectural; every traced generated-map bootstrap | Direct dependency-guard failure |
-| 5 | Add U2-20 negative characterization | Generated river/waterfall maps; guards against future topology pollution | Verified `0x0059E740` write exclusions |
-| 6 | Correct U2-21 terminology | Source/reviewer correctness | Verified active/dormant boundary |
+| 1 | Restore TMP slope writes in the two waterfall/shore stampers | Generated river/waterfall maps whenever non-flat TMP subtiles are selected | Closed; verified `0x0059E740` callee write census |
+| 2 | Correct constructor-before-placement test expectations | Launches with starting units; ordinary skirmish path | Closed; verified active-retail call order |
+| 3 | Rebaseline affected deterministic hashes/Scenario stream | Test certification only, but protects all replayed bridge/launch paths | Closed; verified draw plus passing tripwires |
+| 4 | Move construction-trace DTO to neutral map ownership | Architectural; every traced generated-map bootstrap | Closed; dependency guard retained |
+| 5 | Add U2-20 negative characterization | Generated river/waterfall maps; guards against future topology pollution | Closed; verified `0x0059E740` write exclusions |
+| 6 | Correct U2-21 terminology | Source/reviewer correctness | Closed; verified active/dormant boundary |
 
 ## Not gaps
 
@@ -128,9 +139,10 @@ create churn. No excluded `TrainBridgeSet` surface should be introduced.
 
 ## Implementation boundary
 
-Make only the six ranked fixes, validate each focused owner, obtain fresh read-only criticism,
-then run `cargo test -p vera20k --lib` exactly once as final certification. Keep PR #170 draft
-unless that command passes. Do not merge.
+All classified corrections and U2 closures are implemented and focused validation is green.
+Obtain the final fresh read-only critic verdict, commit the bounded working tree, then run
+`cargo test -p vera20k --lib` exactly once as final certification. Keep PR #170 draft unless
+that command passes. Do not merge.
 
 ## Ghidra annotation candidates
 
