@@ -289,6 +289,7 @@ mod tests {
             current: hp,
             max: max_hp,
         };
+        e.lifecycle.in_limbo = false;
         e
     }
 

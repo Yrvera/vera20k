@@ -135,6 +135,7 @@ fn spawn_miner(sim: &mut Simulation, sid: u64, kind: MinerKind, rx: u16, ry: u16
         ge.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Teleport));
     }
     ge.miner = Some(Miner::new(kind, &MinerConfig::default(), 0));
+    ge.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(ge);
     // Update the shared object allocator if needed so test IDs do not collide.
     if sim.substrate.next_stable_object_id <= sid {
@@ -147,7 +148,7 @@ fn spawn_miner(sim: &mut Simulation, sid: u64, kind: MinerKind, rx: u16, ry: u16
 fn spawn_refinery(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) {
     let owner_id = sim.interner.intern("Americans");
     let type_id = sim.interner.intern("GAREFN");
-    let ge = GameEntity::new_at_frame_zero_for_test(
+    let mut ge = GameEntity::new_at_frame_zero_for_test(
         sid,
         rx,
         ry,
@@ -164,6 +165,7 @@ fn spawn_refinery(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) {
         5,
         false,
     );
+    ge.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(ge);
     occupy_structure_cells(sim, sid, rx, ry, 4, 3);
     if sim.substrate.next_stable_object_id <= sid {
@@ -185,7 +187,7 @@ fn spawn_structure_owned(
 ) {
     let owner_id = sim.interner.intern(owner);
     let type_id_interned = sim.interner.intern(type_id);
-    let ge = GameEntity::new_at_frame_zero_for_test(
+    let mut ge = GameEntity::new_at_frame_zero_for_test(
         sid,
         rx,
         ry,
@@ -202,6 +204,7 @@ fn spawn_structure_owned(
         5,
         false,
     );
+    ge.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(ge);
     occupy_structure_cells(sim, sid, rx, ry, 1, 1);
     if sim.substrate.next_stable_object_id <= sid {

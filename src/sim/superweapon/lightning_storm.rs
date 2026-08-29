@@ -761,6 +761,7 @@ mod tests {
         let type_ref = sim.interner.intern("GAPOWR");
         let mut building = GameEntity::test_default(10, "GAPOWR", "Soviet", 5, 5);
         building.category = EntityCategory::Structure;
+        building.lifecycle.in_limbo = false;
         building.owner = sim.interner.intern("Soviet");
         building.type_ref = type_ref;
         building.health = Health {

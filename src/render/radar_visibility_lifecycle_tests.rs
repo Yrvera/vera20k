@@ -45,6 +45,15 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
                 && i32::from(ry).abs_diff(i32::from(cell.1)) >= 10
         })
         .expect("separate interior mode-one detector cell");
+    let entering_cell = (8u16..56)
+        .flat_map(|ry| (8u16..56).map(move |rx| (rx, ry)))
+        .find(|&(rx, ry)| {
+            (rx, ry) != cell
+                && bounds.contains_height_aware_packed(rx.into(), ry.into(), 0, 0)
+                && rx.abs_diff(cell.0) <= 1
+                && ry.abs_diff(cell.1) <= 1
+        })
+        .expect("adjacent interior mode-one submarine cell");
     let local = sim.interner.intern("Americans");
     let sub = sim
         .spawn_object_at_height("SUB", "Soviet", cell.0, cell.1, 0, 0, &rules)
@@ -59,11 +68,21 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
         .establish_unlimbo_fully_cloaked();
     sim.fog.mark_visible_for_owner(local, cell.0, cell.1);
     let entering = sim
-        .spawn_object_at_height("SUB", "Soviet", cell.0, cell.1, 0, 0, &rules)
+        .spawn_object_at_height(
+            "SUB",
+            "Soviet",
+            entering_cell.0,
+            entering_cell.1,
+            0,
+            0,
+            &rules,
+        )
         .unwrap();
     let entering_owner = sim.substrate.entities.get(entering).unwrap().owner;
     sim.fog
-        .mark_visible_for_owner(entering_owner, cell.0, cell.1);
+        .mark_visible_for_owner(local, entering_cell.0, entering_cell.1);
+    sim.fog
+        .mark_visible_for_owner(entering_owner, entering_cell.0, entering_cell.1);
     assert_eq!(
         sim.substrate
             .entities
@@ -97,19 +116,14 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
     assert_eq!(evaluate(&sim), RadarVisibilityResult::HIDDEN);
     assert_eq!(tracker.update_object(build_update(&sim, sub), false), None);
     assert!(!tracker.is_registered(sub));
-    assert_eq!(tracker.update_object(build_update(&sim, entering), false), None);
+    assert_eq!(
+        tracker.update_object(build_update(&sim, entering), false),
+        None
+    );
     assert!(tracker.is_registered(entering));
 
     let detector = sim
-        .spawn_object_at_height(
-            "DEST",
-            "Americans",
-            far_cell.0,
-            far_cell.1,
-            0,
-            0,
-            &rules,
-        )
+        .spawn_object_at_height("DEST", "Americans", far_cell.0, far_cell.1, 0, 0, &rules)
         .unwrap();
     assert_eq!(evaluate(&sim), RadarVisibilityResult::HIDDEN);
     sim.substrate.occupancy.move_entity(
@@ -192,11 +206,19 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
     );
     assert!(tracker.is_registered(sub));
 
+    let second_detector_cell = (cell.0 + 1, cell.1);
     let second_detector = sim
-        .spawn_object_at_height("DEST", "Americans", cell.0, cell.1, 0, 0, &rules)
+        .spawn_object_at_height(
+            "DEST",
+            "Americans",
+            second_detector_cell.0,
+            second_detector_cell.1,
+            0,
+            0,
+            &rules,
+        )
         .unwrap();
-    let sensor_index =
-        usize::from(cell.1) * usize::from(sim.fog.width) + usize::from(cell.0);
+    let sensor_index = usize::from(cell.1) * usize::from(sim.fog.width) + usize::from(cell.0);
     assert_eq!(sim.fog.sensors_by_house[&local][sensor_index], 2);
     sim.substrate.occupancy.move_entity(
         cell.0,
@@ -225,8 +247,8 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
     assert_eq!(evaluate(&sim).out_code, 1);
 
     sim.substrate.occupancy.move_entity(
-        cell.0,
-        cell.1,
+        second_detector_cell.0,
+        second_detector_cell.1,
         far_cell.0,
         far_cell.1,
         second_detector,
@@ -239,7 +261,12 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
         detector.position.rx = far_cell.0;
         detector.position.ry = far_cell.1;
     }
-    sim.move_unit_sensor_after_cell_change(second_detector, Some(cell), Some(far_cell), &rules);
+    sim.move_unit_sensor_after_cell_change(
+        second_detector,
+        Some(second_detector_cell),
+        Some(far_cell),
+        &rules,
+    );
     assert_eq!(sim.fog.sensors_by_house[&local][sensor_index], 0);
     assert_eq!(evaluate(&sim), RadarVisibilityResult::HIDDEN);
     assert_eq!(tracker.update_object(build_update(&sim, sub), false), None);

@@ -243,6 +243,15 @@ fn empty_height_map() -> BTreeMap<(u16, u16), u8> {
 }
 
 fn flat_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
     ResolvedTerrainCell {
         rx,
         ry,
@@ -262,7 +271,7 @@ fn flat_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         render_offset_x: 0,
         render_offset_y: 0,
         terrain_class: TerrainClass::Clear,
-        speed_costs: SpeedCostProfile::default(),
+        speed_costs,
         is_water: false,
         is_cliff_like: false,
         is_rough: false,
@@ -284,7 +293,7 @@ fn flat_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         base_land_type: 0,
         base_yr_cell_land_type: 0,
         base_terrain_class: TerrainClass::Clear,
-        base_speed_costs: SpeedCostProfile::default(),
+        base_speed_costs: speed_costs,
         build_blocked: false,
         has_bridge_deck: false,
         bridge_walkable: false,
@@ -307,6 +316,13 @@ fn flat_sim() -> Simulation {
         .flat_map(|ry| (0..WIDTH).map(move |rx| flat_terrain_cell(rx, ry)))
         .collect();
     let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -40,
+        off_100: -1,
+        off_104: 80,
+        off_108: 41,
+    });
     sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(WIDTH, HEIGHT, cells));
     sim
 }

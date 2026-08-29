@@ -376,14 +376,7 @@ fn app_and_headless_frames_hash_identically_for_animation_progress() {
         TickLane::Ordinary,
         None,
     );
-    let headless = headless_sim.advance_tick(
-        &[],
-        Some(&rules),
-        &empty_heights(),
-        None,
-        None,
-        67,
-    );
+    let headless = headless_sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
 
     assert!(app.tick.frame_committed && headless.frame_committed);
     assert_eq!(app.tick.state_hash, headless.state_hash);
@@ -391,7 +384,11 @@ fn app_and_headless_frames_hash_identically_for_animation_progress() {
     let app_entity = app_sim.substrate.entities.get(1).expect("app infantry");
     assert_eq!(app_entity.facing, 128);
     assert_eq!(
-        app_entity.animation.as_ref().expect("app animation").sequence,
+        app_entity
+            .animation
+            .as_ref()
+            .expect("app animation")
+            .sequence,
         SequenceKind::Stand,
     );
     assert_eq!(
@@ -529,7 +526,11 @@ fn advance_tick_finishes_dying_infantry_from_rules_catalog() {
     let id = sim
         .spawn_object("E1", "Americans", 4, 4, 0, &rules, &empty_heights())
         .expect("spawn infantry");
-    let entity = sim.substrate.entities.get_mut(id).expect("spawned infantry");
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(id)
+        .expect("spawned infantry");
     entity.dying = true;
     entity.animation = Some(Animation {
         sequence: SequenceKind::Die1,
@@ -1177,14 +1178,14 @@ fn canonical_path_grid_snapshot_remains_pinned_after_publication() {
 
     assert!(pinned.is_walkable(0, 0));
     assert!(
-        !sim
-            .path_grid()
+        !sim.path_grid()
             .expect("published navigation")
             .is_walkable(0, 0)
     );
     assert!(!std::sync::Arc::ptr_eq(
         &pinned,
-        &sim.path_grid_snapshot().expect("second navigation snapshot")
+        &sim.path_grid_snapshot()
+            .expect("second navigation snapshot")
     ));
 }
 
@@ -1221,8 +1222,9 @@ fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
     sim.resolved_terrain = Some(terrain);
     let owner = sim.interner.intern("Americans");
     let type_ref = sim.interner.intern("GAREFN");
-    sim.substrate.entities.insert(
-        GameEntity::new_at_frame_zero_for_test(
+    sim.substrate
+        .entities
+        .insert(GameEntity::new_at_frame_zero_for_test(
             1,
             8,
             8,
@@ -1238,8 +1240,7 @@ fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
             0,
             0,
             false,
-        ),
-    );
+        ));
 
     assert!(sim.rebuild_dynamic_navigation(&rules));
     let grid = sim.path_grid().expect("published navigation");
@@ -2062,7 +2063,7 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
         });
         sim.substrate.entities.insert(entity);
         let original_building_owner = sim.interner.intern("Russians");
-        let building = GameEntity::new_at_frame_zero_for_test(
+        let mut building = GameEntity::new_at_frame_zero_for_test(
             2,
             1,
             0,
@@ -2079,6 +2080,7 @@ fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
             5,
             true,
         );
+        building.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(building);
         sim.fog = crate::sim::vision::FogState {
             width: 3,
@@ -2310,6 +2312,15 @@ fn water_terrain_with_land_type(
     land_type: u8,
     is_cliff_like: bool,
 ) -> ResolvedTerrainGrid {
+    let speed_costs = crate::rules::terrain_rules::SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
     let mut cells = Vec::new();
     for y in 0..height {
         for x in 0..width {
@@ -2331,7 +2342,7 @@ fn water_terrain_with_land_type(
                 render_offset_x: 0,
                 render_offset_y: 0,
                 terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
-                speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
+                speed_costs,
                 is_water: true,
                 is_cliff_like,
                 height_in_pixels: 0,
@@ -2354,7 +2365,7 @@ fn water_terrain_with_land_type(
                 base_land_type: 0,
                 base_yr_cell_land_type: 0,
                 base_terrain_class: Default::default(),
-                base_speed_costs: Default::default(),
+                base_speed_costs: speed_costs,
                 build_blocked: false,
                 has_bridge_deck: false,
                 bridge_walkable: false,
@@ -2445,6 +2456,20 @@ fn bridge_cell_with_ground_block(
     level: u8,
 ) -> ResolvedTerrainGrid {
     let mut terrain = single_bridge_cell(rx, ry, deck_level);
+    let water_speed_costs = crate::rules::terrain_rules::SpeedCostProfile {
+        float: Some(100),
+        ..Default::default()
+    };
+    for cell in &mut terrain.cells {
+        cell.land_type = 4;
+        cell.yr_cell_land_type = 4;
+        cell.speed_costs = water_speed_costs;
+        cell.is_water = true;
+        cell.zone_type = 4;
+        cell.base_land_type = 4;
+        cell.base_yr_cell_land_type = 4;
+        cell.base_speed_costs = water_speed_costs;
+    }
     let idx = terrain.index(rx, ry).expect("bridge index");
     let cell = &mut terrain.cells[idx];
     cell.level = level;
@@ -2466,6 +2491,17 @@ fn bridge_cell_with_ground_block(
 /// being asserted (mutate the center cell at `center_rx, ry`).
 ///
 /// Constraints: `center_rx >= 1` (strip needs the west neighbor in-grid).
+fn install_rectangular_test_playfield(sim: &mut Simulation, width: u16, height: u16) {
+    let span = i32::from(width.max(height));
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -span,
+        off_100: -span,
+        off_104: span * 2,
+        off_108: span * 2,
+    });
+}
+
 fn ew_high_bridge_strip_for_dispatch(
     center_rx: u16,
     ry: u16,
@@ -2481,6 +2517,15 @@ fn ew_high_bridge_strip_for_dispatch(
     let height = ry + 1;
     let west = center_rx - 1;
     let east = center_rx + 1;
+    let speed_costs = crate::rules::terrain_rules::SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
 
     let mut cells = Vec::with_capacity(width as usize * height as usize);
     for y in 0..height {
@@ -2504,7 +2549,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 render_offset_x: 0,
                 render_offset_y: 0,
                 terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
-                speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
+                speed_costs,
                 is_water: on_bridge && ground_walk_blocked,
                 is_cliff_like: false,
                 height_in_pixels: 0,
@@ -2527,14 +2572,21 @@ fn ew_high_bridge_strip_for_dispatch(
                 base_land_type: 0,
                 base_yr_cell_land_type: 0,
                 base_terrain_class: Default::default(),
-                base_speed_costs: Default::default(),
+                base_speed_costs: speed_costs,
                 build_blocked: on_bridge,
                 has_bridge_deck: on_bridge,
                 bridge_walkable: on_bridge,
                 bridge_transition: on_bridge,
                 bridge_deck_level: if on_bridge { deck_level } else { 0 },
                 bridge_layer: None,
-                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts {
+                    raw_flags: if on_bridge {
+                        crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                    } else {
+                        0
+                    },
+                    ..Default::default()
+                },
                 tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
@@ -2629,11 +2681,7 @@ fn sonic_tail_order_test_rules() -> RuleSet {
     .expect("Sonic Logic-tail ordering fixture")
 }
 
-fn sonic_fire_event(
-    sim: &mut Simulation,
-    attacker_id: u64,
-    target_id: u64,
-) -> SimFireEvent {
+fn sonic_fire_event(sim: &mut Simulation, attacker_id: u64, target_id: u64) -> SimFireEvent {
     SimFireEvent {
         attacker_id,
         attacker_type_ref: sim.interner.intern("DLPH"),
@@ -2819,6 +2867,7 @@ fn sonic_fire_registers_immediately_but_later_techno_fires_before_wave_tail_ai()
             .flat_map(|ry| (0..8).map(move |rx| bridgehead_base_cell(rx, ry)))
             .collect(),
     );
+    install_rectangular_test_playfield(&mut sim, terrain.width(), terrain.height());
     sim.install_resolved_terrain_for_new_map(terrain);
     let heights = empty_heights();
     let dolphin_id = sim
@@ -2948,11 +2997,18 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
     for cell in &mut cells {
         cell.level = 2;
         cell.template_height = 2;
+        cell.land_type = 4;
+        cell.yr_cell_land_type = 4;
+        cell.is_water = true;
+        cell.zone_type = 4;
+        cell.base_land_type = 4;
+        cell.base_yr_cell_land_type = 4;
         cell.has_bridge_deck = true;
         cell.bridge_walkable = true;
         cell.bridge_deck_level = 6;
         cell.bridge_facts.raw_flags |= crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
     }
+    install_rectangular_test_playfield(&mut sim, 8, 1);
     sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(8, 1, cells));
     let heights = empty_heights();
     let dolphin_id = sim
@@ -2963,7 +3019,11 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
         .expect("bridge receiver");
     for id in [dolphin_id, receiver_id] {
         sim.remove_entity_occupancy(id);
-        sim.substrate.entities.get_mut(id).expect("live entity").on_bridge = true;
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .expect("live entity")
+            .on_bridge = true;
         sim.add_entity_occupancy(id);
     }
     assert!(crate::sim::combat::issue_attack_cell_command(
@@ -2983,7 +3043,10 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
         .get(&dolphin_id)
         .expect("cell FireAt registered its Wave");
     let wave = sim.waves.get(wave_id).expect("same-frame Wave survives");
-    assert_eq!(wave.lifetime, 99, "the appended tail ran in the firing pass");
+    assert_eq!(
+        wave.lifetime, 99,
+        "the appended tail ran in the firing pass"
+    );
     assert_eq!(
         wave.target.z, 646,
         "level 2 CellClass target is 2*90 + structural 416 + Sonic 50",
@@ -3881,6 +3944,7 @@ fn test_bridge_collapse_clears_transition_flag() {
 fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     let mut sim = Simulation::new();
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 1);
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -3942,6 +4006,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
 fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
     let mut sim = Simulation::new();
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, true, 0);
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -4008,6 +4073,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
     let (mut resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].overlay_blocks = true;
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -4066,6 +4132,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
     let (mut resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].terrain_object_blocks = true;
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -4127,6 +4194,7 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
     let (mut resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].is_cliff_like = true;
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -4195,11 +4263,14 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
 fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
     let mut sim = Simulation::new();
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
-    // Spawn a GROUND unit at (5, 5) — same cell as the bridge above.
-    // `high: false` → spawn places it on the ground layer; on_bridge=false.
+    // Spawn at (5, 5), then explicitly model the native lower object-list
+    // occupant below the structural bridge deck. Constructor admission rightly
+    // selects the deck on this cell; the collapse path itself needs a ground-list
+    // witness.
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
             owner: "Americans".to_string(),
@@ -4228,6 +4299,9 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
         .next()
         .map(|(id, _)| id)
         .expect("ground unit spawned");
+    sim.remove_entity_occupancy(id);
+    sim.substrate.entities.get_mut(id).unwrap().on_bridge = false;
+    sim.add_entity_occupancy(id);
     assert!(
         !sim.substrate.entities.get(id).unwrap().on_bridge,
         "ground layer"
@@ -4697,6 +4771,7 @@ fn test_water_mover_lookahead_does_not_attach_bridge_occupancy_under_bridge() {
     let rules = naval_bridge_test_rules();
     let mut sim = Simulation::new();
     let resolved = bridge_cell_with_ground_block(1, 0, 3, true, 0);
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
         &resolved, true, 15,
@@ -4757,6 +4832,7 @@ fn test_too_big_ship_can_move_under_bridge_route() {
     resolved.cells[idx].bridge_deck_level = 3;
     resolved.cells[idx].ground_walk_blocked = true;
     resolved.cells[idx].build_blocked = true;
+    install_rectangular_test_playfield(&mut sim, resolved.width(), resolved.height());
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
         &resolved, true, 15,
@@ -4822,6 +4898,7 @@ fn test_ship_turn_path_completes_without_drive_track_stall() {
     let mut sim = Simulation::new();
     // Water movers need resolved_terrain with water cells (land_type=4) for
     // the passability check in is_cell_passable_for_mover.
+    install_rectangular_test_playfield(&mut sim, 3, 3);
     sim.resolved_terrain = Some(water_terrain(3, 3));
     let boat_id = sim
         .spawn_object("BOAT", "Americans", 0, 0, 64, &rules, &BTreeMap::new())
@@ -4881,6 +4958,7 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
     let mut sim = Simulation::new();
     let terrain = water_terrain(4, 4);
     let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    install_rectangular_test_playfield(&mut sim, terrain.width(), terrain.height());
     sim.resolved_terrain = Some(terrain.clone());
 
     sim.terrain_costs.insert(
@@ -4961,6 +5039,7 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
     // shoreline/coast land_type values. Ships should still navigate them.
     let terrain = water_terrain_with_land_type(4, 4, 7, false);
     let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    install_rectangular_test_playfield(&mut sim, terrain.width(), terrain.height());
     sim.resolved_terrain = Some(terrain.clone());
 
     sim.terrain_costs.insert(
@@ -5040,6 +5119,7 @@ fn test_real_ship_move_command_can_path_under_bridge_when_too_big() {
     terrain.cells[bridge_idx].bridge_walkable = true;
     terrain.cells[bridge_idx].bridge_transition = true;
     let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    install_rectangular_test_playfield(&mut sim, terrain.width(), terrain.height());
     sim.resolved_terrain = Some(terrain.clone());
 
     sim.terrain_costs.insert(
@@ -6511,7 +6591,7 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
     use crate::sim::game_entity::GameEntity;
     let americans_id = sim.interner.intern("Americans");
     let e1_id = sim.interner.intern("E1");
-    let ge = GameEntity::new_at_frame_zero_for_test(
+    let mut ge = GameEntity::new_at_frame_zero_for_test(
         1,
         1,
         1,
@@ -6532,6 +6612,7 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
         1,
         false,
     );
+    ge.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(ge);
 
     let grid = PathGrid::new(8, 8);
@@ -6785,6 +6866,15 @@ fn make_realistic_bridgehead_terrain() -> ResolvedTerrainGrid {
 fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::ResolvedTerrainCell {
     use crate::map::resolved_terrain::ResolvedTerrainCell;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
     ResolvedTerrainCell {
         rx,
         ry,
@@ -6803,7 +6893,7 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         render_offset_x: 0,
         render_offset_y: 0,
         terrain_class: TerrainClass::Clear,
-        speed_costs: SpeedCostProfile::default(),
+        speed_costs,
         is_water: false,
         is_cliff_like: false,
         height_in_pixels: 0,
@@ -6826,7 +6916,7 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         base_land_type: 0,
         base_yr_cell_land_type: 0,
         base_terrain_class: Default::default(),
-        base_speed_costs: Default::default(),
+        base_speed_costs: speed_costs,
         build_blocked: false,
         has_bridge_deck: false,
         bridge_walkable: false,
@@ -7239,6 +7329,7 @@ fn stacking_crusher_world(size: u16) -> (Simulation, RuleSet, PathGrid) {
     sim.terrain_costs = build_canonical_terrain_cost_grids(&terrain);
     let grid = PathGrid::from_resolved_terrain(&terrain);
     sim.zone_grid = Some(ZoneGrid::build(&grid, &sim.terrain_costs, size, size));
+    install_rectangular_test_playfield(&mut sim, size, size);
     sim.resolved_terrain = Some(terrain);
     (sim, rules, grid)
 }
@@ -9050,8 +9141,7 @@ fn diag_short_range_group_reservation_trace() {
 
 #[test]
 fn rule_handles_resolve_at_init_and_stay_none_for_unresolved_fixtures() {
-    let rules =
-        RuleSet::from_ini(&IniFile::from_str("")).expect("empty rules fixture parses");
+    let rules = RuleSet::from_ini(&IniFile::from_str("")).expect("empty rules fixture parses");
 
     // Init-path resolution pins the canonical warhead names.
     let mut init_sim = Simulation::new();
@@ -9094,7 +9184,10 @@ fn current_rust_frame_call_order_is_preserved() {
         &sim,
         "Americans",
         sim.session.tick + 2,
-        Command::Select { entity_ids: vec![1], additive: false },
+        Command::Select {
+            entity_ids: vec![1],
+            additive: false,
+        },
     );
     sim.queue_command(select);
 
@@ -9156,7 +9249,10 @@ fn runtime_frame_call_order_matches_the_app_seam() {
         &sim,
         "Americans",
         sim.session.tick + 2,
-        Command::Select { entity_ids: vec![1], additive: false },
+        Command::Select {
+            entity_ids: vec![1],
+            additive: false,
+        },
     );
     let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(sim);
     runtime.simulation.queue_command(select);
@@ -9169,7 +9265,12 @@ fn runtime_frame_call_order_matches_the_app_seam() {
     let output = runtime.advance_frame(&due, 16, TickLane::Ordinary);
     assert!(output.tick.frame_committed);
     assert!(
-        runtime.simulation.substrate.entities.get(1).is_some_and(|e| e.selected),
+        runtime
+            .simulation
+            .substrate
+            .entities
+            .get(1)
+            .is_some_and(|e| e.selected),
         "a due command executes in the runtime frame that drained it"
     );
     assert!(runtime.simulation.take_due_commands().is_empty());
@@ -9190,27 +9291,49 @@ fn debug_toggle_updates_existing_and_future_entities() {
         .spawn_object("GACNST", "Player", 5, 5, 0, &rules, &height_map)
         .expect("existing spawn");
     assert!(
-        sim.entities().get(existing).expect("existing").debug_log.is_none(),
+        sim.entities()
+            .get(existing)
+            .expect("existing")
+            .debug_log
+            .is_none(),
         "logging starts disabled"
     );
 
     sim.set_debug_event_logging(true);
     assert!(
-        sim.entities().get(existing).expect("existing").debug_log.is_some(),
+        sim.entities()
+            .get(existing)
+            .expect("existing")
+            .debug_log
+            .is_some(),
         "enabling allocates a log on the existing entity"
     );
     let future = sim
         .spawn_object("GACNST", "Player", 9, 9, 0, &rules, &height_map)
         .expect("future spawn");
     assert!(
-        sim.entities().get(future).expect("future").debug_log.is_some(),
+        sim.entities()
+            .get(future)
+            .expect("future")
+            .debug_log
+            .is_some(),
         "an entity spawned after enabling logs from the spawn flag"
     );
 
     sim.set_debug_event_logging(false);
-    assert!(sim.entities().get(existing).expect("existing").debug_log.is_none());
     assert!(
-        sim.entities().get(future).expect("future").debug_log.is_none(),
+        sim.entities()
+            .get(existing)
+            .expect("existing")
+            .debug_log
+            .is_none()
+    );
+    assert!(
+        sim.entities()
+            .get(future)
+            .expect("future")
+            .debug_log
+            .is_none(),
         "disabling clears every entity's log"
     );
 }

@@ -69,10 +69,7 @@ fn factory_constructor_start_cancel_and_promotion_own_scenario_words() {
     assert!(!vehicle_entity.lifecycle.cell_marked);
     assert!(!vehicle_entity.in_logic_vector);
     assert!(!vehicle_entity.in_playfield);
-    assert_eq!(
-        vehicle_entity.techno_ctor_random_word,
-        mtnk_word
-    );
+    assert_eq!(vehicle_entity.techno_ctor_random_word, mtnk_word);
 
     let e1_word = (expected.next_u32() & 0xFFFF) as u16;
     assert!(enqueue_by_type(&mut sim, &rules, "Americans", "E1"));
@@ -88,10 +85,7 @@ fn factory_constructor_start_cancel_and_promotion_own_scenario_words() {
     assert!(!e1_entity.lifecycle.cell_marked);
     assert!(!e1_entity.in_logic_vector);
     assert!(!e1_entity.in_playfield);
-    assert_eq!(
-        e1_entity.techno_ctor_random_word,
-        e1_word
-    );
+    assert_eq!(e1_entity.techno_ctor_random_word, e1_word);
 
     assert!(enqueue_by_type(&mut sim, &rules, "Americans", "E2"));
     assert_eq!(
@@ -913,6 +907,13 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let mut terrain = water_terrain(32, 32);
     let blocked_grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -32,
+        off_100: -1,
+        off_104: 64,
+        off_108: 33,
+    });
     sim.resolved_terrain = Some(terrain.clone());
 
     spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
@@ -951,6 +952,10 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
 
     for cell in &mut terrain.cells {
         cell.is_water = false;
+        cell.land_type = crate::rules::terrain_rules::LandType::Clear.as_index();
+        cell.yr_cell_land_type = crate::rules::terrain_rules::LandType::Clear.as_index();
+        cell.terrain_class = crate::rules::terrain_rules::TerrainClass::Clear;
+        cell.speed_costs.track = Some(100);
         cell.zone_type = crate::map::resolved_terrain::zone_class::GROUND;
     }
     let clear_grid = PathGrid::from_resolved_terrain(&terrain);

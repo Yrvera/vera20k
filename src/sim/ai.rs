@@ -793,7 +793,7 @@ fn make_queue_cmd(owner: InternedId, type_id: InternedId, execute_tick: u64) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
 
     use super::*;
     use crate::map::overlay_types::OverlayTypeRegistry;
@@ -891,7 +891,7 @@ mod tests {
     ) {
         let owner_id = sim.interner.intern(owner);
         let type_id_interned = sim.interner.intern(type_id);
-        let ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+        let mut ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -908,6 +908,7 @@ mod tests {
             5,
             false,
         );
+        ge.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(ge);
         if sim.substrate.next_stable_object_id <= sid {
             sim.substrate.next_stable_object_id = sid + 1;
@@ -959,7 +960,7 @@ mod tests {
             let mut sim = Simulation::new();
             let owner_id = sim.interner.intern("Americans");
             let mcv_type = sim.interner.intern("TSTMCV");
-            let ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+            let mut ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
                 1,
                 5,
                 5,
@@ -976,6 +977,7 @@ mod tests {
                 5,
                 false,
             );
+            ge.lifecycle.in_limbo = false;
             sim.substrate.entities.insert(ge);
             (sim, owner_id)
         };
@@ -1017,6 +1019,7 @@ mod tests {
              [GACNST]\n\
              Strength=1000\n\
              Foundation=2x2\n\
+             Factory=BuildingType\n\
              BaseNormal=yes\n\
              [GASAND]\n\
              Wall=yes\n\
@@ -1027,6 +1030,8 @@ mod tests {
              Wall=yes\n\
              Armor=concrete\n\
              Strength=300\n\
+             Cost=100\n\
+             TechLevel=1\n\
              Foundation=1x1\n\
              Adjacent=0\n\
              GuardRange=5\n",
@@ -1057,10 +1062,6 @@ mod tests {
         let conyard = sim.substrate.entities.get_mut(1).expect("spawned ConYard");
         conyard.foundation = conyard_foundation;
         conyard.base_reservation_spacing = Some(conyard_spacing);
-        assert!(matches!(
-            sim.reveal(1),
-            crate::sim::world::RevealOutcome::Revealed { .. }
-        ));
         let wall_type = sim.interner.intern("GAWALL");
         assert!(production::enqueue_by_type(
             &mut sim,
@@ -1075,11 +1076,16 @@ mod tests {
                 .factory_shadow
                 .test_arm_ready(owner, wall_category)
         );
-        sim.production
-            .ready_by_owner
-            .entry(owner)
-            .or_default()
-            .push_back(wall_type);
+        assert!(!production::tick_production(
+            &mut sim,
+            &rules,
+            &height_map,
+            Some(&path_grid),
+        ));
+        assert_eq!(
+            sim.production.ready_by_owner.get(&owner),
+            Some(&VecDeque::from([wall_type])),
+        );
 
         let mut ai = vec![AiPlayerState::new(owner)];
         let commands = tick_ai(

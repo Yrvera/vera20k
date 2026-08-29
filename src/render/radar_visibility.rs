@@ -132,9 +132,7 @@ fn radar_get_height_leptons(
         });
     let mut height = super::locomotor_visual::world_z_leptons(entity).wrapping_sub(ground);
     if entity.on_bridge {
-        height = height.wrapping_sub(
-            crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS,
-        );
+        height = height.wrapping_sub(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS);
     }
     height
 }
@@ -147,13 +145,10 @@ fn radar_building_both_corners_shrouded(
 ) -> bool {
     let origin_shrouded =
         !fog.is_cell_revealed(local_owner, entity.position.rx, entity.position.ry);
-    let far_x = i32::from(entity.position.rx)
-        .wrapping_add((foundation.0 as i32).wrapping_sub(1));
-    let far_y = i32::from(entity.position.ry)
-        .wrapping_add((foundation.1 as i32).wrapping_sub(1));
-    let far_shrouded = far_x < 0
-        || far_y < 0
-        || !fog.is_cell_revealed(local_owner, far_x as u16, far_y as u16);
+    let far_x = i32::from(entity.position.rx).wrapping_add((foundation.0 as i32).wrapping_sub(1));
+    let far_y = i32::from(entity.position.ry).wrapping_add((foundation.1 as i32).wrapping_sub(1));
+    let far_shrouded =
+        far_x < 0 || far_y < 0 || !fog.is_cell_revealed(local_owner, far_x as u16, far_y as u16);
     origin_shrouded && far_shrouded
 }
 
@@ -217,14 +212,12 @@ pub(super) fn radar_mobile_registration_visibility(
     if !facts.has_sensor {
         return RadarVisibilityResult::HIDDEN;
     }
-    let out_code = if !facts.allied_with_current_player
-        && !facts.veteran_radar_invisible
-        && !facts.shrouded
-    {
-        if facts.height_leptons < -20 { 2 } else { 1 }
-    } else {
-        0
-    };
+    let out_code =
+        if !facts.allied_with_current_player && !facts.veteran_radar_invisible && !facts.shrouded {
+            if facts.height_leptons < -20 { 2 } else { 1 }
+        } else {
+            0
+        };
     RadarVisibilityResult {
         visible: true,
         out_code,
@@ -378,25 +371,19 @@ pub(super) fn build_radar_object_update(
         || local_owner.is_none()
         || local_owner.is_some_and(|local_owner| {
             entity.owner == local_owner
-                || interner.is_some_and(|interner| {
-                    fog.is_friendly_id(local_owner, entity.owner, interner)
-                })
+                || interner
+                    .is_some_and(|interner| fog.is_friendly_id(local_owner, entity.owner, interner))
         });
     let effective_type_invisible =
         object.is_some_and(|object| object.invisible || object.invisible_in_game);
-    let fresh_in_playfield = radar_fresh_mode_one_membership(
-        entity,
-        playfield_bounds,
-        resolved_terrain,
-    );
+    let fresh_in_playfield =
+        radar_fresh_mode_one_membership(entity, playfield_bounds, resolved_terrain);
     let cloak_state = entity.cloak.as_ref().map_or(0, |cloak| cloak.state);
     let veteran_radar_invisible = object.is_some_and(|object| {
         match crate::sim::combat::veterancy::rank_of(entity.veterancy_raw) {
             VeterancyRank::Rookie => false,
             VeterancyRank::Veteran => object.veteran_radar_invisible,
-            VeterancyRank::Elite => {
-                object.veteran_radar_invisible || object.elite_radar_invisible
-            }
+            VeterancyRank::Elite => object.veteran_radar_invisible || object.elite_radar_invisible,
         }
     });
     let visibility = if foundation.is_some() {
@@ -458,11 +445,11 @@ mod tests {
     use super::*;
     use crate::map::bridge_facts::BridgeCellFacts;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::map::tube_facts::TubeId;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::components::DriveCoord;
     use crate::sim::docking::aircraft_dock::AircraftAmmo;
     use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
-    use crate::map::tube_facts::TubeId;
 
     fn mobile() -> RadarMobileVisibilityFacts {
         RadarMobileVisibilityFacts {
@@ -498,13 +485,8 @@ mod tests {
 
     #[test]
     fn enemy_sensed_prefilter_maps_native_foot_signed_684() {
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "MTNK",
-            "Soviet",
-            4,
-            5,
-        );
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "MTNK", "Soviet", 4, 5);
         assert!(enemy_sensed_prefilter(&entity));
         entity.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
             tube_id: TubeId(2),
@@ -518,22 +500,23 @@ mod tests {
         entity.aircraft_ammo = Some(AircraftAmmo::new(3));
         assert!(!enemy_sensed_prefilter(&entity));
         entity.aircraft_ammo = None;
-        assert!(enemy_sensed_prefilter(&entity), "Ammo=-1 keeps the signed byte negative");
+        assert!(
+            enemy_sensed_prefilter(&entity),
+            "Ammo=-1 keeps the signed byte negative"
+        );
 
         entity.category = EntityCategory::Structure;
         entity.aircraft_ammo = Some(AircraftAmmo::new(3));
-        assert!(enemy_sensed_prefilter(&entity), "Building lacks AbstractFlags IsFoot");
+        assert!(
+            enemy_sensed_prefilter(&entity),
+            "Building lacks AbstractFlags IsFoot"
+        );
     }
 
     #[test]
     fn enemy_sensed_source_uses_raw_building_anchor_not_visibility_center() {
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "BLDG",
-            "Enemy",
-            4,
-            5,
-        );
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "BLDG", "Enemy", 4, 5);
         entity.category = EntityCategory::Structure;
         entity.foundation = "3x2".to_string();
         let raw = radar_raw_coord_leptons(&entity);
@@ -548,18 +531,17 @@ mod tests {
 
     #[test]
     fn radar_object_get_coords_centralizes_mobile_and_building_foundation_centres() {
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "BLDG",
-            "Enemy",
-            10,
-            20,
-        );
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "BLDG", "Enemy", 10, 20);
         entity.position.sub_x = crate::util::fixed_math::SimFixed::from_num(200);
         entity.position.sub_y = crate::util::fixed_math::SimFixed::from_num(33);
         let raw = (10 * 256 + 200, 20 * 256 + 33);
 
-        assert_eq!(radar_object_get_coords_leptons(&entity), raw, "mobile GetCoords is raw");
+        assert_eq!(
+            radar_object_get_coords_leptons(&entity),
+            raw,
+            "mobile GetCoords is raw"
+        );
         entity.category = EntityCategory::Structure;
         for (foundation, expected) in [
             ("1x1", raw),
@@ -579,17 +561,13 @@ mod tests {
 
     #[test]
     fn radar_object_update_uses_native_world_projection_shared_with_cell_events() {
-        let surface = crate::render::native_radar_surface::NativeRadarSurfaceGeometry::from_raw_rect(
-            0, 0, 300, 180,
-        )
-        .expect("wide generated surface");
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "MTNK",
-            "Enemy",
-            120,
-            30,
-        );
+        let surface =
+            crate::render::native_radar_surface::NativeRadarSurfaceGeometry::from_raw_rect(
+                0, 0, 300, 180,
+            )
+            .expect("wide generated surface");
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "MTNK", "Enemy", 120, 30);
         entity.position.sub_x = crate::util::fixed_math::SimFixed::from_num(0);
         entity.position.sub_y = crate::util::fixed_math::SimFixed::from_num(0);
         let mut projection = visibility_projection();
@@ -618,6 +596,15 @@ mod tests {
     }
 
     fn flat_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        let speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
         ResolvedTerrainCell {
             rx,
             ry,
@@ -637,7 +624,7 @@ mod tests {
             render_offset_x: 0,
             render_offset_y: 0,
             terrain_class: TerrainClass::Clear,
-            speed_costs: SpeedCostProfile::default(),
+            speed_costs,
             is_water: false,
             is_cliff_like: false,
             is_rough: false,
@@ -659,7 +646,7 @@ mod tests {
             base_land_type: 0,
             base_yr_cell_land_type: 0,
             base_terrain_class: TerrainClass::Clear,
-            base_speed_costs: SpeedCostProfile::default(),
+            base_speed_costs: speed_costs,
             build_blocked: false,
             has_bridge_deck: false,
             bridge_walkable: false,
@@ -882,22 +869,26 @@ mod tests {
         };
         assert!(radar_building_registration_visibility(human, true).visible);
         assert!(!radar_building_registration_visibility(human, false).visible);
-        assert!(!radar_building_registration_visibility(
-            RadarBuildingVisibilityFacts {
-                type_invisible: true,
-                ..human
-            },
-            true,
-        )
-        .visible);
-        assert!(!radar_building_registration_visibility(
-            RadarBuildingVisibilityFacts {
-                in_limbo: true,
-                ..human
-            },
-            true,
-        )
-        .visible);
+        assert!(
+            !radar_building_registration_visibility(
+                RadarBuildingVisibilityFacts {
+                    type_invisible: true,
+                    ..human
+                },
+                true,
+            )
+            .visible
+        );
+        assert!(
+            !radar_building_registration_visibility(
+                RadarBuildingVisibilityFacts {
+                    in_limbo: true,
+                    ..human
+                },
+                true,
+            )
+            .visible
+        );
     }
 
     #[test]
@@ -910,9 +901,8 @@ mod tests {
             off_108: 8,
         };
         let terrain = flat_terrain(32);
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1, "DOT", "Enemy", 12, 10,
-        );
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "DOT", "Enemy", 12, 10);
         entity.in_playfield = false;
         assert!(radar_fresh_mode_one_membership(
             &entity,
@@ -937,9 +927,8 @@ mod tests {
     #[test]
     fn radar_visibility_building_shroud_samples_origin_and_far_corner() {
         let local = crate::sim::intern::test_intern("Local");
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1, "BLDG", "Enemy", 4, 4,
-        );
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "BLDG", "Enemy", 4, 4);
         entity.foundation = "3x2".to_string();
         let mut fog = FogState::default();
         fog.mark_visible_for_owner(local, 6, 5);
@@ -975,9 +964,7 @@ mod tests {
         );
         let mut fog = FogState::default();
         fog.mark_visible_for_owner(local, 5, 5);
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1, "DOT", "Enemy", 5, 5,
-        );
+        let mut entity = crate::sim::game_entity::GameEntity::test_default(1, "DOT", "Enemy", 5, 5);
         entity.lifecycle.in_limbo = false;
         let update = build_radar_object_update(
             &entity,
@@ -994,5 +981,4 @@ mod tests {
         );
         assert!(!update.visibility.evaluate(false).visible);
     }
-
 }

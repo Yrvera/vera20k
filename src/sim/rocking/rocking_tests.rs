@@ -5,9 +5,8 @@
 use crate::sim::components::RockingState;
 use crate::sim::rocking::impulse::apply_rocker_impulse;
 use crate::sim::rocking::rocking_system::{
-    IMPULSE_VEL_CAP, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10,
-    SLOPE_TRANSITION_TICKS, TILT_DEADBAND, advance_axis, advance_ship_rocking,
-    update_slope_transition,
+    IMPULSE_VEL_CAP, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10, SLOPE_TRANSITION_TICKS,
+    TILT_DEADBAND, advance_axis, advance_ship_rocking, update_slope_transition,
 };
 use crate::util::fixed_math::SimFixed;
 
@@ -441,6 +440,15 @@ const TICK_MS: u32 = 33;
 
 fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
     let mut cells = Vec::with_capacity((width as usize) * (height as usize));
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
     for y in 0..height {
         for x in 0..width {
             cells.push(ResolvedTerrainCell {
@@ -461,7 +469,7 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 render_offset_x: 0,
                 render_offset_y: 0,
                 terrain_class: TerrainClass::Clear,
-                speed_costs: SpeedCostProfile::default(),
+                speed_costs,
                 is_water: false,
                 is_cliff_like: false,
                 height_in_pixels: 0,
@@ -484,7 +492,7 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 base_land_type: 0,
                 base_yr_cell_land_type: 0,
                 base_terrain_class: Default::default(),
-                base_speed_costs: Default::default(),
+                base_speed_costs: speed_costs,
                 build_blocked: false,
                 has_bridge_deck: false,
                 bridge_walkable: false,
@@ -520,6 +528,13 @@ fn minimal_rules() -> RuleSet {
 fn make_test_simulation_with_one_vehicle() -> (Simulation, RuleSet, PathGrid) {
     let rules = minimal_rules();
     let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -10,
+        off_100: -1,
+        off_104: 20,
+        off_108: 11,
+    });
     sim.resolved_terrain = Some(flat_terrain(GRID_W, GRID_H));
     let path_grid = PathGrid::new(GRID_W, GRID_H);
 

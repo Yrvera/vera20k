@@ -10,9 +10,9 @@ use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
-use crate::sim::combat::AttackTarget;
 use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind};
 use crate::sim::cell_rect::PlayfieldBounds;
+use crate::sim::combat::AttackTarget;
 use crate::sim::components::{NavTargetRef, OrderIntent};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -45,6 +45,15 @@ fn grid_from_str(s: &str) -> PathGrid {
 }
 
 fn gsi_04_12_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
     let cells = (0..height)
         .flat_map(|ry| {
             (0..width).map(move |rx| ResolvedTerrainCell {
@@ -65,7 +74,7 @@ fn gsi_04_12_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 render_offset_x: 0,
                 render_offset_y: 0,
                 terrain_class: TerrainClass::Clear,
-                speed_costs: SpeedCostProfile::default(),
+                speed_costs,
                 is_water: false,
                 is_cliff_like: false,
                 is_rough: false,
@@ -88,7 +97,7 @@ fn gsi_04_12_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 base_land_type: LandType::Clear.as_index(),
                 base_yr_cell_land_type: LandType::Clear.as_index(),
                 base_terrain_class: TerrainClass::Clear,
-                base_speed_costs: SpeedCostProfile::default(),
+                base_speed_costs: speed_costs,
                 build_blocked: false,
                 has_bridge_deck: false,
                 bridge_walkable: false,
@@ -129,6 +138,16 @@ fn hierarchy_endpoint_bounds() -> PlayfieldBounds {
         off_100: 1,
         off_104: 10,
         off_108: 6,
+    }
+}
+
+fn rectangular_spawn_bounds(span: i32) -> PlayfieldBounds {
+    PlayfieldBounds {
+        base: 0,
+        off_fc: -span,
+        off_100: -span,
+        off_104: span * 2,
+        off_108: span * 2,
     }
 }
 
@@ -229,7 +248,10 @@ fn playfield_hierarchy_mode_one_level_and_slope_boundaries() {
         (8, 6),
         false,
     );
-    assert!(!raised_inside, "signed level must move the strict mode-one edge");
+    assert!(
+        !raised_inside,
+        "signed level must move the strict mode-one edge"
+    );
 
     let cell = terrain.cell_mut(7, 6).unwrap();
     cell.level = 0;
@@ -243,7 +265,10 @@ fn playfield_hierarchy_mode_one_level_and_slope_boundaries() {
         (8, 6),
         false,
     );
-    assert!(!sloped_inside, "nonzero slope below the native threshold adds one level");
+    assert!(
+        !sloped_inside,
+        "nonzero slope below the native threshold adds one level"
+    );
 
     terrain.cell_mut(10, 6).unwrap().slope_type = 1;
     let (_, _, threshold_equal_inside) = resolve_hierarchy_endpoint_contract(
@@ -291,7 +316,11 @@ fn playfield_hierarchy_bridge_projection_tracks_intact_and_destroyed_records() {
         (9, 6),
         false,
     );
-    assert_eq!(intact_start, (8, 6), "native distance tie selects endpoint B");
+    assert_eq!(
+        intact_start,
+        (8, 6),
+        "native distance tie selects endpoint B"
+    );
     assert!(intact_inside);
 
     let destroyed_record = BridgeEndpointRecord {
@@ -339,9 +368,11 @@ fn playfield_hierarchy_initial_order_outside_endpoint_uses_flat_astar() {
     let mut entities = EntityStore::new();
     let mut mover = gsi_04_12_cell_listed_entity(1, "HTNK", "Americans", 6, 6);
     mover.category = crate::map::entities::EntityCategory::Unit;
-    mover.locomotor = Some(crate::sim::movement::locomotor::LocomotorState::for_test_kind(
-        crate::rules::locomotor_type::LocomotorKind::Drive,
-    ));
+    mover.locomotor = Some(
+        crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+            crate::rules::locomotor_type::LocomotorKind::Drive,
+        ),
+    );
     mover.drive_locomotion = Some(Default::default());
     mover.in_playfield = true;
     entities.insert(mover);
@@ -894,6 +925,7 @@ fn gsi_04_12_completed_ground_unit_rally_threads_exact_blocker_counts() {
     let mut height_map = BTreeMap::new();
     height_map.insert((1, 0), 4);
     let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(rectangular_spawn_bounds(6));
     sim.resolved_terrain = Some(terrain);
     sim.zone_grid = Some(zone_grid);
     sim.spawn_object("GAWEAP", "Americans", 0, 0, 0, &rules, &height_map)
@@ -1047,6 +1079,7 @@ fn gsi_04_12_miner_dock_approach_threads_exact_blocker_counts() {
     height_map.insert((1, 0), 4);
     height_map.insert((5, 0), 4);
     let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(rectangular_spawn_bounds(6));
     sim.resolved_terrain = Some(terrain);
     sim.zone_grid = Some(zone_grid);
     let refinery_id = sim
@@ -1173,6 +1206,7 @@ fn gsi_04_12_interaction_order_entry_threads_exact_blocker_counts() {
     height_map.insert((1, 0), 4);
     height_map.insert((5, 0), 4);
     let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(rectangular_spawn_bounds(6));
     sim.resolved_terrain = Some(terrain);
     sim.zone_grid = Some(zone_grid);
     let engineer_id = sim
