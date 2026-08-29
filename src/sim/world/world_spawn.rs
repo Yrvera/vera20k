@@ -2258,6 +2258,69 @@ mod techno_constructor_tests {
         sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(10, 10, cells));
     }
 
+    fn assert_generated_projection_rejects_before_mutation(
+        seed: u64,
+        entities: &[MapEntity],
+        table: &GeneratedTechnoInitTable,
+        expected_error: GeneratedTechnoInitError,
+    ) {
+        let rules = constructor_rules();
+        let mut sim = Simulation::with_seed(seed);
+        install_american_house(&mut sim);
+        let scenario_before = sim.scenario_rng.logical_state();
+        let stable_id_before = sim.substrate.next_stable_object_id;
+        let enter_order_before = sim.substrate.next_occupancy_enter_order.current();
+        let occupancy_generation_before = sim.substrate.occupancy.generation();
+        let raw_occupation_entries_before = sim.substrate.raw_cell_occupation.entry_count();
+
+        assert_eq!(
+            sim.spawn_generated_from_map_with_resolved(
+                entities,
+                &rules,
+                &BTreeMap::new(),
+                None,
+                table,
+            ),
+            Err(expected_error)
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), scenario_before);
+        assert_eq!(sim.substrate.next_stable_object_id, stable_id_before);
+        assert_eq!(
+            sim.substrate.next_occupancy_enter_order.current(),
+            enter_order_before
+        );
+        assert_eq!(
+            sim.substrate.occupancy.generation(),
+            occupancy_generation_before
+        );
+        assert_eq!(sim.substrate.occupancy.occupied_cell_count(), 0);
+        assert_eq!(sim.substrate.logic.len(), 0);
+        assert!(sim.substrate.entities.is_empty());
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.entry_count(),
+            raw_occupation_entries_before
+        );
+        for entity in entities {
+            assert!(sim.substrate.occupancy.is_empty_on_layer(
+                entity.cell_x,
+                entity.cell_y,
+                MovementLayer::Ground,
+            ));
+            assert_eq!(
+                sim.substrate
+                    .raw_cell_occupation
+                    .ground_bits(entity.cell_x, entity.cell_y),
+                0
+            );
+            assert_eq!(
+                sim.substrate
+                    .raw_cell_occupation
+                    .deck_bits(entity.cell_x, entity.cell_y),
+                0
+            );
+        }
+    }
+
     fn constructor_overlay_registry() -> crate::map::overlay_types::OverlayTypeRegistry {
         crate::map::overlay_types::OverlayTypeRegistry::from_ini(
             &IniFile::from_str(
@@ -2832,7 +2895,7 @@ mod techno_constructor_tests {
 
         assert_eq!(
             sim.spawn_generated_from_map_with_resolved(
-                &[entity.clone()],
+                &[entity],
                 &rules,
                 &BTreeMap::new(),
                 None,
@@ -2868,49 +2931,95 @@ mod techno_constructor_tests {
             ]),
             Err(GeneratedTechnoInitError::DuplicateEntityIndex(0))
         ));
+    }
 
-        let missing = GeneratedTechnoInitTable::default();
-        let mut rejected = Simulation::with_seed(0xC701_0004);
-        install_american_house(&mut rejected);
-        let rejected_before = rejected.scenario_rng.logical_state();
-        assert!(matches!(
-            rejected.spawn_generated_from_map_with_resolved(
-                &[entity],
-                &rules,
-                &BTreeMap::new(),
-                None,
-                &missing,
-            ),
-            Err(GeneratedTechnoInitError::MissingEntityIndex(0))
-        ));
-        assert_eq!(rejected.scenario_rng.logical_state(), rejected_before);
-        assert!(rejected.substrate.entities.is_empty());
-
-        let mismatched = GeneratedTechnoInitTable::try_new([GeneratedTechnoInit {
+    #[test]
+    fn generated_projection_validates_the_whole_table_before_any_mutation() {
+        // Every missing/mismatched slot is deliberately after a valid index 0.
+        // An inline validator would therefore construct or mark the first map
+        // entity before discovering the fault; the shared postconditions below
+        // prove the complete table remains a preflight transaction.
+        let entities = [
+            map_entity("MTNK", EntityCategory::Unit, (7, 9)),
+            map_entity("MTNK", EntityCategory::Unit, (8, 9)),
+        ];
+        let valid_first = || GeneratedTechnoInit {
             entity_index: 0,
-            techno_type: "HTNK".to_string(),
+            techno_type: "MTNK".to_string(),
             cell: (7, 9),
-            techno_ctor_random_word: 0x2468,
-        }])
+            techno_ctor_random_word: 0x1111,
+        };
+
+        let missing = GeneratedTechnoInitTable::try_new([valid_first()]).unwrap();
+        assert_generated_projection_rejects_before_mutation(
+            0xC701_0004,
+            &entities,
+            &missing,
+            GeneratedTechnoInitError::MissingEntityIndex(1),
+        );
+
+        let unexpected = GeneratedTechnoInitTable::try_new([
+            valid_first(),
+            GeneratedTechnoInit {
+                entity_index: 2,
+                techno_type: "MTNK".to_string(),
+                cell: (9, 9),
+                techno_ctor_random_word: 0x2222,
+            },
+        ])
         .unwrap();
-        let mut rejected = Simulation::with_seed(0xC701_0007);
-        install_american_house(&mut rejected);
-        let rejected_before = rejected.scenario_rng.logical_state();
-        assert!(matches!(
-            rejected.spawn_generated_from_map_with_resolved(
-                &[map_entity("MTNK", EntityCategory::Unit, (7, 9))],
-                &rules,
-                &BTreeMap::new(),
-                None,
-                &mismatched,
-            ),
-            Err(GeneratedTechnoInitError::IdentityMismatch {
-                entity_index: 0,
-                ..
-            })
-        ));
-        assert_eq!(rejected.scenario_rng.logical_state(), rejected_before);
-        assert!(rejected.substrate.entities.is_empty());
+        assert_generated_projection_rejects_before_mutation(
+            0xC701_0005,
+            &entities,
+            &unexpected,
+            GeneratedTechnoInitError::UnexpectedEntityIndex(2),
+        );
+
+        let type_mismatch = GeneratedTechnoInitTable::try_new([
+            valid_first(),
+            GeneratedTechnoInit {
+                entity_index: 1,
+                techno_type: "ORCA".to_string(),
+                cell: (8, 9),
+                techno_ctor_random_word: 0x3333,
+            },
+        ])
+        .unwrap();
+        assert_generated_projection_rejects_before_mutation(
+            0xC701_0006,
+            &entities,
+            &type_mismatch,
+            GeneratedTechnoInitError::IdentityMismatch {
+                entity_index: 1,
+                expected_type: "ORCA".to_string(),
+                found_type: "MTNK".to_string(),
+                expected_cell: (8, 9),
+                found_cell: (8, 9),
+            },
+        );
+
+        let cell_mismatch = GeneratedTechnoInitTable::try_new([
+            valid_first(),
+            GeneratedTechnoInit {
+                entity_index: 1,
+                techno_type: "MTNK".to_string(),
+                cell: (9, 9),
+                techno_ctor_random_word: 0x4444,
+            },
+        ])
+        .unwrap();
+        assert_generated_projection_rejects_before_mutation(
+            0xC701_0007,
+            &entities,
+            &cell_mismatch,
+            GeneratedTechnoInitError::IdentityMismatch {
+                entity_index: 1,
+                expected_type: "MTNK".to_string(),
+                found_type: "MTNK".to_string(),
+                expected_cell: (9, 9),
+                found_cell: (8, 9),
+            },
+        );
     }
 
     #[test]
