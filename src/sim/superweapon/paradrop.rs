@@ -183,6 +183,11 @@ fn spawn_pdplane(
             };
         }
     }
+    // gamemd-derived: ObjectClass::AI @ 0x005F3E70 compares the live
+    // In_Which_Layer answer and resubmits at 0x005F400E when it changed. This
+    // producer skips the ordinary ascent tick, so perform that same transition
+    // immediately after installing cruise altitude.
+    sim.sync_display_layer_for_object(pdplane_id);
 
     // Load N limbo-created infantry into cargo as Inside passengers.
     let inf_size = rules.object(inf_type).map(|o| o.size).unwrap_or(1);

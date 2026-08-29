@@ -420,7 +420,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true,
+            true, true, true, true, true,
         )
     }
 
@@ -432,7 +432,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
         )
     }
 
@@ -444,7 +444,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
         )
     }
 
@@ -453,7 +453,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false,
+            false, false, false, false, false,
         )
     }
 
@@ -462,7 +462,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v108(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false,
+            true, false, false, false, false,
         )
     }
 
@@ -472,7 +472,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false,
+            true, true, false, false, false,
         )
     }
 
@@ -482,7 +482,18 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false,
+            true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the v121 Anim constructor layer and saved
+    /// DisplayClass flat-layer vectors. It reconstructs the committed v120 hash
+    /// layout while retaining every earlier authority.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_flat_display_order_v121(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, false,
         )
     }
 
@@ -506,6 +517,7 @@ impl Simulation {
         include_house_deploy_latches_v108: bool,
         include_house_update_activation_v109: bool,
         include_spark_dummy_level_slope_v112: bool,
+        include_flat_display_order_v121: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -532,6 +544,12 @@ impl Simulation {
         order.len().hash(&mut hasher);
         for id in order {
             id.hash(&mut hasher);
+        }
+        if include_flat_display_order_v121 {
+            // DisplayClass save state is independent from LogicClass. Staggered
+            // layer transitions can therefore produce opposite flat order for
+            // simulations with identical construction order.
+            self.substrate.fold_flat_display_order(&mut hasher);
         }
 
         if include_lifecycle_v28 {
@@ -629,7 +647,7 @@ impl Simulation {
             include_naval_build_const_v105,
             include_base_plan_v106,
         );
-        self.hash_anims(&mut hasher);
+        self.hash_anims(&mut hasher, include_flat_display_order_v121);
         self.hash_particle_systems(&mut hasher);
         self.session.fold_identity(&mut hasher);
 
@@ -1822,11 +1840,35 @@ impl Simulation {
 
     /// Scheduler-owned ordinary animations in stable-ID order. Render caches and
     /// transient sound events are deliberately excluded.
-    fn hash_anims(&self, hasher: &mut impl Hasher) {
+    fn hash_anims(&self, hasher: &mut impl Hasher, include_display_layer_v121: bool) {
         self.substrate.anims.iter().count().hash(hasher);
         for (id, anim) in self.substrate.anims.iter() {
             id.hash(hasher);
-            anim.hash(hasher);
+            if include_display_layer_v121 {
+                anim.hash(hasher);
+                continue;
+            }
+
+            // Exact pre-v121 derive(Hash) projection. `native_display_layer`
+            // was inserted after type_id in v121; omitting it here preserves
+            // every committed historical-schema probe byte-for-byte.
+            anim.stable_id.hash(hasher);
+            anim.native_unique_id.hash(hasher);
+            anim.type_id.hash(hasher);
+            anim.world_coord.hash(hasher);
+            anim.draw_flags.hash(hasher);
+            anim.z_adjust.hash(hasher);
+            anim.effective_end.hash(hasher);
+            anim.effective_loop_end.hash(hasher);
+            anim.runtime.hash(hasher);
+            anim.draw_runtime.hash(hasher);
+            anim.use_cell_drawer.hash(hasher);
+            anim.terrain_attached.hash(hasher);
+            anim.building_explosion_start_smudge.hash(hasher);
+            anim.in_logic_vector.hash(hasher);
+            anim.owner_entity.hash(hasher);
+            anim.start_sound_active.hash(hasher);
+            anim.stop_sound_id.hash(hasher);
         }
     }
 }

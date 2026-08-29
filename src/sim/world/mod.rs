@@ -12,6 +12,7 @@
 
 pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
+mod display_layers;
 pub mod edge_cell;
 mod lifecycle;
 mod logic_vector;
@@ -36,6 +37,9 @@ mod team_script_vm_tests;
 pub(crate) use lifecycle::{
     ConcealOutcome, LifecycleOutput, NULL_TARGET_CELL_SENTINEL, PlacementEvidence, RevealOutcome,
     RevealPosition, RevealRequest, UninitContext,
+};
+pub(crate) use display_layers::{
+    NATIVE_AIR_LAYER, NATIVE_GROUND_LAYER, NATIVE_TOP_LAYER, entity_display_layer,
 };
 #[cfg(test)]
 pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
@@ -3537,6 +3541,13 @@ impl Simulation {
     /// but must not reconstruct equal-key ordering from EntityStore keys.
     pub(crate) fn tactical_registration_order(&self) -> &[u64] {
         self.substrate.logic.as_slice()
+    }
+
+    /// Native unsorted DisplayClass submission order for Air (3) or Top (4).
+    /// This is independent of LogicClass construction/reveal order and moves
+    /// an object to the destination tail whenever its layer changes.
+    pub(crate) fn tactical_display_layer_order(&self, layer: u8) -> &[u64] {
+        self.substrate.flat_display_order.layer_order(layer)
     }
 
     /// Current native `TechnoClass` construction registry length.

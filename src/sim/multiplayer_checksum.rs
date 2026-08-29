@@ -239,8 +239,9 @@ impl Simulation {
     /// Compute one active-retail multiplayer checksum.
     ///
     /// `display_layers` must be the five native display vectors in their stored
-    /// order. Rust does not currently own those vectors in `sim`, so the
-    /// presentation owner supplies the exact point-in-time views.
+    /// order. Simulation now owns exact Air/Top identity order, but the checksum
+    /// caller still supplies the five point-in-time `ChecksumObject` projections
+    /// because Ground/object-coordinate folding is wider than that registry.
     /// This method must be called only by the admitted multiplayer-frame path:
     /// it consumes exactly two Scenario RNG samples and therefore must never run
     /// for an offline frame or a diagnostic-only `state_hash()` request.
@@ -377,6 +378,7 @@ mod tests {
             stable_id,
             native_unique_id,
             type_id: InternedId::from_index(0),
+            native_display_layer: 3,
             world_coord: AnimWorldCoord { x, y, z: 0 },
             draw_flags: 0,
             z_adjust: 0,

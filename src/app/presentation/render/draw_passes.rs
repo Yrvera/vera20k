@@ -346,8 +346,8 @@ pub(super) fn dispatch_draw_passes(
     // --- Step 7.7: The band above Ground (gamemd layers 3 and 4) ---
     // The native object loop walks its display layers in numeric order and only
     // layer 2 is sorted. The tagged schedule consumes layer 3 completely before
-    // layer 4 and uses the live Submit_Object registration inside each layer,
-    // interrupting atlas families without changing order.
+    // layer 4 and uses the saved persistent Submit_Object order inside each
+    // layer, interrupting atlas families without changing order.
     //
     // The SHP half goes through passthrough, which does no depth test at all —
     // the same thing the native sprite blitters do for these layers. The voxel

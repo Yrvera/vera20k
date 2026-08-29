@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 
 use super::LogicVector;
+use super::display_layers::FlatDisplayOrder;
 use crate::sim::anim_class::AnimStore;
 use crate::sim::cell_rect::CellReservationGrid;
 use crate::sim::entity_store::EntityStore;
@@ -92,6 +93,10 @@ pub(crate) struct ObjectSubstrate {
     /// Tail-append on reveal, compacting-remove on conceal. Serialized verbatim.
     #[serde(default)]
     pub(crate) logic: LogicVector,
+    /// Saved native append history for unsorted DisplayClass layers 3/4 plus
+    /// current layer membership for transition detection.
+    #[serde(default)]
+    pub(crate) flat_display_order: FlatDisplayOrder,
     /// CellClass-style occupancy grid (per-cell object lists). A rebuilt cache:
     /// `#[serde(skip)]`, reconstructed from the entity store on load, so it never
     /// appears in the serialized snapshot and does not enter the state hash directly.
@@ -153,6 +158,7 @@ impl ObjectSubstrate {
             next_stable_object_id: 1,
             next_occupancy_enter_order: EnterOrderCounter::new(),
             logic: LogicVector::new(),
+            flat_display_order: FlatDisplayOrder::default(),
             occupancy: OccupancyGrid::new(),
             cell_occupation: CellOccupationGrid::new(),
             raw_cell_occupation: RawCellOccupationGrid::new(),
@@ -212,6 +218,7 @@ impl ObjectSubstrate {
                 return Err(SnapshotRestoreError::MissingLogicIdentity { object_id });
             }
         }
+        self.flat_display_order.validate(identities)?;
         Ok(seen_logic)
     }
 
@@ -244,6 +251,10 @@ impl ObjectSubstrate {
             ground_owner.hash(hasher);
             deck_owner.hash(hasher);
         }
+    }
+
+    pub(crate) fn fold_flat_display_order(&self, hasher: &mut impl std::hash::Hasher) {
+        self.flat_display_order.hash_state(hasher);
     }
 
     pub(crate) fn fold_hidden_occupation(&self, hasher: &mut impl std::hash::Hasher) {

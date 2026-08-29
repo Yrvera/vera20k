@@ -23,6 +23,7 @@ use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 
 use super::Simulation;
+use super::display_layers::entity_display_layer;
 use super::substrate::ObjectKind;
 
 /// Borrowed map authority carried through one synchronous ObjectClass UnInit
@@ -746,6 +747,7 @@ impl Simulation {
         self.mark_building_base_reservation(stable_id);
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
+        self.submit_display_object(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealDisplayBoundary);
 
@@ -1450,6 +1452,7 @@ impl Simulation {
             self.add_entity_occupancy(stable_id);
         }
         self.sync_air_spatial_membership(stable_id);
+        self.sync_display_layer_for_object(stable_id);
         stats
     }
 
@@ -1466,6 +1469,7 @@ impl Simulation {
         );
         self.sync_fly_object_height(stable_id);
         self.sync_air_spatial_membership(stable_id);
+        self.sync_display_layer_for_object(stable_id);
         stats
     }
 
@@ -1490,6 +1494,46 @@ impl Simulation {
         } else {
             None
         }
+    }
+
+    /// Current native display-layer answer for the object families whose
+    /// VXL/SHP bodies share the flat renderer schedule. Anim constructor data
+    /// is bound once; owner attachment overrides it to Ground.
+    fn display_layer_for_object(&self, stable_id: u64) -> Option<u8> {
+        if let Some(entity) = self.substrate.entities.get(stable_id) {
+            return Some(entity_display_layer(entity));
+        }
+        let anim = self.substrate.anims.get(stable_id)?;
+        if anim.owner_entity.is_some() {
+            return Some(super::display_layers::NATIVE_GROUND_LAYER);
+        }
+        u8::try_from(anim.native_display_layer)
+            .ok()
+            .filter(|layer| *layer <= super::display_layers::NATIVE_TOP_LAYER)
+    }
+
+    fn submit_display_object(&mut self, stable_id: u64) -> bool {
+        let Some(layer) = self.display_layer_for_object(stable_id) else {
+            return false;
+        };
+        self.substrate.flat_display_order.submit(stable_id, layer);
+        true
+    }
+
+    fn remove_display_object(&mut self, stable_id: u64) -> bool {
+        self.substrate.flat_display_order.remove(stable_id)
+    }
+
+    /// Production ObjectClass-AI re-layer seam. A stable answer is a no-op;
+    /// a changed answer removes the prior vector slot and appends the object to
+    /// its new unsorted layer tail.
+    pub(crate) fn sync_display_layer_for_object(&mut self, stable_id: u64) -> bool {
+        let Some(layer) = self.display_layer_for_object(stable_id) else {
+            return false;
+        };
+        self.substrate
+            .flat_display_order
+            .transition(stable_id, layer)
     }
 
     /// Read the per-object `in_logic_vector` membership flag for a classified
@@ -1628,10 +1672,12 @@ impl Simulation {
         {
             return false;
         }
+        self.submit_display_object(stable_id);
         self.register_logic_object(stable_id)
     }
 
     pub(crate) fn conceal_anim(&mut self, stable_id: u64) -> bool {
+        self.remove_display_object(stable_id);
         self.unregister_logic_object(stable_id)
     }
 
@@ -1784,6 +1830,7 @@ impl Simulation {
 
         self.lifecycle_outputs
             .push(LifecycleOutput::DisplayRemove { stable_id });
+        self.remove_display_object(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealDisplayBoundary);
         self.lifecycle_outputs

@@ -352,7 +352,7 @@ use crate::sim::world::Simulation;
 // Bumped 119 -> 120: scheduler AnimClass records persist the explicit Building
 // `Explosion=` Start-smudge producer identity. The bit gates future Scenario
 // RNG and smudge/ore mutation when a delayed animation reaches Middle.
-const SNAPSHOT_VERSION: u32 = 120;
+const SNAPSHOT_VERSION: u32 = 121;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -493,6 +493,18 @@ pub enum SnapshotRestoreError {
     DuplicateLogicIdentity { object_id: u64 },
     #[error("LogicVector object id {object_id} has no restored registry identity")]
     MissingLogicIdentity { object_id: u64 },
+    #[error("display layers contain duplicate object id {object_id}")]
+    DuplicateDisplayLayerIdentity { object_id: u64 },
+    #[error("display layers reference missing object id {object_id}")]
+    MissingDisplayLayerIdentity { object_id: u64 },
+    #[error(
+        "display object {object_id} vector layer {vector_layer} disagrees with stored layer {stored_layer:?}"
+    )]
+    DisplayLayerMembershipMismatch {
+        object_id: u64,
+        vector_layer: u8,
+        stored_layer: Option<u8>,
+    },
     #[error("live {registry} object id {object_id} is absent from LogicVector")]
     MissingRequiredLogicIdentity {
         registry: &'static str,
@@ -3308,10 +3320,12 @@ mod tests {
     /// relation exercised by Unit Grinder/absorber continuations; 117 -> 118
     /// adds Ship's RawTrack handoff/endpoint occupation pair; 118 -> 119 adds
     /// Bio Reactor Infantry tracking/occupant bytes and House +0x2F4 count;
-    /// 119 -> 120 adds the Building Explosion Start-smudge producer bit.
+    /// 119 -> 120 adds the Building Explosion Start-smudge producer bit;
+    /// 120 -> 121 adds Anim's constructor layer plus saved native flat
+    /// DisplayClass submission history.
     #[test]
-    fn phase3_building_explosion_start_smudge_snapshot_version_is_120() {
-        assert_eq!(super::SNAPSHOT_VERSION, 120);
+    fn phase3_flat_display_order_snapshot_version_is_121() {
+        assert_eq!(super::SNAPSHOT_VERSION, 121);
     }
 
     #[test]

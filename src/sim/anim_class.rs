@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::rules::art_data::AnimTypeRuntimeConfig;
+use crate::rules::art_data::{AnimLayer, AnimTypeRuntimeConfig};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::intern::InternedId;
@@ -312,6 +312,9 @@ pub struct AnimObject {
     pub stable_id: AnimId,
     pub native_unique_id: i32,
     pub type_id: InternedId,
+    /// Constructor-bound `AnimTypeClass+0x364` layer. Owner attachment still
+    /// overrides this to Ground at query time, exactly as GetLayer does.
+    pub native_display_layer: i8,
     /// World leptons — but **owner-relative whenever `owner_entity` is set**,
     /// exactly as `AnimClass::SetOwnerObject @ 0x00424B50` stores it. Read it
     /// through [`Simulation::anim_absolute_coord`] for a world position; read
@@ -345,6 +348,15 @@ pub struct AnimObject {
     pub owner_entity: Option<u64>,
     pub start_sound_active: bool,
     pub stop_sound_id: Option<InternedId>,
+}
+
+fn native_anim_display_layer(layer: AnimLayer) -> i8 {
+    match layer {
+        AnimLayer::Ground => 2,
+        AnimLayer::Air => 3,
+        AnimLayer::Top => 4,
+        AnimLayer::Other(layer) => i8::try_from(layer).unwrap_or(-1),
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -575,6 +587,7 @@ impl Simulation {
             stable_id,
             native_unique_id: stable_id as i32,
             type_id: descriptor.type_name,
+            native_display_layer: native_anim_display_layer(config.layer),
             world_coord,
             draw_flags: descriptor.draw_flags,
             z_adjust: descriptor.z_adjust,
@@ -755,6 +768,7 @@ impl Simulation {
             stable_id,
             native_unique_id: SYNC_EXEMPT_NATIVE_UNIQUE_ID,
             type_id,
+            native_display_layer: native_anim_display_layer(config.layer),
             world_coord,
             draw_flags: TRAILER_DRAW_FLAGS,
             z_adjust: MULTIPLAYER_FEEDBACK_Z_ADJUST,
@@ -1054,9 +1068,8 @@ impl Simulation {
     ///   producer must read `+0x17C` on that class before reusing this.
     /// - The `DisplayClass::RemoveFromLayer` / `Submit_Object` re-registration
     ///   pair either side of the pointer write (`0x004A9770` / `0x004A9720`).
-    ///   Layer membership is rebuilt from `tactical_registration_order` every
-    ///   frame in this engine rather than held as a persistent container, so
-    ///   there is no registration to move.
+    ///   The persistent flat-display registry below performs that exact
+    ///   remove/reappend when owner attachment changes GetLayer.
     ///
     /// Returns `false` when the anim does not exist, or when the requested
     /// owner does not.
@@ -1090,6 +1103,7 @@ impl Simulation {
                 anim.owner_entity = Some(owner_id);
             }
         }
+        self.sync_display_layer_for_object(id);
         true
     }
 
@@ -1299,6 +1313,7 @@ impl Simulation {
         }
         self.lifecycle_outputs
             .push(LifecycleOutput::DisplayRemove { stable_id: id });
+        self.substrate.flat_display_order.remove(id);
         self.detach_anim_from_owner(id);
         if let Some(anim) = self.anim_mut_by_id(id) {
             anim.runtime.inactive = true;
