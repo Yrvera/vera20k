@@ -18,11 +18,9 @@ const LAT_SPAN: i32 = 0x10;
 /// Shore-piece set span: 42 tiles, the same length the LAT pass uses for its
 /// green-group shore exemption.
 const SHORE_SPAN: i32 = 42;
-/// The water tiles the generator itself writes: the base and five variants.
-const WATER_VARIANT_SPAN: i32 = 6;
-/// Tile-only water span accepted by the active low-bridge deck validator.
-const LOW_BRIDGE_WATER_SPAN: i32 = 14;
-/// Each of the four waterfall families contributes four absorbable tiles.
+/// WaterSet span accepted by the active water-family predicate.
+const WATER_FAMILY_SPAN: i32 = 14;
+/// Each of the four waterfall families contributes four matching tiles.
 const WATERFALL_SPAN: i32 = 4;
 /// Fixed spans of the start-placement 6x6 gate ranges.
 const PAVED_ROADS_SPAN: i32 = 15;
@@ -194,19 +192,12 @@ impl TileIds {
             || in_span(tile, sp.water_cliffs, 0x1C)
     }
 
-    /// Narrow terrain-family predicate used by the island rebuild/dilation:
-    /// the six water variants this generator writes plus shore pieces. This is
-    /// not the wider low-deck validator below.
-    pub fn is_bridge_absorbable(&self, tile: i32) -> bool {
-        in_span(tile, self.water_base, WATER_VARIANT_SPAN) || self.is_shore_piece(tile)
-    }
-
-    /// Exact tile-only predicate used by `gamemd` 0x004865D0 for a low-deck
-    /// candidate. This is deliberately wider than the generator-write water
-    /// span and deliberately ignores sub-tile: water 14, shore 42, or any of
-    /// the four 4-tile waterfall bands.
-    pub fn is_low_bridge_absorbable(&self, tile: i32) -> bool {
-        in_span(tile, self.water_base, LOW_BRIDGE_WATER_SPAN)
+    /// Exact tile-only predicate used by `gamemd` 0x004865D0 during region
+    /// construction, island rebuilding/dilation, and low-deck validation.
+    /// It deliberately ignores sub-tile: WaterSet 14, ShorePieces 42, or any
+    /// of the four four-tile waterfall bands.
+    pub fn is_water_shore_or_waterfall(&self, tile: i32) -> bool {
+        in_span(tile, self.water_base, WATER_FAMILY_SPAN)
             || self.is_shore_piece(tile)
             || self
                 .special
@@ -374,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn low_bridge_absorbable_uses_exact_tile_only_family_boundaries() {
+    fn native_water_family_uses_exact_tile_only_boundaries() {
         let mut ids = contract_ids();
         ids.special.waterfalls = [2_000, 2_100, 2_200, 2_300];
 
@@ -386,13 +377,13 @@ mod tests {
             (2_200, 4),
             (2_300, 4),
         ] {
-            assert!(!ids.is_low_bridge_absorbable(base - 1));
-            assert!(ids.is_low_bridge_absorbable(base));
-            assert!(ids.is_low_bridge_absorbable(base + span - 1));
-            assert!(!ids.is_low_bridge_absorbable(base + span));
+            assert!(!ids.is_water_shore_or_waterfall(base - 1));
+            assert!(ids.is_water_shore_or_waterfall(base));
+            assert!(ids.is_water_shore_or_waterfall(base + span - 1));
+            assert!(!ids.is_water_shore_or_waterfall(base + span));
         }
-        assert!(ids.is_low_bridge_absorbable(ids.water_base + 13));
-        assert!(!ids.is_low_bridge_absorbable(ids.special.bridge_set));
-        assert!(!ids.is_low_bridge_absorbable(ids.special.wood_bridge_set));
+        assert!(ids.is_water_shore_or_waterfall(ids.water_base + 13));
+        assert!(!ids.is_water_shore_or_waterfall(ids.special.bridge_set));
+        assert!(!ids.is_water_shore_or_waterfall(ids.special.wood_bridge_set));
     }
 }

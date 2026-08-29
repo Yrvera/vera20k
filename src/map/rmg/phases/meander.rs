@@ -448,10 +448,10 @@ pub(crate) fn dilate_chained(
                 let previous = level.is_some() && owner == region - 1;
                 let tile = ctx.grid.cell_native(nx, ny).tile;
                 let clear = ctx.ids.is_clear(tile);
-                // A previous-region cell may also be water or shore — that
-                // escape is what lets the absorption cross the old river
-                // segment rather than failing on its own water.
-                let absorbable = previous && ctx.ids.is_bridge_absorbable(tile);
+                // A previous-region cell may also be water, shore, or a
+                // waterfall — that escape lets absorption cross the old river
+                // segment rather than failing on its own water family.
+                let absorbable = previous && ctx.ids.is_water_shore_or_waterfall(tile);
                 if (owner == 0 || previous) && (clear || absorbable) {
                     claimed.push((nx, ny));
                     ctx.scratch.get_mut(nx, ny).region = region;

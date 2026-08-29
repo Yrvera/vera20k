@@ -167,7 +167,7 @@ pub fn deck_area_is_clear(
             }
             // Exact tile-only 0x004865D0 family: 14 water, 42 shore, and four
             // four-tile waterfall bands. It intentionally ignores sub-tile.
-            if !ids.is_clear(cell.tile) && !ids.is_low_bridge_absorbable(cell.tile) {
+            if !ids.is_clear(cell.tile) && !ids.is_water_shore_or_waterfall(cell.tile) {
                 return false;
             }
         }
