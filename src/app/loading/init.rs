@@ -873,8 +873,11 @@ pub(crate) struct RandomMapLaunchSnapshot {
     pub(crate) map: RandomMapProjection,
     pub(crate) trace: crate::map::rmg::RmgConstructionTrace,
     pub(crate) emitted_constructor_words: Vec<(usize, u16)>,
+    pub(crate) installed_constructor_words: Vec<(usize, u16, u16)>,
     pub(crate) scenario_after_trace: crate::sim::rng::SimRngLogicalState,
     pub(crate) mapgen_continuation: crate::sim::rng::SimRngLogicalState,
+    pub(crate) final_rng: crate::sim::world::SimulationRngState,
+    pub(crate) post_map_output: crate::sim::scenario_post_map::ScenarioPostMapOutput,
 }
 
 #[cfg(test)]
@@ -887,7 +890,8 @@ impl MapLoadInitial {
         self,
         asset_manager: &mut AssetManager,
         match_seed: u32,
-        preloaded_battle_start_plan: Option<&PreloadedBattleStartPlan>,
+        match_launch_descriptor: &crate::sim::scenario_bootstrap::MatchLaunchDescriptor,
+        preloaded_battle_start_plan: &PreloadedBattleStartPlan,
     ) -> RandomMapLaunchSnapshot {
         let MapLoadInitial {
             map_data,
@@ -974,28 +978,35 @@ impl MapLoadInitial {
         bootstrap_rng.install_generated_mapgen_continuation(
             mapgen_rng_continuation.expect("random-map initial receipt carries MapGen"),
         );
-        if let Some(plan) = preloaded_battle_start_plan {
-            bootstrap_rng
-                .install_preloaded_battle_plan(plan)
-                .expect("matching preloaded Battle prefix");
-        }
+        bootstrap_rng
+            .install_preloaded_battle_plan(preloaded_battle_start_plan)
+            .expect("matching preloaded Battle prefix");
         let mapgen_continuation = bootstrap_rng
             .logical_states_for_test()
             .2
             .expect("installed generated MapGen continuation");
 
-        // Drive the exact production terrain-Fill consumers before replaying
-        // the launch construction trace. This makes `scenario_after_trace` a
-        // post-map boundary proof rather than an isolated trace-only oracle.
+        // Drive the production load inputs through terrain Fill, generated
+        // constructor replay, the GPU-free construction funnel, standard
+        // Battle launch application, and the shared Post_Map_Init finalizer.
         let theater_result = theater::load_theater(asset_manager, &map_data.header.theater);
-        let (rules, rules_ini) = load_rules_with_merged_ini(
+        let mode_override_ini = asset_manager
+            .get_ref(&match_launch_descriptor.session().mode.override_file)
+            .and_then(|bytes| IniFile::from_bytes(bytes).ok());
+        let (mut rules, rules_ini) = load_rules_with_merged_ini(
             asset_manager,
-            None,
+            mode_override_ini.as_ref(),
             Some(&map_data.ini),
         )
         .expect("retail generated-map rules")
         .into_parts();
-        let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, None);
+        let (mut art, art_ini) = load_art_ini(asset_manager).expect("retail ARTMD.INI");
+        rules.merge_art_data(&mut art);
+        rules.art_registry = art.clone();
+        rules.general.resolve_art_rates(&art_ini);
+        let infantry_sequences =
+            crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini);
+        let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
         let mut selector_cache =
             crate::map::tile_variant_selector::TileVariantSelectorCache::default();
         let (mut scenario_fill_rng, mut variant_main_rng) = bootstrap_rng.terrain_draws();
@@ -1003,20 +1014,42 @@ impl MapLoadInitial {
             |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
         let mut variant_draw = || variant_main_rng.next_u32();
         let mut variant_selector = selector_cache.begin_load(&mut variant_draw);
-        let _resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
-            &map_data,
-            theater_result.as_ref(),
-            Some(asset_manager),
-            Some(&rules.terrain_rules),
-            Some(&overlay_registry),
-            Some(&rules.terrain_object_types),
-            true,
-            rules.general.cliff_back_impassability,
-            &mut scenario_fill_ranged,
-            &mut variant_selector,
-            crate::map::resolved_terrain::SharedCellDummy::fresh(),
-            crate::map::resolved_terrain::OverlayLoadSource::GeneratedMaterialized,
+        let mut resolved_terrain =
+            ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
+                &map_data,
+                theater_result.as_ref(),
+                Some(asset_manager),
+                Some(&rules.terrain_rules),
+                Some(&overlay_registry),
+                Some(&rules.terrain_object_types),
+                true,
+                rules.general.cliff_back_impassability,
+                &mut scenario_fill_ranged,
+                &mut variant_selector,
+                crate::map::resolved_terrain::SharedCellDummy::fresh(),
+                crate::map::resolved_terrain::OverlayLoadSource::GeneratedMaterialized,
+            );
+        let theater_ext = theater_result.as_ref().map_or_else(
+            || theater_ext_for(&map_data.header.theater),
+            |td| td.extension,
         );
+        let scheduler_roots = scheduler_anim_roots(&rules, resolved_terrain.tile_animations());
+        art.bind_scheduler_anim_assets(
+            &scheduler_roots,
+            asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        )
+        .expect("retail scheduler animation closure");
+        rules.art_registry = art.clone();
+        rules.bind_effect_assets(asset_manager, theater_ext, &map_data.header.theater);
+        rules.bind_terrain_spawner_assets(
+            &rules_ini,
+            asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
+        rules.bind_animation_sequences(&infantry_sequences);
         drop(variant_selector);
         drop(variant_draw);
         drop(scenario_fill_ranged);
@@ -1030,24 +1063,171 @@ impl MapLoadInitial {
             .iter()
             .filter_map(|event| match &event.outcome {
                 crate::map::rmg::RmgConstructionOutcome::Discarded => None,
-                crate::map::rmg::RmgConstructionOutcome::Emitted { entity_index, .. } => {
-                    Some((
-                        *entity_index,
-                        table
-                            .entry(*entity_index)
-                            .expect("emitted trace row has an exact binding")
-                            .techno_ctor_random_word,
-                    ))
-                }
+                crate::map::rmg::RmgConstructionOutcome::Emitted { entity_index, .. } => Some((
+                    *entity_index,
+                    table
+                        .entry(*entity_index)
+                        .expect("emitted trace row has an exact binding")
+                        .techno_ctor_random_word,
+                )),
             })
             .collect();
         let scenario_after_trace = bootstrap_rng.logical_states_for_test().0;
+
+        let overlay_shp_ids = resolved_overlay_shp_ids(
+            &overlay_registry,
+            &rules_ini,
+            &art,
+            asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
+        let mut overlay_grid = crate::sim::overlay_grid::OverlayGrid::from_native_overlay_packs(
+            &map_data.overlays,
+            &map_data.overlay_data,
+            &mut resolved_terrain,
+            &overlay_registry,
+            &overlay_shp_ids,
+            true,
+        );
+        let _ = crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
+            &mut overlay_grid,
+            &mut resolved_terrain,
+            &map_data.terrain_objects,
+            &rules,
+            &overlay_registry,
+        );
+        let house_roster = houses::parse_house_roster(&map_data.ini, &rules.color_schemes);
+        let height_map = resolved_terrain.build_height_map();
+        let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
+        let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
+            seed: match_seed,
+            map_name: match_launch_descriptor
+                .session()
+                .selected_map_file
+                .clone()
+                .or_else(|| map_data.basic.name.clone())
+                .unwrap_or_default(),
+            theater: map_data.header.theater.clone(),
+            game_mode_nonzero: true,
+            no_damage: false,
+            map_width: resolved_terrain.width(),
+            map_height: resolved_terrain.height(),
+            local_left: map_data.header.local_left as u16,
+            local_top: map_data.header.local_top as u16,
+            local_width: map_data.header.local_width as u16,
+            local_height: map_data.header.local_height as u16,
+            mp_start_waypoints: waypoints::multiplayer_start_waypoints(&map_data.waypoints)
+                .into_iter()
+                .map(|waypoint| (waypoint.index, (waypoint.rx, waypoint.ry)))
+                .collect(),
+            lighting: crate::sim::scenario_session::ScenarioLightingState::new(
+                crate::sim::scenario_session::ScenarioLightProfileUnits {
+                    ambient_percent: lighting_profiles.normal.ambient_percent,
+                    red_percent: lighting_profiles.normal.red_percent,
+                    green_percent: lighting_profiles.normal.green_percent,
+                    blue_percent: lighting_profiles.normal.blue_percent,
+                    ground_units: lighting_profiles.normal.ground_units,
+                    level_units: lighting_profiles.normal.level_units,
+                },
+                crate::sim::scenario_session::ScenarioLightProfileUnits {
+                    ambient_percent: lighting_profiles.ion.ambient_percent,
+                    red_percent: lighting_profiles.ion.red_percent,
+                    green_percent: lighting_profiles.ion.green_percent,
+                    blue_percent: lighting_profiles.ion.blue_percent,
+                    ground_units: lighting_profiles.ion.ground_units,
+                    level_units: lighting_profiles.ion.level_units,
+                },
+            ),
+        };
+        let bridge_destroyability_mode =
+            crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+                bridge_destruction: match_launch_descriptor
+                    .session()
+                    .options
+                    .bridges_destroyable,
+            };
+        let mut simulation = crate::app::loading::init_helpers::construct_app_scenario(
+            &map_data,
+            &resolved_terrain,
+            asset_manager,
+            &map_data.header.theater,
+            Some(&rules),
+            Some(&art),
+            &height_map,
+            Some(&overlay_registry),
+            Some(&overlay_grid),
+            bridge_destroyability_mode,
+            &scenario_descriptor,
+            bootstrap_rng,
+            Some(&table),
+            |simulation| {
+                initialize_skirmish_launch_houses(
+                    simulation,
+                    &house_roster,
+                    &rules,
+                    match_launch_descriptor,
+                );
+            },
+        )
+        .expect("production generated-map construction funnel");
+        let installed_constructor_words = map_data
+            .entities
+            .iter()
+            .enumerate()
+            .map(|(entity_index, map_entity)| {
+                let expected = table
+                    .entry(entity_index)
+                    .expect("generated map entity has an exact constructor binding")
+                    .techno_ctor_random_word;
+                let actual = simulation
+                    .entities()
+                    .values()
+                    .find(|entity| {
+                        entity.position.rx == map_entity.cell_x
+                            && entity.position.ry == map_entity.cell_y
+                            && simulation
+                                .interner
+                                .resolve(entity.type_ref)
+                                .eq_ignore_ascii_case(&map_entity.type_id)
+                    })
+                    .expect("generated map entity reached Simulation")
+                    .techno_ctor_random_word;
+                (entity_index, expected, actual)
+            })
+            .collect();
+        simulation.intern_rule_type_ids(&rules);
+        simulation.resolve_type_handles(&rules);
+        let _ = apply_preloaded_battle_launch_session_with_overlay_registry(
+            &mut simulation,
+            &map_data,
+            &house_roster,
+            &rules,
+            &height_map,
+            &resolved_terrain,
+            match_launch_descriptor,
+            &overlay_registry,
+            preloaded_battle_start_plan,
+        );
+        let post_map_output = crate::sim::runtime::finalize_constructed_scenario(
+            &mut simulation,
+            &map_data,
+            &rules,
+            &overlay_registry,
+            overlay_grid,
+            &house_roster,
+            Some(match_launch_descriptor),
+        );
+        let final_rng = simulation.rng_state();
         RandomMapLaunchSnapshot {
             map,
             trace,
             emitted_constructor_words,
+            installed_constructor_words,
             scenario_after_trace,
             mapgen_continuation,
+            final_rng,
+            post_map_output,
         }
     }
 }

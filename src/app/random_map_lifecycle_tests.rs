@@ -1,7 +1,11 @@
 use super::RandomMapGenerationRetention;
 use super::frontend::skirmish_session::{OfflineSkirmishRuntime, skirmish_global_defaults};
 use super::loading::pump::{LoadingProgressSink, LoadingRequest};
-use super::shell_random_map::teardown_then;
+use super::shell_random_map::{
+    RandomMapUpdate, accept_random_map_setup_owners, begin_random_map_generation_owners,
+    cancel_random_map_setup_owners, finish_random_map_generation_owners,
+    prepare_random_map_generation, spawn_random_map_generation_worker,
+};
 use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace, RmgOptions, RmgRng};
 use crate::skirmish_launch::{
     AiDifficulty, LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishAiSlot,
@@ -52,20 +56,56 @@ fn launch_session(seed_name: &str) -> SkirmishLaunchSession {
     }
 }
 
-fn generate_from_sed(
-    seed_dir: &std::path::Path,
-    seed_name: &str,
+fn start_production_worker(
     assets: &mut crate::assets::asset_manager::AssetManager,
-    match_seed: u32,
-) -> super::loading::init::RandomMapLaunchSnapshot {
-    super::loading::init::load_map_initial_with_assets(
-        seed_dir.to_path_buf(),
-        assets,
-        Some(seed_name),
-        &mut SilentProgress,
+    options: &RmgOptions,
+    runtime: &mut OfflineSkirmishRuntime,
+    retention: &mut RandomMapGenerationRetention,
+    shared_cell_dummy: &crate::map::resolved_terrain::SharedCellDummy,
+) -> std::sync::mpsc::Receiver<RandomMapUpdate> {
+    begin_random_map_generation_owners(runtime, retention, options);
+    let prepared = prepare_random_map_generation(assets, options)
+        .expect("production retail generation preparation");
+    let decision = retention.map_storage_decision(options);
+    let receiver = spawn_random_map_generation_worker(
+        options.clone(),
+        prepared.settings,
+        prepared.resolved_inputs,
+        prepared.blocks,
+        prepared.tech_types,
+        shared_cell_dummy.clone(),
+        decision,
     )
-    .expect("production .SED generation")
-    .into_random_map_launch_snapshot(assets, match_seed, None)
+    .expect("production random-map worker");
+    retention.commit_map_storage_decision(decision);
+    receiver
+}
+
+fn receive_production_generation(
+    receiver: std::sync::mpsc::Receiver<RandomMapUpdate>,
+) -> (usize, crate::map::rmg::GeneratedMap) {
+    let mut entries = 0;
+    loop {
+        match receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("production random-map worker receipt")
+        {
+            RandomMapUpdate::Started => entries += 1,
+            RandomMapUpdate::Progress(_) => {}
+            RandomMapUpdate::Finished(generated) => {
+                assert_eq!(entries, 1, "each production worker enters generation once");
+                return (entries, *generated);
+            }
+        }
+    }
+}
+
+fn lifecycle_preview(color: [u8; 3]) -> crate::map::rmg::preview::PreviewImage {
+    crate::map::rmg::preview::PreviewImage {
+        width: 1,
+        height: 1,
+        rgba: vec![color[0], color[1], color[2], 0xFF],
+    }
 }
 
 #[test]
@@ -105,98 +145,202 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     std::fs::write(seed_dir.join(seed_name), options.to_sed_bytes()).expect("write lifecycle .SED");
     const MATCH_SEED: u32 = 0x0412_0419;
 
-    // U2-02: instrument the actual generator entry. Every Generate repeats
-    // from fresh MapGen state; accepting a valid preview adds no run, while
-    // accepting an empty setup adds exactly one.
-    crate::map::rmg::build::reset_test_generator_entry_count();
+    // U2-02: collect cross-thread receipts from the production worker. Every
+    // Generate enters the real generator once; accepting a valid preview adds
+    // no run, while accepting an empty setup adds exactly one.
     let previous_selection = ChooseMapSelection {
         mode_id: 1,
         record_index: Some(7),
     };
-    let mut generated_modal =
-        RandomMapSetupModalState::open(options.clone(), Some(previous_selection), false);
-    generated_modal.begin_generate();
-    let preview_a = generate_from_sed(&seed_dir, seed_name, &mut assets, MATCH_SEED);
-    generated_modal.finish_generate(None);
-    assert_eq!(crate::map::rmg::build::test_generator_entry_count(), 1);
-    generated_modal.begin_generate();
-    let preview_b = generate_from_sed(&seed_dir, seed_name, &mut assets, MATCH_SEED);
-    generated_modal.finish_generate(None);
-    assert_eq!(crate::map::rmg::build::test_generator_entry_count(), 2);
-    assert_eq!(
-        preview_a, preview_b,
-        "repeated Generate must restart MapGen"
-    );
-    assert!(matches!(generated_modal.accept(), AcceptOutcome::Commit(_)));
-    assert_eq!(
-        crate::map::rmg::build::test_generator_entry_count(),
-        2,
-        "Use Map with a valid preview performs no third generation"
-    );
-
-    let mut empty_modal =
-        RandomMapSetupModalState::open(options.clone(), Some(previous_selection), false);
-    assert_eq!(empty_modal.accept(), AcceptOutcome::NeedsGenerate);
-    empty_modal.begin_generate();
-    let generated_for_accept = generate_from_sed(&seed_dir, seed_name, &mut assets, MATCH_SEED);
-    empty_modal.finish_generate(None);
-    assert!(matches!(empty_modal.accept(), AcceptOutcome::Commit(_)));
-    assert_eq!(crate::map::rmg::build::test_generator_entry_count(), 3);
-    assert_eq!(preview_a, generated_for_accept);
-
-    // U2-03: preview constructor effects remain on the process shell Scenario
-    // owner after Cancel; the chooser selection and edited options survive,
-    // common teardown publishes only the preview product.
     let mut runtime = OfflineSkirmishRuntime::initialize(
         0x0412_0003,
         None,
         None,
         skirmish_global_defaults(&SkirmishShellState::default()),
     );
-    runtime.remember_random_map_options(&options);
-    let shell_before = runtime.scenario_rng_logical_state_for_test();
-    let mut cancel_trace = RmgConstructionTrace::default();
-    cancel_trace.push_emitted(
-        RmgConstructionPhase::BridgeRepairHut,
-        "CABHUT".to_string(),
-        0,
-        (10, 11),
+    let shared_cell_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
+    let mut generation_entries = 0;
+    let mut retention = RandomMapGenerationRetention::default();
+    let mut generated_modal = Some(RandomMapSetupModalState::open(
+        options.clone(),
+        Some(previous_selection),
+        false,
+    ));
+    generated_modal
+        .as_mut()
+        .expect("generated modal")
+        .begin_generate();
+    let receiver = start_production_worker(
+        &mut assets,
+        &options,
+        &mut runtime,
+        &mut retention,
+        &shared_cell_dummy,
     );
-    cancel_trace.push_discarded(RmgConstructionPhase::NeutralTech, "CAOILD".to_string());
-    runtime.replay_random_map_preview_construction(&cancel_trace);
-    let shell_after_preview = runtime.scenario_rng_logical_state_for_test();
-    assert_ne!(shell_after_preview, shell_before);
-    let cancel_modal =
-        RandomMapSetupModalState::open(options.clone(), Some(previous_selection), false);
-    assert_eq!(cancel_modal.cancel(), Some(previous_selection));
-    runtime.remember_random_map_options(&cancel_modal.options);
+    let (entries, generated_a) = receive_production_generation(receiver);
+    generation_entries += entries;
+    let signature_a = (
+        generated_a.map_file.ini.content_hash(),
+        generated_a.construction_trace.clone(),
+        generated_a.start_waypoints.clone(),
+        generated_a.stages_run.clone(),
+        generated_a.unfilled_start_slots,
+    );
+    assert!(!finish_random_map_generation_owners(
+        &mut runtime,
+        &mut retention,
+        generated_modal.as_mut().expect("generated modal"),
+        generated_a,
+        Some(lifecycle_preview([0x10, 0x20, 0x30])),
+        false,
+    ));
 
-    struct CancelTransaction {
-        img: std::path::PathBuf,
-        sed: std::path::PathBuf,
-        selection: ChooseMapSelection,
-    }
-    let cancel_img = seed_dir.join("CancelPreview.img");
-    let cancel_sed = seed_dir.join("CancelPreview.Sed");
-    let mut cancel_transaction = CancelTransaction {
-        img: cancel_img.clone(),
-        sed: cancel_sed.clone(),
-        selection: previous_selection,
-    };
-    teardown_then(
-        &mut cancel_transaction,
-        |transaction| {
-            std::fs::write(&transaction.img, b"completed-preview")
-                .expect("common teardown preview write");
-        },
-        |_| (),
+    generated_modal
+        .as_mut()
+        .expect("generated modal")
+        .begin_generate();
+    let receiver = start_production_worker(
+        &mut assets,
+        &options,
+        &mut runtime,
+        &mut retention,
+        &shared_cell_dummy,
     );
+    let (entries, generated_b) = receive_production_generation(receiver);
+    generation_entries += entries;
+    let signature_b = (
+        generated_b.map_file.ini.content_hash(),
+        generated_b.construction_trace.clone(),
+        generated_b.start_waypoints.clone(),
+        generated_b.stages_run.clone(),
+        generated_b.unfilled_start_slots,
+    );
+    assert!(!finish_random_map_generation_owners(
+        &mut runtime,
+        &mut retention,
+        generated_modal.as_mut().expect("generated modal"),
+        generated_b,
+        Some(lifecycle_preview([0x11, 0x21, 0x31])),
+        false,
+    ));
+    assert_eq!(generation_entries, 2);
     assert_eq!(
-        std::fs::read(&cancel_img).expect("cancel preview product"),
-        b"completed-preview"
+        signature_a, signature_b,
+        "repeated Generate restarts MapGen"
     );
-    assert!(!cancel_transaction.sed.exists());
-    assert_eq!(cancel_transaction.selection, previous_selection);
+
+    let randmap_img = seed_dir.join("RandMap.img");
+    let randmap_sed = seed_dir.join("RandMap.Sed");
+    let committed = accept_random_map_setup_owners(
+        &mut runtime,
+        &mut generated_modal,
+        &mut retention,
+        Some(&seed_dir),
+    )
+    .expect("Use Map accepts the completed production result");
+    assert_eq!(generation_entries, 2, "valid preview adds no worker run");
+    assert!(randmap_img.is_file());
+    assert!(!randmap_sed.exists(), "accepted caller follows teardown");
+    std::fs::write(&randmap_sed, committed.to_sed_bytes()).expect("accepted caller writes .SED");
+
+    let mut empty_modal = Some(RandomMapSetupModalState::open(
+        options.clone(),
+        Some(previous_selection),
+        false,
+    ));
+    assert_eq!(
+        empty_modal.as_ref().expect("empty modal").accept(),
+        AcceptOutcome::NeedsGenerate
+    );
+    empty_modal.as_mut().expect("empty modal").begin_generate();
+    let receiver = start_production_worker(
+        &mut assets,
+        &options,
+        &mut runtime,
+        &mut retention,
+        &shared_cell_dummy,
+    );
+    let (entries, generated_for_accept) = receive_production_generation(receiver);
+    generation_entries += entries;
+    let signature_for_accept = (
+        generated_for_accept.map_file.ini.content_hash(),
+        generated_for_accept.construction_trace.clone(),
+        generated_for_accept.start_waypoints.clone(),
+        generated_for_accept.stages_run.clone(),
+        generated_for_accept.unfilled_start_slots,
+    );
+    assert!(finish_random_map_generation_owners(
+        &mut runtime,
+        &mut retention,
+        empty_modal.as_mut().expect("empty modal"),
+        generated_for_accept,
+        Some(lifecycle_preview([0x12, 0x22, 0x32])),
+        true,
+    ));
+    assert_eq!(signature_a, signature_for_accept);
+    assert_eq!(generation_entries, 3, "empty OK adds exactly one run");
+    let _ = accept_random_map_setup_owners(
+        &mut runtime,
+        &mut empty_modal,
+        &mut retention,
+        Some(&seed_dir),
+    )
+    .expect("deferred OK accepts after production completion");
+
+    // U2-03: preview constructor effects remain on the process shell Scenario
+    // owner after Cancel; the chooser selection and edited options survive,
+    // common teardown publishes only the preview product.
+    std::fs::remove_file(&randmap_sed).expect("clear accepted caller fixture");
+    let shell_before_cancel_generation = runtime.scenario_rng_logical_state_for_test();
+    let mut cancel_modal = Some(RandomMapSetupModalState::open(
+        options.clone(),
+        Some(previous_selection),
+        false,
+    ));
+    cancel_modal
+        .as_mut()
+        .expect("cancel modal")
+        .begin_generate();
+    let receiver = start_production_worker(
+        &mut assets,
+        &options,
+        &mut runtime,
+        &mut retention,
+        &shared_cell_dummy,
+    );
+    let (entries, generated_for_cancel) = receive_production_generation(receiver);
+    generation_entries += entries;
+    assert!(!finish_random_map_generation_owners(
+        &mut runtime,
+        &mut retention,
+        cancel_modal.as_mut().expect("cancel modal"),
+        generated_for_cancel,
+        Some(lifecycle_preview([0x13, 0x23, 0x33])),
+        false,
+    ));
+    let shell_after_preview = runtime.scenario_rng_logical_state_for_test();
+    assert_ne!(shell_after_preview, shell_before_cancel_generation);
+    assert_eq!(
+        cancel_random_map_setup_owners(
+            &mut runtime,
+            &mut cancel_modal,
+            &mut retention,
+            Some(&seed_dir),
+        ),
+        Some(previous_selection)
+    );
+    assert_eq!(generation_entries, 4);
+    assert!(randmap_img.is_file(), "Cancel publishes completed preview");
+    assert!(
+        !randmap_sed.exists(),
+        "Cancel never reaches accepted caller"
+    );
+    assert!(
+        retention
+            .take_preview_for_loading(Some(seed_name))
+            .is_none(),
+        "Cancel discards the generated candidate"
+    );
     assert_eq!(
         runtime.random_map_options_for_setup(),
         options,
@@ -205,7 +349,19 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     assert_eq!(
         runtime.scenario_rng_logical_state_for_test(),
         shell_after_preview,
-        "reopen must continue the preview-advanced shell Scenario cursor"
+        "Cancel/reopen continues the preview-advanced shell Scenario cursor"
+    );
+    let reopened = RandomMapSetupModalState::open(
+        runtime.random_map_options_for_setup(),
+        Some(previous_selection),
+        false,
+    );
+    assert_eq!(reopened.options, options);
+    assert_eq!(reopened.previous_selection, Some(previous_selection));
+    assert_eq!(
+        runtime.scenario_rng_logical_state_for_test(),
+        shell_after_preview,
+        "reopening presentation state cannot reseed the shell Scenario owner"
     );
 
     // U2-04/U2-05/U2-19: transport a deliberately poisoned accepted preview
@@ -252,21 +408,17 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     let ui_initial = ui_request
         .load_initial_with_assets(seed_dir.clone(), &mut assets, &mut SilentProgress)
         .expect("accepted UI .SED launch regeneration");
-    let descriptor = crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(
-        launch.clone(),
-    )
-    .expect("resolved random-map launch descriptor");
+    let descriptor =
+        crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(launch.clone())
+            .expect("resolved random-map launch descriptor");
     let ui_plan = crate::sim::scenario_bootstrap::preload_standard_battle_start_plan(
         &descriptor,
         ui_initial.map_data(),
         MATCH_SEED,
     )
     .expect("generated map supplies complete Battle starts");
-    let ui_launch = ui_initial.into_random_map_launch_snapshot(
-        &mut assets,
-        MATCH_SEED,
-        Some(&ui_plan),
-    );
+    let ui_launch =
+        ui_initial.into_random_map_launch_snapshot(&mut assets, MATCH_SEED, &descriptor, &ui_plan);
     let direct_initial = super::loading::init::load_map_initial_with_assets(
         seed_dir.clone(),
         &mut assets,
@@ -283,9 +435,9 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     let direct_launch = direct_initial.into_random_map_launch_snapshot(
         &mut assets,
         MATCH_SEED,
-        Some(&direct_plan),
+        &descriptor,
+        &direct_plan,
     );
-    assert_eq!(crate::map::rmg::build::test_generator_entry_count(), 5);
     assert_eq!(ui_launch, direct_launch);
     assert_ne!(ui_launch.map.header.0, "POISON_PREVIEW");
     assert_ne!(ui_launch.trace, poison_trace_reference);
@@ -302,8 +454,45 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         ui_launch.scenario_after_trace,
         direct_launch.scenario_after_trace
     );
+    assert!(
+        !ui_launch.installed_constructor_words.is_empty(),
+        "retail generated entities must enter the production construction funnel"
+    );
+    assert!(
+        ui_launch
+            .installed_constructor_words
+            .iter()
+            .all(|(_, expected, installed)| expected == installed),
+        "every replayed constructor word must be installed on its Simulation entity"
+    );
+    assert_eq!(
+        ui_launch.emitted_constructor_words,
+        ui_launch
+            .installed_constructor_words
+            .iter()
+            .map(|(index, expected, _)| (*index, *expected))
+            .collect::<Vec<_>>(),
+        "the emitted trace table and installed generated entities must be one-to-one"
+    );
+    assert_eq!(ui_launch.final_rng, direct_launch.final_rng);
+    assert_ne!(
+        ui_launch.final_rng.scenario, ui_launch.scenario_after_trace,
+        "Battle projection and Post_Map_Init must continue the replayed Scenario cursor"
+    );
+    assert_eq!(
+        ui_launch.final_rng.mapgen, ui_launch.mapgen_continuation,
+        "Full Init and Post Map preserve the launch-generated MapGen continuation"
+    );
+    assert!(
+        ui_launch.post_map_output.navigation_published,
+        "shared Post_Map_Init must publish first navigation authority"
+    );
+    assert!(
+        ui_launch.post_map_output.tiberium_queues.is_some(),
+        "shared Post_Map_Init must rebuild the generated overlay queues"
+    );
 
     std::fs::remove_file(seed_dir.join(seed_name)).expect("remove lifecycle .SED");
-    std::fs::remove_file(cancel_img).expect("remove cancel preview");
+    std::fs::remove_file(randmap_img).expect("remove common-teardown preview");
     std::fs::remove_dir(seed_dir).expect("remove lifecycle seed directory");
 }
