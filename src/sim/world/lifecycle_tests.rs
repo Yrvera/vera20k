@@ -125,6 +125,230 @@ fn request(rx: u16, ry: u16, placement: PlacementEvidence) -> RevealRequest {
     }
 }
 
+fn reveal_display_transition_pair(
+    kind: LocomotorKind,
+    target_altitude: i32,
+) -> (Simulation, u64, u64) {
+    let mut sim = Simulation::with_seed(0);
+    let first = sim.allocate_stable_id();
+    let second = sim.allocate_stable_id();
+    insert_entity(&mut sim, first, EntityCategory::Aircraft);
+    insert_entity(&mut sim, second, EntityCategory::Aircraft);
+    for id in [first, second] {
+        let mut locomotor = LocomotorState::for_test_kind(kind);
+        locomotor.altitude = SimFixed::from_num(0);
+        locomotor.target_altitude = SimFixed::from_num(target_altitude);
+        sim.substrate.entities.get_mut(id).unwrap().locomotor = Some(locomotor);
+        assert!(matches!(
+            sim.try_reveal_entity(id, request(2 + id as u16, 3, PlacementEvidence::MarkSucceeded)),
+            RevealOutcome::Revealed {
+                logic_registered: true
+            }
+        ));
+    }
+    (sim, first, second)
+}
+
+#[test]
+fn phase3_fly_transitions_use_persistent_submission_history_not_logic_order() {
+    let (mut sim, first, second) = reveal_display_transition_pair(LocomotorKind::Fly, 500);
+    assert_eq!(sim.tactical_registration_order(), &[first, second]);
+
+    sim.substrate
+        .entities
+        .get_mut(second)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .altitude = SimFixed::from_num(1);
+    sim.substrate
+        .entities
+        .get_mut(second)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .air_phase = AirMovePhase::Cruising;
+    sim.tick_air_movement_with_cell_lists_one(second);
+    sim.substrate
+        .entities
+        .get_mut(first)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .altitude = SimFixed::from_num(1);
+    sim.substrate
+        .entities
+        .get_mut(first)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .air_phase = AirMovePhase::Cruising;
+    sim.tick_air_movement_with_cell_lists_one(first);
+    assert_eq!(sim.tactical_display_layer_order(4), &[second, first]);
+
+    // Leaving compacts the old vector; returning submits at its tail.
+    sim.substrate
+        .entities
+        .get_mut(second)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .altitude = SimFixed::from_num(0);
+    sim.substrate
+        .entities
+        .get_mut(second)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .air_phase = AirMovePhase::Landed;
+    sim.tick_air_movement_with_cell_lists_one(second);
+    assert_eq!(sim.tactical_display_layer_order(4), &[first]);
+    sim.substrate
+        .entities
+        .get_mut(second)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .altitude = SimFixed::from_num(1);
+    {
+        let locomotor = sim
+            .substrate
+            .entities
+            .get_mut(second)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap();
+        locomotor.target_altitude = SimFixed::from_num(1);
+        locomotor.air_phase = AirMovePhase::Cruising;
+    }
+    sim.tick_air_movement_with_cell_lists_one(second);
+    assert_eq!(sim.tactical_display_layer_order(4), &[first, second]);
+}
+
+#[test]
+fn phase3_jumpjet_air_and_top_transitions_keep_staggered_tail_order() {
+    let (mut sim, first, second) =
+        reveal_display_transition_pair(LocomotorKind::Jumpjet, 500);
+    for id in [second, first] {
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .altitude = SimFixed::from_num(250);
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .air_phase = AirMovePhase::Ascending;
+        sim.tick_air_movement_with_cell_lists_one(id);
+    }
+    assert_eq!(sim.tactical_display_layer_order(3), &[second, first]);
+
+    for id in [second, first] {
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .altitude = SimFixed::from_num(500);
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .air_phase = AirMovePhase::Hovering;
+        sim.tick_air_movement_with_cell_lists_one(id);
+    }
+    assert!(sim.tactical_display_layer_order(3).is_empty());
+    assert_eq!(sim.tactical_display_layer_order(4), &[second, first]);
+}
+
+#[test]
+fn phase3_flat_display_order_roundtrips_and_changes_the_state_hash() {
+    fn ordered(second_first: bool) -> Simulation {
+        let (mut sim, first, second) =
+            reveal_display_transition_pair(LocomotorKind::Fly, 500);
+        let transition_order = if second_first {
+            [second, first]
+        } else {
+            [first, second]
+        };
+        for id in transition_order {
+            sim.substrate
+                .entities
+                .get_mut(id)
+                .unwrap()
+                .locomotor
+                .as_mut()
+                .unwrap()
+                .altitude = SimFixed::from_num(1);
+            assert!(sim.sync_display_layer_for_object(id));
+        }
+        sim
+    }
+
+    let sim = ordered(true);
+    let opposite = ordered(false);
+    assert_eq!(sim.tactical_registration_order(), opposite.tactical_registration_order());
+    assert_eq!(
+        sim.state_hash_without_flat_display_order_v122(),
+        opposite.state_hash_without_flat_display_order_v122(),
+        "the v120 provenance projection excludes DisplayClass append history"
+    );
+    assert_ne!(
+        sim.state_hash(),
+        opposite.state_hash(),
+        "saved flat submission history is deterministic hash authority"
+    );
+
+    let before_hash = sim.state_hash();
+    let before_order = sim.tactical_display_layer_order(4).to_vec();
+    let bytes = GameSnapshot::save(&sim, 0, 0, "display-order", 0);
+    let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
+    restored.restore_after_snapshot_load().unwrap();
+    assert_eq!(restored.tactical_display_layer_order(4), before_order);
+    assert_eq!(restored.state_hash(), before_hash);
+}
+
+#[test]
+fn phase3_anim_constructor_layer_is_current_hash_authority_only() {
+    let mut layer3 = Simulation::new();
+    insert_anim(&mut layer3, 1, false);
+    let mut layer4 = Simulation::new();
+    insert_anim(&mut layer4, 1, false);
+    layer4
+        .substrate
+        .anims
+        .get_mut(1)
+        .unwrap()
+        .native_display_layer = 4;
+
+    assert_eq!(
+        layer3.state_hash_without_flat_display_order_v122(),
+        layer4.state_hash_without_flat_display_order_v122(),
+        "the v120 projection excludes AnimType's constructor layer"
+    );
+    assert_ne!(layer3.state_hash(), layer4.state_hash());
+}
+
 fn drive_ship_slope_rules() -> crate::rules::ruleset::RuleSet {
     let ini = crate::rules::ini_parser::IniFile::from_str(
         "[VehicleTypes]\n0=DRIVE\n1=SHIP\n2=TTRAIN\n\
@@ -1350,6 +1574,7 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
         stable_id,
         native_unique_id: stable_id as i32,
         type_id,
+        native_display_layer: 3,
         world_coord: AnimWorldCoord { x: 0, y: 0, z: 0 },
         draw_flags: 0,
         z_adjust: 0,

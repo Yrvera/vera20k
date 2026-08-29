@@ -357,7 +357,9 @@ use crate::sim::world::Simulation;
 // Bumped 120 -> 121: scheduler AnimClass records persist the explicit Building
 // `Explosion=` Start-smudge producer identity. The bit gates future Scenario
 // RNG and smudge/ore mutation when a delayed animation reaches Middle.
-const SNAPSHOT_VERSION: u32 = 121;
+// Bumped 121 -> 122: Anim records persist their constructor layer and the
+// substrate persists native flat DisplayClass submission history.
+const SNAPSHOT_VERSION: u32 = 122;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -498,6 +500,18 @@ pub enum SnapshotRestoreError {
     DuplicateLogicIdentity { object_id: u64 },
     #[error("LogicVector object id {object_id} has no restored registry identity")]
     MissingLogicIdentity { object_id: u64 },
+    #[error("display layers contain duplicate object id {object_id}")]
+    DuplicateDisplayLayerIdentity { object_id: u64 },
+    #[error("display layers reference missing object id {object_id}")]
+    MissingDisplayLayerIdentity { object_id: u64 },
+    #[error(
+        "display object {object_id} vector layer {vector_layer} disagrees with stored layer {stored_layer:?}"
+    )]
+    DisplayLayerMembershipMismatch {
+        object_id: u64,
+        vector_layer: u8,
+        stored_layer: Option<u8>,
+    },
     #[error("live {registry} object id {object_id} is absent from LogicVector")]
     MissingRequiredLogicIdentity {
         registry: &'static str,
@@ -3313,10 +3327,11 @@ mod tests {
     /// by Unit Grinder/absorber continuations; 118 -> 119 adds Ship's RawTrack
     /// handoff/endpoint occupation pair; 119 -> 120 adds Bio Reactor Infantry
     /// tracking/occupant bytes and the House +0x2F4 count; 120 -> 121 adds the
-    /// Building Explosion Start-smudge producer bit.
+    /// Building Explosion Start-smudge producer bit; 121 -> 122 adds Anim's
+    /// constructor layer plus saved native flat DisplayClass submission history.
     #[test]
-    fn phase3_combined_snapshot_version_is_121() {
-        assert_eq!(super::SNAPSHOT_VERSION, 121);
+    fn phase3_combined_snapshot_version_is_122() {
+        assert_eq!(super::SNAPSHOT_VERSION, 122);
     }
 
     #[test]
@@ -3801,7 +3816,7 @@ mod tests {
         let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v121 facility references resolve");
+            .expect("v122 facility references resolve");
         assert_eq!(
             restored.houses[&owner].grinder_building_order,
             vec![older_id, newer_id]
@@ -8039,7 +8054,7 @@ mod tests {
         assert_ne!(changed.state_hash(), baseline, "temporal warped byte hashes");
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "result_link_fixture", 0);
-        let mut restored = GameSnapshot::load(&bytes).expect("v121 link snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes).expect("v122 link snapshot").sim;
         restored
             .restore_after_snapshot_load()
             .expect("all reciprocal references resolve");

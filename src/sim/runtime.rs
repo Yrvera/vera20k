@@ -156,6 +156,11 @@ impl<'a> SimView<'a> {
         self.simulation.tactical_registration_order()
     }
 
+    /// Persistent native append order for unsorted Air/Top display layers.
+    pub(crate) fn tactical_display_layer_order(&self, layer: u8) -> &'a [u64] {
+        self.simulation.tactical_display_layer_order(layer)
+    }
+
     /// Pending radar-terrain batch for the minimap dirty gate. Presentation
     /// acknowledges this exact generation only after a completed update.
     pub(crate) fn radar_terrain_dirty(&self) -> (&'a [(u16, u16)], u64) {

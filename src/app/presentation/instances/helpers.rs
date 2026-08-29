@@ -14,7 +14,6 @@ use crate::sim::components::Position;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
-use crate::util::fixed_math::SIM_ZERO;
 
 /// Produce the one entity encounter order shared by tactical rendering and
 /// input picking. Layer/Y-sort comes from `TacticalDrawPlan`; equal keys retain
@@ -275,9 +274,9 @@ pub(crate) enum EntityDrawBand {
     Top,
 }
 
-pub(crate) const NATIVE_GROUND_LAYER: u8 = 2;
-pub(crate) const NATIVE_AIR_LAYER: u8 = 3;
-pub(crate) const NATIVE_TOP_LAYER: u8 = 4;
+pub(crate) const NATIVE_GROUND_LAYER: u8 = crate::sim::world::NATIVE_GROUND_LAYER;
+pub(crate) const NATIVE_AIR_LAYER: u8 = crate::sim::world::NATIVE_AIR_LAYER;
+pub(crate) const NATIVE_TOP_LAYER: u8 = crate::sim::world::NATIVE_TOP_LAYER;
 
 /// Exact display-layer number returned by the active locomotor.
 ///
@@ -285,27 +284,7 @@ pub(crate) const NATIVE_TOP_LAYER: u8 = 4;
 /// height is below its configured hover height and Top once that height is
 /// reached. Descending jumpjets therefore return to Air before landing.
 pub(crate) fn entity_draw_layer(entity: &GameEntity) -> u8 {
-    if entity.parachute_state.is_some() {
-        return NATIVE_GROUND_LAYER;
-    }
-    if entity.rocket_state.is_some() {
-        return NATIVE_AIR_LAYER;
-    }
-    let Some(loco) = entity.locomotor.as_ref() else {
-        return NATIVE_GROUND_LAYER;
-    };
-    match loco.kind {
-        LocomotorKind::Rocket => NATIVE_AIR_LAYER,
-        LocomotorKind::Fly if loco.altitude > SIM_ZERO => NATIVE_TOP_LAYER,
-        LocomotorKind::Jumpjet if loco.altitude > SIM_ZERO => {
-            if loco.altitude >= loco.target_altitude {
-                NATIVE_TOP_LAYER
-            } else {
-                NATIVE_AIR_LAYER
-            }
-        }
-        _ => NATIVE_GROUND_LAYER,
-    }
+    crate::sim::world::entity_display_layer(entity)
 }
 
 /// Which band this entity's body belongs to, per gamemd's per-locomotor answer.

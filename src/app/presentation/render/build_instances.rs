@@ -342,10 +342,15 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &top_shp_ids,
         &top_shp_layers,
         &top_shp_modes,
-        state
-            .match_state.sim_runtime
-            .as_ref()
-            .map_or(&[], |rt| rt.view().tactical_registration_order()),
+        state.match_state.sim_runtime.as_ref().map_or(
+            [&[][..], &[][..]],
+            |rt| {
+                [
+                    rt.view().tactical_display_layer_order(3),
+                    rt.view().tactical_display_layer_order(4),
+                ]
+            },
+        ),
     );
     // Non-garrison weapon muzzle flashes at FLH fire origins.
     instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
@@ -1009,8 +1014,9 @@ fn sort_by_depth_desc_with_pages(instances: &mut Vec<SpriteInstance>, pages: &mu
 ///
 /// `DisplayClass::Submit_Object @ 0x004A9720` appends each object to its
 /// numeric layer vector. The display traversal consumes layer 3 completely
-/// before layer 4; within either vector, the live tactical registration is the
-/// append authority. Atlas page and VXL/SHP pipeline are payload only.
+/// before layer 4; within either vector, the saved DisplayClass submission
+/// history is the append authority. Atlas page and VXL/SHP pipeline are
+/// payload only.
 fn build_flat_layer_draws(
     unit_pages: &[usize],
     unit_ids: &[u64],
@@ -1019,7 +1025,7 @@ fn build_flat_layer_draws(
     shp_ids: &[u64],
     shp_layers: &[u8],
     shp_modes: &[super::draw_plan_lowering::ShpCompositeMode],
-    registrations: &[u64],
+    display_orders: [&[u64]; 2],
 ) -> Vec<super::draw_plan_lowering::FlatLayerDraw> {
     assert_eq!(
         unit_pages.len(),
@@ -1047,10 +1053,16 @@ fn build_flat_layer_draws(
         "every flat SHP instance must carry one composite mode"
     );
 
-    let ranks: std::collections::BTreeMap<u64, usize> = registrations
-        .iter()
+    let ranks: std::collections::BTreeMap<(u8, u64), usize> = display_orders
+        .into_iter()
         .enumerate()
-        .map(|(rank, &id)| (id, rank))
+        .flat_map(|(index, order)| {
+            let layer = index as u8 + 3;
+            order
+                .iter()
+                .enumerate()
+                .map(move |(rank, &id)| ((layer, id), rank))
+        })
         .collect();
     let mut emitted = Vec::with_capacity(unit_pages.len() + shp_pages.len());
     for (index, ((&page, &owner), &layer)) in unit_pages
@@ -1064,7 +1076,10 @@ fn build_flat_layer_draws(
             "flat VXL draw must retain native layer 3 or 4"
         );
         emitted.push((
-            ranks.get(&owner).copied().unwrap_or(usize::MAX),
+            ranks
+                .get(&(layer, owner))
+                .copied()
+                .unwrap_or(usize::MAX),
             index,
             super::draw_plan_lowering::FlatLayerDraw {
                 layer,
@@ -1089,7 +1104,10 @@ fn build_flat_layer_draws(
             "flat SHP draw must retain native layer 3 or 4"
         );
         emitted.push((
-            ranks.get(&owner).copied().unwrap_or(usize::MAX),
+            ranks
+                .get(&(layer, owner))
+                .copied()
+                .unwrap_or(usize::MAX),
             unit_emissions + index,
             super::draw_plan_lowering::FlatLayerDraw {
                 layer,
@@ -1168,7 +1186,7 @@ mod tests {
                 ShpCompositeMode::Standard,
                 ShpCompositeMode::AnimShadowDestinationHalve,
             ],
-            &[40, 30],
+            [&[30], &[40]],
         );
         assert_eq!(
             draws.iter().map(|draw| draw.owner).collect::<Vec<_>>(),
@@ -1212,7 +1230,7 @@ mod tests {
                     ShpCompositeMode::Standard,
                     ShpCompositeMode::AnimShadowDestinationHalve,
                 ],
-                &registrations,
+                [&[], &registrations],
             );
             let expected = if registrations[0] == 10 {
                 vec![10, 20, 20]
