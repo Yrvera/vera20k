@@ -21,6 +21,7 @@ use crate::render::batch::CameraUniform;
 use crate::render::gpu::GpuContext;
 
 const SHADER: &str = include_str!("combat_light.wgsl");
+const ANIM_SHADOW_SHADER: &str = include_str!("anim_shadow.wgsl");
 const MASK_WIDTH: u32 = 256;
 const MASK_HEIGHT: u32 = 128;
 const MASK_LAYER_COUNT: u32 = 64;
@@ -49,6 +50,9 @@ struct CompositionTargets {
 /// App-owned renderer for the native persistent combat-light vector.
 pub(crate) struct CombatLightRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// Exact encoded-destination compositor for ordinary AnimClass
+    /// `Shadow=yes` draws (native flags 0x601).
+    anim_shadow_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     mask_bind_group: wgpu::BindGroup,
@@ -62,7 +66,10 @@ pub(crate) struct CombatLightRenderer {
 }
 
 impl CombatLightRenderer {
-    pub(crate) fn new(gpu: &GpuContext) -> Self {
+    pub(crate) fn new(
+        gpu: &GpuContext,
+        batch: &crate::render::batch::BatchRenderer,
+    ) -> Self {
         let encoded_format = gpu.surface_format.remove_srgb_suffix();
         let camera_layout = gpu
             .device
@@ -191,6 +198,66 @@ impl CombatLightRenderer {
                 cache: None,
             });
 
+        let anim_shadow_shader =
+            gpu.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("AnimClass Exact Encoded Shadow Shader"),
+                    source: wgpu::ShaderSource::Wgsl(ANIM_SHADOW_SHADER.into()),
+                });
+        let anim_shadow_layout =
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("AnimClass Exact Encoded Shadow Pipeline Layout"),
+                    bind_group_layouts: &[
+                        batch.camera_bind_group_layout(),
+                        batch.texture_bind_group_layout(),
+                        &scene_bind_group_layout,
+                    ],
+                    push_constant_ranges: &[],
+                });
+        let anim_shadow_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2,
+            1 => Float32x2,
+            2 => Float32x2,
+            3 => Float32x2,
+            4 => Float32
+        ];
+        let anim_shadow_pipeline =
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("AnimClass Exact Encoded Shadow Pipeline"),
+                    layout: Some(&anim_shadow_layout),
+                    vertex: wgpu::VertexState {
+                        module: &anim_shadow_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<
+                                crate::render::batch::SpriteInstance,
+                            >() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &anim_shadow_attributes,
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &anim_shadow_shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            // No sRGB conversion is allowed here: 0x601 edits
+                            // the stored encoded destination, not linear light.
+                            format: encoded_format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
         let instance_buffer = allocate_instance_buffer(gpu, INITIAL_CAPACITY);
         let targets = create_composition_targets(
             gpu,
@@ -202,6 +269,7 @@ impl CombatLightRenderer {
         );
         Self {
             pipeline,
+            anim_shadow_pipeline,
             camera_buffer,
             camera_bind_group,
             mask_bind_group,
@@ -275,6 +343,69 @@ impl CombatLightRenderer {
     /// it at the UI/cursor boundary before the cursor pass modifies it.
     pub(crate) fn composition_texture(&self) -> &wgpu::Texture {
         &self.targets.texture
+    }
+
+    /// Apply a contiguous native-ordered run of AnimClass shadow stencils.
+    ///
+    /// A fresh destination snapshot precedes *every* instance. That is
+    /// load-bearing for overlapping DestroyAnim shadows: two nonzero stencils
+    /// halve the already-halved encoded destination rather than both reading
+    /// the same pre-run colour.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_anim_shadow_run(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        batch: &crate::render::batch::BatchRenderer,
+        stencil: &crate::render::batch::BatchTexture,
+        buffer: &wgpu::Buffer,
+        start: u32,
+        count: u32,
+        tactical: [u32; 4],
+    ) {
+        let extent = wgpu::Extent3d {
+            width: self.targets.width,
+            height: self.targets.height,
+            depth_or_array_layers: 1,
+        };
+        for index in anim_shadow_instance_indices(start, count) {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.targets.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.targets.scratch_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                extent,
+            );
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("AnimClass Native 0x601 Encoded Shadow Edit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.targets.encoded_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.anim_shadow_pipeline);
+            pass.set_bind_group(0, batch.camera_bind_group(), &[]);
+            pass.set_bind_group(1, &stencil.bind_group, &[]);
+            pass.set_bind_group(2, &self.targets.scene_bind_group, &[]);
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.set_scissor_rect(tactical[0], tactical[1], tactical[2], tactical[3]);
+            pass.draw(0..6, index..index + 1);
+        }
     }
 
     /// Apply the vector after tactical objects and before later tactical
@@ -354,6 +485,10 @@ impl CombatLightRenderer {
             },
         );
     }
+}
+
+fn anim_shadow_instance_indices(start: u32, count: u32) -> std::ops::Range<u32> {
+    start..start.saturating_add(count)
 }
 
 /// Native `CoordsToClient2` projects the planar terms with signed integer
@@ -662,5 +797,61 @@ mod tests {
         assert_eq!(native_channel(160, 64, 6, 2), 160);
         assert_eq!(native_channel(160, 64, 6, 4), 160);
         assert_eq!(native_channel(160, 64, 6, 8), 200);
+    }
+
+    #[test]
+    fn phase3_anim_shadow_pipeline_halves_encoded_destination_per_nonzero_stencil() {
+        wgpu::naga::front::wgsl::parse_str(ANIM_SHADOW_SHADER)
+            .expect("the production encoded-shadow WGSL must validate");
+
+        fn encoded_edit(destination: f32, stencil: u8) -> f32 {
+            if stencil == 0 {
+                destination
+            } else {
+                destination * 0.5
+            }
+        }
+        fn srgb_to_linear(c: f32) -> f32 {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn linear_to_srgb(c: f32) -> f32 {
+            if c <= 0.0031308 {
+                12.92 * c
+            } else {
+                1.055 * c.powf(1.0 / 2.4) - 0.055
+            }
+        }
+
+        let destination = 0.5;
+        let native = encoded_edit(destination, 1);
+        let approximate = linear_to_srgb(0.5 * srgb_to_linear(destination));
+        assert_eq!(native, 0.25);
+        assert!((approximate - 0.36078).abs() < 0.001);
+        assert!(
+            (native - approximate).abs() > 0.1,
+            "the exact encoded edit must remain distinguishable from source-alpha sRGB blending",
+        );
+        assert_eq!(encoded_edit(destination, 0), destination);
+
+        let repeated = encoded_edit(encoded_edit(destination, 9), 4);
+        assert_eq!(repeated, 0.125, "overlap must halve the already-halved destination");
+
+        assert!(ANIM_SHADOW_SHADER.contains("textureLoad(destination_snapshot"));
+        assert!(ANIM_SHADOW_SHADER.contains("destination.rgb * 0.5"));
+        assert!(ANIM_SHADOW_SHADER.contains("discard"));
+    }
+
+    #[test]
+    fn phase3_anim_shadow_compositor_snapshots_before_every_overlapping_instance() {
+        assert_eq!(
+            anim_shadow_instance_indices(7, 3).collect::<Vec<_>>(),
+            vec![7, 8, 9],
+            "each instance gets its own copy-then-edit iteration",
+        );
+        assert!(anim_shadow_instance_indices(4, 0).is_empty());
     }
 }

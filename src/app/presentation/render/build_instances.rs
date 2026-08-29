@@ -56,6 +56,7 @@ pub(super) struct WorldInstances {
     /// Kept flat so atlas page changes cannot reorder Top-layer submissions.
     pub top_shp: Vec<SpriteInstance>,
     pub top_shp_pages: Vec<usize>,
+    pub top_shp_modes: Vec<super::draw_plan_lowering::ShpCompositeMode>,
     /// Selected buildings' bodies again, for the depth-only stamp that lets a
     /// building's own art clip its selection-bracket redraw. Empty whenever no
     /// structure is selected.
@@ -240,6 +241,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut top_shp: Vec<SpriteInstance> = Vec::new();
     let mut top_shp_pages: Vec<usize> = Vec::new();
     let mut top_shp_ids: Vec<u64> = Vec::new();
+    let mut top_shp_modes: Vec<super::draw_plan_lowering::ShpCompositeMode> = Vec::new();
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut selected_building_depth_paged: Vec<Vec<SpriteInstance>> =
         vec![Vec::new(); shp_page_count];
@@ -309,6 +311,10 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut ground_objects,
         &ground_order,
     );
+    top_shp_modes.resize(
+        top_shp.len(),
+        super::draw_plan_lowering::ShpCompositeMode::Standard,
+    );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     instances::build_world_effect_instances(state, &mut shp_paged);
     // Scheduler-owned AnimClass objects use their parsed native layer: Ground
@@ -319,6 +325,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut top_shp,
         &mut top_shp_pages,
         &mut top_shp_ids,
+        &mut top_shp_modes,
         &mut ground_objects,
         &ground_order,
     );
@@ -326,6 +333,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut top_shp,
         &mut top_shp_pages,
         &mut top_shp_ids,
+        &mut top_shp_modes,
         state
             .match_state.sim_runtime
             .as_ref()
@@ -401,6 +409,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         top_unit_pages,
         top_shp,
         top_shp_pages,
+        top_shp_modes,
         selected_building_depth_paged,
         particle_paged,
         cell_sparkles,
@@ -997,6 +1006,7 @@ fn order_top_shp_by_registration(
     instances: &mut Vec<SpriteInstance>,
     pages: &mut Vec<usize>,
     ids: &mut Vec<u64>,
+    modes: &mut Vec<super::draw_plan_lowering::ShpCompositeMode>,
     registrations: &[u64],
 ) {
     assert_eq!(
@@ -1009,30 +1019,46 @@ fn order_top_shp_by_registration(
         ids.len(),
         "every Top SHP instance must carry one stable object id"
     );
+    assert_eq!(
+        instances.len(),
+        modes.len(),
+        "every Top SHP instance must carry one composite mode"
+    );
 
     let ranks: std::collections::BTreeMap<u64, usize> = registrations
         .iter()
         .enumerate()
         .map(|(rank, &id)| (id, rank))
         .collect();
-    let mut emitted: Vec<(usize, SpriteInstance, usize, u64)> = instances
+    let mut emitted: Vec<(
+        usize,
+        SpriteInstance,
+        usize,
+        u64,
+        super::draw_plan_lowering::ShpCompositeMode,
+    )> = instances
         .drain(..)
         .zip(pages.drain(..))
         .zip(ids.drain(..))
+        .zip(modes.drain(..))
         .enumerate()
-        .map(|(emission, ((instance, page), id))| (emission, instance, page, id))
+        .map(|(emission, (((instance, page), id), mode))| {
+            (emission, instance, page, id, mode)
+        })
         .collect();
-    emitted.sort_by_key(|(emission, _, _, id)| {
+    emitted.sort_by_key(|(emission, _, _, id, _)| {
         (ranks.get(id).copied().unwrap_or(usize::MAX), *emission)
     });
 
     instances.reserve(emitted.len());
     pages.reserve(emitted.len());
     ids.reserve(emitted.len());
-    for (_, instance, page, id) in emitted {
+    modes.reserve(emitted.len());
+    for (_, instance, page, id, mode) in emitted {
         instances.push(instance);
         pages.push(page);
         ids.push(id);
+        modes.push(mode);
     }
 }
 
@@ -1092,11 +1118,30 @@ mod tests {
         ];
         let mut pages = vec![2usize, 0, 1];
         let mut ids = vec![20u64, 10, 30];
+        let mut modes = vec![
+            crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard,
+            crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve,
+            crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard,
+        ];
 
-        order_top_shp_by_registration(&mut instances, &mut pages, &mut ids, &[10, 20, 30]);
+        order_top_shp_by_registration(
+            &mut instances,
+            &mut pages,
+            &mut ids,
+            &mut modes,
+            &[10, 20, 30],
+        );
 
         assert_eq!(ids, vec![10, 20, 30]);
         assert_eq!(pages, vec![0, 2, 1]);
+        assert_eq!(
+            modes,
+            vec![
+                crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve,
+                crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard,
+                crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard,
+            ],
+        );
         assert_eq!(
             instances
                 .iter()

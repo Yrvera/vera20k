@@ -258,6 +258,13 @@ struct AnimClassDrawPiece {
     native_draw_flags: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RenderedAnimClassPiece {
+    page: usize,
+    kind: AnimClassDrawPieceKind,
+    instance: SpriteInstance,
+}
+
 fn standard_anim_body_draw_flags(mut flags: u32) -> u32 {
     // `AnimClass::DrawIt @ 0x00422CA0`: 0x004230FE..0x00423103 adds
     // 0x800 when the low bit is clear; 0x00423806 adds 0x2000 before the
@@ -315,7 +322,7 @@ fn lower_anim_class_draw_pieces(
     body_tint: [f32; 3],
     body_material: AnimInstanceMaterial,
     instance_z_adjust: i32,
-) -> Vec<(usize, SpriteInstance)> {
+) -> Vec<RenderedAnimClassPiece> {
     draw_pieces
         .iter()
         .filter_map(|piece| {
@@ -333,9 +340,10 @@ fn lower_anim_class_draw_pieces(
                     (standard_anim_body_draw_flags(body_material.native_flags) & !0x6) | 0x601,
                 );
             }
-            Some((
-                entry.page as usize,
-                SpriteInstance {
+            Some(RenderedAnimClassPiece {
+                page: entry.page as usize,
+                kind: piece.kind,
+                instance: SpriteInstance {
                     position: [center_x + entry.offset_x, center_y + entry.offset_y],
                     size: entry.pixel_size,
                     uv_origin: entry.uv_origin,
@@ -348,14 +356,15 @@ fn lower_anim_class_draw_pieces(
                     // The resident shadow half is a black 0x601 stencil;
                     // type/cell palette and body translucency do not apply.
                     tint: if is_shadow { DEFAULT_TINT } else { body_tint },
-                    alpha: if is_shadow {
-                        1.0
-                    } else {
-                        body_material.alpha
-                    },
+                    // The encoded compositor ignores this alpha. Keeping 0.5
+                    // here preserves the pre-existing approximate fallback for
+                    // unverified non-retail `Layer=other` shadow anims; every
+                    // scoped retail DestroyAnim routes to an exact Ground or
+                    // Top destination instead.
+                    alpha: if is_shadow { 0.5 } else { body_material.alpha },
                     ..Default::default()
                 },
-            ))
+            })
         })
         .collect()
 }
@@ -364,11 +373,14 @@ fn lower_anim_class_draw_pieces(
 fn emit_anim_class_rendered_pieces(
     stable_id: u64,
     destination: Option<AnimRenderDestination>,
-    rendered_pieces: Vec<(usize, SpriteInstance)>,
+    rendered_pieces: Vec<RenderedAnimClassPiece>,
     paged: &mut [Vec<SpriteInstance>],
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
+    top_modes: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode,
+    >,
     ground_objects: &mut Vec<
         crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance,
     >,
@@ -377,12 +389,17 @@ fn emit_anim_class_rendered_pieces(
         Some(AnimRenderDestination::Ground(parent)) => {
             let pieces = rendered_pieces
                 .into_iter()
-                .map(|(page, instance)| {
+                .map(|piece| {
                     crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
-                        target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
-                            page,
-                        ),
-                        instance,
+                        target: match piece.kind {
+                            AnimClassDrawPieceKind::Body => crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
+                                piece.page,
+                            ),
+                            AnimClassDrawPieceKind::Shadow => crate::app::presentation::render::draw_plan_lowering::GroundTexture::AnimShadowShpPage(
+                                piece.page,
+                            ),
+                        },
+                        instance: piece.instance,
                     }
                 })
                 .collect();
@@ -393,15 +410,23 @@ fn emit_anim_class_rendered_pieces(
             );
         }
         Some(AnimRenderDestination::Top) => {
-            for (page, instance) in rendered_pieces {
-                top_instances.push(instance);
-                top_pages.push(page);
+            for piece in rendered_pieces {
+                top_instances.push(piece.instance);
+                top_pages.push(piece.page);
                 top_ids.push(stable_id);
+                top_modes.push(match piece.kind {
+                    AnimClassDrawPieceKind::Body => {
+                        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard
+                    }
+                    AnimClassDrawPieceKind::Shadow => {
+                        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve
+                    }
+                });
             }
         }
         Some(AnimRenderDestination::Existing) => {
-            for (page, instance) in rendered_pieces {
-                paged[page].push(instance);
+            for piece in rendered_pieces {
+                paged[piece.page].push(piece.instance);
             }
         }
         None => {}
@@ -469,6 +494,9 @@ pub(crate) fn build_anim_class_instances(
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
+    top_modes: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode,
+    >,
     ground_objects: &mut Vec<
         crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance,
     >,
@@ -607,6 +635,7 @@ pub(crate) fn build_anim_class_instances(
             top_instances,
             top_pages,
             top_ids,
+            top_modes,
             ground_objects,
         );
     }
@@ -2066,14 +2095,23 @@ mod tests {
             -200,
         );
         assert_eq!(lowered.len(), 2, "the builder lowering emits two sprites");
-        assert_eq!(lowered.iter().map(|(page, _)| *page).collect::<Vec<_>>(), vec![0, 1]);
-        assert_eq!(lowered[0].1.uv_origin[0], 0.02, "body frame is first");
-        assert_eq!(lowered[1].1.uv_origin[0], 0.08, "shadow frame is second");
-        assert_eq!(lowered[0].1.alpha, 0.5);
-        assert_eq!(lowered[1].1.alpha, 1.0, "0x601 alpha is baked into the stencil");
-        assert_eq!(lowered[0].1.tint, [0.8, 0.7, 0.6]);
-        assert_eq!(lowered[1].1.tint, crate::map::lighting::DEFAULT_TINT);
-        assert!(lowered[0].1.depth < lowered[1].1.depth);
+        assert_eq!(
+            lowered.iter().map(|piece| piece.page).collect::<Vec<_>>(),
+            vec![0, 1],
+        );
+        assert_eq!(
+            lowered[0].instance.uv_origin[0], 0.02,
+            "body frame is first",
+        );
+        assert_eq!(
+            lowered[1].instance.uv_origin[0], 0.08,
+            "shadow frame is second",
+        );
+        assert_eq!(lowered[0].instance.alpha, 0.5);
+        assert_eq!(lowered[1].instance.alpha, 0.5);
+        assert_eq!(lowered[0].instance.tint, [0.8, 0.7, 0.6]);
+        assert_eq!(lowered[1].instance.tint, crate::map::lighting::DEFAULT_TINT);
+        assert!(lowered[0].instance.depth < lowered[1].instance.depth);
 
         let order =
             crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder::new(&[77]);
@@ -2088,6 +2126,7 @@ mod tests {
         let mut top_instances = Vec::new();
         let mut top_pages = Vec::new();
         let mut top_ids = Vec::new();
+        let mut top_modes = Vec::new();
         let mut ground_objects = Vec::new();
         emit_anim_class_rendered_pieces(
             77,
@@ -2097,12 +2136,23 @@ mod tests {
             &mut top_instances,
             &mut top_pages,
             &mut top_ids,
+            &mut top_modes,
             &mut ground_objects,
         );
         assert_eq!(ground_objects.len(), 1);
         assert_eq!(ground_objects[0].pieces.len(), 2);
         assert_eq!(ground_objects[0].pieces[0].instance.uv_origin[0], 0.02);
         assert_eq!(ground_objects[0].pieces[1].instance.uv_origin[0], 0.08);
+        assert_eq!(
+            ground_objects[0].pieces[0].target,
+            crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(0),
+        );
+        assert_eq!(
+            ground_objects[0].pieces[1].target,
+            crate::app::presentation::render::draw_plan_lowering::GroundTexture::AnimShadowShpPage(
+                1,
+            ),
+        );
 
         emit_anim_class_rendered_pieces(
             77,
@@ -2112,6 +2162,7 @@ mod tests {
             &mut top_instances,
             &mut top_pages,
             &mut top_ids,
+            &mut top_modes,
             &mut ground_objects,
         );
         assert_eq!(top_instances.len(), 2);
@@ -2119,6 +2170,13 @@ mod tests {
         assert_eq!(top_ids, vec![77, 77]);
         assert_eq!(top_instances[0].uv_origin[0], 0.02);
         assert_eq!(top_instances[1].uv_origin[0], 0.08);
+        assert_eq!(
+            top_modes,
+            vec![
+                crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard,
+                crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve,
+            ],
+        );
 
         let non_shadow = anim_class_standard_draw_pieces(2, 12, false, 0x600);
         let lowered_non_shadow = lower_anim_class_draw_pieces(

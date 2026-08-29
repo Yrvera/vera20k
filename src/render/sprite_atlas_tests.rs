@@ -299,6 +299,18 @@ fn phase3_scheduler_shadow_anim_registers_and_classifies_the_raw_shadow_half() {
         12,
     ));
     assert!(!is_scheduler_anim_shadow_frame(None, "DEST", 6, 12));
+
+    assert_eq!(
+        anim_shadow_stencil_to_rgba(&[0, 1, 0, 7, 255]),
+        vec![
+            0, 0, 0, 0, // transparent: destination untouched
+            0, 0, 0, 255, // every nonzero byte is the same binary stencil
+            0, 0, 0, 0,
+            0, 0, 0, 255,
+            0, 0, 0, 255,
+        ],
+        "AnimClass shadow atlas data must not bake the bridge alpha approximation",
+    );
 }
 
 #[test]
