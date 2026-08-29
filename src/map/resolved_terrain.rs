@@ -4118,8 +4118,12 @@ mod tests {
             slope_set_pieces2: None,
             bridge_top_left_1: None,
             bridge_top_left_2: None,
+            bridge_bottom_right_1: None,
+            bridge_bottom_right_2: None,
             bridge_top_right_1: None,
             bridge_top_right_2: None,
+            bridge_bottom_left_1: None,
+            bridge_bottom_left_2: None,
             bridge_middle_1: None,
             bridge_middle_2: None,
             tunnels: None,
@@ -4148,8 +4152,12 @@ mod tests {
             slope_set_pieces2: None,
             bridge_top_left_1: None,
             bridge_top_left_2: None,
+            bridge_bottom_right_1: None,
+            bridge_bottom_right_2: None,
             bridge_top_right_1: None,
             bridge_top_right_2: None,
+            bridge_bottom_left_1: None,
+            bridge_bottom_left_2: None,
             bridge_middle_1: None,
             bridge_middle_2: None,
             tunnels: None,
@@ -4159,6 +4167,20 @@ mod tests {
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
             rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
+    }
+
+    fn synthetic_automatic_shell_theater() -> TheaterData {
+        let mut theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=5\nFileName=tunnel\nSetName=Tunnels\n\n\
+              [TileSet0001]\nTilesInSet=5\nFileName=track\nSetName=Track Tunnels\n\n\
+              [TileSet0002]\nTilesInSet=5\nFileName=dirt\nSetName=Dirt Tunnels\n\n\
+              [TileSet0003]\nTilesInSet=5\nFileName=dtunn\nSetName=Dirt Track Tunnels\n",
+        );
+        theater.tunnels = Some(0);
+        theater.track_tunnels = Some(1);
+        theater.dirt_tunnels = Some(2);
+        theater.dirt_track_tunnels = Some(3);
+        theater
     }
 
     fn make_test_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
@@ -4769,6 +4791,94 @@ mod tests {
             grid.tube_at_cell(1, 0).is_some(),
             "0x00484F20 applies no LandType test"
         );
+    }
+
+    #[test]
+    fn automatic_shell_directions_are_indexed_by_tile_offset_for_every_family() {
+        let theater = synthetic_automatic_shell_theater();
+        let mut cells = Vec::new();
+        for (rx, set_start) in [0i32, 5, 10, 15].into_iter().enumerate() {
+            for offset in 0..4i32 {
+                let mut cell = make_test_cell((rx * 4 + offset as usize) as u16, 0);
+                cell.final_tile_index = set_start + offset;
+                cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+                cells.push(cell);
+            }
+        }
+        let mut tubes = Vec::new();
+
+        build_auto_low_bridge_tubes(&mut cells, 16, 1, Some(&theater), &mut tubes);
+
+        assert_eq!(tubes.len(), 16);
+        for (index, tube) in tubes.iter().enumerate() {
+            let expected_direction = i32::from(AUTO_TUBE_DIRECTIONS[index % 4]);
+            let coord = (index as u16, 0);
+            assert_eq!(tube.entry, coord);
+            assert_eq!(tube.exit, coord);
+            assert_eq!(tube.direction, expected_direction);
+            assert!(tube.path_steps.is_empty());
+            assert_eq!(tube.source, TubeSource::AutoLowBridge);
+            assert_eq!(cells[index].tube_index, Some(TubeId(index as u16)));
+        }
+    }
+
+    #[test]
+    fn automatic_shell_predicate_rejects_each_native_boundary_failure() {
+        let theater = synthetic_automatic_shell_theater();
+        assert_eq!(yr_cell_land_type_from_tmp(5), YR_CELL_LAND_TUNNEL);
+        assert_ne!(yr_cell_land_type_from_tmp(4), YR_CELL_LAND_TUNNEL);
+        assert_eq!(auto_tube_direction_for_tile(0, Some(&theater)), Some(2));
+        assert_eq!(auto_tube_direction_for_tile(3, Some(&theater)), Some(0));
+        assert_eq!(
+            auto_tube_direction_for_tile(4, Some(&theater)),
+            None,
+            "the fifth tile of the configured band is excluded"
+        );
+        assert_eq!(auto_tube_direction_for_tile(0, None), None);
+
+        let mut no_families = synthetic_automatic_shell_theater();
+        no_families.tunnels = None;
+        no_families.track_tunnels = None;
+        no_families.dirt_tunnels = None;
+        no_families.dirt_track_tunnels = None;
+        assert_eq!(auto_tube_direction_for_tile(0, Some(&no_families)), None);
+
+        let mut zero_length = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=0\nFileName=empty\nSetName=Empty Tunnel\n\n\
+              [TileSet0001]\nTilesInSet=5\nFileName=next\nSetName=Following Set\n",
+        );
+        zero_length.tunnels = Some(0);
+        for (tile_id, direction) in AUTO_TUBE_DIRECTIONS.into_iter().enumerate() {
+            assert_eq!(
+                auto_tube_direction_for_tile(tile_id as i32, Some(&zero_length)),
+                Some(direction),
+                "native compares the zero-length set's cumulative base without its count"
+            );
+        }
+        assert_eq!(
+            auto_tube_direction_for_tile(4, Some(&zero_length)),
+            None
+        );
+
+        let mut wrong_land = make_test_cell(0, 0);
+        wrong_land.final_tile_index = 0;
+        wrong_land.yr_cell_land_type = LandType::Road.as_index();
+        let mut existing = make_test_cell(1, 0);
+        existing.final_tile_index = 0;
+        existing.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        existing.tube_index = Some(TubeId(0));
+        let mut fifth_tile = make_test_cell(2, 0);
+        fifth_tile.final_tile_index = 4;
+        fifth_tile.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        let mut cells = vec![wrong_land, existing, fifth_tile];
+        let mut tubes = vec![TubeFact::explicit((1, 0), (1, 0), 2, Vec::new())];
+
+        build_auto_low_bridge_tubes(&mut cells, 3, 1, Some(&theater), &mut tubes);
+
+        assert_eq!(tubes.len(), 1);
+        assert_eq!(cells[0].tube_index, None);
+        assert_eq!(cells[1].tube_index, Some(TubeId(0)));
+        assert_eq!(cells[2].tube_index, None);
     }
 
     #[test]
@@ -6048,6 +6158,7 @@ NoUseTileLandType=yes
         );
 
         assert_eq!(metadata.land_type, LandType::Road.as_index());
+        assert_eq!(metadata.yr_cell_land_type, LandType::Road.as_index());
         assert!(!metadata.is_water);
         // The regression: `ground_blocked` was the one land-derived field the
         // override skipped, so the deck stayed impassable while every other
@@ -6058,6 +6169,18 @@ NoUseTileLandType=yes
         assert!(!ground_walk_blocked);
         // The pristine snapshot is untouched, so overlay removal still restores water.
         assert!(base_ground_walk_blocked);
+
+        let theater = synthetic_automatic_shell_theater();
+        let mut cell = make_test_cell(0, 0);
+        cell.final_tile_index = 0;
+        cell.yr_cell_land_type = metadata.yr_cell_land_type;
+        let mut cells = vec![cell];
+        let mut tubes = Vec::new();
+        build_auto_low_bridge_tubes(&mut cells, 1, 1, Some(&theater), &mut tubes);
+        assert!(
+            tubes.is_empty() && cells[0].tube_index.is_none(),
+            "the low Road early branch cannot reach automatic-shell construction"
+        );
     }
 
     #[test]
@@ -6769,8 +6892,12 @@ Tile03ZAdjust=-10
             slope_set_pieces2: None,
             bridge_top_left_1: None,
             bridge_top_left_2: None,
+            bridge_bottom_right_1: None,
+            bridge_bottom_right_2: None,
             bridge_top_right_1: None,
             bridge_top_right_2: None,
+            bridge_bottom_left_1: None,
+            bridge_bottom_left_2: None,
             bridge_middle_1: None,
             bridge_middle_2: None,
             tunnels: None,

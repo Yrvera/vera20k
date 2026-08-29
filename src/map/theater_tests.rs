@@ -269,6 +269,290 @@ fn parse_general_int_missing_bridge_middle_returns_none() {
     assert_eq!(super::parse_general_int(ini, "BridgeMiddle2"), None);
 }
 
+fn bridge_piece_values(keys: super::TheaterBridgePieceKeys) -> [Option<u16>; 10] {
+    [
+        keys.bridge_top_left_1,
+        keys.bridge_top_left_2,
+        keys.bridge_bottom_right_1,
+        keys.bridge_bottom_right_2,
+        keys.bridge_top_right_1,
+        keys.bridge_top_right_2,
+        keys.bridge_bottom_left_1,
+        keys.bridge_bottom_left_2,
+        keys.bridge_middle_1,
+        keys.bridge_middle_2,
+    ]
+}
+
+fn loaded_bridge_piece_values(theater: &TheaterData) -> [Option<u16>; 10] {
+    [
+        theater.bridge_top_left_1,
+        theater.bridge_top_left_2,
+        theater.bridge_bottom_right_1,
+        theater.bridge_bottom_right_2,
+        theater.bridge_top_right_1,
+        theater.bridge_top_right_2,
+        theater.bridge_bottom_left_1,
+        theater.bridge_bottom_left_2,
+        theater.bridge_middle_1,
+        theater.bridge_middle_2,
+    ]
+}
+
+#[test]
+fn bridge_piece_parser_keeps_all_ten_keys_independent() {
+    let ini = "[General]\n\
+BridgeTopLeft1=11\n\
+BridgeTopLeft2=12\n\
+BridgeBottomRight1=13\n\
+BridgeBottomRight2=14\n\
+BridgeTopRight1=15\n\
+BridgeTopRight2=16\n\
+BridgeBottomLeft1=17\n\
+BridgeBottomLeft2=18\n\
+BridgeMiddle1=19\n\
+BridgeMiddle2=20\n";
+
+    assert_eq!(
+        bridge_piece_values(super::parse_bridge_piece_keys(ini)),
+        [
+            Some(11),
+            Some(12),
+            Some(13),
+            Some(14),
+            Some(15),
+            Some(16),
+            Some(17),
+            Some(18),
+            Some(19),
+            Some(20),
+        ]
+    );
+}
+
+#[test]
+fn bridge_piece_parser_preserves_native_absent_values() {
+    let ini = "[General]\n\
+BridgeTopLeft1=-1\n\
+BridgeBottomRight1=3\n\
+BridgeBottomRight2=-1\n\
+BridgeBottomLeft1=6\n\
+BridgeMiddle1=256\n\
+BridgeMiddle2=70000\n";
+
+    assert_eq!(
+        bridge_piece_values(super::parse_bridge_piece_keys(ini)),
+        [
+            None,
+            None,
+            Some(3),
+            None,
+            None,
+            None,
+            Some(6),
+            None,
+            Some(256),
+            None,
+        ]
+    );
+}
+
+#[test]
+fn active_md_theater_inis_have_exact_ten_bridge_piece_values() {
+    const ACTIVE_INIS: [(&str, &str); 6] = [
+        ("TEMPERATE", include_str!("../../ini/temperatmd.ini")),
+        ("SNOW", include_str!("../../ini/snowmd.ini")),
+        ("URBAN", include_str!("../../ini/urbanmd.ini")),
+        ("NEWURBAN", include_str!("../../ini/urbannmd.ini")),
+        ("DESERT", include_str!("../../ini/desertmd.ini")),
+        ("LUNAR", include_str!("../../ini/lunarmd.ini")),
+    ];
+    let expected = [
+        Some(1),
+        Some(2),
+        Some(3),
+        Some(3),
+        Some(4),
+        Some(5),
+        Some(6),
+        Some(6),
+        Some(7),
+        Some(12),
+    ];
+
+    for (theater, ini) in ACTIVE_INIS {
+        assert_eq!(
+            bridge_piece_values(super::parse_bridge_piece_keys(ini)),
+            expected,
+            "{theater}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires RA2_DIR with installed retail RA2/YR assets"]
+fn active_retail_automatic_shell_corpus_is_exact() {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    use crate::assets::asset_manager::AssetManager;
+    use crate::assets::tmp_file::TmpFile;
+
+    let retail_dir = std::env::var_os("RA2_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            crate::util::config::GameConfig::load()
+                .ok()
+                .map(|config| config.paths.ra2_dir)
+        })
+        .expect("set RA2_DIR to the installed retail RA2/YR directory");
+    assert!(retail_dir.is_dir(), "{}", retail_dir.display());
+    let mut assets = AssetManager::new(&retail_dir).expect("load retail MIX stack");
+
+    let mut loaded_assets = 0usize;
+    let mut candidate_base_ids = 0usize;
+    let mut present_subcells = 0usize;
+    let mut positives = BTreeSet::new();
+    let mut missing_assets = BTreeSet::new();
+    let mut variant_assets = BTreeSet::new();
+    let expected_bridge_pieces = [
+        Some(1),
+        Some(2),
+        Some(3),
+        Some(3),
+        Some(4),
+        Some(5),
+        Some(6),
+        Some(6),
+        Some(7),
+        Some(12),
+    ];
+    for theater_name in ["TEMPERATE", "SNOW", "URBAN", "NEWURBAN", "DESERT", "LUNAR"] {
+        let theater = load_theater(&mut assets, theater_name)
+            .unwrap_or_else(|| panic!("load active retail theater {theater_name}"));
+        assert_eq!(
+            loaded_bridge_piece_values(&theater),
+            expected_bridge_pieces,
+            "loaded {theater_name} bridge-piece keys"
+        );
+
+        let mut candidate_tiles = BTreeSet::new();
+        for set_index in [
+            theater.tunnels,
+            theater.track_tunnels,
+            theater.dirt_tunnels,
+            theater.dirt_track_tunnels,
+        ] {
+            let Some(bounds) =
+                set_index.and_then(|index| theater.lookup.bounds().get(index as usize))
+            else {
+                continue;
+            };
+            for offset in 0..4u16 {
+                let Some(tile_id) = bounds.start.checked_add(offset) else {
+                    continue;
+                };
+                if usize::from(tile_id) < theater.lookup.len() {
+                    candidate_tiles.insert(tile_id);
+                }
+            }
+        }
+
+        candidate_base_ids += candidate_tiles.len();
+        for tile_id in candidate_tiles {
+            for variant in 0..theater.lookup.total_file_count(tile_id) {
+                let filename = theater
+                    .lookup
+                    .filename_for_variant(tile_id, variant)
+                    .expect("enumerated TMP variant has a filename");
+                if variant != 0 {
+                    variant_assets.insert(format!("{theater_name}/{filename}"));
+                }
+                let Some(bytes) = assets.get(filename) else {
+                    missing_assets.insert(format!("{theater_name}/{filename}"));
+                    continue;
+                };
+                let tmp = TmpFile::from_bytes(&bytes).unwrap_or_else(|error| {
+                    panic!("parse {theater_name}/{filename}: {error}")
+                });
+                loaded_assets += 1;
+                for (subtile, tile) in tmp.tiles.iter().enumerate() {
+                    let Some(tile) = tile else {
+                        continue;
+                    };
+                    present_subcells += 1;
+                    if tile.terrain_type == 5 {
+                        positives.insert(format!("{theater_name}/{filename}/{subtile}"));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut expected = BTreeSet::new();
+    for (theater, filename, subtiles) in [
+        ("URBAN", "tunnel01.urb", &[3, 6, 9][..]),
+        ("URBAN", "tunnel02.urb", &[1, 2, 3][..]),
+        ("URBAN", "tunnel03.urb", &[3, 6, 9][..]),
+        ("URBAN", "tunnel04.urb", &[1, 2, 3][..]),
+        ("URBAN", "dtunn01.urb", &[3, 6, 9][..]),
+        ("URBAN", "dtunn02.urb", &[1, 2, 3][..]),
+        ("URBAN", "dtunn03.urb", &[3, 6, 9][..]),
+        ("URBAN", "dtunn04.urb", &[1, 2, 3][..]),
+        ("NEWURBAN", "tunnel01.ubn", &[3, 6, 9][..]),
+        ("NEWURBAN", "tunnel02.ubn", &[1, 2, 3][..]),
+        ("NEWURBAN", "tunnel03.ubn", &[3, 6, 9][..]),
+        ("NEWURBAN", "tunnel04.ubn", &[1, 2, 3][..]),
+    ] {
+        for subtile in subtiles {
+            expected.insert(format!("{theater}/{filename}/{subtile}"));
+        }
+    }
+
+    let expected_missing = [
+        "NEWURBAN/MDrodc01.ubn",
+        "NEWURBAN/MDrodc02.ubn",
+        "SNOW/MDrodc01.sno",
+        "SNOW/MDrodc02.sno",
+        "SNOW/MDrodc03.sno",
+        "SNOW/MDrodc04.sno",
+        "URBAN/MDrodc01.urb",
+        "URBAN/MDrodc02.urb",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(missing_assets, expected_missing);
+
+    let expected_variants = [
+        "LUNAR/Green01a.lun",
+        "LUNAR/Green01b.lun",
+        "LUNAR/Green01c.lun",
+        "LUNAR/Green01d.lun",
+        "LUNAR/Green01e.lun",
+        "LUNAR/Green01f.lun",
+        "LUNAR/Green01g.lun",
+        "LUNAR/glat01a.lun",
+        "LUNAR/glat02a.lun",
+        "LUNAR/glat03a.lun",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(variant_assets, expected_variants);
+    assert_eq!(
+        (
+            candidate_base_ids,
+            loaded_assets,
+            present_subcells,
+            positives.len()
+        ),
+        (64, 66, 731, 36),
+        "positive set: {positives:#?}"
+    );
+    assert_eq!(positives, expected);
+}
+
 #[test]
 fn cliff_ranges_resolve_ordinals_to_cumulative_tile_starts() {
     let ini = b"[TileSet0000]\nTilesInSet=2\nFileName=clear\nSetName=Clear\n\n\
@@ -449,8 +733,12 @@ fn bridge_railing_slope_starts_use_tileset_bounds() {
         slope_set_pieces2: Some(2),
         bridge_top_left_1: None,
         bridge_top_left_2: None,
+        bridge_bottom_right_1: None,
+        bridge_bottom_right_2: None,
         bridge_top_right_1: None,
         bridge_top_right_2: None,
+        bridge_bottom_left_1: None,
+        bridge_bottom_left_2: None,
         bridge_middle_1: None,
         bridge_middle_2: None,
         tunnels: None,
@@ -468,8 +756,8 @@ fn bridge_railing_slope_starts_use_tileset_bounds() {
 /// at tileset index 0 with 20 tiles starting at tile_id 0. Palettes are
 /// all-zero (tests never read pixels).
 fn synthetic_theater_with_bridge_keys(
-    bridge_middle_1: Option<u8>,
-    bridge_middle_2: Option<u8>,
+    bridge_middle_1: Option<u16>,
+    bridge_middle_2: Option<u16>,
 ) -> super::TheaterData {
     let ini = b"[TileSet0000]\nTilesInSet=20\nFileName=bridge\nSetName=Bridge\n";
     let lookup = super::parse_tileset_ini(ini, "tem").unwrap();
@@ -488,8 +776,12 @@ fn synthetic_theater_with_bridge_keys(
         slope_set_pieces2: None,
         bridge_top_left_1: Some(1),
         bridge_top_left_2: Some(2),
+        bridge_bottom_right_1: Some(3),
+        bridge_bottom_right_2: Some(3),
         bridge_top_right_1: Some(4),
         bridge_top_right_2: Some(5),
+        bridge_bottom_left_1: Some(6),
+        bridge_bottom_left_2: Some(6),
         bridge_middle_1,
         bridge_middle_2,
         tunnels: None,
@@ -530,6 +822,24 @@ fn ramp_tile_table_matches_binary_height_predicates() {
         table.match_relative_tile(12, 0x02).map(|r| r.kind),
         Some(BridgeRampKind::Middle2)
     );
+}
+
+#[test]
+fn bottom_piece_keys_do_not_enter_the_ramp_classifier() {
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    assert_eq!(td.bridge_bottom_right_1, Some(3));
+    assert_eq!(td.bridge_bottom_right_2, Some(3));
+    assert_eq!(td.bridge_bottom_left_1, Some(6));
+    assert_eq!(td.bridge_bottom_left_2, Some(6));
+
+    let table = BridgeRampTileTable::from_theater(&td).expect("ramp table");
+    for (relative_tile, height) in [(3, 0x0c), (3, 0x08), (6, 0x0c), (6, 0x08)] {
+        assert_eq!(
+            table.match_relative_tile(relative_tile, height),
+            None,
+            "bottom pavement key {relative_tile} at height {height:#x}"
+        );
+    }
 }
 
 #[test]

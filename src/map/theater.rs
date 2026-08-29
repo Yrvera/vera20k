@@ -637,16 +637,24 @@ pub struct TheaterData {
     pub bridge_top_left_1: Option<u16>,
     /// `[General] BridgeTopLeft2=N` - BridgeSet-relative high bridge ramp tile key.
     pub bridge_top_left_2: Option<u16>,
+    /// `[General] BridgeBottomRight1=N` - east-edge pavement-under-bridge tile key.
+    pub bridge_bottom_right_1: Option<u16>,
+    /// `[General] BridgeBottomRight2=N` - alternate east-edge pavement tile key.
+    pub bridge_bottom_right_2: Option<u16>,
     /// `[General] BridgeTopRight1=N` - BridgeSet-relative high bridge ramp tile key.
     pub bridge_top_right_1: Option<u16>,
     /// `[General] BridgeTopRight2=N` - BridgeSet-relative high bridge ramp tile key.
     pub bridge_top_right_2: Option<u16>,
+    /// `[General] BridgeBottomLeft1=N` - south-edge pavement-under-bridge tile key.
+    pub bridge_bottom_left_1: Option<u16>,
+    /// `[General] BridgeBottomLeft2=N` - alternate south-edge pavement tile key.
+    pub bridge_bottom_left_2: Option<u16>,
     /// `[General] BridgeMiddle1=N` — BridgeSet-relative offset for the NS
     /// bridgehead variant block. The 4 NS variant tile_ids occupy
     /// `BridgeSet_start + {N-1, N, N+1, N+2}`. None if the key is absent.
-    pub bridge_middle_1: Option<u8>,
+    pub bridge_middle_1: Option<u16>,
     /// `[General] BridgeMiddle2=N` — same for EW.
-    pub bridge_middle_2: Option<u8>,
+    pub bridge_middle_2: Option<u16>,
     /// `[General] Tunnels=N` - theater tile set for tunnel/low-bridge tube cells.
     pub tunnels: Option<u16>,
     /// `[General] TrackTunnels=N` - track tunnel tile set.
@@ -688,6 +696,20 @@ pub struct BridgeRampTileTable {
     pub middle_2: Option<u16>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TheaterBridgePieceKeys {
+    bridge_top_left_1: Option<u16>,
+    bridge_top_left_2: Option<u16>,
+    bridge_bottom_right_1: Option<u16>,
+    bridge_bottom_right_2: Option<u16>,
+    bridge_top_right_1: Option<u16>,
+    bridge_top_right_2: Option<u16>,
+    bridge_bottom_left_1: Option<u16>,
+    bridge_bottom_left_2: Option<u16>,
+    bridge_middle_1: Option<u16>,
+    bridge_middle_2: Option<u16>,
+}
+
 impl BridgeRampTileTable {
     pub fn from_theater(td: &TheaterData) -> Option<Self> {
         Some(Self {
@@ -695,8 +717,8 @@ impl BridgeRampTileTable {
             top_right_2: td.bridge_top_right_2,
             top_left_1: td.bridge_top_left_1,
             top_left_2: td.bridge_top_left_2,
-            middle_1: td.bridge_middle_1.map(u16::from),
-            middle_2: td.bridge_middle_2.map(u16::from),
+            middle_1: td.bridge_middle_1,
+            middle_2: td.bridge_middle_2,
         })
         .filter(|table| {
             table.top_right_1.is_some()
@@ -793,7 +815,11 @@ impl TheaterData {
 }
 
 fn in_four_tile_run(relative_tile_index: u16, start: Option<u16>) -> bool {
-    start.is_some_and(|first| relative_tile_index >= first && relative_tile_index < first + 4)
+    start.is_some_and(|first| {
+        let relative_tile_index = u32::from(relative_tile_index);
+        let first = u32::from(first);
+        relative_tile_index >= first && relative_tile_index < first + 4
+    })
 }
 
 impl BridgeAnchorVariantTable {
@@ -813,7 +839,7 @@ impl BridgeAnchorVariantTable {
         let bs_start = td.lookup.bounds().get(bs_idx as usize).map(|b| b.start)?;
         let max_tid = td.lookup.len() as u32;
 
-        let compute_axis = |m: u8| -> Option<[u16; 4]> {
+        let compute_axis = |m: u16| -> Option<[u16; 4]> {
             let base = bs_start as u32 + (m as u32) - 1;
             let highest = base + 3;
             if highest >= max_tid {
@@ -922,19 +948,18 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let mut wood_bridge_set = parse_general_int(&ini_text, "WoodBridgeSet");
     let slope_set_pieces = parse_general_int(&ini_text, "SlopeSetPieces");
     let slope_set_pieces2 = parse_general_int(&ini_text, "SlopeSetPieces2");
-    let bridge_top_left_1 = parse_general_int(&ini_text, "BridgeTopLeft1");
-    let bridge_top_left_2 = parse_general_int(&ini_text, "BridgeTopLeft2");
-    let bridge_top_right_1 = parse_general_int(&ini_text, "BridgeTopRight1");
-    let bridge_top_right_2 = parse_general_int(&ini_text, "BridgeTopRight2");
-    // BridgeMiddle1/2 select which 4 consecutive BridgeSet-relative tile_ids
-    // are the NS / EW bridgehead variant blocks. Parsed as u8 because retail
-    // values fit (temperate/snow/urban/desert/lunar = 7/12). Use the existing
-    // parse_general_int (returns u16) and downcast; None on absent key or
-    // out-of-range value.
-    let bridge_middle_1: Option<u8> =
-        parse_general_int(&ini_text, "BridgeMiddle1").and_then(|v| u8::try_from(v).ok());
-    let bridge_middle_2: Option<u8> =
-        parse_general_int(&ini_text, "BridgeMiddle2").and_then(|v| u8::try_from(v).ok());
+    let TheaterBridgePieceKeys {
+        bridge_top_left_1,
+        bridge_top_left_2,
+        bridge_bottom_right_1,
+        bridge_bottom_right_2,
+        bridge_top_right_1,
+        bridge_top_right_2,
+        bridge_bottom_left_1,
+        bridge_bottom_left_2,
+        bridge_middle_1,
+        bridge_middle_2,
+    } = parse_bridge_piece_keys(&ini_text);
     let tunnels = parse_general_int(&ini_text, "Tunnels");
     let track_tunnels = parse_general_int(&ini_text, "TrackTunnels");
     let dirt_tunnels = parse_general_int(&ini_text, "DirtTunnels");
@@ -950,10 +975,18 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     );
     if bridge_set.is_some() || wood_bridge_set.is_some() {
         log::info!(
-            "Theater {}: BridgeSet={:?}, WoodBridgeSet={:?}, BridgeMiddle1={:?}, BridgeMiddle2={:?}, Tunnels={:?}/{:?}/{:?}/{:?}",
+            "Theater {}: BridgeSet={:?}, WoodBridgeSet={:?}, BridgePieces={:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}, Tunnels={:?}/{:?}/{:?}/{:?}",
             theater_name,
             bridge_set,
             wood_bridge_set,
+            bridge_top_left_1,
+            bridge_top_left_2,
+            bridge_bottom_right_1,
+            bridge_bottom_right_2,
+            bridge_top_right_1,
+            bridge_top_right_2,
+            bridge_bottom_left_1,
+            bridge_bottom_left_2,
             bridge_middle_1,
             bridge_middle_2,
             tunnels,
@@ -991,8 +1024,12 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         slope_set_pieces2,
         bridge_top_left_1,
         bridge_top_left_2,
+        bridge_bottom_right_1,
+        bridge_bottom_right_2,
         bridge_top_right_1,
         bridge_top_right_2,
+        bridge_bottom_left_1,
+        bridge_bottom_left_2,
         bridge_middle_1,
         bridge_middle_2,
         tunnels,
@@ -1149,6 +1186,21 @@ fn waterfall_is_special(start: Option<u16>, tile_id: u16, sub_tile: u8, ordinary
 /// global scope before any section header.
 fn parse_general_int(text: &str, key: &str) -> Option<u16> {
     parse_general_i32(text, key).and_then(|value| u16::try_from(value).ok())
+}
+
+fn parse_bridge_piece_keys(text: &str) -> TheaterBridgePieceKeys {
+    TheaterBridgePieceKeys {
+        bridge_top_left_1: parse_general_int(text, "BridgeTopLeft1"),
+        bridge_top_left_2: parse_general_int(text, "BridgeTopLeft2"),
+        bridge_bottom_right_1: parse_general_int(text, "BridgeBottomRight1"),
+        bridge_bottom_right_2: parse_general_int(text, "BridgeBottomRight2"),
+        bridge_top_right_1: parse_general_int(text, "BridgeTopRight1"),
+        bridge_top_right_2: parse_general_int(text, "BridgeTopRight2"),
+        bridge_bottom_left_1: parse_general_int(text, "BridgeBottomLeft1"),
+        bridge_bottom_left_2: parse_general_int(text, "BridgeBottomLeft2"),
+        bridge_middle_1: parse_general_int(text, "BridgeMiddle1"),
+        bridge_middle_2: parse_general_int(text, "BridgeMiddle2"),
+    }
 }
 
 fn parse_general_i32(text: &str, key: &str) -> Option<i32> {
