@@ -464,6 +464,7 @@ mod tests {
     use crate::map::rmg::options::RmgOptions;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
     use crate::map::rmg::tiles::SpecialTerrain;
+    use crate::map::rmg::{RmgConstructionOutcome, RmgConstructionPhase};
 
     /// A `TileBlocks` provider that returns a 1x1 block for every tile — the
     /// same synthetic the water/shore phase tests use.
@@ -585,6 +586,270 @@ mod tests {
             &mut |_, _, _| {},
         );
         (grid, output)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ConstructionSnapshot {
+        trace: RmgConstructionTrace,
+        structures: Vec<(String, i16, i16)>,
+        entities: Vec<(String, u16, u16)>,
+        continuation: [u32; 4],
+    }
+
+    /// Run the actual active owners in their native phase order on a small,
+    /// controlled map: the flood-region connector driver, neutral-tech driver,
+    /// final structure append, and MapFile emitter.
+    fn controlled_mixed_construction(seed: u16) -> ConstructionSnapshot {
+        const STRIDE: usize = 77;
+        const DIAMOND_MIN: i32 = 34;
+        const DIAMOND_MAX: i32 = 118;
+
+        let mut grid = RmgGrid::new(STRIDE, DIAMOND_MIN, DIAMOND_MAX);
+        let mut scratch = RmgScratch::new(STRIDE, DIAMOND_MIN, DIAMOND_MAX);
+        for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+            let cell = grid.get_mut(x, y).expect("native construction cell");
+            cell.tile = 0;
+            cell.level = 4;
+            cell.overlay = -1;
+        }
+        for cell in scratch.cells_mut() {
+            cell.region = -1;
+        }
+
+        // A six-cell EW water span commits on the first accepted seed. Only
+        // (50,50) belongs to the flood, so the real rejection picker and its
+        // exact draw ownership remain in the path without a costly full-map
+        // generation search.
+        for y in 49..=51 {
+            for x in 48..=52 {
+                grid.get_mut(x, y).expect("water corridor").tile = 500;
+            }
+        }
+        scratch.get_mut(50, 50).region = 0;
+        scratch.get_mut(47, 49).region = 1;
+        scratch.get_mut(53, 49).region = 2;
+
+        let flood = ConnectorRegion {
+            id: 0,
+            level: 4,
+            waterish: true,
+            cell_count: 90,
+            neighbours: vec![1, 2],
+        };
+        let connector_regions = vec![
+            flood.clone(),
+            ConnectorRegion {
+                id: 1,
+                level: 4,
+                waterish: false,
+                cell_count: 90,
+                neighbours: vec![0, 9],
+            },
+            ConnectorRegion {
+                id: 2,
+                level: 4,
+                waterish: false,
+                cell_count: 90,
+                neighbours: vec![0, 9],
+            },
+        ];
+
+        let mut identity = ids();
+        identity.pave = 600;
+        identity.misc_pave = 620;
+        identity.paved_roads = 640;
+        identity.paved_road_ends = 660;
+        let blocks = one_by_one();
+        let playfield = Playfield::from_local_size(74, 2, 5, 70, 70);
+        let mut rng = RmgRng::new(seed);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(carve_driver::carve_connectors_for_region(
+                &mut ctx,
+                &connector_regions,
+                &flood,
+                0,
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        let types = [
+            TechType {
+                name: "CAEMIT".to_string(),
+                footprint: vec![(0, 0)],
+            },
+            TechType {
+                name: "CADROP".to_string(),
+                footprint: vec![(0, 0), (1000, 1000)],
+            },
+        ];
+        let empty_regions = Regions::default();
+        let args = TechArgs {
+            map_type: 3,
+            map_w: 74,
+            local_rect: [2, 5, 70, 70],
+            stride: STRIDE as i32,
+        };
+        let tech_placements = {
+            let mut ctx = TechCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                rng: &mut rng,
+                regions: &empty_regions,
+                types: &types,
+            };
+            tech_buildings::run_traced(&mut ctx, &args, &mut trace, structures.len())
+        };
+        structures.extend(
+            tech_placements
+                .into_iter()
+                .map(|placement| (placement.name, placement.x, placement.y)),
+        );
+
+        let options = RmgOptions {
+            map_type: 3,
+            seed: i32::from(seed),
+            ..Default::default()
+        };
+        let mut map_file = super::super::emit::empty_map_file(&options, 70, 70);
+        super::super::emit::populate(&mut map_file, &grid, &[], &structures, &[]);
+        let entities = map_file
+            .entities
+            .into_iter()
+            .map(|entity| (entity.type_id, entity.cell_x, entity.cell_y))
+            .collect();
+        let continuation = [
+            rng.next_u32(),
+            rng.next_u32(),
+            rng.next_u32(),
+            rng.next_u32(),
+        ];
+
+        ConstructionSnapshot {
+            trace,
+            structures,
+            entities,
+            continuation,
+        }
+    }
+
+    #[test]
+    fn production_trace_orders_huts_before_mixed_tech_and_binds_final_entities() {
+        let expected = ConstructionSnapshot {
+            trace: RmgConstructionTrace {
+                events: vec![
+                    crate::map::rmg::RmgConstructionEvent {
+                        ordinal: 0,
+                        phase: RmgConstructionPhase::BridgeRepairHut,
+                        techno_type: "CABHUT".to_string(),
+                        outcome: RmgConstructionOutcome::Emitted {
+                            entity_index: 0,
+                            cell: (47, 48),
+                        },
+                    },
+                    crate::map::rmg::RmgConstructionEvent {
+                        ordinal: 1,
+                        phase: RmgConstructionPhase::BridgeRepairHut,
+                        techno_type: "CABHUT".to_string(),
+                        outcome: RmgConstructionOutcome::Emitted {
+                            entity_index: 1,
+                            cell: (52, 48),
+                        },
+                    },
+                    crate::map::rmg::RmgConstructionEvent {
+                        ordinal: 2,
+                        phase: RmgConstructionPhase::NeutralTech,
+                        techno_type: "CAEMIT".to_string(),
+                        outcome: RmgConstructionOutcome::Emitted {
+                            entity_index: 2,
+                            cell: (57, 52),
+                        },
+                    },
+                    crate::map::rmg::RmgConstructionEvent {
+                        ordinal: 3,
+                        phase: RmgConstructionPhase::NeutralTech,
+                        techno_type: "CAEMIT".to_string(),
+                        outcome: RmgConstructionOutcome::Emitted {
+                            entity_index: 3,
+                            cell: (57, 38),
+                        },
+                    },
+                    crate::map::rmg::RmgConstructionEvent {
+                        ordinal: 4,
+                        phase: RmgConstructionPhase::NeutralTech,
+                        techno_type: "CADROP".to_string(),
+                        outcome: RmgConstructionOutcome::Discarded,
+                    },
+                ],
+            },
+            structures: vec![
+                ("CABHUT".to_string(), 47, 48),
+                ("CABHUT".to_string(), 52, 48),
+                ("CAEMIT".to_string(), 57, 52),
+                ("CAEMIT".to_string(), 57, 38),
+            ],
+            entities: vec![
+                ("CABHUT".to_string(), 47, 48),
+                ("CABHUT".to_string(), 52, 48),
+                ("CAEMIT".to_string(), 57, 52),
+                ("CAEMIT".to_string(), 57, 38),
+            ],
+            continuation: [1_708_357_426, 3_341_608_727, 3_980_574_297, 3_095_648_970],
+        };
+
+        let first = controlled_mixed_construction(4);
+        let repeat = controlled_mixed_construction(4);
+        assert_eq!(first, expected, "fixed native-order production oracle");
+        assert_eq!(repeat, expected, "the full owner sequence is deterministic");
+
+        let emitted_structures = first
+            .structures
+            .iter()
+            .map(|(name, x, y)| (name.clone(), *x as u16, *y as u16))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            emitted_structures, first.entities,
+            "emission preserves order"
+        );
+        for (ordinal, event) in first.trace.events.iter().enumerate() {
+            assert_eq!(event.ordinal, ordinal);
+            match &event.outcome {
+                RmgConstructionOutcome::Emitted { entity_index, cell } => {
+                    let entity = &first.entities[*entity_index];
+                    assert_eq!(entity.0, event.techno_type);
+                    assert_eq!((entity.1, entity.2), *cell);
+                }
+                RmgConstructionOutcome::Discarded => {
+                    assert_eq!(event.techno_type, "CADROP");
+                    assert!(
+                        !first.entities.iter().any(|entity| entity.0 == "CADROP"),
+                        "discarded construction has no fabricated MapEntity binding"
+                    );
+                }
+            }
+        }
+        assert!(
+            first.trace.events[..2]
+                .iter()
+                .all(|event| event.phase == RmgConstructionPhase::BridgeRepairHut)
+        );
+        assert!(
+            first.trace.events[2..]
+                .iter()
+                .all(|event| event.phase == RmgConstructionPhase::NeutralTech)
+        );
     }
 
     #[test]
