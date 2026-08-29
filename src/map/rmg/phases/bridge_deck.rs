@@ -2,14 +2,14 @@
 //!
 //! gamemd: `RandomMapGenerator::PlaceLowBridgeDeck` 0x0058F2C0,
 //! `ValidateLowBridgeDeckArea` 0x005902C0 and `PlaceBridgeRepairHut`
-//! 0x005904B0, reached from `BridgeAndConnectorPass` 0x0058EF10. Dormant in
-//! stock YR skirmish for the reason recorded in `phases::bridge`.
+//! 0x005904B0, reached from `BridgeAndConnectorPass` 0x0058EF10 for active
+//! random-map types 3 and 4.
 //!
 //! The deck placer tries up to two hundred spots. Each attempt starts by
-//! rolling a cell out of [`pick_seed_cell`] — the only part of this file that
-//! touches the random stream — and the ground it lands on is then offered to
-//! [`deck_area_is_clear`] for the span and [`end_area_is_placeable`] for each
-//! end before anything is stamped. A refusal just moves the placer on.
+//! rolling a cell out of [`pick_seed_cell`]. Candidate search is RNG-free; only
+//! a committed deck may additionally draw the two conditional end-piece
+//! coins. The span goes through [`deck_area_is_clear`] and each end through
+//! [`end_area_is_placeable`]. A refusal just moves the placer on.
 //!
 //! **Those two ground checks look like the same check and are not.** They
 //! disagree about the
@@ -18,12 +18,14 @@
 //! a sweep between them would judge the wrong cells in both directions.
 
 use crate::map::rmg::grid::RmgGrid;
+use crate::map::rmg::phases::carve::CarveCtx;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
 use crate::map::rmg::scratch::RmgScratch;
 use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, TruncF64};
+use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
 
-use super::area::{corners_in_diamond, tile_is_placeable};
+use super::area::{area_is_paved_clear, corners_in_diamond, tile_is_placeable};
 
 /// Turns an infinite native loop into a `None` and nothing else — see
 /// [`pick_seed_cell`]. Not a retry budget: the original has no bound here.
@@ -153,6 +155,9 @@ pub fn deck_area_is_clear(
     // Inclusive on both axes: one row and one column more than the deck.
     for y in ry..=(ry + h) {
         for x in rx..=(rx + w) {
+            // The corner probes cover the deck itself, not the inclusive
+            // margin. Preserve MapClass's shared fallback semantics for that
+            // one-past row/column rather than strengthening the probes.
             let cell = *grid.cell_native(x, y);
             if cell.overlay != -1 {
                 return false;
@@ -160,20 +165,363 @@ pub fn deck_area_is_clear(
             if cell.level != reference_level {
                 return false;
             }
-            // Clear ground, or the water family a deck spans.
-            //
-            // UNVERIFIED CORRESPONDENCE: the port's water-family predicate
-            // covers the water span and shore pieces. The original's also
-            // takes in the waterfall sets. A deck offered a waterfall cell
-            // would be refused here and accepted there — recorded rather than
-            // widened on a guess, since widening it wrongly would let decks
-            // stamp over terrain they must not.
-            if !ids.is_clear(cell.tile) && !ids.is_bridge_absorbable(cell.tile) {
+            // Exact tile-only 0x004865D0 family: 14 water, 42 shore, and four
+            // four-tile waterfall bands. It intentionally ignores sub-tile.
+            if !ids.is_clear(cell.tile) && !ids.is_low_bridge_absorbable(cell.tile) {
                 return false;
             }
         }
     }
     true
+}
+
+const MAX_DECK_ATTEMPTS: i32 = 200;
+const CABHUT: &str = "CABHUT";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeckAxis {
+    EastWest,
+    NorthSouth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeckCandidate {
+    axis: DeckAxis,
+    rect: (i32, i32, i32, i32),
+    span: i32,
+}
+
+fn exact_region_pair(a: i32, b: i32, first: i32, second: i32) -> bool {
+    (a == first && b == second) || (a == second && b == first)
+}
+
+fn outer_cells_are_usable(ctx: &CarveCtx<'_>, a: (i32, i32), b: (i32, i32)) -> bool {
+    [a, b].into_iter().all(|(x, y)| {
+        x >= 0
+            && y >= 0
+            && ctx.playfield.contains(x as u16, y as u16)
+            && ctx
+                .grid
+                .get(x, y)
+                .is_some_and(|cell| !ctx.ids.is_special_terrain(cell.tile, cell.sub_tile))
+    })
+}
+
+/// Build the two orthogonal native candidates around one accepted seed.
+/// North/south is computed first, but an equal-span tie selects east/west.
+fn find_candidate(
+    ctx: &CarveCtx<'_>,
+    seed: (i32, i32),
+    first_region: i32,
+    second_region: i32,
+) -> Option<DeckCandidate> {
+    let (x, y) = seed;
+
+    let mut north = (x - 1, y, 3, 1);
+    let mut south = north;
+    let mut ns_ok = true;
+    while !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, north) {
+        north.1 -= 1;
+        if !outer_cells_are_usable(ctx, (north.0, north.1), (north.0 + 2, north.1)) {
+            ns_ok = false;
+            break;
+        }
+    }
+    if ns_ok && !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, (north.0, north.1 - 3, 3, 3)) {
+        ns_ok = false;
+    }
+    if ns_ok {
+        while !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, south) {
+            south.1 += 1;
+            if !outer_cells_are_usable(ctx, (south.0, south.1), (south.0 + 2, south.1)) {
+                ns_ok = false;
+                break;
+            }
+        }
+        if ns_ok
+            && !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, (south.0, south.1 + 1, 3, 3))
+        {
+            ns_ok = false;
+        }
+    }
+
+    let mut west = (x, y - 1, 1, 3);
+    let mut east = west;
+    let mut ew_ok = true;
+    while !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, west) {
+        west.0 -= 1;
+        if !outer_cells_are_usable(ctx, (west.0, west.1), (west.0, west.1 + 2)) {
+            ew_ok = false;
+            break;
+        }
+    }
+    if ew_ok && !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, (west.0 - 3, west.1, 3, 3)) {
+        ew_ok = false;
+    }
+    if ew_ok {
+        while !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, east) {
+            east.0 += 1;
+            if !outer_cells_are_usable(ctx, (east.0, east.1), (east.0, east.1 + 2)) {
+                ew_ok = false;
+                break;
+            }
+        }
+        if ew_ok && !area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, (east.0 + 1, east.1, 3, 3))
+        {
+            ew_ok = false;
+        }
+    }
+
+    let ns_span = (south.1 - north.1).abs();
+    if ns_ok {
+        let a = ctx.scratch.get(north.0, north.1).region;
+        let b = ctx.scratch.get(south.0, south.1).region;
+        ns_ok = exact_region_pair(a, b, first_region, second_region);
+    }
+    let ew_span = (east.0 - west.0).abs();
+    if ew_ok {
+        let a = ctx.scratch.get(east.0, east.1).region;
+        let b = ctx.scratch.get(west.0, west.1).region;
+        ew_ok = exact_region_pair(a, b, first_region, second_region);
+    }
+
+    if ns_ok && ew_ok {
+        if ns_span < ew_span {
+            ew_ok = false;
+        } else {
+            ns_ok = false;
+        }
+    }
+
+    if ew_ok {
+        Some(DeckCandidate {
+            axis: DeckAxis::EastWest,
+            rect: (west.0, west.1, ew_span + 1, 3),
+            span: ew_span,
+        })
+    } else if ns_ok {
+        Some(DeckCandidate {
+            axis: DeckAxis::NorthSouth,
+            rect: (north.0, north.1, 3, ns_span + 1),
+            span: ns_span,
+        })
+    } else {
+        None
+    }
+}
+
+fn stamp_deck(ctx: &mut CarveCtx<'_>, candidate: DeckCandidate) {
+    let (rx, ry, w, h) = candidate.rect;
+    for y in ry..ry + h {
+        for x in rx..rx + w {
+            let cell = ctx.grid.cell_native_mut(x, y);
+            match candidate.axis {
+                DeckAxis::EastWest => {
+                    cell.overlay = if x == rx {
+                        0x5E
+                    } else if x == rx + w - 1 {
+                        0x5C
+                    } else {
+                        0x4A + x % 4
+                    };
+                    cell.density = (y - ry) as u8;
+                }
+                DeckAxis::NorthSouth => {
+                    cell.overlay = if y == ry {
+                        0x60
+                    } else if y == ry + h - 1 {
+                        0x62
+                    } else {
+                        0x53 + y % 4
+                    };
+                    cell.density = (x - rx) as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Low-deck ends use the native unconditional tile-block stamper with both
+/// metadata arguments -1: scratch stamp changes, cell level does not.
+fn stamp_end_block(ctx: &mut CarveCtx<'_>, tile: i32, origin: (i32, i32)) {
+    let Some(block) = ctx.blocks.block(tile).cloned() else {
+        return;
+    };
+    for row in 0..block.height {
+        for col in 0..block.width {
+            let (x, y) = (origin.0 + col, origin.1 + row);
+            if !ctx.scratch.in_diamond(x, y) {
+                continue;
+            }
+            let index = (block.width * row + col) as usize;
+            let Some(sub) = block.subtiles.get(index).copied().flatten() else {
+                continue;
+            };
+            let cell = ctx.grid.cell_native_mut(x, y);
+            cell.tile = tile;
+            cell.sub_tile = index as u8;
+            cell.slope = sub.slope;
+            ctx.scratch.get_mut(x, y).stamp = -1;
+        }
+    }
+}
+
+fn stamp_end(
+    ctx: &mut CarveCtx<'_>,
+    validator: (i32, i32, i32, i32),
+    alternate: (i32, (i32, i32)),
+    default: (i32, (i32, i32)),
+) {
+    let use_alternate = end_area_is_placeable(ctx.grid, ctx.scratch, ctx.ids, validator)
+        && ctx.rng.uniform(0, 1) != 0;
+    let (tile, origin) = if use_alternate { alternate } else { default };
+    stamp_end_block(ctx, tile, origin);
+}
+
+fn place_hut_in_rect(
+    ctx: &mut CarveCtx<'_>,
+    rect: (i32, i32, i32, i32),
+    structures: &mut Vec<(String, i16, i16)>,
+    trace: &mut RmgConstructionTrace,
+) -> bool {
+    let (rx, ry, w, h) = rect;
+    for y in ry..=ry + h {
+        for x in rx..=rx + w {
+            let qualifies = ctx.grid.get(x, y).is_some_and(|cell| {
+                cell.overlay == -1 && ctx.ids.is_clear(cell.tile) && !cell.occupied
+            });
+            if !qualifies {
+                continue;
+            }
+            ctx.grid.cell_native_mut(x, y).occupied = true;
+            let entity_index = structures.len();
+            structures.push((CABHUT.to_string(), x as i16, y as i16));
+            trace.push_emitted(
+                RmgConstructionPhase::BridgeRepairHut,
+                CABHUT.to_string(),
+                entity_index,
+                (x as u16, y as u16),
+            );
+            return true;
+        }
+    }
+    false
+}
+
+fn place_hut(
+    ctx: &mut CarveCtx<'_>,
+    primary: (i32, i32, i32, i32),
+    fallback: (i32, i32, i32, i32),
+    structures: &mut Vec<(String, i16, i16)>,
+    trace: &mut RmgConstructionTrace,
+) {
+    if !place_hut_in_rect(ctx, primary, structures, trace) {
+        let _ = place_hut_in_rect(ctx, fallback, structures, trace);
+    }
+}
+
+fn commit_candidate(
+    ctx: &mut CarveCtx<'_>,
+    candidate: DeckCandidate,
+    structures: &mut Vec<(String, i16, i16)>,
+    trace: &mut RmgConstructionTrace,
+) -> bool {
+    if !deck_area_is_clear(ctx.grid, ctx.scratch, ctx.ids, candidate.rect) {
+        return false;
+    }
+    stamp_deck(ctx, candidate);
+    let (x, y, w, h) = candidate.rect;
+    match candidate.axis {
+        DeckAxis::EastWest => {
+            stamp_end(
+                ctx,
+                (x + w, y - 2, 6, 6),
+                (ctx.ids.paved_roads + 10, (x + w, y)),
+                (ctx.ids.paved_road_ends, (x + w, y)),
+            );
+            stamp_end(
+                ctx,
+                (x - 6, y - 2, 6, 6),
+                (ctx.ids.paved_roads + 9, (x - 4, y)),
+                (ctx.ids.paved_road_ends + 2, (x - 1, y)),
+            );
+            place_hut(
+                ctx,
+                (x, y - 1, 2, 5),
+                (x - 1, y - 2, 3, 7),
+                structures,
+                trace,
+            );
+            place_hut(
+                ctx,
+                (x + w - 2, y - 1, 2, 5),
+                (x + w - 2, y - 2, 3, 7),
+                structures,
+                trace,
+            );
+        }
+        DeckAxis::NorthSouth => {
+            stamp_end(
+                ctx,
+                (x - 2, y - 6, 7, 6),
+                (ctx.ids.paved_roads + 13, (x, y - 4)),
+                (ctx.ids.paved_road_ends + 1, (x, y - 1)),
+            );
+            stamp_end(
+                ctx,
+                (x - 2, y + h, 7, 6),
+                (ctx.ids.paved_roads + 12, (x, y + h)),
+                (ctx.ids.paved_road_ends + 3, (x, y + h)),
+            );
+            place_hut(
+                ctx,
+                (x - 1, y, 5, 2),
+                (x - 2, y - 1, 7, 3),
+                structures,
+                trace,
+            );
+            place_hut(
+                ctx,
+                (x - 1, y + h - 2, 5, 2),
+                (x - 2, y + h - 2, 7, 3),
+                structures,
+                trace,
+            );
+        }
+    }
+    true
+}
+
+/// Active type-3/type-4 low-deck placement. The only MapGen draws in failed
+/// attempts are seed-cell rejection draws; a committed candidate additionally
+/// takes one coin per end whose exact ground validator succeeds.
+pub(crate) fn place_low_bridge_deck(
+    ctx: &mut CarveCtx<'_>,
+    flood_region: i32,
+    first_region: i32,
+    second_region: i32,
+    structures: &mut Vec<(String, i16, i16)>,
+    trace: &mut RmgConstructionTrace,
+) -> bool {
+    for attempt in 0..MAX_DECK_ATTEMPTS {
+        let Some(seed) = pick_seed_cell(ctx.rng, ctx.scratch, flood_region) else {
+            return false;
+        };
+        let Some(candidate) = find_candidate(ctx, seed, first_region, second_region) else {
+            continue;
+        };
+        if !span_allowed(attempt, candidate.span) {
+            continue;
+        }
+        if commit_candidate(ctx, candidate, structures, trace) {
+            return true;
+        }
+    }
+    false
+}
+
+const fn span_allowed(attempt: i32, span: i32) -> bool {
+    span < attempt / 25 + 8
 }
 
 /// Can a bridge's end piece anchor on this ground?
@@ -200,7 +548,7 @@ pub fn deck_area_is_clear(
 /// branch cannot be reached in play and is folded away here rather than
 /// modelled as a flag no caller sets.
 pub fn end_area_is_placeable(
-    grid: &mut RmgGrid,
+    grid: &RmgGrid,
     scratch: &RmgScratch,
     ids: &TileIds,
     rect: (i32, i32, i32, i32),
@@ -211,12 +559,15 @@ pub fn end_area_is_placeable(
         return false;
     }
 
-    let reference_level = grid.cell_native(rx, ry).level;
+    let reference_level = grid
+        .get(rx, ry)
+        .expect("validated end origin is in-band")
+        .level;
 
     // Exclusive on both axes: exactly the rect, nothing around it.
     for y in ry..(ry + h) {
         for x in rx..(rx + w) {
-            let cell = *grid.cell_native(x, y);
+            let cell = *grid.get(x, y).expect("validated end cell is in-band");
             if cell.level != reference_level {
                 return false;
             }
@@ -231,6 +582,8 @@ pub fn end_area_is_placeable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
+    use crate::map::rmg::preview::Playfield;
     use crate::map::rmg::tiles::SpecialTerrain;
 
     /// Tile bases the fixtures address families by. Spaced far enough apart
@@ -278,6 +631,71 @@ mod tests {
             cell.overlay = -1;
         }
         (grid, scratch)
+    }
+
+    struct OneByOne(TileBlock);
+
+    impl OneByOne {
+        fn new() -> Self {
+            Self(TileBlock {
+                width: 1,
+                height: 1,
+                subtiles: vec![Some(SubTile {
+                    height: 9,
+                    terrain: 0,
+                    slope: 7,
+                })],
+            })
+        }
+    }
+
+    impl TileBlocks for OneByOne {
+        fn block(&self, _tile: i32) -> Option<&TileBlock> {
+            Some(&self.0)
+        }
+    }
+
+    fn playfield() -> Playfield {
+        Playfield::from_local_size(74, 2, 5, 70, 70)
+    }
+
+    fn cross_candidate(horizontal_radius: i32, vertical_radius: i32) -> DeckCandidate {
+        let (mut grid, mut scratch) = harness();
+        for y in 49..=51 {
+            for x in 50 - horizontal_radius..=50 + horizontal_radius {
+                grid.get_mut(x, y).unwrap().tile = WATER;
+                scratch.get_mut(x, y).region = 0;
+            }
+        }
+        for y in 50 - vertical_radius..=50 + vertical_radius {
+            for x in 49..=51 {
+                grid.get_mut(x, y).unwrap().tile = WATER;
+                scratch.get_mut(x, y).region = 0;
+            }
+        }
+        let west = 50 - horizontal_radius - 1;
+        let east = 50 + horizontal_radius + 1;
+        let north = 50 - vertical_radius - 1;
+        let south = 50 + vertical_radius + 1;
+        scratch.get_mut(west, 49).region = 1;
+        scratch.get_mut(east, 49).region = 2;
+        scratch.get_mut(49, north).region = 1;
+        scratch.get_mut(49, south).region = 2;
+
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(1);
+        let ctx = CarveCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &identity,
+            blocks: &blocks,
+            rng: &mut rng,
+            playfield: &playfield,
+            ramp_end_block: -1,
+        };
+        find_candidate(&ctx, (50, 50), 1, 2).expect("cross has a valid axis")
     }
 
     /// A rect that sits inside the grid array but outside the map diamond,
@@ -377,6 +795,385 @@ mod tests {
         let scratch = scratch_owning(&[], 7);
         let mut rng = RmgRng::new(2);
         assert_eq!(pick_seed_cell(&mut rng, &scratch, 7), None);
+    }
+
+    #[test]
+    fn candidate_search_builds_both_axes_and_east_west_wins_the_tie() {
+        let (mut grid, mut scratch) = harness();
+        // Equal 7-cell arms make both walks stop eight coordinates apart.
+        // Both endpoint pairs name the same two land regions, so only the
+        // native equal-length preference can decide the result.
+        for y in 49..=51 {
+            for x in 47..=53 {
+                grid.get_mut(x, y).unwrap().tile = WATER;
+                scratch.get_mut(x, y).region = 0;
+            }
+        }
+        for y in 47..=53 {
+            for x in 49..=51 {
+                grid.get_mut(x, y).unwrap().tile = WATER;
+                scratch.get_mut(x, y).region = 0;
+            }
+        }
+        scratch.get_mut(46, 49).region = 1;
+        scratch.get_mut(54, 49).region = 2;
+        scratch.get_mut(49, 46).region = 1;
+        scratch.get_mut(49, 54).region = 2;
+
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(1);
+        let ctx = CarveCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &identity,
+            blocks: &blocks,
+            rng: &mut rng,
+            playfield: &playfield,
+            ramp_end_block: -1,
+        };
+        assert_eq!(
+            find_candidate(&ctx, (50, 50), 1, 2),
+            Some(DeckCandidate {
+                axis: DeckAxis::EastWest,
+                rect: (46, 49, 9, 3),
+                span: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn candidate_search_selects_the_strictly_shorter_axis() {
+        assert_eq!(cross_candidate(2, 4).axis, DeckAxis::EastWest);
+        assert_eq!(cross_candidate(4, 2).axis, DeckAxis::NorthSouth);
+        assert_eq!(cross_candidate(3, 3).axis, DeckAxis::EastWest);
+    }
+
+    #[test]
+    fn endpoint_regions_must_be_the_exact_requested_unordered_pair() {
+        assert!(exact_region_pair(1, 2, 2, 1));
+        assert!(!exact_region_pair(1, 3, 1, 2));
+        assert!(!exact_region_pair(1, 1, 1, 2));
+    }
+
+    #[test]
+    fn candidate_outer_cells_stop_at_special_terrain_or_playfield_edge() {
+        let (mut grid, mut scratch) = harness();
+        let mut identity = ids();
+        identity.special.cliff_set = 900;
+        grid.get_mut(40, 48).unwrap().tile = 900;
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let mut rng = RmgRng::new(1);
+        let ctx = CarveCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &identity,
+            blocks: &blocks,
+            rng: &mut rng,
+            playfield: &playfield,
+            ramp_end_block: -1,
+        };
+        assert!(!outer_cells_are_usable(&ctx, (40, 48), (41, 48)));
+        assert!(!outer_cells_are_usable(&ctx, (0, 0), (41, 48)));
+        assert!(outer_cells_are_usable(&ctx, (41, 48), (42, 48)));
+    }
+
+    #[test]
+    fn strict_attempt_length_bands_use_the_zero_based_attempt() {
+        for (attempt, refused, accepted) in [
+            (24, 8, 7),
+            (25, 9, 8),
+            (49, 9, 8),
+            (50, 10, 9),
+            (174, 14, 13),
+            (175, 15, 14),
+            (199, 15, 14),
+        ] {
+            assert!(!span_allowed(attempt, refused), "attempt {attempt}");
+            assert!(span_allowed(attempt, accepted), "attempt {attempt}");
+        }
+    }
+
+    #[test]
+    fn committed_east_west_deck_stamps_overlay_ends_and_two_ordered_huts() {
+        let (mut grid, mut scratch) = harness();
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(123);
+        let mut expected_rng = RmgRng::new(123);
+        let east_alternate = expected_rng.uniform(0, 1) != 0;
+        let west_alternate = expected_rng.uniform(0, 1) != 0;
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(commit_candidate(
+                &mut ctx,
+                DeckCandidate {
+                    axis: DeckAxis::EastWest,
+                    rect: (40, 48, 6, 3),
+                    span: 5,
+                },
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        for y in 48..51 {
+            for x in 40..46 {
+                let cell = grid.get(x, y).unwrap();
+                let expected_overlay = if x == 40 {
+                    0x5E
+                } else if x == 45 {
+                    0x5C
+                } else {
+                    0x4A + x % 4
+                };
+                assert_eq!(
+                    (cell.overlay, cell.density),
+                    (expected_overlay, (y - 48) as u8)
+                );
+                assert_eq!((cell.level, cell.tile), (4, 0));
+            }
+        }
+        let east_anchor = (46, 48);
+        let west_anchor = if west_alternate { (36, 48) } else { (39, 48) };
+        let east_tile = if east_alternate {
+            PAVED_ROAD + 10
+        } else {
+            PAVED_ROAD_END
+        };
+        let west_tile = if west_alternate {
+            PAVED_ROAD + 9
+        } else {
+            PAVED_ROAD_END + 2
+        };
+        assert_eq!(
+            grid.get(east_anchor.0, east_anchor.1).unwrap().tile,
+            east_tile
+        );
+        assert_eq!(
+            grid.get(west_anchor.0, west_anchor.1).unwrap().tile,
+            west_tile
+        );
+        assert_eq!(grid.get(east_anchor.0, east_anchor.1).unwrap().level, 4);
+        assert_eq!(scratch.get(east_anchor.0, east_anchor.1).stamp, -1);
+        assert_eq!(
+            rng.next_u32(),
+            expected_rng.next_u32(),
+            "exactly two end coins"
+        );
+
+        assert_eq!(
+            structures,
+            vec![(CABHUT.to_string(), 40, 47), (CABHUT.to_string(), 44, 47),]
+        );
+        assert_eq!(trace.events.len(), 2);
+        for (ordinal, event) in trace.events.iter().enumerate() {
+            assert_eq!(event.ordinal, ordinal);
+            assert_eq!(event.phase, RmgConstructionPhase::BridgeRepairHut);
+            assert_eq!(event.techno_type, CABHUT);
+            assert_eq!(
+                event.outcome,
+                crate::map::rmg::RmgConstructionOutcome::Emitted {
+                    entity_index: ordinal,
+                    cell: (structures[ordinal].1 as u16, structures[ordinal].2 as u16),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn committed_north_south_deck_uses_distinct_overlay_and_end_geometry() {
+        let (mut grid, mut scratch) = harness();
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(321);
+        let mut expected_rng = RmgRng::new(321);
+        let north_alternate = expected_rng.uniform(0, 1) != 0;
+        let south_alternate = expected_rng.uniform(0, 1) != 0;
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            assert!(commit_candidate(
+                &mut ctx,
+                DeckCandidate {
+                    axis: DeckAxis::NorthSouth,
+                    rect: (40, 48, 3, 6),
+                    span: 5,
+                },
+                &mut structures,
+                &mut trace,
+            ));
+        }
+
+        for y in 48..54 {
+            for x in 40..43 {
+                let cell = grid.get(x, y).unwrap();
+                let expected_overlay = if y == 48 {
+                    0x60
+                } else if y == 53 {
+                    0x62
+                } else {
+                    0x53 + y % 4
+                };
+                assert_eq!(
+                    (cell.overlay, cell.density),
+                    (expected_overlay, (x - 40) as u8)
+                );
+                assert_eq!((cell.level, cell.tile), (4, 0));
+            }
+        }
+        let north_anchor = if north_alternate { (40, 44) } else { (40, 47) };
+        let south_anchor = (40, 54);
+        let north_tile = if north_alternate {
+            PAVED_ROAD + 13
+        } else {
+            PAVED_ROAD_END + 1
+        };
+        let south_tile = if south_alternate {
+            PAVED_ROAD + 12
+        } else {
+            PAVED_ROAD_END + 3
+        };
+        assert_eq!(
+            grid.get(north_anchor.0, north_anchor.1).unwrap().tile,
+            north_tile
+        );
+        assert_eq!(
+            grid.get(south_anchor.0, south_anchor.1).unwrap().tile,
+            south_tile
+        );
+        assert_eq!(
+            rng.next_u32(),
+            expected_rng.next_u32(),
+            "exactly two end coins"
+        );
+        assert_eq!(
+            structures,
+            vec![(CABHUT.to_string(), 39, 48), (CABHUT.to_string(), 39, 52),]
+        );
+        assert_eq!(trace.events.len(), 2);
+    }
+
+    #[test]
+    fn failed_end_area_uses_default_without_spending_a_coin() {
+        let (mut grid, mut scratch) = harness();
+        grid.get_mut(42, 49).unwrap().tile = GREEN;
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(77);
+        let mut expected_rng = RmgRng::new(77);
+        {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            stamp_end(
+                &mut ctx,
+                (40, 48, 6, 6),
+                (PAVED_ROAD + 10, (50, 50)),
+                (PAVED_ROAD_END, (51, 50)),
+            );
+        }
+        assert_eq!(grid.get(51, 50).unwrap().tile, PAVED_ROAD_END);
+        assert_eq!(rng.next_u32(), expected_rng.next_u32());
+    }
+
+    #[test]
+    fn a_committed_deck_survives_when_both_hut_searches_fail() {
+        let (mut grid, mut scratch) = harness();
+        for y in 46..=55 {
+            for x in 38..=48 {
+                grid.get_mut(x, y).unwrap().occupied = true;
+            }
+        }
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(99);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        let mut ctx = CarveCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &identity,
+            blocks: &blocks,
+            rng: &mut rng,
+            playfield: &playfield,
+            ramp_end_block: -1,
+        };
+        assert!(commit_candidate(
+            &mut ctx,
+            DeckCandidate {
+                axis: DeckAxis::EastWest,
+                rect: (40, 48, 6, 3),
+                span: 5,
+            },
+            &mut structures,
+            &mut trace,
+        ));
+        assert!(structures.is_empty());
+        assert!(trace.events.is_empty());
+        assert_eq!(ctx.grid.get(40, 48).unwrap().overlay, 0x5E);
+    }
+
+    #[test]
+    fn hut_search_uses_inclusive_y_major_primary_then_fallback() {
+        let (mut grid, mut scratch) = harness();
+        grid.get_mut(40, 48).unwrap().overlay = 1;
+        grid.get_mut(41, 48).unwrap().tile = GREEN;
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(7);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        let mut ctx = CarveCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &identity,
+            blocks: &blocks,
+            rng: &mut rng,
+            playfield: &playfield,
+            ramp_end_block: -1,
+        };
+        place_hut(
+            &mut ctx,
+            (40, 48, 0, 0),
+            (41, 48, 1, 0),
+            &mut structures,
+            &mut trace,
+        );
+        assert_eq!(structures, vec![(CABHUT.to_string(), 42, 48)]);
+        assert!(ctx.grid.get(42, 48).unwrap().occupied);
     }
 
     #[test]

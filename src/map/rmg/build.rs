@@ -283,6 +283,7 @@ pub fn generate_map_observed(
     GeneratedMap {
         map_file,
         mapgen_continuation: rng.into_continuation(),
+        construction_trace: output.construction_trace,
         start_waypoints: output.waypoints,
         stages_run: executed_stages(&options),
         unfilled_start_slots: output.unfilled_start_slots,
@@ -292,6 +293,7 @@ pub fn generate_map_observed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::RmgConstructionOutcome;
     use crate::map::rmg::STAGE_ORDER;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
     use crate::map::rmg::tiles::SpecialTerrain;
@@ -465,6 +467,39 @@ mod tests {
                 .into_native_parts(),
             "generation must carry an advanced MapGen cursor into the map receipt"
         );
+    }
+
+    #[test]
+    fn generated_construction_trace_binds_exact_final_entities() {
+        let resolved = resolved();
+        let blocks = one_by_one();
+        let settings = RmgSettings::default();
+        let types = [TechType {
+            name: "CATECH".to_string(),
+            footprint: vec![(0, 0)],
+        }];
+        let mut chosen = None;
+        for seed in 1..=8 {
+            let mut options = options(1, 0);
+            options.seed = seed;
+            let generated = generate_map(&options, &settings, &resolved, &blocks, &types);
+            if !generated.construction_trace.events.is_empty() {
+                chosen = Some(generated);
+                break;
+            }
+        }
+        let generated = chosen.expect("bounded fixture reaches a constructed neutral type");
+        for (ordinal, event) in generated.construction_trace.events.iter().enumerate() {
+            assert_eq!(event.ordinal, ordinal);
+            match &event.outcome {
+                RmgConstructionOutcome::Discarded => {}
+                RmgConstructionOutcome::Emitted { entity_index, cell } => {
+                    let entity = &generated.map_file.entities[*entity_index];
+                    assert_eq!(entity.type_id, event.techno_type);
+                    assert_eq!((entity.cell_x, entity.cell_y), *cell);
+                }
+            }
+        }
     }
 
     /// The comparable content of a generated map: what the emitter projected

@@ -1,16 +1,16 @@
-//! River-bridge placement for the carved map types.
+//! Waterfall/river terrain shaping for active random-map types 3 and 4.
 //!
 //! gamemd: `RandomMapGenerator::BuildRiverBridge` 0x0059E740 and
 //! `RandomMapGenerator::IsUniformLevelBridgeEndArea` 0x005A7440.
 //!
-//! The whole random-map generator is dormant in stock YR skirmish:
-//! `ScenarioClass::Read_Scenario` 0x00684620 sets `IsRandom` only when the
-//! scenario filename's extension matches the string at 0x0083DA88, which is
-//! `.SED`, and retail ships `.MPR`/`.YRM`/`.MAP`. Nothing here runs in an
-//! ordinary retail match, so this file sits below the divergence cut.
+//! Stock Create Random Map writes a `.SED`, and `ScenarioClass::Read_Scenario`
+//! reaches this generator on launch. The inherited `BuildRiverBridge` name is
+//! misleading: this routine creates waterfall/river terrain only. It writes
+//! no low-bridge overlays, runtime bridge flags, tubes, CABHUTs, or generated
+//! construction events.
 //!
 //! When a river's cross-section runs straight for long enough, the walk may
-//! throw a bridge across itself: a clearance scan ahead, twelve ranks of water
+//! shape a waterfall crossing: a clearance scan ahead, twelve ranks of water
 //! filled in (four near, eight far), the region grown behind the bridge by the
 //! meander arm, the shoreline finalized, and the near side dilated. On success
 //! the river jumps twelve cells forward and continues on the far bank — under a
@@ -21,8 +21,8 @@
 //! into one parametric form — the N and W deck cases carry level-adjust loops
 //! the E and S cases lack.
 //!
-//! The crossing itself is stamped from the theater's four **waterfall
-//! tilesets** — not the bridge sets; the "bridge" naming is inherited drift.
+//! The crossing is stamped from the theater's four **waterfall tilesets** —
+//! not the bridge sets and not the separate low-deck overlay mechanism.
 //! Each set holds four pieces: two ends, a two-cell middle and a one-cell
 //! middle, alternated by span parity. The stamping consumes no randomness,
 //! but it is not cosmetic: its unassigned-tile sentinels and level
@@ -551,6 +551,13 @@ mod tests {
         let (mut grid, mut scratch, ids, blocks) = harness();
         let mut rng = RmgRng::new(1);
         let mut gauss = Gaussian::default();
+        let topology_before: Vec<_> = grid
+            .native_cells()
+            .map(|(x, y)| {
+                let cell = grid.get(x, y).unwrap();
+                ((x, y), cell.overlay, cell.density, cell.occupied)
+            })
+            .collect();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -599,6 +606,18 @@ mod tests {
         // x = 40 and 42.
         assert_eq!(ctx.grid.cell_native(40, 45).tile, 602, "first middle");
         assert_eq!(ctx.grid.cell_native(42, 45).tile, 602, "second middle");
+        let topology_after: Vec<_> = ctx
+            .grid
+            .native_cells()
+            .map(|(x, y)| {
+                let cell = ctx.grid.get(x, y).unwrap();
+                ((x, y), cell.overlay, cell.density, cell.occupied)
+            })
+            .collect();
+        assert_eq!(
+            topology_after, topology_before,
+            "waterfall terrain cannot create low overlays or occupiers"
+        );
     }
 
     #[test]

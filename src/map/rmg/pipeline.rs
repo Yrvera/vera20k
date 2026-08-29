@@ -19,6 +19,7 @@
 use crate::map::theater::TheaterCliffRanges;
 
 use super::grid::RmgGrid;
+use super::phases::adjacency;
 use super::phases::blob::BlobCtx;
 use super::phases::carve::CarveCtx;
 use super::phases::carve_driver::{self, ConnectorRegion};
@@ -43,7 +44,7 @@ use super::rng::RmgRng;
 use super::scratch::RmgScratch;
 use super::tiles::TileIds;
 use super::x87::Gaussian;
-use super::{MapGeometry, Stage};
+use super::{MapGeometry, RmgConstructionTrace, Stage};
 
 /// The land-type count of the wheel-impassable table (`zones::LAND_TYPES`).
 pub const LAND_TYPES: usize = super::phases::zones::LAND_TYPES;
@@ -119,6 +120,8 @@ pub struct PipelineOutput {
     pub terrain: Vec<(String, i16, i16)>,
     /// Placed `(name, x, y)` neutral tech buildings.
     pub structures: Vec<(String, i16, i16)>,
+    /// Scenario-consuming generated Building constructors in exact order.
+    pub(crate) construction_trace: RmgConstructionTrace,
     /// Start slots no region could fill. See `StartsOutcome`.
     pub unfilled_start_slots: usize,
 }
@@ -147,6 +150,8 @@ pub fn run_pipeline(
     // Emit-form start positions, filled in once `Starts` has produced them so
     // every later boundary can hand them to the observer.
     let mut waypoints: Vec<(u8, u16, u16)> = Vec::new();
+    let mut structures: Vec<(String, i16, i16)> = Vec::new();
+    let mut construction_trace = RmgConstructionTrace::default();
 
     // ---- Water + finalize (map types 0-2 shape the base terrain) ----------
     // Struct-literal fields move a `&mut`, so every context reborrows the shared
@@ -232,9 +237,10 @@ pub fn run_pipeline(
                 id: r.id,
                 level: r.level,
                 waterish: r.active,
+                cell_count: adjacency::region_cell_count(scratch, r.id),
+                neighbours: adjacency::neighbour_ids(scratch, r.id, regions.id_counter),
             })
             .collect();
-        let region_count = regions.id_counter;
         for region in &connector_regions {
             let mut ctx = CarveCtx {
                 grid: &mut *grid,
@@ -252,9 +258,10 @@ pub fn run_pipeline(
             carve_driver::carve_connectors_for_region(
                 &mut ctx,
                 &connector_regions,
-                *region,
-                region_count,
+                region,
                 inputs.accessibility,
+                &mut structures,
+                &mut construction_trace,
             );
         }
     }
@@ -326,7 +333,7 @@ pub fn run_pipeline(
             regions: &regions,
             types: inputs.tech_types,
         };
-        tech_buildings::run(&mut ctx, &args)
+        tech_buildings::run_traced(&mut ctx, &args, &mut construction_trace, structures.len())
     };
     observe(Stage::TechBuildings, grid, &waypoints);
 
@@ -436,15 +443,17 @@ pub fn run_pipeline(
     let mut terrain: Vec<(String, i16, i16)> = trees;
     terrain.extend(tiberium.trees);
 
-    let structures = tech_placements
-        .into_iter()
-        .map(|placement| (placement.name, placement.x, placement.y))
-        .collect();
+    structures.extend(
+        tech_placements
+            .into_iter()
+            .map(|placement| (placement.name, placement.x, placement.y)),
+    );
 
     PipelineOutput {
         waypoints,
         terrain,
         structures,
+        construction_trace,
         unfilled_start_slots,
     }
 }

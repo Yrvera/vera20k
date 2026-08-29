@@ -197,6 +197,10 @@ pub struct GeneratedMap {
     /// Exact `g_MapGenRng` continuation after this accepted generation run.
     /// Kept crate-private so app code can transport but never draw from it.
     pub(crate) mapgen_continuation: MapGenRngContinuation,
+    /// Ordered native Building-constructor effects produced during this RMG
+    /// run. Geometry is MapGen-owned; these events are replayed later on the
+    /// appropriate Scenario owner (shell preview or match bootstrap).
+    pub(crate) construction_trace: RmgConstructionTrace,
     /// `(slot, x, y)` per generated start position.
     pub start_waypoints: Vec<(u8, u16, u16)>,
     /// Stages actually executed, in order.
@@ -204,6 +208,76 @@ pub struct GeneratedMap {
     /// Start slots no region could fill. Non-zero means this map is short of
     /// spawns: fewer usable start positions than the player count implies.
     pub unfilled_start_slots: usize,
+}
+
+/// The generated-Building constructor phases that consume Scenario words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RmgConstructionPhase {
+    BridgeRepairHut,
+    NeutralTech,
+}
+
+/// Whether a generated constructor survived placement and entered MapFile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RmgConstructionOutcome {
+    Discarded,
+    Emitted {
+        entity_index: usize,
+        cell: (u16, u16),
+    },
+}
+
+/// One Scenario-consuming generated Building constructor, in native order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RmgConstructionEvent {
+    pub(crate) ordinal: usize,
+    pub(crate) phase: RmgConstructionPhase,
+    pub(crate) techno_type: String,
+    pub(crate) outcome: RmgConstructionOutcome,
+}
+
+/// Immutable transport of all generated Building constructor effects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RmgConstructionTrace {
+    pub(crate) events: Vec<RmgConstructionEvent>,
+}
+
+impl RmgConstructionTrace {
+    pub(crate) fn push_discarded(
+        &mut self,
+        phase: RmgConstructionPhase,
+        techno_type: String,
+    ) -> usize {
+        let ordinal = self.events.len();
+        self.events.push(RmgConstructionEvent {
+            ordinal,
+            phase,
+            techno_type,
+            outcome: RmgConstructionOutcome::Discarded,
+        });
+        ordinal
+    }
+
+    pub(crate) fn push_emitted(
+        &mut self,
+        phase: RmgConstructionPhase,
+        techno_type: String,
+        entity_index: usize,
+        cell: (u16, u16),
+    ) {
+        let ordinal = self.push_discarded(phase, techno_type);
+        self.mark_emitted(ordinal, entity_index, cell);
+    }
+
+    pub(crate) fn mark_emitted(&mut self, ordinal: usize, entity_index: usize, cell: (u16, u16)) {
+        let event = self
+            .events
+            .get_mut(ordinal)
+            .expect("construction trace ordinal was just allocated");
+        debug_assert_eq!(event.ordinal, ordinal);
+        debug_assert_eq!(event.outcome, RmgConstructionOutcome::Discarded);
+        event.outcome = RmgConstructionOutcome::Emitted { entity_index, cell };
+    }
 }
 
 /// Walk `STAGE_ORDER`, dropping the stages this configuration skips: the island

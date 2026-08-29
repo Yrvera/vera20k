@@ -12,7 +12,7 @@
 //! `RaisePinchedCliffCell` 0x00579010, `SelectAndStampCliffFaceTile`
 //! 0x00579620 and `RandomMapGenerator::JitterCliffEdges` 0x005A19E0.
 //! `CellClass::HasBridgeOverlay` 0x004865D0 belongs to the same generator
-//! family. Dormant in stock YR skirmish for the reason in `phases::bridge`.
+//! family. Reached by stock Create Random Map/`.SED` generation.
 //!
 //! For 2x2 all-water clusters (anchor + E/S/SE, none sub-tiled yet) a large
 //! multi-cell variant may be placed; single cells get one of six band

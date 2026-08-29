@@ -2374,6 +2374,7 @@ mod tests {
             map_file: map,
             mapgen_continuation:
                 crate::map::rmg::RmgRng::new(0x1234).into_continuation(),
+            construction_trace: crate::map::rmg::RmgConstructionTrace::default(),
             start_waypoints: vec![(0, 10, 20), (1, 30, 40)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
@@ -2491,6 +2492,7 @@ mod tests {
             map_file: map,
             mapgen_continuation:
                 crate::map::rmg::RmgRng::new(0x4567).into_continuation(),
+            construction_trace: crate::map::rmg::RmgConstructionTrace::default(),
             start_waypoints: vec![(0, 70, 70), (1, 90, 70), (2, 70, 90)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
