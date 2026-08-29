@@ -2,9 +2,10 @@
 //!
 //! `AnimStore` owns animation storage while `world::LogicVector` owns live AI
 //! order. This module implements only the verified ordinary non-bouncer
-//! AnimClass lifecycle needed by building damage fire: constructor/reveal,
-//! first-AI guard, logic-frame timing, loops, reverse/ping-pong, Next, trailer,
-//! sound identity, conceal, and deferred deletion.
+//! AnimClass lifecycle needed by building damage fire and destruction effects:
+//! constructor/reveal, first-AI guard, logic-frame timing, loops,
+//! reverse/ping-pong, Next, trailer, sound identity, conceal, and deferred
+//! deletion.
 
 use std::collections::BTreeMap;
 
@@ -70,6 +71,8 @@ const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const ANIM_HEIGHT_LEVEL_LEPTONS: i32 = 128;
 const TRAILER_DRAW_FLAGS: u32 = 0x600;
 const BUILDING_RENDER_ORIGIN_LEPTONS: i32 = 128;
+const BUILDING_DESTRUCTION_SCATTER_RADIUS: i32 = 0x40;
+const BUILDING_DESTRUCTION_DRAW_FLAGS: u32 = 0x600;
 const DAMAGE_FIRE_SLOT_COUNT: usize = 8;
 // Retained with the verified multiplayer-feedback spawn seam until command
 // feedback owns its production call site.
@@ -611,6 +614,109 @@ impl Simulation {
         Ok(stable_id)
     }
 
+    /// Construct the two verified Building destruction animation arms inline.
+    /// The returned IDs are in native construction order and exist mainly for
+    /// focused executable checks; production ownership is the AnimStore and
+    /// global LogicVector established by `spawn_anim_at_world`.
+    ///
+    /// gamemd-derived: `BuildingClass::DestructionEffects @ 0x004415F0`.
+    /// The per-foundation arm is `0x0044194D..0x00441A24`; the DestroyAnim arm
+    /// is `0x00441CB2..0x00441D66`.
+    pub(crate) fn spawn_building_destruction_anims(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        location: AnimWorldCoord,
+        foundation: &str,
+        explosion_anims: &[String],
+        destroy_anims: &[String],
+    ) -> Vec<AnimId> {
+        let mut spawned = Vec::new();
+        let render_x = location.x.wrapping_sub(BUILDING_RENDER_ORIGIN_LEPTONS);
+        let render_y = location.y.wrapping_sub(BUILDING_RENDER_ORIGIN_LEPTONS);
+
+        for (dx, dy) in crate::rules::foundation::foundation_cell_offsets(foundation) {
+            if explosion_anims.is_empty() {
+                continue;
+            }
+
+            let center_x = (render_x >> 8)
+                .wrapping_add(i32::from(dx))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(crate::util::lepton::CELL_CENTER_LEPTON_I32);
+            let center_y = (render_y >> 8)
+                .wrapping_add(i32::from(dy))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(crate::util::lepton::CELL_CENTER_LEPTON_I32);
+            let (world_x, world_y) = crate::sim::combat::random_direction_coord(
+                &mut self.scenario_rng,
+                center_x,
+                center_y,
+                BUILDING_DESTRUCTION_SCATTER_RADIUS,
+            );
+
+            // Rust's allocator has no recoverable native null-allocation seam.
+            // On the ordinary success path the ranged delay and raw modulo
+            // selection follow the already-consumed scatter draw exactly.
+            let delay = self.scenario_rng.next_range_u32_inclusive(0, 3) as u16;
+            let index = (self.scenario_rng.next_u32() % explosion_anims.len() as u32) as usize;
+            let type_name = self.interner.intern(&explosion_anims[index]);
+            let mut descriptor = AnimClassSpawnDescriptor::new(
+                type_name,
+                0,
+                0,
+                crate::util::fixed_math::SIM_ZERO,
+                crate::util::fixed_math::SIM_ZERO,
+                0,
+            );
+            descriptor.delay = delay;
+            descriptor.draw_flags = BUILDING_DESTRUCTION_DRAW_FLAGS;
+            descriptor.building_explosion_start_smudge = true;
+            let id = self
+                .spawn_anim_at_world_with_overlay_registry(
+                    rules,
+                    descriptor,
+                    AnimWorldCoord {
+                        x: world_x,
+                        y: world_y,
+                        z: location.z,
+                    },
+                    overlay_registry,
+                )
+                .expect("Building Explosion AnimType roots must be bound during scenario load");
+            spawned.push(id);
+        }
+
+        if !destroy_anims.is_empty() {
+            let index = (self.scenario_rng.next_u32() % destroy_anims.len() as u32) as usize;
+            let type_name = self.interner.intern(&destroy_anims[index]);
+            let mut descriptor = AnimClassSpawnDescriptor::new(
+                type_name,
+                0,
+                0,
+                crate::util::fixed_math::SIM_ZERO,
+                crate::util::fixed_math::SIM_ZERO,
+                0,
+            );
+            descriptor.draw_flags = BUILDING_DESTRUCTION_DRAW_FLAGS;
+            let id = self
+                .spawn_anim_at_world_with_overlay_registry(
+                    rules,
+                    descriptor,
+                    AnimWorldCoord {
+                        x: render_x,
+                        y: render_y,
+                        z: location.z,
+                    },
+                    overlay_registry,
+                )
+                .expect("Building DestroyAnim roots must be bound during scenario load");
+            spawned.push(id);
+        }
+
+        spawned
+    }
+
     // The move-feedback producer is not wired yet; keep the verified
     // sync-exempt allocation path available for that activation slice.
     #[allow(dead_code)]
@@ -868,9 +974,7 @@ impl Simulation {
                 );
                 self.destroy_anim(id);
             }
-            VisitAction::Next(next) => {
-                self.switch_anim_type(id, &next, rules, overlay_registry)
-            }
+            VisitAction::Next(next) => self.switch_anim_type(id, &next, rules, overlay_registry),
         }
     }
 
@@ -1772,10 +1876,7 @@ mod tests {
         assert_eq!(restored.get(id).unwrap().draw_runtime, draw_runtime);
         assert!(restored.get(id).unwrap().use_cell_drawer);
         assert!(restored.get(id).unwrap().terrain_attached);
-        assert!(restored
-            .get(id)
-            .unwrap()
-            .building_explosion_start_smudge);
+        assert!(restored.get(id).unwrap().building_explosion_start_smudge);
 
         let before = sim.state_hash();
         sim.anim_mut_by_id(id)
@@ -1970,6 +2071,136 @@ mod tests {
                 "Middle must not repeat after delay {delay} reaches zero"
             );
         }
+    }
+
+    #[test]
+    fn phase3_building_destruction_walk_is_row_major_scenario_owned_and_scheduler_persistent() {
+        let rules = runtime_rules(
+            "[EXP_A]\nRate=450\nEnd=4\nReport=ExplosionA\n\
+             [EXP_B]\nRate=450\nEnd=4\nReport=ExplosionB\n\
+             [DEST]\nRate=300\nEnd=6\nShadow=yes\nAltPalette=yes\nLayer=ground\n",
+            &[("EXP_A", 4), ("EXP_B", 4), ("DEST", 12)],
+        );
+        let mut sim = Simulation::new();
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        sim.main_rng = crate::sim::rng::SimRng::new(91);
+        let main_before = sim.main_rng.logical_state();
+        let mut expected_rng = sim.scenario_rng.clone();
+        let location = AnimWorldCoord {
+            x: 10 * LEPTONS_PER_CELL + 128,
+            y: 20 * LEPTONS_PER_CELL + 128,
+            z: 731,
+        };
+        let explosions = vec!["EXP_A".to_string(), "EXP_B".to_string()];
+        let destroys = vec!["DEST".to_string()];
+        let mut expected = Vec::new();
+        for (dx, dy) in crate::rules::foundation::foundation_cell_offsets("3x3Refinery") {
+            let center_x = (location.x.wrapping_sub(128) >> 8)
+                .wrapping_add(i32::from(dx))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(128);
+            let center_y = (location.y.wrapping_sub(128) >> 8)
+                .wrapping_add(i32::from(dy))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(128);
+            let (x, y) = crate::sim::combat::random_direction_coord(
+                &mut expected_rng,
+                center_x,
+                center_y,
+                BUILDING_DESTRUCTION_SCATTER_RADIUS,
+            );
+            let delay = expected_rng.next_range_u32_inclusive(0, 3) as u16;
+            let index = (expected_rng.next_u32() % explosions.len() as u32) as usize;
+            expected.push((
+                explosions[index].clone(),
+                AnimWorldCoord { x, y, z: 731 },
+                delay,
+            ));
+        }
+        let destroy_index = (expected_rng.next_u32() % destroys.len() as u32) as usize;
+        expected.push((
+            destroys[destroy_index].clone(),
+            AnimWorldCoord {
+                x: location.x - 128,
+                y: location.y - 128,
+                z: 731,
+            },
+            0,
+        ));
+
+        let ids = sim.spawn_building_destruction_anims(
+            &rules,
+            None,
+            location,
+            "3x3Refinery",
+            &explosions,
+            &destroys,
+        );
+
+        assert_eq!(
+            ids.len(),
+            9,
+            "eight holed-foundation cells plus DestroyAnim"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+        assert_eq!(sim.main_rng.logical_state(), main_before);
+        assert_eq!(sim.live_object_order_snapshot(), ids);
+        for (index, (&id, (name, world, delay))) in ids.iter().zip(&expected).enumerate() {
+            let anim = sim.anim(id).expect("scheduler-owned building AnimClass");
+            assert_eq!(sim.interner.resolve(anim.type_id), name);
+            assert_eq!(anim.world_coord, *world);
+            assert_eq!(anim.draw_flags, 0x600);
+            assert_eq!(anim.z_adjust, 0);
+            assert_eq!(anim.runtime.delay_remaining, *delay);
+            assert_eq!(anim.runtime.loop_remaining, 1);
+            assert_eq!(anim.runtime.constructor_reverse, false);
+            assert_eq!(anim.building_explosion_start_smudge, index < 8);
+            assert!(anim.in_logic_vector);
+        }
+        assert!(
+            expected[..8].iter().any(|(_, _, delay)| *delay == 0),
+            "fixture must exercise synchronous constructor-time Middle"
+        );
+        let destroy = sim.anim(*ids.last().expect("DestroyAnim id")).unwrap();
+        let destroy_config = rules.art_registry.anim_runtime_config("DEST").unwrap();
+        assert_eq!(destroy.effective_end, 6, "Shadow halves the SHP body range");
+        assert_eq!(
+            destroy_config.layer,
+            crate::rules::art_data::AnimLayer::Ground
+        );
+        assert!(destroy_config.shadow);
+        assert!(destroy_config.alt_palette);
+
+        let snapshot =
+            crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "building-destruction-anims", 0);
+        let mut restored = crate::sim::snapshot::GameSnapshot::load(&snapshot)
+            .expect("building animation snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("building animation scheduler restore");
+        assert_eq!(restored.live_object_order_snapshot(), ids);
+        for &id in &ids {
+            let before = sim.anim(id).unwrap();
+            let after = restored.anim(id).unwrap();
+            assert_eq!(after.type_id, before.type_id);
+            assert_eq!(after.world_coord, before.world_coord);
+            assert_eq!(after.draw_flags, before.draw_flags);
+            assert_eq!(
+                after.runtime.delay_remaining,
+                before.runtime.delay_remaining
+            );
+            assert_eq!(
+                after.building_explosion_start_smudge,
+                before.building_explosion_start_smudge,
+            );
+        }
+        let restored_hash = restored.state_hash();
+        restored.anim_mut_by_id(ids[0]).unwrap().world_coord.x += 1;
+        assert_ne!(restored.state_hash(), restored_hash);
     }
 
     #[test]

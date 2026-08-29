@@ -199,6 +199,9 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     // The process-shaped dummy was bound before OverlayPack stamping inside
     // the bootstrap. Every grid/sim clone inside this run now shares it;
     // separate loads remain isolated.
+    let defaultable_scheduler_roots =
+        crate::app::loading::init_helpers::building_destruction_anim_roots(&rules);
+    art.install_native_default_anim_types(defaultable_scheduler_roots.iter());
     let scheduler_roots = crate::app::loading::init_helpers::scheduler_anim_roots(
         &rules,
         terrain_bootstrap.resolved.tile_animations(),
@@ -323,12 +326,11 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         &map.actions,
     )
     .map_err(|error| format!("active trigger program rejected: {error}"))?;
-    let trigger_attachments =
-        crate::sim::trigger_runtime::TriggerAttachmentPlan::from_loaded_map(
-            &trigger_program,
-            &map,
-            &sim,
-        );
+    let trigger_attachments = crate::sim::trigger_runtime::TriggerAttachmentPlan::from_loaded_map(
+        &trigger_program,
+        &map,
+        &sim,
+    );
     sim.trigger_runtime = crate::sim::trigger_runtime::TriggerRuntime::materialize_fresh(
         &trigger_program,
         &map.local_variables,

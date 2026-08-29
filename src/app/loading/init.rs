@@ -1844,6 +1844,9 @@ pub(crate) fn load_map_from_initial(
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
+        let defaultable_roots =
+            crate::app::loading::init_helpers::building_destruction_anim_roots(r);
+        a.install_native_default_anim_types(defaultable_roots.iter());
         let roots = scheduler_anim_roots(r, resolved_terrain.tile_animations());
         a.bind_scheduler_anim_assets(
             &roots,

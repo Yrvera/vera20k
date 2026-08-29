@@ -192,18 +192,21 @@ pub struct ObjectType {
     /// the native dedicated Grinder branch and bypass both FactoryPlant and
     /// global RefundPercent multipliers.
     pub soylent: i32,
-    /// `Explosion=` — the type's OWN death animations, one chosen at random.
+    /// `Explosion=` — the type's own death-animation vector.
     ///
     /// gamemd-derived: `UnitClass::Death_Explosion @ 0x00738680` picks
     /// `Explosion[Random__Next() % len]` at the object's coordinate, after the
-    /// killing warhead's own `AnimList=` anim. 487 stock sections author it.
+    /// killing warhead's own `AnimList=` anim. `BuildingClass::DestructionEffects
+    /// @ 0x004415F0` instead selects once per ordered foundation cell after
+    /// scatter and a random constructor delay. 487 stock sections author it.
     pub explosion_anims: Vec<String>,
     /// `DestroyAnim=` — a second list, drawn from after the explosion.
     ///
-    /// gamemd-derived: same function; the vector is `TechnoTypeClass+0x748`
+    /// gamemd-derived: the vector is `TechnoTypeClass+0x748`
     /// (items `+0x74C`, count `+0x758`, key push at `0x00713A97`) and native
-    /// takes `Random__Next() % count` from it, exactly as it does for
-    /// `Explosion=` — one draw each, explosion first.
+    /// Unit/Aircraft death takes `Random__Next() % count` after `Explosion=`.
+    /// Building destruction takes one raw Scenario draw after its intervening
+    /// destruction branches and constructs at `GetRenderCoords`.
     pub destroy_anims: Vec<String>,
     /// `Trainable=` — whether this object can gain veterancy from its kills.
     ///
@@ -1307,9 +1310,7 @@ impl ObjectType {
             crate_goodie: section.get_bool("CrateGoodie").unwrap_or(false),
             carries_crate: section.get_bool("CarriesCrate").unwrap_or(false),
             crate_beneath: section.get_bool("CrateBeneath").unwrap_or(false),
-            crate_beneath_is_money: section
-                .get_bool("CrateBeneathIsMoney")
-                .unwrap_or(false),
+            crate_beneath_is_money: section.get_bool("CrateBeneathIsMoney").unwrap_or(false),
             strength: section.get_i32("Strength").unwrap_or(0),
             dont_score: section.get_bool("DontScore").unwrap_or(false),
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),
@@ -1392,8 +1393,7 @@ impl ObjectType {
                 .get("MindClearedSound")
                 .map(str::trim)
                 .filter(|sound| {
-                    !sound.is_empty()
-                        && !crate::rules::ini_parser::is_native_none_type_name(sound)
+                    !sound.is_empty() && !crate::rules::ini_parser::is_native_none_type_name(sound)
                 })
                 .map(str::to_string),
             power: section.get_i32("Power").unwrap_or(0),
@@ -1633,19 +1633,31 @@ impl ObjectType {
             factory: section.get("Factory").and_then(FactoryType::from_ini),
             factory_plant: section.get_bool("FactoryPlant").unwrap_or(false),
             infantry_cost_bonus: NativeF32Bits::from_bits(
-                section.get_f32("InfantryCostBonus").unwrap_or(1.0).to_bits(),
+                section
+                    .get_f32("InfantryCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
             ),
             units_cost_bonus: NativeF32Bits::from_bits(
                 section.get_f32("UnitsCostBonus").unwrap_or(1.0).to_bits(),
             ),
             aircraft_cost_bonus: NativeF32Bits::from_bits(
-                section.get_f32("AircraftCostBonus").unwrap_or(1.0).to_bits(),
+                section
+                    .get_f32("AircraftCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
             ),
             buildings_cost_bonus: NativeF32Bits::from_bits(
-                section.get_f32("BuildingsCostBonus").unwrap_or(1.0).to_bits(),
+                section
+                    .get_f32("BuildingsCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
             ),
             defenses_cost_bonus: NativeF32Bits::from_bits(
-                section.get_f32("DefensesCostBonus").unwrap_or(1.0).to_bits(),
+                section
+                    .get_f32("DefensesCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
             ),
             weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),
