@@ -3107,6 +3107,380 @@ fn native_result_action_order_preserves_shared_timer_and_textual_stack_results()
     assert!(armed_then_skip_win.notices().is_empty());
 }
 
+fn action_119_rules() -> crate::rules::ruleset::RuleSet {
+    crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[Countries]\n0=Americans\n1=Alliance\n2=French\n3=Germans\n4=British\n5=Africans\n6=Arabs\n7=Koreans\n8=Neutral\n9=YuriCountry\n\
+         [Americans]\nName=Americans\n\
+         [Alliance]\nName=Alliance\n\
+         [French]\nName=French\n\
+         [Germans]\nName=Germans\n\
+         [British]\nName=British\n\
+         [Africans]\nName=Africans\n\
+         [Arabs]\nName=Arabs\n\
+         [Koreans]\nName=Koreans\n\
+         [Neutral]\nName=Civilian\nMultiplayPassive=yes\n\
+         [YuriCountry]\nName=YuriCountry\n\
+         [InfantryTypes]\n\
+         [VehicleTypes]\n0=TARGET\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [TARGET]\nStrength=100\nArmor=none\n\
+         [Warheads]\n0=SWEEPC4\n\
+         [SWEEPC4]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [CombatDamage]\nC4Warhead=SWEEPC4\n",
+    ))
+    .expect("Action 119 country/C4 rules")
+}
+
+fn action_119_program(operand: i32) -> TriggerProgram {
+    compile_program(&format!(
+        "[Triggers]\nT=Neutral,<none>,DestroyHouse,1,1,1,1,0\n\
+         [Tags]\nG=2,G,T\n\
+         [Events]\nT=1,8,0,0\n\
+         [Actions]\nT=1,119,0,{operand},0,0,0,0,A\n",
+    ))
+    .1
+}
+
+fn register_action_119_house(
+    sim: &mut Simulation,
+    name: &str,
+    country: &str,
+) -> InternedId {
+    let owner = sim.interner.intern(name);
+    let country = sim.interner.intern(country);
+    sim.houses.insert(
+        owner,
+        crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10),
+    );
+    sim.session.house_order.push(owner);
+    owner
+}
+
+fn execute_action_119_once(
+    operand: i32,
+    with_rules: bool,
+    resolve_handles: bool,
+) -> (NativeActionResult, Simulation, InternedId) {
+    let rules = action_119_rules();
+    let program = action_119_program(operand);
+    let mut simulation = Simulation::new();
+    let first = register_action_119_house(&mut simulation, "FirstAmericans", "Americans");
+    let _second = register_action_119_house(&mut simulation, "SecondAmericans", "Americans");
+    if resolve_handles {
+        simulation.resolve_type_handles(&rules);
+    }
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        0,
+        &mut simulation.scenario_rng,
+    );
+    let action = program.trigger_types[0].actions[0].clone();
+    let result = {
+        let mut transaction = TriggerTransaction {
+            runtime: &mut runtime,
+            program: &program,
+            simulation: &mut simulation,
+            rules: with_rules.then_some(&rules),
+            overlay_registry: None,
+            waypoints: &HashMap::new(),
+            local_player_owner: None,
+            effects: Vec::new(),
+        };
+        transaction.execute_action(0, 0, &action)
+    };
+    (result, simulation, first)
+}
+
+#[test]
+fn action_119_resolver_covers_retail_operands_raising_house_and_slots_a_through_h() {
+    let rules = action_119_rules();
+    let program = action_119_program(0);
+    let mut sim = Simulation::new();
+    let mut by_country = BTreeMap::new();
+    for (index, name) in [
+        (0, "Americans"),
+        (1, "Alliance"),
+        (4, "British"),
+        (6, "Arabs"),
+        (9, "YuriCountry"),
+    ] {
+        by_country.insert(index, register_action_119_house(&mut sim, name, name));
+    }
+    let duplicate_american = register_action_119_house(&mut sim, "SecondAmericans", "Americans");
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        0,
+        &mut sim.scenario_rng,
+    );
+    let instance = runtime.trigger_instances.get_mut(0).expect("live Trigger instance");
+    let raising = by_country[&6];
+    instance.raising_house = Some(raising);
+
+    for operand in [9, 1, 4, 6, 9, 0, 1] {
+        assert_eq!(
+            resolve_action_119_house(&sim, &rules, Some(operand), Some(instance)),
+            Some(by_country[&operand]),
+            "mounted-retail Action119 country operand {operand}",
+        );
+    }
+    assert_ne!(by_country[&0], duplicate_american);
+    assert_eq!(
+        resolve_action_119_house(&sim, &rules, Some(0), Some(instance)),
+        Some(by_country[&0]),
+        "ordinary country lookup returns the first House registration"
+    );
+    assert_eq!(
+        resolve_action_119_house(&sim, &rules, Some(0x2325), Some(instance)),
+        Some(raising)
+    );
+
+    for slot in 0_u32..8 {
+        let house = *by_country
+            .values()
+            .nth(slot as usize % by_country.len())
+            .unwrap();
+        sim.session.start_slot_houses.insert(slot, house);
+        assert_eq!(
+            resolve_action_119_house(
+                &sim,
+                &rules,
+                Some(0x117B + slot as i32),
+                Some(instance),
+            ),
+            Some(house),
+            "Player slot {slot}"
+        );
+    }
+    assert_eq!(resolve_action_119_house(&sim, &rules, Some(-1), Some(instance)), None);
+    assert_eq!(resolve_action_119_house(&sim, &rules, Some(3), Some(instance)), None);
+    assert_eq!(resolve_action_119_house(&sim, &rules, Some(0), None), None);
+}
+
+#[test]
+fn action_119_boolean_result_requires_trigger_house_rules_and_resolved_c4() {
+    let (result, _, _) = execute_action_119_once(0, true, true);
+    assert_eq!(result, NativeActionResult::True, "resolved empty sweep succeeds");
+    let (result, _, _) = execute_action_119_once(0, false, true);
+    assert_eq!(result, NativeActionResult::False, "missing Rules fails");
+    let (result, simulation, _) = execute_action_119_once(0, true, false);
+    assert_eq!(result, NativeActionResult::True, "resolved empty House returns true");
+    assert!(
+        simulation.rule_handles.is_some(),
+        "direct callers idempotently install the configured C4 authority"
+    );
+    let (result, _, _) = execute_action_119_once(77, true, true);
+    assert_eq!(result, NativeActionResult::False, "missing House fails");
+
+    let rules = action_119_rules();
+    let program = action_119_program(0);
+    let mut simulation = Simulation::new();
+    register_action_119_house(&mut simulation, "FirstAmericans", "Americans");
+    simulation.resolve_type_handles(&rules);
+    let mut runtime = TriggerRuntime::materialize_fresh(
+        &program,
+        &LocalVariableMap::new(),
+        &TriggerAttachmentPlan::default(),
+        1,
+        0,
+        &mut simulation.scenario_rng,
+    );
+    let action = program.trigger_types[0].actions[0].clone();
+    let mut transaction = TriggerTransaction {
+        runtime: &mut runtime,
+        program: &program,
+        simulation: &mut simulation,
+        rules: Some(&rules),
+        overlay_registry: None,
+        waypoints: &HashMap::new(),
+        local_player_owner: None,
+        effects: Vec::new(),
+    };
+    assert_eq!(
+        transaction.execute_action(u32::MAX, 0, &action),
+        NativeActionResult::False,
+        "missing live Trigger pointer fails before operand resolution"
+    );
+}
+
+#[test]
+fn action_119_production_poll_destroys_the_first_matching_house_only() {
+    let rules = action_119_rules();
+    for operand in [9, 1, 4, 6, 9, 0, 1] {
+        let program = action_119_program(operand);
+        let mut sim = Simulation::new();
+        let target_country = rules
+            .country_name(crate::rules::ruleset::CountryIdx(operand as u16))
+            .expect("retail country index");
+        let target = register_action_119_house(&mut sim, "TargetHouse", target_country);
+        let other = register_action_119_house(&mut sim, "OtherHouse", "French");
+        sim.resolve_type_handles(&rules);
+        let target_id = sim
+            .spawn_object("TARGET", "TargetHouse", 2, 2, 0, &rules, &BTreeMap::new())
+            .unwrap();
+        let other_id = sim
+            .spawn_object("TARGET", "OtherHouse", 3, 2, 0, &rules, &BTreeMap::new())
+            .unwrap();
+        let mut runtime = TriggerRuntime::materialize_fresh(
+            &program,
+            &LocalVariableMap::new(),
+            &TriggerAttachmentPlan::default(),
+            1,
+            0,
+            &mut sim.scenario_rng,
+        );
+
+        assert!(runtime
+            .advance_native_poll(&program, &mut sim, Some(&rules), None, &HashMap::new())
+            .is_empty());
+
+        assert!(sim.substrate.entities.get(target_id).is_some_and(|entity| entity.dying));
+        assert!(sim.substrate.entities.get(other_id).is_some_and(|entity| !entity.dying));
+        assert_eq!(sim.houses[&target].owned_unit_count, 0);
+        assert_eq!(sim.houses[&other].owned_unit_count, 1);
+    }
+}
+
+#[test]
+fn action_119_transaction_uses_instance_raising_house_and_all_start_slots() {
+    let rules = action_119_rules();
+    for (operand, slot) in std::iter::once((0x2325, None))
+        .chain((0_u32..8).map(|slot| (0x117B + slot as i32, Some(slot))))
+    {
+        let program = action_119_program(operand);
+        let mut sim = Simulation::new();
+        let target = register_action_119_house(&mut sim, "TargetHouse", "Americans");
+        if let Some(slot) = slot {
+            sim.session.start_slot_houses.insert(slot, target);
+        }
+        sim.resolve_type_handles(&rules);
+        let target_id = sim
+            .spawn_object("TARGET", "TargetHouse", 2, 2, 0, &rules, &BTreeMap::new())
+            .unwrap();
+        let mut runtime = TriggerRuntime::materialize_fresh(
+            &program,
+            &LocalVariableMap::new(),
+            &TriggerAttachmentPlan::default(),
+            1,
+            0,
+            &mut sim.scenario_rng,
+        );
+        if slot.is_none() {
+            runtime.trigger_instances[0].raising_house = Some(target);
+        }
+
+        let _ = runtime.advance_native_poll(
+            &program,
+            &mut sim,
+            Some(&rules),
+            None,
+            &HashMap::new(),
+        );
+
+        assert!(
+            sim.substrate.entities.get(target_id).is_some_and(|entity| entity.dying),
+            "operand={operand:#x} slot={slot:?}",
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the configured active retail RA2/YR install"]
+fn active_retail_action_119_rows_are_extracted_and_executed_through_typed_transactions() {
+    let default_root = std::path::PathBuf::from(
+        "C:/Users/enok/Documents/Command and Conquer Red Alert II",
+    );
+    let root = std::env::var_os("RA2_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(default_root);
+    let assets = crate::assets::asset_manager::AssetManager::new(&root)
+        .unwrap_or_else(|error| panic!("open active retail install {}: {error}", root.display()));
+    let expected = [
+        ("all01umd.map", vec![("08AE3E3C", 9), ("0611BABC", 1)]),
+        ("all03umd.map", vec![("06B0CCCC", 4)]),
+        ("sov01umd.map", vec![("096879AC", 6)]),
+        (
+            "sov06lmd.map",
+            vec![("0782720C", 9), ("09A0EC1C", 0), ("09A0C36C", 1)],
+        ),
+    ];
+    let rules = action_119_rules();
+    let mut extracted_total = 0;
+
+    for (map_name, expected_rows) in expected {
+        let bytes = assets
+            .get(map_name)
+            .unwrap_or_else(|| panic!("active archive stack does not contain {map_name}"));
+        let ini = crate::rules::ini_parser::IniFile::from_bytes(&bytes)
+            .unwrap_or_else(|error| panic!("parse {map_name}: {error}"));
+        let actions = crate::map::actions::parse_actions(&ini);
+        let rows = actions
+            .iter()
+            .flat_map(|(trigger_id, row)| {
+                row.entries
+                    .iter()
+                    .filter(|entry| entry.kind == 119)
+                    .map(move |entry| (trigger_id.as_str(), entry))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), expected_rows.len(), "{map_name} Action119 census");
+
+        for (expected_trigger, expected_operand) in expected_rows {
+            let (_, extracted) = rows
+                .iter()
+                .find(|(trigger_id, _)| trigger_id.eq_ignore_ascii_case(expected_trigger))
+                .unwrap_or_else(|| panic!("{map_name} missing trigger {expected_trigger}"));
+            assert_eq!(extracted.params[0], "0", "{map_name} ParamType");
+            let operand = extracted.params[1]
+                .parse::<i32>()
+                .expect("retail Action119 numeric operand");
+            assert_eq!(operand, expected_operand, "{map_name} {expected_trigger}");
+            eprintln!(
+                "{map_name}: trigger={expected_trigger} action=119 params={:?}",
+                extracted.params,
+            );
+
+            let body = format!(
+                "[Triggers]\nT=Neutral,<none>,Retail destroy,1,1,1,1,0\n\
+                 [Tags]\nG=2,G,T\n\
+                 [Events]\nT=1,8,0,0\n\
+                 [Actions]\nT=1,119,{}\n",
+                extracted.params.join(","),
+            );
+            let (_, program) = compile_program(&body);
+            let mut sim = Simulation::new();
+            let country = rules
+                .country_name(crate::rules::ruleset::CountryIdx(operand as u16))
+                .expect("retail country index");
+            register_action_119_house(&mut sim, "TargetHouse", country);
+            sim.resolve_type_handles(&rules);
+            let target_id = sim
+                .spawn_object("TARGET", "TargetHouse", 2, 2, 0, &rules, &BTreeMap::new())
+                .unwrap();
+            let mut runtime = TriggerRuntime::materialize_fresh(
+                &program,
+                &LocalVariableMap::new(),
+                &TriggerAttachmentPlan::default(),
+                1,
+                0,
+                &mut sim.scenario_rng,
+            );
+            assert!(runtime
+                .advance_native_poll(&program, &mut sim, Some(&rules), None, &HashMap::new())
+                .is_empty());
+            assert!(sim.substrate.entities.get(target_id).is_some_and(|entity| entity.dying));
+            extracted_total += 1;
+        }
+    }
+    assert_eq!(extracted_total, 7);
+}
+
 #[test]
 fn result_action_68_census_fixture_preserves_pinned_owner_semantics() {
     // Hermetic mirror of the separately gated active-install census below.

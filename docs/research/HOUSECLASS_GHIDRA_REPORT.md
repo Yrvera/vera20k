@@ -1,5 +1,10 @@
 # HouseClass — Complete Ghidra Analysis of gamemd.exe
 
+> **2026-08-29 active-binary correction.** Section `ScatterAllUnits
+> (0x4FC6D0)` is materially wrong and is superseded. The function does not
+> scatter or assign movement; it performs the shared House destruction sweep
+> described in `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`.
+
 Source: `D:\ra2mdpost\House.CPP`, `D:\ra2mdpost\Country.CPP`
 
 HouseClass is the per-player state object. One instance per player slot (up to 8 in
@@ -1359,7 +1364,11 @@ Iterates all TechnoClass objects, destroys units owned by this house
 (vtable+0x20 with arg 1 = force delete). Also destroys triggers from
 DAT_00a8eaec whose associated object matches. Finally destroys the house itself.
 
-### ScatterAllUnits (0x4fc6d0) — Scatter on win pending
+### `0x4fc6d0` — SUPERSEDED destructive House Techno sweep
+
+> The historical body below is not active evidence. Use the 2026-08-29 gap
+> scan cited at the top for the corrected effective-owner, Temporal, C4
+> receiver, and mutation-safe live-registry semantics.
 
 Iterates all TechnoClass objects. For each unit owned by this house (or matching
 house via FUN_0070f820), if not busy (no active order at +0xb0, or not retreating

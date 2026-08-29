@@ -1,5 +1,11 @@
 # Factory / House / Bullet / Anim Same-Tick Tail - System Model Synthesis
 
+> **2026-08-29 correction:** this synthesis's `defeat/scatter` shorthand is
+> stale for `0x004FC6D0`. That House tail calls the live-Techno destruction/C4
+> receiver sweep documented in
+> `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`,
+> not movement Scatter. Its independent scheduler-order findings are unchanged.
+
 **Date:** 2026-05-28  
 **Scope:** PerTick tail ordering for tactical/factory/house work, production completion versus house update, and same-tick projectile/animation lifecycle effects through the live object scheduler.  
 **Non-scope:** complete FactoryClass insertion/rebuild order, full HouseClass AI formulas, exhaustive projectile family timing, all AnimClass constructor caller rows, and final draw-layer pixel ordering.  

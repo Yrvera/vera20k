@@ -10,6 +10,7 @@
 //! - Action 40: change visible map area
 //! - Action 53/54: enable/disable trigger
 //! - Action 48/112: center camera at waypoint
+//! - Action 119: destroy one resolved House's Technos
 //! - Action 137/138: set/clear a House's alternate base cell
 //!
 //! The goal is to turn parsed trigger data into real runtime behavior without
@@ -42,6 +43,7 @@ const ACTION_ANNOUNCE_LOSE: i32 = 68;
 const ACTION_END_SCENARIO: i32 = 69;
 const ACTION_CREATE_CRATE: i32 = 108;
 const ACTION_JUMP_CAMERA: i32 = 112;
+const ACTION_DESTROY_HOUSE: i32 = 119;
 const ACTION_SET_ALTERNATE_BASE: i32 = 137;
 const ACTION_CLEAR_ALTERNATE_BASE: i32 = 138;
 
@@ -1288,13 +1290,14 @@ impl TriggerTransaction<'_, '_> {
         let actions = self.program.trigger_types[trigger_type_index].actions.clone();
         let mut result = NativeActionResult::False;
         for action in &actions {
-            result = result.or(self.execute_action(trigger_type_index, action));
+            result = result.or(self.execute_action(instance_index, trigger_type_index, action));
         }
         result
     }
 
     fn execute_action(
         &mut self,
+        instance_index: u32,
         trigger_type_index: usize,
         action: &crate::map::trigger_program::TypedActionDefinition,
     ) -> NativeActionResult {
@@ -1489,6 +1492,32 @@ impl TriggerTransaction<'_, '_> {
             }
             ACTION_END_SCENARIO => {
                 self.apply_local_result_action(ACTION_END_SCENARIO);
+                NativeActionResult::True
+            }
+            ACTION_DESTROY_HOUSE => {
+                let Some(rules) = self.rules else {
+                    return NativeActionResult::False;
+                };
+                let instance = self
+                    .runtime
+                    .trigger_instances
+                    .get(instance_index as usize);
+                let Some(house) = resolve_action_119_house(
+                    self.simulation,
+                    rules,
+                    scalar,
+                    instance,
+                ) else {
+                    return NativeActionResult::False;
+                };
+                let _ = crate::sim::house_destruction::sweep_house_technos(
+                    self.simulation,
+                    rules,
+                    self.overlay_registry,
+                    house,
+                );
+                // FUN_006E3180 treats 0x004FC6D0 as a void call: once the
+                // Trigger and House resolve, even an empty sweep returns true.
                 NativeActionResult::True
             }
             _ => NativeActionResult::False,
@@ -1815,6 +1844,41 @@ fn resolve_trigger_house(
             .and_then(|country| rules.country_index(sim.interner.resolve(country)))
             == Some(trigger_house_type)
     })
+}
+
+/// Trigger Action 119's signed House operand resolver (`FUN_006E3180`).
+///
+/// The native wrapper rejects a null live Trigger pointer before inspecting
+/// the operand.  `0x2325` reads that Trigger instance's raising House;
+/// `0x117B..0x1182` resolve start slots A..H; every other nonnegative ordinary
+/// value uses the first House registration whose country index matches.
+fn resolve_action_119_house(
+    sim: &Simulation,
+    rules: &crate::rules::ruleset::RuleSet,
+    operand: Option<i32>,
+    trigger: Option<&TriggerInstance>,
+) -> Option<InternedId> {
+    let trigger = trigger?;
+    let operand = operand?;
+    let resolved = if operand == 0x2325 {
+        trigger.raising_house
+    } else if operand == -1 {
+        None
+    } else if (0x117B..=0x1182).contains(&operand) {
+        sim.session
+            .start_slot_houses
+            .get(&u32::try_from(operand - 0x117B).expect("A..H offset is nonnegative"))
+            .copied()
+    } else {
+        sim.session.house_order.iter().copied().find(|house_id| {
+            sim.houses
+                .get(house_id)
+                .and_then(|house| house.country)
+                .and_then(|country| rules.country_index(sim.interner.resolve(country)))
+                .is_some_and(|country| i32::from(country.0) == operand)
+        })
+    }?;
+    sim.houses.contains_key(&resolved).then_some(resolved)
 }
 
 fn parse_i32_param(fields: &[String], index: usize) -> Option<i32> {

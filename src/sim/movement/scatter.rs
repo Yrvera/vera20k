@@ -8,9 +8,11 @@
 //! used to carry was invented. The scatter functions that do exist are
 //! `CellClass::Scatter_Objects` @ `0x00481670`,
 //! `DriveLocomotionClass::Stop_And_Scatter` @ `0x004B4890`,
-//! `HouseClass::ScatterAllUnits` @ `0x004FC6D0`, `InfantryClass::Scatter` @
-//! `0x0051D0D0`, `ScatterCommandClass::Execute` @ `0x00730FE0` and
-//! `UnitClass::Scatter` @ `0x00743A50`. Every claim below — the periodic
+//! `InfantryClass::Scatter` @ `0x0051D0D0`,
+//! `ScatterCommandClass::Execute` @ `0x00730FE0` and `UnitClass::Scatter` @
+//! `0x00743A50`. Active `0x004FC6D0` is the distinct House destruction sweep
+//! implemented in `sim::house_destruction`; it does not dispatch movement
+//! Scatter. Every claim below — the periodic
 //! `TechnoClass::AI` scatter, `rules+0x1808` as its interval, 351 direction
 //! tries, the 350-entry global foundation offset table and
 //! `IDLE_SCATTER_INTERVAL` — is asserted with no address and is unverified.
