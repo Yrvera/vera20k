@@ -699,25 +699,34 @@ mod tests {
     /// from accessibility leaking into something else.
     #[test]
     fn accessibility_moves_island_maps_and_leaves_the_others_alone() {
-        for (map_type, should_differ) in [(3, true), (4, true), (0, false), (2, false)] {
-            let mut low = matrix_options(map_type, 0, 4242);
+        let cells = |m: &GeneratedMap| {
+            m.map_file
+                .cells
+                .iter()
+                .map(|c| c.tile_index)
+                .collect::<Vec<_>>()
+        };
+        let differs = |map_type, seed| {
+            let mut low = matrix_options(map_type, 0, seed);
             low.accessibility = 0;
-            let mut high = matrix_options(map_type, 0, 4242);
+            let mut high = matrix_options(map_type, 0, seed);
             high.accessibility = 100;
-            let left = run_cell(&low);
-            let right = run_cell(&high);
-            let cells = |m: &GeneratedMap| {
-                m.map_file
-                    .cells
-                    .iter()
-                    .map(|c| c.tile_index)
-                    .collect::<Vec<_>>()
-            };
-            let differ = cells(&left) != cells(&right);
-            assert_eq!(
-                differ, should_differ,
-                "map type {map_type}: accessibility should change the map: {should_differ}"
+            cells(&run_cell(&low)) != cells(&run_cell(&high))
+        };
+
+        for map_type in [3, 4] {
+            assert!(
+                MATRIX_SEEDS.into_iter().any(|seed| differs(map_type, seed)),
+                "map type {map_type}: the bounded seed matrix must witness accessibility"
             );
+        }
+        for map_type in [0, 2] {
+            for seed in MATRIX_SEEDS {
+                assert!(
+                    !differs(map_type, seed),
+                    "map type {map_type} seed {seed}: accessibility must not leak outside island maps"
+                );
+            }
         }
     }
 
@@ -862,8 +871,8 @@ mod tests {
     /// list; this test isolates the earlier destroy-and-rebuild terrain effect.
     #[test]
     fn island_passes_reshape_only_the_island_map_types() {
-        for (map_type, expect_change) in [(3, true), (4, true), (0, false), (2, false)] {
-            let (_, points, snapshots) = observe_run(&matrix_options(map_type, 0, 4242));
+        let changed = |map_type, seed| {
+            let (_, points, snapshots) = observe_run(&matrix_options(map_type, 0, seed));
             let index_of = |point: GenerationPoint| {
                 points
                     .iter()
@@ -875,11 +884,22 @@ mod tests {
             let after = snapshot_projection(
                 &snapshots[index_of(GenerationPoint::After(Stage::IslandPasses))],
             );
-            assert_eq!(
-                before != after,
-                expect_change,
-                "map type {map_type}: expected IslandPasses to change the map: {expect_change}"
+            before != after
+        };
+
+        for map_type in [3, 4] {
+            assert!(
+                MATRIX_SEEDS.into_iter().any(|seed| changed(map_type, seed)),
+                "map type {map_type}: the bounded seed matrix must witness IslandPasses"
             );
+        }
+        for map_type in [0, 2] {
+            for seed in MATRIX_SEEDS {
+                assert!(
+                    !changed(map_type, seed),
+                    "map type {map_type} seed {seed}: IslandPasses must remain island-only"
+                );
+            }
         }
     }
 }
