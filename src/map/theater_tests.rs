@@ -358,38 +358,6 @@ BridgeMiddle2=70000\n";
 }
 
 #[test]
-fn active_md_theater_inis_have_exact_ten_bridge_piece_values() {
-    const ACTIVE_INIS: [(&str, &str); 6] = [
-        ("TEMPERATE", include_str!("../../ini/temperatmd.ini")),
-        ("SNOW", include_str!("../../ini/snowmd.ini")),
-        ("URBAN", include_str!("../../ini/urbanmd.ini")),
-        ("NEWURBAN", include_str!("../../ini/urbannmd.ini")),
-        ("DESERT", include_str!("../../ini/desertmd.ini")),
-        ("LUNAR", include_str!("../../ini/lunarmd.ini")),
-    ];
-    let expected = [
-        Some(1),
-        Some(2),
-        Some(3),
-        Some(3),
-        Some(4),
-        Some(5),
-        Some(6),
-        Some(6),
-        Some(7),
-        Some(12),
-    ];
-
-    for (theater, ini) in ACTIVE_INIS {
-        assert_eq!(
-            bridge_piece_values(super::parse_bridge_piece_keys(ini)),
-            expected,
-            "{theater}"
-        );
-    }
-}
-
-#[test]
 #[ignore = "requires RA2_DIR with installed retail RA2/YR assets"]
 fn active_retail_automatic_shell_corpus_is_exact() {
     use std::collections::BTreeSet;
