@@ -223,9 +223,9 @@ pub(crate) struct LoadingRequest {
     /// owns exactly one explicit startup variant.
     startup: Option<LoadingStartup>,
     preloaded_battle_start_plan: PreloadedBattleStartPlanState,
-    /// Setup-generated scenario transferred by OK. Read by first-frame
-    /// composition, then moved into the ordinary map-load continuation.
-    retained_random_map: Option<crate::map::rmg::GeneratedMap>,
+    /// Setup-generated preview retained only as a loading-composition fallback.
+    /// It never supplies gameplay map data, RNG continuation, or constructors.
+    random_map_preview: Option<crate::map::rmg::GeneratedMap>,
     presentation: LoadingPresentation,
     fallback_skirmish_settings: SkirmishSettings,
 }
@@ -238,7 +238,7 @@ impl LoadingRequest {
         Self {
             startup: Some(LoadingStartup::Accepted(startup)),
             preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
-            retained_random_map: None,
+            random_map_preview: None,
             presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
@@ -255,7 +255,7 @@ impl LoadingRequest {
                 seed,
             }),
             preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
-            retained_random_map: None,
+            random_map_preview: None,
             presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
@@ -270,7 +270,7 @@ impl LoadingRequest {
                 selected_map_file: selected_map_file.into(),
             }),
             preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
-            retained_random_map: None,
+            random_map_preview: None,
             presentation: LoadingPresentation::GenericMapLoad,
             fallback_skirmish_settings,
         }
@@ -290,28 +290,19 @@ impl LoadingRequest {
             .expect("live loading request must retain startup authority")
     }
 
-    /// Attach the exact random-map setup result and resolve the same launch
-    /// start plan selected maps use before the first displayed frame.
-    /// gamemd provenance: FUN_00595BC0 -> Scenario read 0x00684620 ->
-    /// Full_Init 0x00686B20 retains the generated waypoints through house/start
-    /// assignment before DrawLoadingScreen 0x00552D60.
-    pub(crate) fn with_retained_random_map(
+    /// Attach the setup preview for presentation fallback only. Scenario read
+    /// 0x00684620 regenerates the accepted `.SED`; that launch result, not this
+    /// preview, resolves Battle starts and initializes gameplay.
+    pub(crate) fn with_random_map_preview(
         mut self,
-        retained_random_map: Option<crate::map::rmg::GeneratedMap>,
+        random_map_preview: Option<crate::map::rmg::GeneratedMap>,
     ) -> Self {
-        if let Some(generated) = retained_random_map {
-            self.prepare_battle_start_plan(&generated.map_file);
-            self.retained_random_map = Some(generated);
-        }
+        self.random_map_preview = random_map_preview;
         self
     }
 
-    fn retained_random_map(&self) -> Option<&crate::map::rmg::GeneratedMap> {
-        self.retained_random_map.as_ref()
-    }
-
-    fn take_retained_random_map(&mut self) -> Option<crate::map::rmg::GeneratedMap> {
-        self.retained_random_map.take()
+    fn random_map_preview(&self) -> Option<&crate::map::rmg::GeneratedMap> {
+        self.random_map_preview.as_ref()
     }
 
     fn prepare_battle_start_plan(&mut self, map: &crate::map::map_file::MapFile) {
@@ -649,60 +640,37 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             let requested_map_file = session.request.selected_map_file().to_string();
             let initial = match ensure_session_job_asset_manager(state, &mut session) {
                 Ok(()) => {
-                    if let Some(generated) = session.request.take_retained_random_map() {
-                        let initial = match session.native.as_mut() {
-                            Some(native) => {
-                                let cadence = native.progress_cadence;
-                                let mut sink = GatedProgressSink {
-                                    progress: &mut native.progress,
-                                    cadence,
-                                };
-                                init::retained_random_map_initial(
-                                    requested_map_file,
-                                    generated,
-                                    &mut sink,
-                                )
-                            }
-                            None => init::retained_random_map_initial(
-                                requested_map_file,
-                                generated,
-                                &mut NoopProgressSink,
-                            ),
-                        };
-                        Ok(initial)
-                    } else {
-                        let ra2_dir = session
-                            .job
-                            .ra2_dir
-                            .clone()
-                            .expect("asset-manager setup stores the RA2 directory");
-                        let asset_manager = session
-                            .job
-                            .asset_manager
-                            .as_mut()
-                            .expect("asset-manager setup stores the manager");
-                        match session.native.as_mut() {
-                            // The map-parse milestone (8) is emitted inside the loader.
-                            Some(native) => {
-                                let cadence = native.progress_cadence;
-                                let mut sink = GatedProgressSink {
-                                    progress: &mut native.progress,
-                                    cadence,
-                                };
-                                init::load_map_initial_with_assets(
-                                    ra2_dir,
-                                    asset_manager,
-                                    Some(requested_map_file.as_str()),
-                                    &mut sink,
-                                )
-                            }
-                            None => init::load_map_initial_with_assets(
+                    let ra2_dir = session
+                        .job
+                        .ra2_dir
+                        .clone()
+                        .expect("asset-manager setup stores the RA2 directory");
+                    let asset_manager = session
+                        .job
+                        .asset_manager
+                        .as_mut()
+                        .expect("asset-manager setup stores the manager");
+                    match session.native.as_mut() {
+                        // The map-parse milestone (8) is emitted inside the loader.
+                        Some(native) => {
+                            let cadence = native.progress_cadence;
+                            let mut sink = GatedProgressSink {
+                                progress: &mut native.progress,
+                                cadence,
+                            };
+                            init::load_map_initial_with_assets(
                                 ra2_dir,
                                 asset_manager,
                                 Some(requested_map_file.as_str()),
-                                &mut NoopProgressSink,
-                            ),
+                                &mut sink,
+                            )
                         }
+                        None => init::load_map_initial_with_assets(
+                            ra2_dir,
+                            asset_manager,
+                            Some(requested_map_file.as_str()),
+                            &mut NoopProgressSink,
+                        ),
                     }
                 }
                 Err(err) => Err(err),
@@ -1131,7 +1099,7 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                     preview,
                     session
                         .request
-                        .retained_random_map()
+                        .random_map_preview()
                         .map(|generated| &generated.map_file),
                     &assignments,
                 )
@@ -2347,7 +2315,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_03_09_loading_request_owns_retained_map_and_resolves_start_plan() {
+    fn gsi_04_12_loading_request_preview_is_presentation_only() {
         use crate::map::waypoints::Waypoint;
 
         let mut launch = test_launch_session(LaunchCountry::America);
@@ -2379,47 +2347,30 @@ mod tests {
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
         };
-        let mut request = LoadingRequest::unverified_legacy_skirmish(
+        let request = LoadingRequest::unverified_legacy_skirmish(
             launch.clone(),
             unverified_seed(0x1234),
             SkirmishSettings::default(),
         )
-        .with_retained_random_map(Some(generated));
+        .with_random_map_preview(Some(generated));
 
         assert_eq!(
             request
-                .retained_random_map()
-                .expect("loading request owns setup result")
+                .random_map_preview()
+                .expect("loading request owns setup preview")
                 .start_waypoints,
             vec![(0, 10, 20), (1, 30, 40)]
         );
         let assignments =
             selected_map_start_assignments(&launch, request.preloaded_battle_start_plan());
-        assert_eq!(assignments.len(), 2);
-        assert_eq!(assignments[0].start_index, 0);
-        assert_eq!(assignments[0].participant, LoadingParticipantId::Local);
-        assert_eq!(assignments[0].color_priority, launch.local.color_index);
-        assert_eq!(assignments[1].start_index, 1);
-        assert_eq!(
-            assignments[1].participant,
-            LoadingParticipantId::Opponent(0)
+        assert!(
+            assignments.is_empty(),
+            "preview waypoints cannot resolve gameplay starts"
         );
-        assert_eq!(
-            assignments[1].color_priority,
-            launch.opponents[0].color_index
-        );
-        assert_eq!(
-            request
-                .take_retained_random_map()
-                .expect("map transfers into initial load once")
-                .start_waypoints,
-            vec![(0, 10, 20), (1, 30, 40)]
-        );
-        assert!(request.take_retained_random_map().is_none());
     }
 
     #[test]
-    fn gsi_03_09_stock_ffa_retained_map_drives_initial_and_loading_markers() {
+    fn gsi_04_12_stock_ffa_preview_can_only_supply_loading_fallback_pixels() {
         use crate::map::map_file::MapCell;
         use crate::map::waypoints::Waypoint;
 
@@ -2497,15 +2448,18 @@ mod tests {
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
         };
-        let mut request = LoadingRequest::unverified_legacy_skirmish(
+        let request = LoadingRequest::unverified_legacy_skirmish(
             launch.clone(),
             unverified_seed(0x4567),
             SkirmishSettings::default(),
         )
-        .with_retained_random_map(Some(generated));
+        .with_random_map_preview(Some(generated));
         let assignments =
             selected_map_start_assignments(&launch, request.preloaded_battle_start_plan());
-        assert_eq!(assignments.len(), 2, "FFA resolves both participant starts");
+        assert!(
+            assignments.is_empty(),
+            "only the launch-time `.SED` regeneration may resolve participants"
+        );
 
         let preview = DecodedPreview {
             width: 300,
@@ -2518,7 +2472,7 @@ mod tests {
             [800, 600],
             Some(preview),
             request
-                .retained_random_map()
+                .random_map_preview()
                 .map(|retained| &retained.map_file),
             &assignments,
         );
@@ -2533,50 +2487,7 @@ mod tests {
             3 * 4 * 4,
             "all three valid FFA starts are burned black"
         );
-        assert_eq!(composition.markers.len(), 2);
-        assert_eq!(composition.markers[0].start_index, 0);
-        assert_eq!(
-            composition.markers[0].participant,
-            LoadingParticipantId::Local
-        );
-        assert_eq!(
-            composition.markers[0].color_priority,
-            launch.local.color_index
-        );
-        assert_eq!(composition.markers[1].start_index, 1);
-        assert_eq!(
-            composition.markers[1].participant,
-            LoadingParticipantId::Opponent(0)
-        );
-        assert_eq!(
-            composition.markers[1].color_priority,
-            launch.opponents[0].color_index
-        );
-        assert!(
-            composition
-                .markers
-                .iter()
-                .all(|marker| marker.start_index != 2)
-        );
-
-        let retained = request
-            .take_retained_random_map()
-            .expect("the same retained FFA generation reaches MapLoadInitial");
-        let mut progress = RecordingProgressSink::standard();
-        let initial = init::retained_random_map_initial(
-            "RandMap.Sed".to_string(),
-            retained,
-            &mut progress,
-        );
-        assert_eq!(progress.emitted, vec![8]);
-        assert_eq!(initial.map_data().waypoints.len(), 3);
-        assert_eq!(initial.map_data().waypoints[&2].rx, 70);
-        assert_eq!(initial.map_data().waypoints[&2].ry, 90);
-        assert!(
-            initial.has_mapgen_rng_continuation(),
-            "the accepted map's post-generation RNG cursor reaches MapLoadInitial"
-        );
-        assert!(request.take_retained_random_map().is_none());
+        assert!(composition.markers.is_empty());
     }
 
     #[test]

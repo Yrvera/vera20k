@@ -808,6 +808,9 @@ pub(crate) struct MapLoadInitial {
     map_source: LoadedMapSource,
     /// Move-only generated-map authority; fixed maps never synthesize one.
     mapgen_rng_continuation: Option<crate::rng_continuation::MapGenRngContinuation>,
+    /// Ordered launch-generation Building constructor effects. Preview traces
+    /// never reach this owner; fixed maps carry none.
+    generated_construction_trace: Option<crate::map::rmg::RmgConstructionTrace>,
 }
 
 impl MapLoadInitial {
@@ -817,30 +820,6 @@ impl MapLoadInitial {
 
     pub(crate) fn map_data(&self) -> &MapFile {
         &self.map_data
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_mapgen_rng_continuation(&self) -> bool {
-        self.mapgen_rng_continuation.is_some()
-    }
-}
-
-/// Continue loading from the exact map produced by the accepted setup run.
-///
-/// gamemd provenance: FUN_00595BC0's accepted generated scenario reaches
-/// Scenario initialization 0x00684620 and Full_Init 0x00686B20; loading does
-/// not invoke a second generator solely to recover that scenario.
-pub(crate) fn retained_random_map_initial(
-    seed_name: String,
-    generated: crate::map::rmg::GeneratedMap,
-    progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
-) -> MapLoadInitial {
-    progress.milestone(8);
-    let mapgen_rng_continuation = generated.mapgen_continuation;
-    MapLoadInitial {
-        map_data: generated.map_file,
-        map_source: LoadedMapSource::Generated { seed_name },
-        mapgen_rng_continuation: Some(mapgen_rng_continuation),
     }
 }
 
@@ -1168,12 +1147,14 @@ pub(crate) fn load_map_initial_with_assets(
 
         progress.milestone(8);
         let mapgen_rng_continuation = generated.mapgen_continuation;
+        let generated_construction_trace = generated.construction_trace;
         return Ok(MapLoadInitial {
             map_data: generated.map_file,
             map_source: LoadedMapSource::Generated {
                 seed_name: seed_name.to_string(),
             },
             mapgen_rng_continuation: Some(mapgen_rng_continuation),
+            generated_construction_trace: Some(generated_construction_trace),
         });
     }
 
@@ -1233,6 +1214,7 @@ pub(crate) fn load_map_initial_with_assets(
         map_data,
         map_source,
         mapgen_rng_continuation: None,
+        generated_construction_trace: None,
     })
 }
 
@@ -1255,6 +1237,7 @@ pub(crate) fn load_map_from_initial(
         map_data,
         map_source,
         mapgen_rng_continuation,
+        generated_construction_trace,
     } = initial;
     let map_hash = match &map_source {
         LoadedMapSource::Loose { .. }
@@ -1440,6 +1423,11 @@ pub(crate) fn load_map_from_initial(
         &mut scenario_fill_ranged,
         &mut variant_selector,
         shared_cell_dummy,
+        if generated_construction_trace.is_some() {
+            crate::map::resolved_terrain::OverlayLoadSource::GeneratedMaterialized
+        } else {
+            crate::map::resolved_terrain::OverlayLoadSource::Authored
+        },
     );
     // Bind the complete scheduler closure only after theater Tile##Anim rows
     // have resolved, but before any atlas or AnimClass construction. Missing
@@ -1470,6 +1458,13 @@ pub(crate) fn load_map_from_initial(
     drop(scenario_fill_ranged);
     drop(variant_main_rng);
     drop(scenario_fill_rng);
+    // Launch-time `.SED` generation already chose all geometry. Replay only
+    // its Techno constructor effects now, after the Full-Init/Battle prefix and
+    // terrain Fill, on the one Scenario owner later moved into Simulation.
+    let generated_techno_inits = generated_construction_trace
+        .as_ref()
+        .map(|trace| bootstrap_rng.replay_generated_construction_trace(trace))
+        .transpose()?;
     // Native Fill snapshots prior process-global ClearTile/WaterSet values
     // before the current theater registry reload. Rust loads assets earlier,
     // so defer publishing current results until materialization is complete.
@@ -1688,8 +1683,9 @@ pub(crate) fn load_map_from_initial(
         bridge_destroyability_mode,
         &scenario_descriptor,
         bootstrap_rng,
+        generated_techno_inits.as_ref(),
         initialize_houses_before_objects,
-    );
+    )?;
     let manifest = crate::app::loading::init_helpers::build_presentation_manifest(
         &constructed,
         &asset_manager,

@@ -115,16 +115,17 @@ pub(crate) struct RandomMapGenerationJob {
     accept_on_finish: bool,
 }
 
-/// Generated-map ownership across the setup dialog and loading handoff.
+/// Preview ownership across the setup dialog and loading composition.
 ///
-/// The candidate belongs only to the open setup dialog. The accepted map is
-/// retained until the matching `.SED` launch transfers it to LoadingRequest.
-/// gamemd provenance: random-map setup runner FUN_00595BC0 and accepted caller
-/// 0x005E8590 retain the generated scenario consumed by Scenario initialization.
+/// The candidate belongs only to the open setup dialog. An accepted preview may
+/// accompany the matching `.SED` only as a presentation fallback; gameplay
+/// always regenerates through the seed-file reader after the match reseed.
+/// gamemd provenance: accepted caller 0x005E8590 persists `RandMap.Sed`, while
+/// Scenario read 0x00684620 unconditionally reaches the generator again.
 #[derive(Default)]
 pub(crate) struct RandomMapGenerationRetention {
     candidate: Option<crate::map::rmg::GeneratedMap>,
-    accepted: Option<(String, crate::map::rmg::GeneratedMap)>,
+    accepted_preview: Option<(String, crate::map::rmg::GeneratedMap)>,
     /// The native MapSeed+0x178 clone survives repeated Generate/OK work while
     /// the dialog is open. A four-field mismatch replaces its backing storage,
     /// and common dialog teardown destroys it before a later reopen.
@@ -155,7 +156,7 @@ impl RandomMapGenerationRetention {
 
     fn begin_generation(&mut self) {
         self.candidate = None;
-        self.accepted = None;
+        self.accepted_preview = None;
     }
 
     fn finish_generation(&mut self, generated: crate::map::rmg::GeneratedMap) {
@@ -164,29 +165,32 @@ impl RandomMapGenerationRetention {
 
     fn cancel_setup(&mut self) {
         self.candidate = None;
-        self.accepted = None;
+        self.accepted_preview = None;
     }
 
     fn accept_setup(&mut self, selected_map_file: &str) {
-        self.accepted = self
+        self.accepted_preview = self
             .candidate
             .take()
             .map(|generated| (selected_map_file.to_owned(), generated));
     }
 
     pub(super) fn select_map(&mut self, selected_map_file: &str) {
-        if self.accepted.as_ref().is_some_and(|(accepted_file, _)| {
+        if self
+            .accepted_preview
+            .as_ref()
+            .is_some_and(|(accepted_file, _)| {
             !accepted_file.eq_ignore_ascii_case(selected_map_file)
         }) {
-            self.accepted = None;
+            self.accepted_preview = None;
         }
     }
 
-    pub(super) fn take_for_loading(
+    pub(super) fn take_preview_for_loading(
         &mut self,
         selected_map_file: Option<&str>,
     ) -> Option<crate::map::rmg::GeneratedMap> {
-        let (accepted_file, generated) = self.accepted.take()?;
+        let (accepted_file, generated) = self.accepted_preview.take()?;
         selected_map_file
             .is_some_and(|selected| accepted_file.eq_ignore_ascii_case(selected))
             .then_some(generated)
@@ -242,6 +246,10 @@ impl App {
         options: &crate::map::rmg::RmgOptions,
         accept_on_finish: bool,
     ) -> bool {
+        state
+            .frontend
+            .offline_skirmish_runtime
+            .remember_random_map_options(options);
         // A second Generate makes the previous dialog result stale immediately,
         // even when setup cannot progress far enough to spawn the worker.
         state.frontend.random_map_retention.begin_generation();
@@ -383,7 +391,12 @@ impl App {
                 .take()
                 .expect("checked present above");
             let preview = Self::rasterise_generated_map(state, &job, &generated);
-            state.frontend.random_map_retention.finish_generation(*generated);
+            let generated = *generated;
+            state
+                .frontend
+                .offline_skirmish_runtime
+                .replay_random_map_preview_construction(&generated.construction_trace);
+            state.frontend.random_map_retention.finish_generation(generated);
             if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
                 modal.finish_generate(preview);
             }
@@ -425,7 +438,7 @@ impl App {
     }
 
     /// Remove the setup dialog and any in-flight worker without changing the
-    /// retained-map disposition already chosen by accept or cancel. The cached
+    /// preview disposition already chosen by accept or cancel. The cached
     /// RMG map storage has the dialog's lifetime and is destroyed here on both
     /// return paths.
     fn dismiss_random_map_setup(state: &mut AppState) {
@@ -443,6 +456,18 @@ impl App {
     /// `RandMap.img`, changing the chooser's thumbnail to a map the player
     /// walked away from.
     fn cancel_random_map_setup(state: &mut AppState) {
+        if let Some(options) = state
+            .frontend
+            .skirmish_shell_state
+            .random_map_setup_modal
+            .as_ref()
+            .map(|modal| modal.options.clone())
+        {
+            state
+                .frontend
+                .offline_skirmish_runtime
+                .remember_random_map_options(&options);
+        }
         Self::dismiss_random_map_setup(state);
         state.frontend.random_map_retention.cancel_setup();
     }
@@ -458,6 +483,10 @@ impl App {
         else {
             return;
         };
+        state
+            .frontend
+            .offline_skirmish_runtime
+            .remember_random_map_options(&options);
         match Self::commit_random_map_setup(state, &options) {
             Ok(()) => {
                 state.frontend.random_map_retention.accept_setup(RANDMAP_SED_FILE);
@@ -1193,14 +1222,14 @@ mod tests {
                 &options,
                 &process_dummy
             ));
-            retention.finish_generation(retained_map(0x401, 10));
+            retention.finish_generation(generated_preview(0x401, 10));
             if accepted {
                 retention.accept_setup(RANDMAP_SED_FILE);
             } else {
                 retention.cancel_setup();
             }
             // App::dismiss_random_map_setup owns this common native teardown
-            // after the retained-map disposition has already been selected.
+            // after the preview disposition has already been selected.
             retention.destroy_map_storage();
 
             process_dummy.set_level_slope(-4, 7);
@@ -1229,7 +1258,7 @@ mod tests {
         process_dummy.set_level_slope(-3, 5);
         process_dummy.stamp_coord(12, -4);
         let expected = process_dummy.snapshot();
-        let map = retained_map(11, 10).map_file;
+        let map = generated_preview(11, 10).map_file;
         let mut frontend_main_rng = crate::sim::rng::SimRng::new(0x0401_599D);
         let mut selector_cache =
             crate::map::tile_variant_selector::TileVariantSelectorCache::default();
@@ -1253,7 +1282,7 @@ mod tests {
         }
     }
 
-    fn retained_map(seed: i32, start_x: u16) -> crate::map::rmg::GeneratedMap {
+    fn generated_preview(seed: i32, start_x: u16) -> crate::map::rmg::GeneratedMap {
         let mut options = crate::map::rmg::RmgOptions::default();
         options.seed = seed;
         crate::map::rmg::GeneratedMap {
@@ -1268,100 +1297,110 @@ mod tests {
     }
 
     #[test]
-    fn gsi_03_09_random_map_retention_invalidates_and_transfers_exactly_once() {
+    fn gsi_04_12_random_map_preview_invalidates_and_transfers_exactly_once() {
         let mut regenerated = RandomMapGenerationRetention::default();
-        regenerated.finish_generation(retained_map(11, 10));
+        regenerated.finish_generation(generated_preview(11, 10));
         regenerated.accept_setup("RandMap.Sed");
         regenerated.begin_generation();
         assert!(
-            regenerated.take_for_loading(Some("RandMap.Sed")).is_none(),
+            regenerated
+                .take_preview_for_loading(Some("RandMap.Sed"))
+                .is_none(),
             "starting a genuine regeneration invalidates accepted map A"
         );
 
         let mut reopened_then_cancelled_without_generate = RandomMapGenerationRetention::default();
-        reopened_then_cancelled_without_generate.finish_generation(retained_map(12, 11));
+        reopened_then_cancelled_without_generate.finish_generation(generated_preview(12, 11));
         reopened_then_cancelled_without_generate.accept_setup("RandMap.Sed");
         reopened_then_cancelled_without_generate.cancel_setup();
         assert!(
             reopened_then_cancelled_without_generate
-                .take_for_loading(Some("RandMap.Sed"))
+                .take_preview_for_loading(Some("RandMap.Sed"))
                 .is_none(),
             "a genuine setup Cancel invalidates accepted map A"
         );
 
         let mut reopened_then_cancelled = RandomMapGenerationRetention::default();
-        reopened_then_cancelled.finish_generation(retained_map(13, 12));
+        reopened_then_cancelled.finish_generation(generated_preview(13, 12));
         reopened_then_cancelled.accept_setup("RandMap.Sed");
         reopened_then_cancelled.begin_generation();
-        reopened_then_cancelled.finish_generation(retained_map(14, 13));
+        reopened_then_cancelled.finish_generation(generated_preview(14, 13));
         reopened_then_cancelled.cancel_setup();
         assert!(
             reopened_then_cancelled
-                .take_for_loading(Some("RandMap.Sed"))
+                .take_preview_for_loading(Some("RandMap.Sed"))
                 .is_none(),
             "reopen, regenerate, then Cancel cannot resurrect accepted map A"
         );
 
         let mut cancelled = RandomMapGenerationRetention::default();
-        cancelled.finish_generation(retained_map(22, 20));
+        cancelled.finish_generation(generated_preview(22, 20));
         cancelled.cancel_setup();
         cancelled.accept_setup("RandMap.Sed");
-        assert!(cancelled.take_for_loading(Some("RandMap.Sed")).is_none());
+        assert!(
+            cancelled
+                .take_preview_for_loading(Some("RandMap.Sed"))
+                .is_none()
+        );
 
         let mut selected_elsewhere = RandomMapGenerationRetention::default();
-        selected_elsewhere.finish_generation(retained_map(33, 30));
+        selected_elsewhere.finish_generation(generated_preview(33, 30));
         selected_elsewhere.accept_setup("RandMap.Sed");
         selected_elsewhere.select_map("mp01t4.map");
         assert!(
             selected_elsewhere
-                .take_for_loading(Some("RandMap.Sed"))
+                .take_preview_for_loading(Some("RandMap.Sed"))
                 .is_none()
         );
 
         let mut alternate_seed = RandomMapGenerationRetention::default();
-        alternate_seed.finish_generation(retained_map(34, 35));
+        alternate_seed.finish_generation(generated_preview(34, 35));
         alternate_seed.accept_setup("RandMap.Sed");
         // This is the retention authority used by apply_selected_shell_map_file:
         // another seed selection must invalidate, not merely refuse this call.
         alternate_seed.select_map("Other.Sed");
         assert!(
             alternate_seed
-                .take_for_loading(Some("RandMap.Sed"))
+                .take_preview_for_loading(Some("RandMap.Sed"))
                 .is_none()
         );
-        assert!(alternate_seed.take_for_loading(Some("Other.Sed")).is_none());
+        assert!(
+            alternate_seed
+                .take_preview_for_loading(Some("Other.Sed"))
+                .is_none()
+        );
 
         let mut mismatched_launch = RandomMapGenerationRetention::default();
-        mismatched_launch.finish_generation(retained_map(35, 36));
+        mismatched_launch.finish_generation(generated_preview(35, 36));
         mismatched_launch.accept_setup("RandMap.Sed");
         assert!(
             mismatched_launch
-                .take_for_loading(Some("Other.Sed"))
+                .take_preview_for_loading(Some("Other.Sed"))
                 .is_none()
         );
         assert!(
             mismatched_launch
-                .take_for_loading(Some("RandMap.Sed"))
+                .take_preview_for_loading(Some("RandMap.Sed"))
                 .is_none(),
             "a refused nonmatching launch invalidates the prior accepted map"
         );
 
         let mut accepted_after_successful_close = RandomMapGenerationRetention::default();
-        accepted_after_successful_close.finish_generation(retained_map(44, 40));
+        accepted_after_successful_close.finish_generation(generated_preview(44, 40));
         accepted_after_successful_close.accept_setup("RandMap.Sed");
         // Common dialog teardown destroys only the cached RMG map storage; it
-        // must not discard the accepted generated map awaiting LoadingRequest.
+        // must not discard the accepted presentation preview awaiting loading.
         accepted_after_successful_close.destroy_map_storage();
         accepted_after_successful_close.select_map("RANDMAP.SED");
         let transferred = accepted_after_successful_close
-            .take_for_loading(Some("randmap.sed"))
-            .expect("successful accept close preserves the newly accepted map");
+            .take_preview_for_loading(Some("randmap.sed"))
+            .expect("successful accept close preserves the accepted preview");
         assert_eq!(transferred.start_waypoints, vec![(0, 40, 20)]);
         assert!(
             accepted_after_successful_close
-                .take_for_loading(Some("RandMap.Sed"))
+                .take_preview_for_loading(Some("RandMap.Sed"))
                 .is_none(),
-            "successful accept still transfers exactly once"
+            "successful accept preview still transfers exactly once"
         );
     }
 }

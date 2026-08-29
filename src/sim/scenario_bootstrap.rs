@@ -285,9 +285,9 @@ impl PreloadedBattleStartPlan {
 ///
 /// Sparse or deficient authored starts deliberately return `None`: their two
 /// Gather passes depend on resolved terrain and must stay runtime-owned.
-/// Random maps are eligible once their retained GeneratedMap exists: gamemd's
-/// Full_Init 0x00686B20 assigns the retained RmgRegion start waypoints before
-/// DrawLoadingScreen 0x00552D60 consumes that same table.
+/// Random maps are eligible after the launch-time `.SED` reader regenerates
+/// their MapFile: gamemd Full_Init 0x00686B20 assigns those fresh RmgRegion
+/// start waypoints before DrawLoadingScreen 0x00552D60 consumes the table.
 /// FFA provenance: constructor 0x005C5CE0 installs vtable 0x007EE424, whose
 /// +0x80 (0x005D6BE0), +0x84 (0x005D6C70), and +0xC4 (0x005D6890) callbacks
 /// are byte-identical to Battle's active start-assignment callbacks. Full_Init
@@ -1709,7 +1709,7 @@ fn launch_country_can_own_object(
 /// Opaque owner for the RNG cursors used while a map becomes a world.
 ///
 /// The app may drive content-loading algorithms through the two narrow draw
-/// wrappers and may transport an accepted generated-map continuation, but it
+/// wrappers and may transport the launch-generated MapGen continuation, but it
 /// cannot replace, extract, or draw from those cursors. Consuming this owner is
 /// the only production handoff into a freshly constructed Simulation.
 pub(crate) struct ScenarioBootstrapRng {
@@ -1781,6 +1781,46 @@ impl ScenarioBootstrapRng {
                 rng: &mut self.main,
             },
         )
+    }
+
+    /// Consume the launch generation's ordered Building constructor trace on
+    /// the same Scenario owner that already passed through Battle/FFA preload
+    /// and terrain Fill. Successful rows retain their low word for later
+    /// projection; discarded rows spend the word and deliberately bind none.
+    ///
+    /// gamemd provenance: TechnoClass constructor 0x006F3254 consumes one raw
+    /// Scenario word before RMG placement can succeed or fail. Launch reader
+    /// 0x00684620 regenerates the accepted `.SED` after match RNG reseeding.
+    pub(crate) fn replay_generated_construction_trace(
+        &mut self,
+        trace: &crate::map::rmg::RmgConstructionTrace,
+    ) -> Result<
+        crate::sim::world::GeneratedTechnoInitTable,
+        crate::sim::world::GeneratedTechnoInitError,
+    > {
+        let mut emitted = Vec::new();
+        for (expected_ordinal, event) in trace.events.iter().enumerate() {
+            if event.ordinal != expected_ordinal {
+                return Err(
+                    crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
+                        expected: expected_ordinal,
+                        found: event.ordinal,
+                    },
+                );
+            }
+            let techno_ctor_random_word = (self.scenario.next_u32() & 0xFFFF) as u16;
+            if let crate::map::rmg::RmgConstructionOutcome::Emitted { entity_index, cell } =
+                &event.outcome
+            {
+                emitted.push(crate::sim::game_entity::GeneratedTechnoInit {
+                    entity_index: *entity_index,
+                    techno_type: event.techno_type.clone(),
+                    cell: *cell,
+                    techno_ctor_random_word,
+                });
+            }
+        }
+        crate::sim::world::GeneratedTechnoInitTable::try_new(emitted)
     }
 
     /// Finish the app-to-sim construction handoff with every bound cursor.
@@ -2431,5 +2471,104 @@ mod tests {
 
         assert_eq!(actual.scenario, after.logical_state());
         assert_eq!(actual.main, before.logical_state());
+    }
+
+    #[test]
+    fn gsi_04_12_preload_fill_and_generated_trace_share_one_scenario_owner() {
+        use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
+
+        let seed = 0x51C0_1006;
+        let before = SimRng::new(u64::from(seed));
+        let mut reference = before.clone();
+        let _ = reference
+            .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
+        let plan = PreloadedBattleStartPlan {
+            gathered_starts: Vec::new(),
+            assignment: NativeStartAssignment {
+                placements: Vec::new(),
+                start_table: Vec::new(),
+            },
+            scenario_rng_before: before.logical_state(),
+            scenario_rng_before_fingerprint: before.state(),
+            scenario_rng_after: reference.logical_state(),
+            scenario_rng_after_cursor: reference.clone(),
+        };
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        owner
+            .install_preloaded_battle_plan(&plan)
+            .expect("fresh launch owner accepts the Full-Init prefix");
+        {
+            let (mut scenario_fill, main) = owner.terrain_draws();
+            let actual = scenario_fill.next_range_u32_inclusive(5, 17);
+            let expected = reference.next_range_u32_inclusive(5, 17);
+            assert_eq!(actual, expected);
+            drop(main);
+        }
+
+        let mut trace = RmgConstructionTrace::default();
+        trace.push_emitted(
+            RmgConstructionPhase::BridgeRepairHut,
+            "CABHUT".to_string(),
+            0,
+            (10, 11),
+        );
+        trace.push_discarded(RmgConstructionPhase::NeutralTech, "CAOILD".to_string());
+        trace.push_emitted(
+            RmgConstructionPhase::NeutralTech,
+            "CATHOSP".to_string(),
+            2,
+            (12, 13),
+        );
+        let first_word = (reference.next_u32() & 0xFFFF) as u16;
+        let _discarded_word = reference.next_u32();
+        let second_word = (reference.next_u32() & 0xFFFF) as u16;
+
+        let bindings = owner
+            .replay_generated_construction_trace(&trace)
+            .expect("ordered trace binds emitted constructors");
+        assert_eq!(
+            bindings
+                .entry(0)
+                .expect("CABHUT binding")
+                .techno_ctor_random_word,
+            first_word
+        );
+        assert_eq!(
+            bindings
+                .entry(2)
+                .expect("neutral-tech binding")
+                .techno_ctor_random_word,
+            second_word
+        );
+        assert!(bindings.entry(1).is_none(), "discarded row binds no entity");
+
+        let actual = owner.into_simulation(&descriptor(seed)).rng_state();
+        assert_eq!(actual.scenario, reference.logical_state());
+        assert_eq!(actual.main, before.logical_state());
+    }
+
+    #[test]
+    fn generated_trace_rejects_bad_ordinal_before_spending_scenario() {
+        let seed = 0x51C0_1007;
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        let mut trace = crate::map::rmg::RmgConstructionTrace::default();
+        trace.push_discarded(
+            crate::map::rmg::RmgConstructionPhase::NeutralTech,
+            "CAOILD".to_string(),
+        );
+        trace.events[0].ordinal = 4;
+
+        assert!(matches!(
+            owner.replay_generated_construction_trace(&trace),
+            Err(crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
+                expected: 0,
+                found: 4,
+            })
+        ));
+        let actual = owner.into_simulation(&descriptor(seed)).rng_state();
+        assert_eq!(
+            actual.scenario,
+            SimRng::new(u64::from(seed)).logical_state()
+        );
     }
 }

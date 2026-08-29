@@ -528,12 +528,13 @@ pub(crate) fn construct_app_scenario<F>(
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
     bootstrap_rng: crate::sim::scenario_bootstrap::ScenarioBootstrapRng,
+    generated_inits: Option<&crate::sim::world::GeneratedTechnoInitTable>,
     initialize_houses_before_objects: F,
-) -> Simulation
+) -> Result<Simulation, crate::sim::world::GeneratedTechnoInitError>
 where
     F: FnOnce(&mut Simulation),
 {
-    let mut sim = crate::sim::runtime::construct_scenario(
+    let mut sim = crate::sim::runtime::construct_scenario_with_generated_inits(
         map_data,
         resolved_terrain,
         theater_name,
@@ -545,8 +546,9 @@ where
         bridge_destroyability_mode,
         descriptor,
         bootstrap_rng,
+        generated_inits,
         initialize_houses_before_objects,
-    );
+    )?;
     // F09: HVA frame counts are sim metadata — parse them through the GPU-free
     // catalog before any atlas exists, so the renderer never writes into the
     // simulation. Atlas seeding derives its own copy from the same functions.
@@ -558,7 +560,7 @@ where
         art,
     );
     sim.update_voxel_anim_frame_counts(&frame_catalog);
-    sim
+    Ok(sim)
 }
 
 /// Build voxel + SHP sprite atlases for an already-constructed simulation.

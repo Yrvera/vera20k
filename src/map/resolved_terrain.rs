@@ -46,6 +46,16 @@ use std::sync::{
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
+/// Identifies whether map overlays still require the ordinary authored-map
+/// `OverlayClass::Mark` pass. RMG writes its complete overlay/data rectangles
+/// directly into live cells; serializing those cells through `MapFile` must not
+/// turn loading into a second Mark operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlayLoadSource {
+    Authored,
+    GeneratedMaterialized,
+}
+
 /// Exact overlay portion of RecalcZoneType. `Some(GROUND)` is the terminal
 /// IsRubble result and is intentionally distinct from no overlay result.
 pub(crate) fn overlay_reduced_zone_type(flags: Option<&OverlayTypeFlags>) -> Option<u8> {
@@ -1793,6 +1803,7 @@ impl ResolvedTerrainGrid {
             None,
             lat_enabled,
             cliff_back_impassability,
+            OverlayLoadSource::Authored,
             None,
             None,
             None,
@@ -1821,6 +1832,7 @@ impl ResolvedTerrainGrid {
             terrain_object_types,
             lat_enabled,
             cliff_back_impassability,
+            OverlayLoadSource::Authored,
             Some(scenario_fill_ranged),
             Some(variant_selector),
             None,
@@ -1844,6 +1856,7 @@ impl ResolvedTerrainGrid {
         scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
         variant_selector: &mut TileVariantSelectionContext<'_, '_>,
         shared_cell_dummy: SharedCellDummy,
+        overlay_load_source: OverlayLoadSource,
     ) -> Self {
         Self::build_inner(
             map,
@@ -1854,6 +1867,7 @@ impl ResolvedTerrainGrid {
             terrain_object_types,
             lat_enabled,
             cliff_back_impassability,
+            overlay_load_source,
             Some(scenario_fill_ranged),
             Some(variant_selector),
             Some(shared_cell_dummy),
@@ -1869,6 +1883,7 @@ impl ResolvedTerrainGrid {
         terrain_object_types: Option<&HashMap<String, TerrainObjectType>>,
         lat_enabled: bool,
         cliff_back_impassability: u8,
+        overlay_load_source: OverlayLoadSource,
         mut scenario_fill_ranged: Option<&mut dyn FnMut(u32, u32) -> u32>,
         mut variant_selector: Option<&mut TileVariantSelectionContext<'_, '_>>,
         shared_cell_dummy: Option<SharedCellDummy>,
@@ -2379,8 +2394,9 @@ impl ResolvedTerrainGrid {
             if let Some(index) = anchor_index {
                 cells[index].bridge_facts.overlay_id = Some(overlay.overlay_id);
             }
-            if let Some((family, direction)) =
-                crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay.overlay_id)
+            if overlay_load_source == OverlayLoadSource::Authored
+                && let Some((family, direction)) =
+                    crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay.overlay_id)
                 && anchor_index.is_some()
             {
                 let stamp = BridgeFlagStamp::new((overlay.rx, overlay.ry), direction, true);
@@ -4477,6 +4493,7 @@ mod tests {
                 &mut fill,
                 &mut selector,
                 dummy.clone(),
+                OverlayLoadSource::Authored,
             )
         };
 
@@ -4493,6 +4510,88 @@ mod tests {
         );
         assert_eq!(grid.cell(2, 1).unwrap().bridge_facts.overlay_id, Some(0x18));
         assert_eq!(grid.cell(1, 2).unwrap().bridge_facts.overlay_id, Some(0x18));
+    }
+
+    #[test]
+    fn gsi_04_12_generated_materialized_overlays_never_replay_fixed_map_mark() {
+        let map = make_map(
+            vec![MapCell {
+                rx: 4,
+                ry: 4,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            }],
+            vec![
+                OverlayEntry {
+                    rx: 2,
+                    ry: 2,
+                    overlay_id: 0x18,
+                    frame: 0,
+                },
+                OverlayEntry {
+                    rx: 1,
+                    ry: 1,
+                    overlay_id: 0x5C,
+                    frame: 0,
+                },
+            ],
+            Vec::new(),
+        );
+
+        let authored = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            0,
+            OverlayLoadSource::Authored,
+            None,
+            None,
+            None,
+        );
+        let generated = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            0,
+            OverlayLoadSource::GeneratedMaterialized,
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            authored
+                .cell(2, 2)
+                .unwrap()
+                .bridge_facts
+                .has_structural_bridge(),
+            "the ordinary authored-map source still runs fixed OverlayClass::Mark"
+        );
+        assert_eq!(
+            generated.cell(2, 2).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "generated direct cell writes must not be expanded a second time"
+        );
+        assert_eq!(
+            generated.cell(2, 2).unwrap().bridge_facts.overlay_id,
+            Some(0x18),
+            "source marking suppresses only Mark, not the materialized overlay"
+        );
+        assert_eq!(
+            generated.cell(1, 1).unwrap().bridge_facts.overlay_id,
+            Some(0x5C),
+            "the generated low-deck rectangle remains present"
+        );
     }
 
     #[test]
@@ -5946,6 +6045,7 @@ SnowOccupationBits=0
             Some(&rules.terrain_object_types),
             false,
             0,
+            OverlayLoadSource::Authored,
             None,
             None,
             None,
@@ -5970,6 +6070,7 @@ SnowOccupationBits=0
             Some(&rules.terrain_object_types),
             false,
             0,
+            OverlayLoadSource::Authored,
             None,
             None,
             None,

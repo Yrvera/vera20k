@@ -40,6 +40,7 @@ pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
 pub(crate) use logic_vector::LogicVector;
 pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
+pub(crate) use world_spawn::{GeneratedTechnoInitError, GeneratedTechnoInitTable};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -652,7 +653,7 @@ pub struct Simulation {
     pub(crate) main_rng: SimRng,
     /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). VERA's fresh
     /// fixed-map construction uses `Random__Seed(0)`, matching the verified
-    /// native fresh-process state; an accepted generated map installs its exact
+    /// native fresh-process state; launch `.SED` generation installs its exact
     /// post-RMG continuation. Bridge repair consumes this stream; destruction
     /// remains Scenario-owned. This cursor is not saved or checksummed; Rust
     /// retains it across in-scenario restore, while native cross-match process

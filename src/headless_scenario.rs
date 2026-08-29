@@ -112,6 +112,7 @@ fn build_headless_terrain_bootstrap(
         &mut scenario_fill_ranged,
         &mut variant_selector,
         shared_cell_dummy,
+        crate::map::resolved_terrain::OverlayLoadSource::Authored,
     );
     drop(variant_selector);
     drop(variant_draw);

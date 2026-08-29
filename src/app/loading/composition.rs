@@ -390,13 +390,15 @@ pub(crate) fn build_loading_composition(
 ///
 /// gamemd provenance: DrawLoadingScreen 0x00552D60 loads `RandMap.img` at
 /// 0x00553592/0x00553599, then unconditionally calls compositor 0x00640A40 at
-/// 0x00553687 with the retained scenario waypoints and resolved assignments.
+/// 0x00553687 with launch-scenario waypoints and resolved assignments. Rust's
+/// optional setup preview below is presentation fallback only; it never enters
+/// map loading or start assignment.
 pub(crate) fn build_random_map_loading_composition(
     session: &SkirmishLaunchSession,
     csf: Option<&CsfFile>,
     render_size: [u32; 2],
     preview_image: Option<DecodedPreview>,
-    retained_map: Option<&MapFile>,
+    preview_map: Option<&MapFile>,
     assignments: &[LoadingStartAssignment],
 ) -> LoadingCompositionSnapshot {
     let region = mmpb_region_rect(render_size[0]);
@@ -405,7 +407,7 @@ pub(crate) fn build_random_map_loading_composition(
         .filter(valid_preview_buffer)
         .and_then(|mut image| {
             let fit = aspect_fit_preview(region, image.width, image.height)?;
-            if let Some(map) = retained_map {
+            if let Some(map) = preview_map {
                 let prefix = native_loading_waypoint_prefix(&map.waypoints);
                 if let Some(bounds) = projected_playfield_bounds(map) {
                     burn_black_start_indicators(&mut image, &prefix, bounds);
@@ -1020,7 +1022,7 @@ mod tests {
             preview.fit,
             aspect_fit_preview(mmpb_region_rect(800), 200, 80).expect("valid fit")
         );
-        // Without retained scenario data, the loader never invents starts.
+        // Without optional preview map data, the loader never invents starts.
         assert!(preview.image.rgba.iter().all(|byte| *byte == 255));
         assert!(composition.markers.is_empty());
     }

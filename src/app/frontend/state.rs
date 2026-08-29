@@ -96,9 +96,10 @@ pub(crate) struct FrontendState {
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app::loading::pump::LoadingSession>,
-    /// Process-owned front-end Main stream. RMG dialog actions and the first
-    /// preview selector reach share this cursor; accepted matches reseed their
-    /// own Main stream instead of inheriting it.
+    /// Process-owned front-end Main stream. RMG Randomize/derived-option work
+    /// and the first preview selector reach share this cursor; the setup-entry
+    /// seed comes from shell Scenario instead. Accepted matches reseed their
+    /// own Main stream rather than inheriting either shell cursor.
     pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
     /// Process-lifetime monotonic identity source; zero is permanently reserved.
     pub(crate) next_match_correlation: u64,

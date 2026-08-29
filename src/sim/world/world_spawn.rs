@@ -39,6 +39,10 @@ pub(crate) struct GeneratedTechnoInitTable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GeneratedTechnoInitError {
+    TraceOrdinalMismatch {
+        expected: usize,
+        found: usize,
+    },
     DuplicateEntityIndex(usize),
     MissingEntityIndex(usize),
     UnexpectedEntityIndex(usize),
@@ -59,6 +63,10 @@ pub(crate) enum GeneratedTechnoInitError {
 impl fmt::Display for GeneratedTechnoInitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TraceOrdinalMismatch { expected, found } => write!(
+                f,
+                "generated construction trace expected ordinal {expected}, found {found}"
+            ),
             Self::DuplicateEntityIndex(index) => {
                 write!(
                     f,
@@ -113,6 +121,11 @@ impl GeneratedTechnoInitTable {
             }
         }
         Ok(Self { entries: by_index })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entry(&self, entity_index: usize) -> Option<&GeneratedTechnoInit> {
+        self.entries.get(&entity_index)
     }
 
     fn validate<'a>(

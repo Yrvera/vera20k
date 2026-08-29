@@ -87,6 +87,9 @@ pub(crate) struct OfflineSkirmishRuntime {
     snapshot: SkirmishPersistedSnapshot,
     local_preferences: LocalMultiplayerPreferences,
     scenario_rng: SimRng,
+    /// Process-persistent native MapSeed options. The setup dialog edits a
+    /// working copy, but closing it does not reconstruct this global record.
+    random_map_options: crate::map::rmg::RmgOptions,
     ini_path: Option<PathBuf>,
     cooperative_registry: CooperativeRegistry,
     cooperative_progress: CooperativeProgressState,
@@ -129,6 +132,7 @@ impl OfflineSkirmishRuntime {
             snapshot,
             local_preferences,
             scenario_rng,
+            random_map_options: crate::map::rmg::RmgOptions::default(),
             ini_path,
             cooperative_registry,
             cooperative_progress,
@@ -476,6 +480,45 @@ impl OfflineSkirmishRuntime {
         self.scenario_rng = gameplay_rng;
         self.gameplay_rng_return_pending = false;
         true
+    }
+
+    /// Return the process MapSeed options for a setup instance. Only the first
+    /// entry with the constructor sentinel spends a Scenario word; later
+    /// entries reuse the stored seed and all other edited fields.
+    ///
+    /// gamemd provenance: setup `WM_INITDIALOG` at
+    /// 0x00596BB1..0x00596BC8 calls Scenario `RandomRanged(0,0xFFFF)` only
+    /// when MapSeed+0x74 is -1. The global MapSeed survives dialog teardown.
+    pub(crate) fn random_map_options_for_setup(&mut self) -> crate::map::rmg::RmgOptions {
+        if self.random_map_options.seed == -1 {
+            self.random_map_options.seed =
+                self.scenario_rng.next_range_u32_inclusive(0, 0xFFFF) as i32;
+        }
+        self.random_map_options.normalize();
+        self.random_map_options.clone()
+    }
+
+    /// Persist the dialog's working record back into the process MapSeed owner.
+    pub(crate) fn remember_random_map_options(&mut self, options: &crate::map::rmg::RmgOptions) {
+        self.random_map_options = options.clone();
+        self.random_map_options.normalize();
+    }
+
+    /// Replay the generated Building constructors on the shell Scenario owner.
+    /// Geometry stays MapGen-only; every trace row, including discarded
+    /// objects, represents exactly one raw Techno constructor word.
+    ///
+    /// gamemd provenance: TechnoClass constructor 0x006F3254 calls raw
+    /// Scenario `Random__Next`; CABHUT reaches it through
+    /// 0x005904B0 -> 0x0043B740 and the other RMG Building owners share it.
+    pub(crate) fn replay_random_map_preview_construction(
+        &mut self,
+        trace: &crate::map::rmg::RmgConstructionTrace,
+    ) {
+        for (expected_ordinal, event) in trace.events.iter().enumerate() {
+            debug_assert_eq!(event.ordinal, expected_ordinal);
+            let _ = self.scenario_rng.next_u32();
+        }
     }
 
     #[cfg(test)]
@@ -847,6 +890,7 @@ mod tests {
             snapshot: SkirmishPersistedSnapshot::from_global_defaults(defaults()),
             local_preferences: LocalMultiplayerPreferences::default(),
             scenario_rng,
+            random_map_options: crate::map::rmg::RmgOptions::default(),
             ini_path: None,
             cooperative_registry,
             cooperative_progress,
@@ -860,6 +904,7 @@ mod tests {
             snapshot,
             local_preferences: LocalMultiplayerPreferences::default(),
             scenario_rng: SimRng::new(u64::from(seed)),
+            random_map_options: crate::map::rmg::RmgOptions::default(),
             ini_path: None,
             cooperative_registry: CooperativeRegistry::default(),
             cooperative_progress: CooperativeProgressState::default(),
@@ -1423,6 +1468,61 @@ mod tests {
         runtime.mark_gameplay_rng_return_pending();
         assert!(runtime.capture_returned_gameplay_rng(replacement));
         assert_eq!(runtime.scenario_rng_state(), expected);
+    }
+
+    #[test]
+    fn gsi_04_12_first_random_map_entry_spends_one_scenario_draw_and_reentry_spends_none() {
+        let snapshot = SkirmishPersistedSnapshot::from_global_defaults(defaults());
+        let seed = 0x4321_u32;
+        let mut runtime = runtime(snapshot, seed);
+        let mut reference = SimRng::new(u64::from(seed));
+        let expected_seed = reference.next_range_u32_inclusive(0, 0xFFFF) as i32;
+
+        let mut first = runtime.random_map_options_for_setup();
+        assert_eq!(first.seed, expected_seed);
+        assert_eq!(runtime.scenario_rng.logical_state(), reference.logical_state());
+
+        first.resources = 3;
+        first.num_players = 7;
+        runtime.remember_random_map_options(&first);
+        let before_reentry = runtime.scenario_rng.logical_state();
+        let reopened = runtime.random_map_options_for_setup();
+
+        assert_eq!(reopened.seed, expected_seed);
+        assert_eq!(reopened.resources, 3);
+        assert_eq!(reopened.num_players, 7);
+        assert_eq!(runtime.scenario_rng.logical_state(), before_reentry);
+    }
+
+    #[test]
+    fn gsi_04_12_preview_trace_spends_one_raw_scenario_word_per_constructor() {
+        use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
+
+        let snapshot = SkirmishPersistedSnapshot::from_global_defaults(defaults());
+        let seed = 0x1357_u32;
+        let mut runtime = runtime(snapshot, seed);
+        let mut reference = SimRng::new(u64::from(seed));
+        let mut trace = RmgConstructionTrace::default();
+        trace.push_emitted(
+            RmgConstructionPhase::BridgeRepairHut,
+            "CABHUT".to_string(),
+            0,
+            (12, 13),
+        );
+        trace.push_discarded(RmgConstructionPhase::NeutralTech, "CAOILD".to_string());
+        trace.push_emitted(
+            RmgConstructionPhase::NeutralTech,
+            "CATHOSP".to_string(),
+            1,
+            (20, 21),
+        );
+
+        for _ in &trace.events {
+            let _ = reference.next_u32();
+        }
+        runtime.replay_random_map_preview_construction(&trace);
+
+        assert_eq!(runtime.scenario_rng.logical_state(), reference.logical_state());
     }
 
     #[test]

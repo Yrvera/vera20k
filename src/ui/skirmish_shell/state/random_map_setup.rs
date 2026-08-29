@@ -22,9 +22,6 @@ impl RandomRanged for crate::sim::rng::SimRng {
     }
 }
 
-/// Sentinel meaning "no seed chosen yet"; replaced with a random one on open.
-const UNSET_SEED: i32 = -1;
-
 /// Which combo is currently dropped open, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupCombo {
@@ -189,17 +186,18 @@ pub struct RandomMapSetupModalState {
 impl RandomMapSetupModalState {
     /// Open the dialog over the current selection.
     ///
-    /// An unset seed is replaced with a fresh random one, matching the
-    /// original's init. Accept starts disabled: the player must generate first.
+    /// The app-layer Scenario owner initializes the process-persistent seed
+    /// before opening this presentation state. Accept starts disabled: the
+    /// player must generate first.
     pub fn open(
         mut options: RmgOptions,
         previous_selection: Option<ChooseMapSelection>,
         saved_seeds_available: bool,
-        rng: &mut impl RandomRanged,
     ) -> Self {
-        if options.seed == UNSET_SEED {
-            options.seed = rng.ranged(0, 0xFFFF);
-        }
+        assert_ne!(
+            options.seed, -1,
+            "random-map options must be initialized by the app Scenario owner"
+        );
         options.normalize();
         Self {
             options,
@@ -401,17 +399,18 @@ mod tests {
     }
 
     fn opened() -> RandomMapSetupModalState {
-        RandomMapSetupModalState::open(RmgOptions::default(), None, false, &mut MaxRng)
+        RandomMapSetupModalState::open(
+            RmgOptions {
+                seed: 0x1234,
+                ..Default::default()
+            },
+            None,
+            false,
+        )
     }
 
     #[test]
-    fn open_replaces_the_unset_seed() {
-        assert_eq!(RmgOptions::default().seed, UNSET_SEED);
-        assert_eq!(opened().options.seed, 0xFFFF, "unset seed is randomized");
-    }
-
-    #[test]
-    fn gsi_04_02_dialog_open_and_generate_reroll_share_process_main_only() {
+    fn gsi_04_02_dialog_open_is_rng_pure_and_generate_reroll_uses_process_main_only() {
         let mut process_main = crate::sim::rng::SimRng::new(0);
         let mut reference_main = crate::sim::rng::SimRng::new(0);
         let scenario = crate::sim::rng::SimRng::new(0x1234);
@@ -419,10 +418,14 @@ mod tests {
         let mut mapgen = crate::map::rmg::RmgRng::new(0x5678);
         let mut mapgen_reference = mapgen.clone();
 
-        let mut modal =
-            RandomMapSetupModalState::open(RmgOptions::default(), None, false, &mut process_main);
-        let expected_seed = reference_main.next_range_u32_inclusive(0, 0xFFFF) as i32;
-        assert_eq!(modal.options.seed, expected_seed);
+        let mut modal = RandomMapSetupModalState::open(
+            RmgOptions {
+                seed: 0x2468,
+                ..Default::default()
+            },
+            None,
+            false,
+        );
         assert_eq!(process_main.logical_state(), reference_main.logical_state());
 
         let mut expected_options = modal.options.clone();
@@ -445,7 +448,7 @@ mod tests {
             seed: 4321,
             ..Default::default()
         };
-        let state = RandomMapSetupModalState::open(options, None, false, &mut MaxRng);
+        let state = RandomMapSetupModalState::open(options, None, false);
         assert_eq!(state.options.seed, 4321);
     }
 
@@ -462,7 +465,14 @@ mod tests {
         assert!(!none.is_enabled(RandomMapSetupControl::Load0x6c2));
         assert!(!none.is_enabled(RandomMapSetupControl::Delete0x6c4));
 
-        let some = RandomMapSetupModalState::open(RmgOptions::default(), None, true, &mut MaxRng);
+        let some = RandomMapSetupModalState::open(
+            RmgOptions {
+                seed: 1,
+                ..Default::default()
+            },
+            None,
+            true,
+        );
         assert!(some.is_enabled(RandomMapSetupControl::Load0x6c2));
         assert!(some.is_enabled(RandomMapSetupControl::Delete0x6c4));
     }
@@ -665,10 +675,12 @@ mod tests {
             record_index: Some(3),
         };
         let state = RandomMapSetupModalState::open(
-            RmgOptions::default(),
+            RmgOptions {
+                seed: 7,
+                ..Default::default()
+            },
             Some(previous),
             false,
-            &mut MaxRng,
         );
         assert_eq!(state.cancel(), Some(previous));
     }
