@@ -27,10 +27,6 @@ use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
 
 use super::area::{area_is_paved_clear, corners_in_diamond, tile_is_placeable};
 
-/// Turns an infinite native loop into a `None` and nothing else — see
-/// [`pick_seed_cell`]. Not a retry budget: the original has no bound here.
-const SEED_PICK_SPIN_LIMIT: u32 = 10_000_000;
-
 /// One uniform index over the whole scratch array.
 ///
 /// `rnd * span * K`, in that order, with `K` the original's own
@@ -86,16 +82,30 @@ fn draw_cell_index(rng: &mut RmgRng, span: i32) -> u32 {
 ///   one. It is not a test for the corner cell.
 ///
 /// Returns `None` only where the original would spin forever, which is when no
-/// cell in the scratch array satisfies both conditions. The spin limit is
-/// VERA-internal; the original has no counter here. It cannot mask a real run:
-/// with a single qualifying cell in a 256-wide scratch the chance of reaching
-/// the limit anyway is about e^-153, and a bound that only trips where the
-/// original never terminates cannot change any map the original produces.
+/// cell in the scratch array satisfies both conditions. That impossible case
+/// is detected without consuming RNG. Once an eligible record exists, the
+/// draw/reject loop is deliberately unbounded just like the original.
 pub fn pick_seed_cell(rng: &mut RmgRng, scratch: &RmgScratch, region: i32) -> Option<(i32, i32)> {
     let width = scratch.width() as i32;
     let span = width * width;
-    for _ in 0..SEED_PICK_SPIN_LIMIT {
-        let cell = scratch.cells()[draw_cell_index(rng, span) as usize];
+    pick_seed_cell_from_draws(scratch, region, || draw_cell_index(rng, span) as usize)
+}
+
+fn pick_seed_cell_from_draws(
+    scratch: &RmgScratch,
+    region: i32,
+    mut draw_index: impl FnMut() -> usize,
+) -> Option<(i32, i32)> {
+    if !scratch
+        .cells()
+        .iter()
+        .any(|cell| cell.region == region && (cell.x != 0 || cell.y != 0))
+    {
+        return None;
+    }
+
+    loop {
+        let cell = scratch.cells()[draw_index()];
         if cell.region != region {
             continue;
         }
@@ -111,7 +121,6 @@ pub fn pick_seed_cell(rng: &mut RmgRng, scratch: &RmgScratch, region: i32) -> Op
         }
         return Some((i32::from(cell.x), i32::from(cell.y)));
     }
-    None
 }
 
 /// Is this area clear enough to lay a bridge deck across?
@@ -769,6 +778,28 @@ mod tests {
     }
 
     #[test]
+    fn an_eligible_region_has_no_non_native_draw_cap() {
+        const FORMER_SPIN_LIMIT: u32 = 10_000_000;
+
+        let scratch = scratch_owning(&[(40, 48)], 7);
+        let rejected_index = 0;
+        let accepted_index = 48 * scratch.width() + 40;
+        let mut draws = 0_u32;
+
+        let picked = pick_seed_cell_from_draws(&scratch, 7, || {
+            draws += 1;
+            if draws <= FORMER_SPIN_LIMIT {
+                rejected_index
+            } else {
+                accepted_index
+            }
+        });
+
+        assert_eq!(picked, Some((40, 48)));
+        assert_eq!(draws, FORMER_SPIN_LIMIT + 1);
+    }
+
+    #[test]
     fn low_end_stamper_writes_multicell_tmp_fields_and_clears_region_only() {
         let (mut grid, mut scratch) = harness();
         let origin = (40, 48);
@@ -870,7 +901,13 @@ mod tests {
     fn an_empty_region_gives_up_where_the_original_would_spin_forever() {
         let scratch = scratch_owning(&[], 7);
         let mut rng = RmgRng::new(2);
+        let mut expected_rng = RmgRng::new(2);
         assert_eq!(pick_seed_cell(&mut rng, &scratch, 7), None);
+        assert_eq!(
+            rng.next_u32(),
+            expected_rng.next_u32(),
+            "the impossible-case pre-scan must not spend a draw"
+        );
     }
 
     #[test]
