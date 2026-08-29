@@ -6,9 +6,7 @@
 //! calls each admitted concrete `ReceiveDamage` receiver.
 
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::{
-    EntityDamageEvent, RAD_NO_ATTACKER, ReceiverCallFlags,
-};
+use crate::sim::combat::{EntityDamageEvent, RAD_NO_ATTACKER, ReceiverCallFlags};
 use crate::sim::intern::InternedId;
 use crate::sim::world::Simulation;
 
@@ -170,11 +168,8 @@ pub(crate) fn sweep_house_technos(
         let Some(stable_id) = sim.techno_registration_id_at(index) else {
             break;
         };
-        let Some((current_owner, controller_id, current_health)) = sim
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| {
+        let Some((current_owner, controller_id, current_health)) =
+            sim.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.owner,
                     entity.mind_control_controller_id,
@@ -193,12 +188,7 @@ pub(crate) fn sweep_house_technos(
 
         if current_owner != swept_house
             && let Some(controller_id) = controller_id
-            && rewrite_reversible_original_owner_to_civilian(
-                sim,
-                rules,
-                controller_id,
-                stable_id,
-            )
+            && rewrite_reversible_original_owner_to_civilian(sim, rules, controller_id, stable_id)
         {
             index += 1;
             continue;
@@ -228,9 +218,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::rules::ini_parser::IniFile;
-    use crate::sim::capture_manager::{
-        CaptureManagerState, CaptureNodeState,
-    };
+    use crate::sim::capture_manager::{CaptureManagerState, CaptureNodeState};
     use crate::sim::game_entity::TemporalManagerState;
     use crate::sim::house_state::HouseState;
 
@@ -288,6 +276,31 @@ mod tests {
         (sim, rules, target, other, civilian)
     }
 
+    fn building_animation_rules() -> RuleSet {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[Countries]\n0=Americans\n\
+             [Americans]\nName=Americans\n\
+             [InfantryTypes]\n0=E1\n\
+             [BuildingTypes]\n0=BLD\n\
+             [E1]\nStrength=100\nArmor=none\n\
+             [BLD]\nStrength=100\nArmor=none\nFoundation=3x3Refinery\nCrewed=yes\nExplosion=EXP_A,EXP_B\nDestroyAnim=DEST\n\
+             [Warheads]\n0=SWEEPC4\n\
+             [SWEEPC4]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+             [CombatDamage]\nC4Warhead=SWEEPC4\n",
+        ))
+        .expect("House Building animation rules");
+        let mut art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+            "[EXP_A]\nRate=450\nReport=ExplosionA\n\
+             [EXP_B]\nRate=450\nReport=ExplosionB\n\
+             [DEST]\nRate=300\nNewTheater=yes\nShadow=yes\nAltPalette=yes\nLayer=ground\n",
+        ));
+        art.bind_anim_frame_count_for_test("EXP_A", 4);
+        art.bind_anim_frame_count_for_test("EXP_B", 4);
+        art.bind_anim_frame_count_for_test("DEST", 12);
+        rules.art_registry = art;
+        rules
+    }
+
     fn spawn(
         sim: &mut Simulation,
         rules: &RuleSet,
@@ -296,16 +309,8 @@ mod tests {
         rx: u16,
     ) -> u64 {
         let owner = sim.interner.resolve(owner).to_owned();
-        sim.spawn_object(
-            type_id,
-            &owner,
-            rx,
-            4,
-            0,
-            rules,
-            &BTreeMap::new(),
-        )
-        .expect("spawn sweep fixture Techno")
+        sim.spawn_object(type_id, &owner, rx, 4, 0, rules, &BTreeMap::new())
+            .expect("spawn sweep fixture Techno")
     }
 
     #[test]
@@ -328,6 +333,56 @@ mod tests {
     }
 
     #[test]
+    fn action119_house_sweep_constructs_building_anims_before_appended_survivor() {
+        let rules = building_animation_rules();
+        let mut sim = Simulation::new();
+        let target = add_house(&mut sim, "Target", "Americans");
+        sim.resolve_type_handles(&rules);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let building_id = spawn(&mut sim, &rules, "BLD", target, 10);
+
+        assert!(sweep_house_technos(&mut sim, &rules, None, target));
+
+        let anims = sim
+            .anims()
+            .map(|(&id, anim)| (id, sim.interner.resolve(anim.type_id).to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(anims.len(), 9);
+        assert_eq!(anims.iter().filter(|(_, name)| name == "DEST").count(), 1,);
+        let survivor_id = sim
+            .substrate
+            .entities
+            .values()
+            .find(|entity| {
+                entity.stable_id > building_id
+                    && entity.category == crate::map::entities::EntityCategory::Infantry
+            })
+            .map(|entity| entity.stable_id)
+            .expect("Crewed Building survivor is appended after destruction effects");
+        assert!(
+            anims
+                .iter()
+                .all(|(anim_id, _)| building_id < *anim_id && *anim_id < survivor_id),
+            "all per-cell and DestroyAnim constructors precede survivor creation",
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(survivor_id)
+                .is_some_and(|survivor| survivor.dying)
+        );
+        assert_eq!(
+            sim.anim(anims.last().expect("DestroyAnim").0)
+                .map(|anim| anim.world_coord),
+            Some(crate::sim::anim_class::AnimWorldCoord {
+                x: 10 * crate::util::lepton::LEPTONS_PER_CELL_I32,
+                y: 4 * crate::util::lepton::LEPTONS_PER_CELL_I32,
+                z: 0,
+            }),
+        );
+    }
+
+    #[test]
     fn live_cursor_revisits_compacted_slot_and_advances_one_surviving_receiver() {
         let (mut sim, rules, target, other, _) = fixture();
         let survivor = spawn(&mut sim, &rules, "VEH", target, 2);
@@ -345,16 +400,18 @@ mod tests {
 
         assert!(sim.substrate.entities.get(survivor).is_some());
         assert!(sim.substrate.entities.get(skipped).is_some());
-        assert!(sim
-            .substrate
-            .entities
-            .get(first_fatal)
-            .is_some_and(|entity| entity.dying));
-        assert!(sim
-            .substrate
-            .entities
-            .get(second_fatal)
-            .is_some_and(|entity| entity.dying));
+        assert!(
+            sim.substrate
+                .entities
+                .get(first_fatal)
+                .is_some_and(|entity| entity.dying)
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(second_fatal)
+                .is_some_and(|entity| entity.dying)
+        );
         assert_eq!(
             (0..sim.techno_registration_len())
                 .map(|index| sim.techno_registration_id_at(index).unwrap())
@@ -373,21 +430,24 @@ mod tests {
 
         assert!(sweep_house_technos(&mut sim, &rules, None, target));
 
-        assert!(sim
-            .substrate
-            .entities
-            .get(earlier_other)
-            .is_some_and(|entity| entity.dying && !entity.lifecycle.object_alive));
-        assert!(sim
-            .substrate
-            .entities
-            .get(current_receiver)
-            .is_some_and(|entity| entity.dying && !entity.lifecycle.object_alive));
-        assert!(sim
-            .substrate
-            .entities
-            .get(shifted_successor)
-            .is_some_and(|entity| !entity.dying && entity.health.current == 100));
+        assert!(
+            sim.substrate
+                .entities
+                .get(earlier_other)
+                .is_some_and(|entity| entity.dying && !entity.lifecycle.object_alive)
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(current_receiver)
+                .is_some_and(|entity| entity.dying && !entity.lifecycle.object_alive)
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(shifted_successor)
+                .is_some_and(|entity| !entity.dying && entity.health.current == 100)
+        );
         assert_eq!(sim.techno_registration_len(), 1);
         assert_eq!(sim.techno_registration_id_at(0), Some(shifted_successor));
     }
@@ -408,22 +468,27 @@ mod tests {
         );
         assert!(!sim.tactical_registration_order().contains(&infantry));
         assert!(!sim.tactical_registration_order().contains(&aircraft));
-        assert!(sim
-            .substrate
-            .entities
-            .get(infantry)
-            .is_some_and(|entity| entity.lifecycle.object_alive && entity.lifecycle.in_limbo));
-        assert!(sim
-            .substrate
-            .entities
-            .get(aircraft)
-            .is_some_and(|entity| entity.lifecycle.object_alive && entity.lifecycle.in_limbo));
+        assert!(
+            sim.substrate
+                .entities
+                .get(infantry)
+                .is_some_and(|entity| entity.lifecycle.object_alive && entity.lifecycle.in_limbo)
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(aircraft)
+                .is_some_and(|entity| entity.lifecycle.object_alive && entity.lifecycle.in_limbo)
+        );
 
         assert!(sweep_house_technos(&mut sim, &rules, None, target));
 
         for id in [infantry, vehicle, aircraft, building] {
             assert!(
-                sim.substrate.entities.get(id).is_some_and(|entity| entity.dying),
+                sim.substrate
+                    .entities
+                    .get(id)
+                    .is_some_and(|entity| entity.dying),
                 "Techno {id} was admitted regardless of limbo/reveal state"
             );
         }
@@ -550,10 +615,12 @@ mod tests {
         restored.substrate.next_stable_object_id = dead_tombstone;
         assert_eq!(
             restored.restore_after_snapshot_load(),
-            Err(crate::sim::snapshot::SnapshotRestoreError::ObjectIdCounterBehind {
-                next_id: dead_tombstone,
-                highest_id: dead_tombstone,
-            }),
+            Err(
+                crate::sim::snapshot::SnapshotRestoreError::ObjectIdCounterBehind {
+                    next_id: dead_tombstone,
+                    highest_id: dead_tombstone,
+                }
+            ),
         );
     }
 
@@ -574,16 +641,18 @@ mod tests {
         }
 
         assert!(sweep_house_technos(&mut sim, &rules, None, source));
-        assert!(sim
-            .substrate
-            .entities
-            .get(transferred)
-            .is_some_and(|entity| entity.dying));
-        assert!(sim
-            .substrate
-            .entities
-            .get(null_source)
-            .is_some_and(|entity| !entity.dying && entity.health.current == 100));
+        assert!(
+            sim.substrate
+                .entities
+                .get(transferred)
+                .is_some_and(|entity| entity.dying)
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(null_source)
+                .is_some_and(|entity| !entity.dying && entity.health.current == 100)
+        );
 
         assert!(sweep_house_technos(&mut sim, &rules, None, destination));
         assert!(
@@ -602,18 +671,20 @@ mod tests {
         }
         let controller_id = spawn(&mut sim, &rules, "VEH", controller_owner, 2);
         let victim_id = spawn(&mut sim, &rules, "VEH", controller_owner, 3);
-        sim.substrate.entities.get_mut(controller_id).unwrap().capture_manager = Some(
-            CaptureManagerState {
-                max_control: 1,
-                infinite_mind_control: false,
-                controlled_nodes: vec![CaptureNodeState {
-                    victim_id,
-                    original_owner: original,
-                    capture_frame: 1,
-                    link_visible_frames: 15,
-                }],
-            },
-        );
+        sim.substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager = Some(CaptureManagerState {
+            max_control: 1,
+            infinite_mind_control: false,
+            controlled_nodes: vec![CaptureNodeState {
+                victim_id,
+                original_owner: original,
+                capture_frame: 1,
+                link_visible_frames: 15,
+            }],
+        });
         {
             let victim = sim.substrate.entities.get_mut(victim_id).unwrap();
             victim.mind_control_controller_id = Some(controller_id);
@@ -634,8 +705,7 @@ mod tests {
 
     #[test]
     fn reversible_victim_rewrites_to_first_civilian_and_is_spared() {
-        let (mut sim, rules, original, _, controller_id, victim_id) =
-            controlled_fixture(true);
+        let (mut sim, rules, original, _, controller_id, victim_id) = controlled_fixture(true);
         let civilian = sim
             .session
             .house_order
@@ -667,11 +737,12 @@ mod tests {
     fn reversible_victim_falls_through_to_damage_when_civilian_is_unresolved() {
         let (mut sim, rules, original, _, _, victim_id) = controlled_fixture(false);
         assert!(sweep_house_technos(&mut sim, &rules, None, original));
-        assert!(sim
-            .substrate
-            .entities
-            .get(victim_id)
-            .is_some_and(|victim| victim.dying));
+        assert!(
+            sim.substrate
+                .entities
+                .get(victim_id)
+                .is_some_and(|victim| victim.dying)
+        );
     }
 
     #[test]
@@ -686,11 +757,12 @@ mod tests {
             controller_owner,
         ));
 
-        assert!(sim
-            .substrate
-            .entities
-            .get(controller_id)
-            .is_some_and(|controller| controller.dying));
+        assert!(
+            sim.substrate
+                .entities
+                .get(controller_id)
+                .is_some_and(|controller| controller.dying)
+        );
         let victim = sim.substrate.entities.get(victim_id).unwrap();
         assert!(!victim.dying);
         assert_eq!(victim.owner, original);
@@ -714,14 +786,13 @@ mod tests {
             (middle_id, Some(head_id), Some(tail_id), 13),
             (tail_id, Some(middle_id), None, 17),
         ] {
-            sim.substrate.entities.get_mut(id).unwrap().temporal_manager = Some(
-                TemporalManagerState {
+            sim.substrate.entities.get_mut(id).unwrap().temporal_manager =
+                Some(TemporalManagerState {
                     target_id: Some(victim_id),
                     previous_owner_id: previous,
                     next_owner_id: next,
                     warp_points: points,
-                },
-            );
+                });
         }
         // A zero-health Techno is still admitted. Its zero-damage receiver
         // persists at the same live-array slot, proving both preclear ordering

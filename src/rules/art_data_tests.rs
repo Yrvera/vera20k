@@ -3,6 +3,35 @@
 use super::*;
 
 #[test]
+fn phase3_missing_building_anim_art_installs_native_constructor_defaults() {
+    let mut registry = ArtRegistry::empty();
+    let names = vec!["gtpowexp".to_string(), "TSTLEXP".to_string()];
+    registry.install_native_default_anim_types(names.iter());
+    registry.bind_anim_frame_count_for_test("GTPOWEXP", 29);
+    registry.bind_anim_frame_count_for_test("TSTLEXP", 33);
+
+    let power = registry
+        .anim_runtime_config("gtpowexp")
+        .expect("native default AnimType");
+    assert_eq!(power.start, 0);
+    assert_eq!(power.rate_logic_frames, DEFAULT_ART_RATE_LOGIC_FRAMES);
+    assert_eq!(power.end, 29);
+    assert_eq!(power.loop_end, 29);
+    assert_eq!(power.make_infantry, -1);
+    assert_eq!(power.layer, AnimLayer::Top);
+    assert!(!power.shadow);
+    assert!(registry.get("GTPOWEXP").is_none());
+
+    assert_eq!(
+        registry
+            .anim_runtime_config("TSTLEXP")
+            .expect("second native default AnimType")
+            .end,
+        33,
+    );
+}
+
+#[test]
 fn test_apply_theater_letter() {
     assert_eq!(apply_theater_letter("GAPOWR", "TEMPERATE"), "GTPOWR");
     assert_eq!(apply_theater_letter("GAPOWR", "SNOW"), "GAPOWR");
@@ -688,10 +717,7 @@ fn gsi_05_10_delayed_building_fire_art_fields_keep_defaults_and_signed_delay() {
 #[test]
 fn populate_anim_frame_dims_binds_smudge_inputs_without_a_renderer() {
     let root = AnimDimTestRoot::new();
-    std::fs::write(
-        root.path().join("BIGIMAGE.SHP"),
-        single_frame_shp(61, 51),
-    )
+    std::fs::write(root.path().join("BIGIMAGE.SHP"), single_frame_shp(61, 51))
         .expect("write big smudge anim SHP");
     let assets = crate::assets::asset_manager::AssetManager::from_loose_root_for_test(root.path());
     let mut registry = ArtRegistry::from_ini(&IniFile::from_str(
@@ -700,8 +726,7 @@ fn populate_anim_frame_dims_binds_smudge_inputs_without_a_renderer() {
          [UNFLAGGED]\nImage=BIGIMAGE\n",
     ));
 
-    let (populated, fallback) =
-        registry.populate_anim_frame_dims(&assets, "TEM", "TEMPERATE");
+    let (populated, fallback) = registry.populate_anim_frame_dims(&assets, "TEM", "TEMPERATE");
 
     assert_eq!((populated, fallback), (1, 1));
     let big = registry.get("BIG").expect("bound big anim");
@@ -730,8 +755,7 @@ fn single_frame_shp(width: u16, height: u16) -> Vec<u8> {
     data
 }
 
-static NEXT_ANIM_DIM_TEST_ROOT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static NEXT_ANIM_DIM_TEST_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct AnimDimTestRoot(std::path::PathBuf);
 

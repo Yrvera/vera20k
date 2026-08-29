@@ -25,7 +25,6 @@ use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
 use crate::rules::ruleset::RuleSet;
 
-
 use crate::sim::world::Simulation;
 
 use crate::app::frontend::skirmish::deployable_building_types;
@@ -329,15 +328,10 @@ pub(crate) fn load_retail_team_ai_source(asset_manager: &AssetManager) -> Option
 }
 
 fn missing_active_team_ai_registry_sections(ini: &IniFile) -> Vec<&'static str> {
-    [
-        "TeamTypes",
-        "ScriptTypes",
-        "TaskForces",
-        "AITriggerTypes",
-    ]
-    .into_iter()
-    .filter(|section| ini.section(section).is_none())
-    .collect()
+    ["TeamTypes", "ScriptTypes", "TaskForces", "AITriggerTypes"]
+        .into_iter()
+        .filter(|section| ini.section(section).is_none())
+        .collect()
 }
 
 /// Load active YR rules and retain the exact composed source.
@@ -500,6 +494,7 @@ pub(crate) fn scheduler_anim_roots(
             .map(|anim| anim.name.trim().to_ascii_uppercase())
             .filter(|name| !name.is_empty()),
     );
+    roots.extend(building_destruction_anim_roots(rules));
     roots.extend(
         tile_animations
             .iter()
@@ -509,6 +504,26 @@ pub(crate) fn scheduler_anim_roots(
     roots.into_iter().collect()
 }
 
+/// Rules-resolved Building destruction animations. The separate projection is
+/// retained because only this source is allowed to synthesize a native-default
+/// AnimType when the referenced retail SHP has no ART section.
+pub(crate) fn building_destruction_anim_roots(rules: &RuleSet) -> Vec<String> {
+    let mut roots = BTreeSet::new();
+    for building_id in &rules.building_ids {
+        let Some(building) = rules.object(building_id) else {
+            continue;
+        };
+        roots.extend(
+            building
+                .explosion_anims
+                .iter()
+                .chain(&building.destroy_anims)
+                .map(|name| name.trim().to_ascii_uppercase())
+                .filter(|name| !name.is_empty()),
+        );
+    }
+    roots.into_iter().collect()
+}
 
 /// The presentation-side atlas bundle the app builds AFTER GPU-free scenario
 /// construction (F09): derived from immutable resources plus the constructed
@@ -709,10 +724,9 @@ mod retail_placement_oracle_tests;
 mod tests {
     use std::path::PathBuf;
 
-    use crate::sim::runtime::spawn_terrain_tile_animations;
     use super::{
-        LoadedRules, compose_rules_layers, load_rules_with_merged_ini,
-        missing_active_team_ai_registry_sections, scheduler_anim_roots,
+        LoadedRules, building_destruction_anim_roots, compose_rules_layers,
+        load_rules_with_merged_ini, missing_active_team_ai_registry_sections, scheduler_anim_roots,
     };
     use crate::assets::asset_manager::AssetManager;
     use crate::map::entities::EntityCategory;
@@ -724,6 +738,7 @@ mod tests {
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::runtime::spawn_terrain_tile_animations;
     use crate::sim::world::{SimSoundEvent, Simulation};
 
     #[derive(Debug, PartialEq, Eq)]
@@ -780,6 +795,25 @@ mod tests {
         assert_eq!(
             scheduler_anim_roots(&rules, &tiles),
             vec!["CUSTOM_FALLS", "CUSTOM_MOUTH", "FIRE_A", "FIRE_B"]
+        );
+    }
+
+    #[test]
+    fn phase3_scheduler_roots_include_all_building_explosion_and_destroy_anim_refs() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=BLD_A\n1=BLD_B\n\
+             [BLD_A]\nExplosion= twlt070,gtpowexp\nDestroyAnim=CAEAST01DM\n\
+             [BLD_B]\nExplosion=TSTLEXP,TWLT070\n",
+        ))
+        .expect("rules");
+
+        assert_eq!(
+            building_destruction_anim_roots(&rules),
+            vec!["CAEAST01DM", "GTPOWEXP", "TSTLEXP", "TWLT070"],
+        );
+        assert_eq!(
+            scheduler_anim_roots(&rules, &[]),
+            vec!["CAEAST01DM", "GTPOWEXP", "TSTLEXP", "TWLT070"],
         );
     }
 

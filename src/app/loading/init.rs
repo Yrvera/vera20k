@@ -11,17 +11,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::app::loading::init_helpers::{
-    build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
-    load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
-    scheduler_anim_roots, theater_ext_for,
-};
 use crate::app::frontend::list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
 use crate::app::frontend::skirmish::{
     build_overlay_atlas_from_map, house_color_map_for_launch_session,
     seed_skirmish_opening_if_needed,
+};
+use crate::app::loading::init_helpers::{
+    build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
+    load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
+    scheduler_anim_roots, theater_ext_for,
 };
 use crate::match_bootstrap::LoadingStartup;
 use crate::sim::scenario_bootstrap::{
@@ -195,7 +195,6 @@ mod native_overlay_shp_tests {
 mod map_wall_owner_candidate_tests {
     use super::*;
     use crate::map::entities::EntityCategory;
-    use crate::sim::runtime::map_wall_owner_candidate_from_building;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
     use crate::sim::components::{BuildingUp, Health};
@@ -203,6 +202,7 @@ mod map_wall_owner_candidate_tests {
     use crate::sim::overlay_grid::{MapWallOwnerCandidate, OverlayGrid};
     use crate::sim::power_system::PowerState;
     use crate::sim::radiation::RadDetonation;
+    use crate::sim::runtime::map_wall_owner_candidate_from_building;
 
     fn flat_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         let land = LandType::Clear.as_index();
@@ -683,15 +683,20 @@ mod map_wall_owner_candidate_tests {
         };
         sim.radiation
             .apply_detonation(detonation, 0, &rules.radiation, None);
-        let old_epoch =
-            crate::app::presentation::radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation);
+        let old_epoch = crate::app::presentation::radiation_light::radiation_light_epoch(
+            &sim.radiation,
+            &rules.radiation,
+        );
         let first = derive_lighting_view(&LightingConfig::default(), Some(&sim), Some(&rules), 2);
         assert_eq!(first.point_lights.len(), 1);
 
         sim.radiation
             .apply_detonation(detonation, 0, &rules.radiation, None);
         assert_eq!(
-            crate::app::presentation::radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation,),
+            crate::app::presentation::radiation_light::radiation_light_epoch(
+                &sim.radiation,
+                &rules.radiation,
+            ),
             old_epoch,
             "the former center-plus-step epoch cannot see a same-cell rearm"
         );
@@ -1232,7 +1237,6 @@ pub(crate) fn load_map_initial_with_assets(
     })
 }
 
-
 pub(crate) fn load_map_from_initial(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -1270,8 +1274,8 @@ pub(crate) fn load_map_from_initial(
     // The scenario/Main pair and the one-time TMP selector construction share
     // the same single resolved seed word. Generic loads retain the explicitly
     // unverified fallback, but it is sampled exactly once.
-    let match_seed =
-        startup.seed_or_else(crate::app::loading::init_helpers::generate_unverified_legacy_match_seed);
+    let match_seed = startup
+        .seed_or_else(crate::app::loading::init_helpers::generate_unverified_legacy_match_seed);
 
     // Load theater INI for tileset lookup, palette, and LAT configuration.
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
@@ -1282,7 +1286,9 @@ pub(crate) fn load_map_from_initial(
         // Native advances while rebuilding each color scheme. Rust's theater
         // loader is monolithic, so present the verified pre-load-count sequence
         // synchronously after that work instead of faking per-item callbacks.
-        for value in crate::app::loading::pump::theater_ramp_changed_values(runtime_color_scheme_count) {
+        for value in
+            crate::app::loading::pump::theater_ramp_changed_values(runtime_color_scheme_count)
+        {
             progress.milestone(value);
         }
         progress.milestone(25);
@@ -1440,6 +1446,9 @@ pub(crate) fn load_map_from_initial(
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
+        let defaultable_roots =
+            crate::app::loading::init_helpers::building_destruction_anim_roots(r);
+        a.install_native_default_anim_types(defaultable_roots.iter());
         let roots = scheduler_anim_roots(r, resolved_terrain.tile_animations());
         a.bind_scheduler_anim_assets(
             &roots,
@@ -1448,11 +1457,7 @@ pub(crate) fn load_map_from_initial(
             &map_data.header.theater,
         )?;
         r.art_registry = a.clone();
-        r.bind_effect_assets(
-            &asset_manager,
-            theater_ext,
-            &map_data.header.theater,
-        );
+        r.bind_effect_assets(&asset_manager, theater_ext, &map_data.header.theater);
         r.bind_terrain_spawner_assets(
             &rules_ini,
             &asset_manager,
@@ -1752,9 +1757,10 @@ pub(crate) fn load_map_from_initial(
         // resolution must happen before any combat tick.
         sim.resolve_type_handles(ruleset);
         let diagnostics = sim.install_team_ai_registry(&team_ai_registry, ruleset);
-        if diagnostics.iter().any(
-            crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal,
-        ) {
+        if diagnostics
+            .iter()
+            .any(crate::sim::team_script_vm::TeamAiInstallDiagnostic::is_fixed_source_refusal)
+        {
             anyhow::bail!(
                 "active YR aimd.ini failed RuleSet resolution: diagnostics={diagnostics:?}"
             );
@@ -1770,52 +1776,51 @@ pub(crate) fn load_map_from_initial(
     let mut initial_local_owner: Option<String> = None;
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
-            let should_rebuild_entity_atlases = if let Some(descriptor) =
-                match_launch_descriptor.as_ref()
-            {
-                // Complete standard-Battle vectors were resolved before the
-                // first loading frame and terrain continued their post-plan
-                // Scenario cursor. Other modes/deficient maps retain the
-                // terrain-dependent runtime resolver below.
-                let result = if let Some(plan) = preloaded_battle_start_plan.as_ref() {
-                    apply_preloaded_battle_launch_session(
-                        sim,
-                        &map_data,
-                        &house_roster,
-                        ruleset,
-                        &height_map,
-                        &resolved_terrain,
-                        descriptor,
-                        plan,
-                    )
+            let should_rebuild_entity_atlases =
+                if let Some(descriptor) = match_launch_descriptor.as_ref() {
+                    // Complete standard-Battle vectors were resolved before the
+                    // first loading frame and terrain continued their post-plan
+                    // Scenario cursor. Other modes/deficient maps retain the
+                    // terrain-dependent runtime resolver below.
+                    let result = if let Some(plan) = preloaded_battle_start_plan.as_ref() {
+                        apply_preloaded_battle_launch_session(
+                            sim,
+                            &map_data,
+                            &house_roster,
+                            ruleset,
+                            &height_map,
+                            &resolved_terrain,
+                            descriptor,
+                            plan,
+                        )
+                    } else {
+                        apply_explicit_skirmish_launch_session(
+                            sim,
+                            &map_data,
+                            &house_roster,
+                            ruleset,
+                            &height_map,
+                            &resolved_terrain,
+                            descriptor,
+                        )
+                    };
+                    initial_local_owner = result.local_owner;
+                    result.spawned_mcvs > 0
                 } else {
-                    apply_explicit_skirmish_launch_session(
+                    initial_local_owner = seed_skirmish_opening_if_needed(
                         sim,
                         &map_data,
                         &house_roster,
                         ruleset,
                         &height_map,
-                        &resolved_terrain,
-                        descriptor,
-                    )
+                        skirmish_settings,
+                    );
+                    // Set up AI players: all playable houses except the local (first) player.
+                    if let Some(ref local_owner) = initial_local_owner {
+                        sim.register_ai_players_from_roster(&house_roster, local_owner);
+                    }
+                    initial_local_owner.is_some()
                 };
-                initial_local_owner = result.local_owner;
-                result.spawned_mcvs > 0
-            } else {
-                initial_local_owner = seed_skirmish_opening_if_needed(
-                    sim,
-                    &map_data,
-                    &house_roster,
-                    ruleset,
-                    &height_map,
-                    skirmish_settings,
-                );
-                // Set up AI players: all playable houses except the local (first) player.
-                if let Some(ref local_owner) = initial_local_owner {
-                    sim.register_ai_players_from_roster(&house_roster, local_owner);
-                }
-                initial_local_owner.is_some()
-            };
 
             if should_rebuild_entity_atlases {
                 let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(
@@ -1940,9 +1945,8 @@ pub(crate) fn load_map_from_initial(
     // fields, never overlay ids), while its post-map tail may place
     // scenario-start crates — new overlay occupancy this presentation filter
     // must not react to.
-    overlays_connected.retain(|entry| {
-        overlay_grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id)
-    });
+    overlays_connected
+        .retain(|entry| overlay_grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id));
     let rules_for_post_map = rules
         .as_ref()
         .expect("merged rules were installed before post-map finalization");

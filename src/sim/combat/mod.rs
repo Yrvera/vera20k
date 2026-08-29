@@ -27,6 +27,7 @@ pub(crate) mod damage;
 pub(crate) mod fire_decision;
 pub(crate) mod in_range;
 mod inviso_scatter;
+pub(crate) use inviso_scatter::random_direction_coord;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
 pub(crate) mod veterancy;
@@ -1106,6 +1107,20 @@ pub struct ExplosionEffect {
     pub z: u8,
 }
 
+/// Immutable Building receiver facts captured before the fatal postlude. The
+/// world hook constructs scheduler AnimClasses synchronously while combat lends
+/// it the Scenario RNG and map authorities.
+#[derive(Debug, Clone)]
+pub(crate) struct BuildingDestructionAnimPlan {
+    pub rx: u16,
+    pub ry: u16,
+    pub center_smudge_z: i32,
+    pub location: crate::sim::anim_class::AnimWorldCoord,
+    pub foundation: String,
+    pub explosion_anims: Vec<String>,
+    pub destroy_anims: Vec<String>,
+}
+
 /// One transient combat-light request emitted when active IronCurtain or
 /// ForceShield rejects a positive receiver call. `FUN_0048A620` creates an
 /// unowned screen-space light, not an AnimClass/ParticleSystem, so this record
@@ -1788,6 +1803,27 @@ pub(crate) trait CombatInlineHooks {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Production world combat always supplies this hook because the receiver
+    /// transaction temporarily owns the Scenario RNG and map authorities.
+    /// Hookless combat fixtures cannot construct scheduler-owned AnimClasses
+    /// and intentionally retain the no-op adapter.
+    fn commit_building_destruction_anims(
+        &mut self,
+        _rules: &RuleSet,
+        _overlay_registry: Option<&OverlayTypeRegistry>,
+        _plan: &BuildingDestructionAnimPlan,
+        _occupancy: &mut OccupancyGrid,
+        _interner: &mut StringInterner,
+        _scenario_rng: &mut SimRng,
+        _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+        _overlay_grid: Option<&mut OverlayGrid>,
+        _terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        _terrain_area_state: Option<&mut TerrainAreaState>,
+        _sound_events: Option<&mut Vec<SimSoundEvent>>,
+    ) {
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn respond_to_base_attack(
         &mut self,
         _site: BaseDefenseResponseCallSite,
@@ -2049,12 +2085,7 @@ enum ConcreteDeathSmudgePlan {
         z: u8,
         world_z_leptons: i32,
     },
-    Building {
-        rx: u16,
-        ry: u16,
-        z: i32,
-        foundation: String,
-    },
+    Building(BuildingDestructionAnimPlan),
 }
 
 /// Process combat-owned death effects and classify the lifecycle handoff.
@@ -2278,16 +2309,32 @@ fn handle_entity_deaths(
             // TechnoClass's synchronous death weapon has returned. Capture the
             // immutable plan now; placement and all RNG stay at that postlude.
             if category == EntityCategory::Structure {
-                let foundation = rules
-                    .object(interner.resolve(type_id))
-                    .map(|obj| obj.foundation.as_str())
-                    .unwrap_or("1x1");
-                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Building {
-                    rx,
-                    ry,
-                    z: i32::from(z),
-                    foundation: foundation.to_owned(),
-                });
+                let object = rules.object(interner.resolve(type_id));
+                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Building(
+                    BuildingDestructionAnimPlan {
+                        rx,
+                        ry,
+                        center_smudge_z: i32::from(z),
+                        location: crate::sim::anim_class::AnimWorldCoord {
+                            x: i32::from(rx)
+                                .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+                                .wrapping_add(sub_x.to_num::<i32>()),
+                            y: i32::from(ry)
+                                .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+                                .wrapping_add(sub_y.to_num::<i32>()),
+                            z: world_z_leptons,
+                        },
+                        foundation: object
+                            .map(|object| object.foundation.clone())
+                            .unwrap_or_else(|| "1x1".to_string()),
+                        explosion_anims: object
+                            .map(|object| object.explosion_anims.clone())
+                            .unwrap_or_default(),
+                        destroy_anims: object
+                            .map(|object| object.destroy_anims.clone())
+                            .unwrap_or_default(),
+                    },
+                ));
             }
 
             // `UnitClass::Death_Explosion @ 0x00738680` for vehicles and
@@ -2307,16 +2354,13 @@ fn handle_entity_deaths(
             // `[InfantryTypes]` section authors `Explosion=` either, so this is
             // a contract correction rather than a visible one.
             //
-            // RESIDUAL (GSI-08.11) — the BUILDING arm is not modelled. Native
-            // runs `BuildingClass::DestructionEffects @ 0x004415F0`, which plays
-            // the `Explosion=` list once PER FOUNDATION CELL at cell centre with
-            // a scatter helper and a `RandomRanged(0, 3)` anim delay, then one
-            // `DestroyAnim=` at the building coordinate; the sub-order of the
-            // scatter, delay and index draws is UNCHECKED, and getting it wrong
-            // would misroute the stream for every structure death. `Explodes=`
-            // (forcing the last `Explosion=` entry for a loaded miner) is
-            // likewise unread. Trigger: every building death, and every loaded
-            // miner death. Frequency: continuous.
+            // BuildingClass's distinct scheduler-owned producer is committed
+            // inline in the concrete receiver postlude below. RESIDUAL
+            // (GSI-08.11): the adjacent `Explodes=yes` overlay-cell arm,
+            // storage/callback/timer work, destruction particle-system choice,
+            // and remaining teardown are still open. Trigger: applicable
+            // Building deaths; frequency continuous for particle-bearing stock
+            // types and conditional for the other branches.
             if matches!(category, EntityCategory::Unit | EntityCategory::Aircraft)
                 && let Some(obj) = rules.object(interner.resolve(type_id))
             {
@@ -2555,11 +2599,10 @@ fn handle_entity_deaths(
         }
     }
 
-    // Concrete InfDeath AnimClass and building destruction smudges are the
+    // Concrete InfDeath AnimClass and Building destruction work are the
     // receiver postlude. The structure is intentionally still represented and
     // its raw occupation bytes are still in TerrainAreaState during dispatch.
     for plan in concrete_smudge_plans {
-        let mut requests = Vec::new();
         match plan {
             ConcreteDeathSmudgePlan::Infantry {
                 inf_death,
@@ -2569,40 +2612,93 @@ fn handle_entity_deaths(
                 sub_y,
                 z,
                 world_z_leptons,
-            } => emit_infantry_death_anim(
-                &rules.general,
-                inf_death,
-                rx,
-                ry,
-                sub_x,
-                sub_y,
-                z,
-                world_z_leptons,
-                interner,
-                &mut explosion_effects,
-                &mut requests,
-            ),
-            ConcreteDeathSmudgePlan::Building {
-                rx,
-                ry,
-                z,
-                foundation,
-            } => append_building_smudge_requests(&mut requests, rx, ry, z, &foundation),
+            } => {
+                let mut requests = Vec::new();
+                emit_infantry_death_anim(
+                    &rules.general,
+                    inf_death,
+                    rx,
+                    ry,
+                    sub_x,
+                    sub_y,
+                    z,
+                    world_z_leptons,
+                    interner,
+                    &mut explosion_effects,
+                    &mut requests,
+                );
+                commit_smudge_batch_or_defer(
+                    requests,
+                    &mut smudge_spawn_requests,
+                    inline_hooks,
+                    rules,
+                    occupancy,
+                    interner,
+                    scenario_rng,
+                    resource_nodes,
+                    overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    terrain.as_deref_mut(),
+                    terrain_area_state.as_deref(),
+                );
+            }
+            ConcreteDeathSmudgePlan::Building(plan) => {
+                let mut requests = Vec::new();
+                append_building_smudge_requests(
+                    &mut requests,
+                    plan.rx,
+                    plan.ry,
+                    plan.center_smudge_z,
+                    &plan.foundation,
+                );
+                let survivor_requests = requests.split_off(1);
+                commit_smudge_batch_or_defer(
+                    requests,
+                    &mut smudge_spawn_requests,
+                    inline_hooks,
+                    rules,
+                    occupancy,
+                    interner,
+                    scenario_rng,
+                    resource_nodes,
+                    overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    terrain.as_deref_mut(),
+                    terrain_area_state.as_deref(),
+                );
+
+                if let Some(hooks) = inline_hooks.as_deref_mut() {
+                    hooks.commit_building_destruction_anims(
+                        rules,
+                        overlay_registry,
+                        &plan,
+                        occupancy,
+                        interner,
+                        scenario_rng,
+                        resource_nodes,
+                        overlay_grid.as_deref_mut(),
+                        terrain.as_deref_mut(),
+                        terrain_area_state.as_deref_mut(),
+                        sound_sink.as_deref_mut(),
+                    );
+                }
+
+                commit_smudge_batch_or_defer(
+                    survivor_requests,
+                    &mut smudge_spawn_requests,
+                    inline_hooks,
+                    rules,
+                    occupancy,
+                    interner,
+                    scenario_rng,
+                    resource_nodes,
+                    overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    terrain.as_deref_mut(),
+                    terrain_area_state.as_deref(),
+                );
+            }
         }
-        commit_smudge_batch_or_defer(
-            requests,
-            &mut smudge_spawn_requests,
-            inline_hooks,
-            rules,
-            occupancy,
-            interner,
-            scenario_rng,
-            resource_nodes,
-            overlay_grid.as_deref_mut(),
-            overlay_registry,
-            terrain.as_deref_mut(),
-            terrain_area_state.as_deref(),
-        );
     }
 
     DeathEffects {

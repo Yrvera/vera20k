@@ -1589,6 +1589,105 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn commit_building_destruction_anims(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        plan: &crate::sim::combat::BuildingDestructionAnimPlan,
+        borrowed_occupancy: &mut OccupancyGrid,
+        borrowed_interner: &mut StringInterner,
+        borrowed_scenario_rng: &mut SimRng,
+        borrowed_resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+        borrowed_overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
+        borrowed_terrain: Option<&mut ResolvedTerrainGrid>,
+        borrowed_terrain_area_state: Option<
+            &mut crate::sim::terrain_object::TerrainAreaState,
+        >,
+        borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
+    ) {
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(
+            &mut self.sim.production.resource_nodes,
+            borrowed_resource_nodes,
+        );
+
+        let mut borrowed_terrain_area_state = borrowed_terrain_area_state;
+        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
+            area_state.swap_authority(
+                &mut self.sim.production,
+                &mut self.sim.substrate.raw_cell_occupation,
+            );
+        }
+
+        let had_overlay = borrowed_overlay_grid.is_some();
+        let mut borrowed_overlay_grid = borrowed_overlay_grid;
+        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
+            debug_assert!(self.sim.overlay_grid.is_none());
+            self.sim.overlay_grid = Some(grid.clone());
+            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
+        }
+        let had_terrain = borrowed_terrain.is_some();
+        let mut borrowed_terrain = borrowed_terrain;
+        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
+            debug_assert!(self.sim.resolved_terrain.is_none());
+            self.sim.resolved_terrain = Some(terrain.clone());
+            std::mem::swap(
+                self.sim.resolved_terrain.as_mut().expect("installed"),
+                terrain,
+            );
+        }
+
+        let mut borrowed_sound_events = borrowed_sound_events;
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+
+        let _ = self.sim.spawn_building_destruction_anims(
+            rules,
+            overlay_registry,
+            plan.location,
+            &plan.foundation,
+            &plan.explosion_anims,
+            &plan.destroy_anims,
+        );
+
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
+            std::mem::swap(
+                self.sim.resolved_terrain.as_mut().expect("installed"),
+                terrain,
+            );
+        }
+        if had_terrain {
+            self.sim.resolved_terrain = None;
+        }
+        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
+            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
+        }
+        if had_overlay {
+            self.sim.overlay_grid = None;
+        }
+        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
+            area_state.swap_authority(
+                &mut self.sim.production,
+                &mut self.sim.substrate.raw_cell_occupation,
+            );
+        }
+
+        std::mem::swap(
+            &mut self.sim.production.resource_nodes,
+            borrowed_resource_nodes,
+        );
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn respond_to_base_attack(
         &mut self,
         _site: crate::sim::combat::BaseDefenseResponseCallSite,
