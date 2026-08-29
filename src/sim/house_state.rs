@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::playfield::local_to_packed_cell;
 use crate::sim::cell_rect::PlayfieldBounds;
 use crate::sim::economy::Economy;
 use crate::sim::intern::InternedId;
@@ -178,13 +179,7 @@ impl BaseReservationState {
         }
     }
 
-    pub(crate) fn update_bounds(
-        &mut self,
-        start_x: i32,
-        start_y: i32,
-        width: i32,
-        height: i32,
-    ) {
+    pub(crate) fn update_bounds(&mut self, start_x: i32, start_y: i32, width: i32, height: i32) {
         Self::update_axis(&mut self.min_x, &mut self.width, start_x, width);
         Self::update_axis(&mut self.min_y, &mut self.height, start_y, height);
     }
@@ -625,16 +620,6 @@ pub fn resolve_wall_owner(
     key.map_or(true, |key| rules.country_wall_owner(key))
 }
 
-/// Convert a LocalSize-relative coordinate into the native cell-grid frame.
-fn local_to_cell(local: (i32, i32), bounds: PlayfieldBounds) -> (i32, i32) {
-    let q = local.0.wrapping_add(bounds.off_fc);
-    let r = local.1.wrapping_add(bounds.off_100);
-    (
-        r.wrapping_add(1).wrapping_shr(1).wrapping_add(q),
-        bounds.base.wrapping_add(r >> 1).wrapping_sub(q),
-    )
-}
-
 /// Cell-space distance through the native Sqrt_Approx/Math::ftol pipeline.
 fn native_edge_distance(anchor: (u16, u16), reference: (i32, i32)) -> i32 {
     let dx = X87Chop53::load_i32(i32::from(anchor.0 as i16).wrapping_sub(reference.0));
@@ -662,7 +647,7 @@ pub(crate) fn determine_waypoint_edge(anchor: (u16, u16), bounds: PlayfieldBound
     let mut best_edge = 0u8;
     let mut best_distance = i32::MAX;
     for (edge, local_reference) in references.into_iter().enumerate() {
-        let reference = local_to_cell(local_reference, bounds);
+        let reference = local_to_packed_cell(bounds, local_reference.0, local_reference.1);
         let distance = native_edge_distance(anchor, reference);
         if distance < best_distance {
             best_distance = distance;
@@ -864,7 +849,7 @@ mod waypoint_edge_tests {
             off_104: 65,
             off_108: 62,
         };
-        assert_eq!(local_to_cell((32, 124), bounds), (100, 102));
+        assert_eq!(local_to_packed_cell(bounds, 32, 124), (100, 102));
         assert_eq!(determine_waypoint_edge((69, 115), bounds), 2);
     }
 }

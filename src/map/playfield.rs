@@ -57,11 +57,8 @@ impl PlayfieldBounds {
         size_height: i32,
         raw_local_size: [i32; 4],
     ) -> Self {
-        let [clipped_left, clipped_top, clipped_width, clipped_height] = clip_local_size_to_map(
-            size_width,
-            size_height,
-            raw_local_size,
-        );
+        let [clipped_left, clipped_top, clipped_width, clipped_height] =
+            clip_local_size_to_map(size_width, size_height, raw_local_size);
 
         let left = clipped_left.max(2);
         let top = clipped_top.max(2);
@@ -146,6 +143,23 @@ impl PlayfieldBounds {
 
         low < sum && sum <= high && difference < right && difference.wrapping_neg() < left
     }
+}
+
+/// Convert one LocalSize-relative coordinate through active
+/// `MapClass::LocalToCell @ 0x005654A0`.
+///
+/// All arithmetic wraps as signed i32, both results truncate through the
+/// packed signed-i16 cell ABI, and the half-row terms use arithmetic shifts.
+pub(crate) const fn local_to_packed_cell(
+    bounds: PlayfieldBounds,
+    local_u: i32,
+    local_v: i32,
+) -> (i32, i32) {
+    let q = local_u.wrapping_add(bounds.off_fc);
+    let r = local_v.wrapping_add(bounds.off_100);
+    let rx = q.wrapping_add(r.wrapping_add(1) >> 1);
+    let ry = bounds.base.wrapping_add(r >> 1).wrapping_sub(q);
+    (rx as i16 as i32, ry as i16 as i32)
 }
 
 /// Packed corner coordinates for `MapClass::IsRectInPlayfield @ 0x00578390`.
