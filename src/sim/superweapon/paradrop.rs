@@ -20,9 +20,9 @@ use crate::sim::movement::air_movement;
 use crate::sim::movement::locomotor::AirMovePhase;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::world::edge_cell::{Edge, find_paradrop_carrier_edge_cell};
-use crate::sim::world::{SimSoundEvent, Simulation};
-use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
+use crate::sim::world::edge_cell::{find_paradrop_edge_cell, Edge};
+use crate::sim::world::{PlacementEvidence, SimSoundEvent, Simulation};
+use crate::util::fixed_math::{ra2_speed_to_leptons_per_second, SimFixed};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ParaDropKind {
@@ -68,31 +68,14 @@ pub fn launch(
 
     // Resolve the carrier's spawn edge cell.
     let waypoint_edge_idx = sim.houses.get(&owner).map_or(0, |h| h.waypoint_edge);
-    let edge = match Edge::from_index(waypoint_edge_idx) {
-        Some(e) => e,
+    let (edge, resolved_edge_idx) = match Edge::from_index(waypoint_edge_idx) {
+        Some(e) => (e, waypoint_edge_idx),
         None => {
             log::warn!(
                 "Paradrop launch: invalid waypoint_edge {}; falling back to north edge",
                 waypoint_edge_idx
             );
-            Edge::North
-        }
-    };
-    let edge_cell = match find_paradrop_carrier_edge_cell(
-        sim.fog.width,
-        sim.fog.height,
-        edge,
-        (target_rx, target_ry),
-    ) {
-        Some(c) => c,
-        None => {
-            log::warn!(
-                "Paradrop launch: no carrier edge cell on edge {:?} for target ({},{})",
-                edge,
-                target_rx,
-                target_ry,
-            );
-            return false;
+            (Edge::North, 0)
         }
     };
 
@@ -105,7 +88,7 @@ pub fn launch(
 
     // YR linked-aircraft paradrop dispatch derives its facing from edge*2 << 13.
     let launch_facing_word = crate::sim::aircraft::runtime_contract::paradrop_edge_facing_word(
-        waypoint_edge_idx.into(),
+        resolved_edge_idx.into(),
         false,
     );
     let launch_facing = (launch_facing_word >> 8) as u8;
@@ -117,7 +100,7 @@ pub fn launch(
             sim,
             rules,
             owner,
-            edge_cell,
+            edge,
             launch_facing,
             target_rx,
             target_ry,
@@ -134,7 +117,7 @@ fn spawn_pdplane(
     sim: &mut Simulation,
     rules: &RuleSet,
     owner: InternedId,
-    edge_cell: (u16, u16),
+    edge: Edge,
     launch_facing: u8,
     target_rx: u16,
     target_ry: u16,
@@ -144,12 +127,14 @@ fn spawn_pdplane(
     let owner_str = sim.interner.resolve(owner).to_string();
     let pdplane_type = rules.general.paradrop_aircraft_type.clone();
 
-    // Spawn the carrier at ground z; ascent ramp is skipped (parity drift S8).
-    let pdplane_id = match sim.spawn_object_at_height(
+    // Active FUN_0065E660 constructs each carrier before its own edge-helper
+    // draw, then Unlimbos that retained identity. Standard list entries must
+    // not share one precomputed edge or reverse constructor/RNG ordering.
+    let pdplane_id = match sim.construct_object_limbo_at_height(
         &pdplane_type,
         &owner_str,
-        edge_cell.0,
-        edge_cell.1,
+        0,
+        0,
         launch_facing,
         /*z*/ 0,
         rules,
@@ -157,13 +142,23 @@ fn spawn_pdplane(
         Some(id) => id,
         None => {
             log::warn!(
-                "Paradrop spawn: failed to create carrier '{}' at edge ({},{})",
+                "Paradrop spawn: failed to construct carrier '{}'",
                 pdplane_type,
-                edge_cell.0,
-                edge_cell.1,
             );
             return false;
         }
+    };
+
+    let edge_cell = find_paradrop_edge_cell(
+        sim.playfield_bounds,
+        sim.resolved_terrain.as_ref(),
+        edge,
+        &mut sim.scenario_rng,
+    );
+    let Some(edge_cell) = edge_cell else {
+        let _ = sim.discard_constructed_limbo(pdplane_id);
+        log::warn!("Paradrop spawn: native edge helper lacks MapClass authority");
+        return false;
     };
 
     // Jump straight to cruise altitude AND install a cargo hold sized for the
@@ -182,6 +177,52 @@ fn spawn_pdplane(
                 cargo: crate::sim::passenger::PassengerCargo::new(num, /*size_limit*/ 0),
             };
         }
+        entity.aircraft_mission = Some(AircraftMission::ParaDropApproach {
+            target_rx,
+            target_ry,
+            has_revealed_fog: false,
+        });
+    }
+
+    // FUN_0065E660 installs the carrier mission and destination before
+    // AircraftClass::Unlimbo. This mutates only the retained carrier's
+    // MovementTarget/Fly locomotor target; passenger constructors remain
+    // strictly after successful Unlimbo.
+    let speed = rules
+        .object(&pdplane_type)
+        .map(|o| ra2_speed_to_leptons_per_second(o.speed.max(1)))
+        .unwrap_or(SimFixed::from_num(8));
+    air_movement::issue_air_move_command(
+        &mut sim.substrate.entities,
+        pdplane_id,
+        (target_rx, target_ry),
+        speed,
+    );
+
+    // Criterion 4 intentionally chooses the first cell just outside the
+    // isometric playfield. AircraftClass Unlimbo accepts that map-edge spawn;
+    // the ordinary Object Reveal inside-playfield gate is not the admission
+    // oracle for this verified call path.
+    if sim
+        .reveal_constructed_object_at_height(
+            pdplane_id,
+            edge_cell.0,
+            edge_cell.1,
+            launch_facing,
+            0,
+            PlacementEvidence::MarkSucceeded,
+            rules,
+        )
+        .is_none()
+    {
+        let _ = sim.discard_constructed_limbo(pdplane_id);
+        log::warn!(
+            "Paradrop spawn: carrier '{}' rejected edge ({},{})",
+            pdplane_type,
+            edge_cell.0,
+            edge_cell.1,
+        );
+        return false;
     }
 
     // Load N limbo-created infantry into cargo as Inside passengers.
@@ -230,26 +271,6 @@ fn spawn_pdplane(
         }
         return false;
     }
-
-    // Set initial mission to the Open-equivalent paradrop state and issue
-    // movement to target.
-    if let Some(entity) = sim.substrate.entities.get_mut(pdplane_id) {
-        entity.aircraft_mission = Some(AircraftMission::ParaDropApproach {
-            target_rx,
-            target_ry,
-            has_revealed_fog: false,
-        });
-    }
-    let speed = rules
-        .object(&pdplane_type)
-        .map(|o| ra2_speed_to_leptons_per_second(o.speed.max(1)))
-        .unwrap_or(SimFixed::from_num(8));
-    air_movement::issue_air_move_command(
-        &mut sim.substrate.entities,
-        pdplane_id,
-        (target_rx, target_ry),
-        speed,
-    );
 
     log::info!(
         "Paradrop: spawned '{}' for '{}' carrying {} '{}' at edge ({},{}) → target ({},{})",

@@ -207,6 +207,7 @@ pub(super) fn owner_matches_build_identity(sim: &Simulation, owner: &str, candid
 fn has_any_override_building(sim: &Simulation, owner: &str, overrides: &[String]) -> bool {
     sim.substrate.entities.values().any(|e| {
         !e.dying
+            && !e.lifecycle.in_limbo
             && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
@@ -249,7 +250,14 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
             .iter()
             .filter(|f| f.owner == oid)
             .map(|f| {
-                let active = f.object.as_ref().map_or(0, |o| u32::from(o.type_id == tid));
+                // StartProduction materializes the active object into EntityStore,
+                // so `owned` above already counts it. Only a restored/malformed
+                // active head missing its swizzled identity needs the registry
+                // fallback; queued tails remain unconstructed and count here.
+                let active = f
+                    .object
+                    .as_ref()
+                    .map_or(0, |o| u32::from(o.type_id == tid && o.entity_id.is_none()));
                 let tail = f.queue.iter().filter(|e| e.type_id == tid).count() as u32;
                 active + tail
             })
@@ -267,7 +275,25 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
         })
         .unwrap_or(0);
 
-    owned + queued + ready
+    let materialized_ready = match (owner_id, type_interned) {
+        (Some(oid), Some(tid)) => {
+            sim.production
+                .factory_shadow
+                .iter_insertion_ordered()
+                .iter()
+                .filter(|factory| {
+                    factory.owner == oid
+                        && factory.progress >= super::factory::PRODUCTION_STEPS
+                        && factory.object.as_ref().is_some_and(|object| {
+                            object.type_id == tid && object.entity_id.is_some()
+                        })
+                })
+                .count() as u32
+        }
+        _ => 0,
+    };
+
+    owned + queued + ready.saturating_sub(materialized_ready)
 }
 
 fn first_missing_prereq(
@@ -283,6 +309,7 @@ fn first_missing_prereq(
         // Only structures satisfy prerequisites — units/infantry/aircraft don't count.
         let ok = sim.substrate.entities.values().any(|e| {
             !e.dying
+                && !e.lifecycle.in_limbo
                 && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
@@ -331,6 +358,7 @@ fn has_factory_for_owner(
 ) -> bool {
     entities.values().any(|e| {
         !e.dying
+            && !e.lifecycle.in_limbo
             && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
@@ -609,6 +637,7 @@ pub(in crate::sim::production) fn matching_factory_count_for_owner(
         .values()
         .filter(|e| {
             !e.dying
+                && !e.lifecycle.in_limbo
                 && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
@@ -629,6 +658,9 @@ pub fn producer_candidates_for_owner_category(
     for e in entities.values() {
         // A Dying factory corpse must not be selected as a unit's producer/exit.
         if e.dying {
+            continue;
+        }
+        if e.lifecycle.in_limbo {
             continue;
         }
         if !interner.resolve(e.owner).eq_ignore_ascii_case(owner) {

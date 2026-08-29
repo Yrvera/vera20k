@@ -242,9 +242,8 @@ impl SpawnManagerState {
 ///
 /// Mirrors `TechnoClass::Init_Managers` (`0x006F3FF4`): the manager exists iff
 /// the type's `Spawns=` resolves to a real object type. The slot vector is
-/// created here; the children themselves are materialised by
-/// [`Simulation::commit_spawn_manager_pool`] right after the parent is placed,
-/// because creating an object needs the world.
+/// created here; the world-owned constructor transaction materialises every
+/// child before the parent attempts Unlimbo.
 pub fn init_spawn_manager(
     obj: &crate::rules::object_type::ObjectType,
     rules: &RuleSet,
@@ -264,9 +263,9 @@ pub fn init_spawn_manager(
     let slots = (0..obj.spawns_number.max(0) as usize)
         .map(|_| SpawnSlot {
             spawn: None,
-            // Slots enter Regenerating with an already-due timer so the pool
-            // commit below (or, if that is skipped, the first AI pass) fills
-            // them. Native fills them in the constructor.
+            // Slots enter Regenerating with an already-due timer so the
+            // world-owned constructor transaction can fill them. Native fills
+            // them in the manager constructor.
             state: SpawnSlotState::Regenerating,
             timer: SpawnTimer::ready(),
             is_missile_spawn,
@@ -290,13 +289,11 @@ pub fn init_spawn_manager(
     })
 }
 
-/// Materialise every empty slot of a freshly placed parent.
+/// Materialise every empty slot of a freshly constructed parent.
 ///
 /// Native `SpawnManagerClass`'s constructor creates the whole pool up front
 /// (`CreateObject` + `Limbo` per slot) so `CountAliveSpawns` is already full
-/// when the parent's first fire attempt runs. `init_spawn_manager` cannot do
-/// that — object creation needs the world — so the parent's placement calls
-/// this immediately afterwards.
+/// when the parent's first placement attempt or fire attempt runs.
 pub fn commit_spawn_manager_pool(sim: &mut Simulation, owner_id: u64, rules: &RuleSet) {
     let Some(slot_count) = manager_field(sim, owner_id, |m| m.slots.len()) else {
         return;
@@ -735,7 +732,7 @@ fn regenerate_child(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, slot_i
     };
     let type_name = sim.interner.resolve(spawn_type).to_string();
     let Some(child_id) =
-        sim.spawn_object_limbo_at_height(&type_name, &owner_house, rx, ry, facing, z, rules)
+        sim.construct_object_limbo_at_height(&type_name, &owner_house, rx, ry, facing, z, rules)
     else {
         return;
     };

@@ -94,8 +94,9 @@ pub fn empty_map_file(options: &RmgOptions, gen_w: u32, gen_h: u32) -> MapFile {
 /// `-1`, and tile `0` stays `0` (the clear-set flat index). Cells carrying an
 /// overlay also emit an `OverlayEntry` plus a density byte in the data pack.
 ///
-/// `terrain` are the placed trees / TIBTRE `(name, x, y)`; `structures` are the
-/// neutral tech buildings `(name, x, y)`; `waypoints` are the `(slot, x, y)`
+/// `terrain` are the placed trees / TIBTRE `(name, x, y)`; `structures` are
+/// generated neutral Buildings in constructor order (bridge-repair CABHUTs,
+/// then neutral tech) as `(name, x, y)`; `waypoints` are the `(slot, x, y)`
 /// start positions.
 pub fn populate(
     map_file: &mut MapFile,
@@ -161,6 +162,7 @@ pub fn populate(
             mission: None,
             recruitable_a: true,
             recruitable_b: true,
+            structure_upgrades: [None, None, None],
         });
     }
 

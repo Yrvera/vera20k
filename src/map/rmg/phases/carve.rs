@@ -5,7 +5,7 @@
 //! `CarveStraightRamp_ClearSouth` 0x005910F0, `_ClearEast` 0x00591740,
 //! `_ClearNorth` 0x00591D80, `_ClearWest` 0x00592440, and the two corner
 //! carvers `CarveCornerRamp_Diagonal` 0x00593030 and `_Reflected` 0x00593550.
-//! Dormant in stock YR skirmish for the reason recorded in `phases::bridge`.
+//! Reached by active stock `.SED` generation on random-map types 3 and 4.
 //!
 //! [`carve_straight_ramp_clear_south`] is the first of the original's seven
 //! carve routines. It takes the two endpoints a ramp site chose and turns the

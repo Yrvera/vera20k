@@ -8,7 +8,7 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::intern;
 
 fn spawn_with_vision(store: &mut EntityStore, id: u64, owner: &str, rx: u16, ry: u16, range: u16) {
-    let entity = GameEntity::new_at_frame_zero_for_test(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -25,6 +25,7 @@ fn spawn_with_vision(store: &mut EntityStore, id: u64, owner: &str, rx: u16, ry:
         range,
         false,
     );
+    entity.lifecycle.in_limbo = false;
     store.insert(entity);
 }
 
@@ -382,7 +383,7 @@ fn test_sight_capped_at_max_range() {
 fn test_veteran_sight_bonus() {
     let mut store = EntityStore::new();
     // Spawn veteran unit (veterancy >= 100) with base sight 5.
-    let entity = GameEntity::new_at_frame_zero_for_test(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -399,6 +400,7 @@ fn test_veteran_sight_bonus() {
         5,   // vision_range
         false,
     );
+    entity.lifecycle.in_limbo = false;
     store.insert(entity);
 
     let config = VisionConfig {
@@ -431,7 +433,7 @@ fn test_veteran_sight_bonus() {
 #[test]
 fn elevation_grants_no_sight_bonus_at_any_reachable_terrain_level() {
     let mut store = EntityStore::new();
-    let entity = GameEntity::new_at_frame_zero_for_test(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -448,6 +450,7 @@ fn elevation_grants_no_sight_bonus_at_any_reachable_terrain_level() {
         5,
         false,
     );
+    entity.lifecycle.in_limbo = false;
     store.insert(entity);
     let config = VisionConfig {
         require_playfield_membership: false,
@@ -476,7 +479,7 @@ fn elevation_grants_no_sight_bonus_at_any_reachable_terrain_level() {
 #[test]
 fn test_elevation_sight_bonus_z0_gives_no_bonus() {
     let mut store = EntityStore::new();
-    let entity = GameEntity::new_at_frame_zero_for_test(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -493,6 +496,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
         5,
         false,
     );
+    entity.lifecycle.in_limbo = false;
     store.insert(entity);
     let config = VisionConfig {
         require_playfield_membership: false,
@@ -517,7 +521,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
 fn test_elevation_sight_bonus_disabled_when_zero() {
     let mut store = EntityStore::new();
     // High z — would give large bonus if enabled.
-    let entity = GameEntity::new_at_frame_zero_for_test(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -534,6 +538,7 @@ fn test_elevation_sight_bonus_disabled_when_zero() {
         5,
         false,
     );
+    entity.lifecycle.in_limbo = false;
     store.insert(entity);
     // leptons_per_sight_increase=0 → elevation bonus disabled.
     let config = VisionConfig {
@@ -1657,6 +1662,7 @@ fn an_aircrafts_altitude_moves_its_revealed_disc() {
     let mut store = EntityStore::new();
     let mut entity = GameEntity::test_default(1, "BEAG", "Americans", 30, 30);
     entity.category = EntityCategory::Aircraft;
+    entity.lifecycle.in_limbo = false;
     entity.vision_range = 1;
     let mut loco = LocomotorState::for_test_kind(LocomotorKind::Fly);
     loco.layer = MovementLayer::Air;
@@ -1743,12 +1749,8 @@ fn repeated_fog_view_builds_leave_state_hash_unchanged() {
     let other = sim.interner.intern("Russians");
     sim.fog.width = 8;
     sim.fog.height = 8;
-    sim.fog
-        .by_owner
-        .insert(owner, OwnerVisibility::new(8, 8));
-    sim.fog
-        .by_owner
-        .insert(other, OwnerVisibility::new(8, 8));
+    sim.fog.by_owner.insert(owner, OwnerVisibility::new(8, 8));
+    sim.fog.by_owner.insert(other, OwnerVisibility::new(8, 8));
 
     let before = sim.state_hash();
     for _ in 0..5 {

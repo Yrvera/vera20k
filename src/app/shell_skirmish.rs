@@ -226,9 +226,9 @@ impl App {
         state: &mut AppState,
         session: crate::skirmish_launch::SkirmishLaunchSession,
     ) {
-        let retained_random_map = state
+        let random_map_preview = state
             .frontend.random_map_retention
-            .take_for_loading(session.selected_map_file.as_deref());
+            .take_preview_for_loading(session.selected_map_file.as_deref());
         let request = match crate::match_bootstrap::classify_startup_session(&session) {
             crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
                 accepted,
@@ -264,7 +264,7 @@ impl App {
                 )
             }
         }
-        .with_retained_random_map(retained_random_map);
+        .with_random_map_preview(random_map_preview);
         state.frontend.skirmish_shell_state.pressed_owner_draw_button = None;
         state.frontend.skirmish_shell_last_painted_pressed_button = None;
         state.frontend.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
@@ -624,13 +624,16 @@ impl App {
         if let Some(previous) = open_random_map_setup {
             // The setup dialog opens OVER the chooser, which stays open behind
             // it so a cancel returns to the untouched selection.
+            let options = state
+                .frontend
+                .offline_skirmish_runtime
+                .random_map_options_for_setup();
             state.frontend.skirmish_shell_state.random_map_setup_modal =
                 Some(crate::ui::skirmish_shell::RandomMapSetupModalState::open(
-                    crate::map::rmg::RmgOptions::default(),
+                    options,
                     Some(previous),
                     // Saved-seed browsing (0x6C2/0x6C3/0x6C4) is not implemented.
                     false,
-                    &mut state.frontend.frontend_main_rng,
                 ));
         }
         if close_modal {

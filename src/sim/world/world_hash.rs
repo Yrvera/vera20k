@@ -251,7 +251,7 @@ impl Simulation {
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -262,7 +262,7 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
-            true, false, false, false, false, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -273,7 +273,7 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
-            false, false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -290,6 +290,7 @@ impl Simulation {
         include_sensor_deposit_v88: bool,
         include_real_cell_bridge_flags_v90: bool,
         include_base_defense_response_v97: bool,
+        include_techno_constructor_v104: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -385,6 +386,7 @@ impl Simulation {
             include_techno_playfield_v87,
             include_sensor_deposit_v88,
             include_base_defense_response_v97,
+            include_techno_constructor_v104,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -916,9 +918,44 @@ impl Simulation {
         include_techno_playfield_v87: bool,
         include_sensor_deposit_v88: bool,
         include_base_defense_response_v97: bool,
+        include_techno_constructor_v104: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
+            if include_techno_constructor_v104
+                && (entity.techno_ctor_random_word != 0
+                    || entity.structure_upgrade_link.is_some())
+            {
+                b"techno-constructor-v1".hash(hasher);
+                entity.techno_ctor_random_word.hash(hasher);
+                entity.structure_upgrade_link.hash(hasher);
+            }
+            if include_techno_constructor_v104 {
+                // Constructor-owned SlaveManager identities live in the
+                // transitional ProductionState registry until the manager is
+                // promoted to its own component. Both the ordered pool and
+                // each child's active harvest cursor affect future simulation.
+                if let Some(slave_ids) = self.production.slave_bindings.get(&entity.stable_id) {
+                    b"constructor-slave-pool-v1".hash(hasher);
+                    slave_ids.len().hash(hasher);
+                    for slave_id in slave_ids {
+                        slave_id.hash(hasher);
+                    }
+                }
+                if let Some(slave) = entity.slave_harvester.as_ref() {
+                    b"slave-harvester-v1".hash(hasher);
+                    slave.master_id.hash(hasher);
+                    (slave.state as u8).hash(hasher);
+                    slave.cargo.len().hash(hasher);
+                    for bale in &slave.cargo {
+                        (bale.resource_type as u8).hash(hasher);
+                        bale.value.hash(hasher);
+                    }
+                    slave.capacity.hash(hasher);
+                    slave.harvest_timer.hash(hasher);
+                    slave.target_cell.hash(hasher);
+                }
+            }
             entity.occupancy_enter_order.hash(hasher);
             entity.air_spatial_bucket.hash(hasher);
             entity.air_spatial_enter_order.hash(hasher);

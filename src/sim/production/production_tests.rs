@@ -550,7 +550,7 @@ pub(super) fn spawn_structure(
 ) {
     let owner_id = sim.interner.intern(owner);
     let type_id_interned = sim.interner.intern(type_id);
-    let ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+    let mut ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
         sid,
         rx,
         ry,
@@ -567,17 +567,12 @@ pub(super) fn spawn_structure(
         5,
         false,
     );
+    ge.lifecycle.in_limbo = false;
+    ge.in_playfield = true;
     sim.substrate.entities.insert(ge);
-    // Register structure in occupancy grid (single cell — test structures
-    // don't have foundation data, so just register the origin cell).
-    sim.substrate.occupancy.add(
-        rx,
-        ry,
-        sid,
-        crate::sim::movement::locomotor::MovementLayer::Ground,
-        None,
-        CellListInsertion::AppendBuilding,
-    );
+    // Use the lifecycle boundary so the fixture is a placed (not factory-held)
+    // structure and raw-store consumers see the same Mark state as gameplay.
+    sim.add_entity_occupancy(sid);
     if sim.substrate.next_stable_object_id <= sid {
         sim.substrate.next_stable_object_id = sid + 1;
     }
@@ -602,9 +597,24 @@ pub(super) fn arm_build_via(
     let oid = sim.interner.intern(owner);
     let tid = sim.interner.intern(type_id);
     let cost = sim.object_type(tid, rules).map_or(0, |o| o.cost.max(0));
-    sim.production
-        .factory_shadow
-        .enqueue(oid, queue_category, tid, order, total_base_frames, cost);
+    let started = sim.production.factory_shadow.enqueue(
+        oid,
+        queue_category,
+        tid,
+        order,
+        total_base_frames,
+        cost,
+    );
+    if started {
+        super::production_queue::construct_and_link_active_factory_object(
+            sim,
+            rules,
+            oid,
+            queue_category,
+            tid,
+        )
+        .expect("test production type must construct at StartProduction");
+    }
 }
 
 #[test]
@@ -1073,11 +1083,17 @@ fn mixed_land_and_naval_factories_bind_independent_vehicle_and_ship_slots() {
         &sim.interner,
     );
     assert_eq!(
-        vehicle_candidates.iter().map(|candidate| candidate.0).collect::<Vec<_>>(),
+        vehicle_candidates
+            .iter()
+            .map(|candidate| candidate.0)
+            .collect::<Vec<_>>(),
         vec![1]
     );
     assert_eq!(
-        ship_candidates.iter().map(|candidate| candidate.0).collect::<Vec<_>>(),
+        ship_candidates
+            .iter()
+            .map(|candidate| candidate.0)
+            .collect::<Vec<_>>(),
         vec![2]
     );
 
@@ -1165,7 +1181,10 @@ fn mixed_land_and_naval_factories_bind_independent_vehicle_and_ship_slots() {
         .values()
         .find(|entity| {
             entity.owner == americans
-                && sim.interner.resolve(entity.type_ref).eq_ignore_ascii_case("DEST")
+                && sim
+                    .interner
+                    .resolve(entity.type_ref)
+                    .eq_ignore_ascii_case("DEST")
         })
         .expect("GAYARD delivered DEST through naval FNPC/Unlimbo");
     assert_eq!((destroyer.position.rx, destroyer.position.ry), (22, 22));
@@ -1326,14 +1345,7 @@ fn naval_empty_fnpc_reuses_pending_identity_and_accounts_completion_once() {
     let americans = sim.interner.intern("Americans");
     sim.houses.insert(
         americans,
-        crate::sim::house_state::HouseState::new(
-            americans,
-            0,
-            None,
-            true,
-            STARTING_CREDITS,
-            10,
-        ),
+        crate::sim::house_state::HouseState::new(americans, 0, None, true, STARTING_CREDITS, 10),
     );
     spawn_structure(&mut sim, 1, "Americans", "GAYARD", 10, 10);
     spawn_structure(&mut sim, 2, "Americans", "GAYARD", 20, 20);
@@ -1382,10 +1394,10 @@ fn naval_empty_fnpc_reuses_pending_identity_and_accounts_completion_once() {
         .expect("zero-cell Unlimbo refusal retains the completed Unit");
     let held = sim.substrate.entities.get(held_id).unwrap();
     assert!(held.lifecycle.in_limbo && !held.lifecycle.cell_marked);
-    assert_eq!(sim.substrate.entities.len(), entity_count_before + 1);
+    assert_eq!(sim.substrate.entities.len(), entity_count_before);
     assert_eq!(
         sim.houses[&americans].owned_unit_count,
-        owned_units_before + 1
+        owned_units_before
     );
     assert_eq!(
         sim.houses[&americans].stats.built, 1,
@@ -1394,8 +1406,8 @@ fn naval_empty_fnpc_reuses_pending_identity_and_accounts_completion_once() {
 
     let registry_bytes = bincode::serialize(&sim.production.factory_shadow)
         .expect("serialize refused completed factory");
-    sim.production.factory_shadow = bincode::deserialize(&registry_bytes)
-        .expect("restore refused completed factory");
+    sim.production.factory_shadow =
+        bincode::deserialize(&registry_bytes).expect("restore refused completed factory");
 
     assert!(!super::production_queue::tick_production(
         &mut sim,
@@ -1411,10 +1423,10 @@ fn naval_empty_fnpc_reuses_pending_identity_and_accounts_completion_once() {
         .unwrap();
     assert_eq!(retried_id, held_id, "retry must reuse the held identity");
     assert_eq!(retained_dummy.snapshot().coord, (0, 0));
-    assert_eq!(sim.substrate.entities.len(), entity_count_before + 1);
+    assert_eq!(sim.substrate.entities.len(), entity_count_before);
     assert_eq!(
         sim.houses[&americans].owned_unit_count,
-        owned_units_before + 1,
+        owned_units_before,
         "sentinel retry must not account for a second Unit"
     );
     assert_eq!(
@@ -1465,7 +1477,16 @@ fn naval_empty_fnpc_reuses_pending_identity_and_accounts_completion_once() {
         .view(americans, ProductionCategory::Ship)
         .expect("tail item is promoted after delivery");
     assert_eq!(promoted.progress, 0);
-    assert_eq!(promoted.object.unwrap().entity_id, None);
+    let promoted_id = promoted
+        .object
+        .and_then(|object| object.entity_id)
+        .expect("StartNextQueued constructs the promoted Unit immediately");
+    assert!(
+        sim.substrate
+            .entities
+            .get(promoted_id)
+            .is_some_and(|entity| entity.lifecycle.in_limbo)
+    );
 
     // Free the first delivered anchor so the promoted item can exercise its own
     // completion edge without turning this test into a CanEnter blocker case.
@@ -1506,7 +1527,7 @@ fn naval_delivery_success_uses_producer_rally_then_move_and_recentres() {
     sim.session.map_height = 40;
 
     spawn_structure(&mut sim, 1, "Americans", "GAYARD", 10, 10);
-    sim.substrate.occupancy.remove(10, 10, 1);
+    sim.remove_entity_occupancy(1);
     {
         let yard = sim.substrate.entities.get_mut(1).unwrap();
         yard.foundation = "4x4".to_string();
@@ -1606,7 +1627,7 @@ fn naval_rally_destination_and_move_survive_without_path_grid() {
     sim.session.map_height = 40;
 
     spawn_structure(&mut sim, 1, "Americans", "GAYARD", 10, 10);
-    sim.substrate.occupancy.remove(10, 10, 1);
+    sim.remove_entity_occupancy(1);
     {
         let yard = sim.substrate.entities.get_mut(1).unwrap();
         yard.foundation = "4x4".to_string();
@@ -1685,7 +1706,7 @@ fn naval_rally_destination_and_move_survive_failed_immediate_path() {
     sim.session.map_height = 40;
 
     spawn_structure(&mut sim, 1, "Americans", "GAYARD", 10, 10);
-    sim.substrate.occupancy.remove(10, 10, 1);
+    sim.remove_entity_occupancy(1);
     {
         let yard = sim.substrate.entities.get_mut(1).unwrap();
         yard.foundation = "4x4".to_string();

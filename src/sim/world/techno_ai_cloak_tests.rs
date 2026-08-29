@@ -43,7 +43,17 @@ fn stock_cloak_producer_healthy_trace_uses_type_speed_and_no_rng() {
     let (mut sim, rules, id) = spawned_sub();
     let before = sim.scenario_rng.logical_state();
     tick_stock_cloak_producer(&mut sim, id, &rules);
-    assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 1);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        1
+    );
     assert_eq!(sim.scenario_rng.logical_state(), before);
     let entity = sim.substrate.entities.get(id).unwrap();
     assert!(matches!(
@@ -70,8 +80,22 @@ fn stock_cloak_producer_healthy_trace_uses_type_speed_and_no_rng() {
         sim.session.binary_frame = frame;
         tick_stock_cloak_producer(&mut sim, id, &rules);
     }
-    assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 2);
-    assert_eq!(sim.sound_events.len(), 1, "states one/two do not replay CloakSound");
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        2
+    );
+    assert_eq!(
+        sim.sound_events.len(),
+        1,
+        "states one/two do not replay CloakSound"
+    );
 }
 
 #[test]
@@ -79,25 +103,66 @@ fn stock_cloak_producer_current_fire_and_weapons_factory_contact_block_entry() {
     let (mut sim, rules, id) = spawned_sub();
     sim.substrate.entities.get_mut(id).unwrap().attack_target = Some(AttackTarget::new(999));
     tick_stock_cloak_producer(&mut sim, id, &rules);
-    assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 0);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        0
+    );
 
     sim.substrate.entities.get_mut(id).unwrap().attack_target = None;
     let yard = sim
-        .spawn_object_at_height("NAYARD", "Soviet", 24, 20, 0, 0, &rules)
+        .spawn_object_at_height("NAYARD", "Soviet", 30, 40, 0, 0, &rules)
         .unwrap();
-    sim.substrate.entities.get_mut(id).unwrap().radio_contacts.insert(yard);
+    sim.substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .radio_contacts
+        .insert(yard);
     tick_stock_cloak_producer(&mut sim, id, &rules);
-    assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 0);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        0
+    );
 
-    sim.substrate.entities.get_mut(id).unwrap().radio_contacts.remove(yard);
+    sim.substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .radio_contacts
+        .remove(yard);
     tick_stock_cloak_producer(&mut sim, id, &rules);
-    assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 1);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        1
+    );
 }
 
 #[test]
 fn stock_cloak_producer_should_uncloak_uses_current_activity_and_owner_visibility() {
     let (mut sim, rules, id) = spawned_sub();
-    sim.substrate.entities
+    sim.substrate
+        .entities
         .get_mut(id)
         .unwrap()
         .cloak
@@ -106,7 +171,17 @@ fn stock_cloak_producer_should_uncloak_uses_current_activity_and_owner_visibilit
         .establish_unlimbo_fully_cloaked();
     sim.substrate.entities.get_mut(id).unwrap().attack_target = Some(AttackTarget::new(999));
     tick_stock_cloak_producer(&mut sim, id, &rules);
-    assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 3);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        3
+    );
     assert!(matches!(
         sim.sound_events.as_slice(),
         [crate::sim::world::SimSoundEvent::CloakSound { sound_id, .. }]
@@ -130,17 +205,38 @@ fn stock_cloak_producer_should_uncloak_uses_current_activity_and_owner_visibilit
         .map(|entity| (entity.position.rx, entity.position.ry))
         .unwrap();
     visible.fog.mark_visible_for_owner(owner, rx, ry);
-    visible.substrate.entities
+    visible
+        .substrate
+        .entities
         .get_mut(id)
         .unwrap()
         .cloak
         .as_mut()
         .unwrap()
         .establish_unlimbo_fully_cloaked();
-    visible.substrate.entities.get_mut(id).unwrap().attack_target = Some(AttackTarget::new(999));
+    visible
+        .substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .attack_target = Some(AttackTarget::new(999));
     tick_stock_cloak_producer(&mut visible, id, &rules);
-    assert_eq!(visible.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 2);
-    assert!(visible.sound_events.is_empty(), "no transition means no positional cue");
+    assert_eq!(
+        visible
+            .substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        2
+    );
+    assert!(
+        visible.sound_events.is_empty(),
+        "no transition means no positional cue"
+    );
 }
 
 #[test]
@@ -159,7 +255,14 @@ fn stock_cloak_producer_honors_rank_selected_cloak_ability() {
     sim.substrate.entities.get_mut(ranked).unwrap().veterancy = 100;
     tick_stock_cloak_producer(&mut sim, ranked, &rules);
     assert_eq!(
-        sim.substrate.entities.get(ranked).unwrap().cloak.as_ref().unwrap().state,
+        sim.substrate
+            .entities
+            .get(ranked)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
         1
     );
 }
@@ -194,8 +297,7 @@ fn sensor_callback_reassigns_admitted_targeters_in_forward_techno_registration_o
         entity.passively_acquired_target = true;
     }
     let american_owner = sim.substrate.entities.get(sensor_admitted).unwrap().owner;
-    sim.fog
-        .increment_sensor_at(american_owner, cell.0, cell.1);
+    sim.fog.increment_sensor_at(american_owner, cell.0, cell.1);
 
     // Logic registration is deliberately opposite to prove the callback uses
     // Techno class-array construction order, not the active-object vector.
@@ -293,9 +395,15 @@ fn sensor_callback_rejected_cloak_still_clears_only_same_target_passive_provenan
 
     let outcome = sensor_reevaluate_stock_cloak(&mut sim, cloaker, &rules);
 
-    assert!(!outcome.cloak_transitioned, "state two rejects StartCloaking");
+    assert!(
+        !outcome.cloak_transitioned,
+        "state two rejects StartCloaking"
+    );
     assert_eq!(outcome.reassigned_targeters, vec![targeter]);
-    assert!(sim.sound_events.is_empty(), "rejected StartCloaking is silent");
+    assert!(
+        sim.sound_events.is_empty(),
+        "rejected StartCloaking is silent"
+    );
     assert_eq!(
         sim.substrate
             .entities
@@ -323,10 +431,15 @@ fn sensor_callback_rejected_cloak_still_clears_only_same_target_passive_provenan
     );
     assert_eq!(entity.mission, mission_before);
     let hash_after = sim.state_hash();
-    assert_ne!(hash_after, hash_before, "passive provenance is hashed authority");
+    assert_ne!(
+        hash_after, hash_before,
+        "passive provenance is hashed authority"
+    );
 
     let bytes = GameSnapshot::save(&sim, 0, 0, "sensor-targeter", 0);
-    let restored = GameSnapshot::load(&bytes).expect("v88 sensor targeter snapshot").sim;
+    let restored = GameSnapshot::load(&bytes)
+        .expect("v88 sensor targeter snapshot")
+        .sim;
     assert_eq!(restored.state_hash(), hash_after);
     assert!(
         !restored

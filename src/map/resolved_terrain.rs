@@ -46,6 +46,16 @@ use std::sync::{
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
+/// Identifies whether map overlays still require the ordinary authored-map
+/// `OverlayClass::Mark` pass. RMG writes its complete overlay/data rectangles
+/// directly into live cells; serializing those cells through `MapFile` must not
+/// turn loading into a second Mark operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlayLoadSource {
+    Authored,
+    GeneratedMaterialized,
+}
+
 /// Exact overlay portion of RecalcZoneType. `Some(GROUND)` is the terminal
 /// IsRubble result and is intentionally distinct from no overlay result.
 pub(crate) fn overlay_reduced_zone_type(flags: Option<&OverlayTypeFlags>) -> Option<u8> {
@@ -1793,6 +1803,27 @@ impl ResolvedTerrainGrid {
             None,
             lat_enabled,
             cliff_back_impassability,
+            OverlayLoadSource::Authored,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Selector-free generated-map load seam for focused construction tests.
+    /// Production generated maps use `build_with_variant_selector_and_shared_dummy`.
+    #[cfg(test)]
+    pub(crate) fn build_generated_materialized_for_test(map: &MapFile) -> Self {
+        Self::build_inner(
+            map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            0,
+            OverlayLoadSource::GeneratedMaterialized,
             None,
             None,
             None,
@@ -1821,6 +1852,7 @@ impl ResolvedTerrainGrid {
             terrain_object_types,
             lat_enabled,
             cliff_back_impassability,
+            OverlayLoadSource::Authored,
             Some(scenario_fill_ranged),
             Some(variant_selector),
             None,
@@ -1844,6 +1876,7 @@ impl ResolvedTerrainGrid {
         scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
         variant_selector: &mut TileVariantSelectionContext<'_, '_>,
         shared_cell_dummy: SharedCellDummy,
+        overlay_load_source: OverlayLoadSource,
     ) -> Self {
         Self::build_inner(
             map,
@@ -1854,6 +1887,7 @@ impl ResolvedTerrainGrid {
             terrain_object_types,
             lat_enabled,
             cliff_back_impassability,
+            overlay_load_source,
             Some(scenario_fill_ranged),
             Some(variant_selector),
             Some(shared_cell_dummy),
@@ -1869,6 +1903,7 @@ impl ResolvedTerrainGrid {
         terrain_object_types: Option<&HashMap<String, TerrainObjectType>>,
         lat_enabled: bool,
         cliff_back_impassability: u8,
+        overlay_load_source: OverlayLoadSource,
         mut scenario_fill_ranged: Option<&mut dyn FnMut(u32, u32) -> u32>,
         mut variant_selector: Option<&mut TileVariantSelectionContext<'_, '_>>,
         shared_cell_dummy: Option<SharedCellDummy>,
@@ -2379,8 +2414,9 @@ impl ResolvedTerrainGrid {
             if let Some(index) = anchor_index {
                 cells[index].bridge_facts.overlay_id = Some(overlay.overlay_id);
             }
-            if let Some((family, direction)) =
-                crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay.overlay_id)
+            if overlay_load_source == OverlayLoadSource::Authored
+                && let Some((family, direction)) =
+                    crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay.overlay_id)
                 && anchor_index.is_some()
             {
                 let stamp = BridgeFlagStamp::new((overlay.rx, overlay.ry), direction, true);
@@ -4118,8 +4154,12 @@ mod tests {
             slope_set_pieces2: None,
             bridge_top_left_1: None,
             bridge_top_left_2: None,
+            bridge_bottom_right_1: None,
+            bridge_bottom_right_2: None,
             bridge_top_right_1: None,
             bridge_top_right_2: None,
+            bridge_bottom_left_1: None,
+            bridge_bottom_left_2: None,
             bridge_middle_1: None,
             bridge_middle_2: None,
             tunnels: None,
@@ -4148,8 +4188,12 @@ mod tests {
             slope_set_pieces2: None,
             bridge_top_left_1: None,
             bridge_top_left_2: None,
+            bridge_bottom_right_1: None,
+            bridge_bottom_right_2: None,
             bridge_top_right_1: None,
             bridge_top_right_2: None,
+            bridge_bottom_left_1: None,
+            bridge_bottom_left_2: None,
             bridge_middle_1: None,
             bridge_middle_2: None,
             tunnels: None,
@@ -4159,6 +4203,20 @@ mod tests {
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
             rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
+    }
+
+    fn synthetic_automatic_shell_theater() -> TheaterData {
+        let mut theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=5\nFileName=tunnel\nSetName=Tunnels\n\n\
+              [TileSet0001]\nTilesInSet=5\nFileName=track\nSetName=Track Tunnels\n\n\
+              [TileSet0002]\nTilesInSet=5\nFileName=dirt\nSetName=Dirt Tunnels\n\n\
+              [TileSet0003]\nTilesInSet=5\nFileName=dtunn\nSetName=Dirt Track Tunnels\n",
+        );
+        theater.tunnels = Some(0);
+        theater.track_tunnels = Some(1);
+        theater.dirt_tunnels = Some(2);
+        theater.dirt_track_tunnels = Some(3);
+        theater
     }
 
     fn make_test_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
@@ -4455,6 +4513,7 @@ mod tests {
                 &mut fill,
                 &mut selector,
                 dummy.clone(),
+                OverlayLoadSource::Authored,
             )
         };
 
@@ -4471,6 +4530,88 @@ mod tests {
         );
         assert_eq!(grid.cell(2, 1).unwrap().bridge_facts.overlay_id, Some(0x18));
         assert_eq!(grid.cell(1, 2).unwrap().bridge_facts.overlay_id, Some(0x18));
+    }
+
+    #[test]
+    fn gsi_04_12_generated_materialized_overlays_never_replay_fixed_map_mark() {
+        let map = make_map(
+            vec![MapCell {
+                rx: 4,
+                ry: 4,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            }],
+            vec![
+                OverlayEntry {
+                    rx: 2,
+                    ry: 2,
+                    overlay_id: 0x18,
+                    frame: 0,
+                },
+                OverlayEntry {
+                    rx: 1,
+                    ry: 1,
+                    overlay_id: 0x5C,
+                    frame: 0,
+                },
+            ],
+            Vec::new(),
+        );
+
+        let authored = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            0,
+            OverlayLoadSource::Authored,
+            None,
+            None,
+            None,
+        );
+        let generated = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            0,
+            OverlayLoadSource::GeneratedMaterialized,
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            authored
+                .cell(2, 2)
+                .unwrap()
+                .bridge_facts
+                .has_structural_bridge(),
+            "the ordinary authored-map source still runs fixed OverlayClass::Mark"
+        );
+        assert_eq!(
+            generated.cell(2, 2).unwrap().bridge_facts.raw_flags
+                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            0,
+            "generated direct cell writes must not be expanded a second time"
+        );
+        assert_eq!(
+            generated.cell(2, 2).unwrap().bridge_facts.overlay_id,
+            Some(0x18),
+            "source marking suppresses only Mark, not the materialized overlay"
+        );
+        assert_eq!(
+            generated.cell(1, 1).unwrap().bridge_facts.overlay_id,
+            Some(0x5C),
+            "the generated low-deck rectangle remains present"
+        );
     }
 
     #[test]
@@ -4769,6 +4910,94 @@ mod tests {
             grid.tube_at_cell(1, 0).is_some(),
             "0x00484F20 applies no LandType test"
         );
+    }
+
+    #[test]
+    fn automatic_shell_directions_are_indexed_by_tile_offset_for_every_family() {
+        let theater = synthetic_automatic_shell_theater();
+        let mut cells = Vec::new();
+        for (rx, set_start) in [0i32, 5, 10, 15].into_iter().enumerate() {
+            for offset in 0..4i32 {
+                let mut cell = make_test_cell((rx * 4 + offset as usize) as u16, 0);
+                cell.final_tile_index = set_start + offset;
+                cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+                cells.push(cell);
+            }
+        }
+        let mut tubes = Vec::new();
+
+        build_auto_low_bridge_tubes(&mut cells, 16, 1, Some(&theater), &mut tubes);
+
+        assert_eq!(tubes.len(), 16);
+        for (index, tube) in tubes.iter().enumerate() {
+            let expected_direction = i32::from(AUTO_TUBE_DIRECTIONS[index % 4]);
+            let coord = (index as u16, 0);
+            assert_eq!(tube.entry, coord);
+            assert_eq!(tube.exit, coord);
+            assert_eq!(tube.direction, expected_direction);
+            assert!(tube.path_steps.is_empty());
+            assert_eq!(tube.source, TubeSource::AutoLowBridge);
+            assert_eq!(cells[index].tube_index, Some(TubeId(index as u16)));
+        }
+    }
+
+    #[test]
+    fn automatic_shell_predicate_rejects_each_native_boundary_failure() {
+        let theater = synthetic_automatic_shell_theater();
+        assert_eq!(yr_cell_land_type_from_tmp(5), YR_CELL_LAND_TUNNEL);
+        assert_ne!(yr_cell_land_type_from_tmp(4), YR_CELL_LAND_TUNNEL);
+        assert_eq!(auto_tube_direction_for_tile(0, Some(&theater)), Some(2));
+        assert_eq!(auto_tube_direction_for_tile(3, Some(&theater)), Some(0));
+        assert_eq!(
+            auto_tube_direction_for_tile(4, Some(&theater)),
+            None,
+            "the fifth tile of the configured band is excluded"
+        );
+        assert_eq!(auto_tube_direction_for_tile(0, None), None);
+
+        let mut no_families = synthetic_automatic_shell_theater();
+        no_families.tunnels = None;
+        no_families.track_tunnels = None;
+        no_families.dirt_tunnels = None;
+        no_families.dirt_track_tunnels = None;
+        assert_eq!(auto_tube_direction_for_tile(0, Some(&no_families)), None);
+
+        let mut zero_length = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=0\nFileName=empty\nSetName=Empty Tunnel\n\n\
+              [TileSet0001]\nTilesInSet=5\nFileName=next\nSetName=Following Set\n",
+        );
+        zero_length.tunnels = Some(0);
+        for (tile_id, direction) in AUTO_TUBE_DIRECTIONS.into_iter().enumerate() {
+            assert_eq!(
+                auto_tube_direction_for_tile(tile_id as i32, Some(&zero_length)),
+                Some(direction),
+                "native compares the zero-length set's cumulative base without its count"
+            );
+        }
+        assert_eq!(
+            auto_tube_direction_for_tile(4, Some(&zero_length)),
+            None
+        );
+
+        let mut wrong_land = make_test_cell(0, 0);
+        wrong_land.final_tile_index = 0;
+        wrong_land.yr_cell_land_type = LandType::Road.as_index();
+        let mut existing = make_test_cell(1, 0);
+        existing.final_tile_index = 0;
+        existing.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        existing.tube_index = Some(TubeId(0));
+        let mut fifth_tile = make_test_cell(2, 0);
+        fifth_tile.final_tile_index = 4;
+        fifth_tile.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        let mut cells = vec![wrong_land, existing, fifth_tile];
+        let mut tubes = vec![TubeFact::explicit((1, 0), (1, 0), 2, Vec::new())];
+
+        build_auto_low_bridge_tubes(&mut cells, 3, 1, Some(&theater), &mut tubes);
+
+        assert_eq!(tubes.len(), 1);
+        assert_eq!(cells[0].tube_index, None);
+        assert_eq!(cells[1].tube_index, Some(TubeId(0)));
+        assert_eq!(cells[2].tube_index, None);
     }
 
     #[test]
@@ -5836,6 +6065,7 @@ SnowOccupationBits=0
             Some(&rules.terrain_object_types),
             false,
             0,
+            OverlayLoadSource::Authored,
             None,
             None,
             None,
@@ -5860,6 +6090,7 @@ SnowOccupationBits=0
             Some(&rules.terrain_object_types),
             false,
             0,
+            OverlayLoadSource::Authored,
             None,
             None,
             None,
@@ -6048,6 +6279,7 @@ NoUseTileLandType=yes
         );
 
         assert_eq!(metadata.land_type, LandType::Road.as_index());
+        assert_eq!(metadata.yr_cell_land_type, LandType::Road.as_index());
         assert!(!metadata.is_water);
         // The regression: `ground_blocked` was the one land-derived field the
         // override skipped, so the deck stayed impassable while every other
@@ -6058,6 +6290,18 @@ NoUseTileLandType=yes
         assert!(!ground_walk_blocked);
         // The pristine snapshot is untouched, so overlay removal still restores water.
         assert!(base_ground_walk_blocked);
+
+        let theater = synthetic_automatic_shell_theater();
+        let mut cell = make_test_cell(0, 0);
+        cell.final_tile_index = 0;
+        cell.yr_cell_land_type = metadata.yr_cell_land_type;
+        let mut cells = vec![cell];
+        let mut tubes = Vec::new();
+        build_auto_low_bridge_tubes(&mut cells, 1, 1, Some(&theater), &mut tubes);
+        assert!(
+            tubes.is_empty() && cells[0].tube_index.is_none(),
+            "the low Road early branch cannot reach automatic-shell construction"
+        );
     }
 
     #[test]
@@ -6769,8 +7013,12 @@ Tile03ZAdjust=-10
             slope_set_pieces2: None,
             bridge_top_left_1: None,
             bridge_top_left_2: None,
+            bridge_bottom_right_1: None,
+            bridge_bottom_right_2: None,
             bridge_top_right_1: None,
             bridge_top_right_2: None,
+            bridge_bottom_left_1: None,
+            bridge_bottom_left_2: None,
             bridge_middle_1: None,
             bridge_middle_2: None,
             tunnels: None,

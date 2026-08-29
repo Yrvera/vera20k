@@ -26,7 +26,7 @@ use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::{BuildingUp, Health};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::MissionType;
-use crate::sim::overlay_grid::{recalc_overlay_passability, OverlayGrid};
+use crate::sim::overlay_grid::{OverlayGrid, recalc_overlay_passability};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::has_active_radar;
 use crate::sim::world::Simulation;
@@ -101,13 +101,9 @@ fn ready_and_place(
     path_grid: &PathGrid,
     height_map: &BTreeMap<(u16, u16), u8>,
 ) -> u64 {
+    ready_building(sim, rules, owner, type_id);
     let owner_id = sim.interner.intern(owner);
-    let type_ref = sim.interner.intern(type_id);
-    sim.production
-        .ready_by_owner
-        .entry(owner_id)
-        .or_default()
-        .push_back(type_ref);
+    let type_ref = sim.interner.get(type_id).expect("ready type interned");
     assert!(place_ready_building_without_overlays(
         sim,
         rules,
@@ -250,6 +246,7 @@ fn complete_stock_allied_refinery(
         sim.spawn_object("BLOCKER", "Russians", rx, ry, 0, &rules, &height_map)
             .expect("fixture blocker should spawn");
     }
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -265,6 +262,15 @@ fn resolved_clear_grid_with_override(
     height: u16,
     mut override_cell: impl FnMut(&mut ResolvedTerrainCell),
 ) -> ResolvedTerrainGrid {
+    let clear_speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(0),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
     let mut cells = Vec::with_capacity((width as usize) * (height as usize));
     for ry in 0..height {
         for rx in 0..width {
@@ -286,7 +292,7 @@ fn resolved_clear_grid_with_override(
                 render_offset_x: 0,
                 render_offset_y: 0,
                 terrain_class: TerrainClass::Clear,
-                speed_costs: SpeedCostProfile::default(),
+                speed_costs: clear_speed_costs,
                 is_water: false,
                 is_cliff_like: false,
                 height_in_pixels: 0,
@@ -309,7 +315,7 @@ fn resolved_clear_grid_with_override(
                 base_land_type: 0,
                 base_yr_cell_land_type: 0,
                 base_terrain_class: Default::default(),
-                base_speed_costs: Default::default(),
+                base_speed_costs: clear_speed_costs,
                 build_blocked: false,
                 has_bridge_deck: false,
                 bridge_walkable: false,
@@ -328,6 +334,20 @@ fn resolved_clear_grid_with_override(
         }
     }
     ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
+/// Install the MapClass inputs that active UnitClass::Unlimbo always sees.
+/// Blocker fixtures are inserted before this call so they model objects already
+/// occupying the bay rather than a second constructor placement.
+fn install_refinery_test_terrain(sim: &mut Simulation) {
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -100,
+        off_100: -100,
+        off_104: 200,
+        off_108: 200,
+    });
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
 }
 
 fn naval_yard_placement_rules() -> RuleSet {
@@ -472,9 +492,36 @@ fn mark_allied(sim: &mut Simulation, a: &str, b: &str) {
     sim.house_alliances.entry(b).or_default().insert(a);
 }
 
-fn ready_building(sim: &mut Simulation, owner: &str, type_id: &str) {
+fn ready_building(sim: &mut Simulation, rules: &RuleSet, owner: &str, type_id: &str) {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_id);
+    let category = rules
+        .object(sim.interner.resolve(type_id))
+        .map(super::production_tech::production_category_for_object)
+        .expect("ready-building test type");
+    let cost = sim
+        .object_type(type_id, rules)
+        .map_or(0, |object| object.cost.max(0));
+    let started = sim
+        .production
+        .factory_shadow
+        .enqueue(owner_id, category, type_id, 0, 1, cost);
+    assert!(started, "test fixture arms one fresh factory head");
+    super::production_queue::construct_and_link_active_factory_object(
+        sim, rules, owner_id, category, type_id,
+    )
+    .expect("ready-building fixture constructs at StartProduction");
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(owner_id, category)
+    );
+    assert!(
+        sim.production
+            .factory_shadow
+            .account_completed_object_once(owner_id, category),
+        "ready projection is already completion-accounted"
+    );
     sim.production
         .ready_by_owner
         .insert(owner_id, VecDeque::from([type_id]));
@@ -539,7 +586,13 @@ fn completed_building_moves_into_ready_placement_pool() {
 
     let spawned = tick_production(&mut sim, &rules, &height_map, None);
     assert!(!spawned, "completed building should wait for placement");
-    assert!(sim.production.factory_shadow.is_empty());
+    let held = sim
+        .production
+        .factory_shadow
+        .view(americans, ProductionCategory::Building)
+        .expect("completed building remains held by its Factory");
+    assert!(held.ready);
+    assert!(held.object.and_then(|object| object.entity_id).is_some());
     assert_eq!(
         ready_buildings_for_owner(&sim, &rules, "Americans")
             .into_iter()
@@ -558,10 +611,14 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 18, 18);
 
     let americans = sim.interner.intern("Americans");
-    let gacnst = sim.interner.intern("GACNST");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([gacnst]));
+    ready_building(&mut sim, &rules, "Americans", "GACNST");
+    let held_id = sim
+        .production
+        .factory_shadow
+        .view(americans, ProductionCategory::Building)
+        .and_then(|view| view.object.and_then(|object| object.entity_id))
+        .expect("Factory+0x58 identity exists before placement");
+    let rng_before_placement = sim.scenario_rng.logical_state();
 
     assert!(place_ready_building_without_overlays(
         &mut sim,
@@ -573,6 +630,7 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
         Some(&grid),
         &height_map,
     ));
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before_placement);
     assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
 
     let structures = sim
@@ -593,6 +651,13 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
         })
         .count();
     assert_eq!(structures, 1);
+    let placed = sim
+        .substrate
+        .entities
+        .get(held_id)
+        .expect("same held identity placed");
+    assert_eq!((placed.position.rx, placed.position.ry), (20, 20));
+    assert!(!placed.lifecycle.in_limbo);
 }
 
 #[test]
@@ -627,9 +692,7 @@ fn stock_gapowr_placement_restores_power_and_radar_during_buildup() {
         "stock American radar must be offline during house low power"
     );
 
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([gapowr]));
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
     let place = CommandEnvelope::new(
         americans,
         sim.session.tick + 1,
@@ -703,11 +766,7 @@ fn place_ready_building_accepts_clear_mixed_height_footprint() {
         height_map.insert(cell, z);
     }
 
-    let americans = sim.interner.intern("Americans");
-    let gapowr = sim.interner.intern("GAPOWR");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([gapowr]));
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     let preview = placement_preview_for_owner_without_overlays(
         &sim,
@@ -762,11 +821,7 @@ fn place_ready_building_rejects_blocked_cell_inside_mixed_height_footprint() {
         height_map.insert(cell, z);
     }
 
-    let americans = sim.interner.intern("Americans");
-    let gapowr = sim.interner.intern("GAPOWR");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([gapowr]));
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     assert!(!place_ready_building_without_overlays(
         &mut sim,
@@ -803,6 +858,7 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
         &height_map,
     );
     block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 2);
 
     assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
@@ -834,11 +890,10 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
 #[test]
 fn stock_4x3_refinery_free_unit_is_refused_its_footprint_and_placed_by_the_nearby_search() {
     // The primary cell is `(bx + W/2, by + H/2 + 1)`, which for a 4x3 refinery at
-    // (20,20) is (22,22) — inside the building's own footprint. The cell-entry test
-    // grants the placing building no exemption, so the refinery is itself the
-    // occupant that refuses its free unit: the nearby search is the ORDINARY path on
-    // every stock refinery, not an exception, and the unit lands beside the building
-    // with the fallback facing rather than on the primary cell with 0xC0.
+    // (20,20) is (22,22) — inside the building's own footprint. The fresh Unit has
+    // no radio contact before `UnitClass::Unlimbo`; `Can_Enter_Cell @ 0x0073F0A0`
+    // therefore retains the refinery as an ordinary building blocker. The nearby
+    // search is the ordinary stock path and uses fallback facing 0xA0.
     //
     // The frame sweep is the point of the loop: selection is `pool[frame % len]` over
     // the ring-ordered pool, so walking the counter must walk the pool and must never
@@ -940,6 +995,7 @@ fn refinery_whose_primary_cell_clears_its_footprint_keeps_the_primary_cell_and_f
         &grid,
         &height_map,
     );
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -990,6 +1046,7 @@ fn occupied_primary_bay_uses_one_fallback_without_overlap() {
         .expect("dynamic primary blocker should spawn");
     assert!(sim.substrate.occupancy.contains_entity(22, 22, refinery_id));
     assert!(sim.substrate.occupancy.contains_entity(22, 22, blocker_id));
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1109,6 +1166,18 @@ fn free_unit_total_placement_failure_refunds_once_and_leaves_no_entity() {
         .get(&americans)
         .expect("house should exist")
         .owned_unit_count;
+    install_refinery_test_terrain(&mut sim);
+    for ry in 0..64 {
+        for rx in 0..64 {
+            let cell = sim
+                .resolved_terrain
+                .as_mut()
+                .and_then(|terrain| terrain.cell_mut(rx, ry))
+                .expect("fixture terrain cell");
+            cell.speed_costs = SpeedCostProfile::default();
+            cell.base_speed_costs = SpeedCostProfile::default();
+        }
+    }
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1146,10 +1215,9 @@ fn free_unit_total_placement_failure_refunds_once_and_leaves_no_entity() {
 #[test]
 fn stock_soviet_refinery_completion_spawns_harv() {
     // The Soviet refinery is the same 4x3 shape as the Allied one, so its primary
-    // cell (22,22) also lands on its own footprint and is refused; only the FreeUnit
-    // type differs. The frame is pinned because selection is `pool[frame % len]` —
-    // and deliberately not 0, so an implementation that always returned the first
-    // pool entry would not pass.
+    // cell (22,22) also lands on its own occupied footprint; only the FreeUnit type
+    // differs. The deliberately nonzero frame proves the same ordered fallback pool
+    // is used rather than always selecting its first entry.
     const SELECTION_FRAME: u32 = 3;
     let mut sim = Simulation::new();
     sim.session.binary_frame = SELECTION_FRAME;
@@ -1168,6 +1236,7 @@ fn stock_soviet_refinery_completion_spawns_harv() {
         &height_map,
     );
     block_building_foundation(&mut grid, &rules, "NAREFN", 20, 20);
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1256,6 +1325,7 @@ fn simultaneous_refinery_completions_preserve_stable_id_order() {
     assert!(allied_refinery < soviet_refinery);
     block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
     block_building_foundation(&mut grid, &rules, "NAREFN", 20, 35);
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, allied_refinery, 1);
     set_ticks_until_completion(&mut sim, soviet_refinery, 1);
 
@@ -1309,6 +1379,7 @@ fn modded_refinery_completion_uses_free_unit_from_rules() {
         &height_map,
     );
     assert!(unit_ids(&sim, "Americans", "MODHARV").is_empty());
+    install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -1430,7 +1501,7 @@ fn placement_command_rejects_marked_ground_mobiles_until_they_are_unmarked() {
                 .dying = true;
         }
 
-        ready_building(&mut sim, "Americans", "GAPOWR");
+        ready_building(&mut sim, &rules, "Americans", "GAPOWR");
         let preview = placement_preview_for_owner_without_overlays(
             &sim,
             &rules,
@@ -1552,7 +1623,7 @@ fn placement_command_rejects_nonblocking_overlay_and_preserves_ready_building() 
     let mut overlay_grid = OverlayGrid::new(64, 64);
     overlay_grid.place_overlay(13, 11, 7, 4);
     sim.overlay_grid = Some(overlay_grid);
-    ready_building(&mut sim, "Americans", "GAPOWR");
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     let preview = placement_preview_for_owner_without_overlays(
         &sim,
@@ -1663,7 +1734,7 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
     let mut clear_sim = Simulation::new();
     spawn_structure(&mut clear_sim, 1, "Americans", "GACNST", 10, 10);
     clear_sim.overlay_grid = Some(OverlayGrid::new(64, 64));
-    ready_building(&mut clear_sim, "Americans", "GAWALL");
+    ready_building(&mut clear_sim, &rules, "Americans", "GAWALL");
     let preview = placement_preview_for_owner_with_overlays(
         &clear_sim,
         &rules,
@@ -1701,7 +1772,7 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
     let mut overlay_grid = OverlayGrid::new(64, 64);
     overlay_grid.place_overlay(12, 10, 7, 4);
     overlay_sim.overlay_grid = Some(overlay_grid);
-    ready_building(&mut overlay_sim, "Americans", "GAWALL");
+    ready_building(&mut overlay_sim, &rules, "Americans", "GAWALL");
     let preview = placement_preview_for_owner_with_overlays(
         &overlay_sim,
         &rules,
@@ -1730,7 +1801,7 @@ fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
-    ready_building(&mut sim, "Americans", "GAWALL");
+    ready_building(&mut sim, &rules, "Americans", "GAWALL");
     let owner = sim.interner.get("Americans").expect("owner");
     let type_id = sim.interner.get("GAWALL").expect("wall type");
     let entities_before = sim.substrate.entities.len();
@@ -1758,7 +1829,11 @@ fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
         !tick.spawned_entities,
         "wall stamps no BuildingClass entity"
     );
-    assert_eq!(sim.substrate.entities.len(), entities_before);
+    assert_eq!(
+        sim.substrate.entities.len(),
+        entities_before - 1,
+        "wall placement consumes the limbo Factory+0x58 BuildingClass into overlay state"
+    );
     assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
     let cell = sim.overlay_grid.as_ref().unwrap().cell(12, 10);
     assert_eq!(cell.overlay_id, Some(2));
@@ -1779,7 +1854,7 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
-    ready_building(&mut sim, "Americans", "GAWALL");
+    ready_building(&mut sim, &rules, "Americans", "GAWALL");
     let owner = sim.interner.get("Americans").expect("owner");
     let wall_type = sim.interner.get("GAWALL").expect("wall type");
     sim.production
@@ -1867,7 +1942,10 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
             "endpoint connectivity should refresh at ({rx},{ry})"
         );
     }
-    assert!(sim.zone_grid.is_some(), "wall placement must publish navigation");
+    assert!(
+        sim.zone_grid.is_some(),
+        "wall placement must publish navigation"
+    );
     for (rx, ry) in std::iter::once(origin).chain(expected.iter().copied()) {
         assert!(
             sim.resolved_terrain
@@ -1889,7 +1967,7 @@ fn gsi_04_07_regular_wall_autofill_rejects_out_of_range_and_foreign_endpoints() 
     let mut out_of_range = Simulation::new();
     spawn_structure(&mut out_of_range, 1, "Americans", "GACNST", 10, 10);
     out_of_range.overlay_grid = Some(OverlayGrid::new(64, 64));
-    ready_building(&mut out_of_range, "Americans", "GAWALL");
+    ready_building(&mut out_of_range, &rules, "Americans", "GAWALL");
     let owner = out_of_range.interner.get("Americans").expect("owner");
     out_of_range
         .overlay_grid
@@ -1916,7 +1994,7 @@ fn gsi_04_07_regular_wall_autofill_rejects_out_of_range_and_foreign_endpoints() 
     let mut foreign_blocker = Simulation::new();
     spawn_structure(&mut foreign_blocker, 1, "Americans", "GACNST", 10, 10);
     foreign_blocker.overlay_grid = Some(OverlayGrid::new(64, 64));
-    ready_building(&mut foreign_blocker, "Americans", "GAWALL");
+    ready_building(&mut foreign_blocker, &rules, "Americans", "GAWALL");
     let owner = foreign_blocker.interner.get("Americans").expect("owner");
     let enemy = foreign_blocker.interner.intern("Russians");
     let grid = foreign_blocker.overlay_grid.as_mut().expect("overlay grid");
@@ -1969,7 +2047,7 @@ fn gsi_04_07_wall_placement_resolves_art_tooverlay_not_building_id() {
     let mut sim = Simulation::new();
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
-    ready_building(&mut sim, "Americans", "WALLKIT");
+    ready_building(&mut sim, &rules, "Americans", "WALLKIT");
     assert!(registry.id_for_name("WALLKIT").is_none());
 
     assert!(place_ready_building_with_overlays(
@@ -2000,7 +2078,7 @@ fn gsi_04_07_wall_execution_recomputes_preview_gap_after_a_blocker_appears() {
     let mut sim = Simulation::new();
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
-    ready_building(&mut sim, "Americans", "GAWALL");
+    ready_building(&mut sim, &rules, "Americans", "GAWALL");
     let owner = sim.interner.get("Americans").expect("owner");
     let overlay_id = registry.id_for_name("GAWALL").expect("wall overlay");
     sim.overlay_grid
@@ -2059,7 +2137,7 @@ fn gsi_04_07_wall_placement_publishes_connectivity_neighbor_auto_destruction() {
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
-    ready_building(&mut sim, "Americans", "GAWALL");
+    ready_building(&mut sim, &rules, "Americans", "GAWALL");
     let owner = sim.interner.get("Americans").expect("owner");
     sim.overlay_grid
         .as_mut()
@@ -2100,7 +2178,10 @@ fn gsi_04_07_wall_placement_publishes_connectivity_neighbor_auto_destruction() {
             .is_some_and(|cell| !cell.overlay_blocks),
         "neighbor removal must be published to resolved passability immediately"
     );
-    assert!(sim.zone_grid.is_some(), "neighbor removal must publish zones");
+    assert!(
+        sim.zone_grid.is_some(),
+        "neighbor removal must publish zones"
+    );
 }
 
 #[test]
@@ -2111,7 +2192,7 @@ fn gsi_04_07_placement_command_rejects_payload_owner_mismatch() {
     let mut sim = Simulation::new();
     spawn_structure(&mut sim, 1, "Russians", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
-    ready_building(&mut sim, "Russians", "GAWALL");
+    ready_building(&mut sim, &rules, "Russians", "GAWALL");
     let event_owner = sim.interner.intern("Americans");
     let payload_owner = sim.interner.get("Russians").expect("payload owner");
     let wall_type = sim.interner.get("GAWALL").expect("wall type");
@@ -2159,7 +2240,7 @@ fn gsi_04_07_wall_replacement_requires_damaged_same_type_and_owner_and_stays_loc
     let mut sim = Simulation::new();
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
-    ready_building(&mut sim, "Americans", "GAWALL");
+    ready_building(&mut sim, &rules, "Americans", "GAWALL");
     let owner = sim.interner.get("Americans").expect("owner");
     let enemy = sim.interner.intern("Russians");
 
@@ -2238,11 +2319,7 @@ fn place_ready_building_requires_base_normal_provider_within_adjacent_range() {
 
     let mut sim = Simulation::new();
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
-    let americans = sim.interner.intern("Americans");
-    let gapowr = sim.interner.intern("GAPOWR");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([gapowr]));
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     assert!(place_ready_building_without_overlays(
         &mut sim,
@@ -2312,7 +2389,7 @@ fn build_off_ally_enabled_accepts_allied_eligible_provider() {
 
     spawn_structure(&mut sim, 1, "Alliance", "GACNST", 10, 10);
     mark_allied(&mut sim, "Americans", "Alliance");
-    ready_building(&mut sim, "Americans", "GAPOWR");
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     assert!(place_ready_building_without_overlays(
         &mut sim,
@@ -2336,7 +2413,7 @@ fn build_off_ally_disabled_rejects_allied_eligible_provider() {
     sim.session.game_options.build_off_ally = false;
     spawn_structure(&mut sim, 1, "Alliance", "GACNST", 10, 10);
     mark_allied(&mut sim, "Americans", "Alliance");
-    ready_building(&mut sim, "Americans", "GAPOWR");
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     assert!(!place_ready_building_without_overlays(
         &mut sim,
@@ -2359,7 +2436,7 @@ fn build_off_ally_requires_eligibile_for_ally_building() {
 
     spawn_structure(&mut sim, 1, "Alliance", "GAPOWR", 10, 10);
     mark_allied(&mut sim, "Americans", "Alliance");
-    ready_building(&mut sim, "Americans", "GAPOWR");
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     assert!(!place_ready_building_without_overlays(
         &mut sim,
@@ -2382,7 +2459,7 @@ fn build_off_ally_off_keeps_own_base_provider() {
 
     sim.session.game_options.build_off_ally = false;
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
-    ready_building(&mut sim, "Americans", "GAPOWR");
+    ready_building(&mut sim, &rules, "Americans", "GAPOWR");
 
     assert!(place_ready_building_without_overlays(
         &mut sim,
@@ -2660,11 +2737,7 @@ fn gsi_04_04_water_bound_building_rejects_beach_zone() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
-    let americans = sim.interner.intern("Americans");
-    let gayard = sim.interner.intern("GAYARD");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([gayard]));
+    ready_building(&mut sim, &rules, "Americans", "GAYARD");
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |cell| {
         if cell.rx == 20 && cell.ry == 20 {
             cell.is_water = true;
@@ -2710,11 +2783,7 @@ fn gsi_04_04_water_bound_building_accepts_water_zone() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
-    let americans = sim.interner.intern("Americans");
-    let gayard = sim.interner.intern("GAYARD");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([gayard]));
+    ready_building(&mut sim, &rules, "Americans", "GAYARD");
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |cell| {
         if cell.rx == 20 && cell.ry == 20 {
             cell.is_water = true;
@@ -2988,10 +3057,6 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
 
     // Use spawn_structure for dual-write, then reduce health for the test.
     spawn_structure(&mut sim, 1, "Americans", "GAPOWR", 20, 20);
-    assert!(matches!(
-        sim.reveal(1),
-        crate::sim::world::RevealOutcome::Revealed { .. }
-    ));
     if let Some(ge) = sim.substrate.entities.get_mut(1) {
         ge.health = Health {
             current: 375,

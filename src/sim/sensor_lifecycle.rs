@@ -5,9 +5,9 @@
 //! use 0x00455820/0x004556D0 and deliberately add with `SensorsSight=` but
 //! remove with the signed-byte `CloakRadiusInCells=` value.
 
+use crate::map::entities::EntityCategory;
 use crate::rules::object_type::{ObjectCategory, ObjectType};
 use crate::rules::ruleset::RuleSet;
-use crate::map::entities::EntityCategory;
 use crate::sim::intern::InternedId;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::world::Simulation;
@@ -185,11 +185,8 @@ impl Simulation {
     /// `FootClass::Unlimbo` sensor writer. The deposit is absent for a
     /// rules-less/headless fixture and for non-Foot objects.
     pub(crate) fn add_unit_sensor_after_unlimbo(&mut self, stable_id: u64, rules: &RuleSet) {
-        let Some((owner, center, radius, in_limbo)) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .and_then(|entity| {
+        let Some((owner, center, radius, in_limbo)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
                 let object = rules.object(self.interner.resolve(entity.type_ref))?;
                 Some((
                     entity.owner,
@@ -213,16 +210,9 @@ impl Simulation {
 
     /// `BuildingClass::AddSensorArrayAt @ 0x00455820`, used only after map
     /// initialization or construction completion and only while powered.
-    pub(crate) fn add_building_sensor_array_if_powered(
-        &mut self,
-        stable_id: u64,
-        rules: &RuleSet,
-    ) {
-        let Some((owner, center, sight, remove_radius, powered, in_limbo)) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .and_then(|entity| {
+    pub(crate) fn add_building_sensor_array_if_powered(&mut self, stable_id: u64, rules: &RuleSet) {
+        let Some((owner, center, sight, remove_radius, powered, in_limbo)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
                 let object = rules.object(self.interner.resolve(entity.type_ref))?;
                 if entity.category != EntityCategory::Structure
                     || object.category != ObjectCategory::Building
@@ -254,12 +244,8 @@ impl Simulation {
         let _ = self.remove_cached_sensor_deposit(stable_id, Some(rules));
         self.apply_sensor_add(owner, center, sight, Some(rules));
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-            entity.sensor_deposit = Some(SensorDeposit::building(
-                owner,
-                center,
-                sight,
-                remove_radius,
-            ));
+            entity.sensor_deposit =
+                Some(SensorDeposit::building(owner, center, sight, remove_radius));
         }
     }
 
@@ -327,12 +313,7 @@ impl Simulation {
             return;
         };
         deposit.owner = new_owner;
-        self.apply_sensor_add(
-            new_owner,
-            deposit.center,
-            deposit.add_radius,
-            Some(rules),
-        );
+        self.apply_sensor_add(new_owner, deposit.center, deposit.add_radius, Some(rules));
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.sensor_deposit = Some(deposit);
         }
@@ -378,31 +359,31 @@ mod tests {
         let rules = rules();
         let mut sim = sim_with_map_authority();
         let first = sim
-            .spawn_object_at_height("DEST", "Americans", 20, 20, 0, 0, &rules)
+            .spawn_object_at_height("DEST", "Americans", 40, 30, 0, 0, &rules)
             .unwrap();
         let second = sim
-            .spawn_object_at_height("DEST", "Americans", 20, 20, 0, 0, &rules)
+            .spawn_object_at_height("DEST", "Americans", 40, 30, 0, 0, &rules)
             .unwrap();
         let americans = sim.substrate.entities.get(first).unwrap().owner;
         let soviet = sim.interner.intern("Soviet");
-        assert!(sim.fog.has_sensor_for_house(americans, 13, 20));
-        assert!(!sim.fog.has_sensor_for_house(americans, 28, 20));
+        assert!(sim.fog.has_sensor_for_house(americans, 33, 30));
+        assert!(!sim.fog.has_sensor_for_house(americans, 48, 30));
 
         sim.techno_limbo_with_rules(first, &rules);
         assert!(
-            sim.fog.has_sensor_for_house(americans, 13, 20),
+            sim.fog.has_sensor_for_house(americans, 33, 30),
             "the overlapping second deposit remains positive"
         );
 
-        let old = Some((20, 20));
-        sim.substrate.entities.get_mut(second).unwrap().position.rx = 30;
-        sim.move_unit_sensor_after_cell_change(second, old, Some((30, 20)), &rules);
-        assert!(!sim.fog.has_sensor_for_house(americans, 13, 20));
-        assert!(sim.fog.has_sensor_for_house(americans, 37, 20));
+        let old = Some((40, 30));
+        sim.substrate.entities.get_mut(second).unwrap().position.rx = 50;
+        sim.move_unit_sensor_after_cell_change(second, old, Some((50, 30)), &rules);
+        assert!(!sim.fog.has_sensor_for_house(americans, 33, 30));
+        assert!(sim.fog.has_sensor_for_house(americans, 57, 30));
 
         sim.change_owner(second, soviet);
-        assert!(!sim.fog.has_sensor_for_house(americans, 37, 20));
-        assert!(sim.fog.has_sensor_for_house(soviet, 37, 20));
+        assert!(!sim.fog.has_sensor_for_house(americans, 57, 30));
+        assert!(sim.fog.has_sensor_for_house(soviet, 57, 30));
 
         // Drift every live fact after the deposit. Limbo must still remove the
         // cached Soviet/30,20/radius8 footprint, not current owner/position.
@@ -414,20 +395,27 @@ mod tests {
             entity.position.ry = 5;
         }
         sim.techno_limbo_with_rules(second, &rules);
-        assert!(!sim.fog.has_sensor_for_house(soviet, 37, 20));
+        assert!(!sim.fog.has_sensor_for_house(soviet, 57, 30));
     }
 
     #[test]
     fn napsis_construction_adds_radius_fifteen_but_limbo_removes_default_twenty() {
         let rules = rules();
         let mut sim = sim_with_map_authority();
-        sim.spawn_object_at_height("NAPOWR", "Soviet", 20, 20, 0, 0, &rules)
+        sim.spawn_object_at_height("NAPOWR", "Soviet", 30, 40, 0, 0, &rules)
             .unwrap();
         let id = sim
-            .spawn_object_at_height("NAPSIS", "Soviet", 30, 30, 0, 0, &rules)
+            .spawn_object_at_height("NAPSIS", "Soviet", 40, 40, 0, 0, &rules)
             .unwrap();
         let owner = sim.substrate.entities.get(id).unwrap().owner;
-        assert!(sim.substrate.entities.get(id).unwrap().sensor_deposit.is_none());
+        assert!(
+            sim.substrate
+                .entities
+                .get(id)
+                .unwrap()
+                .sensor_deposit
+                .is_none()
+        );
         sim.substrate.entities.get_mut(id).unwrap().building_up = Some(BuildingUp {
             elapsed_ticks: 0,
             total_ticks: 1,
@@ -440,11 +428,18 @@ mod tests {
             None,
             67,
         );
-        assert!(sim.substrate.entities.get(id).unwrap().building_up.is_none());
-        assert!(sim.fog.has_sensor_for_house(owner, 44, 30));
-        assert!(!sim.fog.has_sensor_for_house(owner, 45, 30));
+        assert!(
+            sim.substrate
+                .entities
+                .get(id)
+                .unwrap()
+                .building_up
+                .is_none()
+        );
+        assert!(sim.fog.has_sensor_for_house(owner, 54, 40));
+        assert!(!sim.fog.has_sensor_for_house(owner, 55, 40));
         sim.techno_limbo_with_rules(id, &rules);
-        let index = 30 * usize::from(sim.fog.width) + 45;
+        let index = 40 * usize::from(sim.fog.width) + 55;
         assert_eq!(sim.fog.sensors_by_house[&owner][index], -1);
     }
 
@@ -453,14 +448,14 @@ mod tests {
         let rules = rules();
         let mut sim = sim_with_map_authority();
         let older = sim
-            .spawn_object_at_height("TGT", "Soviet", 20, 20, 0, 0, &rules)
+            .spawn_object_at_height("TGT", "Soviet", 40, 30, 0, 0, &rules)
             .unwrap();
         let newer = sim
-            .spawn_object_at_height("TGT", "Soviet", 20, 20, 0, 0, &rules)
+            .spawn_object_at_height("TGT", "Soviet", 40, 30, 0, 0, &rules)
             .unwrap();
         let soviet = sim.substrate.entities.get(older).unwrap().owner;
         let detector = sim.interner.intern("Americans");
-        sim.fog.mark_visible_for_owner(soviet, 20, 20);
+        sim.fog.mark_visible_for_owner(soviet, 40, 30);
         for id in [older, newer] {
             let cloak = sim
                 .substrate
@@ -474,14 +469,29 @@ mod tests {
             cloak.visual_phase = None;
         }
 
-        let added = sim.apply_sensor_add(detector, (20, 20), 1, Some(&rules));
-        assert_eq!(added, vec![newer, older], "non-Buildings prepend to FirstObject");
+        let added = sim.apply_sensor_add(detector, (40, 30), 1, Some(&rules));
         assert_eq!(
-            sim.substrate.entities.get(newer).unwrap().cloak.as_ref().unwrap().state,
+            added,
+            vec![newer, older],
+            "non-Buildings prepend to FirstObject"
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(newer)
+                .unwrap()
+                .cloak
+                .as_ref()
+                .unwrap()
+                .state,
             1,
             "+0x420 owner-visible CanAutoCloak calls StartCloaking"
         );
-        assert_eq!(sim.sound_events.len(), 2, "each accepted callback emits exactly once");
+        assert_eq!(
+            sim.sound_events.len(),
+            2,
+            "each accepted callback emits exactly once"
+        );
         assert!(sim.sound_events.iter().all(|event| matches!(
             event,
             crate::sim::world::SimSoundEvent::CloakSound { sound_id, .. }
@@ -501,7 +511,7 @@ mod tests {
             cloak.state = 0;
             cloak.visual_phase = None;
         }
-        let removed = sim.apply_unit_sensor_remove(detector, (20, 20), 1, Some(&rules));
+        let removed = sim.apply_unit_sensor_remove(detector, (40, 30), 1, Some(&rules));
         assert_eq!(removed, vec![newer, older]);
         assert_eq!(
             sim.sound_events.len(),
@@ -510,25 +520,24 @@ mod tests {
         );
         sim.sound_events.clear();
         assert!(
-            sim.apply_unit_sensor_remove(detector, (20, 20), 1, Some(&rules))
+            sim.apply_unit_sensor_remove(detector, (40, 30), 1, Some(&rules))
                 .is_empty(),
             "unit RemoveSensorsAt skips decrement and callbacks at nonpositive pre-count"
         );
         assert!(sim.sound_events.is_empty());
 
         let building_removed =
-            sim.apply_building_sensor_remove(detector, (20, 20), 1, Some(&rules));
+            sim.apply_building_sensor_remove(detector, (40, 30), 1, Some(&rules));
         assert_eq!(building_removed, vec![newer, older]);
-        let index = 20 * usize::from(sim.fog.width) + 20;
+        let index = 30 * usize::from(sim.fog.width) + 40;
         assert_eq!(
-            sim.fog.sensors_by_house[&detector][index],
-            -1,
+            sim.fog.sensors_by_house[&detector][index], -1,
             "BuildingClass removal is unconditional and signed"
         );
     }
 
     #[test]
-    fn map_and_production_unlimbo_apply_exact_unit_cloak_state_two_rule() {
+    fn map_and_production_unlimbo_reject_outside_playfield_units() {
         let rules = rules();
         let mut sim = sim_with_map_authority();
         let bounds = sim.playfield_bounds.unwrap();
@@ -557,6 +566,7 @@ mod tests {
                     mission: None,
                     recruitable_a: true,
                     recruitable_b: true,
+                    structure_upgrades: [None, None, None],
                 },
                 MapEntity {
                     owner: "Soviet".into(),
@@ -572,21 +582,47 @@ mod tests {
                     mission: None,
                     recruitable_a: true,
                     recruitable_b: true,
+                    structure_upgrades: [None, None, None],
                 },
             ],
             Some(&rules),
             &height,
         );
-        assert_eq!(sim.substrate.entities.get(1).unwrap().cloak.as_ref().unwrap().state, 0);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().cloak.as_ref().unwrap().state, 2);
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .cloak
+                .as_ref()
+                .unwrap()
+                .state,
+            0
+        );
+        assert!(
+            sim.substrate.entities.get(2).is_none(),
+            "authored outside-playfield Unit must fail Unlimbo and be discarded"
+        );
 
         let inside = sim
             .spawn_object_at_height("SUB", "Soviet", inside.0, inside.1, 0, 0, &rules)
             .unwrap();
-        let outside = sim
-            .spawn_object_at_height("SUB", "Soviet", outside.0, outside.1, 0, 0, &rules)
-            .unwrap();
-        assert_eq!(sim.substrate.entities.get(inside).unwrap().cloak.as_ref().unwrap().state, 0);
-        assert_eq!(sim.substrate.entities.get(outside).unwrap().cloak.as_ref().unwrap().state, 2);
+        let outside =
+            sim.spawn_object_at_height("SUB", "Soviet", outside.0, outside.1, 0, 0, &rules);
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(inside)
+                .unwrap()
+                .cloak
+                .as_ref()
+                .unwrap()
+                .state,
+            0
+        );
+        assert!(
+            outside.is_none(),
+            "runtime outside-playfield Unit must fail Unlimbo"
+        );
     }
 }

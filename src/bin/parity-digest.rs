@@ -21,7 +21,6 @@ use std::path::PathBuf;
 use vera20k::headless_scenario::{self, SIM_TICK_MS};
 use vera20k::map::entities::EntityCategory;
 use vera20k::sim::components::Health;
-use vera20k::sim::game_entity::GameEntity;
 use vera20k::sim::house_state::HouseState;
 use vera20k::sim::parity_digest::ParityDigestSink;
 use vera20k::sim::world::Simulation;
@@ -100,8 +99,7 @@ fn build_synthetic_simulation(seed: u32) -> Simulation {
         let type_ref = sim.interner.intern("GACNST");
         let base_x = 10 + (index as u16) * 20;
         for slot in 0..3u16 {
-            let entity = GameEntity::new_at_frame(
-                (index as u64) * 10 + slot as u64 + 1,
+            sim.insert_synthetic_techno_for_diagnostics(
                 base_x + slot * 2,
                 12,
                 0,
@@ -116,9 +114,7 @@ fn build_synthetic_simulation(seed: u32) -> Simulation {
                 0,
                 6,
                 false,
-                0,
             );
-            sim.entities_mut().insert(entity);
         }
     }
     sim

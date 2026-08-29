@@ -1745,6 +1745,8 @@ fn find_nearest_refinery(
             // Death animations keep the building entity around, but gamemd
             // calls UndockUnit from damage/sell paths before accepting more cargo.
             || entity.dying
+            // FactoryClass retains the constructed product in limbo until delivery.
+            || entity.lifecycle.in_limbo
             // TibSun legacy: skip dead buildings (CanDock checks HP > 0).
             || entity.health.current == 0
             // TibSun legacy: skip buildings under construction (CanDock rejects mission 0x13).

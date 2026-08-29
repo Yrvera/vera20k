@@ -176,12 +176,12 @@ pub fn generate_map(
     generate_map_observed(options, settings, resolved, blocks, tech_types, &mut |_| {})
 }
 
-/// Chance that a map is even allowed to grow a river bridge.
+/// Chance that a map is allowed to attempt a river waterfall crossing.
 const BRIDGE_ENABLE_CHANCE: f32 = 0.25;
 
 /// The generation's first random draw, taken during map bring-up.
 ///
-/// It decides one thing — whether a river on this map may carry a bridge — and
+/// It decides one thing — whether a river may attempt waterfall terrain — and
 /// only the river reads the answer. The **draw itself** is what matters to every
 /// other map type: it happens before any terrain work, unconditionally, whatever
 /// the map type or the water amount, so a generator that skips it starts every
@@ -283,6 +283,7 @@ pub fn generate_map_observed(
     GeneratedMap {
         map_file,
         mapgen_continuation: rng.into_continuation(),
+        construction_trace: output.construction_trace,
         start_waypoints: output.waypoints,
         stages_run: executed_stages(&options),
         unfilled_start_slots: output.unfilled_start_slots,
@@ -292,6 +293,7 @@ pub fn generate_map_observed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::RmgConstructionOutcome;
     use crate::map::rmg::STAGE_ORDER;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
     use crate::map::rmg::tiles::SpecialTerrain;
@@ -465,6 +467,39 @@ mod tests {
                 .into_native_parts(),
             "generation must carry an advanced MapGen cursor into the map receipt"
         );
+    }
+
+    #[test]
+    fn generated_construction_trace_binds_exact_final_entities() {
+        let resolved = resolved();
+        let blocks = one_by_one();
+        let settings = RmgSettings::default();
+        let types = [TechType {
+            name: "CATECH".to_string(),
+            footprint: vec![(0, 0)],
+        }];
+        let mut chosen = None;
+        for seed in 1..=8 {
+            let mut options = options(1, 0);
+            options.seed = seed;
+            let generated = generate_map(&options, &settings, &resolved, &blocks, &types);
+            if !generated.construction_trace.events.is_empty() {
+                chosen = Some(generated);
+                break;
+            }
+        }
+        let generated = chosen.expect("bounded fixture reaches a constructed neutral type");
+        for (ordinal, event) in generated.construction_trace.events.iter().enumerate() {
+            assert_eq!(event.ordinal, ordinal);
+            match &event.outcome {
+                RmgConstructionOutcome::Discarded => {}
+                RmgConstructionOutcome::Emitted { entity_index, cell } => {
+                    let entity = &generated.map_file.entities[*entity_index];
+                    assert_eq!(entity.type_id, event.techno_type);
+                    assert_eq!((entity.cell_x, entity.cell_y), *cell);
+                }
+            }
+        }
     }
 
     /// The comparable content of a generated map: what the emitter projected
@@ -664,25 +699,34 @@ mod tests {
     /// from accessibility leaking into something else.
     #[test]
     fn accessibility_moves_island_maps_and_leaves_the_others_alone() {
-        for (map_type, should_differ) in [(3, true), (4, true), (0, false), (2, false)] {
-            let mut low = matrix_options(map_type, 0, 4242);
+        let cells = |m: &GeneratedMap| {
+            m.map_file
+                .cells
+                .iter()
+                .map(|c| c.tile_index)
+                .collect::<Vec<_>>()
+        };
+        let differs = |map_type, seed| {
+            let mut low = matrix_options(map_type, 0, seed);
             low.accessibility = 0;
-            let mut high = matrix_options(map_type, 0, 4242);
+            let mut high = matrix_options(map_type, 0, seed);
             high.accessibility = 100;
-            let left = run_cell(&low);
-            let right = run_cell(&high);
-            let cells = |m: &GeneratedMap| {
-                m.map_file
-                    .cells
-                    .iter()
-                    .map(|c| c.tile_index)
-                    .collect::<Vec<_>>()
-            };
-            let differ = cells(&left) != cells(&right);
-            assert_eq!(
-                differ, should_differ,
-                "map type {map_type}: accessibility should change the map: {should_differ}"
+            cells(&run_cell(&low)) != cells(&run_cell(&high))
+        };
+
+        for map_type in [3, 4] {
+            assert!(
+                MATRIX_SEEDS.into_iter().any(|seed| differs(map_type, seed)),
+                "map type {map_type}: the bounded seed matrix must witness accessibility"
             );
+        }
+        for map_type in [0, 2] {
+            for seed in MATRIX_SEEDS {
+                assert!(
+                    !differs(map_type, seed),
+                    "map type {map_type} seed {seed}: accessibility must not leak outside island maps"
+                );
+            }
         }
     }
 
@@ -823,13 +867,12 @@ mod tests {
     /// leave a mark on map types 3 and 4, and must still leave none on the
     /// ordinary types (which do not reach the stage at all).
     ///
-    /// The connector/bridge carving inside the pass is not modelled yet, so
-    /// this asserts the pass runs and reshapes terrain — not that the result
-    /// matches the original.
+    /// The connector/low-deck construction now runs after the rebuilt region
+    /// list; this test isolates the earlier destroy-and-rebuild terrain effect.
     #[test]
     fn island_passes_reshape_only_the_island_map_types() {
-        for (map_type, expect_change) in [(3, true), (4, true), (0, false), (2, false)] {
-            let (_, points, snapshots) = observe_run(&matrix_options(map_type, 0, 4242));
+        let changed = |map_type, seed| {
+            let (_, points, snapshots) = observe_run(&matrix_options(map_type, 0, seed));
             let index_of = |point: GenerationPoint| {
                 points
                     .iter()
@@ -841,11 +884,22 @@ mod tests {
             let after = snapshot_projection(
                 &snapshots[index_of(GenerationPoint::After(Stage::IslandPasses))],
             );
-            assert_eq!(
-                before != after,
-                expect_change,
-                "map type {map_type}: expected IslandPasses to change the map: {expect_change}"
+            before != after
+        };
+
+        for map_type in [3, 4] {
+            assert!(
+                MATRIX_SEEDS.into_iter().any(|seed| changed(map_type, seed)),
+                "map type {map_type}: the bounded seed matrix must witness IslandPasses"
             );
+        }
+        for map_type in [0, 2] {
+            for seed in MATRIX_SEEDS {
+                assert!(
+                    !changed(map_type, seed),
+                    "map type {map_type} seed {seed}: IslandPasses must remain island-only"
+                );
+            }
         }
     }
 }

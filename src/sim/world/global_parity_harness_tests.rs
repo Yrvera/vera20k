@@ -137,12 +137,15 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// before the returned hash and consumes its victory-bonus draw from Scenario.
 /// Main and MapGen remain byte-identical and record/replay equality remains
 /// exact. The native bonus formula and score traversal remain UNCHECKED.
+/// Re-baselined for TechnoClass::TechnoClass @ 0x006F2B90: seven authored
+/// Technos now consume the raw Scenario words stored at 0x006F3254. Only
+/// Scenario moves; Main and MapGen plus tick-for-tick record/replay remain exact.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
     // MERGE 2026-08-03: both branches re-baselined these independently (dev:
     // passive acquire + spawner; foundations: Move cadence + hashed runtime
     // state). Neither side's values describe the merged tree; re-derived below
     // from the merged tree's own output in the same merge commit.
-    0x4EF3_9A94_9C6A_C7F3,
+    0x9DB0_43D6_9BD1_1E15,
     0x39F3_258B_A550_EB7C,
     0x1CE8_1848_7043_6163,
 );
@@ -338,8 +341,12 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // is byte-identical across all three streams — the award consumes no RNG, which is
 // what `VeterancyClass::Add @ 0x0074FF50` does — and record/replay stayed equal at
 // every tick, ruling out both nondeterminism and a routing change.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x538F_0FF2_FACD_9ACA;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC5B2_3DFA_C256_6948;
+// Re-baselined for TechnoClass::TechnoClass @ 0x006F2B90: all seven authored
+// Technos consume the raw Scenario words stored at 0x006F3254. That
+// behavior-bearing Scenario shift reaches both historical schema probes;
+// record/replay remains exact and Main plus MapGen remain unchanged.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x4185_6CCF_FF66_1666;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6E21_7425_AAC6_F794;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -496,7 +503,9 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC5B2_3DFA_C256_6948;
 // now join the current hash. Both historical probes, all three final RNG
 // fingerprints, and tick-for-tick record/replay equality remain exact, proving
 // this measured shift is composition-only.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB90E_9180_E783_1032;
+// The current schema additionally folds the persistent Techno constructor
+// fields; the historical probes above isolate the shared RNG-behavior shift.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x848C_B752_96E9_9804;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -548,6 +557,7 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
         mission: None,
         recruitable_a: true,
         recruitable_b: true,
+        structure_upgrades: [None, None, None],
     }
 }
 

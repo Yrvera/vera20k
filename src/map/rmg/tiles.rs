@@ -18,8 +18,10 @@ const LAT_SPAN: i32 = 0x10;
 /// Shore-piece set span: 42 tiles, the same length the LAT pass uses for its
 /// green-group shore exemption.
 const SHORE_SPAN: i32 = 42;
-/// The water tiles the generator itself writes: the base and five variants.
-const WATER_VARIANT_SPAN: i32 = 6;
+/// WaterSet span accepted by the active water-family predicate.
+const WATER_FAMILY_SPAN: i32 = 14;
+/// Each of the four waterfall families contributes four matching tiles.
+const WATERFALL_SPAN: i32 = 4;
 /// Fixed spans of the start-placement 6x6 gate ranges.
 const PAVED_ROADS_SPAN: i32 = 15;
 const PAVED_ROAD_ENDS_SPAN: i32 = 4;
@@ -190,14 +192,18 @@ impl TileIds {
             || in_span(tile, sp.water_cliffs, 0x1C)
     }
 
-    /// The families the original's bridge-overlay test matches, as far as the
-    /// generator writes them: water (the base tile and its five variants) and
-    /// shore pieces. The stamped dilation uses this to absorb a previous river
-    /// segment through its own water. The native test also matches the four
-    /// bridge-deck tilesets; nothing in this port stamps those yet, so they
-    /// are deferred with the deck.
-    pub fn is_bridge_absorbable(&self, tile: i32) -> bool {
-        in_span(tile, self.water_base, WATER_VARIANT_SPAN) || self.is_shore_piece(tile)
+    /// Exact tile-only predicate used by `gamemd` 0x004865D0 during region
+    /// construction, island rebuilding/dilation, and low-deck validation.
+    /// It deliberately ignores sub-tile: WaterSet 14, ShorePieces 42, or any
+    /// of the four four-tile waterfall bands.
+    pub fn is_water_shore_or_waterfall(&self, tile: i32) -> bool {
+        in_span(tile, self.water_base, WATER_FAMILY_SPAN)
+            || self.is_shore_piece(tile)
+            || self
+                .special
+                .waterfalls
+                .iter()
+                .any(|&base| in_span(tile, base, WATERFALL_SPAN))
     }
 
     /// Paved-road range used by the start 6x6 passability gate.
@@ -356,5 +362,28 @@ mod tests {
         assert!(!ids.is_misc_pave(ids.misc_pave + 14));
         assert!(ids.is_pave(ids.pave + 15));
         assert!(!ids.is_pave(ids.pave + 16));
+    }
+
+    #[test]
+    fn native_water_family_uses_exact_tile_only_boundaries() {
+        let mut ids = contract_ids();
+        ids.special.waterfalls = [2_000, 2_100, 2_200, 2_300];
+
+        for (base, span) in [
+            (ids.water_base, 14),
+            (ids.shore, 42),
+            (2_000, 4),
+            (2_100, 4),
+            (2_200, 4),
+            (2_300, 4),
+        ] {
+            assert!(!ids.is_water_shore_or_waterfall(base - 1));
+            assert!(ids.is_water_shore_or_waterfall(base));
+            assert!(ids.is_water_shore_or_waterfall(base + span - 1));
+            assert!(!ids.is_water_shore_or_waterfall(base + span));
+        }
+        assert!(ids.is_water_shore_or_waterfall(ids.water_base + 13));
+        assert!(!ids.is_water_shore_or_waterfall(ids.special.bridge_set));
+        assert!(!ids.is_water_shore_or_waterfall(ids.special.wood_bridge_set));
     }
 }

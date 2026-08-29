@@ -265,6 +265,7 @@ fn make_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> GameEntity
         current: hp,
         max: hp,
     };
+    e.lifecycle.in_limbo = false;
     e
 }
 
@@ -281,6 +282,7 @@ fn make_entity_owned(
         current: hp,
         max: hp,
     };
+    e.lifecycle.in_limbo = false;
     e
 }
 
@@ -5991,12 +5993,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     let shared_cell_dummy = sim.effective_shared_cell_dummy();
     assert!(
         sim.projectiles
-            .advance(
-                &target_positions,
-                None,
-                &shared_cell_dummy,
-                |_, _| None,
-            )
+            .advance(&target_positions, None, &shared_cell_dummy, |_, _| None,)
             .detonations
             .is_empty()
     );
@@ -7269,8 +7266,7 @@ fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
     use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeStampSlot};
     use crate::sim::cell_rect::{CellRef, get_cellclass_fallback};
     use crate::sim::projectile::{
-        ProjectileCoord, ProjectileTarget, dummy_cell_target_coord,
-        projectile_random_shrapnel_cell,
+        ProjectileCoord, ProjectileTarget, dummy_cell_target_coord, projectile_random_shrapnel_cell,
     };
     use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, cellclass_ground_height_leptons};
 
@@ -7359,14 +7355,8 @@ fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
             ry: expected_cells[0].1 as u16,
         }
     );
-    assert_eq!(
-        out.projectile_spawns[1].target,
-        ProjectileTarget::DummyCell
-    );
-    assert_eq!(
-        out.projectile_spawns[2].target,
-        ProjectileTarget::DummyCell
-    );
+    assert_eq!(out.projectile_spawns[1].target, ProjectileTarget::DummyCell);
+    assert_eq!(out.projectile_spawns[2].target, ProjectileTarget::DummyCell);
     for (index, spawn) in out.projectile_spawns.iter().enumerate() {
         assert_eq!(spawn.initial_target_position, expected_positions[index]);
         assert_eq!(
@@ -7398,11 +7388,11 @@ fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
     let later_target = dummy_cell_target_coord(&later_dummy);
     assert_eq!(later_target.x, 9 * 256 + 128);
     assert_eq!(later_target.y, 10 * 256 + 128);
-    assert_eq!(
-        later_target.z,
-        2 * 90 + BRIDGE_HEIGHT_DELTA_LEPTONS as i32
+    assert_eq!(later_target.z, 2 * 90 + BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
+    assert_ne!(
+        later_target,
+        out.projectile_spawns[2].initial_target_position
     );
-    assert_ne!(later_target, out.projectile_spawns[2].initial_target_position);
     assert_eq!(
         out.projectile_spawns
             .iter()

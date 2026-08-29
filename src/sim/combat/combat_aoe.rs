@@ -596,7 +596,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
     }
 
     for entity in entities.values() {
-        if entity.occupancy_list_layer().is_none() {
+        if entity.lifecycle.in_limbo || entity.occupancy_list_layer().is_none() {
             continue;
         }
         // Dying corpses (uninit'd this tick, awaiting the end-of-tick drain)

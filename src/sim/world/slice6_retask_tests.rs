@@ -69,6 +69,7 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
         mission: None,
         recruitable_a: true,
         recruitable_b: true,
+        structure_upgrades: [None, None, None],
     }
 }
 
@@ -186,8 +187,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // float bits and the rank cache are now hashed per object, a composition-only
 // shift. No RNG draw is added — `VeterancyClass::Add @ 0x0074FF50` consumes
 // none — and record/replay stayed equal at every tick.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xD076_757F_1D14_2787;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
+// Re-baselined for TechnoClass::TechnoClass @ 0x006F2B90: all three authored
+// Technos now consume the raw Scenario word stored at 0x006F3254. That
+// behavior-bearing Scenario shift reaches every schema probe, and record/replay
+// equality remains exact.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xEC57_2CB0_656C_A6DF;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x667E_E413_E196_0D48;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -305,7 +310,9 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
 // now join the current hash. Both historical probes remain byte-identical;
 // this fixture creates no Wave or cliff mutation, so the measured shift is
 // current-schema composition only.
-const SLICE6_BASELINE_HASH: u64 = 0xA623_FD5A_9571_E3AD;
+// Techno constructor RNG also persists in the current-schema Techno fields;
+// the two legacy probes above isolate the shared behavior-bearing portion.
+const SLICE6_BASELINE_HASH: u64 = 0xD919_789E_36B6_D056;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

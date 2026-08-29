@@ -79,7 +79,7 @@ fn recalculate_power_for_owner(
         // A Dying corpse (sold/destroyed this tick, awaiting the end-of-tick
         // drain) no longer produces or drains power — gamemd drops it from the
         // house power totals at uninit.
-        if entity.dying {
+        if entity.dying || entity.lifecycle.in_limbo {
             continue;
         }
         if entity.category != EntityCategory::Structure || entity.owner != owner_id {
@@ -154,6 +154,7 @@ pub fn tick_power_states(
     let mut owners: Vec<InternedId> = Vec::new();
     for entity in entities.values() {
         if !entity.dying
+            && !entity.lifecycle.in_limbo
             && entity.category == EntityCategory::Structure
             && !owners.contains(&entity.owner)
         {
@@ -254,6 +255,7 @@ pub fn has_active_radar(
 
     entities.values().any(|e| {
         !e.dying
+            && !e.lifecycle.in_limbo
             && e.category == EntityCategory::Structure
             && e.owner == owner_id
             && rules
@@ -287,6 +289,7 @@ mod tests {
             current: hp,
             max: max_hp,
         };
+        e.lifecycle.in_limbo = false;
         e
     }
 

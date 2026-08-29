@@ -21,18 +21,17 @@
 //! an exact test against the starting base level.
 //!
 //! An earlier version of this module had the canyon backwards — two stamped
-//! rings and no outside raise, read off the *bridge's* finish dilation, which
+//! rings and no outside raise, read off the *waterfall's* finish dilation, which
 //! sits a hundred bytes later and really is two stamped rings. The two calls
 //! are easy to conflate; the fix was verified against the canyon path's own
 //! bytes, not the neighbouring one.
 //!
-//! A straight-enough section may also throw a **bridge** across the river —
-//! see [`bridge`]. The gate needs a straight cross-section, a small heading
-//! drift, the generation-start coin, and the drawn minimum step; a placed
-//! bridge widens the channel ahead, jumps the walk twelve cells, and the river
-//! continues under a new region id whose finish absorbs the old one. Bridges
-//! currently never *survive* — the deck stamping that resolves the junction
-//! for the finish pass is not ported, and its module doc carries the details.
+//! A straight-enough section may also form **waterfall terrain** — see
+//! [`bridge`], whose inherited `BuildRiverBridge` name is not a topology role.
+//! The gate needs a straight cross-section, a small heading drift, the first
+//! MapGen coin, and the drawn minimum step; a successful crossing widens the
+//! channel, jumps the walk twelve cells, and continues under a new region id.
+//! Active low-deck overlays/CABHUTs are a separate `bridge_deck` mechanism.
 
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
 use crate::map::rmg::x87::{self, Gaussian, TruncF64};
@@ -61,10 +60,10 @@ const WIDTH_SIGMA: f64 = 0.5;
 const WIDTH_SCALE: f64 = 0.07;
 const WIDTH_MIN: f64 = 1.0;
 
-/// Bridge minimum-step draw: uniform over 35..=125.
-const BRIDGE_STEP_BASE: f64 = 35.0;
-const BRIDGE_STEP_SPAN_SCALED: f64 = 2.118_758_857_743_525_6e-8; // 91 * K
-const BRIDGE_STEP_MAX: i32 = 125;
+/// Waterfall-attempt minimum-step draw: uniform over 35..=125.
+const WATERFALL_STEP_BASE: f64 = 35.0;
+const WATERFALL_STEP_SPAN_SCALED: f64 = 2.118_758_857_743_525_6e-8; // 91 * K
+const WATERFALL_STEP_MAX: i32 = 125;
 
 /// Per-step chance of spawning a branch, and of stopping.
 const BRANCH_CHANCE: f64 = 0.01;
@@ -81,7 +80,7 @@ const CANYON_LEVEL_STEP: u8 = 4;
 const CANYON_STEP_DENSITY: f32 = 0.01;
 /// Rings the canyon's region is grown by. Six, unstamped — this was first
 /// ported as two rings with a level stamp, a misreading that belonged to the
-/// bridge's finish dilation, not the canyon's.
+/// waterfall crossing's finish dilation, not the canyon's.
 const CANYON_DILATE_RINGS: i32 = 6;
 /// The canyon's clamp rect covers everything — it is not really a clamp.
 const WHOLE_MAP: i32 = 0x200;
@@ -186,7 +185,7 @@ struct Walk {
 }
 
 /// What one cross-section reports back to the walk: its end cells, and whether
-/// it ran straight. The bridge gate reads all four.
+/// it ran straight. The waterfall-terrain gate reads all four.
 struct Section {
     first: (i32, i32),
     last: (i32, i32),
@@ -292,9 +291,9 @@ pub fn carve(
     let mut region = quota.region_id;
     // The original mutates its own is-branch argument when a branch spawns, so
     // one flag serves both "I am a branch" and "I have spawned one" — and a
-    // river that has done either can never bridge.
+    // river that has done either can never attempt a waterfall crossing.
     let mut no_more_branches = is_branch;
-    let mut bridges_placed = 0i32;
+    let mut waterfall_successes = 0i32;
 
     let (origin, mut heading) = match start {
         Some((x, y, h)) => ((x, y), h),
@@ -330,15 +329,15 @@ pub fn carve(
     let half_width = width / 2;
     let mut width_walk = f64::from(width);
 
-    // The earliest step at which this river may bridge itself.
-    let bridge_min_step = loop {
+    // The earliest step at which this river may attempt waterfall terrain.
+    let waterfall_min_step = loop {
         let value = x87::ftol(
             TruncF64::from_f64(f64::from(ctx.rng.next_u32()))
-                .mul(TruncF64::from_f64(BRIDGE_STEP_SPAN_SCALED))
-                .add(TruncF64::from_f64(BRIDGE_STEP_BASE))
+                .mul(TruncF64::from_f64(WATERFALL_STEP_SPAN_SCALED))
+                .add(TruncF64::from_f64(WATERFALL_STEP_BASE))
                 .to_f64(),
         );
-        if value <= BRIDGE_STEP_MAX {
+        if value <= WATERFALL_STEP_MAX {
             break value;
         }
     };
@@ -376,12 +375,14 @@ pub fn carve(
             row_straight = false;
         }
 
-        // Bridge attempt — before the travel advance, reading this section's
+        // Waterfall-terrain attempt — before travel, reading this section's
         // endpoints and the heading as they stand. A river that is a branch or
-        // has spawned one never bridges, and one bridge is the lifetime cap.
-        if !no_more_branches && (column_straight || row_straight) && bridges_placed < 1 {
+        // has spawned one cannot attempt it, and one success is the lifetime cap.
+        if !no_more_branches && (column_straight || row_straight) && waterfall_successes < 1 {
             let drift = x87::ftol(heading - heading0).abs();
-            if f64::from(drift) < EIGHTH_TURN && args.bridge_enabled && walk.steps > bridge_min_step
+            if f64::from(drift) < EIGHTH_TURN
+                && args.bridge_enabled
+                && walk.steps > waterfall_min_step
             {
                 let dir = if column_straight {
                     if cos <= 0.0 { 6 } else { 2 }
@@ -400,7 +401,7 @@ pub fn carve(
                 if bridge::build(ctx, &attempt) {
                     // The river continues on the far bank under a new region
                     // id; the finish dilation later absorbs the old one.
-                    bridges_placed += 1;
+                    waterfall_successes += 1;
                     quota.region_id += 1;
                     region = quota.region_id;
                     walk.region = region;
@@ -417,7 +418,7 @@ pub fn carve(
 
         // Branch spawn. The draw is unconditional; only the spawn is gated.
         let branch = draw_below(ctx.rng, BRANCH_CHANCE);
-        if branch && walk.alive && !no_more_branches && bridges_placed == 0 {
+        if branch && walk.alive && !no_more_branches && waterfall_successes == 0 {
             no_more_branches = true;
             let mean = heading + QUARTER_TURN;
             let angle = bounded_gaussian(
@@ -508,8 +509,12 @@ pub fn carve(
     // arguments — one stamps a level, the other does not — so exactly one of
     // the two runs.
     let mut cut_a_canyon = false;
-    if !is_branch && walk.alive && bridges_placed == 0 && ctx.rollback_level == CANYON_BASE_LEVEL {
-        // A bridged river never rolls the canyon coin at all.
+    if !is_branch
+        && walk.alive
+        && waterfall_successes == 0
+        && ctx.rollback_level == CANYON_BASE_LEVEL
+    {
+        // A river with a waterfall crossing never rolls the canyon coin.
         cut_a_canyon = draw_below(ctx.rng, CANYON_CHANCE);
     }
 
@@ -550,8 +555,8 @@ pub fn carve(
                 }
                 ctx.rollback_level += CANYON_LEVEL_STEP;
             }
-        } else if bridges_placed > 0 {
-            // A bridged river finishes by absorbing its own pre-bridge id: the
+        } else if waterfall_successes > 0 {
+            // A waterfall river absorbs its own pre-crossing region id: the
             // stamped dilation accepts cells of region − 1 and writes the
             // current base level onto everything it claims.
             let base = ctx.rollback_level;
@@ -569,8 +574,8 @@ pub fn carve(
 
     if !walk.alive {
         rollback(ctx, &cells, region);
-        if bridges_placed > 0 {
-            // The pre-bridge half of the river lives under the previous id.
+        if waterfall_successes > 0 {
+            // The near half of the river lives under the previous id.
             rollback(ctx, &cells, region - 1);
         }
         return false;
@@ -642,11 +647,10 @@ mod tests {
         }
     }
 
-    /// Like `run_carved_levels`, but with the bridge coin on, reporting how
-    /// far the region counter moved — a placed bridge adds one extra id.
-    fn run_bridged(map_type: i32, seed: u16) -> (i32, Grid, TileIds) {
-        // A realistic map size: bridges need room — the fills alone span 13
-        // ranks, and the finish's junction only settles when the post-bridge
+    /// Run with the waterfall coin on and report the final region counter.
+    fn run_with_waterfall_attempt(map_type: i32, seed: u16) -> (i32, Grid, TileIds) {
+        // A realistic map size: waterfall terrain needs room — fills span 13
+        // ranks, and the finish's junction only settles when the far-bank
         // river can wander without re-touching the old segment.
         let (map_w, map_h) = (64, 72);
         let stride = (map_w + map_h + 1) as usize;
@@ -654,7 +658,7 @@ mod tests {
         let mut grid = Grid::new(stride, dmin, dmax);
         let mut scratch = RmgScratch::new(stride, dmin, dmax);
         let mut identity = ids();
-        // The deck needs waterfall sets; four synthetic bases, disjoint from
+        // The crossing needs waterfall sets; four synthetic bases, disjoint from
         // everything else the test ids use.
         identity.special.waterfalls = [600, 610, 620, 630];
         let blocks = blocks();
@@ -699,11 +703,11 @@ mod tests {
     }
 
     #[test]
-    fn some_rivers_carry_a_bridge_when_the_coin_allows_it() {
-        // A placed bridge shows two ways: the region counter advances one
+    fn waterfall_attempts_advance_the_region_and_stamp_varied_water() {
+        // A successful waterfall attempt shows two ways: the region advances
         // extra id, and the fills paint varied water tiles (water_base+1..+5),
         // which nothing else in the carved path produces. The counter alone is
-        // not proof of surviving water — a bridge can place and the river
+        // not proof of surviving water — a crossing can place and the river
         // still die later, in which case the rollback erases the varied tiles
         // while the counter stays bumped, exactly like the original's
         // never-decremented region field. So the assertion wants one seed
@@ -711,7 +715,7 @@ mod tests {
         let mut attempted = 0;
         let mut survived = 0;
         for seed in (0u16..96).map(|i| i * 683 + 11) {
-            let (final_region, grid, identity) = run_bridged(3, seed);
+            let (final_region, grid, identity) = run_with_waterfall_attempt(3, seed);
             let varied = grid
                 .native_cells()
                 .filter(|&(x, y)| {
@@ -719,7 +723,7 @@ mod tests {
                     tile > identity.water_base && tile <= identity.water_base + 5
                 })
                 .count();
-            // region_id without a bridge tops out at 3: the river's id, its
+            // region_id without a waterfall success tops out at 3: river id,
             // success bump, and the lake's.
             if final_region > 3 {
                 attempted += 1;
@@ -730,13 +734,13 @@ mod tests {
         }
         assert!(
             attempted > 0,
-            "no bridge even placed across any seed — the gate never opens"
+            "no waterfall terrain placed across any seed — the gate never opens"
         );
         // KNOWN GAP, pinned deliberately: placements still never survive the
-        // river finish, even with the waterfall deck stamped. The finish's
+        // river finish, even with the waterfall pieces stamped. The finish's
         // shore pass hard-refuses where the two region generations'
         // shorelines meet — foreign shore pieces whose classes differ,
-        // because the junction geometry changed between the bridge's own
+        // because the junction geometry changed between the crossing's own
         // shore pass and the finish, so a different piece family is selected
         // at the same cell. The refusal gate itself is verified faithful
         // (both piece tables and the stamper's arms match the binary), so
@@ -746,7 +750,7 @@ mod tests {
         // `survived > 0` and update the module docs.
         assert_eq!(
             survived, 0,
-            "a bridge survived — flip this test to assert survival and \
+            "a waterfall crossing survived — flip this test to assert survival and \
              update the module docs"
         );
     }

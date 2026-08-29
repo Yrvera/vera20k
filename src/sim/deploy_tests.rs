@@ -741,8 +741,10 @@ fn conyard_redeploy_ui_hides_while_building_queue_busy() {
     let owner = sim.interner.get("Americans").unwrap();
     let type_id = sim.interner.intern("GAPOWR");
     // P5d: arm a Building build in the registry (the queue-of-record) so the
-    // production-busy gate sees an active Building factory.
-    sim.production.factory_shadow.enqueue(
+    // production-busy gate sees an active Building factory. This deliberately
+    // bypasses producer validation because the minimal fixture has no Factory
+    // flag, but it must still model StartProduction's held Techno constructor.
+    let started = sim.production.factory_shadow.enqueue(
         owner,
         crate::sim::production::ProductionCategory::Building,
         type_id,
@@ -750,6 +752,15 @@ fn conyard_redeploy_ui_hides_while_building_queue_busy() {
         100,
         0,
     );
+    assert!(started);
+    crate::sim::production::construct_and_link_active_factory_object(
+        &mut sim,
+        &rules,
+        owner,
+        crate::sim::production::ProductionCategory::Building,
+        type_id,
+    )
+    .expect("low-level fixture constructs at StartProduction");
 
     assert!(!sim.should_show_undeploy_building_command(yard, &rules));
     assert!(

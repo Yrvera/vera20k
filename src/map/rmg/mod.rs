@@ -31,6 +31,9 @@ pub use settings::RmgSettings;
 pub use tiles::TileIds;
 pub use x87::{Gaussian, TruncF64};
 
+pub(crate) use crate::map::construction_trace::{
+    RmgConstructionEvent, RmgConstructionOutcome, RmgConstructionPhase, RmgConstructionTrace,
+};
 use crate::map::map_file::MapFile;
 use crate::rng_continuation::MapGenRngContinuation;
 
@@ -197,6 +200,10 @@ pub struct GeneratedMap {
     /// Exact `g_MapGenRng` continuation after this accepted generation run.
     /// Kept crate-private so app code can transport but never draw from it.
     pub(crate) mapgen_continuation: MapGenRngContinuation,
+    /// Ordered native Building-constructor effects produced during this RMG
+    /// run. Geometry is MapGen-owned; these events are replayed later on the
+    /// appropriate Scenario owner (shell preview or match bootstrap).
+    pub(crate) construction_trace: RmgConstructionTrace,
     /// `(slot, x, y)` per generated start position.
     pub start_waypoints: Vec<(u8, u16, u16)>,
     /// Stages actually executed, in order.

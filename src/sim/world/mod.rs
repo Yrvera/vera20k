@@ -40,6 +40,7 @@ pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
 pub(crate) use logic_vector::LogicVector;
 pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
+pub(crate) use world_spawn::{GeneratedTechnoInitError, GeneratedTechnoInitTable};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -652,7 +653,7 @@ pub struct Simulation {
     pub(crate) main_rng: SimRng,
     /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). VERA's fresh
     /// fixed-map construction uses `Random__Seed(0)`, matching the verified
-    /// native fresh-process state; an accepted generated map installs its exact
+    /// native fresh-process state; launch `.SED` generation installs its exact
     /// post-RMG continuation. Bridge repair consumes this stream; destruction
     /// remains Scenario-owned. This cursor is not saved or checksummed; Rust
     /// retains it across in-scenario restore, while native cross-match process
@@ -4137,7 +4138,8 @@ impl Simulation {
             std::collections::BTreeMap::new();
         if let Some(rules) = rules {
             for e in self.substrate.entities.values() {
-                if e.category == EntityCategory::Structure
+                if !e.lifecycle.in_limbo
+                    && e.category == EntityCategory::Structure
                     && self
                         .object_type(e.type_ref, rules)
                         .is_some_and(|obj| obj.ore_purifier)
@@ -5155,7 +5157,10 @@ impl Simulation {
             gap_generators: Vec::new(),
         };
         for entity in self.substrate.entities.values() {
-            if entity.dying || entity.category != EntityCategory::Structure {
+            if entity.dying
+                || entity.lifecycle.in_limbo
+                || entity.category != EntityCategory::Structure
+            {
                 continue;
             }
             let Some(obj) = self.object_type(entity.type_ref, rules) else {
@@ -5334,7 +5339,11 @@ impl Simulation {
     /// Advance building-down (undeploy) animations. When done, despawn the
     /// building and spawn the mobile unit (e.g., ConYard → MCV).
     /// Returns true if any entities were spawned (triggers atlas refresh).
-    fn tick_building_down(&mut self, rules: Option<&RuleSet>) -> bool {
+    fn tick_building_down(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> bool {
         let keys = self.substrate.entities.keys_sorted();
         let mut finished: Vec<u64> = Vec::new();
         for &sid in &keys {
@@ -5378,7 +5387,16 @@ impl Simulation {
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
             if let Some(new_sid) =
-                self.spawn_object_at_height(&unit_type_str, &owner_str, rx, ry, 0, z, rules)
+                self.spawn_object_at_height_with_overlay_context(
+                    &unit_type_str,
+                    &owner_str,
+                    rx,
+                    ry,
+                    0,
+                    z,
+                    rules,
+                    overlay_registry,
+                )
             {
                 if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
                     ge.selected = was_selected;
@@ -5998,10 +6016,11 @@ impl Simulation {
                 rules,
                 path_grid,
                 height_map,
+                overlay_registry,
             );
         }
         // Advance building-down (undeploy) animations; spawn units when done.
-        *spawned_entities |= self.tick_building_down(rules);
+        *spawned_entities |= self.tick_building_down(rules, overlay_registry);
 
         // Tick radar event aging (remove expired pings).
         self.radar_events.tick();
@@ -7134,7 +7153,22 @@ impl Simulation {
                 // + now-unbuildable queued items dropped, so a freshly-abandoned factory is not
                 // charged this tick and a freshly-promoted one starts charging next tick.
                 let reval_plan = registry.plan_revalidation(self, rules);
-                registry.apply_revalidation(&reval_plan, &mut self.houses);
+                let lifecycle = registry.apply_revalidation(&reval_plan, &mut self.houses);
+                for entity_id in lifecycle.discarded_entity_ids {
+                    let discarded = self.discard_constructed_limbo(entity_id);
+                    debug_assert!(
+                        discarded,
+                        "prerequisite AbandonProduction destroys its held limbo object"
+                    );
+                }
+                self.production.factory_shadow = registry;
+                for (owner, category, type_id) in lifecycle.promoted {
+                    production::construct_and_link_active_factory_object(
+                        self, rules, owner, category, type_id,
+                    )
+                    .expect("validated revalidation promotion must construct one Techno");
+                }
+                let mut registry = std::mem::take(&mut self.production.factory_shadow);
                 let prepared = registry.prepare_step_inputs(self, rules);
                 registry.step_all(&mut self.houses, &prepared);
                 self.production.factory_shadow = registry;

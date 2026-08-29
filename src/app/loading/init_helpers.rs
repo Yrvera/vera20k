@@ -25,7 +25,6 @@ use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
 use crate::rules::ruleset::RuleSet;
 
-
 use crate::sim::world::Simulation;
 
 use crate::app::frontend::skirmish::deployable_building_types;
@@ -329,15 +328,10 @@ pub(crate) fn load_retail_team_ai_source(asset_manager: &AssetManager) -> Option
 }
 
 fn missing_active_team_ai_registry_sections(ini: &IniFile) -> Vec<&'static str> {
-    [
-        "TeamTypes",
-        "ScriptTypes",
-        "TaskForces",
-        "AITriggerTypes",
-    ]
-    .into_iter()
-    .filter(|section| ini.section(section).is_none())
-    .collect()
+    ["TeamTypes", "ScriptTypes", "TaskForces", "AITriggerTypes"]
+        .into_iter()
+        .filter(|section| ini.section(section).is_none())
+        .collect()
 }
 
 /// Load active YR rules and retain the exact composed source.
@@ -509,7 +503,6 @@ pub(crate) fn scheduler_anim_roots(
     roots.into_iter().collect()
 }
 
-
 /// The presentation-side atlas bundle the app builds AFTER GPU-free scenario
 /// construction (F09): derived from immutable resources plus the constructed
 /// simulation, never fed back into it.
@@ -530,26 +523,32 @@ pub(crate) fn construct_app_scenario<F>(
     rules: Option<&RuleSet>,
     art: Option<&ArtRegistry>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
     bootstrap_rng: crate::sim::scenario_bootstrap::ScenarioBootstrapRng,
+    generated_inits: Option<&crate::sim::world::GeneratedTechnoInitTable>,
     initialize_houses_before_objects: F,
-) -> Simulation
+) -> Result<Simulation, crate::sim::world::GeneratedTechnoInitError>
 where
     F: FnOnce(&mut Simulation),
 {
-    let mut sim = crate::sim::runtime::construct_scenario(
+    let mut sim = crate::sim::runtime::construct_scenario_with_generated_inits(
         map_data,
         resolved_terrain,
         theater_name,
         rules,
         art,
         height_map,
+        overlay_registry,
+        overlay_grid,
         bridge_destroyability_mode,
         descriptor,
         bootstrap_rng,
+        generated_inits,
         initialize_houses_before_objects,
-    );
+    )?;
     // F09: HVA frame counts are sim metadata — parse them through the GPU-free
     // catalog before any atlas exists, so the renderer never writes into the
     // simulation. Atlas seeding derives its own copy from the same functions.
@@ -561,7 +560,7 @@ where
         art,
     );
     sim.update_voxel_anim_frame_counts(&frame_catalog);
-    sim
+    Ok(sim)
 }
 
 /// Build voxel + SHP sprite atlases for an already-constructed simulation.
@@ -709,7 +708,6 @@ mod retail_placement_oracle_tests;
 mod tests {
     use std::path::PathBuf;
 
-    use crate::sim::runtime::spawn_terrain_tile_animations;
     use super::{
         LoadedRules, compose_rules_layers, load_rules_with_merged_ini,
         missing_active_team_ai_registry_sections, scheduler_anim_roots,
@@ -724,6 +722,7 @@ mod tests {
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::runtime::spawn_terrain_tile_animations;
     use crate::sim::world::{SimSoundEvent, Simulation};
 
     #[derive(Debug, PartialEq, Eq)]

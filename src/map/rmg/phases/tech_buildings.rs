@@ -17,6 +17,7 @@ use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::RmgRng;
 use crate::map::rmg::scratch::RmgScratch;
 use crate::map::rmg::tiles::TileIds;
+use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
 
 use super::regions::Regions;
 use super::zones::diamond_frame_contains;
@@ -65,6 +66,19 @@ pub struct TechCtx<'a> {
 }
 
 pub fn run(ctx: &mut TechCtx<'_>, args: &TechArgs) -> Vec<TechPlacement> {
+    let mut ignored_trace = RmgConstructionTrace::default();
+    run_traced(ctx, args, &mut ignored_trace, 0)
+}
+
+/// Native placement plus the Scenario-constructor trace. Each selected type
+/// constructs before its placement attempts, so an exhausted building remains
+/// as a discarded event even though it contributes no MapFile entity.
+pub(crate) fn run_traced(
+    ctx: &mut TechCtx<'_>,
+    args: &TechArgs,
+    trace: &mut RmgConstructionTrace,
+    entity_index_base: usize,
+) -> Vec<TechPlacement> {
     let mut placements = Vec::new();
     // The driver is not called at all for map type 0.
     if args.map_type == 0 || ctx.types.is_empty() {
@@ -79,13 +93,13 @@ pub fn run(ctx: &mut TechCtx<'_>, args: &TechArgs) -> Vec<TechPlacement> {
                 if ctx.regions.list[index].start_quota <= 0 {
                     continue;
                 }
-                place_from_region(ctx, args, index, &mut placements);
+                place_from_region(ctx, args, index, &mut placements, trace, entity_index_base);
             }
         }
     } else {
         let count = ctx.rng.uniform(0, 4);
         for _ in 0..count {
-            place_whole_map(ctx, args, &mut placements);
+            place_whole_map(ctx, args, &mut placements, trace, entity_index_base);
         }
     }
     placements
@@ -102,8 +116,14 @@ fn place_from_region(
     args: &TechArgs,
     region_index: usize,
     out: &mut Vec<TechPlacement>,
+    trace: &mut RmgConstructionTrace,
+    entity_index_base: usize,
 ) {
     let type_index = draw_type(ctx);
+    let event = trace.push_discarded(
+        RmgConstructionPhase::NeutralTech,
+        ctx.types[type_index].name.clone(),
+    );
     let cell_count = ctx.regions.list[region_index].cells.len() as i32;
     debug_assert!(cell_count > 0, "quota-bearing regions own cells");
 
@@ -112,6 +132,12 @@ fn place_from_region(
         let (cx, cy) = ctx.regions.list[region_index].cells[pick];
         let anchor = (i32::from(cx), i32::from(cy));
         if try_place(ctx, args, type_index, anchor, out) {
+            let placement = out.last().expect("successful placement was appended");
+            trace.mark_emitted(
+                event,
+                entity_index_base + out.len() - 1,
+                (placement.x as u16, placement.y as u16),
+            );
             return;
         }
     }
@@ -119,11 +145,27 @@ fn place_from_region(
 
 /// Map-types-1/3/4 path: anchor is a uniform random clear scratch cell over
 /// the whole array, with the inner empty-slot / non-clear rejection.
-fn place_whole_map(ctx: &mut TechCtx<'_>, args: &TechArgs, out: &mut Vec<TechPlacement>) {
+fn place_whole_map(
+    ctx: &mut TechCtx<'_>,
+    args: &TechArgs,
+    out: &mut Vec<TechPlacement>,
+    trace: &mut RmgConstructionTrace,
+    entity_index_base: usize,
+) {
     let type_index = draw_type(ctx);
+    let event = trace.push_discarded(
+        RmgConstructionPhase::NeutralTech,
+        ctx.types[type_index].name.clone(),
+    );
     for _ in 0..MAX_ATTEMPTS {
         let anchor = draw_clear_anchor(ctx, args.stride);
         if try_place(ctx, args, type_index, anchor, out) {
+            let placement = out.last().expect("successful placement was appended");
+            trace.mark_emitted(
+                event,
+                entity_index_base + out.len() - 1,
+                (placement.x as u16, placement.y as u16),
+            );
             return;
         }
     }
@@ -584,5 +626,79 @@ mod tests {
         // so the stream advanced past a fresh generator.
         let mut fresh = RmgRng::new(3);
         assert_ne!(rng.next_u32(), fresh.next_u32());
+    }
+
+    #[test]
+    fn every_constructed_tech_is_traced_even_when_placement_discards_it() {
+        let mut w = world(1);
+        let identity = ids();
+        let type_list = types();
+        let regions = Regions::default();
+        for (x, y) in w.grid.native_cells().collect::<Vec<_>>() {
+            w.grid.get_mut(x, y).unwrap().tile = 500;
+        }
+        let mut rng = RmgRng::new(3);
+        let mut trace = RmgConstructionTrace::default();
+        let placements = {
+            let mut ctx = TechCtx {
+                grid: &mut w.grid,
+                scratch: &mut w.scratch,
+                ids: &identity,
+                rng: &mut rng,
+                regions: &regions,
+                types: &type_list,
+            };
+            run_traced(&mut ctx, &w.args, &mut trace, 7)
+        };
+        assert!(placements.is_empty());
+        assert!(
+            !trace.events.is_empty(),
+            "fixture constructs at least one type"
+        );
+        for (ordinal, event) in trace.events.iter().enumerate() {
+            assert_eq!(event.ordinal, ordinal);
+            assert_eq!(event.phase, RmgConstructionPhase::NeutralTech);
+            assert!(matches!(event.techno_type.as_str(), "CATHOSP" | "CAPOWR"));
+            assert_eq!(
+                event.outcome,
+                crate::map::rmg::RmgConstructionOutcome::Discarded
+            );
+        }
+    }
+
+    #[test]
+    fn emitted_tech_trace_binds_the_supplied_final_entity_index_base() {
+        let mut w = world(1);
+        let identity = ids();
+        let type_list = types();
+        let regions = Regions::default();
+        let mut rng = RmgRng::new(1234);
+        let mut trace = RmgConstructionTrace::default();
+        let placements = {
+            let mut ctx = TechCtx {
+                grid: &mut w.grid,
+                scratch: &mut w.scratch,
+                ids: &identity,
+                rng: &mut rng,
+                regions: &regions,
+                types: &type_list,
+            };
+            run_traced(&mut ctx, &w.args, &mut trace, 2)
+        };
+        assert!(!placements.is_empty(), "fixture emits neutral tech");
+        for (local_index, placement) in placements.iter().enumerate() {
+            let event = trace
+                .events
+                .iter()
+                .find(|event| {
+                    event.outcome
+                        == (crate::map::rmg::RmgConstructionOutcome::Emitted {
+                            entity_index: 2 + local_index,
+                            cell: (placement.x as u16, placement.y as u16),
+                        })
+                })
+                .expect("every emitted placement has one stable trace binding");
+            assert_eq!(event.techno_type, placement.name);
+        }
     }
 }

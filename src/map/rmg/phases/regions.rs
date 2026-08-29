@@ -76,11 +76,10 @@ pub struct RegionCtx<'a> {
     pub default_level: u8,
 }
 
-/// Water-ish class half: shore pieces, narrow water set, or waterfall sets
-/// (the waterfall sets cannot occur on generated maps; see tiles.rs).
+/// Water-ish class half. This is the exact tile-only family predicate called
+/// by the native seed scan, flood fill, and first-region dissolve path.
 fn water_ish(ids: &TileIds, tile: i32) -> bool {
-    (ids.shore != -1 && tile >= ids.shore && tile < ids.shore + 0x2A)
-        || (ids.water_base != -1 && tile >= ids.water_base && tile < ids.water_base + 0x0E)
+    ids.is_water_shore_or_waterfall(tile)
 }
 
 /// The region class bit: water-ish OR green membership.
@@ -488,6 +487,50 @@ mod tests {
             .find(|region| region.id == lake_region)
             .expect("lake object");
         assert!(lake_object.active, "water class regions are active");
+    }
+
+    #[test]
+    fn water_variants_and_all_waterfalls_seed_one_active_flood_region() {
+        let (mut grid, mut scratch) = world();
+        let mut identity = ids();
+        identity.special.waterfalls = [600, 700, 800, 900];
+
+        // A connected 6x4 lake containing every WaterSet variant beyond the
+        // old six-tile shortcut and every tile in all four waterfall bands.
+        // The production seed scan and flood fill must classify all 24 cells
+        // through the same native 0x004865D0 predicate.
+        let lake: Vec<(i32, i32)> = (13..19)
+            .flat_map(|x| (8..12).map(move |y| (x, y)))
+            .filter(|&(x, y)| grid.is_valid(x, y))
+            .collect();
+        assert_eq!(lake.len(), 24, "fixture must remain a connected 6x4 lake");
+        let tiles = (identity.water_base + 6..=identity.water_base + 13).chain(
+            identity
+                .special
+                .waterfalls
+                .into_iter()
+                .flat_map(|base| base..base + 4),
+        );
+        for ((x, y), tile) in lake.iter().copied().zip(tiles) {
+            grid.get_mut(x, y).unwrap().tile = tile;
+        }
+
+        let mut rng = RmgRng::new(3);
+        let mut context = ctx(&mut grid, &mut scratch, &identity, &mut rng);
+        let regions = run(&mut context);
+        let lake_region = scratch.get(lake[0].0, lake[0].1).region;
+        assert!(
+            lake.iter()
+                .all(|&(x, y)| scratch.get(x, y).region == lake_region),
+            "WaterSet +6..+13 and every waterfall band must flood together"
+        );
+        assert!(
+            regions
+                .list
+                .iter()
+                .any(|region| region.id == lake_region && region.active),
+            "the exact native water family must seed an active region"
+        );
     }
 
     #[test]

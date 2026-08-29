@@ -5,8 +5,8 @@
 //! makes at most one river system and at most one standalone lake — it is not
 //! an iterated fill.
 //!
-//! This module implements the lake half. The river half, its meander arm and
-//! the bridge builder are not modelled yet; the river is gated on a water
+//! This module implements the lake half; `river`, `meander`, and `bridge` own
+//! the active river and waterfall-terrain half. The river is gated on a water
 //! amount above `RIVER_GATE`, so for `0 < water <= 20` the lake path alone is
 //! the whole of the original's output.
 //!
@@ -24,7 +24,7 @@ use super::shore::{self, ShoreCtx};
 use super::water::WaterArgs;
 
 /// Water amount above which the seeder also carves a river. Strictly greater,
-/// and signed — the river half is W2' and is not implemented here.
+/// and signed — the river half is W2' and is implemented in `river`.
 pub(crate) const RIVER_GATE: i32 = 0x14;
 /// Attempts the driver makes at each of its two phases, stopping on the first
 /// success.

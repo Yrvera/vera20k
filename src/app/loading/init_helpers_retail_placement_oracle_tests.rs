@@ -340,6 +340,20 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
 
     let owner_id = sim.interner.intern(OWNER);
     let gapowr_id = sim.interner.intern(POWER_PLANT);
+    assert!(crate::sim::production::enqueue_by_type(
+        &mut sim,
+        &rules,
+        OWNER,
+        POWER_PLANT,
+    ));
+    let category = crate::sim::production::category_for_object(
+        rules.object(POWER_PLANT).expect("stock GAPOWR profile"),
+    );
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(owner_id, category)
+    );
     sim.production
         .ready_by_owner
         .insert(owner_id, VecDeque::from([gapowr_id]));

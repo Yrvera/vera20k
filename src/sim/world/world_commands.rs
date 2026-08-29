@@ -574,7 +574,11 @@ impl Simulation {
                 // Drop any dock reservation (depot + aircraft + docked-idle) and
                 // retask onto a fresh Move via the verb API. The legacy field
                 // clears below stay authoritative in Slice 6.
-                self.queue_megamission_with_teardown(*entity_id, MissionType::Move, DockTeardown::All);
+                self.queue_megamission_with_teardown(
+                    *entity_id,
+                    MissionType::Move,
+                    DockTeardown::All,
+                );
                 // Clear attack and order intent.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
@@ -1121,8 +1125,13 @@ impl Simulation {
                             .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
                     })
                 {
-                    return crate::sim::slave_miner::deploy_slave_miner(self, *entity_id, rules)
-                        .is_some();
+                    return crate::sim::slave_miner::deploy_slave_miner_with_overlay_context(
+                        self,
+                        *entity_id,
+                        rules,
+                        overlay_registry,
+                    )
+                    .is_some();
                 }
                 self.deploy_mcv(*entity_id, rules, height_map)
             }
@@ -1141,8 +1150,13 @@ impl Simulation {
                         })
                     })
                 {
-                    return crate::sim::slave_miner::undeploy_slave_miner(self, *entity_id, rules)
-                        .is_some();
+                    return crate::sim::slave_miner::undeploy_slave_miner_with_overlay_context(
+                        self,
+                        *entity_id,
+                        rules,
+                        overlay_registry,
+                    )
+                    .is_some();
                 }
                 self.undeploy_building(*entity_id, rules)
             }
@@ -2162,7 +2176,11 @@ impl Simulation {
                 );
                 // Retask onto Enter (no dock reservation), mark the unit as
                 // approaching THIS bunker (the install machine's keep-alive gate).
-                self.queue_megamission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
+                self.queue_megamission_with_teardown(
+                    *unit_id,
+                    MissionType::Enter,
+                    DockTeardown::None,
+                );
                 if let Some(e) = self.substrate.entities.get_mut(*unit_id) {
                     e.attack_target = None;
                     e.passively_acquired_target = false;
@@ -3007,7 +3025,14 @@ mod tests {
             Some(&grid),
             &BTreeMap::new(),
         ));
-        assert!(sim.substrate.entities.get(1).unwrap().movement_target.is_some());
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .movement_target
+                .is_some()
+        );
 
         assert!(!sim.apply_command(
             "Americans",
@@ -3020,7 +3045,12 @@ mod tests {
             &BTreeMap::new(),
         ));
         assert!(
-            sim.substrate.entities.get(1).unwrap().movement_target.is_some(),
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .movement_target
+                .is_some(),
             "the refused guard must not have stopped the unit"
         );
     }

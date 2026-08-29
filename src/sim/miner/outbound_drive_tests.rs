@@ -229,6 +229,13 @@ fn install_world(
     install_zones: bool,
 ) {
     let terrain = staged_terrain(oracle, ore_cells);
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: -64,
+        off_100: -1,
+        off_104: 128,
+        off_108: 65,
+    });
     sim.terrain_costs = SpeedType::ALL_WITH_COSTS
         .iter()
         .copied()

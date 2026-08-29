@@ -344,7 +344,7 @@ mod tests {
     use crate::sim::superweapon::invulnerability::{InvulnKind, InvulnerabilityState};
 
     fn entity() -> GameEntity {
-        GameEntity::new_at_frame(
+        GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
@@ -360,7 +360,6 @@ mod tests {
             0,
             1,
             true,
-            0,
         )
     }
 

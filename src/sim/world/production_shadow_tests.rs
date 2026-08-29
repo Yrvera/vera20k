@@ -49,6 +49,7 @@ fn spawn_war_factory(sim: &mut Simulation, owner: InternedId) {
     e.category = EntityCategory::Structure;
     e.owner = owner;
     e.type_ref = gaweap;
+    e.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(e);
 }
 
@@ -163,6 +164,7 @@ fn economy_purifier_count_is_building_count() {
         e.category = EntityCategory::Structure;
         e.owner = owner;
         e.type_ref = ty;
+        e.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(e);
     };
     // One purifier -> count 1.

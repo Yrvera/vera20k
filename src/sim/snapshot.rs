@@ -304,7 +304,9 @@ use crate::sim::world::Simulation;
 // TechnoType identity rather than an ambiguous interned name alone.
 // Bumped 102 -> 103: WaveClass persists live ownership/fade/CellClass identity,
 // and destroyable-cliff replacement persists exact changed CellClass values.
-const SNAPSHOT_VERSION: u32 = 103;
+// Bumped 103 -> 104: every Techno persists its constructor Scenario-RNG low
+// word, and authored structure-upgrade Technos persist their parent/slot link.
+const SNAPSHOT_VERSION: u32 = 104;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2704,10 +2706,135 @@ mod tests {
     /// adds the three post-load TeamType zone-derivation fields; 100 -> 101
     /// adds category-distinct resolved TaskForce member identities; 101 -> 102
     /// adds category-distinct resolved AITrigger token-6 identities; 102 -> 103
-    /// adds WaveClass state and destroyable-cliff replacement CellClass values.
+    /// adds WaveClass state and destroyable-cliff replacement CellClass values;
+    /// 103 -> 104 adds the persistent Techno constructor word and authored
+    /// structure-upgrade parent/slot identity.
     #[test]
-    fn phase3_team_ai_and_wave_snapshot_version_is_103() {
-        assert_eq!(super::SNAPSHOT_VERSION, 103);
+    fn techno_constructor_snapshot_version_is_104() {
+        assert_eq!(super::SNAPSHOT_VERSION, 104);
+    }
+
+    #[test]
+    fn techno_constructor_word_and_upgrade_link_roundtrip_without_a_draw_and_hash() {
+        let mut sim = Simulation::new();
+        let mut entity = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "UP1",
+            "Americans",
+            4,
+            5,
+        );
+        entity.techno_ctor_random_word = 0xA55A;
+        entity.structure_upgrade_link = Some(crate::sim::game_entity::StructureUpgradeLink {
+            parent_stable_id: 77,
+            slot: 2,
+        });
+        sim.substrate.entities.insert(entity);
+        // Native load resets Scenario RNG to Seed(0); align the source before
+        // comparing persistence/hash state unrelated to that separate rule.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let source_rng = sim.scenario_rng.logical_state();
+        let source_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "techno-constructor", 0);
+        let restored = GameSnapshot::load(&bytes).unwrap().sim;
+        let restored_entity = restored.substrate.entities.get(1).unwrap();
+        assert_eq!(restored.scenario_rng.logical_state(), source_rng);
+        assert_eq!(restored_entity.techno_ctor_random_word, 0xA55A);
+        assert_eq!(
+            restored_entity.structure_upgrade_link,
+            Some(crate::sim::game_entity::StructureUpgradeLink {
+                parent_stable_id: 77,
+                slot: 2,
+            })
+        );
+        assert_eq!(restored.state_hash(), source_hash);
+
+        let mut changed_word = GameSnapshot::load(&bytes).unwrap().sim;
+        changed_word
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .techno_ctor_random_word ^= 1;
+        assert_ne!(changed_word.state_hash(), source_hash);
+
+        let mut changed_link = restored;
+        changed_link
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .structure_upgrade_link
+            .as_mut()
+            .unwrap()
+            .slot = 1;
+        assert_ne!(changed_link.state_hash(), source_hash);
+    }
+
+    #[test]
+    fn techno_constructor_manager_owned_slave_pool_roundtrips_and_hashes_identity_order() {
+        let mut sim = Simulation::new();
+        let mut parent = crate::sim::game_entity::GameEntity::test_default(
+            1,
+            "SMIN",
+            "Americans",
+            4,
+            5,
+        );
+        parent.techno_ctor_random_word = 0x1111;
+        sim.substrate.entities.insert(parent);
+        for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
+            let mut slave = crate::sim::game_entity::GameEntity::test_default(
+                stable_id,
+                "SLAV",
+                "Americans",
+                4,
+                5,
+            );
+            slave.techno_ctor_random_word = word;
+            slave.slave_harvester = Some(crate::sim::slave_miner::SlaveHarvester::new(1, 4));
+            sim.substrate.entities.insert(slave);
+        }
+        sim.production.slave_bindings.insert(1, vec![2, 3]);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let source_rng = sim.scenario_rng.logical_state();
+        let source_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "techno-constructor-manager-pool", 0);
+        let restored = GameSnapshot::load(&bytes).unwrap().sim;
+        assert_eq!(restored.scenario_rng.logical_state(), source_rng);
+        assert_eq!(restored.production.slave_bindings.get(&1), Some(&vec![2, 3]));
+        for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
+            let slave = restored.substrate.entities.get(stable_id).unwrap();
+            assert_eq!(slave.techno_ctor_random_word, word);
+            assert_eq!(
+                slave.slave_harvester.as_ref().map(|slave| slave.master_id),
+                Some(1)
+            );
+        }
+        assert_eq!(restored.state_hash(), source_hash);
+
+        let mut changed_order = GameSnapshot::load(&bytes).unwrap().sim;
+        changed_order
+            .production
+            .slave_bindings
+            .get_mut(&1)
+            .unwrap()
+            .reverse();
+        assert_ne!(changed_order.state_hash(), source_hash);
+
+        let mut changed_master = restored;
+        changed_master
+            .substrate
+            .entities
+            .get_mut(2)
+            .unwrap()
+            .slave_harvester
+            .as_mut()
+            .unwrap()
+            .master_id = 3;
+        assert_ne!(changed_master.state_hash(), source_hash);
     }
 
     #[test]
@@ -5404,7 +5531,7 @@ mod tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("MTNK");
-        let entity = GameEntity::new_at_frame(
+        let entity = GameEntity::new_at_frame_for_test(
             1,
             5,
             5,

@@ -11,9 +11,9 @@
 //! - Part of sim/; NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::resolved_terrain::TerrainTileAnimation;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::anim_class::{AnimDrawRuntime, AnimWorldCoord};
 use crate::sim::components::AnimClassSpawnDescriptor;
-use crate::rules::ruleset::RuleSet;
 use crate::sim::world::Simulation;
 
 /// Immutable per-match resources bound at construction (F07 cones land here).
@@ -117,8 +117,10 @@ impl<'a> SimView<'a> {
 
     pub fn houses(
         &self,
-    ) -> &'a std::collections::BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState>
-    {
+    ) -> &'a std::collections::BTreeMap<
+        crate::sim::intern::InternedId,
+        crate::sim::house_state::HouseState,
+    > {
         &self.simulation.houses
     }
 
@@ -183,8 +185,7 @@ impl<'a> SimView<'a> {
 impl SimRuntime {
     /// Clear the exact radar-terrain batch a completed presentation update read.
     pub(crate) fn acknowledge_radar_terrain_dirty(&mut self, generation: u64) -> bool {
-        self.simulation
-            .acknowledge_radar_terrain_dirty(generation)
+        self.simulation.acknowledge_radar_terrain_dirty(generation)
     }
 
     /// One command-free Ordinary-lane frame for side binaries (parity-digest):
@@ -227,10 +228,7 @@ impl SimRuntime {
     /// (same-content in-scenario load: rules, heights, registries, and
     /// trigger definitions are immutable match inputs and MUST carry over —
     /// an empty rebind would silently break every bound-resource consumer).
-    pub fn rebind_restored(
-        previous: Option<SimRuntime>,
-        simulation: Simulation,
-    ) -> SimRuntime {
+    pub fn rebind_restored(previous: Option<SimRuntime>, simulation: Simulation) -> SimRuntime {
         let resources = previous
             .map(|rt| rt.resources)
             .unwrap_or_else(SimResources::empty);
@@ -270,6 +268,100 @@ mod tests {
         // explicitly empty rather than partially bound.
         let fresh = SimRuntime::rebind_restored(None, Simulation::new());
         assert!(fresh.resources.height_map.is_empty());
+    }
+
+    #[test]
+    fn gsi_04_12_generated_funnel_projects_preconsumed_words_without_scenario_draw() {
+        use crate::map::entities::{EntityCategory, MapEntity};
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::game_entity::GeneratedTechnoInit;
+        use crate::sim::world::GeneratedTechnoInitTable;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=300\nSpeed=6\n",
+        ))
+        .expect("generated projection rules");
+        let entity = MapEntity {
+            owner: "Americans".to_string(),
+            type_id: "MTNK".to_string(),
+            health: 256,
+            cell_x: 7,
+            cell_y: 9,
+            facing: 0,
+            category: EntityCategory::Unit,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+            mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
+            structure_upgrades: [None, None, None],
+        };
+        let inits = GeneratedTechnoInitTable::try_new([GeneratedTechnoInit {
+            entity_index: 0,
+            techno_type: "MTNK".to_string(),
+            cell: (7, 9),
+            techno_ctor_random_word: 0xA55A,
+        }])
+        .expect("one exact generated binding");
+        let mut sim = Simulation::with_seed(0xC701_0412);
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+        );
+        let before = sim.scenario_rng.logical_state();
+
+        assert_eq!(
+            project_map_entities(
+                &mut sim,
+                &[entity],
+                Some(&rules),
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                Some(&inits),
+            )
+            .expect("generated funnel projection"),
+            1
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before);
+        assert_eq!(
+            sim.entities()
+                .values()
+                .next()
+                .expect("projected MTNK")
+                .techno_ctor_random_word,
+            0xA55A
+        );
+    }
+}
+
+fn project_map_entities(
+    sim: &mut Simulation,
+    entities: &[crate::map::entities::MapEntity],
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    height_map: &std::collections::BTreeMap<(u16, u16), u8>,
+    resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    generated_inits: Option<&crate::sim::world::GeneratedTechnoInitTable>,
+) -> Result<u32, crate::sim::world::GeneratedTechnoInitError> {
+    if let Some(generated_inits) = generated_inits {
+        sim.spawn_generated_from_map_with_resolved(
+            entities,
+            rules.expect("generated-map projection requires loaded rules"),
+            height_map,
+            resolved_terrain,
+            generated_inits,
+        )
+    } else {
+        Ok(sim.spawn_from_map_with_resolved_and_overlay_registry(
+            entities,
+            rules,
+            height_map,
+            resolved_terrain,
+            overlay_registry,
+        ))
     }
 }
 
@@ -355,11 +447,53 @@ pub(crate) fn construct_scenario<F>(
     rules: Option<&crate::rules::ruleset::RuleSet>,
     art: Option<&crate::rules::art_data::ArtRegistry>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     bridge_destroyability_mode: crate::map::basic::BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
     bootstrap_rng: crate::sim::scenario_bootstrap::ScenarioBootstrapRng,
     initialize_houses_before_objects: F,
 ) -> Simulation
+where
+    F: FnOnce(&mut Simulation),
+{
+    construct_scenario_with_generated_inits(
+        map_data,
+        resolved_terrain,
+        theater_name,
+        rules,
+        art,
+        height_map,
+        overlay_registry,
+        overlay_grid,
+        bridge_destroyability_mode,
+        descriptor,
+        bootstrap_rng,
+        None,
+        initialize_houses_before_objects,
+    )
+    .expect("fixed-map Techno constructor projection cannot fail")
+}
+
+/// Generated-map variant of the shared construction funnel. The binding table
+/// proves that launch-time RMG already consumed every Techno constructor word;
+/// projection validates the complete table before creating its first entity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn construct_scenario_with_generated_inits<F>(
+    map_data: &crate::map::map_file::MapFile,
+    resolved_terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    theater_name: &str,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    art: Option<&crate::rules::art_data::ArtRegistry>,
+    height_map: &std::collections::BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    bridge_destroyability_mode: crate::map::basic::BridgeDestroyabilityMode,
+    descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    bootstrap_rng: crate::sim::scenario_bootstrap::ScenarioBootstrapRng,
+    generated_inits: Option<&crate::sim::world::GeneratedTechnoInitTable>,
+    initialize_houses_before_objects: F,
+) -> Result<Simulation, crate::sim::world::GeneratedTechnoInitError>
 where
     F: FnOnce(&mut Simulation),
 {
@@ -388,6 +522,11 @@ where
         }
     }
     sim.install_resolved_terrain_for_new_map(resolved_terrain.clone());
+    // Active `CellClass` overlay identity exists before the Techno map
+    // sections are read. Install the already-resolved grid now so every
+    // UnitClass virtual Unlimbo sees ore, walls, and structural bridges;
+    // finalization later replaces this clone after wall-owner reconstruction.
+    sim.overlay_grid = overlay_grid.cloned();
     // Wire the cliff/slope coefficients from [General] into the live World config;
     // it otherwise holds compiled vanilla defaults and never sees a modded INI.
     if let Some(rules) = rules {
@@ -473,13 +612,16 @@ where
     } else {
         log::warn!("No rules loaded — skipping terrain object construction");
     }
-    if !map_data.entities.is_empty() {
-        let _count: u32 = sim.spawn_from_map_with_resolved(
+    if !map_data.entities.is_empty() || generated_inits.is_some() {
+        let _count: u32 = project_map_entities(
+            &mut sim,
             &map_data.entities,
             rules,
             height_map,
             Some(resolved_terrain),
-        );
+            overlay_registry,
+            generated_inits,
+        )?;
         let miner_count: usize = sim
             .entities()
             .values()
@@ -496,7 +638,7 @@ where
             spawned.len()
         );
     }
-    sim
+    Ok(sim)
 }
 
 /// BuildingClass::GetCoords projects the stored north-west anchor to the

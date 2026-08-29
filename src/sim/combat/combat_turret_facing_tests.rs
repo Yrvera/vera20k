@@ -434,6 +434,7 @@ fn retargeted_attacker_aims_new_target_same_tick() {
     // Hostile alternative in range (2 cells east).
     let mut alt = GameEntity::test_default(4, "MTNK", "Soviet", 7, 5);
     alt.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 5));
+    alt.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(alt);
     use_test_interner(&mut sim);
     let rules = rules_with_mtnk_rot(5);
@@ -702,6 +703,7 @@ fn non_unit_barrel_still_driven_by_global_sweep() {
     // attack pre-sweep); the CATEGORY is what routes facing ownership.
     let mut tower = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
     tower.category = crate::map::entities::EntityCategory::Structure;
+    tower.lifecycle.in_limbo = false;
     tower.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 100));
     tower.attack_target = Some(AttackTarget::new(2));
     sim.substrate.entities.insert(tower);

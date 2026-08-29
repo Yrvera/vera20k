@@ -929,7 +929,9 @@ mod tests {
 
     use super::*;
     use crate::assets::asset_manager::AssetManager;
-    use crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+    use crate::map::bridge_facts::{
+        BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL, BRIDGE_FLAG_TRANSITION,
+    };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
@@ -1108,9 +1110,32 @@ SpreadPercentage=.06
         blocked.base_build_blocked = true;
         assert!(!resolved_cell_accepts_tiberium(&blocked));
 
-        let mut bridge = cell;
-        bridge.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
-        assert!(!resolved_cell_accepts_tiberium(&bridge));
+        for (raw_flags, accepts) in [
+            (0, true),
+            (BRIDGE_FLAG_STRUCTURAL, false),
+            (BRIDGE_FLAG_DESTROYED_OR_RAMP, false),
+            (
+                BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DESTROYED_OR_RAMP,
+                false,
+            ),
+            (BRIDGE_FLAG_TRANSITION, true),
+            (0x0004_0000, true),
+        ] {
+            let mut flagged = cell.clone();
+            flagged.bridge_facts.raw_flags = raw_flags;
+            assert_eq!(
+                resolved_cell_accepts_tiberium(&flagged),
+                accepts,
+                "CellClass+0x140={raw_flags:#x}"
+            );
+        }
+
+        let mut not_walkable = cell;
+        not_walkable.ground_walk_blocked = true;
+        assert!(
+            resolved_cell_accepts_tiberium(&not_walkable),
+            "the native 0x500 gate does not substitute generalized walkability"
+        );
     }
 
     #[test]

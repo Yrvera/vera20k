@@ -1,33 +1,33 @@
-//! River-bridge placement for the carved map types.
+//! Waterfall/river terrain shaping for active random-map types 3 and 4.
 //!
 //! gamemd: `RandomMapGenerator::BuildRiverBridge` 0x0059E740 and
 //! `RandomMapGenerator::IsUniformLevelBridgeEndArea` 0x005A7440.
 //!
-//! The whole random-map generator is dormant in stock YR skirmish:
-//! `ScenarioClass::Read_Scenario` 0x00684620 sets `IsRandom` only when the
-//! scenario filename's extension matches the string at 0x0083DA88, which is
-//! `.SED`, and retail ships `.MPR`/`.YRM`/`.MAP`. Nothing here runs in an
-//! ordinary retail match, so this file sits below the divergence cut.
+//! Stock Create Random Map writes a `.SED`, and `ScenarioClass::Read_Scenario`
+//! reaches this generator on launch. The inherited `BuildRiverBridge` name is
+//! misleading: this routine creates waterfall/river terrain only. It writes
+//! no low-bridge overlays, runtime bridge flags, tubes, CABHUTs, or generated
+//! construction events.
 //!
 //! When a river's cross-section runs straight for long enough, the walk may
-//! throw a bridge across itself: a clearance scan ahead, twelve ranks of water
-//! filled in (four near, eight far), the region grown behind the bridge by the
-//! meander arm, the shoreline finalized, and the near side dilated. On success
+//! shape a waterfall crossing: a clearance scan ahead, twelve ranks of water
+//! filled in (four near, eight far), the near region grown behind the crossing
+//! by the meander arm, the shoreline finalized, and the near side dilated. On success
 //! the river jumps twelve cells forward and continues on the far bank — under a
 //! **new region id**, which is why the finish dilation absorbs the previous id.
 //!
 //! Everything here is transcribed from the original's four hand-written heading
 //! cases. They are *not* rotations of one another and must not be refactored
-//! into one parametric form — the N and W deck cases carry level-adjust loops
+//! into one parametric form — the N and W waterfall cases carry level loops
 //! the E and S cases lack.
 //!
-//! The crossing itself is stamped from the theater's four **waterfall
-//! tilesets** — not the bridge sets; the "bridge" naming is inherited drift.
+//! The crossing is stamped from the theater's four **waterfall tilesets** —
+//! not the bridge sets and not the separate low-deck overlay mechanism.
 //! Each set holds four pieces: two ends, a two-cell middle and a one-cell
 //! middle, alternated by span parity. The stamping consumes no randomness,
 //! but it is not cosmetic: its unassigned-tile sentinels and level
 //! adjustments are what let the river-finish shore pass accept the junction
-//! between the pre-bridge and post-bridge regions.
+//! between the near and far river regions.
 
 use crate::map::rmg::x87::{self, TruncF64};
 
@@ -80,7 +80,7 @@ struct Layout {
     fill_near: [i32; 4],
     /// The eight further ranks.
     fill_far: [i32; 4],
-    /// Clamp for the arm and the dilation: the half-plane behind the bridge.
+    /// Clamp for the arm and dilation: the half-plane behind the crossing.
     clamp: [i32; 4],
     /// The arm's angle reference.
     seed: (i32, i32),
@@ -173,17 +173,17 @@ fn fill_water(ctx: &mut BlobCtx<'_>, rect: [i32; 4], region: i32) {
     }
 }
 
-/// Attempt one bridge. Returns whether it was placed.
+/// Attempt one waterfall-terrain crossing. Returns whether it was placed.
 ///
 /// A false return is not fatal to the river — the caller carries on without a
-/// bridge, and any water the first fill painted simply belongs to the river's
+/// crossing, and any water the first fill painted simply belongs to the river's
 /// region from then on. That mirrors the original, which does not roll a
 /// failed placement back either.
 pub(crate) fn build(ctx: &mut BlobCtx<'_>, args: &BridgeArgs) -> bool {
     let layout = layout(args);
 
     // Clearance: any in-bounds cell ahead that is owned or not bare ground
-    // vetoes the bridge before a single draw is consumed.
+    // vetoes the crossing before a single draw is consumed.
     let [cx, cy, cw, ch] = layout.clearance;
     for y in cy..cy + ch {
         for x in cx..cx + cw {
@@ -247,22 +247,22 @@ pub(crate) fn build(ctx: &mut BlobCtx<'_>, args: &BridgeArgs) -> bool {
 
     fill_water(ctx, layout.fill_far, args.region);
 
-    deck(ctx, args, &layout);
+    stamp_waterfall_pieces(ctx, args, &layout);
     true
 }
 
-/// The unassigned-tile sentinel the deck writes at its approach cells. It is
+/// The unassigned-tile sentinel written beside waterfall approach cells. It is
 /// the port's own unassigned value, which is what makes those cells read as
 /// bare ground to every later pass — that equivalence is what lets a finished
 /// river's shore pass cross the junction.
 const SENTINEL: i32 = crate::map::rmg::tiles::TILE_UNASSIGNED;
 
-/// One level step, shared by the plateau raise and the deck's adjustments.
+/// One level step, shared by the plateau raise and waterfall adjustments.
 const LEVEL_STEP: u8 = 4;
 
 /// Stamp one waterfall tile block at `anchor`.
 ///
-/// This is the iso-tile stamper's deck path: the overwrite range covers every
+/// This is the iso-tile stamper's waterfall path: the overwrite range covers
 /// tile, so water is stamped over freely; unowned or foreign bare ground is
 /// adopted into `region`; a foreign non-clear cell refuses hard unless it
 /// holds an equivalent shore piece, in which case the whole call succeeds
@@ -304,7 +304,7 @@ fn stamp_block(
                 if clear {
                     ctx.scratch.get_mut(x, y).region = region;
                 } else if ctx.ids.is_shore_piece(target) && ctx.ids.is_shore_piece(tile) {
-                    // Equivalence would compare piece groups here; the deck
+                    // Equivalence would compare piece groups here; this path
                     // never stamps shore pieces, so this arm cannot be taken
                     // by any live caller. Kept for shape, refusing is safer
                     // than guessing a group table result.
@@ -317,12 +317,13 @@ fn stamp_block(
             cell.tile = tile;
             cell.sub_tile = index as u8;
             cell.level = (i32::from(sub.height) + level_base) as u8;
+            cell.slope = sub.slope;
         }
     }
     true
 }
 
-/// A flank cell beside a deck end: unassigned tile, one level up, adopted.
+/// A flank cell beside a waterfall end: unassigned, one level up, adopted.
 fn flank(ctx: &mut BlobCtx<'_>, x: i32, y: i32, region: i32) {
     if !ctx.scratch.in_diamond(x, y) {
         return;
@@ -345,9 +346,9 @@ fn flank(ctx: &mut BlobCtx<'_>, x: i32, y: i32, region: i32) {
 /// found.
 ///
 /// The stamp refusals are deliberately ignored here: the original discards
-/// every ok-flag on this path, so a deck that could not fully stamp still
+/// every ok-flag on this path, so an incomplete waterfall stamp still
 /// counts as placed.
-fn deck(ctx: &mut BlobCtx<'_>, args: &BridgeArgs, _layout: &Layout) {
+fn stamp_waterfall_pieces(ctx: &mut BlobCtx<'_>, args: &BridgeArgs, _layout: &Layout) {
     let base = ctx.ids.special.waterfalls[args.heading_dir / 2];
     if base < 0 {
         // No waterfall set in this theater: nothing to stamp. The placement
@@ -485,12 +486,15 @@ pub(crate) fn jump(heading_dir: usize) -> (i32, i32) {
 mod tests {
     use super::*;
     use crate::map::rmg::grid::RmgGrid;
+    use crate::map::rmg::{RmgConstructionTrace, emit};
+    use crate::map::rmg::options::RmgOptions;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::rng::RmgRng;
     use crate::map::rmg::scratch::RmgScratch;
     use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::tiles::{TILE_UNASSIGNED, TileIds};
     use crate::map::rmg::x87::Gaussian;
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
 
     struct OneByOne(TileBlock);
     impl TileBlocks for OneByOne {
@@ -542,15 +546,22 @@ mod tests {
     }
 
     #[test]
-    fn the_north_deck_stamps_ends_middles_and_sentinels() {
+    fn north_waterfall_stamps_ends_middles_and_sentinels() {
         // A hand-built north crossing: section from (40,50) to (43,50).
         // Pins the case-0 geometry cell by cell against the derived contract —
         // ends at the row two above the near fill, sentinels beside them, the
         // −4 sweep along that row, flanks one row down, and the middles
-        // alternating by parity along the deck row.
+        // alternating by parity along the waterfall row.
         let (mut grid, mut scratch, ids, blocks) = harness();
         let mut rng = RmgRng::new(1);
         let mut gauss = Gaussian::default();
+        let topology_before: Vec<_> = grid
+            .native_cells()
+            .map(|(x, y)| {
+                let cell = grid.get(x, y).unwrap();
+                ((x, y), cell.overlay, cell.density, cell.occupied)
+            })
+            .collect();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -571,7 +582,7 @@ mod tests {
             pool_dims: (30, 30),
         };
         let layout = layout(&args);
-        deck(&mut ctx, &args, &layout);
+        stamp_waterfall_pieces(&mut ctx, &args, &layout);
 
         // span = 3. End piece A: base+0 at (38,44).
         assert_eq!(ctx.grid.cell_native(38, 44).tile, 600, "end piece A");
@@ -595,10 +606,22 @@ mod tests {
         assert_eq!(ctx.grid.cell_native(37, 45).tile, TILE_UNASSIGNED);
         assert_eq!(ctx.grid.cell_native(37, 45).level, 8);
         assert_eq!(ctx.scratch.get(37, 45).region, 5);
-        // Deck row 45: remaining starts at 4 (even) → two 2-cell pieces at
+        // Waterfall row 45: remaining starts at 4 (even) → two 2-cell pieces at
         // x = 40 and 42.
         assert_eq!(ctx.grid.cell_native(40, 45).tile, 602, "first middle");
         assert_eq!(ctx.grid.cell_native(42, 45).tile, 602, "second middle");
+        let topology_after: Vec<_> = ctx
+            .grid
+            .native_cells()
+            .map(|(x, y)| {
+                let cell = ctx.grid.get(x, y).unwrap();
+                ((x, y), cell.overlay, cell.density, cell.occupied)
+            })
+            .collect();
+        assert_eq!(
+            topology_after, topology_before,
+            "waterfall terrain cannot create low overlays or occupiers"
+        );
     }
 
     #[test]
@@ -607,6 +630,140 @@ mod tests {
         assert_eq!(jump(2), (12, 0), "east");
         assert_eq!(jump(4), (0, 12), "south");
         assert_eq!(jump(6), (-12, 0), "west");
+    }
+
+    #[test]
+    fn direct_waterfall_build_changes_terrain_without_creating_bridge_topology() {
+        // Fixed successful direct-BuildRiverBridge fixture. Active retail
+        // 0x0059E740 may mutate terrain working state only: never overlay/data,
+        // CellClass bridge flags, Tube topology, structures, or constructors.
+        let run = || {
+            let (mut grid, mut scratch, ids, mut blocks) = harness();
+            blocks.0.subtiles[0].as_mut().expect("one-by-one subtile").slope = 1;
+            let cells_before: Vec<_> = grid
+                .native_cells()
+                .map(|coord @ (x, y)| (coord, *grid.get(x, y).expect("native cell")))
+                .collect();
+            let topology_before: Vec<_> = cells_before
+                .iter()
+                .map(|(coord, cell)| {
+                    (*coord, cell.overlay, cell.density, cell.occupied, cell.start_marker)
+                })
+                .collect();
+            let scratch_before = scratch.cells().to_vec();
+            let structures: Vec<(String, i16, i16)> = Vec::new();
+            let construction_trace = RmgConstructionTrace::default();
+            let construction_trace_before = construction_trace.clone();
+            let mut rng = RmgRng::new(0);
+            let mut gauss = Gaussian::default();
+            {
+                let mut ctx = BlobCtx {
+                    grid: &mut grid,
+                    scratch: &mut scratch,
+                    ids: &ids,
+                    blocks: &blocks,
+                    rng: &mut rng,
+                    gauss: &mut gauss,
+                    trig: None,
+                    map_w: 34,
+                    map_h: 42,
+                    rollback_level: 4,
+                };
+                let args = BridgeArgs {
+                    region: 5,
+                    heading_dir: 0,
+                    first: (40, 50),
+                    last: (43, 50),
+                    pool_dims: (34, 42),
+                };
+                assert!(build(&mut ctx, &args), "seed 0 is the fixed success oracle");
+            }
+
+            let cells_after: Vec<_> = grid
+                .native_cells()
+                .map(|coord @ (x, y)| (coord, *grid.get(x, y).expect("native cell")))
+                .collect();
+            assert!(
+                cells_before
+                    .iter()
+                    .zip(&cells_after)
+                    .any(|((_, before), (_, after))| before.tile != after.tile),
+                "successful waterfall construction changes tiles"
+            );
+            assert!(
+                cells_before
+                    .iter()
+                    .zip(&cells_after)
+                    .any(|((_, before), (_, after))| before.sub_tile != after.sub_tile),
+                "successful waterfall construction changes sub-tiles"
+            );
+            assert!(
+                cells_before
+                    .iter()
+                    .zip(&cells_after)
+                    .any(|((_, before), (_, after))| before.slope != after.slope),
+                "successful waterfall construction changes shore slopes"
+            );
+            assert!(
+                cells_before
+                    .iter()
+                    .zip(&cells_after)
+                    .any(|((_, before), (_, after))| before.level != after.level),
+                "successful waterfall construction changes terrain levels"
+            );
+            assert_ne!(scratch.cells(), scratch_before.as_slice(), "scratch state changes");
+            assert!(
+                cells_after
+                    .iter()
+                    .any(|(_, cell)| (600..=603).contains(&cell.tile)),
+                "north waterfall tile set appears"
+            );
+
+            let topology_after: Vec<_> = cells_after
+                .iter()
+                .map(|(coord, cell)| {
+                    (*coord, cell.overlay, cell.density, cell.occupied, cell.start_marker)
+                })
+                .collect();
+            assert_eq!(
+                topology_after, topology_before,
+                "waterfall terrain cannot write overlay/data, occupancy, or start markers"
+            );
+            assert_eq!(construction_trace, construction_trace_before);
+            assert!(structures.is_empty(), "waterfall terrain constructs no buildings");
+
+            let mut map = emit::empty_map_file(&RmgOptions::default(), 34, 42);
+            emit::populate(&mut map, &grid, &[], &structures, &[]);
+            assert!(map.overlays.is_empty(), "no emitted OverlayPack entries");
+            assert!(!map.overlay_data.is_present(), "no emitted OverlayDataPack");
+            assert!(map.entities.is_empty(), "no emitted structures");
+            assert!(map.explicit_tubes.is_empty(), "no explicit Tube topology");
+
+            let resolved = ResolvedTerrainGrid::build_generated_materialized_for_test(&map);
+            assert!(resolved.tube_facts().is_empty(), "no synthesized low-deck tubes");
+            assert!(
+                resolved
+                    .iter()
+                    .all(|cell| cell.bridge_flags() == 0 && !cell.has_bridge_deck),
+                "generated materialization has no modeled raw bridge flags or deck"
+            );
+
+            let projection: Vec<_> = map
+                .cells
+                .iter()
+                .map(|cell| (cell.rx, cell.ry, cell.tile_index, cell.sub_tile, cell.z))
+                .collect();
+            (
+                cells_after,
+                scratch.cells().to_vec(),
+                projection,
+                rng.into_continuation().into_native_parts(),
+            )
+        };
+
+        let first = run();
+        let second = run();
+        assert_eq!(first, second, "fixed input repeats output and MapGen continuation");
     }
 
     #[test]

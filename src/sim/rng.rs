@@ -60,7 +60,7 @@ impl SimRng {
     ///
     /// The two implementations intentionally keep separate draw code, but the
     /// native 250-word state and lag cursors are the same logical object at the
-    /// accepted generated-map -> live-scenario boundary.
+    /// launch `.SED` generation -> live-scenario boundary.
     pub(crate) fn from_mapgen_continuation(continuation: MapGenRngContinuation) -> Self {
         let (words, index_a, index_b) = continuation.into_native_parts();
         Self {

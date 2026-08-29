@@ -286,7 +286,7 @@ pub(crate) fn acquire_best_target(
         if candidate.stable_id == attacker.stable_id {
             continue;
         }
-        if candidate.health.current == 0 || candidate.dying {
+        if candidate.health.current == 0 || candidate.dying || candidate.lifecycle.in_limbo {
             continue;
         }
         // `TechnoClass::Evaluate_Candidate @ 0x006F7DB0` rejects a candidate

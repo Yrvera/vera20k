@@ -383,7 +383,7 @@ pub(super) fn build_live_building_entry_skip_map(
     let mut skips = LiveBuildingEntrySkipMap::new();
     for building in entities.values() {
         // A Dying building corpse no longer offers gate/bunker/bib entry cells.
-        if building.dying {
+        if building.dying || !building.lifecycle.cell_marked {
             continue;
         }
         if building.category != EntityCategory::Structure {
@@ -1625,6 +1625,8 @@ mod tests {
         entities.insert(mover);
         let mut refinery = GameEntity::test_default(100, "GAREFN", "Americans", 10, 10);
         refinery.category = EntityCategory::Structure;
+        refinery.lifecycle.in_limbo = false;
+        refinery.lifecycle.cell_marked = true;
         entities.insert(refinery);
         let interner = crate::sim::intern::test_interner();
 
@@ -1654,6 +1656,8 @@ mod tests {
         entities.insert(mover);
         let mut refinery = GameEntity::test_default(100, "GAREFN", "Americans", 10, 10);
         refinery.category = EntityCategory::Structure;
+        refinery.lifecycle.in_limbo = false;
+        refinery.lifecycle.cell_marked = true;
         entities.insert(refinery);
         let interner = crate::sim::intern::test_interner();
 
@@ -1683,6 +1687,8 @@ mod tests {
         entities.insert(mover);
         let mut gate = GameEntity::test_default(100, "GAGATE_A", "Americans", 10, 10);
         gate.category = EntityCategory::Structure;
+        gate.lifecycle.in_limbo = false;
+        gate.lifecycle.cell_marked = true;
         gate.building_gate = Some(BuildingGateRuntime {
             mission_18_active: true,
             phase: BuildingGatePhase::OpenStable,
@@ -1732,6 +1738,8 @@ mod tests {
         entities.insert(mover);
         let mut gate = GameEntity::test_default(100, "GAGATE_A", "Americans", 10, 10);
         gate.category = EntityCategory::Structure;
+        gate.lifecycle.in_limbo = false;
+        gate.lifecycle.cell_marked = true;
         gate.building_gate = Some(BuildingGateRuntime {
             mission_18_active: true,
             phase: BuildingGatePhase::OpenStable,
@@ -1764,6 +1772,8 @@ mod tests {
         entities.insert(mover);
         let mut bunker = GameEntity::test_default(100, "NATBNK", "Americans", 10, 10);
         bunker.category = EntityCategory::Structure;
+        bunker.lifecycle.in_limbo = false;
+        bunker.lifecycle.cell_marked = true;
         entities.insert(bunker);
         let interner = crate::sim::intern::test_interner();
 

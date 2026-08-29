@@ -33,7 +33,7 @@ pub enum EntityCategory {
 /// A single entity placement parsed from a map file.
 ///
 /// Contains the minimum data needed to spawn an ECS entity.
-/// Advanced fields (trigger tags, AI flags, upgrades) are not yet parsed
+/// Advanced fields (trigger tags and remaining AI flags) are not yet parsed
 /// — they'll be added when trigger/AI systems are implemented.
 #[derive(Debug, Clone)]
 pub struct MapEntity {
@@ -70,6 +70,11 @@ pub struct MapEntity {
     /// Second independent recruitment-admission byte (`Techno+0x422`), stored
     /// at trailing field 13 and likewise constructor-default true.
     pub recruitable_b: bool,
+    /// Authored `[Structures]` upgrade type names for native slots 0..2.
+    /// Slots beyond the line's declared upgrade count and unresolved `None`/
+    /// `-1` entries remain empty. Non-structure categories always hold three
+    /// empty slots.
+    pub structure_upgrades: [Option<String>; 3],
 }
 
 /// Field index of the `MISSION=` column in `[Units]`, `[Infantry]` and
@@ -217,6 +222,7 @@ fn parse_infantry_section(
             mission: parse_mission_field(&fields),
             recruitable_a: parse_recruitment_field(fields.get(12).copied()),
             recruitable_b: parse_recruitment_field(fields.get(13).copied()),
+            structure_upgrades: [None, None, None],
         });
     }
 }
@@ -240,9 +246,10 @@ fn parse_structures_section(
             );
             continue;
         }
-        let Some(entity) = parse_common_fields(&fields, EntityCategory::Structure, key) else {
+        let Some(mut entity) = parse_common_fields(&fields, EntityCategory::Structure, key) else {
             continue;
         };
+        entity.structure_upgrades = parse_structure_upgrades(&fields);
         entities.push(entity);
     }
 }
@@ -335,6 +342,30 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
             || parse_recruitment_field(fields.get(12).copied()),
         recruitable_b: matches!(category, EntityCategory::Structure)
             || parse_recruitment_field(fields.get(13).copied()),
+        structure_upgrades: [None, None, None],
+    })
+}
+
+/// Active `BuildingClass::ReadFromINI @ 0x0044F820` stores the declared
+/// installed-upgrade count at retail `[Structures]` field 10; its loop at
+/// `0x0044FD50..0x0044FDC3` visits type selectors 12..14 only within that
+/// prefix and skips selectors resolving to `-1` before construction.
+fn parse_structure_upgrades(fields: &[&str]) -> [Option<String>; 3] {
+    let declared = fields
+        .get(10)
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(0)
+        .clamp(0, 3) as usize;
+    std::array::from_fn(|slot| {
+        if slot >= declared {
+            return None;
+        }
+        let value = fields.get(12 + slot)?.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("none") || value == "-1" {
+            None
+        } else {
+            Some(value.to_string())
+        }
     })
 }
 
@@ -433,6 +464,23 @@ mod tests {
         assert_eq!(entities[0].cell_y, 25);
         assert_eq!(entities[0].facing, 0);
         assert_eq!(entities[0].category, EntityCategory::Structure);
+        assert_eq!(entities[0].structure_upgrades, [None, None, None]);
+    }
+
+    #[test]
+    fn techno_constructor_structure_upgrades_follow_declared_slot_prefix() {
+        let ini = IniFile::from_str(
+            "[Structures]\n\
+             0=Americans,GAPOWR,256,15,25,0,None,true,false,true,2,0,GAPOWRUP,None,IGNORED,false,true\n",
+        );
+
+        let entities = parse_map_entities(&ini);
+
+        assert_eq!(entities.len(), 1);
+        assert_eq!(
+            entities[0].structure_upgrades,
+            [Some("GAPOWRUP".to_string()), None, None]
+        );
     }
 
     #[test]

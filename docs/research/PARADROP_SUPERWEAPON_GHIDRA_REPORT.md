@@ -351,14 +351,12 @@ Returns a coord on the specified map edge of the playfield. Uses the playable re
 - `MapClass+0x104` = playfield width
 - `MapClass+0x108` = playfield height
 
-Algorithm (paraphrased):
-1. If `current_cell == sentinel`, snap to map's `dest_or_default` cell.
-2. Compute closest edge based on cell distance to all 4 borders.
-3. Iterate cells along that edge, calling `FUN_004AAB30` (passability + zone match) until a valid cell is found.
-4. For edges 0 (north) and 3 (west) the iteration walks from start; for 1 (east) and 2 (south) it walks from playfield extent.
-5. Edge 2 (south) does an extra pass that builds a candidate list of up to 10 entries via a vector (`PTR_FUN_007E3890`), then picks either a random entry or the closest to the target — a different behavior from the other edges.
-
-**Parity caveat:** edge 2's "closest passable to target" search is meaningfully different from the others' "first valid scan" — replicating it 1:1 matters for the spawn position to feel right.
+For the active paradrop sentinel/sentinel, criterion-4 call, the exact edge-specific scan is
+recorded in §15. Criterion 4 fast-accepts the first candidate outside the height-aware
+playfield; it does not perform ordinary passability or zone checks. South accumulates the full
+dynamic candidate vector (10 is the allocation growth quantum) and consumes a second Scenario
+RNG draw to select one. Target-distance selection belongs to non-sentinel callers and is not
+reached by carrier spawn or the Approach/Overfly exit calls.
 
 ---
 
@@ -688,15 +686,24 @@ Re-reading the decomp with care:
 - `param_7`: zone-id / boolean
 - `param_8`: optional movement-zone arg
 
-Per-mode behavior:
-- **Mode 0 (North):** scan along map width, picking cells from playfield top edge. Iterate via `iVar13 - iVar14` (ascending Y).
-- **Mode 1 (East):** `bVar16 = true`, `param_7 = playfield_X`, scan along height from right.
-- **Mode 2 (South):** `bVar4 = true`, `param_4 = playfield_height*2 + 2`. **Special path**: builds a candidate list of up to 10 valid cells, then picks either:
-  - Random one (when alternate cell is sentinel), or
-  - Closest to alternate cell (`Sqrt_Approx(dx² + dy²)` minimized).
-- **Mode 3 (West):** `bVar16 = true`, scan along height from left.
+2026-08-29 active-retail correction from the assembly and vector growth path:
 
-The asymmetry of mode 2 (random pick vs nearest-to-target) is the most parity-relevant detail — replicate the candidate list + closest-to-target logic, not a simple linear scan.
+- **Mode 0 (North):** consume `RandomRanged(1, width)`, subtract one, then scan
+  `LocalToCell((n + start) % width, -1)`; criterion 4 accepts the first candidate
+  outside the height-aware playfield.
+- **Mode 1 (East):** consume `RandomRanged(1, 2*height)`, subtract one, then scan
+  `LocalToCell(width, (n + start) % (2*height))` for the first outside candidate.
+- **Mode 2 (South):** consume `RandomRanged(1, width)` even though its result is unused.
+  For every local `u=0..width-1`, scan `v=2*height+j`, `j=0..14`, and append the
+  first outside candidate. The vector's 10-entry allocation is a growth quantum, not a
+  candidate cap. With sentinel alternate input, select from the complete vector using
+  `RandomRanged(0, count-1)`; an empty vector writes packed `(0,0)`.
+- **Mode 3 (West):** consume `RandomRanged(0, 2*height)`, subtract one, and retain
+  signed remainder behavior while scanning `LocalToCell(0, (n + start) % (2*height))`.
+- North/East/West use `LocalToCell(1, width/2)` if their scan finds no candidate.
+
+For the paradrop sentinel/sentinel call, target-distance selection is not reached. The material
+asymmetry is South's full dynamic candidate vector and second RNG draw.
 
 ### 16. `aircraft+0x169` semantics
 
@@ -890,7 +897,7 @@ So: search a 24-cell radius around the bridge target for a non-bridge passable c
 | 11 | Mission table at 0x7E24A8; mission 26=Approach, 27=Overfly | RESOLVED | Use direct mission ID enum |
 | 12+13 | Edge encoding 0=N, 1=E, 2=S, 3=W; opposite via switch | RESOLVED | Per-house WaypointEdge field |
 | 14 | V-pattern radius = **128 leptons** (constant at 0x7E2808) | **RESOLVED** | Hardcode 128 leptons offset |
-| 15 | FUN_004AA440 modes characterized; mode 2 special | RESOLVED | Replicate per-mode logic incl. mode 2 candidate-list-then-closest |
+| 15 | FUN_004AA440 modes characterized; mode 2 special | RESOLVED | Replicate exact per-mode initial draws; South grows the full candidate vector and randomly selects for sentinel input |
 | 16 | aircraft+0x5A4 = current drop target ptr (distinct from cargo count) | RESOLVED | Track separately |
 | 17 | FUN_00473430 returns popped passenger via EAX | RESOLVED | Standard cargo pop semantic |
 | 18 | LandingState = 5-tick mutex timer between drops | RESOLVED | u8 countdown, reset on drop |

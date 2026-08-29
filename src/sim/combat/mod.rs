@@ -5342,6 +5342,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             if candidate.stable_id == id
                 || candidate.health.current == 0
                 || candidate.dying
+                || candidate.lifecycle.in_limbo
                 || candidate.passenger_role.is_inside_transport()
             {
                 continue;

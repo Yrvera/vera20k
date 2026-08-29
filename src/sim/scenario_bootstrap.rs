@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseRoster;
 use crate::map::map_file::MapFile;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::waypoints::Waypoint;
 use crate::rng_continuation::MapGenRngContinuation;
@@ -26,7 +27,7 @@ use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_ed
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::rng::{SimRng, SimRngLogicalState};
 use crate::sim::scenario_session::ScenarioDescriptor;
-use crate::sim::world::Simulation;
+use crate::sim::world::{PlacementEvidence, Simulation};
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
 };
@@ -284,9 +285,9 @@ impl PreloadedBattleStartPlan {
 ///
 /// Sparse or deficient authored starts deliberately return `None`: their two
 /// Gather passes depend on resolved terrain and must stay runtime-owned.
-/// Random maps are eligible once their retained GeneratedMap exists: gamemd's
-/// Full_Init 0x00686B20 assigns the retained RmgRegion start waypoints before
-/// DrawLoadingScreen 0x00552D60 consumes that same table.
+/// Random maps are eligible after the launch-time `.SED` reader regenerates
+/// their MapFile: gamemd Full_Init 0x00686B20 assigns those fresh RmgRegion
+/// start waypoints before DrawLoadingScreen 0x00552D60 consumes the table.
 /// FFA provenance: constructor 0x005C5CE0 installs vtable 0x007EE424, whose
 /// +0x80 (0x005D6BE0), +0x84 (0x005D6C70), and +0xC4 (0x005D6890) callbacks
 /// are byte-identical to Battle's active start-assignment callbacks. Full_Init
@@ -712,6 +713,30 @@ pub(crate) fn apply_explicit_skirmish_launch_session(
         resolved_terrain,
         descriptor,
         None,
+        None,
+    )
+}
+
+pub(crate) fn apply_explicit_skirmish_launch_session_with_overlay_registry(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    descriptor: &MatchLaunchDescriptor,
+    overlay_registry: &OverlayTypeRegistry,
+) -> SkirmishLaunchApplyResult {
+    apply_resolved_skirmish_launch_session(
+        sim,
+        map_data,
+        house_roster,
+        rules,
+        height_map,
+        resolved_terrain,
+        descriptor,
+        Some(overlay_registry),
+        None,
     )
 }
 
@@ -734,6 +759,32 @@ pub(crate) fn apply_preloaded_battle_launch_session(
         height_map,
         resolved_terrain,
         descriptor,
+        None,
+        Some(plan),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_preloaded_battle_launch_session_with_overlay_registry(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    descriptor: &MatchLaunchDescriptor,
+    overlay_registry: &OverlayTypeRegistry,
+    plan: &PreloadedBattleStartPlan,
+) -> SkirmishLaunchApplyResult {
+    apply_resolved_skirmish_launch_session(
+        sim,
+        map_data,
+        house_roster,
+        rules,
+        height_map,
+        resolved_terrain,
+        descriptor,
+        Some(overlay_registry),
         Some(plan),
     )
 }
@@ -746,6 +797,7 @@ fn apply_resolved_skirmish_launch_session(
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
     descriptor: &MatchLaunchDescriptor,
+    overlay_registry: Option<&OverlayTypeRegistry>,
     preloaded_battle_plan: Option<&PreloadedBattleStartPlan>,
 ) -> SkirmishLaunchApplyResult {
     // Direct frontend/unit-test launch paths can enter before the shared
@@ -867,6 +919,7 @@ fn apply_resolved_skirmish_launch_session(
                 rules,
                 height_map,
                 resolved_terrain,
+                overlay_registry,
             )
             .is_some()
             {
@@ -895,7 +948,7 @@ fn apply_resolved_skirmish_launch_session(
         }
     }
 
-    seed_starting_extra_units(
+    seed_starting_extra_units_with_overlay_registry(
         sim,
         &slots,
         rules,
@@ -907,6 +960,7 @@ fn apply_resolved_skirmish_launch_session(
             .special_flags
             .initial_veteran
             .unwrap_or(rules.initial_veteran),
+        overlay_registry,
     );
 
     // The selected-mode starting-force orchestrator advances Scenario RNG once
@@ -1181,6 +1235,7 @@ fn place_starting_mcv(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Option<u64> {
     place_starting_object_near_base(
         sim,
@@ -1194,6 +1249,7 @@ fn place_starting_mcv(
         rules,
         height_map,
         resolved_terrain,
+        overlay_registry,
     )
 }
 
@@ -1209,10 +1265,33 @@ fn place_starting_object_near_base(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Option<u64> {
     let category = rules.object(type_id)?.category;
+    let initial_z = height_map.get(&(base_rx, base_ry)).copied().unwrap_or(0);
+    // Active retail constructs one Techno before exact/fallback Unlimbo. The
+    // one constructor draw therefore precedes every placement-search draw and
+    // remains spent even when every attempt fails.
+    let stable_id = sim.construct_object_limbo_at_height(
+        type_id, owner, base_rx, base_ry, facing, initial_z, rules,
+    )?;
     if starting_object_cell_placeable(sim, resolved_terrain, base_rx, base_ry, category) {
-        return sim.spawn_object(type_id, owner, base_rx, base_ry, facing, rules, height_map);
+        if sim
+            .reveal_constructed_object_at_height_with_unit_context(
+                stable_id,
+                base_rx,
+                base_ry,
+                facing,
+                initial_z,
+                PlacementEvidence::EvaluateMark,
+                rules,
+                overlay_registry,
+                stable_id,
+            )
+            .is_some()
+        {
+            return Some(stable_id);
+        }
     }
 
     for radius in start_radius..=STARTING_MCV_FALLBACK_MAX_RADIUS {
@@ -1244,15 +1323,28 @@ fn place_starting_object_near_base(
                 {
                     continue;
                 }
-                if let Some(id) =
-                    sim.spawn_object(type_id, owner, rx, ry, facing, rules, height_map)
+                let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
+                if sim
+                    .reveal_constructed_object_at_height_with_unit_context(
+                        stable_id,
+                        rx,
+                        ry,
+                        facing,
+                        z,
+                        PlacementEvidence::EvaluateMark,
+                        rules,
+                        overlay_registry,
+                        stable_id,
+                    )
+                    .is_some()
                 {
-                    return Some(id);
+                    return Some(stable_id);
                 }
             }
         }
     }
 
+    sim.discard_constructed_limbo(stable_id);
     None
 }
 
@@ -1280,6 +1372,31 @@ pub(crate) fn seed_starting_extra_units(
     bounds: NativeStartBounds,
     unit_count: i32,
     initial_veteran: bool,
+) -> u32 {
+    seed_starting_extra_units_with_overlay_registry(
+        sim,
+        slots,
+        rules,
+        height_map,
+        resolved_terrain,
+        bounds,
+        unit_count,
+        initial_veteran,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seed_starting_extra_units_with_overlay_registry(
+    sim: &mut Simulation,
+    slots: &[NormalizedSkirmishSlot],
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    bounds: NativeStartBounds,
+    unit_count: i32,
+    initial_veteran: bool,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> u32 {
     if unit_count <= 0 {
         return 0;
@@ -1346,6 +1463,7 @@ pub(crate) fn seed_starting_extra_units(
                 rules,
                 height_map,
                 resolved_terrain,
+                overlay_registry,
             ) else {
                 placement_failures_left -= 1;
                 continue;
@@ -1591,7 +1709,7 @@ fn launch_country_can_own_object(
 /// Opaque owner for the RNG cursors used while a map becomes a world.
 ///
 /// The app may drive content-loading algorithms through the two narrow draw
-/// wrappers and may transport an accepted generated-map continuation, but it
+/// wrappers and may transport the launch-generated MapGen continuation, but it
 /// cannot replace, extract, or draw from those cursors. Consuming this owner is
 /// the only production handoff into a freshly constructed Simulation.
 pub(crate) struct ScenarioBootstrapRng {
@@ -1662,6 +1780,63 @@ impl ScenarioBootstrapRng {
             VariantMainRng {
                 rng: &mut self.main,
             },
+        )
+    }
+
+    /// Consume the launch generation's ordered Building constructor trace on
+    /// the same Scenario owner that already passed through Battle/FFA preload
+    /// and terrain Fill. Successful rows retain their low word for later
+    /// projection; discarded rows spend the word and deliberately bind none.
+    ///
+    /// gamemd provenance: TechnoClass constructor 0x006F3254 consumes one raw
+    /// Scenario word before RMG placement can succeed or fail. Launch reader
+    /// 0x00684620 regenerates the accepted `.SED` after match RNG reseeding.
+    pub(crate) fn replay_generated_construction_trace(
+        &mut self,
+        trace: &crate::map::construction_trace::RmgConstructionTrace,
+    ) -> Result<
+        crate::sim::world::GeneratedTechnoInitTable,
+        crate::sim::world::GeneratedTechnoInitError,
+    > {
+        let mut emitted = Vec::new();
+        for (expected_ordinal, event) in trace.events.iter().enumerate() {
+            if event.ordinal != expected_ordinal {
+                return Err(
+                    crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
+                        expected: expected_ordinal,
+                        found: event.ordinal,
+                    },
+                );
+            }
+            let techno_ctor_random_word = (self.scenario.next_u32() & 0xFFFF) as u16;
+            if let crate::map::construction_trace::RmgConstructionOutcome::Emitted {
+                entity_index,
+                cell,
+            } = &event.outcome
+            {
+                emitted.push(crate::sim::game_entity::GeneratedTechnoInit {
+                    entity_index: *entity_index,
+                    techno_type: event.techno_type.clone(),
+                    cell: *cell,
+                    techno_ctor_random_word,
+                });
+            }
+        }
+        crate::sim::world::GeneratedTechnoInitTable::try_new(emitted)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn logical_states_for_test(
+        &self,
+    ) -> (
+        crate::sim::rng::SimRngLogicalState,
+        crate::sim::rng::SimRngLogicalState,
+        Option<crate::sim::rng::SimRngLogicalState>,
+    ) {
+        (
+            self.scenario.logical_state(),
+            self.main.logical_state(),
+            self.mapgen.as_ref().map(SimRng::logical_state),
         )
     }
 
@@ -1820,12 +1995,357 @@ pub(crate) fn initialize_map_roster_houses(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::bridge_facts::BridgeCellFacts;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
 
     fn descriptor(seed: u32) -> ScenarioDescriptor {
         ScenarioDescriptor {
             seed,
             ..ScenarioDescriptor::default()
         }
+    }
+
+    fn techno_constructor_start_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n\n\
+             [VehicleTypes]\n0=MTNK\n1=HTNK\n\n\
+             [AircraftTypes]\n\n\
+             [BuildingTypes]\n\n\
+             [MTNK]\nStrength=300\nSpeed=6\nCost=100\nTechLevel=1\nOwner=Americans\nAllowedToStartInMultiplayer=yes\n\n\
+             [HTNK]\nStrength=400\nSpeed=5\nCost=100\nTechLevel=1\nOwner=Americans\nAllowedToStartInMultiplayer=yes\n",
+        ))
+        .expect("starting-object constructor rules")
+    }
+
+    fn techno_constructor_flat_start_terrain(size: u16) -> ResolvedTerrainGrid {
+        let land_type = LandType::Clear.as_index();
+        let speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        let mut cells = Vec::with_capacity(usize::from(size) * usize::from(size));
+        for ry in 0..size {
+            for rx in 0..size {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: false,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type,
+                    yr_cell_land_type: land_type,
+                    slope_type: 0,
+                    template_height: 0,
+                    height_in_pixels: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs,
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: true,
+                    allows_tiberium: true,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    terrain_object_occupation: None,
+                    overlay_blocks: false,
+                    overlay_zone_type: None,
+                    outside_playfield: false,
+                    zone_type: zone_class::GROUND,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    base_land_type: land_type,
+                    base_yr_cell_land_type: land_type,
+                    base_terrain_class: TerrainClass::Clear,
+                    base_speed_costs: speed_costs,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: BridgeCellFacts::default(),
+                    tube_index: None,
+                    radar_left: [0; 3],
+                    radar_right: [0; 3],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(size, size, cells)
+    }
+
+    fn techno_constructor_start_sim(seed: u64, size: u16) -> Simulation {
+        let mut sim = Simulation::with_seed(seed);
+        sim.session.map_width = size;
+        sim.session.map_height = size;
+        sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+            base: i32::from(size),
+            off_fc: 0,
+            off_100: 0,
+            off_104: i32::from(size),
+            off_108: i32::from(size),
+        });
+        sim
+    }
+
+    #[test]
+    fn techno_constructor_postmap_exact_and_fallback_place_one_constructed_identity() {
+        let seed = 0xC701_1001;
+        let rules = techno_constructor_start_rules();
+        let terrain = techno_constructor_flat_start_terrain(10);
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+
+        let mut exact = techno_constructor_start_sim(seed, 10);
+        let mut exact_expected = SimRng::new(seed);
+        let exact_word = (exact_expected.next_u32() & 0xFFFF) as u16;
+        let exact_id = place_starting_object_near_base(
+            &mut exact,
+            "MTNK",
+            "Americans",
+            6,
+            5,
+            STARTING_MCV_FACING,
+            1,
+            bounds,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+            None,
+        )
+        .expect("exact PostMap placement");
+        let exact_entity = exact.substrate.entities.get(exact_id).unwrap();
+        assert_eq!(exact_entity.techno_ctor_random_word, exact_word);
+        assert_eq!((exact_entity.position.rx, exact_entity.position.ry), (6, 5));
+        assert_eq!(
+            exact.scenario_rng.logical_state(),
+            exact_expected.logical_state()
+        );
+
+        let mut fallback = techno_constructor_start_sim(seed, 10);
+        let mut fallback_expected = SimRng::new(seed);
+        let blocker_word = (fallback_expected.next_u32() & 0xFFFF) as u16;
+        let blocker = fallback
+            .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            fallback
+                .substrate
+                .entities
+                .get(blocker)
+                .unwrap()
+                .techno_ctor_random_word,
+            blocker_word
+        );
+        let fallback_word = (fallback_expected.next_u32() & 0xFFFF) as u16;
+        let _start_direction = fallback_expected.next_range_u32_inclusive(0, 7);
+        let fallback_id = place_starting_object_near_base(
+            &mut fallback,
+            "MTNK",
+            "Americans",
+            6,
+            5,
+            STARTING_MCV_FACING,
+            1,
+            bounds,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+            None,
+        )
+        .expect("fallback PostMap placement");
+        let fallback_entity = fallback.substrate.entities.get(fallback_id).unwrap();
+        assert_eq!(fallback_entity.techno_ctor_random_word, fallback_word);
+        assert_ne!(
+            (fallback_entity.position.rx, fallback_entity.position.ry),
+            (6, 5)
+        );
+        assert_eq!(
+            fallback.scenario_rng.logical_state(),
+            fallback_expected.logical_state()
+        );
+    }
+
+    #[test]
+    fn techno_constructor_postmap_total_failure_deletes_object_but_keeps_draw_first() {
+        let seed = 0xC701_1002;
+        let rules = techno_constructor_start_rules();
+        let terrain = ResolvedTerrainGrid::from_cells(10, 10, Vec::new());
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+        let mut sim = techno_constructor_start_sim(seed, 10);
+        let mut expected = SimRng::new(seed);
+        let _constructor_word = expected.next_u32();
+        for _radius in 1..=STARTING_MCV_FALLBACK_MAX_RADIUS {
+            let _ = expected.next_range_u32_inclusive(0, 7);
+            for jitter_pass in 0..2 {
+                for _offset in 0..8 {
+                    if jitter_pass != 0 {
+                        let _ = expected.next_range_u32_inclusive(0, 1);
+                        let _ = expected.next_range_u32_inclusive(0, 99);
+                        let _ = expected.next_range_u32_inclusive(0, 1);
+                        let _ = expected.next_range_u32_inclusive(0, 99);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            place_starting_object_near_base(
+                &mut sim,
+                "MTNK",
+                "Americans",
+                5,
+                5,
+                STARTING_MCV_FACING,
+                1,
+                bounds,
+                &rules,
+                &BTreeMap::new(),
+                &terrain,
+                None,
+            )
+            .is_none()
+        );
+        assert!(sim.substrate.entities.is_empty());
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_starting_unit_uses_raw_unit_admission_before_fallback() {
+        let seed = 0xC701_1004;
+        let rules = techno_constructor_start_rules();
+        let terrain = techno_constructor_flat_start_terrain(10);
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+        let base = (6, 5);
+        let mut sim = techno_constructor_start_sim(seed, 10);
+        sim.install_resolved_terrain_for_new_map(terrain.clone());
+        sim.substrate.raw_cell_occupation.mark_ground(
+            base.0,
+            base.1,
+            crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+        );
+
+        let mut expected = SimRng::new(seed);
+        let expected_word = (expected.next_u32() & 0xFFFF) as u16;
+        let _fallback_start_direction = expected.next_range_u32_inclusive(0, 7);
+        let stable_id = place_starting_object_near_base(
+            &mut sim,
+            "MTNK",
+            "Americans",
+            base.0,
+            base.1,
+            STARTING_MCV_FACING,
+            1,
+            bounds,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+            None,
+        )
+        .expect("raw-bit rejection must retry the same constructed Unit");
+
+        let placed = sim.substrate.entities.get(stable_id).unwrap();
+        assert_eq!(placed.techno_ctor_random_word, expected_word);
+        assert_ne!((placed.position.rx, placed.position.ry), base);
+        assert_eq!(stable_id, 1, "fallback must retain the first identity");
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+    }
+
+    #[test]
+    fn techno_constructor_extra_unit_selection_precedes_constructor_word() {
+        let seed = 0xC701_1003;
+        let rules = techno_constructor_start_rules();
+        let terrain = techno_constructor_flat_start_terrain(10);
+        let bounds = NativeStartBounds {
+            min_rx: 1,
+            min_ry: 1,
+            width: 9,
+            height: 9,
+        };
+        let mut sim = techno_constructor_start_sim(seed, 10);
+        sim.session.game_options.tech_level = 10;
+        let owner = sim.interner.intern("Americans");
+        let mut house = HouseState::new(owner, 0, None, true, 0, 10);
+        house.base_center = Some((6, 5));
+        sim.houses.insert(owner, house);
+        let slots = [NormalizedSkirmishSlot {
+            owner_name: "Americans".to_string(),
+            country: LaunchCountry::America,
+            color_index: 0,
+            start_position: LaunchStartPosition::Auto,
+            team: LaunchTeam::None,
+            is_human: true,
+            difficulty: HouseDifficulty::Normal,
+        }];
+        let mut expected = SimRng::new(seed);
+        let blocker_word = (expected.next_u32() & 0xFFFF) as u16;
+        let blocker = sim
+            .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
+            .expect("starting-cell blocker");
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(blocker)
+                .unwrap()
+                .techno_ctor_random_word,
+            blocker_word
+        );
+        let candidate_index = expected.next_range_u32_inclusive(0, 1) as usize;
+        let expected_type = ["MTNK", "HTNK"][candidate_index];
+        let expected_word = (expected.next_u32() & 0xFFFF) as u16;
+        let _fallback_start_direction = expected.next_range_u32_inclusive(0, 7);
+
+        assert_eq!(
+            seed_starting_extra_units(
+                &mut sim,
+                &slots,
+                &rules,
+                &BTreeMap::new(),
+                &terrain,
+                bounds,
+                1,
+                false,
+            ),
+            1
+        );
+        let entity = sim.substrate.entities.get(2).unwrap();
+        assert_eq!(sim.interner.resolve(entity.type_ref), expected_type);
+        assert_eq!(entity.techno_ctor_random_word, expected_word);
+        assert_ne!((entity.position.rx, entity.position.ry), (6, 5));
+        assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
     }
 
     #[test]
@@ -1968,5 +2488,386 @@ mod tests {
 
         assert_eq!(actual.scenario, after.logical_state());
         assert_eq!(actual.main, before.logical_state());
+    }
+
+    #[test]
+    fn gsi_04_12_preload_fill_and_generated_trace_share_one_scenario_owner() {
+        use crate::map::construction_trace::{RmgConstructionPhase, RmgConstructionTrace};
+
+        let seed = 0x51C0_1006;
+        let before = SimRng::new(u64::from(seed));
+        let mut reference = before.clone();
+        let _ = reference
+            .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
+        let plan = PreloadedBattleStartPlan {
+            gathered_starts: Vec::new(),
+            assignment: NativeStartAssignment {
+                placements: Vec::new(),
+                start_table: Vec::new(),
+            },
+            scenario_rng_before: before.logical_state(),
+            scenario_rng_before_fingerprint: before.state(),
+            scenario_rng_after: reference.logical_state(),
+            scenario_rng_after_cursor: reference.clone(),
+        };
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        owner
+            .install_preloaded_battle_plan(&plan)
+            .expect("fresh launch owner accepts the Full-Init prefix");
+        {
+            let (mut scenario_fill, main) = owner.terrain_draws();
+            let actual = scenario_fill.next_range_u32_inclusive(5, 17);
+            let expected = reference.next_range_u32_inclusive(5, 17);
+            assert_eq!(actual, expected);
+            drop(main);
+        }
+
+        let mut trace = RmgConstructionTrace::default();
+        trace.push_emitted(
+            RmgConstructionPhase::BridgeRepairHut,
+            "CABHUT".to_string(),
+            0,
+            (10, 11),
+        );
+        trace.push_discarded(RmgConstructionPhase::NeutralTech, "CAOILD".to_string());
+        trace.push_emitted(
+            RmgConstructionPhase::NeutralTech,
+            "CATHOSP".to_string(),
+            2,
+            (12, 13),
+        );
+        let first_word = (reference.next_u32() & 0xFFFF) as u16;
+        let _discarded_word = reference.next_u32();
+        let second_word = (reference.next_u32() & 0xFFFF) as u16;
+
+        let bindings = owner
+            .replay_generated_construction_trace(&trace)
+            .expect("ordered trace binds emitted constructors");
+        assert_eq!(
+            bindings
+                .entry(0)
+                .expect("CABHUT binding")
+                .techno_ctor_random_word,
+            first_word
+        );
+        assert_eq!(
+            bindings
+                .entry(2)
+                .expect("neutral-tech binding")
+                .techno_ctor_random_word,
+            second_word
+        );
+        assert!(bindings.entry(1).is_none(), "discarded row binds no entity");
+
+        let actual = owner.into_simulation(&descriptor(seed)).rng_state();
+        assert_eq!(actual.scenario, reference.logical_state());
+        assert_eq!(actual.main, before.logical_state());
+    }
+
+    #[test]
+    fn gsi_04_12_generated_trace_continues_into_starting_techno_and_post_map_crate() {
+        use crate::map::construction_trace::{RmgConstructionPhase, RmgConstructionTrace};
+        use crate::sim::scenario_post_map::ScenarioPostMapInput;
+        use crate::skirmish_launch::{
+            SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLocalSlot,
+        };
+
+        const SIZE: u16 = 80;
+        let seed = 0x51C0_100B;
+        let ini = IniFile::from_str(
+            "[General]\n\
+             BaseUnit=MTNK\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=MTNK\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=CABHUT\n\
+             1=CATHOSP\n\
+             [MTNK]\n\
+             Strength=300\n\
+             Speed=6\n\
+             Cost=100\n\
+             TechLevel=1\n\
+             Owner=Americans\n\
+             [CABHUT]\n\
+             Strength=100\n\
+             Foundation=1x1\n\
+             Owner=Neutral\n\
+             [CATHOSP]\n\
+             Strength=100\n\
+             Foundation=1x1\n\
+             Owner=Neutral\n\
+             [OverlayTypes]\n\
+             0=WOOD\n\
+             1=WATER\n\
+             [WOOD]\n\
+             Crate=yes\n\
+             [WATER]\n\
+             Crate=yes\n\
+             [CrateRules]\n\
+             CrateImg=WOOD\n\
+             WoodCrateImg=WOOD\n\
+             WaterCrateImg=WATER\n\
+             CrateMinimum=1\n\
+             CrateMaximum=1\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("single-owner launch rules");
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let map = MapFile::from_bytes(
+            b"[Map]\nTheater=TEMPERATE\nSize=0,0,40,40\nLocalSize=2,2,36,32\n\
+              [Basic]\nName=GSI 04.12 owner fixture\n\
+              [Structures]\n\
+              0=Neutral,CABHUT,256,30,30,0,None\n\
+              1=Neutral,CATHOSP,256,32,32,0,None\n\
+              [IsoMapPack5]\n1=CAAEABUAAAAAEQAA\n",
+        )
+        .expect("minimal generated-map-shaped input");
+        let session = SkirmishLaunchSession {
+            mode: SkirmishLaunchMode {
+                id: 1,
+                ui_name_key: "GUI:Battle".to_string(),
+                tooltip_key: "STT:ModeBattle".to_string(),
+                override_file: "MPBattleMD.ini".to_string(),
+                map_filter: "standard".to_string(),
+                random_maps_allowed: true,
+                allies_allowed: true,
+                must_ally: false,
+            },
+            selected_map_file: Some("RandMap.SED".to_string()),
+            player_name: "Player".to_string(),
+            local: SkirmishLocalSlot {
+                country: LaunchCountry::America,
+                country_random: false,
+                color_index: 0,
+                color_random: false,
+                start_position: LaunchStartPosition::Position(1),
+                team: LaunchTeam::None,
+            },
+            opponents: Vec::new(),
+            options: SkirmishLaunchOptions {
+                unit_count: 0,
+                bases: true,
+                crates: true,
+                ..SkirmishLaunchOptions::default()
+            },
+        };
+        let launch = MatchLaunchDescriptor::from_resolved(session)
+            .expect("fixture contains no unresolved shell choices");
+
+        let before = SimRng::new(u64::from(seed));
+        let mut reference = before.clone();
+        // One participant, then Neutral and Special, in native House order.
+        for _ in 0..3 {
+            let _ = reference
+                .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
+        }
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
+        };
+        let plan = PreloadedBattleStartPlan {
+            gathered_starts: vec![start],
+            assignment: NativeStartAssignment {
+                placements: vec![(0, start)],
+                start_table: vec![Some(0)],
+            },
+            scenario_rng_before: before.logical_state(),
+            scenario_rng_before_fingerprint: before.state(),
+            scenario_rng_after: reference.logical_state(),
+            scenario_rng_after_cursor: reference.clone(),
+        };
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        owner
+            .install_preloaded_battle_plan(&plan)
+            .expect("one authoritative Full-Init prefix");
+        {
+            let (mut scenario_fill, main) = owner.terrain_draws();
+            let actual = scenario_fill.next_range_u32_inclusive(5, 17);
+            let expected = reference.next_range_u32_inclusive(5, 17);
+            assert_eq!(actual, expected, "terrain Fill continues the prefix");
+            drop(main);
+        }
+
+        let mut trace = RmgConstructionTrace::default();
+        trace.push_emitted(
+            RmgConstructionPhase::BridgeRepairHut,
+            "CABHUT".to_string(),
+            0,
+            (30, 30),
+        );
+        trace.push_discarded(RmgConstructionPhase::NeutralTech, "CAOILD".to_string());
+        trace.push_emitted(
+            RmgConstructionPhase::NeutralTech,
+            "CATHOSP".to_string(),
+            1,
+            (32, 32),
+        );
+        let first_trace_word = (reference.next_u32() & 0xFFFF) as u16;
+        let _discarded_trace_word = reference.next_u32();
+        let second_trace_word = (reference.next_u32() & 0xFFFF) as u16;
+        let bindings = owner
+            .replay_generated_construction_trace(&trace)
+            .expect("ordered trace binds emitted constructors");
+        assert_eq!(
+            bindings.entry(0).unwrap().techno_ctor_random_word,
+            first_trace_word
+        );
+        assert_eq!(
+            bindings.entry(1).unwrap().techno_ctor_random_word,
+            second_trace_word
+        );
+        assert!(bindings.entry(2).is_none());
+        assert_eq!(
+            owner.logical_states_for_test().0,
+            reference.logical_state(),
+            "the independently walked intermediate cursor must match after replay"
+        );
+
+        let mut scenario = descriptor(seed);
+        scenario.map_name = "RandMap.SED".to_string();
+        scenario.theater = "TEMPERATE".to_string();
+        scenario.game_mode_nonzero = true;
+        scenario.map_width = SIZE;
+        scenario.map_height = SIZE;
+        scenario.local_left = 2;
+        scenario.local_top = 2;
+        scenario.local_width = 36;
+        scenario.local_height = 32;
+        scenario.mp_start_waypoints.insert(0, (start.rx, start.ry));
+        let terrain = techno_constructor_flat_start_terrain(SIZE);
+        let mut sim = owner.into_simulation(&scenario);
+        sim.install_resolved_terrain_for_new_map(terrain.clone());
+        sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(SIZE, SIZE));
+        sim.install_playfield_from_map_header(&map.header);
+        let house_roster = HouseRoster::default();
+        initialize_skirmish_launch_houses(&mut sim, &house_roster, &rules, &launch);
+        let before_projection = sim.scenario_rng.logical_state();
+        assert_eq!(
+            sim.spawn_generated_from_map_with_resolved(
+                &map.entities,
+                &rules,
+                &BTreeMap::new(),
+                Some(&terrain),
+                &bindings,
+            )
+            .expect("generated projection validates the replay bindings"),
+            2
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            before_projection,
+            "generated projection must install preconsumed words without drawing"
+        );
+        let installed_words = [("CABHUT", first_trace_word), ("CATHOSP", second_trace_word)];
+        for (type_id, expected_word) in installed_words {
+            let entity = sim
+                .entities()
+                .values()
+                .find(|entity| sim.interner.resolve(entity.type_ref) == type_id)
+                .unwrap_or_else(|| panic!("generated {type_id} reached Simulation"));
+            assert_eq!(entity.techno_ctor_random_word, expected_word);
+        }
+
+        let starting_techno_word = (reference.next_u32() & 0xFFFF) as u16;
+        let _starting_force_tail = reference.next_range_u32_inclusive(0, 0xFFFF);
+        let launch_result = apply_preloaded_battle_launch_session_with_overlay_registry(
+            &mut sim,
+            &map,
+            &house_roster,
+            &rules,
+            &BTreeMap::new(),
+            &terrain,
+            &launch,
+            &overlays,
+            &plan,
+        );
+        assert_eq!(launch_result.spawned_mcvs, 1);
+        let starting_techno = sim
+            .entities()
+            .values()
+            .find(|entity| sim.interner.resolve(entity.type_ref) == "MTNK")
+            .expect("the production launch constructs its starting MCV");
+        assert_eq!(
+            starting_techno.techno_ctor_random_word, starting_techno_word,
+            "the first post-trace Techno constructor continues the same cursor"
+        );
+
+        let expected_crate_cell = (
+            reference.next_range_u32_inclusive(1, u32::from(SIZE - 1)) as u16,
+            reference.next_range_u32_inclusive(1, u32::from(SIZE - 1)) as u16,
+        );
+        assert!(
+            crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                (
+                    i32::from(expected_crate_cell.0),
+                    i32::from(expected_crate_cell.1),
+                ),
+                sim.playfield_bounds,
+                Some(&terrain),
+            ),
+            "controlled first crate draw must need no FNPC displacement"
+        );
+        let _crate_timer = reference.next_range_u32_inclusive(0, 0x7FFF_FFFE);
+        let output = sim.finalize_scenario_post_map(ScenarioPostMapInput {
+            map_width: SIZE,
+            map_height: SIZE,
+            basic: &map.basic,
+            special_flags: &map.special_flags,
+            rules: &rules,
+            overlay_registry: &overlays,
+            house_roster: &house_roster,
+            skirmish_session: Some(&launch),
+        });
+        assert_eq!(
+            output.crates,
+            Some(crate::sim::crates::CratePlacement {
+                requested: 1,
+                placed: 1,
+            })
+        );
+        let wood = overlays.id_for_name("WOOD").expect("WOOD crate overlay");
+        let crate_cells = sim
+            .overlay_grid
+            .as_ref()
+            .expect("post-map overlay authority")
+            .iter_occupied()
+            .filter_map(|(rx, ry, cell)| (cell.overlay_id == Some(wood)).then_some((rx, ry)))
+            .collect::<Vec<_>>();
+        assert_eq!(crate_cells, vec![expected_crate_cell]);
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            reference.logical_state(),
+            "prefix, Fill, trace, starting Techno, and crate draws must form one stream"
+        );
+        assert_eq!(sim.main_rng.logical_state(), before.logical_state());
+    }
+
+    #[test]
+    fn generated_trace_rejects_bad_ordinal_before_spending_scenario() {
+        let seed = 0x51C0_1007;
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        let mut trace = crate::map::construction_trace::RmgConstructionTrace::default();
+        trace.push_discarded(
+            crate::map::construction_trace::RmgConstructionPhase::NeutralTech,
+            "CAOILD".to_string(),
+        );
+        trace.events[0].ordinal = 4;
+
+        assert!(matches!(
+            owner.replay_generated_construction_trace(&trace),
+            Err(
+                crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
+                    expected: 0,
+                    found: 4,
+                }
+            )
+        ));
+        let actual = owner.into_simulation(&descriptor(seed)).rng_state();
+        assert_eq!(
+            actual.scenario,
+            SimRng::new(u64::from(seed)).logical_state()
+        );
     }
 }

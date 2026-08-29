@@ -4,14 +4,16 @@
 use std::collections::BTreeMap;
 
 use super::{
-    BuildQueueState, ProductionCategory, build_options_for_owner, credits_for_owner,
-    queue_view_for_owner, tick_production, toggle_pause_for_owner_category,
+    BuildQueueState, ProductionCategory, build_options_for_owner, cancel_by_type_for_owner,
+    credits_for_owner, enqueue_by_type, queue_view_for_owner, tick_production,
+    toggle_pause_for_owner_category,
 };
 use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
 
 // Re-use test helpers from the main production_tests module.
@@ -21,6 +23,104 @@ use super::tests::{
     arm_build_via, basic_infantry_rules, basic_multi_queue_rules, build_catalog_rules,
     naval_production_rules, production_modifier_rules, spawn_structure, water_terrain,
 };
+
+fn factory_constructor_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n1=E2\n\
+         [VehicleTypes]\n0=MTNK\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GAPILE\n1=GAWEAP\n\
+         [E1]\nCost=200\nStrength=100\nSpeed=4\nTechLevel=1\nOwner=Americans\n\
+         [E2]\nCost=300\nStrength=125\nSpeed=4\nTechLevel=1\nOwner=Americans\n\
+         [MTNK]\nCost=700\nStrength=300\nSpeed=6\nTechLevel=1\nOwner=Americans\n\
+         [GAPILE]\nFactory=InfantryType\n\
+         [GAWEAP]\nFactory=UnitType\n",
+    ))
+    .expect("factory constructor rules")
+}
+
+#[test]
+fn factory_constructor_start_cancel_and_promotion_own_scenario_words() {
+    let seed = 0xFAC7_0001;
+    let rules = factory_constructor_rules();
+    let mut sim = Simulation::with_seed(seed);
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(
+        owner,
+        crate::sim::house_state::HouseState::new(owner, 0, None, true, 50_000, 10),
+    );
+    spawn_structure(&mut sim, 1, "Americans", "GAPILE", 10, 10);
+    spawn_structure(&mut sim, 2, "Americans", "GAWEAP", 14, 10);
+
+    let mut expected = SimRng::new(seed);
+    let mtnk_word = (expected.next_u32() & 0xFFFF) as u16;
+    assert!(enqueue_by_type(&mut sim, &rules, "Americans", "MTNK"));
+    let vehicle = sim
+        .production
+        .factory_shadow
+        .view(owner, ProductionCategory::Vehicle)
+        .and_then(|view| view.object.cloned())
+        .expect("vehicle constructed at StartProduction");
+    let vehicle_id = vehicle.entity_id.expect("Factory+0x58 identity");
+    let vehicle_entity = sim.substrate.entities.get(vehicle_id).unwrap();
+    assert!(vehicle_entity.lifecycle.in_limbo);
+    assert!(!vehicle_entity.lifecycle.cell_marked);
+    assert!(!vehicle_entity.in_logic_vector);
+    assert!(!vehicle_entity.in_playfield);
+    assert_eq!(vehicle_entity.techno_ctor_random_word, mtnk_word);
+
+    let e1_word = (expected.next_u32() & 0xFFFF) as u16;
+    assert!(enqueue_by_type(&mut sim, &rules, "Americans", "E1"));
+    let infantry = sim
+        .production
+        .factory_shadow
+        .view(owner, ProductionCategory::Infantry)
+        .and_then(|view| view.object.cloned())
+        .expect("infantry constructed at StartProduction");
+    let e1_id = infantry.entity_id.expect("Factory+0x58 identity");
+    let e1_entity = sim.substrate.entities.get(e1_id).unwrap();
+    assert!(e1_entity.lifecycle.in_limbo);
+    assert!(!e1_entity.lifecycle.cell_marked);
+    assert!(!e1_entity.in_logic_vector);
+    assert!(!e1_entity.in_playfield);
+    assert_eq!(e1_entity.techno_ctor_random_word, e1_word);
+
+    assert!(enqueue_by_type(&mut sim, &rules, "Americans", "E2"));
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected.logical_state(),
+        "a queued tail has not reached StartProduction and must not construct"
+    );
+
+    let e2_word = (expected.next_u32() & 0xFFFF) as u16;
+    assert!(cancel_by_type_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        "E1"
+    ));
+    assert!(sim.substrate.entities.get(e1_id).is_none());
+    let promoted = sim
+        .production
+        .factory_shadow
+        .view(owner, ProductionCategory::Infantry)
+        .and_then(|view| view.object.cloned())
+        .expect("E2 promoted through StartNextQueued");
+    let e2_id = promoted.entity_id.expect("promoted Factory+0x58 identity");
+    assert_eq!(promoted.type_id, sim.interner.get("E2").unwrap());
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(e2_id)
+            .unwrap()
+            .techno_ctor_random_word,
+        e2_word
+    );
+    assert!(sim.substrate.entities.get(vehicle_id).is_some());
+    assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+}
 
 #[test]
 fn build_catalog_exposes_sidebar_categories_and_required_houses() {
@@ -450,6 +550,13 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
         100,
         0,
     );
+    let held_id = sim
+        .production
+        .factory_shadow
+        .view(americans_display, ProductionCategory::Ship)
+        .and_then(|view| view.object.and_then(|object| object.entity_id))
+        .expect("ship exists in limbo from StartProduction");
+    let rng_before_delivery = sim.scenario_rng.logical_state();
     assert!(
         sim.production
             .factory_shadow
@@ -458,6 +565,7 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
 
     let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid));
     assert!(spawned, "completed naval production should spawn the unit");
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before_delivery);
 
     let ship = sim
         .substrate
@@ -469,6 +577,10 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
                 .eq_ignore_ascii_case("DEST")
         })
         .expect("spawned destroyer");
+    assert_eq!(
+        ship.stable_id, held_id,
+        "delivery reuses Factory+0x58 identity"
+    );
     assert_eq!(
         ship.navigation.nav_com,
         Some(crate::sim::components::NavTargetRef::cell(26, 21)),
@@ -779,14 +891,13 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
     assert_eq!(projected.len(), 2);
     assert_eq!(projected[0].state, BuildQueueState::Done);
     assert_eq!(projected[1].state, BuildQueueState::Queued);
-    assert!(
-        sim.substrate.entities.values().all(|entity| {
-            !sim.interner
-                .resolve(entity.type_ref)
-                .eq_ignore_ascii_case("MTNK")
-        }),
-        "blocked delivery must not create the vehicle entity"
-    );
+    let held_id = view
+        .object
+        .and_then(|object| object.entity_id)
+        .expect("blocked delivery retains the StartProduction identity");
+    let held = sim.substrate.entities.get(held_id).unwrap();
+    assert!(held.lifecycle.in_limbo && !held.lifecycle.cell_marked);
+    assert_eq!(sim.interner.resolve(held.type_ref), "MTNK");
 }
 
 #[test]
@@ -796,6 +907,13 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let mut terrain = water_terrain(32, 32);
     let blocked_grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -32,
+        off_100: -1,
+        off_104: 64,
+        off_108: 33,
+    });
     sim.resolved_terrain = Some(terrain.clone());
 
     spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
@@ -834,6 +952,10 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
 
     for cell in &mut terrain.cells {
         cell.is_water = false;
+        cell.land_type = crate::rules::terrain_rules::LandType::Clear.as_index();
+        cell.yr_cell_land_type = crate::rules::terrain_rules::LandType::Clear.as_index();
+        cell.terrain_class = crate::rules::terrain_rules::TerrainClass::Clear;
+        cell.speed_costs.track = Some(100);
         cell.zone_type = crate::map::resolved_terrain::zone_class::GROUND;
     }
     let clear_grid = PathGrid::from_resolved_terrain(&terrain);
@@ -855,7 +977,10 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
                 .eq_ignore_ascii_case("MTNK")
         })
         .count();
-    assert_eq!(tanks, 1);
+    assert_eq!(
+        tanks, 2,
+        "one delivered tank and one freshly promoted limbo tank exist"
+    );
 
     // The delivered active build is cleared and the tail MTNK is promoted into the active
     // slot (one item left, now the active Building head with an empty tail).
@@ -865,6 +990,26 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
         .view(americans_id, ProductionCategory::Vehicle)
         .expect("next queued item should have started");
     assert!(view.object.is_some(), "promoted MTNK is the active build");
+    let promoted_id = view.object.unwrap().entity_id.unwrap();
+    assert!(
+        sim.substrate
+            .entities
+            .get(promoted_id)
+            .is_some_and(|entity| entity.lifecycle.in_limbo)
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .values()
+            .filter(|entity| {
+                sim.interner
+                    .resolve(entity.type_ref)
+                    .eq_ignore_ascii_case("MTNK")
+                    && !entity.lifecycle.in_limbo
+            })
+            .count(),
+        1
+    );
     assert!(view.queue.is_empty(), "the FIFO tail is now empty");
     // The promoted build has not been charged this tick (step_delay = 0 -> first charge next
     // tick), so progress is 0 and its remaining base frames == its full total of 100.

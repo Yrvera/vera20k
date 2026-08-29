@@ -14,7 +14,8 @@ use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::aircraft::AircraftMission;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::superweapon::paradrop::{ParaDropKind, launch};
+use crate::sim::superweapon::paradrop::{launch, ParaDropKind};
+use crate::sim::world::edge_cell::{find_paradrop_edge_cell, Edge};
 use crate::sim::world::Simulation;
 
 /// Minimal ruleset with PDPLANE + ParaDropWeapon + E1 + AMRADR cargo plane setup.
@@ -157,10 +158,9 @@ CellSpread=0
 /// Build a Simulation with a 100x100 fully-passable map and an "Americans"
 /// house anchored at (50, 90) → waypoint_edge=North after transforming the
 /// playfield's native LocalSize reference points into cell space.
-fn build_sim(rules: &RuleSet) -> (Simulation, PathGrid) {
-    let mut sim = Simulation::new();
-    sim.fog.width = 100;
-    sim.fog.height = 100;
+fn install_paradrop_playfield(sim: &mut Simulation) {
+    sim.fog.width = 200;
+    sim.fog.height = 200;
     sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
         base: 100,
         off_fc: 0,
@@ -168,6 +168,11 @@ fn build_sim(rules: &RuleSet) -> (Simulation, PathGrid) {
         off_104: 100,
         off_108: 100,
     });
+}
+
+fn build_sim(rules: &RuleSet) -> (Simulation, PathGrid) {
+    let mut sim = Simulation::new();
+    install_paradrop_playfield(&mut sim);
     let owner_id = sim.interner.intern("Americans");
     let mut house = crate::sim::house_state::HouseState::new(
         owner_id, /*side_index*/ 0, /*country*/ None, /*is_human*/ true,
@@ -180,7 +185,7 @@ fn build_sim(rules: &RuleSet) -> (Simulation, PathGrid) {
     );
     sim.houses.insert(owner_id, house);
     let _ = rules;
-    let path_grid = PathGrid::test_all_passable(100, 100);
+    let path_grid = PathGrid::test_all_passable(200, 200);
     (sim, path_grid)
 }
 
@@ -280,11 +285,62 @@ fn paradrop_launch_spawns_carrier_with_loaded_cargo() {
 }
 
 #[test]
+fn paradrop_multi_entry_resolves_each_edge_after_its_carrier_constructor() {
+    let mut rules = make_paradrop_rules();
+    rules.general.amer_paradrop_list = vec![("E1".to_string(), 1), ("E1".to_string(), 1)];
+    let (mut sim, path_grid) = build_sim(&rules);
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x65E6_6000);
+    let owner = sim.interner.intern("Americans");
+    let bounds = sim.playfield_bounds.expect("playfield authority");
+
+    let mut expected_rng = sim.scenario_rng.clone();
+    let mut expected_cells = Vec::new();
+    for _ in 0..2 {
+        let _carrier_constructor_word = expected_rng.next_u32();
+        expected_cells.push(
+            find_paradrop_edge_cell(Some(bounds), None, Edge::North, &mut expected_rng)
+                .expect("North edge cell"),
+        );
+        let _passenger_constructor_word = expected_rng.next_u32();
+    }
+
+    assert!(launch(
+        &mut sim,
+        &rules,
+        owner,
+        50,
+        20,
+        ParaDropKind::American,
+        Some(&path_grid),
+    ));
+    let mut actual_cells = sim
+        .substrate
+        .entities
+        .values()
+        .filter(|entity| {
+            sim.interner
+                .resolve(entity.type_ref)
+                .eq_ignore_ascii_case("PDPLANE")
+        })
+        .map(|entity| (entity.stable_id, (entity.position.rx, entity.position.ry)))
+        .collect::<Vec<_>>();
+    actual_cells.sort_by_key(|entry| entry.0);
+    assert_eq!(
+        actual_cells.iter().map(|entry| entry.1).collect::<Vec<_>>(),
+        expected_cells,
+    );
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
+}
+
+#[test]
 fn paradrop_launch_ignores_blocked_ground_spawn_edge() {
     let rules = make_paradrop_rules();
     let (mut sim, _path_grid) = build_sim(&rules);
     let owner = sim.interner.intern("Americans");
-    let blocked_grid = PathGrid::test_all_blocked(100, 100);
+    let blocked_grid = PathGrid::test_all_blocked(200, 200);
 
     let ok = launch(
         &mut sim,
@@ -299,10 +355,15 @@ fn paradrop_launch_ignores_blocked_ground_spawn_edge() {
     assert!(ok, "carrier edge helper should bypass ground passability");
     let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
     let pdplane = sim.substrate.entities.get(pdplane_id).unwrap();
-    assert_eq!(
-        (pdplane.position.rx, pdplane.position.ry),
-        (50, 0),
-        "carrier spawn should still use the selected edge when ground cells are blocked"
+    let bounds = sim.playfield_bounds.expect("playfield authority");
+    assert!(
+        !bounds.contains_height_aware_packed(
+            i32::from(pdplane.position.rx),
+            i32::from(pdplane.position.ry),
+            0,
+            0,
+        ),
+        "criterion-4 carrier spawn remains outside the playfield even when ground cells are blocked"
     );
 }
 
@@ -326,7 +387,16 @@ fn paradrop_launch_invalid_waypoint_edge_falls_back_to_north() {
     assert!(ok, "invalid waypoint edge should not abort standard launch");
     let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
     let pdplane = sim.substrate.entities.get(pdplane_id).unwrap();
-    assert_eq!((pdplane.position.rx, pdplane.position.ry), (40, 0));
+    let bounds = sim.playfield_bounds.expect("playfield authority");
+    assert!(
+        !bounds.contains_height_aware_packed(
+            i32::from(pdplane.position.rx),
+            i32::from(pdplane.position.ry),
+            0,
+            0,
+        ),
+        "invalid edge fallback still uses the native outside North perimeter"
+    );
 }
 
 #[test]
@@ -575,14 +645,13 @@ CellSpread=0
     // Yuri side (index=2) → loads INIT × 5.
     {
         let mut sim = Simulation::new();
-        sim.fog.width = 100;
-        sim.fog.height = 100;
+        install_paradrop_playfield(&mut sim);
         let owner_id = sim.interner.intern("Yuri");
         let mut house =
             crate::sim::house_state::HouseState::new(owner_id, 2, None, true, 10_000, 10);
         house.waypoint_edge = 2; // South
         sim.houses.insert(owner_id, house);
-        let path_grid = PathGrid::test_all_passable(100, 100);
+        let path_grid = PathGrid::test_all_passable(200, 200);
 
         launch(
             &mut sim,
@@ -632,14 +701,13 @@ CellSpread=0
     // Soviet side (index=1, falls through default arm) → loads E2 × 4.
     {
         let mut sim = Simulation::new();
-        sim.fog.width = 100;
-        sim.fog.height = 100;
+        install_paradrop_playfield(&mut sim);
         let owner_id = sim.interner.intern("Russians");
         let mut house =
             crate::sim::house_state::HouseState::new(owner_id, 1, None, true, 10_000, 10);
         house.waypoint_edge = 2;
         sim.houses.insert(owner_id, house);
-        let path_grid = PathGrid::test_all_passable(100, 100);
+        let path_grid = PathGrid::test_all_passable(200, 200);
 
         launch(
             &mut sim,
@@ -667,14 +735,13 @@ CellSpread=0
     // Unknown side (index=99, also falls through to Soviet branch) → 4 E2.
     {
         let mut sim = Simulation::new();
-        sim.fog.width = 100;
-        sim.fog.height = 100;
+        install_paradrop_playfield(&mut sim);
         let owner_id = sim.interner.intern("Unknown");
         let mut house =
             crate::sim::house_state::HouseState::new(owner_id, 99, None, true, 10_000, 10);
         house.waypoint_edge = 2;
         sim.houses.insert(owner_id, house);
-        let path_grid = PathGrid::test_all_passable(100, 100);
+        let path_grid = PathGrid::test_all_passable(200, 200);
 
         launch(
             &mut sim,

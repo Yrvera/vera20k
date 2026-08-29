@@ -13,18 +13,18 @@
 //! - **A pair is visited once, from the lower id.** Combined with the ascending
 //!   neighbour order this fixes the visit order completely.
 //!
-//! The water-class branch — low bridges spanning a water region — is **not
-//! modelled here**. It is safe to leave out precisely because it takes no
-//! random draws at all, so its absence costs bridges and nothing else. That is
-//! the opposite of the carve routines, where a missing verdict would have
-//! shifted the whole draw stream.
+//! Water-class regions take the active low-deck branch. That branch owns its
+//! own seed rejection draws and conditional end-piece coins; dry regions keep
+//! the ramp order described above.
 
 use crate::map::rmg::rng::RmgRng;
 use crate::map::rmg::x87::{self, TruncF64};
 
 use super::adjacency;
+use super::bridge_deck;
 use super::carve::{CarveCtx, CarveRegions, try_carve_connector_at_cell};
 use super::connector::LENIENCY_STEP;
+use crate::map::rmg::RmgConstructionTrace;
 
 /// `101 * (1 + 2^-32) * 2^-32` — the accessibility roll, pre-divided.
 const ACCESS_ROLL_SCALE_BITS: u64 = 0x3E59_4000_0019_4000;
@@ -43,13 +43,16 @@ const EXTRA_ROLL_MAX: i32 = 2;
 const MAX_ATTEMPTS: i32 = 100;
 
 /// What the driver needs to know about each region.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ConnectorRegion {
     pub id: i32,
     pub level: u8,
-    /// The flood's class flag. Water-class regions take the bridge branch,
-    /// which is not modelled — see the module note.
+    /// The flood's class flag. Water-class regions take the bridge branch.
     pub waterish: bool,
+    pub cell_count: i32,
+    /// Ascending ids captured for every region before any connector mutates
+    /// the grid/scratch state.
+    pub neighbours: Vec<i32>,
 }
 
 /// How many ramps to cut between one pair.
@@ -116,21 +119,27 @@ fn pick_border_cell(rng: &mut RmgRng, count: i32) -> usize {
 /// Returns whether anything was carved for this region at all — the original
 /// records that on the region and nothing has been found to read it back, so it
 /// is handed to the caller rather than stored.
-pub fn carve_connectors_for_region(
+pub(crate) fn carve_connectors_for_region(
     ctx: &mut CarveCtx<'_>,
     regions: &[ConnectorRegion],
-    region: ConnectorRegion,
-    region_count: i32,
+    region: &ConnectorRegion,
     accessibility: i32,
+    structures: &mut Vec<(String, i16, i16)>,
+    trace: &mut RmgConstructionTrace,
 ) -> bool {
-    // Water-class regions take the bridge branch, which is not modelled.
     if region.waterish {
-        return false;
+        let mut placed_any = false;
+        for (first_id, second_id) in qualified_deck_pairs(regions, region) {
+            placed_any |= bridge_deck::place_low_bridge_deck(
+                ctx, region.id, first_id, second_id, structures, trace,
+            );
+        }
+        return placed_any;
     }
 
     let mut carved_any = false;
-    for neighbour_id in adjacency::neighbour_ids(ctx.scratch, region.id, region_count) {
-        let Some(neighbour) = regions.iter().find(|r| r.id == neighbour_id).copied() else {
+    for &neighbour_id in &region.neighbours {
+        let Some(neighbour) = regions.iter().find(|r| r.id == neighbour_id) else {
             continue;
         };
         // Each pair is visited once, from the lower id, and only where the two
@@ -180,9 +189,59 @@ pub fn carve_connectors_for_region(
     carved_any
 }
 
+fn qualified_deck_pairs(regions: &[ConnectorRegion], flood: &ConnectorRegion) -> Vec<(i32, i32)> {
+    if !flood.waterish {
+        return Vec::new();
+    }
+    let mut pairs = Vec::new();
+    for first_index in 0..flood.neighbours.len().saturating_sub(1) {
+        let Some(first) = regions
+            .iter()
+            .find(|candidate| candidate.id == flood.neighbours[first_index])
+        else {
+            continue;
+        };
+        // gamemd 0x00590648..0x0059065f checks only substantiality
+        // for the first ordered slot. Its class field is not read here.
+        if first.neighbours.len() <= 1 && first.cell_count <= 50 {
+            continue;
+        }
+        for &second_id in &flood.neighbours[first_index + 1..] {
+            let Some(second) = regions.iter().find(|candidate| candidate.id == second_id) else {
+                continue;
+            };
+            if second.waterish
+                || (second.neighbours.len() <= 1 && second.cell_count <= 50)
+                || first.level != second.level
+                || first.level != flood.level
+            {
+                continue;
+            }
+            pairs.push((first.id, second.id));
+        }
+    }
+    pairs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn region(
+        id: i32,
+        level: u8,
+        waterish: bool,
+        cell_count: i32,
+        neighbours: &[i32],
+    ) -> ConnectorRegion {
+        ConnectorRegion {
+            id,
+            level,
+            waterish,
+            cell_count,
+            neighbours: neighbours.to_vec(),
+        }
+    }
 
     #[test]
     fn a_failed_accessibility_roll_still_gives_one_connection() {
@@ -234,5 +293,47 @@ mod tests {
             assert!(pick_border_cell(&mut rng, 5) < 5);
         }
         assert_eq!(pick_border_cell(&mut rng, 1), 0, "a single cell is index 0");
+    }
+
+    #[test]
+    fn flood_branch_visits_exact_qualified_ordered_slot_pairs_in_order() {
+        let flood = region(0, 4, true, 90, &[1, 2, 3, 4, 5, 6]);
+        let regions = vec![
+            flood.clone(),
+            // Exactly one neighbour and 50 cells: not substantial.
+            region(1, 4, false, 50, &[0]),
+            // Two neighbours qualifies at the count boundary.
+            region(2, 4, false, 1, &[0, 9]),
+            // 51 cells qualifies with one neighbour.
+            region(3, 4, false, 51, &[0]),
+            // Water is allowed in the first ordered slot, but excluded when it
+            // appears as the second slot of an earlier pair.
+            region(4, 4, true, 90, &[0, 9]),
+            // Wrong level is excluded.
+            region(5, 5, false, 90, &[0, 9]),
+            region(6, 4, false, 90, &[0, 9]),
+        ];
+        assert_eq!(
+            qualified_deck_pairs(&regions, &flood),
+            vec![(2, 3), (2, 6), (3, 6), (4, 6)]
+        );
+        assert!(qualified_deck_pairs(&regions, &regions[2]).is_empty());
+    }
+
+    #[test]
+    fn flood_pair_class_gate_is_second_neighbor_only() {
+        let flood = region(0, 4, true, 90, &[1, 2]);
+        let water = region(1, 4, true, 90, &[0, 9]);
+        let land = region(2, 4, false, 90, &[0, 9]);
+        let other_land = region(3, 4, false, 90, &[0, 9]);
+        let regions = vec![flood.clone(), water, land, other_land];
+
+        assert_eq!(qualified_deck_pairs(&regions, &flood), vec![(1, 2)]);
+
+        let reverse = region(0, 4, true, 90, &[2, 1]);
+        assert!(qualified_deck_pairs(&regions, &reverse).is_empty());
+
+        let both_land = region(0, 4, true, 90, &[2, 3]);
+        assert_eq!(qualified_deck_pairs(&regions, &both_land), vec![(2, 3)]);
     }
 }
