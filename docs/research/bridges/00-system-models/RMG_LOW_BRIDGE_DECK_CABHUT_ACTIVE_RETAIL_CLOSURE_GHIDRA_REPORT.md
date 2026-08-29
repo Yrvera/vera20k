@@ -45,10 +45,12 @@ pass for map types 3 and 4, including stock Skirmish Create Random Map and launc
 
 The active YR type-3/type-4 connector pass has two distinct branches. A land-class region connects
 unequal-height neighboring regions with ramps. A flood-class region instead considers unordered
-pairs of neighboring land regions and, when both are substantial and all three region levels are
-equal, calls `RandomMapGenerator__PlaceLowBridgeDeck @ 0x0058F2C0`. Current Rust returns before
-this water branch, so it removes an active player-visible bridge mechanism and also skips all of
-its MapGen and Scenario RNG effects.
+pairs from its ordered neighbor list. The first neighbor is tested only for substantiality; the
+second is tested for substantiality and land class. When those ordered-slot gates pass and all
+three region levels are equal, native calls
+`RandomMapGenerator__PlaceLowBridgeDeck @ 0x0058F2C0`. The first neighbor's class field is not read
+by this owner. (active `gamemd.exe`, `RmgRegion__CarveConnectorsOrBridges @ 0x005905D0`,
+disassembly `0x00590648..0x005906D5`; matching decompile)
 
 The low-deck placer makes at most 200 attempts. Each attempt rejection-draws a seed cell from the
 entire square scratch array until it finds a real cell owned by the water region. It grows two
@@ -84,10 +86,10 @@ the active generator and must not be added to the construction trace.
 | `OpenTS\code\isotype.cpp`, `scenario.cpp` | locate PavedRoad keys and `.SED` entry correspondence | navigation lead only |
 
 OpenTS correspondences were rechecked at every material point. In particular, the YR binary—not
-the readable reference—establishes the active caller set, both-land endpoint condition, exact
-runtime globals, waterfall-family predicate, YR overlay numbers, CABHUT construction chain, and
-dormant-helper exclusions. `TrainBridgeSet` is inherited TS data surface with no active YR bridge
-role and is not a port target.
+the readable reference—establishes the active caller set, ordered first/second neighbor class-gate
+asymmetry, exact runtime globals, waterfall-family predicate, YR overlay numbers, CABHUT
+construction chain, and dormant-helper exclusions. `TrainBridgeSet` is inherited TS data surface
+with no active YR bridge role and is not a port target.
 
 ## 3. Active Call Graph and Phase Order
 
@@ -124,10 +126,19 @@ tile-family predicate or green terrain. It is not a generic runtime `Water` land
 flood-class region, the active bridge candidate gates are:
 
 1. choose each unordered pair from that region's ordered neighbor list;
-2. both neighboring regions are land-class;
-3. each neighbor is substantial: `neighbor_count > 1 || cell_count > 50`;
-4. neighbor A level equals neighbor B level and equals the flood region level;
-5. call `0x0058F2C0(flood, neighborA, neighborB)` once for the pair.
+2. require the first neighbor to be substantial: `neighbor_count > 1 || cell_count > 50`;
+3. require the second neighbor to be substantial and land-class;
+4. require first-neighbor level to equal second-neighbor level and flood-region level;
+5. call `0x0058F2C0(flood, firstNeighbor, secondNeighbor)` once for the pair.
+
+Native performs no `firstNeighbor + 0x14` class read in this path: first-neighbor substantiality is
+at `0x00590648..0x0059065F`; second-neighbor substantiality and its sole class read are at
+`0x005906A8..0x005906BC`; the level gates and call follow at `0x005906BE..0x005906D5`. (active
+`gamemd.exe`, live disassembly and decompile of `0x005905D0`)
+
+The active region-rebuild partition likely makes a distinct same-level flood-class region in the
+first slot output-redundant in ordinary generated states. That is an invariant inference, not the
+literal owner rule, and cannot justify adding a symmetric first-neighbor class gate.
 
 The low-deck return value does not feed a retry at the region-driver level. Each qualifying pair
 gets its one 200-attempt placer invocation.
@@ -453,7 +464,7 @@ TS-only/dormant data lead and is excluded.
 
 | Rust owner | Current state | Verified mismatch / required ownership |
 |---|---|---|
-| `src/map/rmg/phases/carve_driver.rs` | returns immediately for `waterish`; claims branch costs no draws | active flood branch calls low-deck placer and consumes seed rejections, conditional end coins, and Scenario constructor events |
+| `src/map/rmg/phases/carve_driver.rs` | active flood branch exists, but rejects `first.waterish` as well as `second.waterish` | native class-gates only the second ordered neighbor; remove the extra first-slot rejection while retaining both substantiality and all level gates |
 | `src/map/rmg/pipeline.rs` | rebuilds regions and iterates a simplified `ConnectorRegion`; adjacency prepass is only implicit | must provide ordered neighbor/cell-count/flood-class facts and run both land ramp and water deck branches in native pass order |
 | `src/map/rmg/phases/bridge_deck.rs` | seed picker plus two validators only; header calls RMG dormant | mechanism is active for type 3/4; implement full search, stamp, ends, huts, and exact predicate |
 | `TileIds::is_bridge_absorbable` | six WaterSet variants + shore; waterfall deferred | exact helper is WaterSet span 14 + shore 42 + four waterfall spans 4 |
@@ -478,7 +489,7 @@ continuation stored beside MapGen, and it is not a CABHUT-only counter.
 | type-3/type-4 active entry | VERIFIED | `0x00598960` map-type branch to `0x0058EF10` | none |
 | three-pass adjacency/connection/release order | VERIFIED | live `0x0058EF10` disassembly | none |
 | flood-class bridge branch | VERIFIED | `0x005905D0` | none |
-| both-land/substantial/equal-level gates | VERIFIED | `0x005905D0` | none |
+| ordered first/second class-gate asymmetry, both-substantial, equal-level gates | VERIFIED | `0x005905D0`, `0x00590648..0x005906D5` | none |
 | 200 attempts and whole-scratch seed rejection | VERIFIED | `0x0058F2C0` | none |
 | NS/EW corridor walks and approach gates | VERIFIED | `0x0058F2C0`, all `0x005A7250` calls | none |
 | endpoint region pair | VERIFIED | `0x0058F2C0` | none |
@@ -505,7 +516,7 @@ continuation stored beside MapGen, and it is not a CABHUT-only counter.
 - `[RESOLVED] OQ-01 — Is low-deck placement active in retail YR? -> Yes, conditionally for RMG map types 3/4.`
 - `[RESOLVED] OQ-02 — Does the connector pass build adjacency before any connection? -> Yes, all-region prepass, then all-region connection pass.`
 - `[RESOLVED] OQ-03 — What does the region water flag mean here? -> Flood-build class from the active terrain classifier, not generic runtime Water land type.`
-- `[RESOLVED] OQ-04 — Can a water/flood neighbor be a deck endpoint? -> No; both endpoint regions must be land-class.`
+- `[RESOLVED] OQ-04 — Does the driver require both ordered neighbors to be land-class? -> No. Only the second slot is class-gated; the first slot's class is not read by this owner. Ordinary active partitions likely make a water-class first slot output-redundant, but that inference must not replace the literal gate.`
 - `[RESOLVED] OQ-05 — How often is one neighbor pair attempted? -> Once, through one 200-attempt placer call.`
 - `[RESOLVED] OQ-06 — Which rejection loops really spend MapGen draws? -> Seed-cell region/(0,0) rejections; candidate walks and validators spend none.`
 - `[RESOLVED] OQ-07 — Is the attempt limit 199 or 200? -> 200 attempts, zero-based indices 0..199.`
@@ -552,7 +563,7 @@ continuation stored beside MapGen, and it is not a CABHUT-only counter.
    BuildRiverBridge?** No. The complete function/callee write census shows tile/level/scratch
    mutation and no overlay/data/flag/Tube topology. Name inheritance is not behavior evidence.
 6. **Could the OpenTS loop be ported verbatim?** No. It is useful readable correspondence, but YR
-   active reachability, both-land eligibility, exact globals, overlay constants, and helper family
+   active reachability, exact ordered neighbor gates, globals, overlay constants, and helper family
    ranges were re-established from `gamemd.exe` and retail data.
 
 ## 16. Exhaustive-Slice Closure Checks
@@ -586,7 +597,7 @@ The pass changed no conclusion and produced no deferred material question.
 
 | Verified requirement | Current Rust delta | Required effect | Acceptance gate | Forbidden shortcut |
 |---|---|---|---|---|
-| Process every active flood-region neighbor pair in native pass order. | waterish region returns false | retain ordered neighbor facts/counts and call low-deck placer after full adjacency prepass | fixed synthetic region graph visits exact qualifying pairs once | do not infer water solely from runtime land type |
+| Process every active flood-region neighbor pair through the literal ordered-slot gates. | active driver adds a non-native first-neighbor class rejection | retain ordered neighbor facts/counts; require both substantial, class-gate only the second, and call the placer after the full adjacency prepass | water-first/land-second dispatches once; land-first/water-second does not; both-land dispatches once | do not symmetrize the second-slot class gate or infer water solely from runtime land type |
 | Preserve exact MapGen draw order. | no deck calls/draws | rejection-draw seed, then conditional end coins only | fixture asserts accepted cell, rejection count, coin count, and post-phase cursor | do not draw coins on failed end areas |
 | Reproduce NS/EW search and choice. | absent | exact strip/approach gates, region pair, EW tie, strict length bands | fixtures cover one-axis, two-axis shorter, tie, and each threshold boundary | do not collapse into nearest-end search |
 | Validate exact absorbable families. | six water + shore only | water span 14, shore 42, four waterfall spans 4; no extra special families | boundary test at every base-1/base/base+last/base+span | do not reuse sub-tile-sensitive special-terrain predicate |
@@ -600,7 +611,8 @@ The pass changed no conclusion and produced no deferred material question.
 
 Suggested focused tests:
 
-- `rmg_flood_region_visits_each_eligible_land_pair_once`
+- `rmg_flood_pair_class_gate_is_second_neighbor_only`
+- `rmg_flood_region_visits_each_eligible_ordered_slot_pair_once`
 - `rmg_low_deck_seed_rejections_and_end_coins_match_native_cursor`
 - `rmg_low_deck_east_west_wins_equal_length_tie`
 - `rmg_low_deck_length_gate_relaxes_every_twenty_five_attempts`
@@ -620,7 +632,8 @@ Suggested focused tests:
 - Do not call the active type-3/type-4 RMG bridge system dormant.
 - Do not skip the water-region branch on the premise that it consumes no RNG.
 - Do not classify the region flag as a generic water land type without the flood-build predicate.
-- Do not permit flood/water regions as deck endpoints; both endpoints are land regions.
+- Do not add a first-neighbor class gate: native class-gates only the second ordered slot.
+- Do not omit the second-neighbor land-class gate.
 - Do not accept only six water variants in deck validation; native uses fourteen.
 - Do not apply waterfall sub-tile exceptions or unrelated cliff families to `0x004865D0`.
 - Do not shrink the deck validator to `w*h`; its margin is inclusive on both axes.
@@ -649,6 +662,8 @@ candidates for a later explicitly authorized sync:
 - rename stale `0x004865D0` to an exact water/shore/waterfall tile-family predicate name;
 - document `0x0058F2C0` with active type-3/type-4 reachability, EW tie, length bands, and direct
   overlay/data stamp;
+- correct the stale `0x005905D0` plate comment that says both neighbors are land-class; live
+  `0x00590648..0x005906D5` class-gates only the second ordered slot;
 - document `0x005A7440` as the exact end-area predicate with all low-deck call-site overrides zero;
 - document `0x005904B0` with inclusive scan, constructor-before-Unlimbo, ignored return, and
   Scenario-word side effect;
