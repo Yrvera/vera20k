@@ -205,7 +205,7 @@ impl Simulation {
     ) -> bool {
         if self.substrate.anims.contains_key(id) {
             if let Some(rules) = rules {
-                self.visit_anim(id, rules);
+                self.visit_anim_with_overlay_registry(id, rules, ctx.overlay_registry);
             }
             return true;
         }

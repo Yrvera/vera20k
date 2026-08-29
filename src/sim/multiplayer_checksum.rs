@@ -396,6 +396,7 @@ mod tests {
             draw_runtime: AnimDrawRuntime::default(),
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,

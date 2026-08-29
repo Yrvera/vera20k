@@ -349,7 +349,10 @@ use crate::sim::world::Simulation;
 // Bumped 118 -> 119: Infantry persists its independent House-tracked and Bio
 // Reactor occupant bytes; HouseState persists the distinct +0x2F4 Infantry
 // tracking count that absorber entry temporarily removes.
-const SNAPSHOT_VERSION: u32 = 119;
+// Bumped 119 -> 120: scheduler AnimClass records persist the explicit Building
+// `Explosion=` Start-smudge producer identity. The bit gates future Scenario
+// RNG and smudge/ore mutation when a delayed animation reaches Middle.
+const SNAPSHOT_VERSION: u32 = 120;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3304,10 +3307,11 @@ mod tests {
     /// Grinder-detach timer state and the independently nested CargoClass
     /// relation exercised by Unit Grinder/absorber continuations; 117 -> 118
     /// adds Ship's RawTrack handoff/endpoint occupation pair; 118 -> 119 adds
-    /// Bio Reactor Infantry tracking/occupant bytes and House +0x2F4 count.
+    /// Bio Reactor Infantry tracking/occupant bytes and House +0x2F4 count;
+    /// 119 -> 120 adds the Building Explosion Start-smudge producer bit.
     #[test]
-    fn phase3_absorber_infantry_tracking_snapshot_version_is_119() {
-        assert_eq!(super::SNAPSHOT_VERSION, 119);
+    fn phase3_building_explosion_start_smudge_snapshot_version_is_120() {
+        assert_eq!(super::SNAPSHOT_VERSION, 120);
     }
 
     #[test]
