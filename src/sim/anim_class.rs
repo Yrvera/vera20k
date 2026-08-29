@@ -1733,6 +1733,7 @@ mod long_tail_contract_tests {
 mod tests {
     use super::*;
     use crate::map::entities::EntityCategory;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
@@ -1820,6 +1821,132 @@ mod tests {
         }
         rules.art_registry = art;
         rules
+    }
+
+    fn building_start_smudge_rules() -> (
+        RuleSet,
+        crate::map::overlay_types::OverlayTypeRegistry,
+    ) {
+        let ini = IniFile::from_str(
+            "[Tiberiums]\n0=Riparius\n\
+             [Riparius]\nImage=1\nValue=25\n\
+             [OverlayTypes]\n0=ORE\n\
+             [ORE]\nTiberium=yes\n\
+             [SmudgeTypes]\n1=CR1\n2=BURN1\n\
+             [CR1]\nCrater=yes\nWidth=1\nHeight=1\n\
+             [BURN1]\nBurn=yes\nWidth=1\nHeight=1\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).expect("Building Start-smudge rules");
+        let mut art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[EXP]\nRate=450\nEnd=4\nScorch=yes\nCrater=yes\n\
+             FrameWidth=100\nFrameHeight=100\n",
+        ));
+        art.bind_anim_frame_count_for_test("EXP", 4);
+        rules.art_registry = art;
+        let overlay_registry =
+            crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+        (rules, overlay_registry)
+    }
+
+    fn building_start_flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for ry in 0..height {
+            for rx in 0..width {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: false,
+                    level: 0,
+                    filled_clear: true,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    yr_cell_land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    height_in_pixels: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: Default::default(),
+                    speed_costs: crate::rules::terrain_rules::SpeedCostProfile {
+                        track: Some(100),
+                        ..Default::default()
+                    },
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: true,
+                    allows_tiberium: true,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    terrain_object_occupation: None,
+                    overlay_blocks: false,
+                    overlay_zone_type: None,
+                    outside_playfield: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    base_land_type: 0,
+                    base_yr_cell_land_type: 0,
+                    base_terrain_class: Default::default(),
+                    base_speed_costs: Default::default(),
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
+                    radar_left: [0; 3],
+                    radar_right: [0; 3],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    fn install_building_start_authorities(
+        sim: &mut Simulation,
+        overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+        ore_cells: &[(u16, u16)],
+    ) {
+        const MAP_SIZE: u16 = 32;
+        let ore_id = overlay_registry.id_for_name("ORE").expect("ORE overlay");
+        let mut overlay_grid = crate::sim::overlay_grid::OverlayGrid::new(MAP_SIZE, MAP_SIZE);
+        for &(rx, ry) in ore_cells {
+            overlay_grid.place_overlay(rx, ry, ore_id, 5);
+        }
+        sim.overlay_grid = Some(overlay_grid);
+        sim.resolved_terrain = Some(building_start_flat_terrain(MAP_SIZE, MAP_SIZE));
+        sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::new(
+            MAP_SIZE, MAP_SIZE,
+        ));
+        sim.production.ore_growth_state =
+            crate::sim::ore_growth::OreGrowthState::new(MAP_SIZE, MAP_SIZE);
+    }
+
+    fn oracle_building_scatter(
+        rng: &mut crate::sim::rng::SimRng,
+        center_x: i32,
+        center_y: i32,
+    ) -> (i32, i32) {
+        let byte = (rng.next_u32() & 0xff) as u8;
+        crate::sim::combat::random_direction_coord_for_byte(
+            byte,
+            center_x,
+            center_y,
+            BUILDING_DESTRUCTION_SCATTER_RADIUS,
+        )
     }
 
     fn runtime_descriptor(type_name: InternedId, delay: u16) -> AnimClassSpawnDescriptor {
@@ -2086,6 +2213,202 @@ mod tests {
                 "Middle must not repeat after delay {delay} reaches zero"
             );
         }
+    }
+
+    #[test]
+    fn phase3_building_delay_zero_start_smudge_interleaves_before_next_foundation_cell() {
+        let (rules, overlay_registry) = building_start_smudge_rules();
+        const SEED: u64 = 17;
+        let mut sim = Simulation::new();
+        sim.scenario_rng = crate::sim::rng::SimRng::new(SEED);
+        install_building_start_authorities(&mut sim, &overlay_registry, &[(10, 20)]);
+
+        let location = AnimWorldCoord {
+            x: 10 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+            y: 20 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+            z: 0,
+        };
+        let mut oracle = crate::sim::rng::SimRng::new(SEED);
+        let first_world = oracle_building_scatter(
+            &mut oracle,
+            10 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        assert_eq!(oracle.next_range_u32_inclusive(0, 3), 0);
+        oracle.next_u32(); // raw modulo selection from the one-entry Explosion list
+        let start_roll = oracle.next_range_u32_inclusive(0, 0x7fff_fffe);
+        assert!(
+            start_roll >= 0x4000_0000,
+            "fixture takes the crater arm so the production ore authority mutates"
+        );
+        let state_after_first_start = oracle.logical_state();
+        let second_world = oracle_building_scatter(
+            &mut oracle,
+            11 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        let second_delay = oracle.next_range_u32_inclusive(0, 3) as u16;
+        assert_ne!(second_delay, 0, "only cell 1 may Start during construction");
+        oracle.next_u32(); // cell 2 raw list selection
+
+        let mut incorrectly_deferred = crate::sim::rng::SimRng::new(SEED);
+        incorrectly_deferred.next_u32();
+        incorrectly_deferred.next_range_u32_inclusive(0, 3);
+        incorrectly_deferred.next_u32();
+        let incorrectly_deferred_second_world = oracle_building_scatter(
+            &mut incorrectly_deferred,
+            11 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        let incorrectly_deferred_second_delay =
+            incorrectly_deferred.next_range_u32_inclusive(0, 3) as u16;
+        incorrectly_deferred.next_u32();
+        incorrectly_deferred.next_range_u32_inclusive(0, 0x7fff_fffe);
+
+        let ids = sim.spawn_building_destruction_anims(
+            &rules,
+            Some(&overlay_registry),
+            location,
+            "2x1",
+            &["EXP".to_string()],
+            &[],
+        );
+
+        assert_eq!(ids.len(), 2);
+        assert_eq!(
+            sim.anim(ids[0]).unwrap().world_coord,
+            AnimWorldCoord {
+                x: first_world.0,
+                y: first_world.1,
+                z: 0,
+            }
+        );
+        assert_eq!(
+            sim.anim(ids[1]).unwrap().world_coord,
+            AnimWorldCoord {
+                x: second_world.0,
+                y: second_world.1,
+                z: 0,
+            },
+            "cell 2 scatter must observe cell 1's synchronous Start RNG draw"
+        );
+        assert_eq!(sim.anim(ids[0]).unwrap().runtime.delay_remaining, 0);
+        assert_eq!(
+            sim.anim(ids[1]).unwrap().runtime.delay_remaining,
+            second_delay
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), oracle.logical_state());
+        assert_ne!(
+            (second_world, second_delay),
+            (
+                incorrectly_deferred_second_world,
+                incorrectly_deferred_second_delay
+            ),
+            "deferring Start would assign its RNG draw to cell 2 scatter/delay instead"
+        );
+        assert_ne!(
+            sim.scenario_rng.logical_state(),
+            state_after_first_start,
+            "cell 2 scatter/delay/selection must follow the synchronous Start"
+        );
+
+        let crater_id = rules.smudge_types.find_by_name("CR1").unwrap();
+        assert_eq!(
+            sim.smudge_grid.as_ref().unwrap().cell(10, 20).type_id,
+            Some(crater_id)
+        );
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_id,
+            None,
+            "AnimClass::Start crater removes retail-style ore density 5 before smudge placement"
+        );
+    }
+
+    #[test]
+    fn phase3_building_delay_one_start_smudge_waits_for_zero_transition_once() {
+        let (rules, overlay_registry) = building_start_smudge_rules();
+        const SEED: u64 = 14;
+        let mut sim = Simulation::new();
+        sim.scenario_rng = crate::sim::rng::SimRng::new(SEED);
+        install_building_start_authorities(&mut sim, &overlay_registry, &[(10, 20)]);
+        let mut oracle = crate::sim::rng::SimRng::new(SEED);
+        let world = oracle_building_scatter(
+            &mut oracle,
+            10 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        assert_eq!(oracle.next_range_u32_inclusive(0, 3), 1);
+        oracle.next_u32(); // raw one-entry list selection
+        let construction_state = oracle.logical_state();
+
+        let ids = sim.spawn_building_destruction_anims(
+            &rules,
+            Some(&overlay_registry),
+            AnimWorldCoord {
+                x: 10 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+                y: 20 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+                z: 0,
+            },
+            "1x1",
+            &["EXP".to_string()],
+            &[],
+        );
+        let id = ids[0];
+        assert_eq!(
+            sim.anim(id).unwrap().world_coord,
+            AnimWorldCoord {
+                x: world.0,
+                y: world.1,
+                z: 0,
+            }
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), construction_state);
+        assert!(sim.smudge_grid.as_ref().unwrap().iter_occupied().next().is_none());
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_data,
+            5
+        );
+
+        sim.visit_anim_with_overlay_registry(id, &rules, Some(&overlay_registry));
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            construction_state,
+            "constructor first-AI guard must not run Start or consume RNG"
+        );
+        assert!(sim.smudge_grid.as_ref().unwrap().iter_occupied().next().is_none());
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_data,
+            5
+        );
+
+        sim.session.binary_frame = 1;
+        let start_roll = oracle.next_range_u32_inclusive(0, 0x7fff_fffe);
+        assert!(start_roll >= 0x4000_0000, "fixture takes the crater arm");
+        sim.visit_anim_with_overlay_registry(id, &rules, Some(&overlay_registry));
+        assert_eq!(sim.anim(id).unwrap().runtime.delay_remaining, 0);
+        assert_eq!(sim.scenario_rng.logical_state(), oracle.logical_state());
+        let crater_id = rules.smudge_types.find_by_name("CR1").unwrap();
+        assert_eq!(
+            sim.smudge_grid.as_ref().unwrap().cell(10, 20).type_id,
+            Some(crater_id)
+        );
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_id,
+            None
+        );
+
+        let state_after_start = sim.scenario_rng.logical_state();
+        sim.visit_anim_with_overlay_registry(id, &rules, Some(&overlay_registry));
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            state_after_start,
+            "Start must not repeat after the delay transition reaches zero"
+        );
+        assert_eq!(sim.smudge_grid.as_ref().unwrap().iter_occupied().count(), 1);
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_id,
+            None
+        );
     }
 
     #[test]

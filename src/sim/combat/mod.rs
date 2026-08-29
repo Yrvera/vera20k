@@ -28,6 +28,8 @@ pub(crate) mod fire_decision;
 pub(crate) mod in_range;
 mod inviso_scatter;
 pub(crate) use inviso_scatter::random_direction_coord;
+#[cfg(test)]
+pub(crate) use inviso_scatter::random_direction_coord_for_byte;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
 pub(crate) mod veterancy;
