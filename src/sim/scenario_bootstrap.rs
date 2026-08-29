@@ -1793,7 +1793,7 @@ impl ScenarioBootstrapRng {
     /// 0x00684620 regenerates the accepted `.SED` after match RNG reseeding.
     pub(crate) fn replay_generated_construction_trace(
         &mut self,
-        trace: &crate::map::rmg::RmgConstructionTrace,
+        trace: &crate::map::construction_trace::RmgConstructionTrace,
     ) -> Result<
         crate::sim::world::GeneratedTechnoInitTable,
         crate::sim::world::GeneratedTechnoInitError,
@@ -1809,8 +1809,10 @@ impl ScenarioBootstrapRng {
                 );
             }
             let techno_ctor_random_word = (self.scenario.next_u32() & 0xFFFF) as u16;
-            if let crate::map::rmg::RmgConstructionOutcome::Emitted { entity_index, cell } =
-                &event.outcome
+            if let crate::map::construction_trace::RmgConstructionOutcome::Emitted {
+                entity_index,
+                cell,
+            } = &event.outcome
             {
                 emitted.push(crate::sim::game_entity::GeneratedTechnoInit {
                     entity_index: *entity_index,
@@ -2490,7 +2492,7 @@ mod tests {
 
     #[test]
     fn gsi_04_12_preload_fill_and_generated_trace_share_one_scenario_owner() {
-        use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
+        use crate::map::construction_trace::{RmgConstructionPhase, RmgConstructionTrace};
 
         let seed = 0x51C0_1006;
         let before = SimRng::new(u64::from(seed));
@@ -2564,7 +2566,7 @@ mod tests {
 
     #[test]
     fn gsi_04_12_generated_trace_continues_into_starting_techno_and_post_map_crate() {
-        use crate::map::rmg::{RmgConstructionPhase, RmgConstructionTrace};
+        use crate::map::construction_trace::{RmgConstructionPhase, RmgConstructionTrace};
         use crate::sim::scenario_post_map::ScenarioPostMapInput;
         use crate::skirmish_launch::{
             SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLocalSlot,
@@ -2846,9 +2848,9 @@ mod tests {
     fn generated_trace_rejects_bad_ordinal_before_spending_scenario() {
         let seed = 0x51C0_1007;
         let mut owner = ScenarioBootstrapRng::new(seed);
-        let mut trace = crate::map::rmg::RmgConstructionTrace::default();
+        let mut trace = crate::map::construction_trace::RmgConstructionTrace::default();
         trace.push_discarded(
-            crate::map::rmg::RmgConstructionPhase::NeutralTech,
+            crate::map::construction_trace::RmgConstructionPhase::NeutralTech,
             "CAOILD".to_string(),
         );
         trace.events[0].ordinal = 4;

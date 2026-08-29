@@ -18,6 +18,7 @@ pub mod actions;
 pub mod basic;
 pub mod bridge_facts;
 pub mod cell_index;
+pub(crate) mod construction_trace;
 pub mod scenario_menu;
 pub mod skirmish_scenarios;
 pub mod briefing;
