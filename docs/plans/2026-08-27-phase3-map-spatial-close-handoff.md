@@ -1,61 +1,60 @@
 # Phase 3 Map/Spatial Closure Handoff
 
-**Checkpoint:** 2026-08-27, after active-retail Giant Squid lifecycle/state-machine verification
+**Checkpoint:** 2026-08-29, stopped immediately after the sixth Explodes/Temporal design critic failed on active `IsGattling` target behavior
 
 **Worktree:** `C:\Users\enok\Documents\ra2-rust-game-phase3-map-spatial-close`
 
 **Branch:** `feature/phase3-map-spatial-close`
 
-**HEAD before this handoff update:** `b6811604 docs(ship): verify active giant squid lifecycle`
+**HEAD before this handoff update:** `9b700b40 docs(sim): verify gamemd Temporal target completion`
 
-**Publish state:** local only; no push or PR authority was granted
+**Publish state:** local only; no push, PR, merge, or main-checkout integration was authorized or performed
 
-## Closed work
+## Completed work
 
-The bounded GSI-04.03 Spark shared-CellClass-dummy mechanism is closed. Its final certification is `6463f2c2`; supporting implementation, repair, provenance, and critic-led commits are in branch history through that commit. The final recorded focused validation was:
+The promoted Building Action 119/House destruction sweep plus bounded `Explosion=`/`DestroyAnim=` prerequisite closed through independent builder/critic repair cycles. Its implementation range is `3287e425..d6f9aeca`; the final critic passed at `d6f9aeca`. The important closing commits include `dd21ba74` (Building destruction anim construction), `92eb1cc4..0db2bbc7` (native AnimClass shadow/layer behavior), `bcb8ba1f` (Building Start-smudge interleave), and `d6f9aeca` (Wave Building Start-smudge authority).
 
-```text
-gsi_04_03: 69 passed; 0 failed
-Spark focused groups: 45 passed; 0 failed
-snapshot v111 rejection: 1 passed; 0 failed
-```
+The next BuildingType `Explodes=yes` row has complete committed evidence through the following local commits:
 
-No phase-wide/full `cargo test -p vera20k --lib` was run; Phase 3 remains open.
+- `fe7ec733` — Building Explodes retained lifecycle;
+- `ccf4d2ed` — Building survivor/absorber Cargo;
+- `e61a6438` — independent `CanBeOccupied` Building vector;
+- `84546436` — corrected Explodes report occupant ownership;
+- `ad5c7536` — occupied-Building Temporal erase; and
+- `9b700b40` — all active Temporal target-class completion, SHA256 `68E06233CB7B576D4F8517F2E4AF4BA617D6A8ED8E21C3D7B9B075A4BFAF7CC1`.
 
-## Open work at stop
+No Explodes/Temporal Rust implementation began. No Cargo validation was run for this open row. The phase-wide reverse audit and the single final `cargo test -p vera20k --lib` have not run.
 
-The current mechanism remains GSI-04.03 ShipLocomotion bridge-Z destination, braking, terminal, guard, and its promoted Giant Squid attachment prerequisite. The authoritative artifacts are:
+## Open work and blocking finding
 
-- `docs/research/PHASE3_SHIP_BRIDGE_Z_ADJUSTMENT_GHIDRA_REPORT.md`
-- `docs/plans/2026-08-27-phase3-ship-bridge-z-adjustment-design.md`
+The task-owned provisional design is preserved untracked at `docs/plans/2026-08-29-phase3-building-explodes-lifecycle-design.md` (1,174 lines, 244,109 bytes). Its Testing Strategy contains exactly 128 sequential cases. It integrates Building fatal retention, survivor Cargo, the independent occupant vector, and production Temporal delivery/completion for Infantry, Unit, Aircraft, and Building, but it is **not approved**.
 
-Research commit `b6811604` adds Section 17, which supersedes the stale temporal/CLEG identity, null-cell rejection, bounded attachment-only design, and unconditional Naval-detach death. It verifies the stock SQD manager construction; `LimboLaunch`; target `+0x698` 20-frame Parasite refire lock; exact `CanAttach` gates and reciprocal link order; victim-driven Foot AI updates; `Paralyzes=32767`; states 0–4 and 70/40 update cadence; wake/splash RNG and geometry; culling, XP, delayed sinking; Sonic/suppression/healing releases; adjacent Naval re-entry with `3*ROF=297`; placement-failure death; pointer expiry; persistence; and OpenTS negative evidence.
+Fresh read-only critic 6 returned FAIL:
 
-No Ship/SQD Rust implementation has started. The design is still `OPEN` and is not implementation-ready because it still proposes the superseded bounded approximation. Its next revision must promote the full verified SQD core and resolve the architecture-facing details exposed by that evidence, especially:
+> Native `TemporalClass::InitiateWarp @ 0x0071AF20` calls `UpdateGattlingStage(1)` on attachment. Retail `YTNK` and `YAGGUN` author `IsGattling=yes`, so stock CLEG/IFV attacks can alter their active weapon-stage state. The design names the call but does not own its parser/runtime state, progression/decay effects, persistence/hash, or YTNK/YAGGUN production tests; current Rust still records gattling-stage weapon selection as residual.
 
-- exact native-table trigonometry and f32 rocking-frame ownership/order;
-- real attached `AnimObject` handling for SQDG, wakes, splashes, owner-relative XYZ, listener cleanup, and delayed Reports;
-- two-stage splash allocation so list-index RNG is consumed only after successful allocation;
-- manager/backlink/refire-lock/destination-delay state, native post-load timer reset, digest coverage, and snapshot-version change;
-- exact limbo fallback, detach/re-entry, culling, delayed sinking, and all active release routes;
-- bounded upstream admission evidence for Chronosphere and IsLocomotor release callers, rather than residual or unconditional approximations.
+The smallest required correction is a focused active-retail `UpdateGattlingStage(1)` investigation followed by a design revision and a new fresh critic. That investigation was dispatched, then interrupted immediately when the user ordered this run to stop. It produced no report file, code, Cargo output, commit, or Ghidra mutation. The row therefore remains open; do not implement from the current design.
 
-Fresh critic 7's earlier blockers remain historical inputs to the revised design: the first destination-delay write belongs to the victim's later update rather than projectile detonation; attachment and release must be gated by real manager/link state; and the exact timer predicate is `CdTimer::remaining(frame) != 0`, including paused-start behavior. The bridge-Z core itself had no new finding: transactional command/internal/direct/scatter entry, separate Ship/Drive Z, structural destination authority, native 3D distance/saturation, strict terminal cell-plus-Z retry, geometry rejection without mutation, cancel/getter behavior, and save/hash coverage remain required.
+## Files and checkout state
 
-Any unresolved, approximate, missing, or residual behavior keeps this row open. Remaining Phase 3 rows, the phase-wide reverse audit, and the single final full library suite have not begun.
+Feature worktree tracked state is clean after this handoff commit except for deliberately preserved untracked files. The task-owned partial file is:
 
-## Working-tree and process state
+- `docs/plans/2026-08-29-phase3-building-explodes-lifecycle-design.md`
 
-Preserve these unrelated pre-existing untracked reports; this task did not create or modify them:
+These unrelated pre-existing protected reports remain untracked and were not modified or staged:
 
 - `docs/research/PHASE3_HOUSE_UPDATE_AI_ACTIVATION_GHIDRA_REPORT.md`
 - `docs/research/PHASE3_MAIN_TICK_MODAL_SCHEDULER_SEAM_GHIDRA_REPORT.md`
 - `docs/research/PHASE3_UNIT_DEPLOY_HOUSE_FLAGS_GHIDRA_REPORT.md`
 
-Before this handoff update, the branch was 74 commits ahead of `origin/main`. No merge, rebase, or cherry-pick is in progress. All delegated researchers and critics are complete. The process check returned no `cargo` or `rustc` processes, so this worktree owns no running build.
+This task wrote exactly one file into the main checkout, where it remains untracked and preserved:
 
-No Cargo validation was run after the recorded Spark tests because subsequent work was research/design only.
+- `C:\Users\enok\Documents\ra2-rust-game\docs\research\PHASE3_BUILDING_DESTRUCTION_EFFECT_ANIMS_GHIDRA_REPORT.md` — 37,645 bytes, SHA256 `7C7BFB07996BAAE61E3073FC48A21A46937E9BCB7BEF56D3706FBC7DB6C8CBCE`.
+
+No other current main-checkout dirty path intersects `3287e425^..9b700b40` or the task-named Explodes/Temporal artifacts. The main checkout has substantial unrelated pre-existing modified/untracked work; none was changed, staged, deleted, or committed by this wrap-up.
+
+The final process check returned no output for `Get-Process cargo,rustc`; this worktree owns no build. No merge, rebase, or cherry-pick is in progress. No files are staged beyond this completed handoff update.
 
 ## Exact next safe action
 
-Resume in this same branch/worktree and reconcile git/worktree/process state first. Rewrite the Ship design against report Section 17 before editing Rust. Close the exact native trig/facing path, animation allocation/ownership ordering, and bounded Chronosphere/IsLocomotor release admissions with live evidence. Commit the revised design, then submit the requirement, Section 17 evidence, prior findings, design diff, and output to a genuinely fresh read-only critic. Repair its largest finding and use another fresh critic, rechecking prior fixes, until the design passes with zero findings. Only then appoint one builder for the Ship/SQD mechanism. Reserve the single `cargo test -p vera20k --lib` run for final Phase 3 closure.
+Remain stopped until the user explicitly resumes this same row. On a later authorized resume, first reconcile branch/worktree/process state, then finish only the focused active-retail `TemporalClass::InitiateWarp -> UpdateGattlingStage(1)` prerequisite for stock `YTNK` and `YAGGUN`. Commit only a fully read-back evidence report, revise the existing 128-case design without discarding prior contracts, and submit the requirement, all native evidence, design diff, critic-6 finding, and validation output to a genuinely fresh read-only critic. Fix its largest finding and repeat with another fresh critic until PASS. Do not begin Rust implementation, another mechanism, the phase-wide audit, or the full library suite before that gate closes.
