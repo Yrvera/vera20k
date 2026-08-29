@@ -330,6 +330,11 @@ pub struct AnimObject {
     /// AnimClass `+0x197`: created from a terrain tile animation descriptor.
     #[serde(default)]
     pub terrain_attached: bool,
+    /// Exact producer identity for Building `Explosion=` Start scorch/crater
+    /// work. This cannot be inferred from AnimType because the same type may be
+    /// constructed by a caller whose Start subset has not yet been audited.
+    #[serde(default)]
+    pub building_explosion_start_smudge: bool,
     /// LogicClass membership is reconstructed from the serialized vector.
     /// ObjectClass::Save does not persist its local membership byte.
     #[serde(skip)]
@@ -529,6 +534,16 @@ impl Simulation {
         descriptor: AnimClassSpawnDescriptor,
         world_coord: AnimWorldCoord,
     ) -> Result<AnimId, AnimSpawnError> {
+        self.spawn_anim_at_world_with_overlay_registry(rules, descriptor, world_coord, None)
+    }
+
+    pub(crate) fn spawn_anim_at_world_with_overlay_registry(
+        &mut self,
+        rules: &RuleSet,
+        descriptor: AnimClassSpawnDescriptor,
+        world_coord: AnimWorldCoord,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> Result<AnimId, AnimSpawnError> {
         let type_name = self
             .interner
             .resolve(descriptor.type_name)
@@ -580,6 +595,7 @@ impl Simulation {
             draw_runtime: descriptor.draw_runtime,
             use_cell_drawer: descriptor.use_cell_drawer,
             terrain_attached: descriptor.terrain_attached,
+            building_explosion_start_smudge: descriptor.building_explosion_start_smudge,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -590,7 +606,7 @@ impl Simulation {
         // delay-zero constructor-time Middle call.
         self.reveal_anim(stable_id);
         if descriptor.delay == 0 {
-            self.anim_middle(stable_id, &config);
+            self.anim_middle(stable_id, rules, &config, overlay_registry);
         }
         Ok(stable_id)
     }
@@ -656,6 +672,7 @@ impl Simulation {
             draw_runtime: AnimDrawRuntime::default(),
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -667,7 +684,7 @@ impl Simulation {
                 .insert(object)
                 .is_none()
         );
-        self.anim_middle(stable_id, &config);
+        self.anim_middle(stable_id, rules, &config, None);
         Ok(stable_id)
     }
 
@@ -686,6 +703,15 @@ impl Simulation {
     }
 
     pub(crate) fn visit_anim(&mut self, id: AnimId, rules: &RuleSet) {
+        self.visit_anim_with_overlay_registry(id, rules, None);
+    }
+
+    pub(crate) fn visit_anim_with_overlay_registry(
+        &mut self,
+        id: AnimId,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
         // `AnimClass::GetCoords @ 0x00422BE0`, not the stored field: an
         // owner-attached anim stores an owner-relative delta.
         let Some(world_coord) = self.anim_absolute_coord(id) else {
@@ -741,6 +767,7 @@ impl Simulation {
                     reverse: false,
                     use_cell_drawer: false,
                     terrain_attached: false,
+                    building_explosion_start_smudge: false,
                     draw_runtime: AnimDrawRuntime::default(),
                 };
                 self.spawn_anim_at_world(rules, descriptor, world_coord)
@@ -758,14 +785,29 @@ impl Simulation {
         let mut action = VisitAction::None;
         let mut random_loop_delay = None;
         let current_frame = self.session.binary_frame as i32;
-        {
+        let delay_transition = {
             let Some(anim) = self.anim_mut_by_id(id) else {
                 return;
             };
             if anim.runtime.delay_remaining > 0 {
                 anim.runtime.delay_remaining -= 1;
-                return;
+                Some(anim.runtime.delay_remaining == 0)
+            } else {
+                None
             }
+        };
+        if let Some(reached_zero) = delay_transition {
+            if reached_zero {
+                self.anim_middle(id, rules, &config, overlay_registry);
+            }
+            // Native returns from the AI visit that handles the delay whether
+            // or not it reached zero; frame advancement begins on a later visit.
+            return;
+        }
+        {
+            let Some(anim) = self.anim_mut_by_id(id) else {
+                return;
+            };
             if anim.runtime.rate_reload == 0 {
                 return;
             }
@@ -826,7 +868,9 @@ impl Simulation {
                 );
                 self.destroy_anim(id);
             }
-            VisitAction::Next(next) => self.switch_anim_type(id, &next, rules),
+            VisitAction::Next(next) => {
+                self.switch_anim_type(id, &next, rules, overlay_registry)
+            }
         }
     }
 
@@ -1280,6 +1324,7 @@ impl Simulation {
                 reverse: false,
                 use_cell_drawer: false,
                 terrain_attached: false,
+                building_explosion_start_smudge: false,
                 draw_runtime: AnimDrawRuntime::default(),
             };
             let world = AnimWorldCoord {
@@ -1351,30 +1396,47 @@ impl Simulation {
         }
     }
 
-    fn anim_middle(&mut self, id: AnimId, config: &AnimTypeRuntimeConfig) {
+    fn anim_middle(
+        &mut self,
+        id: AnimId,
+        rules: &RuleSet,
+        config: &AnimTypeRuntimeConfig,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
         let sound_name = config
             .start_sound
             .as_ref()
             .or(config.report.as_ref())
             .cloned();
-        let Some(sound_name) = sound_name else {
-            return;
-        };
-        let sound_id = self.interner.intern(&sound_name);
-        let Some(world) = self.anim_absolute_coord(id) else {
-            return;
-        };
-        if let Some(anim) = self.anim_mut_by_id(id) {
-            anim.start_sound_active = true;
+        if let Some(sound_name) = sound_name {
+            let sound_id = self.interner.intern(&sound_name);
+            if let Some(world) = self.anim_absolute_coord(id) {
+                if let Some(anim) = self.anim_mut_by_id(id) {
+                    anim.start_sound_active = true;
+                }
+                self.sound_events.push(SimSoundEvent::AnimationStarted {
+                    anim_id: id,
+                    sound_id,
+                    world,
+                });
+            }
         }
-        self.sound_events.push(SimSoundEvent::AnimationStarted {
-            anim_id: id,
-            sound_id,
-            world,
-        });
+        if config.start == 0
+            && self
+                .anim(id)
+                .is_some_and(|anim| anim.building_explosion_start_smudge)
+        {
+            self.dispatch_building_explosion_anim_start_smudge(id, rules, overlay_registry);
+        }
     }
 
-    fn switch_anim_type(&mut self, id: AnimId, next: &str, rules: &RuleSet) {
+    fn switch_anim_type(
+        &mut self,
+        id: AnimId,
+        next: &str,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
         let Some(config) = rules.art_registry.anim_runtime_config(next).cloned() else {
             self.destroy_anim(id);
             return;
@@ -1413,7 +1475,7 @@ impl Simulation {
             anim.runtime.first_ai_guard = false;
             anim.runtime.inactive = false;
         }
-        self.anim_middle(id, &config);
+        self.anim_middle(id, rules, &config, overlay_registry);
     }
 }
 
@@ -1656,6 +1718,7 @@ mod tests {
             reverse: false,
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             draw_runtime: AnimDrawRuntime::default(),
         }
     }
@@ -1699,6 +1762,7 @@ mod tests {
         };
         descriptor.use_cell_drawer = true;
         descriptor.terrain_attached = true;
+        descriptor.building_explosion_start_smudge = true;
         let draw_runtime = descriptor.draw_runtime;
         let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
         assert_eq!(sim.anim(id).unwrap().draw_runtime, draw_runtime);
@@ -1708,9 +1772,15 @@ mod tests {
         assert_eq!(restored.get(id).unwrap().draw_runtime, draw_runtime);
         assert!(restored.get(id).unwrap().use_cell_drawer);
         assert!(restored.get(id).unwrap().terrain_attached);
+        assert!(restored
+            .get(id)
+            .unwrap()
+            .building_explosion_start_smudge);
 
         let before = sim.state_hash();
-        sim.anim_mut_by_id(id).unwrap().terrain_attached = false;
+        sim.anim_mut_by_id(id)
+            .unwrap()
+            .building_explosion_start_smudge = false;
         assert_ne!(sim.state_hash(), before);
     }
 
@@ -1859,6 +1929,47 @@ mod tests {
         sim.visit_anim(id, &rules); // a second visit in the same frame cannot advance again
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
         assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+
+    #[test]
+    fn building_explosion_delays_one_through_three_run_middle_on_zero_transition_once() {
+        let rules = runtime_rules(
+            "[TEST]\nRate=450\nEnd=3\nLoopCount=1\nReport=ExplosionReport\n",
+            &[("TEST", 3)],
+        );
+
+        for delay in 1..=3 {
+            let mut sim = Simulation::new();
+            let type_id = sim.interner.intern("TEST");
+            let id = sim
+                .spawn_anim_object(&rules, runtime_descriptor(type_id, delay))
+                .unwrap();
+            assert!(sim.sound_events.is_empty());
+
+            sim.visit_anim(id, &rules); // constructor first-AI guard
+            assert!(sim.sound_events.is_empty());
+            for visit in 1..=delay {
+                sim.session.binary_frame = u32::from(visit);
+                sim.visit_anim(id, &rules);
+                if visit < delay {
+                    assert!(sim.sound_events.is_empty());
+                }
+            }
+
+            assert_eq!(sim.anim(id).unwrap().runtime.delay_remaining, 0);
+            assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
+            assert!(matches!(
+                sim.sound_events.as_slice(),
+                [SimSoundEvent::AnimationStarted { anim_id, .. }] if *anim_id == id
+            ));
+
+            sim.visit_anim(id, &rules);
+            assert_eq!(
+                sim.sound_events.len(),
+                1,
+                "Middle must not repeat after delay {delay} reaches zero"
+            );
+        }
     }
 
     #[test]
@@ -2332,6 +2443,7 @@ mod tests {
                     reverse: false,
                     use_cell_drawer: false,
                     terrain_attached: false,
+                    building_explosion_start_smudge: false,
                     draw_runtime: AnimDrawRuntime::default(),
                 },
                 AnimWorldCoord { x: 0, y: 0, z: 0 },

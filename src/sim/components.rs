@@ -887,6 +887,11 @@ pub struct AnimClassSpawnDescriptor {
     /// AnimClass `+0x197`: marks the instance as terrain-attached.
     #[serde(default)]
     pub terrain_attached: bool,
+    /// Producer-scoped `AnimClass::Start` work for the verified Building
+    /// `Explosion=` constructor. Generic scheduler anims deliberately leave
+    /// this false until their own Start side effects are audited.
+    #[serde(default)]
+    pub building_explosion_start_smudge: bool,
     /// Instance draw-state bytes supplied by the native producer.
     pub draw_runtime: crate::sim::anim_class::AnimDrawRuntime,
 }
@@ -914,6 +919,7 @@ impl AnimClassSpawnDescriptor {
             reverse: false,
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             draw_runtime: crate::sim::anim_class::AnimDrawRuntime::default(),
         }
     }

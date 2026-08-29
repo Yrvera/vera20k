@@ -354,7 +354,10 @@ use crate::sim::world::Simulation;
 // Bumped 119 -> 120: Infantry persists its independent House-tracked and Bio
 // Reactor occupant bytes; HouseState persists the distinct +0x2F4 Infantry
 // tracking count that absorber entry temporarily removes.
-const SNAPSHOT_VERSION: u32 = 120;
+// Bumped 120 -> 121: scheduler AnimClass records persist the explicit Building
+// `Explosion=` Start-smudge producer identity. The bit gates future Scenario
+// RNG and smudge/ore mutation when a delayed animation reaches Middle.
+const SNAPSHOT_VERSION: u32 = 121;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3309,10 +3312,11 @@ mod tests {
     /// timer state and the independently nested CargoClass relation exercised
     /// by Unit Grinder/absorber continuations; 118 -> 119 adds Ship's RawTrack
     /// handoff/endpoint occupation pair; 119 -> 120 adds Bio Reactor Infantry
-    /// tracking/occupant bytes and the House +0x2F4 count.
+    /// tracking/occupant bytes and the House +0x2F4 count; 120 -> 121 adds the
+    /// Building Explosion Start-smudge producer bit.
     #[test]
-    fn phase3_combined_snapshot_version_is_120() {
-        assert_eq!(super::SNAPSHOT_VERSION, 120);
+    fn phase3_combined_snapshot_version_is_121() {
+        assert_eq!(super::SNAPSHOT_VERSION, 121);
     }
 
     #[test]
@@ -3797,7 +3801,7 @@ mod tests {
         let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v120 facility references resolve");
+            .expect("v121 facility references resolve");
         assert_eq!(
             restored.houses[&owner].grinder_building_order,
             vec![older_id, newer_id]
@@ -8035,7 +8039,7 @@ mod tests {
         assert_ne!(changed.state_hash(), baseline, "temporal warped byte hashes");
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "result_link_fixture", 0);
-        let mut restored = GameSnapshot::load(&bytes).expect("v120 link snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes).expect("v121 link snapshot").sim;
         restored
             .restore_after_snapshot_load()
             .expect("all reciprocal references resolve");

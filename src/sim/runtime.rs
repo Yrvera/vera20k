@@ -448,6 +448,7 @@ pub(crate) fn spawn_terrain_tile_animations(
             reverse: false,
             use_cell_drawer: true,
             terrain_attached: true,
+            building_explosion_start_smudge: false,
             draw_runtime: AnimDrawRuntime::default(),
         };
         let id = sim

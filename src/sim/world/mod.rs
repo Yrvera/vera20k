@@ -1165,6 +1165,57 @@ fn dispatch_smudge_inline(
     );
 }
 
+impl Simulation {
+    /// Run only the verified Building `Explosion=` caller's
+    /// `AnimClass::Start` scorch/crater/ore subset. The producer bit stored on
+    /// the Anim object prevents this from widening any other scheduler caller.
+    pub(crate) fn dispatch_building_explosion_anim_start_smudge(
+        &mut self,
+        anim_id: crate::sim::anim_class::AnimId,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        let Some((anim_name, world)) = self.anim(anim_id).and_then(|anim| {
+            self.anim_absolute_coord(anim_id)
+                .map(|world| (anim.type_id, world))
+        }) else {
+            return;
+        };
+        let (rx, ry, sub_x, sub_y, _) = world.to_cell_sub_z();
+        let request = crate::sim::combat::SmudgeSpawnRequest::Anim {
+            anim_name,
+            rx,
+            ry,
+            sub_x,
+            sub_y,
+            world_z_leptons: world.z,
+        };
+        let binary_frame = self.session.binary_frame;
+        let spread_enabled = self.production.ore_growth_config.spreads;
+        dispatch_smudge_inline(
+            &request,
+            rules,
+            overlay_registry,
+            &self.interner,
+            &self.substrate.occupancy,
+            &self.substrate.raw_cell_occupation,
+            &mut self.scenario_rng,
+            &mut self.production.resource_nodes,
+            self.overlay_grid.as_mut(),
+            self.resolved_terrain.as_mut(),
+            self.smudge_grid.as_mut(),
+            &mut self.production.ore_growth_state,
+            &self.production.tiberium_spawning_terrain_cells,
+            binary_frame,
+            spread_enabled,
+            &mut self.radar_terrain_dirty_cells,
+            &mut self.radar_terrain_dirty_generation,
+            &mut self.tactical_dirty_cells,
+        );
+        self.flush_smudge_dirty();
+    }
+}
+
 /// Single mutable bridge back into Simulation while combat owns the moved-out
 /// receiver transaction. It deliberately implements both lifecycle and smudge
 /// callbacks so no pair of closures can alias `&mut Simulation`.
