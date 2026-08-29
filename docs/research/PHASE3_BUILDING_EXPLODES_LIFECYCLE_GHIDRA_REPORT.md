@@ -8,6 +8,7 @@
 **Rust baseline:** `d6f9aecade79b7d155f1eb163db9c9ff1d77fba3`  
 **Status:** **VERIFIED — implementation-ready**  
 **Confidence:** High for field identity, complete active consumer inventory, burst coordinates/gates/RNG/constructor row, zero-duration retention, cleanup ordering, repeated survivor consequences, scheduler mutation, active-retail reach, persistence/checksum behavior, and the current Rust delta.
+**Correction authority:** `PHASE3_BUILDING_CAN_BE_OCCUPIED_VECTOR_LIFECYCLE_GHIDRA_REPORT.md` supersedes the original Cargo/vector conflation and supplies the exact separate fatal `SellBuilding(0,0)` vector phase used by this corrected revision.
 
 ## 1. Scope and completion boundary
 
@@ -32,9 +33,9 @@ The mission value paired with `Explodes` in the timer OR is raw `0x13 = Selling`
 
 `BuildingClass::Limbo -> BuildingClass::SpawnSurvivors (second invocation) -> ObjectClass::UnInit -> BuildingClass::Place_OccupyMap -> return`.
 
-The second `SpawnSurvivors` is not a harmless duplicate. The first invocation has already run at the end of `DestructionEffects`. For a Type-Explodes Building, generic fatal processing has already destroyed all cargo, so both survivor calls see empty cargo. Each call nevertheless recomputes a fresh local crew budget. If that budget is nonzero, each independently walks the entire ordered foundation, rolls for crew, and produces the passable-cell debris/smudge branch and all of its Scenario RNG. Thus an ordinary, non-`ignore_defenses` fatal hit on a side-eligible `NANRCT` gets two independent crew/smudge passes. A forced C4-style `ignore_defenses` fatal packet sets the persistent survivor-suppression latch first, so both calls skip the foundation walk. The other nine effective stock BuildingTypes have no crew budget and native emits no per-foundation survivor smudge pass at all.
+The second `SpawnSurvivors` is not a harmless duplicate. The first invocation has already run at the end of `DestructionEffects`. For a Type-Explodes Building, generic fatal processing has already destroyed all **inherited Techno Cargo**, so both survivor calls see empty inherited Cargo. A distinct `CanBeOccupied` Building occupant vector is processed separately by `BuildingClass::SellBuilding(0,0)` after the parent death weapon and before `DestructionEffects`; it is not an input to either survivor call. Each call nevertheless recomputes a fresh local crew budget. If that budget is nonzero, each independently walks the entire ordered foundation, rolls for crew, and produces the passable-cell debris/smudge branch and all of its Scenario RNG. Thus an ordinary, non-`ignore_defenses` fatal hit on a side-eligible `NANRCT` gets two independent crew/smudge passes. A forced C4-style `ignore_defenses` fatal packet sets the persistent survivor-suppression latch first, so both calls skip the foundation walk. The other nine effective stock BuildingTypes have no crew budget and native emits no per-foundation survivor smudge pass at all.
 
-Current Rust preserves the parsed Building `explodes` field and death-weapon admission and already implements the separately owned Building destruction animations. It does not preserve the duration-zero live Building, does not allow the Building's own Update to remove it, purges cargo under the wrong gate, ejects `YAPPPT` garrison occupants instead of destroying them, spawns Building crew once after UnInit, and emits one survivor-smudge foundation pass for every destroyed Building regardless of native crew eligibility.
+Current Rust preserves the parsed Building `explodes` field and death-weapon admission and already implements the separately owned Building destruction animations. It does not preserve the duration-zero live Building, does not allow the Building's own Update to remove it, purges inherited Cargo under the wrong gate, conflates inherited Cargo with the distinct `CanBeOccupied` occupant vector, processes fatal vector release at the wrong ownership/order point, spawns Building crew once after UnInit, and emits one survivor-smudge foundation pass for every destroyed Building regardless of native crew eligibility.
 
 The native `FIRE3` burst is compiled and exact but unreachable in the mounted active retail corpus: 250 active OverlayTypes, zero OverlayType `Explodes=` assignments in canonical rules or any of 184 extracted maps, therefore zero eligible overlay types and zero eligible overlay cells. Active-stock implementation must consume zero RNG and construct zero burst Anims. Adding mod-only overlay `Explodes` support is not required to close this active-retail row, but any future implementation must use the exact row below.
 
@@ -172,7 +173,7 @@ Therefore the active eligible OverlayType set is empty, and the active eligible 
 
 This is an evidence-backed active-stock exclusion, not proof that the compiled arm is dead for mods.
 
-## 7. Generic fatal `Explodes` coupling: cargo before death weapon
+## 7. Generic fatal `Explodes` coupling: inherited Cargo before death weapon
 
 `TechnoClass::ReceiveDamage @ 0x00701900` reads `Type+0xD15` at `0x0070258F`. Admission to the shared fatal block is true when any of these hold:
 
@@ -180,7 +181,7 @@ This is an evidence-backed active-stock exclusion, not proof that the compiled a
 - active veteran/elite Explodes ability; or
 - the object's current selected weapon has `Suicide=yes`.
 
-For a Type-Explodes Building the first arm is sufficient. At `0x00702603` the helper loops while cargo head `Techno+0x118` is non-null:
+For a Type-Explodes Building the first arm is sufficient. At `0x00702603` the helper loops while inherited Cargo head `Techno+0x118` is non-null:
 
 1. inspect the current head;
 2. if it belongs to a Team, call `TeamClass::Remove_Member`;
@@ -188,17 +189,18 @@ For a Type-Explodes Building the first arm is sufficient. At `0x00702603` the he
 4. recursively call `FootClass::EMPPassengers @ 0x00707CB0` on the popped Foot;
 5. call the popped object's virtual `+0xE0` damage/death callback;
 6. call its virtual `+0xF8` `UnInit`;
-7. repeat until cargo is empty.
+7. repeat until inherited Cargo is empty.
 
-Only after cargo is empty does `FUN_0070D690` run the shared death-weapon helper. Building-specific `DestructionEffects` follows later through the Building receiver wrapper. Thus, for Type-Explodes Buildings:
+Only after inherited Cargo is empty does `FUN_0070D690` run the shared death-weapon helper. After the parent Techno receiver returns, the Building wrapper separately runs fatal `CanBeOccupied` `SellBuilding(0,0)` vector release, then invokes Building-specific `DestructionEffects`. Thus, for Type-Explodes Buildings:
 
-- every carried passenger is synchronously destroyed before death-weapon detonation;
-- every passenger is gone before the first `BuildingClass::SpawnSurvivors`;
-- neither the first nor second survivor call can eject that cargo.
+- every inherited-Cargo passenger is synchronously destroyed before death-weapon detonation;
+- inherited Cargo is empty before the first `BuildingClass::SpawnSurvivors`;
+- neither the first nor second survivor call can eject that inherited Cargo; and
+- the distinct `CanBeOccupied` vector is untouched by the generic purge and is released or UnInitialized later by `SellBuilding(0,0)`, after the death weapon and before `DestructionEffects`.
 
 The Explodes/Suicide/ability admission and the cargo-before-death-weapon order are owned by this field boundary. Weapon selection, warhead detonation, radial damage, and their internal RNG are the existing generic death-weapon mechanism and remain outside this report.
 
-Rust's `death_weapon_aoe` gate in `src/sim/combat/mod.rs:1622` matches the effective Type/veterancy/Suicide admission. Rust's `BeforeDeathEffects` hook in `src/sim/world/mod.rs:1990`, however, purges cargo for every fatal Unit/Structure regardless of that gate and special-cases occupied/absorber Buildings to eject their cargo. For the active Type-Explodes set, ordinary cargo purge happens to match; `YAPPPT` (`CanBeOccupied=yes`) is a direct opposite result and must destroy, not eject, its occupants.
+Rust's `death_weapon_aoe` gate in `src/sim/combat/mod.rs:1622` matches the effective Type/veterancy/Suicide admission. Rust's `BeforeDeathEffects` hook in `src/sim/world/mod.rs:1990`, however, purges one shared passenger store for every fatal Unit/Structure and special-cases occupied/absorber Buildings through that same store. Native requires two independent owners: admitted inherited Cargo is destroyed before the death weapon, while a `CanBeOccupied` vector is processed afterward by `SellBuilding(0,0)`. Canonical `YAPPPT` is the binary-representable intersection, although both shipped map contexts disable its occupancy and no effective shipped placement reaches that intersection.
 
 ## 8. Timer writes and `Selling OR Explodes` precedence
 
@@ -258,7 +260,8 @@ At the return from a Type-Explodes fatal hit, the Building has:
 | Logic membership | true (`+0x98` not yet cleared) |
 | map/foundation occupancy | retained |
 | owner/house membership | retained |
-| cargo | empty from the generic fatal gate |
+| inherited Cargo | empty from the generic fatal gate |
+| `CanBeOccupied` vector | separately emptied by fatal `SellBuilding(0,0)` before `DestructionEffects` when applicable |
 | first `SpawnSurvivors` | already complete |
 | death weapon and destruction effects | already complete; must not repeat |
 
@@ -334,9 +337,9 @@ Those cell semantics belong to the existing placement/occupancy mechanism; this 
 
 The first call is at `0x00441F1B`, after `DestructionEffects` sets Health to zero and before `FootClass::EMPPassengers` on the Building. The second is at `0x004400D4`, after the retained Building's first Limbo and before UnInit.
 
-`SpawnSurvivors` has its own cargo-pop arm for absorber/carry-capable types, but Type Explodes already emptied cargo in generic `TechnoClass::ReceiveDamage`. Both invocations therefore enter with cargo count/head zero. There is no cargo ejection, placement, passenger mission assignment, or cargo RNG in either pass for a Type-Explodes fatal Building.
+`SpawnSurvivors` has its own inherited-Cargo pop arm for absorber/carry-capable types, but Type Explodes already emptied inherited Cargo in generic `TechnoClass::ReceiveDamage`. Both invocations therefore enter with inherited Cargo count/head zero. There is no inherited-Cargo ejection, placement, passenger mission assignment, or Cargo RNG in either pass for a Type-Explodes fatal Building. The separate `CanBeOccupied` vector, if active, was already processed by fatal `SellBuilding(0,0)` before `DestructionEffects`.
 
-This is why `YAPPPT`'s occupied-building status does not rescue its occupants: the Explodes fatal gate annihilates them before Building destruction effects.
+Canonical `YAPPPT` demonstrates the storage distinction in synthetic/custom/save state: its inherited Cargo would be destroyed before the death weapon, but its `CanBeOccupied` vector survives that purge and is then released or source-less-UnInitialized by `SellBuilding(0,0)` before Building destruction effects. The mounted shipped contexts override `YAPPPT` occupancy off, so no effective shipped placement reaches this intersection.
 
 ### 12.2 Fresh crew budget on every invocation
 
@@ -485,11 +488,11 @@ Nine canonical BuildingTypes author `Explodes=yes`. `xeb2.map` adds one map-loca
 | `INGRNLMP` | `xeb2.map` yes | explicit no | none | map-local `specialrad` | 8 |
 | `NANRCT` | canonical yes | explicit yes | none | explicit `NukePayload` | 22 |
 | `NAYARD` | canonical yes | explicit no | none | shared Rules default | 3 |
-| `YAPPPT` | canonical yes | default false | `CanBeOccupied=yes` | explicit `BlimpBombEffect` | 1 |
+| `YAPPPT` | canonical yes | default false | base `CanBeOccupied=yes`; sole placement overrides no | explicit `BlimpBombEffect` | 1 |
 | `YAYARD` | canonical yes | explicit no | none | shared Rules default | 6 |
 | **Total** |  |  |  |  | **1,794** |
 
-Only `NANRCT` reaches a positive native crew budget from active type data. `YAPPPT` is the active proof that Type Explodes takes priority over garrison ejection.
+Only `NANRCT` reaches a positive native crew budget from active type data. `YAPPPT` is the native type-level proof that inherited Cargo and the Building occupant vector require separate owners; both shipped map contexts disable its occupancy, so the combined fatal path is synthetic/custom/save reachable rather than an effective shipped-placement occurrence.
 
 ### 15.2 Every map-local `Explodes=` assignment
 
@@ -681,8 +684,8 @@ The remaining 36 maps contain zero preplaced effective Type-Explodes Buildings. 
 
 ### 16.2 Replace what is wrong
 
-1. `FatalLifecycleStage::BeforeDeathEffects` in `src/sim/world/mod.rs:1990` purges passengers for every fatal Unit/Structure. Native passenger annihilation is admitted only by effective Explodes/Suicide/ability.
-2. The same hook ejects occupied/absorber Building cargo. For Type Explodes, including the active `YAPPPT`, native destroys it before Building death effects.
+1. `FatalLifecycleStage::BeforeDeathEffects` in `src/sim/world/mod.rs:1990` purges passengers for every fatal Unit/Structure. Native inherited-Cargo destruction is admitted only by effective Explodes/Suicide/ability.
+2. The same hook conflates inherited Cargo, absorber Cargo, and the distinct `CanBeOccupied` vector. Native destroys only admitted inherited Cargo before the death weapon, then processes the occupant vector through `SellBuilding(0,0)` after the weapon and before Building death effects.
 3. `append_building_smudge_requests` in `src/sim/combat/mod.rs:1174` always appends one request for every foundation cell. Native enters that foundation pass only when initial `SpawnSurvivors` crew budget is nonzero. Nine of ten active Explodes BuildingTypes must emit none.
 4. `eject_destruction_survivors` in `src/sim/production/production_sell.rs:201` always tries one side crew from one position. Native uses cost/divisor budget 1..5, ordered per-cell chance/type/placement/Health RNG, and can spawn multiple.
 5. Rust dispatches that survivor event after combat/world cleanup. Native first-pass crew happens before Limbo/UnInit; Type Explodes repeats the full opportunity after Limbo and before UnInit.
@@ -732,16 +735,17 @@ No excluded mechanism is used to excuse an active ordinary-retail result.
 The smallest exact active-retail implementation is:
 
 1. Reuse the current effective Explodes/Suicide/ability predicate for native fatal admission.
-2. Only when admitted, destroy cargo recursively in stable head order before the death weapon; never route Type-Explodes Building cargo through garrison ejection.
+2. Only when admitted, destroy inherited Cargo recursively in stable head order before the death weapon; never route it through `CanBeOccupied` vector release.
 3. Run the existing death weapon once.
-4. Run Building destruction effects once, preserving current center-smudge and `Explosion=`/`DestroyAnim=` ordering.
-5. Replace the unconditional foundation-smudge list with an exact first `SpawnSurvivors` transaction. Cargo is already empty; compute crew budget from side divisor, sticky owner-change latch, and `ignore_defenses` suppression; then interleave crew and smudge draws per foundation only when initial budget is nonzero. Reuse the retained C4 source for denominator and survivor mission/target postlude.
-6. At the authoritative Building owner-transfer chokepoint, set a persistent owner-changed latch only after a real distinct-owner transfer; never clear it during the Building lifetime and include it in snapshot/hash state.
-7. For current mission Selling **or** Type Explodes, leave the Building Health zero but alive, nonlimbo, in occupancy and Logic; store pending duration-zero cleanup, the survivor-suppression result, and reset the Building animation timer equivalent. Skip `AfterDeathEffects` UnInit for this object.
-8. When the live Logic scheduler reaches the Building, run the ordinary implemented Building Update prefix. Do not advance the reset Building animation timer.
-9. At the Health-zero timer check, clear damage-fire slots, call Building Limbo, execute a fresh second exact `SpawnSurvivors` with the same suppression/owner-change/source inputs, call UnInit, run the existing post-UnInit Building cell/placement transaction, and return.
-10. Stable-erase the Building from the live Logic vector through Limbo so the native successor-skip behavior occurs.
-11. Serialize and hash the pending phase/remaining duration, owner-change latch, survivor-suppression latch, and retained source identity; bump snapshot version to 122. Preserve the current explosion animation objects, smudges, survivor entities, cargo deaths, lifecycle facts, occupancy, and Logic order in the hash.
+4. After the death weapon and before Building destruction effects, process the independently stored `CanBeOccupied` vector through exact fatal `SellBuilding(0,0)` behavior; do not read inherited Cargo.
+5. Run Building destruction effects once, preserving current center-smudge and `Explosion=`/`DestroyAnim=` ordering.
+6. Replace the unconditional foundation-smudge list with an exact first `SpawnSurvivors` transaction. Inherited Cargo is already empty for explosive admission; compute crew budget from side divisor, sticky owner-change latch, and `ignore_defenses` suppression; then interleave crew and smudge draws per foundation only when initial budget is nonzero. Reuse the retained C4 source for denominator and survivor mission/target postlude.
+7. At the authoritative Building owner-transfer chokepoint, set a persistent owner-changed latch only after a real distinct-owner transfer; never clear it during the Building lifetime and include it in snapshot/hash state.
+8. For current mission Selling **or** Type Explodes, leave the Building Health zero but alive, nonlimbo, in occupancy and Logic; store pending duration-zero cleanup, the survivor-suppression result, and reset the Building animation timer equivalent. Skip `AfterDeathEffects` UnInit for this object.
+9. When the live Logic scheduler reaches the Building, run the ordinary implemented Building Update prefix. Do not advance the reset Building animation timer.
+10. At the Health-zero timer check, clear damage-fire slots, call Building Limbo, execute a fresh second exact `SpawnSurvivors` with the same suppression/owner-change/source inputs, call UnInit, run the existing post-UnInit Building cell/placement transaction, and return.
+11. Stable-erase the Building from the live Logic vector through Limbo so the native successor-skip behavior occurs.
+12. Serialize and hash the pending phase/remaining duration, owner-change latch, survivor-suppression latch, retained source identity, and the separate Building occupant vector/fire cursor; bump snapshot version to 122. Preserve the current explosion animation objects, smudges, survivor entities, Cargo deaths, vector release results, lifecycle facts, occupancy, and Logic order in the hash.
 
 The compiled four-cell FIRE3 burst may remain unimplemented for this active-retail row, but its absence must be protected by a census regression asserting the eligible overlay set remains empty. If implemented, use the exact N/E/S/W, allocation-before-RNG, fixed FIRE3 constructor row in section 6.
 
@@ -752,9 +756,9 @@ The compiled four-cell FIRE3 burst may remain unimplemented for this active-reta
 3. **Active census golden:** canonical counts remain 403 BuildingTypes and 250 OverlayTypes; ten effective Explodes BuildingTypes, 1,794 structures, 148 affected maps; zero exploding OverlayTypes and zero map overlay assignments.
 4. **Active burst zero-add:** fatal active `CAOILD`, `NANRCT`, and `YAPPPT` beside arbitrary stock overlays consume zero burst RNG and spawn zero FIRE3 Anims.
 5. **Optional synthetic burst:** with a synthetic OverlayType `Explodes=yes`, visit N/E/S/W in order, preserve relative Z, reject dummy/no-overlay/nonexploding cells without allocation/RNG, allocate before `Ranged(1,3)`, construct FIRE3 delay 4..6 with loop 1/flags `0x600`/owner none/ground layer, and consume no constructor RNG.
-6. **Cargo/death-weapon order:** a Type-Explodes Building with nested passengers destroys cargo depth-first/head-stably before its death weapon and before first survivor work. No passenger can be ejected by either survivor pass.
-7. **`YAPPPT` regression:** occupied active `YAPPPT` destroys all occupants; it does not invoke garrison exit selection/ejection.
-8. **Immediate post-fatal state:** after Type-Explodes fatal ReceiveDamage returns, assert Health=0, alive=true, in_limbo=false, Logic membership/position unchanged, occupancy/map membership retained, death effects marked complete, and cargo empty.
+6. **Inherited-Cargo/death-weapon order:** a Type-Explodes Building with nested inherited-Cargo passengers destroys them depth-first/head-stably before its death weapon and before first survivor work. No inherited-Cargo passenger can be ejected by either survivor pass.
+7. **`YAPPPT`/dual-store regression:** a synthetic/custom occupied `YAPPPT` proves inherited Cargo is purged before the death weapon while the separate occupant vector remains unchanged through the weapon, then exact fatal `SellBuilding(0,0)` edge-releases or source-less-UnInits the vector before `DestructionEffects`. A census guard proves both shipped `YAPPPT` contexts keep occupancy disabled.
+8. **Immediate post-fatal state:** after Type-Explodes fatal ReceiveDamage returns, assert Health=0, alive=true, in_limbo=false, Logic membership/position unchanged, occupancy/map membership retained, death effects marked complete, inherited Cargo empty, and any distinct occupant vector already resolved before effects.
 9. **Non-Explodes control:** a nonselling, non-Explodes Building follows duration 8 and immediate UnInit/placement transaction; it never reaches a retained own Update.
 10. **Selling precedence:** a non-Explodes Building already on Selling takes the same duration-zero retained path; Explodes need not be read for the result. A Building both Selling and Explodes still performs one cleanup only.
 11. **No effect replay:** retained own Update must not repeat death weapon, death sound, DestructionEffects, center smudge, `Explosion=`, `DestroyAnim=`, storage, or particle creation.
@@ -790,8 +794,8 @@ The compiled four-cell FIRE3 burst may remain unimplemented for this active-reta
 | Exact FIRE3 constructor row/layer/owner? | **RESOLVED:** delay 4..6, loop 1, flags `0x600`, zAdjust/reverse 0, art ground layer, owner null; no SetOwnerObject. |
 | Can FIRE3 constructor consume more RNG? | **RESOLVED:** not active art; no RandomRate and nonzero delay. |
 | Is the burst active in stock maps? | **RESOLVED:** no; zero eligible OverlayTypes/cells in the complete corpus. |
-| Does Type Explodes eject or kill Building cargo? | **RESOLVED:** kill recursively before death weapon and Building effects. |
-| Does `YAPPPT` use garrison ejection? | **RESOLVED:** no; Explodes fatal cargo annihilation occurs first. |
+| Does Type Explodes eject or kill inherited Building Cargo? | **RESOLVED:** kill recursively before the death weapon and Building effects. The distinct occupant vector is not Cargo. |
+| Does an occupied `YAPPPT` use garrison-vector release? | **RESOLVED:** yes in synthetic/custom/save state; `SellBuilding(0,0)` runs after the death weapon and before `DestructionEffects`. Shipped map contexts disable its occupancy. |
 | Does duration zero mean no timer or delayed removal? | **RESOLVED:** timer exists with duration zero; fatal wrapper treats it expired and returns without UnInit, leaving own Update to remove. |
 | State at fatal return? | **RESOLVED:** Health zero, alive, nonlimbo, in Logic/map/occupancy, effects already complete. |
 | Does own Update start at cleanup? | **RESOLVED:** no; ordinary Building prefix and AI run first. |
@@ -820,7 +824,7 @@ All questions are closed. There is no residual load-bearing uncertainty.
 5. **Owner attack:** inspected the post-constructor instruction interval; no owner setter occurs. Constructor initializes null.
 6. **Hidden overlay reach attack:** scanned all canonical OverlayType sections and all map-local type sections, not only observed OverlayPack cells. The eligible set is empty by type authority.
 7. **Timer inversion attack:** inspected assembly in both fatal ReceiveDamage and own Update. Duration 8 triggers immediate UnInit in the fatal wrapper; duration 0 skips it and is removed by own Update.
-8. **Second-pass cargo attack:** traced generic fatal cargo destruction before Building DestructionEffects, then both survivor call sites. Cargo is empty at both.
+8. **Second-pass Cargo attack:** traced generic fatal inherited-Cargo destruction before Building DestructionEffects, the separate pre-effects occupant-vector drain, then both survivor call sites. Inherited Cargo is empty at both; the vector is a different owner and is already empty before effects.
 9. **Smudge duplication attack:** decompiled the outer `if budget != 0`; crewless Buildings skip the whole pass, contrary to current Rust.
 10. **Pass equivalence attack:** verified first call precedes Limbo and second follows it; cell passability and Infantry unlimbo can differ.
 11. **Scheduler snapshot attack:** inspected the live count re-read after every callback and stable vector erase. The successor skip is native, not an inferred queue behavior.
