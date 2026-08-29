@@ -2,9 +2,9 @@
 
 Date: 2026-08-29
 Scope: PR #170 (`feature/bridge-movement-parity`) only
-Compared revisions: `origin/main@0a6e6742`, branch `440a4900`, and the reviewed
-merge-readiness working tree
-Verdict: **RESOLVED_PENDING_FINAL_SUITE**
+Compared revisions: `origin/main@0a6e6742` and branch implementation through
+`b4faa65c`
+Verdict: **MERGE_READY**
 
 ## Question
 
@@ -82,7 +82,9 @@ failures, is below. No default lifecycle, production gate, or test scheduler was
 - `cargo test -p vera20k --lib radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle`:
   1 passed, 0 failed.
 
-The exact full-library command remains the final recurrence and merge-readiness gate.
+Final certification:
+
+- `cargo test -p vera20k --lib`: 7,577 passed, 0 failed, 75 ignored.
 
 ## Verified gaps
 
@@ -139,10 +141,9 @@ create churn. No excluded `TrainBridgeSet` surface was introduced.
 
 ## Implementation boundary
 
-All classified corrections and U2 closures are implemented and focused validation is green.
-Obtain the final fresh read-only critic verdict, commit the bounded working tree, then run
-`cargo test -p vera20k --lib` exactly once as final certification. Keep PR #170 draft unless
-that command passes. Do not merge.
+All classified corrections and U2 closures are implemented. The final fresh read-only critic
+passed, the bounded working tree was committed, and the exact full-library certification is
+green. PR #170 can leave draft state for review; this report does not authorize merging it.
 
 ## Ghidra annotation candidates
 
