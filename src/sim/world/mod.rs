@@ -1351,11 +1351,16 @@ fn apply_house_ownership_transaction_delta(
     }
 }
 
-struct SimulationCombatInlineHooks<'a> {
-    sim: &'a mut Simulation,
+struct SimulationCombatInlineHooks<'sim, 'smudge> {
+    sim: &'sim mut Simulation,
+    /// WaveClass::DamageArea temporarily owns this authority while its cell
+    /// walk is in flight. BuildingClass::DestructionEffects can re-enter an
+    /// AnimClass::Start from that walk, so the detached grid must accompany
+    /// the other borrowed map authorities across the inline hook.
+    borrowed_smudge_grid: Option<&'smudge mut crate::sim::smudge_grid::SmudgeGrid>,
 }
 
-impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
+impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '_> {
     #[cfg(test)]
     fn trace_wave_receiver(&mut self, wave_id: u64, target_id: u64, scenario_rng_state: u64) {
         self.sim
@@ -1570,6 +1575,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         }
     }
 
+    fn clear_cliff_smudge(&mut self, cell: (u16, u16)) {
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            let _ = grid.clear_cell_slot(cell.0, cell.1);
+        }
+    }
+
     fn spawn_cliff_anims(
         &mut self,
         rules: &RuleSet,
@@ -1632,6 +1643,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
             self.sim.overlay_grid = Some(grid.clone());
             std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
         }
+        let had_smudge = self.borrowed_smudge_grid.is_some();
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            debug_assert!(self.sim.smudge_grid.is_none());
+            self.sim.smudge_grid = Some(grid.clone());
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
         let had_terrain = borrowed_terrain.is_some();
         let mut borrowed_terrain = borrowed_terrain;
         if let Some(terrain) = borrowed_terrain.as_deref_mut() {
@@ -1668,6 +1685,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         }
         if had_terrain {
             self.sim.resolved_terrain = None;
+        }
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
+        if had_smudge {
+            self.sim.smudge_grid = None;
         }
         if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
             std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
@@ -1843,6 +1866,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         let Some(terrain_area_state) = terrain_area_state else {
             return;
         };
+        let had_smudge = self.borrowed_smudge_grid.is_some();
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            debug_assert!(self.sim.smudge_grid.is_none());
+            self.sim.smudge_grid = Some(grid.clone());
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
         let binary_frame = self.sim.session.binary_frame;
         let spread_enabled = self.sim.production.ore_growth_config.spreads;
         dispatch_smudge_inline(
@@ -1866,6 +1895,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
             &mut self.sim.tactical_dirty_cells,
         );
         self.sim.flush_smudge_dirty();
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
+        if had_smudge {
+            self.sim.smudge_grid = None;
+        }
     }
 }
 
@@ -2067,7 +2102,10 @@ impl Simulation {
         let require_playfield_membership = self.playfield_bounds.is_some();
 
         let combat_result = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: None,
+            };
             combat::tick_combat_with_fog_and_main_rng_with_terrain_area(
                 &mut entities,
                 &mut occupancy,
@@ -2169,7 +2207,10 @@ impl Simulation {
         let scenario_no_damage = self.session.no_damage;
 
         let commit = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: None,
+            };
             combat::commit_logic_projectile_detonations(
                 detonations,
                 &mut entities,
@@ -2430,7 +2471,10 @@ impl Simulation {
         let mut collapsed_terrain_cells = BTreeMap::new();
 
         {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: smudge_grid.as_mut(),
+            };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
             let mut sound_sink = Some(&mut sound_events);
@@ -2681,9 +2725,10 @@ impl Simulation {
                                     if let Some(grid) = overlay_grid.as_mut() {
                                         let _ = grid.clear_overlay(cell_x, cell_y);
                                     }
-                                    if let Some(grid) = smudge_grid.as_mut() {
-                                        let _ = grid.clear_cell_slot(cell_x, cell_y);
-                                    }
+                                    inline_hooks
+                                        .as_deref_mut()
+                                        .expect("world cliff hook")
+                                        .clear_cliff_smudge((cell_x, cell_y));
                                 },
                             )
                         })
@@ -2890,7 +2935,10 @@ impl Simulation {
         let scenario_no_damage = self.session.no_damage;
         let mut handled_deaths = Vec::new();
         let (effects, under_attack_events) = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: None,
+            };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
             let mut sound_sink = Some(&mut sound_events);
