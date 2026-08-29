@@ -5034,23 +5034,59 @@ impl Simulation {
 
     /// Check each house for defeat and game completion
     /// (all remaining houses mutually allied).
-    fn check_defeat(&mut self, rules: Option<&RuleSet>) {
+    fn check_defeat(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        // Native always reaches HouseClass::Update with RulesClass installed.
+        // Rules-less synthetic lanes cannot substitute a hardcoded C4 warhead,
+        // so they do not run this result/destruction owner.
+        let Some(rules) = rules else {
+            return;
+        };
         // Trigger commands and the later House result timer rung share the
         // current signed Scenario frame. `tick + 1` is not equivalent here:
         // it would expire a freshly armed one-frame result on the same tick.
         let outcome_tick = self.session.binary_frame as i32;
         let savour_frames = crate::rules::ruleset::savour_delay_frames(
-            rules
-                .map(|rules| rules.general.savour_delay_minutes)
-                // RulesClass__Constructor @ 0x00665650 stores the exact f64
-                // default 0.03 before any optional INI ReadDouble override.
-                .unwrap_or(0.03),
+            rules.general.savour_delay_minutes,
         ) as i32;
-        // Short Game defeats houses with no buildings unless a BaseUnit remains.
-        // Long games wait for all owned objects.
-        let owners: Vec<InternedId> = self.houses.keys().copied().collect();
+        let owners = self.session.house_order.clone();
+
+        // The ordinary annihilation/MPlayer_Defeated arm exists only outside
+        // campaign and after frame zero. Pending-result expiry above does not
+        // share either gate.
+        let defeat_enabled =
+            self.session.game_mode_nonzero && self.session.binary_frame != 0;
+
+        // LogicClass visits HouseClass objects in registration order. Each
+        // single House update runs pending expiry first and its defeat arm
+        // later before the next House is visited. The two operations cannot be
+        // split into global passes: an earlier sweep may free controlled
+        // victims or otherwise mutate a later House's ownership/count inputs.
         for &owner in &owners {
-            let house = &self.houses[&owner];
+            let pending_expired = self
+                .houses
+                .get_mut(&owner)
+                .is_some_and(|house| house.advance_outcome_savour(outcome_tick).pending_expired);
+            if pending_expired {
+                let _ = crate::sim::house_destruction::sweep_house_technos(
+                    self,
+                    rules,
+                    overlay_registry,
+                    owner,
+                );
+            }
+            if !defeat_enabled {
+                continue;
+            }
+
+            // Short Game defeats houses with no buildings unless a BaseUnit
+            // remains. Long games wait for all owned objects.
+            let Some(house) = self.houses.get(&owner) else {
+                continue;
+            };
             // gamemd gates its entire defeat block on the house type's
             // MultiplayPassive being clear, so Civilian/JP houses are never
             // evaluated for defeat no matter what they own or lose.
@@ -5058,21 +5094,27 @@ impl Simulation {
                 continue;
             }
             let should_defeat = if self.session.game_options.short_game {
-                house.owned_building_count == 0 && !self.house_has_live_base_unit(owner, rules)
+                house.owned_building_count == 0
+                    && !self.house_has_live_base_unit(owner, Some(rules))
             } else {
                 house.owned_building_count == 0 && house.owned_unit_count == 0
             };
             if should_defeat {
+                // HouseClass::Update @ 0x004F8F7B enters the same synchronous
+                // destruction sweep before MPlayer_Defeated mutates result
+                // bytes or emits its localized outcome edge.
+                let _ = crate::sim::house_destruction::sweep_house_technos(
+                    self,
+                    rules,
+                    overlay_registry,
+                    owner,
+                );
                 let accepted = if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
                     // A house that owns nothing (or, in Short Game, has no base
                     // left) has lost from its own perspective. Flag_To_Lose owns
-                    // the result transition and grace timer. NOTE: gamemd does
-                    // NOT destroy the
-                    // defeated house's remaining objects — it scatters surviving
-                    // units (ScatterAllUnits) and they persist; hard object
-                    // removal only happens under the non-standard SpecialFlags
-                    // 0x800 (HarvesterImmune). So no cleanup/destroy is done here.
+                    // the result transition and grace timer after the shared
+                    // destructive receiver loop has completed.
                     h.flag_to_lose(outcome_tick, savour_frames)
                 } else {
                     false
@@ -5086,16 +5128,23 @@ impl Simulation {
             }
         }
 
+        if !defeat_enabled {
+            return;
+        }
+
         // Check if all remaining alive houses are mutually allied → game over.
         // The native alive scan counts only houses that are neither defeated nor
         // passive; the Civilian/JP houses present in every skirmish own map
         // objects forever, so including them would keep the alive set above one
         // and the victory screen would never appear.
-        let alive: Vec<InternedId> = self
-            .houses
+        let alive: Vec<InternedId> = owners
             .iter()
-            .filter(|(_, h)| !h.is_defeated && !h.multiplay_passive)
-            .map(|(k, _)| *k)
+            .copied()
+            .filter(|owner| {
+                self.houses
+                    .get(owner)
+                    .is_some_and(|house| !house.is_defeated && !house.multiplay_passive)
+            })
             .collect();
 
         if alive.len() == 1 {
@@ -5138,12 +5187,6 @@ impl Simulation {
             }
         }
 
-        // HouseClass::Update @ 0x004F8440 advances the accepted result timer
-        // in the house rung. The expiry frame is terminal and therefore skips
-        // the wrapping frame commit below, matching Main_Tick's early return.
-        for house in self.houses.values_mut() {
-            let _ = house.advance_outcome_savour(outcome_tick);
-        }
     }
 
     /// Number of houses that can actually contend for the match outcome.
@@ -6566,7 +6609,7 @@ impl Simulation {
         // (but before this tick's AI spawns); tick_ai then skips any house already
         // flagged defeated via its is_defeated gate.
         if self.session.tick > 0 {
-            self.check_defeat(rules);
+            self.check_defeat(rules, overlay_registry);
             #[cfg(test)]
             self.trace_house_ai_activation_order(
                 HouseAiActivationOrderTestEvent::DefeatProcessed,

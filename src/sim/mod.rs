@@ -26,6 +26,7 @@ pub(crate) mod base_plan;
 pub(crate) mod base_plan_generation;
 pub mod capture_manager;
 pub(crate) mod capture_fate_facility;
+pub(crate) mod house_destruction;
 pub mod cloak_disguise;
 pub mod command;
 pub mod components;

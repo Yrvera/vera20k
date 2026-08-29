@@ -1,5 +1,11 @@
 # Factory / House / AI Tick Order vs Rust Production AI - Ghidra Report
 
+> **2026-08-29 correction:** the `HouseClass::ScatterAllUnits @ 0x004FC6D0`
+> label retained by this ordering report is stale. The callee is the shared
+> destructive House Techno sweep documented in
+> `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`.
+> This correction does not change the factory-before-house ordering proven here.
+
 **Date:** 2026-05-28  
 **Target:** `FACTORY_HOUSE_AI_ORDER_VS_RUST_PRODUCTION_AI`  
 **Address(es):** `LogicClass::PerTickUpdate @ 0x0055AFB0`, `FactoryClass::AI @ 0x004C9B20`, `HouseClass::Update @ 0x004F8440`  
@@ -199,7 +205,7 @@ Rust AI in `src/sim/ai.rs` is not native `HouseClass::Update` AI:
 ## Remaining Uncertainty
 
 - Exact native construction/insertion order of the global `FactoryClass` array was not re-investigated here. The order matters for simultaneous multi-factory completions.
-- Exact side effects of `HouseClass__MPlayer_Defeated @ 0x004FC0B0` and `HouseClass__ScatterAllUnits @ 0x004FC6D0` were not expanded beyond call placement.
+- Exact side effects of `HouseClass__MPlayer_Defeated @ 0x004FC0B0` were not expanded here. The formerly named `HouseClass__ScatterAllUnits @ 0x004FC6D0` is now resolved as the destructive House Techno sweep by the 2026-08-29 correction cited above.
 - Exact AI chooser formulas and production-selection priorities are out of scope.
 - Exact interaction between `HouseClass::CheckSuperweaponReady`, `SuperClass::AI_Ready`, sidebar flash/EVA, and current-player gating needs a separate UI/superweapon trace if the implementation changes.
 

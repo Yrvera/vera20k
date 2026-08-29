@@ -1,5 +1,18 @@
 # Skirmish Short Game Last Building Defeat Trace
 
+> **2026-08-29 active-binary correction.** The trace's
+> `HouseClass__ScatterAllUnits` name is stale: `0x004FC6D0` is the shared House
+> destruction sweep, not a movement command. It destroys admitted Technos via
+> the configured C4 receiver before `MPlayer_Defeated`. See
+> `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`.
+>
+> **Current implementation verdict: PASS.** The stage-by-stage Rust `FAIL`,
+> `NOT-IMPLEMENTED`, and source-line observations below are retained as the
+> historical pre-fix trace. The active implementation now evaluates the Short
+> Game condition in signed binary-frame/House-registration order and performs
+> the shared destruction sweep before the multiplayer defeat transition; the
+> focused production regressions named in the gap scan lock that closure.
+
 Scenario: standard offline Yuri's Revenge Skirmish Battle, Short Game enabled. After play begins, the human player loses the last building while still owning one ordinary non-building unit. Concrete values used for this trace: `OwnedBuildings=0`, surviving ordinary non-building units `=1`, counted ConYard-style instances `=0`, current frame `>0`.
 
 ## Pipeline
@@ -11,7 +24,7 @@ Scenario: standard offline Yuri's Revenge Skirmish Battle, Short Game enabled. A
 - Standard YR default enables this option: `ini/rulesmd.ini:3039` has `ShortGame=yes`.
 - Offline Skirmish Start packs checkbox `0x54E` into `DAT_00A8B262=1` when checked. Evidence: `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`.
 - `HouseClass__Update @ 0x004F86F0` is active for standard non-campaign Skirmish because the defeat block is gated by `g_GameMode != 0`; Skirmish mode is documented as mode `5` in `MULTIPLAYER_DEFEAT_VICTORY_GHIDRA_REPORT.md`.
-- Live read-only Ghidra decompile of `0x004F86F0` confirms the Short Game branch reads `DAT_00A8B262`, requires `g_CurrentFrameCounter > 0`, and calls `HouseClass__ScatterAllUnits()` then `HouseClass__MPlayer_Defeated()` when the short condition is true.
+- Live read-only Ghidra decompile of `0x004F86F0` confirms the Short Game branch reads `DAT_00A8B262`, requires `g_CurrentFrameCounter > 0`, and calls the destructive House Techno sweep at `0x004FC6D0` then `HouseClass__MPlayer_Defeated()` when the short condition is true.
 
 ## Stage Trace
 
@@ -49,7 +62,7 @@ Verdict: FAIL. gamemd output is defeated `1`; Rust output is defeated `0`.
 
 Input: Stage 3 condition true in gamemd, false in Rust.
 
-gamemd: `HouseClass__Update @ 0x004F86F0` calls `HouseClass__ScatterAllUnits()` and then `HouseClass__MPlayer_Defeated()` on the same update path.
+gamemd: `HouseClass__Update @ 0x004F86F0` calls the destructive House Techno sweep at `0x004FC6D0` and then `HouseClass__MPlayer_Defeated()` on the same update path.
 
 Rust: because `total == 1`, `src/sim/world/mod.rs:637` does not enter the defeat branch, so `HouseState.is_defeated` remains false. There is also no Short Game-specific branch in `check_defeat`.
 
