@@ -1791,6 +1791,11 @@ pub(crate) trait CombatInlineHooks {
 
     fn mark_cliff_tactical_dirty(&mut self, _cells: &[(u16, u16)]) {}
 
+    /// WaveClass owns SmudgeGrid outside Simulation for the duration of its
+    /// cell walk. Keep cliff removal on that same borrowed authority rather
+    /// than reaching around the transaction owner.
+    fn clear_cliff_smudge(&mut self, _cell: (u16, u16)) {}
+
     fn spawn_cliff_anims(
         &mut self,
         _rules: &RuleSet,

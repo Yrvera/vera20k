@@ -5239,6 +5239,79 @@ fn gsi_01_05_damage_rules() -> crate::rules::ruleset::RuleSet {
     .expect("Logic-slot damage fixture rules")
 }
 
+fn wave_building_start_smudge_rules() -> (
+    crate::rules::ruleset::RuleSet,
+    crate::map::overlay_types::OverlayTypeRegistry,
+) {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[Tiberiums]\n0=Riparius\n\
+         [Riparius]\nImage=1\nValue=25\n\
+         [OverlayTypes]\n0=ORE\n\
+         [ORE]\nTiberium=yes\n\
+         [SmudgeTypes]\n1=CR1\n2=BURN1\n\
+         [CR1]\nCrater=yes\nWidth=1\nHeight=1\n\
+         [BURN1]\nBurn=yes\nWidth=1\nHeight=1\n\
+         [VehicleTypes]\n0=FIRER\n\
+         [BuildingTypes]\n0=WAVEBLD\n\
+         [Warheads]\n0=KILLWH\n\
+         [FIRER]\nStrength=100\nArmor=light\nPrimary=SONIC\n\
+         [WAVEBLD]\nStrength=10\nArmor=concrete\nFoundation=2x1\nCrewed=no\nExplosion=EXP\n\
+         [SONIC]\nDamage=1\nAmbientDamage=10\nWarhead=KILLWH\nIsSonic=yes\n\
+         [KILLWH]\nCellSpread=0\nPercentAtMax=1\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    );
+    let mut rules = crate::rules::ruleset::RuleSet::from_ini(&ini)
+        .expect("Wave Building Start-smudge fixture rules");
+    let mut art = crate::rules::art_data::ArtRegistry::from_ini(
+        &crate::rules::ini_parser::IniFile::from_str(
+            "[EXP]\nRate=450\nEnd=4\nScorch=yes\nCrater=yes\n\
+             FrameWidth=100\nFrameHeight=100\n",
+        ),
+    );
+    art.bind_anim_frame_count_for_test("EXP", 4);
+    rules.art_registry = art;
+    let overlay_registry =
+        crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    (rules, overlay_registry)
+}
+
+fn install_wave_building_start_authorities(
+    sim: &mut Simulation,
+    overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    ore_cell: (u16, u16),
+) {
+    const MAP_SIZE: u16 = 32;
+    sim.session.map_width = MAP_SIZE;
+    sim.session.map_height = MAP_SIZE;
+    let ore_id = overlay_registry.id_for_name("ORE").expect("ORE overlay");
+    let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(MAP_SIZE, MAP_SIZE);
+    overlay.place_overlay(ore_cell.0, ore_cell.1, ore_id, 5);
+    sim.overlay_grid = Some(overlay);
+    sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::new(
+        MAP_SIZE, MAP_SIZE,
+    ));
+    let cells = (0..MAP_SIZE)
+        .flat_map(|ry| {
+            (0..MAP_SIZE).map(move |rx| {
+                let mut cell = common_raw_terrain_cell(rx, ry, 0, false);
+                cell.filled_clear = true;
+                cell.accepts_smudge = true;
+                cell.allows_tiberium = true;
+                // SpawnSurvivors checks Track speed before its later smudges;
+                // keeping it absent isolates the synchronous DestructionEffects
+                // constructor cursor without weakening AnimClass::Start.
+                cell.speed_costs = SpeedCostProfile::default();
+                cell
+            })
+        })
+        .collect();
+    sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(
+        MAP_SIZE, MAP_SIZE, cells,
+    ));
+    sim.production.ore_growth_state =
+        crate::sim::ore_growth::OreGrowthState::new(MAP_SIZE, MAP_SIZE);
+}
+
 #[test]
 fn wave_pointer_expiry_target_survives_dying_then_uninit_starts_decay_tail() {
     let mut sim = Simulation::new();
@@ -6328,6 +6401,172 @@ fn gsi_01_05_wave_reselects_live_cell_list_after_fatal_receiver_unmark() {
     assert!(!sim.substrate.occupancy.contains_entity(5, 5, building_id));
     assert_eq!(sim.substrate.pending_delete, vec![building_id, wave_id]);
     assert!(sim.pending_wave_damage_requests.is_empty());
+}
+
+#[test]
+fn wave_building_kill_keeps_delay_zero_start_smudge_inline_before_cell_two_rng() {
+    const SEED: u64 = 17;
+    const BUILDING_RX: u16 = 10;
+    const BUILDING_RY: u16 = 20;
+    let (rules, overlay_registry) = wave_building_start_smudge_rules();
+    let mut sim = Simulation::new();
+    sim.scenario_rng = crate::sim::rng::SimRng::new(SEED);
+    install_wave_building_start_authorities(
+        &mut sim,
+        &overlay_registry,
+        (BUILDING_RX, BUILDING_RY),
+    );
+
+    let building_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, building_id, EntityCategory::Structure);
+    {
+        let building = sim.substrate.entities.get_mut(building_id).unwrap();
+        building.type_ref = sim.interner.intern("WAVEBLD");
+        building.foundation = "2x1".to_string();
+        building.health = Health {
+            current: 10,
+            max: 10,
+        };
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(
+            building_id,
+            common_raw_request(BUILDING_RX, BUILDING_RY, 0, 128, 128)
+        ),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert!(
+        sim.substrate
+            .occupancy
+            .contains_entity(BUILDING_RX, BUILDING_RY, building_id)
+    );
+    assert!(
+        sim.substrate
+            .occupancy
+            .contains_entity(BUILDING_RX + 1, BUILDING_RY, building_id)
+    );
+
+    let firer_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, firer_id, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(firer_id).unwrap().type_ref = sim.interner.intern("FIRER");
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new_owned(
+        0,
+        firer_id,
+        TargetKind::Entity(building_id),
+        ProjectileCoord::new(0, 0, 0),
+        ProjectileCoord::new(
+            i32::from(BUILDING_RX) * 256 + 128,
+            i32::from(BUILDING_RY) * 256 + 128,
+            0,
+        ),
+    );
+    wave.replace_recorded_cells(vec![WaveRecordedCell::real(BUILDING_RX, BUILDING_RY)]);
+    sim.admit_wave(wave_id, wave);
+    sim.active_wave_links.insert(firer_id, wave_id);
+
+    // Independently advance the native Scenario cursor. Foundation cell one
+    // takes scatter -> delay -> raw list selection -> synchronous Start; only
+    // then may cell two take its scatter/delay/selection draws.
+    let mut oracle = crate::sim::rng::SimRng::new(SEED);
+    let scatter = |rng: &mut crate::sim::rng::SimRng, rx: u16| {
+        let byte = (rng.next_u32() & 0xff) as u8;
+        crate::sim::combat::random_direction_coord_for_byte(
+            byte,
+            i32::from(rx) * 256 + 128,
+            i32::from(BUILDING_RY) * 256 + 128,
+            0x40,
+        )
+    };
+    let first_world = scatter(&mut oracle, BUILDING_RX);
+    assert_eq!(oracle.next_range_u32_inclusive(0, 3), 0);
+    oracle.next_u32(); // raw modulo selection from one Explosion= entry
+    let first_start_roll = oracle.next_range_u32_inclusive(0, 0x7fff_fffe);
+    assert!(
+        first_start_roll >= 0x4000_0000,
+        "seed must select crater so the ore authority is visibly mutated"
+    );
+    let state_after_first_start = oracle.logical_state();
+    let second_world = scatter(&mut oracle, BUILDING_RX + 1);
+    let second_delay = oracle.next_range_u32_inclusive(0, 3) as u16;
+    assert_ne!(second_delay, 0, "only cell one Starts during construction");
+    oracle.next_u32(); // raw modulo selection from one Explosion= entry
+
+    let mut deferred_oracle = crate::sim::rng::SimRng::new(SEED);
+    deferred_oracle.next_u32(); // cell-one scatter
+    deferred_oracle.next_range_u32_inclusive(0, 3);
+    deferred_oracle.next_u32(); // cell-one list selection
+    let deferred_second_world = scatter(&mut deferred_oracle, BUILDING_RX + 1);
+    let deferred_second_delay = deferred_oracle.next_range_u32_inclusive(0, 3) as u16;
+
+    sim.commit_logic_wave_damage_request(
+        &rules,
+        Some(&overlay_registry),
+        &crate::sim::wave::WaveDamageRequest {
+            wave_id,
+            firer_id,
+            recorded_cells: vec![WaveRecordedCell::real(BUILDING_RX, BUILDING_RY)],
+            wave_z: 0,
+        },
+    );
+
+    let anims = sim
+        .substrate
+        .anims
+        .iter()
+        .map(|(_, anim)| anim)
+        .collect::<Vec<_>>();
+    assert_eq!(anims.len(), 2, "one Explosion Anim per 2x1 foundation cell");
+    assert_eq!(sim.interner.resolve(anims[0].type_id), "EXP");
+    assert_eq!(sim.interner.resolve(anims[1].type_id), "EXP");
+    assert_eq!(
+        anims[0].world_coord,
+        AnimWorldCoord {
+            x: first_world.0,
+            y: first_world.1,
+            z: 0,
+        }
+    );
+    assert_eq!(anims[0].runtime.delay_remaining, 0);
+    assert_eq!(
+        anims[1].world_coord,
+        AnimWorldCoord {
+            x: second_world.0,
+            y: second_world.1,
+            z: 0,
+        },
+        "Wave death must let cell-one Start consume RNG before cell-two scatter"
+    );
+    assert_eq!(anims[1].runtime.delay_remaining, second_delay);
+    assert_ne!(
+        (second_world, second_delay),
+        (deferred_second_world, deferred_second_delay),
+        "fixture must distinguish synchronous Start from the broken detached-grid path"
+    );
+    assert_ne!(oracle.logical_state(), state_after_first_start);
+    assert_eq!(sim.scenario_rng.logical_state(), oracle.logical_state());
+
+    assert!(
+        sim.smudge_grid
+            .as_ref()
+            .expect("Wave returns its detached SmudgeGrid authority")
+            .iter_occupied()
+            .next()
+            .is_none(),
+        "the represented dying Building still rejects ordinary Anim smudge placement after ore reduction"
+    );
+    let ore_cell = sim
+        .overlay_grid
+        .as_ref()
+        .expect("Wave returns its detached OverlayGrid authority")
+        .cell(BUILDING_RX, BUILDING_RY);
+    assert_eq!(ore_cell.overlay_id, None);
+    assert_eq!(ore_cell.overlay_data, 0);
+    assert!(
+        sim.tactical_dirty_cells
+            .contains(&(BUILDING_RX, BUILDING_RY)),
+        "ore/smudge mutation must reach the live tactical dirty authority"
+    );
 }
 
 #[test]
