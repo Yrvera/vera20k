@@ -1978,9 +1978,13 @@ mod tests {
         )
         .expect("blocker");
         let mut expected_rng = sim.scenario_rng.clone();
+        // gamemd-derived: TechnoClass::TechnoClass @ 0x006F2B90 consumes and
+        // stores one raw Scenario word at 0x006F3254 before placement.
+        let _ = expected_rng.next_u32();
         let direction = expected_rng.next_range_u32_inclusive(0, 7) as usize;
         let (dx, dy) = STARTING_MCV_FALLBACK_DIRECTIONS[direction];
         let expected_position = ((45i32 + dx) as u16, (45i32 + dy) as u16);
+        let _ = expected_rng.next_u32();
         let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
 
         let result = apply_explicit_skirmish_launch_session(
@@ -2006,7 +2010,7 @@ mod tests {
         assert_eq!(
             sim.rng_state().scenario,
             expected_rng.logical_state(),
-            "one direction draw plus the final sync draw"
+            "two constructor draws plus the fallback direction and final sync draws"
         );
     }
 
@@ -2051,10 +2055,13 @@ mod tests {
         )
         .expect("authored start blocker");
         let mut expected_rng = sim.scenario_rng.clone();
+        // TechnoClass::TechnoClass @ 0x006F2B90 consumes its raw Scenario
+        // word at 0x006F3254 before Try_Unlimbo chooses a fallback spoke.
+        let _ = expected_rng.next_u32();
         assert_eq!(
             expected_rng.next_range_u32_inclusive(0, 7),
-            3,
-            "seed zero chooses the southeast radius-one spoke"
+            5,
+            "after construction, seed zero chooses the southwest radius-one spoke"
         );
         let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
 
@@ -2074,8 +2081,8 @@ mod tests {
         assert_eq!(entity_position_for_owner(&sim, "Neutral"), Some((100, 75)));
         assert_eq!(
             entity_position_for_owner(&sim, "Player"),
-            Some((101, 76)),
-            "the valid spoke stays outside the old LocalSize box instead of clamping to (77,51)"
+            Some((99, 76)),
+            "the valid southwest spoke stays outside the old LocalSize box instead of clamping to (77,51)"
         );
         assert_eq!(
             crate::sim::house_state::house_state_for_owner(&sim.houses, "Player", &sim.interner)
@@ -2177,6 +2184,9 @@ mod tests {
             // The only eligible vehicle has a one-entry pool. RandomRanged(0,0)
             // is still called but does not advance the native RNG.
             let _ = expected_rng.next_range_u32_inclusive(0, 0);
+            // TechnoClass::TechnoClass @ 0x006F2B90 spends this word at
+            // 0x006F3254 before each candidate's placement can fail.
+            let _ = expected_rng.next_u32();
             for _radius in
                 STARTING_EXTRA_UNIT_FALLBACK_START_RADIUS..=STARTING_MCV_FALLBACK_MAX_RADIUS
             {
@@ -2206,7 +2216,7 @@ mod tests {
         assert_eq!(
             sim.rng_state().scenario,
             expected_rng.logical_state(),
-            "candidate plus fallback draws stop after the twentieth failed placement"
+            "candidate, constructor, and fallback draws stop after the twentieth failed placement"
         );
     }
 
@@ -2276,6 +2286,12 @@ mod tests {
             })
             .collect();
         let mut expected_rng = sim.scenario_rng.clone();
+        // MultiplayerGameMode__Create_Starting_Base_Unit @ 0x005D7030
+        // constructs all eight MCVs, and TechnoClass::TechnoClass @ 0x006F2B90
+        // consumes each raw Scenario word at 0x006F3254 before exact unlimbo.
+        for _ in 0..8 {
+            let _ = expected_rng.next_u32();
+        }
         let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
 
         let result = apply_explicit_skirmish_launch_session(
@@ -2328,7 +2344,7 @@ mod tests {
         assert_eq!(
             sim.scenario_rng.logical_state(),
             expected_rng.logical_state(),
-            "exact placement consumes only the final scenario synchronization draw"
+            "exact placement consumes constructor words plus the final synchronization draw, with no fallback draws"
         );
     }
 

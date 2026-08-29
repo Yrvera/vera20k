@@ -95,7 +95,11 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// It has its own name on purpose: `GLOBAL_HARNESS_FINAL_HASH` and the other
 /// committed goldens are shared, coordination-gated constants and are not
 /// touched by this file.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x318F_ADEC_8EA6_4DE2;
+/// Re-baselined for TechnoClass::TechnoClass @ 0x006F2B90: the two authored
+/// Technos now consume and persist the raw Scenario words written at
+/// 0x006F3254. Path nodes, visited cells, bridge tripwires, and record/replay
+/// equality remain exact; this is a Rust regression ratchet, not parity evidence.
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x49EF_3591_2127_4502;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
