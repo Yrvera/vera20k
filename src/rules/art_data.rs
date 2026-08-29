@@ -276,6 +276,61 @@ pub struct AnimTypeRuntimeConfig {
     pub stop_sound: Option<String>,
 }
 
+impl Default for AnimTypeRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            loop_start: 0,
+            loop_end: 0,
+            end: 0,
+            explicit_end: None,
+            explicit_loop_end: None,
+            raw_shp_frame_count: None,
+            loop_count: 0,
+            rate_logic_frames: DEFAULT_ART_RATE_LOGIC_FRAMES,
+            normalized: false,
+            tiberium_chain_reaction: false,
+            is_tiberium: false,
+            hide_if_no_ore: false,
+            is_animated_tiberium: false,
+            tiberium_spread_radius: 0,
+            tiberium_spawn_type: None,
+            make_infantry: -1,
+            bouncer: false,
+            spawns: None,
+            spawn_count: 0,
+            running_frames: 0,
+            detail_level: 0,
+            next: None,
+            bounce_anim: None,
+            expire_anim: None,
+            trailer_anim: None,
+            trailer_seperation: 0,
+            random_loop_delay: None,
+            random_rate_logic_frames: None,
+            y_draw_offset: 0,
+            z_adjust: 0,
+            y_sort_adjust: 0,
+            // `AnimTypeClass::AnimTypeClass` initializes the numeric display
+            // layer field to 3. Only an authored `Layer=Top` promotes it to 4.
+            layer: AnimLayer::Air,
+            flat: false,
+            tiled: false,
+            translucency: 0,
+            translucency_detail_level: 0,
+            translucent: false,
+            alt_palette: false,
+            use_normal_light: false,
+            shadow: false,
+            ping_pong: false,
+            reverse: false,
+            report: None,
+            start_sound: None,
+            stop_sound: None,
+        }
+    }
+}
+
 /// Failures while binding native AnimType metadata to retail SHP assets.
 #[derive(Debug, Error)]
 pub enum AnimAssetBindError {
@@ -302,6 +357,8 @@ pub enum AnimAssetBindError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimLayer {
     Ground,
+    /// Native display layer 3. This is the constructor/default value.
+    Air,
     Top,
     Other(i32),
 }
@@ -311,8 +368,14 @@ impl AnimLayer {
         match value.map(|v| v.trim().to_ascii_lowercase()) {
             Some(v) if v == "ground" => Self::Ground,
             Some(v) if v == "top" => Self::Top,
-            Some(v) => v.parse::<i32>().map(Self::Other).unwrap_or(Self::Top),
-            None => Self::Top,
+            Some(v) => match v.parse::<i32>() {
+                Ok(2) => Self::Ground,
+                Ok(3) => Self::Air,
+                Ok(4) => Self::Top,
+                Ok(layer) => Self::Other(layer),
+                Err(_) => Self::Air,
+            },
+            None => Self::Air,
         }
     }
 }
@@ -1100,6 +1163,26 @@ impl ArtRegistry {
     /// scheduler-owned runtime.
     pub fn scheduler_anim_types(&self) -> &BTreeSet<String> {
         &self.scheduler_anim_types
+    }
+
+    /// Materialize the AnimType constructor defaults for rules-resolved
+    /// animation references whose ART section is absent. This is intentionally
+    /// opt-in: missing terrain and damage-fire ART remains a load error.
+    ///
+    /// gamemd-derived: `BuildingClass::DestructionEffects @ 0x004415F0`
+    /// consumes resolved `Explosion=`/`DestroyAnim=` AnimType pointers, while
+    /// active retail `gtpowexp` and `tstlexp` have real SHPs but no ART section.
+    pub(crate) fn install_native_default_anim_types<'a>(
+        &mut self,
+        names: impl IntoIterator<Item = &'a String>,
+    ) {
+        for name in names {
+            let key = name.trim().to_ascii_uppercase();
+            if key.is_empty() {
+                continue;
+            }
+            self.anim_runtime_configs.entry(key).or_default();
+        }
     }
 
     #[cfg(test)]

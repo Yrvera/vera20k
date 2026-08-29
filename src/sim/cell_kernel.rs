@@ -90,7 +90,8 @@ pub fn checked_cell_from_world(
     Some((x as u16, y as u16))
 }
 
-/// YR `CellClass::GetFloorHeight`; bridge height is deliberately not included.
+/// YR `CellClass::ComputeGroundHeightAtCoord @ 0x0047B3A0`; bridge height is
+/// deliberately not included.
 pub fn cell_floor_height(
     level: u8,
     slope_index: u8,

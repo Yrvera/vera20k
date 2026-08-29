@@ -154,10 +154,16 @@ impl Default for ScenarioLightingState {
     }
 }
 
+fn default_trigger_difficulty_raw() -> i32 {
+    // `ScenarioClass+0x60C` is initialized to Medium before a campaign or
+    // multiplayer launch owner supplies its explicit raw selector.
+    1
+}
+
 /// Everything the app layer decides about a session before the sim exists.
 /// Built from the lobby/launch flow and the selected map file — never
 /// hardcoded inside sim/.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ScenarioDescriptor {
     /// The negotiated per-match seed. 32 bits wide because the original's
     /// negotiated seed is 32 bits and the RNG seeder consumes exactly 32; SP
@@ -175,6 +181,10 @@ pub struct ScenarioDescriptor {
     /// Native `ScenarioClass` flags bit `0x20`. The shared direct and area
     /// damage entries return before any receiver or terrain mutation while set.
     pub no_damage: bool,
+    /// Raw signed `ScenarioClass+0x60C` selector used only by TriggerType
+    /// construction: 0 Easy, 1 Medium, 2 Hard; every other value applies only
+    /// the TriggerType's authored-enabled field.
+    pub trigger_difficulty_raw: i32,
     /// Map-authored global-light profiles plus their tick-zero mutable state.
     pub lighting: ScenarioLightingState,
     /// Authoritative map bounds in the CANONICAL CELL-ARRAY frame (max cell
@@ -193,6 +203,27 @@ pub struct ScenarioDescriptor {
     /// BTreeMap for deterministic iteration; sized by content, never by a
     /// player-count assumption.
     pub mp_start_waypoints: BTreeMap<u32, (u16, u16)>,
+}
+
+impl Default for ScenarioDescriptor {
+    fn default() -> Self {
+        Self {
+            seed: 0,
+            map_name: String::new(),
+            theater: String::new(),
+            game_mode_nonzero: false,
+            no_damage: false,
+            trigger_difficulty_raw: default_trigger_difficulty_raw(),
+            lighting: ScenarioLightingState::default(),
+            map_width: 0,
+            map_height: 0,
+            local_left: 0,
+            local_top: 0,
+            local_width: 0,
+            local_height: 0,
+            mp_start_waypoints: BTreeMap::new(),
+        }
+    }
 }
 
 impl ScenarioDescriptor {
@@ -233,6 +264,9 @@ pub struct ScenarioSession {
     /// Persisted native `ScenarioClass` flags bit `0x20`.
     #[serde(default)]
     pub no_damage: bool,
+    /// Persisted raw trigger-construction difficulty selector.
+    #[serde(default = "default_trigger_difficulty_raw")]
+    pub trigger_difficulty_raw: i32,
     /// Persistent fixed-integer global-light configuration and transition state.
     pub lighting: ScenarioLightingState,
     /// Authoritative map bounds in the canonical cell-array frame (max cell
@@ -289,6 +323,7 @@ impl ScenarioSession {
         if s.no_damage {
             b"scenario-no-damage-v1".hash(hasher);
         }
+        s.trigger_difficulty_raw.hash(hasher);
         (s.map_width, s.map_height).hash(hasher);
         (s.local_left, s.local_top, s.local_width, s.local_height).hash(hasher);
         s.mp_start_waypoints.len().hash(hasher);
@@ -357,6 +392,7 @@ impl ScenarioSession {
             theater: desc.theater.clone(),
             game_mode_nonzero: desc.game_mode_nonzero,
             no_damage: desc.no_damage,
+            trigger_difficulty_raw: desc.trigger_difficulty_raw,
             lighting: desc.lighting,
             map_width: desc.map_width,
             map_height: desc.map_height,
@@ -388,6 +424,40 @@ mod tests {
         });
         let b = Simulation::with_seed(0xDEAD_BEEF);
         assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn trigger_difficulty_defaults_medium_and_preserves_any_signed_raw_value() {
+        assert_eq!(ScenarioDescriptor::default().trigger_difficulty_raw, 1);
+        for raw in [0, 1, 2, -1, i32::MAX, i32::MIN] {
+            let sim = Simulation::from_descriptor(&ScenarioDescriptor {
+                trigger_difficulty_raw: raw,
+                ..Default::default()
+            });
+            assert_eq!(sim.session.trigger_difficulty_raw, raw);
+        }
+    }
+
+    #[test]
+    fn trigger_difficulty_raw_round_trips_snapshot_and_changes_world_hash() {
+        let mut hashes = std::collections::BTreeSet::new();
+        for raw in [0, 1, 2, -1, i32::MAX, i32::MIN] {
+            let sim = Simulation::from_descriptor(&ScenarioDescriptor {
+                trigger_difficulty_raw: raw,
+                ..Default::default()
+            });
+            assert!(
+                hashes.insert(sim.state_hash()),
+                "raw {raw} must hash distinctly"
+            );
+            let bytes =
+                crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "trigger-difficulty.map", 0);
+            let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+                .expect("trigger difficulty snapshot")
+                .sim;
+            assert_eq!(restored.session.trigger_difficulty_raw, raw);
+            assert_eq!(restored.state_hash(), sim.state_hash());
+        }
     }
 
     #[test]
@@ -462,6 +532,7 @@ mod tests {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             };
             sim.spawn_from_map(&[entity], None, &BTreeMap::new());
             sim

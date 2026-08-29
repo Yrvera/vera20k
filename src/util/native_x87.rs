@@ -134,7 +134,12 @@ impl X87Chop53 {
             if fraction == 0 {
                 return Ok(X87Value::zero(sign));
             }
-            return Err(NativeX87Error::SubnormalInput { format: "f32" });
+            let top = 31 - fraction.leading_zeros();
+            return Ok(X87Value {
+                sign,
+                exponent: top as i32 - 149,
+                significand: (fraction as u64) << (52 - top),
+            });
         }
         Ok(X87Value {
             sign,
@@ -155,7 +160,12 @@ impl X87Chop53 {
             if fraction == 0 {
                 return Ok(X87Value::zero(sign));
             }
-            return Err(NativeX87Error::SubnormalInput { format: "f64" });
+            let top = 63 - fraction.leading_zeros();
+            return Ok(X87Value {
+                sign,
+                exponent: top as i32 - 1074,
+                significand: fraction << (52 - top),
+            });
         }
         Ok(X87Value {
             sign,
@@ -598,15 +608,17 @@ mod tests {
     }
 
     #[test]
-    fn unverified_exceptional_domains_return_typed_errors() {
+    fn exceptional_domains_reject_nonfinite_but_load_subnormals_exactly() {
         assert_eq!(
             X87Chop53::load_f32(NativeF32Bits::from_bits(0x7f80_0000)),
             Err(NativeX87Error::NonFiniteInput { format: "f32" }),
         );
-        assert_eq!(
-            X87Chop53::load_f64(NativeF64Bits::from_bits(0x0000_0000_0000_0001)),
-            Err(NativeX87Error::SubnormalInput { format: "f64" }),
-        );
+        let min_f64 = X87Chop53::load_f64(NativeF64Bits::from_bits(1)).unwrap();
+        assert_eq!(min_f64.exponent, -1074);
+        assert_eq!(min_f64.significand, SIGNIFICAND_TOP);
+        let min_f32 = X87Chop53::load_f32(NativeF32Bits::from_bits(1)).unwrap();
+        assert_eq!(min_f32.exponent, -149);
+        assert_eq!(min_f32.significand, SIGNIFICAND_TOP);
     }
 
     #[test]

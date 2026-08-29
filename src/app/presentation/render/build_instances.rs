@@ -51,11 +51,11 @@ pub(super) struct WorldInstances {
     /// Bodies above the Ground band: voxel aircraft off their pads, missiles in
     /// flight. Drawn after every ground object — see `top_unit` in draw_passes.
     pub top_unit: Vec<SpriteInstance>,
-    pub top_unit_pages: Vec<usize>,
     /// The SHP half of the same band — in stock YR, Rocketeers at hover height.
     /// Kept flat so atlas page changes cannot reorder Top-layer submissions.
     pub top_shp: Vec<SpriteInstance>,
-    pub top_shp_pages: Vec<usize>,
+    /// Exact layer-3/layer-4 traversal across VXL and SHP submissions.
+    pub flat_layer_draws: Vec<super::draw_plan_lowering::FlatLayerDraw>,
     /// Selected buildings' bodies again, for the depth-only stamp that lets a
     /// building's own art clip its selection-bracket redraw. Empty whenever no
     /// structure is selected.
@@ -240,6 +240,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut top_shp: Vec<SpriteInstance> = Vec::new();
     let mut top_shp_pages: Vec<usize> = Vec::new();
     let mut top_shp_ids: Vec<u64> = Vec::new();
+    let mut top_shp_layers: Vec<u8> = Vec::new();
+    let mut top_shp_modes: Vec<super::draw_plan_lowering::ShpCompositeMode> = Vec::new();
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut selected_building_depth_paged: Vec<Vec<SpriteInstance>> =
         vec![Vec::new(); shp_page_count];
@@ -253,13 +255,13 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     unit_pages.clear();
     let mut bridge_unit: Vec<SpriteInstance> = Vec::new();
     let mut bridge_unit_pages: Vec<usize> = Vec::new();
-    // The band above Ground (gamemd layers 3 and 4). Deliberately NOT depth
-    // sorted: those layers append and render in submission order, so the
-    // engine's own intra-band order is "whichever object entered the layer
-    // first". We cannot reproduce that submission history from a per-frame
-    // rebuild, and emission order is as legitimate a submission order as any.
+    // The flat bands above Ground (gamemd layers 3 and 4). They are never depth
+    // sorted. Per-piece metadata below lowers the live tactical registration
+    // across both VXL and SHP buffers after every builder has emitted.
     let mut top_unit: Vec<SpriteInstance> = Vec::new();
     let mut top_unit_pages: Vec<usize> = Vec::new();
+    let mut top_unit_ids: Vec<u64> = Vec::new();
+    let mut top_unit_layers: Vec<u8> = Vec::new();
     let transition_page_count = state
         .renderer.vxl_slope_transition_cache
         .borrow()
@@ -275,6 +277,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut unit_pages,
         &mut top_unit,
         &mut top_unit_pages,
+        &mut top_unit_ids,
+        &mut top_unit_layers,
         &mut bridge_unit,
         &mut bridge_unit_pages,
         &mut unit_transition_paged,
@@ -304,32 +308,49 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut top_shp,
         &mut top_shp_pages,
         &mut top_shp_ids,
+        &mut top_shp_layers,
         &mut parachute_body_depths,
         &mut selected_building_depth_paged,
         &mut ground_objects,
         &ground_order,
     );
+    top_shp_modes.resize(
+        top_shp.len(),
+        super::draw_plan_lowering::ShpCompositeMode::Standard,
+    );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     instances::build_world_effect_instances(state, &mut shp_paged);
     // Scheduler-owned AnimClass objects use their parsed native layer: Ground
-    // joins the integer plan, Top appends to the flat page-tagged stream.
+    // joins the integer plan, while default Air (3) and explicit Top (4) append
+    // to the flat page-tagged stream.
     instances::build_anim_class_instances(
         state,
         &mut shp_paged,
         &mut top_shp,
         &mut top_shp_pages,
         &mut top_shp_ids,
+        &mut top_shp_layers,
+        &mut top_shp_modes,
         &mut ground_objects,
         &ground_order,
     );
-    order_top_shp_by_registration(
-        &mut top_shp,
-        &mut top_shp_pages,
-        &mut top_shp_ids,
-        state
-            .match_state.sim_runtime
-            .as_ref()
-            .map_or(&[], |rt| rt.view().tactical_registration_order()),
+    let flat_layer_draws = build_flat_layer_draws(
+        &top_unit_pages,
+        &top_unit_ids,
+        &top_unit_layers,
+        &top_shp_pages,
+        &top_shp_ids,
+        &top_shp_layers,
+        &top_shp_modes,
+        state.match_state.sim_runtime.as_ref().map_or(
+            [&[][..], &[][..]],
+            |rt| {
+                [
+                    rt.view().tactical_display_layer_order(3),
+                    rt.view().tactical_display_layer_order(4),
+                ]
+            },
+        ),
     );
     // Non-garrison weapon muzzle flashes at FLH fire origins.
     instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
@@ -398,9 +419,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         shp_paged,
         bridge_shp_paged,
         top_unit,
-        top_unit_pages,
         top_shp,
-        top_shp_pages,
+        flat_layer_draws,
         selected_building_depth_paged,
         particle_paged,
         cell_sparkles,
@@ -990,50 +1010,118 @@ fn sort_by_depth_desc_with_pages(instances: &mut Vec<SpriteInstance>, pages: &mu
     }
 }
 
-/// Restore native Top-layer append order after the disjoint SHP builders have
-/// emitted into one flat, page-tagged stream. Atlas identity remains aligned
-/// payload and never becomes an ordering authority.
-fn order_top_shp_by_registration(
-    instances: &mut Vec<SpriteInstance>,
-    pages: &mut Vec<usize>,
-    ids: &mut Vec<u64>,
-    registrations: &[u64],
-) {
+/// Lower native unsorted display layers 3 and 4 across both atlas families.
+///
+/// `DisplayClass::Submit_Object @ 0x004A9720` appends each object to its
+/// numeric layer vector. The display traversal consumes layer 3 completely
+/// before layer 4; within either vector, the saved DisplayClass submission
+/// history is the append authority. Atlas page and VXL/SHP pipeline are
+/// payload only.
+fn build_flat_layer_draws(
+    unit_pages: &[usize],
+    unit_ids: &[u64],
+    unit_layers: &[u8],
+    shp_pages: &[usize],
+    shp_ids: &[u64],
+    shp_layers: &[u8],
+    shp_modes: &[super::draw_plan_lowering::ShpCompositeMode],
+    display_orders: [&[u64]; 2],
+) -> Vec<super::draw_plan_lowering::FlatLayerDraw> {
     assert_eq!(
-        instances.len(),
-        pages.len(),
-        "every Top SHP instance must carry one page tag"
+        unit_pages.len(),
+        unit_ids.len(),
+        "every flat VXL instance must carry one stable object id"
     );
     assert_eq!(
-        instances.len(),
-        ids.len(),
-        "every Top SHP instance must carry one stable object id"
+        unit_pages.len(),
+        unit_layers.len(),
+        "every flat VXL instance must carry one numeric display layer"
+    );
+    assert_eq!(
+        shp_pages.len(),
+        shp_ids.len(),
+        "every flat SHP instance must carry one stable object id"
+    );
+    assert_eq!(
+        shp_pages.len(),
+        shp_layers.len(),
+        "every flat SHP instance must carry one numeric display layer"
+    );
+    assert_eq!(
+        shp_pages.len(),
+        shp_modes.len(),
+        "every flat SHP instance must carry one composite mode"
     );
 
-    let ranks: std::collections::BTreeMap<u64, usize> = registrations
+    let ranks: std::collections::BTreeMap<(u8, u64), usize> = display_orders
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, order)| {
+            let layer = index as u8 + 3;
+            order
+                .iter()
+                .enumerate()
+                .map(move |(rank, &id)| ((layer, id), rank))
+        })
+        .collect();
+    let mut emitted = Vec::with_capacity(unit_pages.len() + shp_pages.len());
+    for (index, ((&page, &owner), &layer)) in unit_pages
         .iter()
+        .zip(unit_ids)
+        .zip(unit_layers)
         .enumerate()
-        .map(|(rank, &id)| (id, rank))
-        .collect();
-    let mut emitted: Vec<(usize, SpriteInstance, usize, u64)> = instances
-        .drain(..)
-        .zip(pages.drain(..))
-        .zip(ids.drain(..))
-        .enumerate()
-        .map(|(emission, ((instance, page), id))| (emission, instance, page, id))
-        .collect();
-    emitted.sort_by_key(|(emission, _, _, id)| {
-        (ranks.get(id).copied().unwrap_or(usize::MAX), *emission)
-    });
-
-    instances.reserve(emitted.len());
-    pages.reserve(emitted.len());
-    ids.reserve(emitted.len());
-    for (_, instance, page, id) in emitted {
-        instances.push(instance);
-        pages.push(page);
-        ids.push(id);
+    {
+        assert!(
+            matches!(layer, 3 | 4),
+            "flat VXL draw must retain native layer 3 or 4"
+        );
+        emitted.push((
+            ranks
+                .get(&(layer, owner))
+                .copied()
+                .unwrap_or(usize::MAX),
+            index,
+            super::draw_plan_lowering::FlatLayerDraw {
+                layer,
+                owner,
+                target: super::draw_plan_lowering::FlatDrawTarget::Unit {
+                    page,
+                    index: index as u32,
+                },
+            },
+        ));
     }
+    let unit_emissions = emitted.len();
+    for (index, (((&page, &owner), &layer), &mode)) in shp_pages
+        .iter()
+        .zip(shp_ids)
+        .zip(shp_layers)
+        .zip(shp_modes)
+        .enumerate()
+    {
+        assert!(
+            matches!(layer, 3 | 4),
+            "flat SHP draw must retain native layer 3 or 4"
+        );
+        emitted.push((
+            ranks
+                .get(&(layer, owner))
+                .copied()
+                .unwrap_or(usize::MAX),
+            unit_emissions + index,
+            super::draw_plan_lowering::FlatLayerDraw {
+                layer,
+                owner,
+                target: super::draw_plan_lowering::FlatDrawTarget::Shp {
+                    page,
+                    index: index as u32,
+                    mode,
+                },
+            },
+        ));
+    }
+    emitted.sort_by_key(|(rank, emission, draw)| (draw.layer, *rank, *emission));
+    emitted.into_iter().map(|(_, _, draw)| draw).collect()
 }
 
 #[cfg(test)]
@@ -1084,26 +1172,76 @@ mod tests {
     }
 
     #[test]
-    fn gsi_13_04_top_shp_stream_uses_registration_not_atlas_page_order() {
-        let mut instances = vec![
-            marker_instance(0.0, 20),
-            marker_instance(0.0, 10),
-            marker_instance(0.0, 30),
-        ];
-        let mut pages = vec![2usize, 0, 1];
-        let mut ids = vec![20u64, 10, 30];
+    fn native_flat_schedule_finishes_default_layer3_anim_before_layer4_fly() {
+        use super::super::draw_plan_lowering::{FlatDrawTarget, ShpCompositeMode};
 
-        order_top_shp_by_registration(&mut instances, &mut pages, &mut ids, &[10, 20, 30]);
-
-        assert_eq!(ids, vec![10, 20, 30]);
-        assert_eq!(pages, vec![0, 2, 1]);
-        assert_eq!(
-            instances
-                .iter()
-                .map(|instance| instance.draw_state.fx_flags)
-                .collect::<Vec<_>>(),
-            vec![10, 20, 30]
+        let draws = build_flat_layer_draws(
+            &[9],
+            &[40],
+            &[4],
+            &[2, 3],
+            &[30, 30],
+            &[3, 3],
+            &[
+                ShpCompositeMode::Standard,
+                ShpCompositeMode::AnimShadowDestinationHalve,
+            ],
+            [&[30], &[40]],
         );
+        assert_eq!(
+            draws.iter().map(|draw| draw.owner).collect::<Vec<_>>(),
+            [30, 30, 40]
+        );
+        assert_eq!(
+            draws.iter().map(|draw| draw.layer).collect::<Vec<_>>(),
+            [3, 3, 4]
+        );
+        assert_eq!(
+            draws.iter().map(|draw| draw.target).collect::<Vec<_>>(),
+            [
+                FlatDrawTarget::Shp {
+                    page: 2,
+                    index: 0,
+                    mode: ShpCompositeMode::Standard,
+                },
+                FlatDrawTarget::Shp {
+                    page: 3,
+                    index: 1,
+                    mode: ShpCompositeMode::AnimShadowDestinationHalve,
+                },
+                FlatDrawTarget::Unit { page: 9, index: 0 },
+            ],
+        );
+    }
+
+    #[test]
+    fn native_flat_schedule_preserves_cross_pipeline_registration_both_ways() {
+        use super::super::draw_plan_lowering::ShpCompositeMode;
+
+        for registrations in [[10, 20], [20, 10]] {
+            let draws = build_flat_layer_draws(
+                &[0],
+                &[10],
+                &[4],
+                &[1, 1],
+                &[20, 20],
+                &[4, 4],
+                &[
+                    ShpCompositeMode::Standard,
+                    ShpCompositeMode::AnimShadowDestinationHalve,
+                ],
+                [&[], &registrations],
+            );
+            let expected = if registrations[0] == 10 {
+                vec![10, 20, 20]
+            } else {
+                vec![20, 20, 10]
+            };
+            assert_eq!(
+                draws.iter().map(|draw| draw.owner).collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     /// Building turrets are appended to the voxel stream after every vehicle

@@ -27,6 +27,9 @@ pub(crate) mod damage;
 pub(crate) mod fire_decision;
 pub(crate) mod in_range;
 mod inviso_scatter;
+pub(crate) use inviso_scatter::random_direction_coord;
+#[cfg(test)]
+pub(crate) use inviso_scatter::random_direction_coord_for_byte;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
 pub(crate) mod veterancy;
@@ -72,6 +75,7 @@ use crate::rules::warhead_type::WarheadType;
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
+use crate::sim::house_strategy::update_anger_nodes;
 use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
@@ -1072,10 +1076,10 @@ pub struct DestroyedCrewedBuilding {
     pub z: u8,
 }
 
-/// A `CanBeOccupied` building destroyed in combat with live occupants —
-/// gamemd routes this through `BuildingClass::SellBuilding @ 0x00457DE0`, the
-/// same occupant-eject helper used by sell. The world layer owns the deferred
-/// repositioning because it has access to `Simulation` and the occupancy grid.
+/// A `CanBeOccupied` or capture-fate absorber building destroyed in combat with
+/// live occupants. Both classes release occupants while the Building is still
+/// represented; the world layer owns deferred placement because it has access
+/// to `Simulation` and the occupancy grid.
 pub struct DestroyedGarrisonBuilding {
     pub building_id: u64,
     pub type_id: InternedId,
@@ -1103,6 +1107,20 @@ pub struct ExplosionEffect {
     /// Sub-cell impact Y in leptons.
     pub sub_y: SimFixed,
     pub z: u8,
+}
+
+/// Immutable Building receiver facts captured before the fatal postlude. The
+/// world hook constructs scheduler AnimClasses synchronously while combat lends
+/// it the Scenario RNG and map authorities.
+#[derive(Debug, Clone)]
+pub(crate) struct BuildingDestructionAnimPlan {
+    pub rx: u16,
+    pub ry: u16,
+    pub center_smudge_z: i32,
+    pub location: crate::sim::anim_class::AnimWorldCoord,
+    pub foundation: String,
+    pub explosion_anims: Vec<String>,
+    pub destroy_anims: Vec<String>,
 }
 
 /// One transient combat-light request emitted when active IronCurtain or
@@ -1720,6 +1738,25 @@ pub(crate) trait CombatInlineHooks {
     #[cfg(test)]
     fn trace_wave_receiver(&mut self, _wave_id: u64, _target_id: u64, _scenario_rng_state: u64) {}
 
+    /// `WarheadTypeClass::Detonate @ 0x0046920B` enters CaptureUnit
+    /// synchronously. The world hook lends Simulation the staged combat stores
+    /// so the ownership/link transaction completes before the next projectile.
+    fn commit_mind_control_detonation(
+        &mut self,
+        _rules: &RuleSet,
+        _controller_id: u64,
+        _target_id: u64,
+        _current_frame: u32,
+        _entities: &mut EntityStore,
+        _occupancy: &mut OccupancyGrid,
+        _interner: &mut StringInterner,
+        _scenario_rng: &mut SimRng,
+        _houses: &mut BTreeMap<InternedId, HouseState>,
+        _sound_events: Option<&mut Vec<SimSoundEvent>>,
+    ) -> bool {
+        false
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn commit_wave_fire_event(
         &mut self,
@@ -1754,6 +1791,11 @@ pub(crate) trait CombatInlineHooks {
 
     fn mark_cliff_tactical_dirty(&mut self, _cells: &[(u16, u16)]) {}
 
+    /// WaveClass owns SmudgeGrid outside Simulation for the duration of its
+    /// cell walk. Keep cliff removal on that same borrowed authority rather
+    /// than reaching around the transaction owner.
+    fn clear_cliff_smudge(&mut self, _cell: (u16, u16)) {}
+
     fn spawn_cliff_anims(
         &mut self,
         _rules: &RuleSet,
@@ -1764,6 +1806,27 @@ pub(crate) trait CombatInlineHooks {
             crate::sim::components::AnimClassSpawnDescriptor,
             crate::sim::anim_class::AnimWorldCoord,
         )>,
+    ) {
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Production world combat always supplies this hook because the receiver
+    /// transaction temporarily owns the Scenario RNG and map authorities.
+    /// Hookless combat fixtures cannot construct scheduler-owned AnimClasses
+    /// and intentionally retain the no-op adapter.
+    fn commit_building_destruction_anims(
+        &mut self,
+        _rules: &RuleSet,
+        _overlay_registry: Option<&OverlayTypeRegistry>,
+        _plan: &BuildingDestructionAnimPlan,
+        _occupancy: &mut OccupancyGrid,
+        _interner: &mut StringInterner,
+        _scenario_rng: &mut SimRng,
+        _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+        _overlay_grid: Option<&mut OverlayGrid>,
+        _terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        _terrain_area_state: Option<&mut TerrainAreaState>,
+        _sound_events: Option<&mut Vec<SimSoundEvent>>,
     ) {
     }
 
@@ -2029,12 +2092,7 @@ enum ConcreteDeathSmudgePlan {
         z: u8,
         world_z_leptons: i32,
     },
-    Building {
-        rx: u16,
-        ry: u16,
-        z: i32,
-        foundation: String,
-    },
+    Building(BuildingDestructionAnimPlan),
 }
 
 /// Process combat-owned death effects and classify the lifecycle handoff.
@@ -2208,9 +2266,10 @@ fn handle_entity_deaths(
                 .map(|c| c.passengers.clone())
                 .unwrap_or_default();
 
-            // Garrisoned CanBeOccupied buildings use the same gamemd
-            // SellBuilding occupant-eject contract as sell. Generic transports
-            // deliberately emit no passenger-side mutations from combat.
+            // Garrisoned CanBeOccupied buildings and Bio Reactor capture-fate
+            // absorbers release their live cargo before Building UnInit.
+            // Generic transports deliberately emit no passenger-side mutations
+            // from combat.
             //
             // Re-resolve the type string here because earlier mutable borrows
             // of `interner` (death_weapon_aoe, intern calls) ended its prior
@@ -2218,7 +2277,7 @@ fn handle_entity_deaths(
             let type_id_str_for_branch = interner.resolve(type_id);
             let is_garrison_building = rules
                 .object(type_id_str_for_branch)
-                .map(|obj| obj.can_be_occupied)
+                .map(|obj| obj.can_be_occupied || obj.infantry_absorb || obj.unit_absorb)
                 .unwrap_or(false)
                 && category == EntityCategory::Structure
                 && !passenger_ids.is_empty();
@@ -2257,16 +2316,32 @@ fn handle_entity_deaths(
             // TechnoClass's synchronous death weapon has returned. Capture the
             // immutable plan now; placement and all RNG stay at that postlude.
             if category == EntityCategory::Structure {
-                let foundation = rules
-                    .object(interner.resolve(type_id))
-                    .map(|obj| obj.foundation.as_str())
-                    .unwrap_or("1x1");
-                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Building {
-                    rx,
-                    ry,
-                    z: i32::from(z),
-                    foundation: foundation.to_owned(),
-                });
+                let object = rules.object(interner.resolve(type_id));
+                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Building(
+                    BuildingDestructionAnimPlan {
+                        rx,
+                        ry,
+                        center_smudge_z: i32::from(z),
+                        location: crate::sim::anim_class::AnimWorldCoord {
+                            x: i32::from(rx)
+                                .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+                                .wrapping_add(sub_x.to_num::<i32>()),
+                            y: i32::from(ry)
+                                .wrapping_mul(crate::util::lepton::LEPTONS_PER_CELL_I32)
+                                .wrapping_add(sub_y.to_num::<i32>()),
+                            z: world_z_leptons,
+                        },
+                        foundation: object
+                            .map(|object| object.foundation.clone())
+                            .unwrap_or_else(|| "1x1".to_string()),
+                        explosion_anims: object
+                            .map(|object| object.explosion_anims.clone())
+                            .unwrap_or_default(),
+                        destroy_anims: object
+                            .map(|object| object.destroy_anims.clone())
+                            .unwrap_or_default(),
+                    },
+                ));
             }
 
             // `UnitClass::Death_Explosion @ 0x00738680` for vehicles and
@@ -2286,16 +2361,13 @@ fn handle_entity_deaths(
             // `[InfantryTypes]` section authors `Explosion=` either, so this is
             // a contract correction rather than a visible one.
             //
-            // RESIDUAL (GSI-08.11) — the BUILDING arm is not modelled. Native
-            // runs `BuildingClass::DestructionEffects @ 0x004415F0`, which plays
-            // the `Explosion=` list once PER FOUNDATION CELL at cell centre with
-            // a scatter helper and a `RandomRanged(0, 3)` anim delay, then one
-            // `DestroyAnim=` at the building coordinate; the sub-order of the
-            // scatter, delay and index draws is UNCHECKED, and getting it wrong
-            // would misroute the stream for every structure death. `Explodes=`
-            // (forcing the last `Explosion=` entry for a loaded miner) is
-            // likewise unread. Trigger: every building death, and every loaded
-            // miner death. Frequency: continuous.
+            // BuildingClass's distinct scheduler-owned producer is committed
+            // inline in the concrete receiver postlude below. RESIDUAL
+            // (GSI-08.11): the adjacent `Explodes=yes` overlay-cell arm,
+            // storage/callback/timer work, destruction particle-system choice,
+            // and remaining teardown are still open. Trigger: applicable
+            // Building deaths; frequency continuous for particle-bearing stock
+            // types and conditional for the other branches.
             if matches!(category, EntityCategory::Unit | EntityCategory::Aircraft)
                 && let Some(obj) = rules.object(interner.resolve(type_id))
             {
@@ -2534,11 +2606,10 @@ fn handle_entity_deaths(
         }
     }
 
-    // Concrete InfDeath AnimClass and building destruction smudges are the
+    // Concrete InfDeath AnimClass and Building destruction work are the
     // receiver postlude. The structure is intentionally still represented and
     // its raw occupation bytes are still in TerrainAreaState during dispatch.
     for plan in concrete_smudge_plans {
-        let mut requests = Vec::new();
         match plan {
             ConcreteDeathSmudgePlan::Infantry {
                 inf_death,
@@ -2548,40 +2619,93 @@ fn handle_entity_deaths(
                 sub_y,
                 z,
                 world_z_leptons,
-            } => emit_infantry_death_anim(
-                &rules.general,
-                inf_death,
-                rx,
-                ry,
-                sub_x,
-                sub_y,
-                z,
-                world_z_leptons,
-                interner,
-                &mut explosion_effects,
-                &mut requests,
-            ),
-            ConcreteDeathSmudgePlan::Building {
-                rx,
-                ry,
-                z,
-                foundation,
-            } => append_building_smudge_requests(&mut requests, rx, ry, z, &foundation),
+            } => {
+                let mut requests = Vec::new();
+                emit_infantry_death_anim(
+                    &rules.general,
+                    inf_death,
+                    rx,
+                    ry,
+                    sub_x,
+                    sub_y,
+                    z,
+                    world_z_leptons,
+                    interner,
+                    &mut explosion_effects,
+                    &mut requests,
+                );
+                commit_smudge_batch_or_defer(
+                    requests,
+                    &mut smudge_spawn_requests,
+                    inline_hooks,
+                    rules,
+                    occupancy,
+                    interner,
+                    scenario_rng,
+                    resource_nodes,
+                    overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    terrain.as_deref_mut(),
+                    terrain_area_state.as_deref(),
+                );
+            }
+            ConcreteDeathSmudgePlan::Building(plan) => {
+                let mut requests = Vec::new();
+                append_building_smudge_requests(
+                    &mut requests,
+                    plan.rx,
+                    plan.ry,
+                    plan.center_smudge_z,
+                    &plan.foundation,
+                );
+                let survivor_requests = requests.split_off(1);
+                commit_smudge_batch_or_defer(
+                    requests,
+                    &mut smudge_spawn_requests,
+                    inline_hooks,
+                    rules,
+                    occupancy,
+                    interner,
+                    scenario_rng,
+                    resource_nodes,
+                    overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    terrain.as_deref_mut(),
+                    terrain_area_state.as_deref(),
+                );
+
+                if let Some(hooks) = inline_hooks.as_deref_mut() {
+                    hooks.commit_building_destruction_anims(
+                        rules,
+                        overlay_registry,
+                        &plan,
+                        occupancy,
+                        interner,
+                        scenario_rng,
+                        resource_nodes,
+                        overlay_grid.as_deref_mut(),
+                        terrain.as_deref_mut(),
+                        terrain_area_state.as_deref_mut(),
+                        sound_sink.as_deref_mut(),
+                    );
+                }
+
+                commit_smudge_batch_or_defer(
+                    survivor_requests,
+                    &mut smudge_spawn_requests,
+                    inline_hooks,
+                    rules,
+                    occupancy,
+                    interner,
+                    scenario_rng,
+                    resource_nodes,
+                    overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    terrain.as_deref_mut(),
+                    terrain_area_state.as_deref(),
+                );
+            }
         }
-        commit_smudge_batch_or_defer(
-            requests,
-            &mut smudge_spawn_requests,
-            inline_hooks,
-            rules,
-            occupancy,
-            interner,
-            scenario_rng,
-            resource_nodes,
-            overlay_grid.as_deref_mut(),
-            overlay_registry,
-            terrain.as_deref_mut(),
-            terrain_area_state.as_deref(),
-        );
     }
 
     DeathEffects {
@@ -2948,68 +3072,6 @@ fn receiver_type_value(target: &GameEntity, object: &ObjectType, rules: &RuleSet
         return object.cost;
     }
     rules.building_actual_cost(object)
-}
-
-/// Exact active subset of HouseClass::UpdateAngerNodes @ 0x00504790.
-///
-/// Native stores one node for every other HouseClass in global creation order.
-/// Rust keeps touched scores keyed by identity, but scans `house_order` for the
-/// strict-greater winner so equal scores preserve the same earlier house.
-fn update_receiver_anger_nodes(
-    houses: &mut BTreeMap<InternedId, HouseState>,
-    house_order: &[InternedId],
-    alliances: &HouseAllianceMap,
-    interner: &StringInterner,
-    victim_owner: InternedId,
-    source_owner: InternedId,
-    delta: i32,
-) {
-    let source_is_registered = source_owner != victim_owner
-        && house_order.iter().any(|&owner| owner == source_owner)
-        && houses.contains_key(&source_owner);
-    if source_is_registered && let Some(victim) = houses.get_mut(&victim_owner) {
-        // Native pre-creates every other-house node. In the sparse Rust form,
-        // an absent key therefore already means native score zero: a zero
-        // update must not materialize new serialized/hashed state. Once a key
-        // exists it remains represented even when its score is zero.
-        if delta != 0 || victim.grudge_scores.contains_key(&source_owner) {
-            let score = victim.grudge_scores.entry(source_owner).or_insert(0);
-            *score = score.wrapping_add(delta);
-        }
-    }
-
-    let Some(victim) = houses.get(&victim_owner) else {
-        return;
-    };
-    let mut best_score = 0;
-    let mut best_house = None;
-    for &candidate_id in house_order {
-        if candidate_id == victim_owner {
-            continue;
-        }
-        let Some(candidate) = houses.get(&candidate_id) else {
-            continue;
-        };
-        let score = victim
-            .grudge_scores
-            .get(&candidate_id)
-            .copied()
-            .unwrap_or(0);
-        if score > best_score
-            && !candidate.is_defeated
-            && !crate::map::houses::is_allied_with(
-                alliances,
-                interner.resolve(victim_owner),
-                interner.resolve(candidate_id),
-            )
-        {
-            best_score = score;
-            best_house = Some(candidate_id);
-        }
-    }
-    if let Some(victim) = houses.get_mut(&victim_owner) {
-        victim.enemy_house = best_house;
-    }
 }
 
 fn has_active_area_invulnerability(entity: &GameEntity, current_tick: u64) -> bool {
@@ -3679,7 +3741,7 @@ fn commit_damage_events_with_isolation(
         }
         if let Some((victim_owner, source_owner, final_damage, strength, cost)) = threat_feedback {
             let delta = receiver_anger_delta(final_damage, strength, cost);
-            update_receiver_anger_nodes(
+            update_anger_nodes(
                 houses,
                 house_order,
                 alliances,
@@ -4361,14 +4423,17 @@ fn emit_one_projectile_detonation(
         nuke_maker: warhead.nuke_maker,
     });
     if special_action != SpecialDetonationAction::OrdinaryDamage {
-        // Effect bodies remain explicit residuals. Native else-if ownership is
-        // authoritative, so an earlier unsupported predicate still shadows
-        // Shrapnel and ordinary DamageArea.
-        log::debug!(
-            "Projectile {} selected unsupported special detonation {:?}",
-            detonation.projectile_id,
-            special_action
-        );
+        // MindControl is committed synchronously by the world hook after this
+        // emitter returns. Other effect bodies remain explicit residuals.
+        // Native else-if ownership is authoritative, so every earlier special
+        // still shadows Shrapnel and ordinary DamageArea.
+        if special_action != SpecialDetonationAction::MindControl {
+            log::debug!(
+                "Projectile {} selected unsupported special detonation {:?}",
+                detonation.projectile_id,
+                special_action
+            );
+        }
         return;
     }
 
@@ -5000,6 +5065,40 @@ fn commit_projectile_detonations_inline(
             inline_hooks,
             emit,
         );
+        let special_action = rules
+            .warhead(interner.resolve(detonation.payload.warhead))
+            .map(|warhead| {
+                projectile_special_detonation_action(SpecialDetonationFlags {
+                    mind_control: warhead.mind_control,
+                    ivan_bomb: warhead.ivan_bomb,
+                    electric_assault: warhead.electric_assault,
+                    parasite: warhead.parasite,
+                    temporal: warhead.temporal,
+                    is_locomotor: warhead.is_locomotor,
+                    airstrike: warhead.airstrike,
+                    raw_335: warhead.raw_335,
+                    bomb_disarm: warhead.bomb_disarm,
+                    makes_disguise: warhead.makes_disguise,
+                    nuke_maker: warhead.nuke_maker,
+                })
+            });
+        if special_action == Some(SpecialDetonationAction::MindControl)
+            && let ProjectileTarget::Entity(target_id) = detonation.target
+            && let Some(hooks) = inline_hooks.as_deref_mut()
+        {
+            let _ = hooks.commit_mind_control_detonation(
+                rules,
+                detonation.source_id,
+                target_id,
+                current_tick as u32,
+                entities,
+                occupancy,
+                interner,
+                scenario_rng,
+                houses,
+                sound_sink.as_deref_mut(),
+            );
+        }
         let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
         let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
         let (inline_death, mut pings) = commit_area_damage_receivers_with_scenario(
@@ -5654,6 +5753,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             rules,
             interner,
             handles,
+            houses,
             resource_nodes,
             fog,
             occupancy,
@@ -6300,6 +6400,7 @@ pub(crate) fn resolve_attacker_fire(
     rules: &RuleSet,
     interner: &mut StringInterner,
     handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
+    houses: &BTreeMap<InternedId, HouseState>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     fog: Option<&FogState>,
     occupancy: &OccupancyGrid,
@@ -6941,15 +7042,33 @@ pub(crate) fn resolve_attacker_fire(
             .min(weapon_burst.saturating_sub(1))
     };
     let warhead = selected.warhead;
-    // Garrison damage: apply OccupyDamageMultiplier to base damage before AoE or
-    // single-target paths. Matches gamemd Fire_At which modifies damage before bullet
-    // creation, so AoE splash uses the modified value.
+    // gamemd-derived active crate prerequisite: both Fire_At construction
+    // consumers fold House.Firepower * Techno.CrateFirepower * weapon Damage
+    // in one x87 expression and cross one FISTP boundary. Garrison Occupy is a
+    // distinct later stage, so it consumes the already-truncated prefix.
+    let house_firepower = houses.get(&snap.owner).map_or(1.0, |house| {
+        let country_name = house
+            .country
+            .map(|country| interner.resolve(country))
+            .unwrap_or_else(|| interner.resolve(snap.owner));
+        rules.general.difficulty_firepower[house.difficulty.table_index()]
+            * rules.country_firepower(country_name)
+    });
+    let crate_firepower = entities
+        .get(snap.stable_id)
+        .map_or(NativeF64Bits::ONE, |entity| entity.firepower_crate_multiplier);
+    let firepower_damage = damage::attacker::firepower_damage(
+        weapon.damage,
+        NativeF64Bits::from_bits(house_firepower.to_bits()),
+        crate_firepower,
+    );
     let base_damage = if is_garrison {
         sim_to_i32(
-            SimFixed::from_num(weapon.damage) * rules.garrison_rules.occupy_damage_multiplier,
+            SimFixed::from_num(firepower_damage)
+                * rules.garrison_rules.occupy_damage_multiplier,
         )
     } else {
-        weapon.damage
+        firepower_damage
     };
     let persistent_delivery = classify_projectile_delivery(weapon, rules);
     if let ProjectileDelivery::Persistent {

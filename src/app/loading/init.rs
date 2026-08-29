@@ -47,6 +47,7 @@ use crate::map::tags::TagMap;
 use crate::map::terrain::{self, LocalBounds, TerrainGrid};
 use crate::map::theater;
 use crate::map::trigger_graph::TriggerGraph;
+use crate::map::trigger_program::TriggerProgram;
 use crate::map::triggers::TriggerMap;
 use crate::map::waypoints::{self, Waypoint};
 use crate::render::batch::BatchRenderer;
@@ -63,7 +64,7 @@ use crate::render::unit_atlas::UnitAtlas;
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::trigger_runtime::TriggerRuntime;
+use crate::sim::trigger_runtime::{TriggerAttachmentPlan, TriggerRuntime};
 use crate::sim::world::Simulation;
 
 fn resolved_overlay_shp_ids(
@@ -732,6 +733,7 @@ pub struct ScenarioLoadInputs {
     pub events: EventMap,
     pub actions: ActionMap,
     pub trigger_graph: TriggerGraph,
+    pub trigger_program: TriggerProgram,
     pub trigger_runtime: TriggerRuntime,
     /// Overlay type registry — kept so wall placement can look up overlay_id by name.
     pub overlay_registry: OverlayTypeRegistry,
@@ -1097,7 +1099,8 @@ impl MapLoadInitial {
             &rules,
             &overlay_registry,
         );
-        let house_roster = houses::parse_house_roster(&map_data.ini, &rules.color_schemes);
+        let house_roster =
+            houses::parse_house_roster(&map_data.ini, &rules.color_schemes, Some(&rules));
         let height_map = resolved_terrain.build_height_map();
         let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
         let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
@@ -1111,6 +1114,7 @@ impl MapLoadInitial {
             theater: map_data.header.theater.clone(),
             game_mode_nonzero: true,
             no_damage: false,
+            trigger_difficulty_raw: 1,
             map_width: resolved_terrain.width(),
             map_height: resolved_terrain.height(),
             local_left: map_data.header.local_left as u16,
@@ -1842,6 +1846,9 @@ pub(crate) fn load_map_from_initial(
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
+        let defaultable_roots =
+            crate::app::loading::init_helpers::building_destruction_anim_roots(r);
+        a.install_native_default_anim_types(defaultable_roots.iter());
         let roots = scheduler_anim_roots(r, resolved_terrain.tile_animations());
         a.bind_scheduler_anim_assets(
             &roots,
@@ -1970,7 +1977,8 @@ pub(crate) fn load_map_from_initial(
         .as_ref()
         .map(|r| r.color_schemes.as_slice())
         .unwrap_or(&[]);
-    let house_roster: HouseRoster = houses::parse_house_roster(&map_data.ini, color_schemes);
+    let house_roster: HouseRoster =
+        houses::parse_house_roster(&map_data.ini, color_schemes, rules.as_ref());
     let house_color_map: HouseColorMap = skirmish_launch_session.map_or_else(
         || house_roster.color_map(),
         |session| house_color_map_for_launch_session(session, &house_roster),
@@ -2031,6 +2039,11 @@ pub(crate) fn load_map_from_initial(
         // has no writer for bit 0x20 and therefore starts false.
         no_damage: skirmish_launch_session.is_none()
             && map_data.special_flags.inert.unwrap_or(false),
+        // The launch owner supplies the exact signed ScenarioClass+0x60C word:
+        // OfflineSkirmish preserves MultiplayerDialogSettings AIDifficulty,
+        // Campaign preserves its selected difficulty, and generic/debug loads
+        // retain the constructor's Medium (1).
+        trigger_difficulty_raw: startup.trigger_difficulty_raw(),
         // CANONICAL CELL-ARRAY FRAME, not [Map] Size=. Sim cell coordinates
         // (entities, waypoints, vision) live in the iso array whose extent is
         // ~(SizeW+SizeH); seeding bounds from Size= verbatim leaves most of
@@ -2079,7 +2092,7 @@ pub(crate) fn load_map_from_initial(
     };
     // F09 seam: GPU-free construction first, then the presentation manifest
     // is derived from the constructed simulation — never fed back into it.
-    let constructed = crate::app::loading::init_helpers::construct_app_scenario(
+    let mut constructed = crate::app::loading::init_helpers::construct_app_scenario(
         &map_data,
         &resolved_terrain,
         &asset_manager,
@@ -2095,6 +2108,27 @@ pub(crate) fn load_map_from_initial(
         generated_techno_inits.as_ref(),
         initialize_houses_before_objects,
     )?;
+    // Full_Init materializes Tags immediately after the five map attachment
+    // streams and before later skirmish launch/debug spawns can enter the
+    // object registry or consume the Scenario RNG.
+    let trigger_program = TriggerProgram::compile(
+        &map_data.ini,
+        &map_data.tags,
+        &map_data.triggers,
+        &map_data.events,
+        &map_data.actions,
+    )
+    .map_err(|error| anyhow::anyhow!("active trigger program rejected: {error}"))?;
+    let trigger_attachments =
+        TriggerAttachmentPlan::from_loaded_map(&trigger_program, &map_data, &constructed);
+    let trigger_runtime = TriggerRuntime::materialize_fresh(
+        &trigger_program,
+        &map_data.local_variables,
+        &trigger_attachments,
+        constructed.session.trigger_difficulty_raw,
+        constructed.session.binary_frame,
+        &mut constructed.scenario_rng,
+    );
     let manifest = crate::app::loading::init_helpers::build_presentation_manifest(
         &constructed,
         &asset_manager,
@@ -2432,7 +2466,6 @@ pub(crate) fn load_map_from_initial(
     } else {
         log::warn!("Software cursor NOT loaded (mouse.sha missing?) — using OS cursor");
     }
-    let trigger_runtime = TriggerRuntime::from_map(&map_data.triggers, &map_data.local_variables);
     let lighting_grid = rebuild_lighting_grid_from_sim(
         &resolved_terrain,
         &lighting_config,
@@ -2470,6 +2503,7 @@ pub(crate) fn load_map_from_initial(
             events: map_data.events,
             actions: map_data.actions,
             trigger_graph: map_data.trigger_graph,
+            trigger_program,
             trigger_runtime,
             overlay_registry,
             house_roster,

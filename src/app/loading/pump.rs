@@ -276,6 +276,26 @@ impl LoadingRequest {
         }
     }
 
+    /// Construct a campaign loading request from the already-selected native
+    /// campaign difficulty word. The current campaign selector can call this
+    /// once its separately owned side -> first-scenario mapping is decoded.
+    pub(crate) fn campaign_map_load(
+        selected_map_file: impl Into<String>,
+        trigger_difficulty_raw: i32,
+        fallback_skirmish_settings: SkirmishSettings,
+    ) -> Self {
+        Self {
+            startup: Some(LoadingStartup::Campaign {
+                selected_map_file: selected_map_file.into(),
+                trigger_difficulty_raw,
+            }),
+            preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
+            random_map_preview: None,
+            presentation: LoadingPresentation::GenericMapLoad,
+            fallback_skirmish_settings,
+        }
+    }
+
     pub(crate) fn selected_map_file(&self) -> &str {
         self.startup().selected_map_file()
     }

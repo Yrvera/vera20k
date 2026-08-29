@@ -11,6 +11,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::rules::error::RulesError;
+use crate::rules::crate_rules::{
+    CrateRules, POWERUP_COUNT, PowerupEntry, apply_powerups_pass, executable_powerup_baseline,
+};
 
 const READ_LINE_PAYLOAD: usize = 511;
 
@@ -573,9 +576,13 @@ impl RulesLayerStack {
         for (_, ini) in self.iter_passes() {
             processor.apply_pass(ini);
         }
+        let crate_rules = processor.crate_rules.clone();
+        let powerups = processor.powerups.clone();
         ProcessedRulesLayers {
             ini: processor.finish(),
             content_hash: self.content_hash(),
+            crate_rules,
+            powerups,
         }
     }
 }
@@ -585,6 +592,8 @@ impl RulesLayerStack {
 pub struct ProcessedRulesLayers {
     ini: IniFile,
     content_hash: u64,
+    crate_rules: CrateRules,
+    powerups: [PowerupEntry; POWERUP_COUNT],
 }
 
 impl ProcessedRulesLayers {
@@ -598,6 +607,14 @@ impl ProcessedRulesLayers {
 
     pub fn content_hash(&self) -> u64 {
         self.content_hash
+    }
+
+    pub fn crate_rules(&self) -> &CrateRules {
+        &self.crate_rules
+    }
+
+    pub fn powerups(&self) -> &[PowerupEntry; POWERUP_COUNT] {
+        &self.powerups
     }
 }
 
@@ -653,13 +670,29 @@ impl ProcessedType {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RulesPassProcessor {
     ordinary: Option<IniFile>,
     families: HashMap<RulesTypeFamily, Vec<ProcessedType>>,
     tiberiums: Vec<ProcessedType>,
     colors: Vec<(String, String)>,
     prerequisite_groups: HashMap<&'static str, Vec<String>>,
+    crate_rules: CrateRules,
+    powerups: [PowerupEntry; POWERUP_COUNT],
+}
+
+impl Default for RulesPassProcessor {
+    fn default() -> Self {
+        Self {
+            ordinary: None,
+            families: HashMap::new(),
+            tiberiums: Vec::new(),
+            colors: Vec::new(),
+            prerequisite_groups: HashMap::new(),
+            crate_rules: CrateRules::default(),
+            powerups: executable_powerup_baseline(),
+        }
+    }
 }
 
 impl RulesPassProcessor {
@@ -791,6 +824,20 @@ impl RulesPassProcessor {
             self.apply_family(RulesTypeFamily::Warhead, pass);
         }
 
+        // gamemd-derived: RulesClass readers apply CrateRules and the
+        // executable-global Powerups table once per original Process pass.
+        // Powerups resolves animation identities against the registry as it
+        // exists at this point; later allocations do not repair an earlier miss.
+        self.crate_rules.apply_pass(pass);
+        let live_animations: Vec<String> = self
+            .families
+            .get(&RulesTypeFamily::Animation)
+            .into_iter()
+            .flatten()
+            .map(|member| member.canonical_name.clone())
+            .collect();
+        apply_powerups_pass(&mut self.powerups, pass, &live_animations);
+
         // TiberiumClass::ReadINI_All is the final type reader in Process. Its
         // registry keys are numeric slot selectors, not ordinary type IDs.
         self.process_tiberiums(pass);
@@ -804,10 +851,7 @@ impl RulesPassProcessor {
         let identity = trim_ascii_controls(identity);
         // UnitTypeClass::FindOrAllocate @ 0x007480D0 rejects both native
         // no-type sentinels before the per-family case-insensitive lookup.
-        if identity.is_empty()
-            || identity.eq_ignore_ascii_case("none")
-            || identity.eq_ignore_ascii_case("<none>")
-        {
+        if is_native_none_type_name(identity) {
             return;
         }
         let members = self.family_mut(family);
@@ -1215,6 +1259,16 @@ impl RulesPassProcessor {
 
 fn trim_ascii_controls(value: &str) -> &str {
     value.trim_matches(|character| u32::from(character) <= 0x20)
+}
+
+/// Whether a type-name reader resolves the input to native null.
+///
+/// `UnitTypeClass__FindOrAllocate @ 0x007480D0`, reached for
+/// `UndeploysInto=` by `TechnoTypeClass__ReadINI @ 0x00712170` at
+/// `0x0071329D..0x007132E4`, rejects these names before lookup/allocation.
+pub(crate) fn is_native_none_type_name(value: &str) -> bool {
+    let value = trim_ascii_controls(value);
+    value.is_empty() || value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("<none>")
 }
 
 fn parse_bool_value(value: &str) -> Option<bool> {

@@ -339,6 +339,83 @@ fn prepare_bunker_special_overlay(
     })
 }
 
+/// Grinder per-cell presentation leaf (`UnitClass::PerCellProcess @
+/// 0x00739EC0`): only a Building with the native Active slot has SpecialAnim
+/// slot 10 reset, selecting the damaged image at/below ConditionYellow.
+pub(crate) fn trigger_grinder_special_anim(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    building_id: u64,
+) {
+    let Some((type_name, image, damaged)) = sim.entities().get(building_id).and_then(|building| {
+        let type_name = sim.interner.resolve(building.type_ref);
+        let object = rules.object(type_name)?;
+        let damaged = i64::from(building.health.current).wrapping_mul(1000)
+            <= i64::from(building.health.max)
+                .wrapping_mul(rules.general.condition_yellow_x1000);
+        Some((type_name.to_string(), object.image.clone(), damaged))
+    }) else {
+        return;
+    };
+    let Some(entry) = rules.art_registry.resolve_metadata_entry(&type_name, &image) else {
+        return;
+    };
+    let active_names = entry
+        .building_anims
+        .iter()
+        .filter(|anim| matches!(anim.kind, BuildingAnimKind::Active))
+        .map(|anim| anim.anim_type.to_uppercase())
+        .collect::<Vec<_>>();
+    if active_names.is_empty() {
+        return;
+    }
+    let Some(config) = entry
+        .building_anims
+        .iter()
+        .find(|anim| matches!(anim.kind, BuildingAnimKind::Special))
+    else {
+        return;
+    };
+    let Some(prepared) = prepare_bunker_special_overlay(sim, &rules.art_registry, config, damaged)
+    else {
+        return;
+    };
+    let active_ids = active_names
+        .iter()
+        .map(|name| sim.interner.intern(name))
+        .collect::<Vec<_>>();
+    let new_state = AnimOverlayState {
+        anim_type: sim.interner.intern(&prepared.anim_type),
+        frame: prepared.frame,
+        loop_start: prepared.loop_start,
+        loop_end: prepared.loop_end,
+        rate_logic_frames: prepared.rate_logic_frames,
+        elapsed_logic_frames: 0,
+        finished: false,
+    };
+    let Some(building) = sim.entities_mut().get_mut(building_id) else {
+        return;
+    };
+    if let Some(overlays) = building.building_anim_overlays.as_mut() {
+        overlays
+            .anims
+            .retain(|overlay| !active_ids.contains(&overlay.anim_type));
+        if let Some(existing) = overlays
+            .anims
+            .iter_mut()
+            .find(|overlay| overlay.anim_type == new_state.anim_type)
+        {
+            *existing = new_state;
+        } else {
+            overlays.anims.push(new_state);
+        }
+    } else {
+        building.building_anim_overlays = Some(BuildingAnimOverlays {
+            anims: vec![new_state],
+        });
+    }
+}
+
 fn consume_bunker_wall_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRegistry) {
     if sim.bunker_wall_events.is_empty() {
         return;

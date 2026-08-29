@@ -116,14 +116,16 @@ Before implementation, a bounded Ghidra pass must prove:
   candidate `f32` Z selects ground/contact/clamp predicates. [GHIDRA
   `0x0062C6E0`]
 - Candidate X/Y are converted to the native cell frame with the exact verified
-  signed semantics; invalid cells use the native dummy-cell result, not `None` or
-  a clamped edge. [doc: collision report section `Cell and ground semantics`]
+  signed semantics. Rust now has the shared mutable dummy substrate in
+  `cell_rect`, but Spark still returns typed unavailable/off-array errors rather
+  than routing through it; that caller-specific integration remains open. [doc:
+  `PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`]
 - Candidate ground includes signed terrain level and exact slope contribution.
   [GHIDRA `0x00578080`, `0x0047B3A0`; exact formula pending prerequisite]
 - The slope matrix is selected by the candidate cell's slope byte, not particle
   facing. [GHIDRA `0x006D6AD0`, `0x007559B0`]
 - Structural collision checks the live old-cell or candidate-cell `0x100` bit;
-  plane and equality rules remain `G+360`, with ascending commit `G+340`.
+  plane and equality rules use `G+416`, with ascending commit `G+396`.
   [doc: collision report section `Collision decision table`]
 - Building lookup scans the candidate ground object list and stops at the first
   `WhatAmI==6`; an excluded first building does not authorize unordered searching
@@ -194,7 +196,9 @@ rejected. It must not opportunistically add burst spawning, lights, or rendering
 
 - World-query input is the exact `SparkMotionStep`, not only a rounded cell.
 - Facts are owned values; no world borrow crosses the RNG call.
-- Missing ordinary cell data follows verified dummy semantics.
+- Missing ordinary cell data still returns a typed unavailable/error result in
+  Spark even though the shared dummy substrate exists; closing that routing is
+  separate mechanism work.
 - A genuinely unsupported prerequisite returns a typed unavailable/error result.
   It never substitutes flat ground, identity slope, static bridge state, or an
   ordinary building.

@@ -1,5 +1,10 @@
 # HouseClass Verified Field Map (gamemd.exe)
 
+> **2026-08-29 correction:** the `ScatterAllUnits()` symbol retained in this
+> field map for `0x004FC6D0` is a stale name only. The active function is the
+> shared destructive House Techno sweep documented in
+> `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`.
+
 **Source:** Live Ghidra decompilation of `gamemd.exe` (YR 1.001)
 **Original source path:** `D:\ra2mdpost\House.CPP`, `D:\ra2mdpost\Country.CPP`
 **Total struct size:** 0x160B8 bytes (90,296 bytes). Verified: `operator_new(0x160B8)` in Create_Houses.
@@ -228,7 +233,7 @@ total = OwnedBuildings[+0x2F0]
       + CountOwnedInstances(MCV from Rules+0x8E8)
 
 if total == 0:
-    ScatterAllUnits()
+    DestructiveHouseTechnoSweep()  // 0x004FC6D0; not movement Scatter
     MPlayer_Defeated()
 ```
 

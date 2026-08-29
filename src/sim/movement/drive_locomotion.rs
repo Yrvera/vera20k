@@ -4,17 +4,41 @@
 //! generic `MovementTarget` path. Detailed DriveTrack consumption remains in
 //! `drive_track`; this file handles the Drive-local speed fraction scaffold.
 
+use std::collections::BTreeMap;
+
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
+use crate::rules::object_type::{ObjectCategory, ObjectType};
+use crate::rules::ruleset::RuleSet;
 use crate::sim::components::{
     DriveCoord, DriveLocomotionRuntime, NavTargetRef, ShipLocomotionRuntime,
 };
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
-use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
-use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+use crate::sim::house_state::HouseState;
+use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
+use crate::util::fixed_math::SimFixed;
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53, X87Ordering};
 
-const DRIVE_DESTINATION_BRAKE_FLOOR: SimFixed = SimFixed::lit("0.3");
+const DRIVE_DESTINATION_BRAKE_FLOOR: NativeF64Bits =
+    NativeF64Bits::from_bits(0x3fd3_3333_4000_0000);
+const DRIVE_ALTERNATE_BRAKE_RATE: NativeF64Bits =
+    NativeF64Bits::from_bits(0x3f58_9374_c000_0000);
+const DRIVE_ALTERNATE_BRAKE_FLOOR: NativeF64Bits =
+    NativeF64Bits::from_bits(0x3fb9_9999_a000_0000);
+const DRIVE_CRUSH_FRACTION: NativeF64Bits =
+    NativeF64Bits::from_bits(0x3fc9_9999_9999_999a);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct VehicleRampFlags {
+    /// UnitTypeClass `Passive +0xE0C`.
+    pub(super) passive: bool,
+    /// Owner `+0x3CD`, the alternate out-of-arrival-band brake gate.
+    pub(super) alternate_brake: bool,
+    /// UnitClass `CurrentlyCrushing +0x6B5`.
+    pub(super) currently_crushing: bool,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DriveProcessOutcome {
@@ -95,19 +119,149 @@ pub(super) fn compute_drive_target_speed_fraction(
     locomotor_kind: LocomotorKind,
     current_cell: (u16, u16),
     next_cell: (u16, u16),
+    current_world_xy: (i32, i32),
+    on_bridge: bool,
+    is_unit: bool,
     terrain: &ResolvedTerrainGrid,
     config: &TerrainSpeedConfig,
-    below_condition_yellow: bool,
-) -> SimFixed {
-    terrain_speed::compute_cell_speed_modifier(
-        speed_type,
-        locomotor_kind,
-        current_cell,
-        next_cell,
-        terrain,
-        config,
-        below_condition_yellow,
-    )
+    below_condition_yellow_or_unordered: bool,
+) -> NativeF64Bits {
+    if !matches!(locomotor_kind, LocomotorKind::Drive | LocomotorKind::Ship) {
+        return NativeF64Bits::ONE;
+    }
+
+    let current = terrain.cell(current_cell.0, current_cell.1);
+    let candidate = terrain.cell(next_cell.0, next_cell.1);
+    let reference_level = current
+        .map(|cell| i32::from(i8::from_ne_bytes([cell.level])))
+        .unwrap_or(0)
+        .wrapping_add(if on_bridge { 4 } else { 0 });
+    let candidate_level = candidate
+        .map(|cell| i32::from(i8::from_ne_bytes([cell.level])))
+        .unwrap_or(0);
+    let use_road = reference_level.abs_diff(candidate_level) >= 2;
+    let profile = if use_road {
+        &config.road_speed_costs
+    } else {
+        candidate
+            .map(|cell| &cell.speed_costs)
+            .unwrap_or(&config.road_speed_costs)
+    };
+    let row_f32 = profile.native_multiplier_for(speed_type);
+    let row = f32::from_bits(row_f32.bits()) as f64;
+    let mut result = if row > 1.0 {
+        NativeF64Bits::ONE
+    } else {
+        NativeF64Bits::from_bits(row.to_bits())
+    };
+
+    if is_unit {
+        let current_ground = current.and_then(|cell| {
+            crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                current_world_xy.0,
+                current_world_xy.1,
+            )
+            .ok()
+        });
+        let candidate_x = i32::from(next_cell.0).wrapping_mul(256).wrapping_add(128);
+        let candidate_y = i32::from(next_cell.1).wrapping_mul(256).wrapping_add(128);
+        let candidate_ground = candidate.and_then(|cell| {
+            crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                candidate_x,
+                candidate_y,
+            )
+            .ok()
+        });
+        if let (Some(current_ground), Some(candidate_ground)) =
+            (current_ground, candidate_ground)
+        {
+            let slope = if candidate_ground > current_ground {
+                Some(if speed_type == SpeedType::Track {
+                    config.tracked_uphill_native
+                } else {
+                    config.wheeled_uphill_native
+                })
+            } else if candidate_ground < current_ground {
+                Some(if speed_type == SpeedType::Track {
+                    config.tracked_downhill_native
+                } else {
+                    config.wheeled_downhill_native
+                })
+            } else {
+                None
+            };
+            if let Some(slope) = slope {
+                result = native_fraction_product(result, slope);
+            }
+        }
+    }
+
+    let combined = f64::from_bits(result.bits());
+    if combined == 0.0 || combined.is_nan() {
+        result = NativeF64Bits::HALF;
+    }
+    if below_condition_yellow_or_unordered {
+        result = native_fraction_product(
+            result,
+            NativeF64Bits::from_bits(0x3fe8_0000_0000_0000),
+        );
+    }
+    result
+}
+
+fn native_fraction_product(lhs: NativeF64Bits, rhs: NativeF64Bits) -> NativeF64Bits {
+    match (X87Chop53::load_f64(lhs), X87Chop53::load_f64(rhs)) {
+        (Ok(lhs), Ok(rhs)) => X87Chop53::store_f64(X87Chop53::mul(lhs, rhs))
+            .unwrap_or(NativeF64Bits::POSITIVE_ZERO),
+        _ => NativeF64Bits::from_bits(
+            (f64::from_bits(lhs.bits()) * f64::from_bits(rhs.bits())).to_bits(),
+        ),
+    }
+}
+
+/// Caller-specific Drive/Ship stored-destination distance. Native evaluates
+/// the squared deltas in z/y/x order, materializes a qword, then passes it
+/// through the shared f32-table `Sqrt_Approx` and chops to i32. A structural
+/// destination cell replaces the stored Z with exact ground height +416.
+pub(super) fn stored_destination_distance(
+    owner_xyz: DriveCoord,
+    mut destination: DriveCoord,
+    terrain: Option<&ResolvedTerrainGrid>,
+) -> i32 {
+    if let Some(terrain) = terrain {
+        let cell_x = destination.x.div_euclid(256);
+        let cell_y = destination.y.div_euclid(256);
+        if let (Ok(cell_x), Ok(cell_y)) = (u16::try_from(cell_x), u16::try_from(cell_y))
+            && let Some(cell) = terrain.cell(cell_x, cell_y)
+            && cell
+                .bridge_facts
+                .has_flag(crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL)
+            && let Ok(ground) = crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                destination.x,
+                destination.y,
+            )
+        {
+            destination.z = ground.wrapping_add(416);
+        }
+    }
+
+    let dz = X87Chop53::load_i32(destination.z.wrapping_sub(owner_xyz.z));
+    let dy = X87Chop53::load_i32(destination.y.wrapping_sub(owner_xyz.y));
+    let dx = X87Chop53::load_i32(destination.x.wrapping_sub(owner_xyz.x));
+    let zy = X87Chop53::add(X87Chop53::mul(dz, dz), X87Chop53::mul(dy, dy));
+    let squared = X87Chop53::add(zy, X87Chop53::mul(dx, dx));
+    let squared = X87Chop53::store_f64(squared).unwrap_or(NativeF64Bits::POSITIVE_ZERO);
+    let squared = X87Chop53::load_f64(squared).expect("map squared distance is finite");
+    let root = crate::util::native_x87::sqrt_approx_f32(squared)
+        .expect("map squared distance fits Sqrt_Approx");
+    let root = X87Chop53::load_f32(root).expect("Sqrt_Approx returns finite f32");
+    X87Chop53::ftol_i64(root).unwrap_or(i64::MIN) as i32
 }
 
 /// Update Drive target/current speed fractions before budget consumption.
@@ -117,24 +271,81 @@ pub(super) fn compute_drive_target_speed_fraction(
 /// runtime for now, but `current_speed_fraction` is the movement authority.
 pub(super) fn update_drive_speed_fraction(
     drive: &mut DriveLocomotionRuntime,
-    target_fraction: SimFixed,
+    owner_current_fraction: &mut NativeF64Bits,
+    target_fraction: NativeF64Bits,
     accelerates: bool,
-    raw_speed_per_frame: SimFixed,
-    accel_factor: SimFixed,
-    decel_factor: SimFixed,
-    slowdown_distance: SimFixed,
-    distance_to_goal: SimFixed,
+    native_type_speed: i32,
+    accel_factor: NativeF64Bits,
+    decel_factor: NativeF64Bits,
+    slowdown_distance: i32,
+    distance_to_goal: i32,
 ) {
-    update_vehicle_speed_fraction(
-        &mut drive.target_speed_fraction,
-        &mut drive.current_speed_fraction,
+    update_drive_speed_fraction_with_flags(
+        drive,
+        owner_current_fraction,
         target_fraction,
         accelerates,
-        raw_speed_per_frame,
+        native_type_speed,
         accel_factor,
         decel_factor,
         slowdown_distance,
         distance_to_goal,
+        VehicleRampFlags::default(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_drive_speed_fraction_with_flags(
+    drive: &mut DriveLocomotionRuntime,
+    owner_current_fraction: &mut NativeF64Bits,
+    target_fraction: NativeF64Bits,
+    accelerates: bool,
+    native_type_speed: i32,
+    accel_factor: NativeF64Bits,
+    decel_factor: NativeF64Bits,
+    slowdown_distance: i32,
+    distance_to_goal: i32,
+    flags: VehicleRampFlags,
+) {
+    if drive.track_index >= 64 {
+        // ProcessMovement's forced-selector arm bypasses the locomotor target
+        // and conditionally writes the owner. An unordered comparison skips.
+        if ordered_compare_bits(target_fraction, *owner_current_fraction)
+            .is_some_and(|ordering| ordering != X87Ordering::Equal)
+        {
+            *owner_current_fraction = normalize_current_speed_fraction(target_fraction);
+        }
+        if accelerates {
+            return;
+        }
+        // Nonaccelerated Track ignores the selector gate and applies the
+        // already-installed locomotor target, not the bypass result.
+        let installed_target = drive.target_speed_fraction;
+        update_vehicle_speed_fraction(
+            &mut drive.target_speed_fraction,
+            owner_current_fraction,
+            installed_target,
+            false,
+            native_type_speed,
+            accel_factor,
+            decel_factor,
+            slowdown_distance,
+            distance_to_goal,
+            flags,
+        );
+        return;
+    }
+    update_vehicle_speed_fraction(
+        &mut drive.target_speed_fraction,
+        owner_current_fraction,
+        target_fraction,
+        accelerates,
+        native_type_speed,
+        accel_factor,
+        decel_factor,
+        slowdown_distance,
+        distance_to_goal,
+        flags,
     );
 }
 
@@ -147,24 +358,77 @@ pub(super) fn update_drive_speed_fraction(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_ship_speed_fraction(
     ship: &mut ShipLocomotionRuntime,
-    target_fraction: SimFixed,
+    owner_current_fraction: &mut NativeF64Bits,
+    target_fraction: NativeF64Bits,
     accelerates: bool,
-    raw_speed_per_frame: SimFixed,
-    accel_factor: SimFixed,
-    decel_factor: SimFixed,
-    slowdown_distance: SimFixed,
-    distance_to_goal: SimFixed,
+    native_type_speed: i32,
+    accel_factor: NativeF64Bits,
+    decel_factor: NativeF64Bits,
+    slowdown_distance: i32,
+    distance_to_goal: i32,
 ) {
-    update_vehicle_speed_fraction(
-        &mut ship.target_speed_fraction,
-        &mut ship.current_speed_fraction,
+    update_ship_speed_fraction_with_flags(
+        ship,
+        owner_current_fraction,
         target_fraction,
         accelerates,
-        raw_speed_per_frame,
+        native_type_speed,
         accel_factor,
         decel_factor,
         slowdown_distance,
         distance_to_goal,
+        VehicleRampFlags::default(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_ship_speed_fraction_with_flags(
+    ship: &mut ShipLocomotionRuntime,
+    owner_current_fraction: &mut NativeF64Bits,
+    target_fraction: NativeF64Bits,
+    accelerates: bool,
+    native_type_speed: i32,
+    accel_factor: NativeF64Bits,
+    decel_factor: NativeF64Bits,
+    slowdown_distance: i32,
+    distance_to_goal: i32,
+    flags: VehicleRampFlags,
+) {
+    if ship.track_index >= 64 {
+        if ordered_compare_bits(target_fraction, *owner_current_fraction)
+            .is_some_and(|ordering| ordering != X87Ordering::Equal)
+        {
+            *owner_current_fraction = normalize_current_speed_fraction(target_fraction);
+        }
+        if accelerates {
+            return;
+        }
+        let installed_target = ship.target_speed_fraction;
+        update_vehicle_speed_fraction(
+            &mut ship.target_speed_fraction,
+            owner_current_fraction,
+            installed_target,
+            false,
+            native_type_speed,
+            accel_factor,
+            decel_factor,
+            slowdown_distance,
+            distance_to_goal,
+            flags,
+        );
+        return;
+    }
+    update_vehicle_speed_fraction(
+        &mut ship.target_speed_fraction,
+        owner_current_fraction,
+        target_fraction,
+        accelerates,
+        native_type_speed,
+        accel_factor,
+        decel_factor,
+        slowdown_distance,
+        distance_to_goal,
+        flags,
     );
 }
 
@@ -174,8 +438,8 @@ pub(super) fn update_ship_speed_fraction(
 /// clamped target without running a fresh terrain request over it.
 pub(super) fn ship_process_target_speed_fraction(
     ship: &ShipLocomotionRuntime,
-    movement_target_fraction: SimFixed,
-) -> SimFixed {
+    movement_target_fraction: NativeF64Bits,
+) -> NativeF64Bits {
     if ship.destination.is_none() && ship.head_to.is_some() {
         ship.target_speed_fraction
     } else {
@@ -243,15 +507,16 @@ pub(super) fn ship_process_target_speed_fraction(
 ///   `Passive=yes` is civilian traffic. Downstream risk: one `if`.
 #[allow(clippy::too_many_arguments)]
 fn update_vehicle_speed_fraction(
-    target_slot: &mut SimFixed,
-    current_slot: &mut SimFixed,
-    target_fraction: SimFixed,
+    target_slot: &mut NativeF64Bits,
+    current_slot: &mut NativeF64Bits,
+    target_fraction: NativeF64Bits,
     accelerates: bool,
-    raw_speed_per_frame: SimFixed,
-    accel_factor: SimFixed,
-    decel_factor: SimFixed,
-    slowdown_distance: SimFixed,
-    distance_to_goal: SimFixed,
+    native_type_speed: i32,
+    accel_factor: NativeF64Bits,
+    decel_factor: NativeF64Bits,
+    slowdown_distance: i32,
+    distance_to_goal: i32,
+    flags: VehicleRampFlags,
 ) {
     // The locomotor-owned target fraction is **not** clamped in gamemd.
     // `Process_Movement` @ `0x004B2630` writes `drive+0x50` raw, so a healthy
@@ -268,29 +533,126 @@ fn update_vehicle_speed_fraction(
     // *target* fraction rather than the owner's; it is not a speed change.
     *target_slot = target_fraction;
     if !accelerates {
-        *current_slot = target_fraction.clamp(SIM_ZERO, SIM_ONE);
+        *current_slot = normalize_current_speed_fraction(target_fraction);
+        return;
+    }
+    if flags.passive {
         return;
     }
 
-    let target = *target_slot;
-    let mut current = *current_slot;
-    if slowdown_distance > SIM_ZERO && distance_to_goal < slowdown_distance {
-        current -= raw_speed_per_frame * decel_factor;
-        if current < DRIVE_DESTINATION_BRAKE_FLOOR {
-            current = DRIVE_DESTINATION_BRAKE_FLOOR;
-        }
-    } else if current < target {
-        current += accel_factor;
-        if current > target {
-            current = target;
-        }
-    } else if target < current {
-        current -= raw_speed_per_frame * decel_factor;
-        if current < target {
-            current = target;
-        }
+    let brake = if distance_to_goal < slowdown_distance {
+        let candidate = native_sub_scaled(*current_slot, native_type_speed, decel_factor);
+        Some(ordered_max(candidate, DRIVE_DESTINATION_BRAKE_FLOOR))
+    } else if flags.alternate_brake {
+        let candidate = native_sub_scaled(
+            *current_slot,
+            native_type_speed,
+            DRIVE_ALTERNATE_BRAKE_RATE,
+        );
+        Some(ordered_max(candidate, DRIVE_ALTERNATE_BRAKE_FLOOR))
+    } else {
+        None
+    };
+
+    if flags.currently_crushing {
+        let crush_target = ordered_min_unordered_left(*target_slot, DRIVE_CRUSH_FRACTION);
+        *target_slot = crush_target;
+        *current_slot = normalize_current_speed_fraction(crush_target);
+        return;
     }
-    *current_slot = current.clamp(SIM_ZERO, SIM_ONE);
+    if let Some(brake) = brake {
+        *current_slot = normalize_current_speed_fraction(brake);
+        return;
+    }
+
+    let next = match ordered_compare_bits(*current_slot, *target_slot) {
+        Some(X87Ordering::Equal) => return,
+        Some(X87Ordering::Greater) => {
+            let candidate = native_sub_scaled(*current_slot, native_type_speed, decel_factor);
+            if ordered_compare_bits(*target_slot, candidate) == Some(X87Ordering::Greater) {
+                *target_slot
+            } else {
+                candidate
+            }
+        }
+        Some(X87Ordering::Less) | None => {
+            let candidate = native_add_bits(*current_slot, accel_factor);
+            match ordered_compare_bits(candidate, *target_slot) {
+                Some(X87Ordering::Greater) | None => *target_slot,
+                _ => candidate,
+            }
+        }
+    };
+    *current_slot = normalize_current_speed_fraction(next);
+}
+
+fn raw_is_nan(bits: NativeF64Bits) -> bool {
+    let raw = bits.bits();
+    raw & 0x7ff0_0000_0000_0000 == 0x7ff0_0000_0000_0000
+        && raw & 0x000f_ffff_ffff_ffff != 0
+}
+
+fn ordered_compare_bits(lhs: NativeF64Bits, rhs: NativeF64Bits) -> Option<X87Ordering> {
+    if raw_is_nan(lhs) || raw_is_nan(rhs) {
+        return None;
+    }
+    match (X87Chop53::load_f64(lhs), X87Chop53::load_f64(rhs)) {
+        (Ok(lhs), Ok(rhs)) => Some(X87Chop53::compare(lhs, rhs)),
+        _ => f64::from_bits(lhs.bits())
+            .partial_cmp(&f64::from_bits(rhs.bits()))
+            .map(|ordering| match ordering {
+                std::cmp::Ordering::Less => X87Ordering::Less,
+                std::cmp::Ordering::Equal => X87Ordering::Equal,
+                std::cmp::Ordering::Greater => X87Ordering::Greater,
+            }),
+    }
+}
+
+fn native_add_bits(lhs: NativeF64Bits, rhs: NativeF64Bits) -> NativeF64Bits {
+    match (X87Chop53::load_f64(lhs), X87Chop53::load_f64(rhs)) {
+        (Ok(lhs), Ok(rhs)) => X87Chop53::store_f64(X87Chop53::add(lhs, rhs))
+            .unwrap_or(NativeF64Bits::POSITIVE_ZERO),
+        _ => NativeF64Bits::from_bits(
+            (f64::from_bits(lhs.bits()) + f64::from_bits(rhs.bits())).to_bits(),
+        ),
+    }
+}
+
+fn native_sub_scaled(
+    current: NativeF64Bits,
+    native_type_speed: i32,
+    rate: NativeF64Bits,
+) -> NativeF64Bits {
+    match (X87Chop53::load_f64(current), X87Chop53::load_f64(rate)) {
+        (Ok(current), Ok(rate)) => {
+            let delta = X87Chop53::mul(X87Chop53::load_i32(native_type_speed), rate);
+            X87Chop53::store_f64(X87Chop53::sub(current, delta))
+                .unwrap_or(NativeF64Bits::POSITIVE_ZERO)
+        }
+        _ => NativeF64Bits::from_bits(
+            (f64::from_bits(current.bits())
+                - f64::from(native_type_speed) * f64::from_bits(rate.bits()))
+            .to_bits(),
+        ),
+    }
+}
+
+/// Ordered max whose unordered arm preserves the left/candidate operand.
+fn ordered_max(candidate: NativeF64Bits, floor: NativeF64Bits) -> NativeF64Bits {
+    if ordered_compare_bits(candidate, floor) == Some(X87Ordering::Less) {
+        floor
+    } else {
+        candidate
+    }
+}
+
+/// Ordered min whose unordered arm selects the native left/target operand.
+fn ordered_min_unordered_left(target: NativeF64Bits, cap: NativeF64Bits) -> NativeF64Bits {
+    if ordered_compare_bits(target, cap) == Some(X87Ordering::Greater) {
+        cap
+    } else {
+        target
+    }
 }
 
 /// Reproduce the positive/zero value returned by owner slot `+0x538` for the
@@ -313,12 +675,162 @@ fn update_vehicle_speed_fraction(
 ///   carries no frequency clause - naming that field is the prerequisite, and
 ///   a factor of two on a vehicle's per-frame speed is first-order if it
 ///   fires.
+pub(crate) fn native_fraction_from_sim(value: SimFixed) -> NativeF64Bits {
+    NativeF64Bits::from_bits(value.to_num::<f64>().to_bits())
+}
+
+/// Legacy adapter retained only for callers being migrated in this slice.
+/// Production Drive/Ship/Walk/Hover paths no longer use it.
 pub(crate) fn owner_current_speed_from_fraction(
     adjusted_speed_per_second: SimFixed,
     current_speed_fraction: SimFixed,
 ) -> i32 {
-    let adjusted_type_speed = (adjusted_speed_per_second / SimFixed::from_num(15)).to_num::<i32>();
-    (SimFixed::from_num(adjusted_type_speed) * current_speed_fraction).to_num::<i32>()
+    let adjusted_type_speed =
+        (adjusted_speed_per_second / SimFixed::from_num(15)).to_num::<i32>();
+    foot_current_speed(
+        adjusted_type_speed,
+        NativeF32Bits::ONE,
+        NativeF64Bits::ONE,
+        false,
+        NativeF64Bits::ONE,
+        normalize_current_speed_fraction(native_fraction_from_sim(current_speed_fraction)),
+    )
+}
+
+/// Native `TechnoClass::SetSpeedFraction @ 0x004D3710` selection contract.
+/// Ordered interior values preserve every input bit; infinities and NaNs take
+/// their native compare arms rather than Rust `clamp` semantics.
+pub(crate) fn normalize_current_speed_fraction(input: NativeF64Bits) -> NativeF64Bits {
+    let raw = input.bits();
+    let sign = raw >> 63 != 0;
+    let exponent = (raw >> 52) & 0x7ff;
+    let fraction = raw & 0x000f_ffff_ffff_ffff;
+    if exponent == 0x7ff {
+        if fraction != 0 || sign {
+            return NativeF64Bits::POSITIVE_ZERO;
+        }
+        return NativeF64Bits::ONE;
+    }
+    let value = X87Chop53::load_f64(input).expect("finite fraction including subnormal");
+    let one = X87Chop53::load_f64(NativeF64Bits::ONE).expect("one");
+    if matches!(
+        X87Chop53::compare(value, one),
+        X87Ordering::Equal | X87Ordering::Greater
+    ) {
+        return NativeF64Bits::ONE;
+    }
+    let zero = X87Chop53::load_f64(NativeF64Bits::POSITIVE_ZERO).expect("zero");
+    if matches!(
+        X87Chop53::compare(value, zero),
+        X87Ordering::Equal | X87Ordering::Less
+    ) {
+        return NativeF64Bits::POSITIVE_ZERO;
+    }
+    input
+}
+
+pub(crate) fn set_entity_current_speed_fraction(
+    entity: &mut GameEntity,
+    input: NativeF64Bits,
+) -> NativeF64Bits {
+    let selected = normalize_current_speed_fraction(input);
+    entity.current_speed_fraction = selected;
+    selected
+}
+
+fn ftol_low_i32(value: crate::util::native_x87::X87Value) -> i32 {
+    X87Chop53::ftol_i64(value).unwrap_or(i64::MIN) as i32
+}
+
+/// Exact `FootClass::GetCurrentSpeed @ 0x004DB1A0` three-stage consumer.
+/// House and crate multipliers share stage one; VeteranSpeed and current
+/// fraction each have their own mandatory integer boundary.
+pub(crate) fn foot_current_speed(
+    native_type_speed: i32,
+    house_speed_bonus: NativeF32Bits,
+    crate_speed: NativeF64Bits,
+    has_faster_ability: bool,
+    veteran_speed: NativeF64Bits,
+    current_fraction: NativeF64Bits,
+) -> i32 {
+    let Ok(house) = X87Chop53::load_f32(house_speed_bonus) else {
+        return 0;
+    };
+    let Ok(crate_mult) = X87Chop53::load_f64(crate_speed) else {
+        return 0;
+    };
+    let stage1 = X87Chop53::mul(X87Chop53::load_i32(native_type_speed), house);
+    let stage1 = ftol_low_i32(X87Chop53::mul(stage1, crate_mult));
+    let stage2 = if has_faster_ability {
+        let Ok(veteran) = X87Chop53::load_f64(veteran_speed) else {
+            return 0;
+        };
+        ftol_low_i32(X87Chop53::mul(X87Chop53::load_i32(stage1), veteran))
+    } else {
+        stage1
+    };
+    let Ok(fraction) = X87Chop53::load_f64(current_fraction) else {
+        return 0;
+    };
+    ftol_low_i32(X87Chop53::mul(
+        X87Chop53::load_i32(stage2),
+        fraction,
+    ))
+}
+
+/// Infantry's sole owner-vslot override, applied after the common Foot query.
+pub(crate) fn infantry_current_speed(common: i32, is_prone: bool, crawls: bool) -> i32 {
+    if !is_prone {
+        return common;
+    }
+    if crawls {
+        common.wrapping_sub(common / 3)
+    } else {
+        common.wrapping_add(common / 2)
+    }
+}
+
+/// Resolve every live HouseType/category/crate/rank operand for the native
+/// owner query. Jumpjet and Teleport deliberately do not call this from their
+/// displacement paths; Drive, Ship, Walk, and Hover do.
+pub(crate) fn entity_current_speed(
+    entity: &GameEntity,
+    object: &ObjectType,
+    rules: &RuleSet,
+    houses: &BTreeMap<InternedId, HouseState>,
+    interner: &StringInterner,
+) -> i32 {
+    let country_name = houses
+        .get(&entity.owner)
+        .and_then(|house| house.country)
+        .map(|country| interner.resolve(country))
+        .unwrap_or_else(|| interner.resolve(entity.owner));
+    let house_bonus = rules.country_speed_bonus(country_name, object.category);
+    let has_faster = if entity.veterancy
+        >= crate::sim::combat::veterancy::RANK_ELITE_U16
+    {
+        object.veteran_faster || object.elite_faster
+    } else {
+        entity.veterancy >= crate::sim::combat::veterancy::RANK_VETERAN_U16
+            && object.veteran_faster
+    };
+    let common = foot_current_speed(
+        object.native_speed,
+        house_bonus,
+        entity.speed_crate_multiplier,
+        has_faster,
+        rules.general.veteran_speed,
+        entity.current_speed_fraction,
+    );
+    if object.category == ObjectCategory::Infantry {
+        infantry_current_speed(
+            common,
+            crate::sim::infantry::is_prone_for_damage(entity),
+            object.crawls,
+        )
+    } else {
+        common
+    }
 }
 
 #[cfg(test)]
@@ -326,38 +838,49 @@ mod tests {
     use super::*;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
-    use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO};
+    use crate::util::fixed_math::{SIM_HALF, SIM_ONE};
+
+    fn native_f64(value: f64) -> NativeF64Bits {
+        NativeF64Bits::from_bits(value.to_bits())
+    }
+
+    fn native_value(value: NativeF64Bits) -> f64 {
+        f64::from_bits(value.bits())
+    }
 
     #[test]
     fn gsi_13_06_ship_speed_fraction_uses_locomotor_owned_state() {
         let mut ship = ShipLocomotionRuntime::default();
+        let mut current = NativeF64Bits::POSITIVE_ZERO;
 
         update_ship_speed_fraction(
             &mut ship,
-            SIM_HALF,
+            &mut current,
+            native_f64(0.5),
             false,
-            SimFixed::from_num(10),
-            SimFixed::lit("0.03"),
-            SimFixed::lit("0.002"),
-            SimFixed::from_num(500),
-            SimFixed::from_num(1000),
+            10,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1000,
         );
-        assert_eq!(ship.target_speed_fraction, SIM_HALF);
-        assert_eq!(ship.current_speed_fraction, SIM_HALF);
+        assert_eq!(ship.target_speed_fraction, native_f64(0.5));
+        assert_eq!(current, native_f64(0.5));
 
-        ship.current_speed_fraction = SIM_ZERO;
+        current = NativeF64Bits::POSITIVE_ZERO;
         update_ship_speed_fraction(
             &mut ship,
-            SIM_ONE,
+            &mut current,
+            NativeF64Bits::ONE,
             true,
-            SimFixed::from_num(10),
-            SimFixed::lit("0.03"),
-            SimFixed::lit("0.002"),
-            SimFixed::from_num(500),
-            SimFixed::from_num(1000),
+            10,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1000,
         );
-        assert_eq!(ship.target_speed_fraction, SIM_ONE);
-        assert_eq!(ship.current_speed_fraction, SimFixed::lit("0.03"));
+        assert_eq!(ship.target_speed_fraction, NativeF64Bits::ONE);
+        assert_eq!(current, native_f64(0.03));
     }
 
     #[test]
@@ -392,41 +915,66 @@ mod tests {
         use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 
         let speed = ra2_speed_to_leptons_per_second(8);
+        let native_speed = (speed / SimFixed::from_num(15)).to_num::<i32>();
+        let target = DRIVE_DESTINATION_BRAKE_FLOOR;
+        let mut current = native_f64(0.5);
         let mut ship = ShipLocomotionRuntime {
             destination: None,
             head_to: Some(DriveCoord::cell(4, 3, 0)),
-            target_speed_fraction: SimFixed::lit("0.3"),
-            current_speed_fraction: SIM_HALF,
+            target_speed_fraction: target,
             owner_current_speed: 10,
             ..Default::default()
         };
 
         for _ in 0..10 {
-            let requested = ship_process_target_speed_fraction(&ship, SIM_ONE);
-            assert_eq!(requested, SimFixed::lit("0.3"));
+            let requested = ship_process_target_speed_fraction(&ship, NativeF64Bits::ONE);
+            assert_eq!(requested, target);
             update_ship_speed_fraction(
                 &mut ship,
+                &mut current,
                 requested,
                 true,
-                speed / SimFixed::from_num(15),
-                SimFixed::lit("0.03"),
-                SimFixed::lit("0.002"),
-                SIM_ZERO,
-                SimFixed::from_num(256),
+                native_speed,
+                native_f64(0.03),
+                native_f64(0.002),
+                0,
+                256,
             );
-            ship.owner_current_speed =
-                owner_current_speed_from_fraction(speed, ship.current_speed_fraction);
-            assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
+            ship.owner_current_speed = foot_current_speed(
+                native_speed,
+                NativeF32Bits::ONE,
+                NativeF64Bits::ONE,
+                false,
+                NativeF64Bits::ONE,
+                current,
+            );
+            assert_eq!(ship.target_speed_fraction, target);
             assert!(ship.owner_current_speed > 0);
         }
 
         assert_eq!(ship.destination, None);
         assert_eq!(ship.head_to, Some(DriveCoord::cell(4, 3, 0)));
-        assert_eq!(ship.current_speed_fraction, SimFixed::lit("0.3"));
+        assert_eq!(current, target);
         assert_eq!(ship.owner_current_speed, 6);
     }
 
-    fn terrain_cell(rx: u16, ry: u16, speed_costs: SpeedCostProfile) -> ResolvedTerrainCell {
+    fn terrain_cell(rx: u16, ry: u16, mut speed_costs: SpeedCostProfile) -> ResolvedTerrainCell {
+        let native = |value: Option<u8>| {
+            NativeF32Bits::from_bits((f32::from(value.unwrap_or(100)) / 100.0).to_bits())
+        };
+        if !speed_costs.native_row_present {
+            speed_costs.native_row_present = true;
+            speed_costs.native_speed_bits = [
+                native(speed_costs.foot),
+                native(speed_costs.track),
+                native(speed_costs.wheel),
+                native(speed_costs.hover),
+                NativeF32Bits::ONE,
+                native(speed_costs.float),
+                native(speed_costs.amphibious),
+                native(speed_costs.float_beach),
+            ];
+        }
         ResolvedTerrainCell {
             rx,
             ry,
@@ -484,6 +1032,10 @@ mod tests {
         }
     }
 
+    fn sim_fraction(value: NativeF64Bits) -> SimFixed {
+        SimFixed::from_num(f64::from_bits(value.bits()))
+    }
+
     #[test]
     fn drive_target_speed_fraction_uses_terrain_modifier() {
         let terrain = ResolvedTerrainGrid::from_cells(
@@ -502,15 +1054,18 @@ mod tests {
             ],
         );
 
-        let fraction = compute_drive_target_speed_fraction(
+        let fraction = sim_fraction(compute_drive_target_speed_fraction(
             SpeedType::Track,
             LocomotorKind::Drive,
             (0, 0),
             (1, 0),
+            (128, 128),
+            false,
+            true,
             &terrain,
             &TerrainSpeedConfig::default(),
             false,
-        );
+        ));
 
         assert_eq!(fraction, SIM_HALF);
     }
@@ -532,15 +1087,18 @@ mod tests {
     }
 
     fn fraction_for(kind: LocomotorKind, damaged: bool) -> SimFixed {
-        compute_drive_target_speed_fraction(
+        sim_fraction(compute_drive_target_speed_fraction(
             SpeedType::Track,
             kind,
             (0, 0),
             (1, 0),
+            (128, 128),
+            false,
+            true,
             &flat_clear_pair(),
             &TerrainSpeedConfig::default(),
             damaged,
-        )
+        ))
     }
 
     /// GSI-06.04 G1: gamemd multiplies the per-cell speed fraction by 0.75 when
@@ -608,15 +1166,18 @@ mod tests {
             ],
         );
         let sample = |kind: LocomotorKind, st: SpeedType| {
-            compute_drive_target_speed_fraction(
+            sim_fraction(compute_drive_target_speed_fraction(
                 st,
                 kind,
                 (0, 0),
                 (1, 0),
+                (128, 128),
+                false,
+                true,
                 &terrain,
                 &TerrainSpeedConfig::default(),
                 false,
-            )
+            ))
         };
         assert_eq!(sample(LocomotorKind::Drive, SpeedType::Track), SIM_HALF);
         assert_eq!(sample(LocomotorKind::Ship, SpeedType::Track), SIM_HALF);
@@ -638,15 +1199,18 @@ mod tests {
         high.level = 2;
         let terrain = ResolvedTerrainGrid::from_cells(2, 1, vec![high, terrain_cell(1, 0, flat)]);
         let sample = |kind: LocomotorKind, st: SpeedType| {
-            compute_drive_target_speed_fraction(
+            sim_fraction(compute_drive_target_speed_fraction(
                 st,
                 kind,
                 (0, 0),
                 (1, 0),
+                (128, 128),
+                false,
+                true,
                 &terrain,
                 &TerrainSpeedConfig::default(),
                 false,
-            )
+            ))
         };
         // Downhill: the Drive mover takes the 1.2x coefficient...
         assert_eq!(
@@ -712,112 +1276,487 @@ mod tests {
         // native clamp is `TechnoClass::SetSpeedFraction` @ 0x004D3710, which
         // every arm of `Process_Drive_Track` reaches, so the owner's fraction
         // never exceeds 1.
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_ZERO,
-            ..Default::default()
-        };
+        let mut drive = DriveLocomotionRuntime::default();
+        let mut current = NativeF64Bits::POSITIVE_ZERO;
 
         update_drive_speed_fraction(
             &mut drive,
-            SimFixed::lit("1.2"),
+            &mut current,
+            native_f64(1.2),
             false,
-            SimFixed::from_num(10),
-            SimFixed::lit("0.03"),
-            SimFixed::lit("0.002"),
-            SimFixed::from_num(500),
-            SimFixed::from_num(1000),
+            10,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1000,
         );
 
-        assert_eq!(drive.target_speed_fraction, SimFixed::lit("1.2"));
-        assert_eq!(drive.current_speed_fraction, SIM_ONE);
+        assert_eq!(drive.target_speed_fraction, native_f64(1.2));
+        assert_eq!(current, NativeF64Bits::ONE);
     }
 
     #[test]
     fn accelerates_false_assigns_current_fraction_directly() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_ZERO,
-            ..Default::default()
-        };
+        let mut drive = DriveLocomotionRuntime::default();
+        let mut current = NativeF64Bits::POSITIVE_ZERO;
 
         update_drive_speed_fraction(
             &mut drive,
-            SIM_HALF,
+            &mut current,
+            native_f64(0.5),
             false,
-            SimFixed::from_num(10),
-            SimFixed::lit("0.03"),
-            SimFixed::lit("0.002"),
-            SimFixed::from_num(500),
-            SimFixed::from_num(1000),
+            10,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1000,
         );
 
-        assert_eq!(drive.target_speed_fraction, SIM_HALF);
-        assert_eq!(drive.current_speed_fraction, SIM_HALF);
+        assert_eq!(drive.target_speed_fraction, native_f64(0.5));
+        assert_eq!(current, native_f64(0.5));
     }
 
     #[test]
     fn accelerates_true_ramps_current_fraction_upward() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_ZERO,
-            ..Default::default()
-        };
+        let mut drive = DriveLocomotionRuntime::default();
+        let mut current = NativeF64Bits::POSITIVE_ZERO;
 
         update_drive_speed_fraction(
             &mut drive,
-            SIM_ONE,
+            &mut current,
+            NativeF64Bits::ONE,
             true,
-            SimFixed::from_num(10),
-            SimFixed::lit("0.03"),
-            SimFixed::lit("0.002"),
-            SimFixed::from_num(500),
-            SimFixed::from_num(1000),
+            10,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1000,
         );
 
-        assert_eq!(drive.target_speed_fraction, SIM_ONE);
-        assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.03"));
+        assert_eq!(drive.target_speed_fraction, NativeF64Bits::ONE);
+        assert_eq!(current, native_f64(0.03));
     }
 
     #[test]
     fn accelerates_true_brakes_by_raw_speed_scaled_decel_with_floor() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_HALF,
-            ..Default::default()
-        };
+        let mut drive = DriveLocomotionRuntime::default();
+        let mut current = native_f64(0.5);
 
         update_drive_speed_fraction(
             &mut drive,
-            SIM_ONE,
+            &mut current,
+            NativeF64Bits::ONE,
             true,
-            SimFixed::from_num(10),
-            SimFixed::lit("0.03"),
-            SimFixed::lit("0.002"),
-            SimFixed::from_num(500),
-            SimFixed::from_num(499),
+            10,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            499,
         );
 
-        assert_eq!(
-            drive.current_speed_fraction,
-            SIM_HALF - SimFixed::from_num(10) * SimFixed::lit("0.002")
-        );
+        assert_eq!(native_value(current), 0.5 - 10.0 * 0.002);
     }
 
     #[test]
     fn accelerates_true_braking_uses_strict_slowdown_distance() {
-        let mut drive = DriveLocomotionRuntime {
-            current_speed_fraction: SIM_HALF,
-            ..Default::default()
-        };
+        let mut drive = DriveLocomotionRuntime::default();
+        let mut current = native_f64(0.5);
 
         update_drive_speed_fraction(
             &mut drive,
-            SIM_ONE,
+            &mut current,
+            NativeF64Bits::ONE,
             true,
-            SimFixed::from_num(10),
-            SimFixed::lit("0.03"),
-            SimFixed::lit("0.002"),
-            SimFixed::from_num(500),
-            SimFixed::from_num(500),
+            10,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            500,
         );
 
-        assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.53"));
+        assert_eq!(current, NativeF64Bits::from_bits(0x3fe0_f5c2_8f5c_28f5));
+    }
+
+    #[test]
+    fn active_speed_consumer_keeps_all_three_integer_boundaries() {
+        let stock_veteran = NativeF64Bits::from_bits(0x3ff3_3333_4000_0000);
+        let stock_crate = NativeF64Bits::from_bits(0x3ff3_3333_3333_3333);
+        assert_eq!(
+            foot_current_speed(
+                17,
+                NativeF32Bits::ONE,
+                NativeF64Bits::ONE,
+                false,
+                stock_veteran,
+                NativeF64Bits::ONE,
+            ),
+            17
+        );
+        assert_eq!(
+            foot_current_speed(
+                17,
+                NativeF32Bits::ONE,
+                NativeF64Bits::ONE,
+                true,
+                stock_veteran,
+                NativeF64Bits::ONE,
+            ),
+            20
+        );
+        assert_eq!(
+            foot_current_speed(
+                17,
+                NativeF32Bits::ONE,
+                stock_crate,
+                true,
+                stock_veteran,
+                NativeF64Bits::ONE,
+            ),
+            24
+        );
+        assert_eq!(
+            foot_current_speed(
+                21,
+                NativeF32Bits::ONE,
+                NativeF64Bits::from_bits(0.9f64.to_bits()),
+                true,
+                stock_veteran,
+                NativeF64Bits::ONE,
+            ),
+            21,
+            "18.9 truncates to 18 before VeteranSpeed, so the result is 21 rather than fused 22"
+        );
+    }
+
+    #[test]
+    fn active_infantry_wrapper_is_signed_and_wrapping() {
+        assert_eq!(infantry_current_speed(-17, true, true), -12);
+        assert_eq!(infantry_current_speed(-17, true, false), -25);
+        assert_eq!(infantry_current_speed(i32::MAX, true, true), 1_431_655_765);
+        assert_eq!(infantry_current_speed(i32::MAX, true, false), -1_073_741_826);
+        assert_eq!(infantry_current_speed(i32::MIN, true, true), -1_431_655_766);
+        assert_eq!(infantry_current_speed(i32::MIN, true, false), 1_073_741_824);
+    }
+
+    #[test]
+    fn active_fraction_setter_preserves_only_strict_ordered_interior_bits() {
+        for (input, expected) in [
+            (0x0000_0000_0000_0000, 0x0000_0000_0000_0000),
+            (0x8000_0000_0000_0000, 0x0000_0000_0000_0000),
+            (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
+            (0x3ff0_0000_0000_0001, 0x3ff0_0000_0000_0000),
+            (0x0000_0000_0000_0001, 0x0000_0000_0000_0001),
+            (0x8000_0000_0000_0001, 0x0000_0000_0000_0000),
+            (0x7ff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
+            (0xfff0_0000_0000_0000, 0x0000_0000_0000_0000),
+            (0x7ff8_0000_0000_0001, 0x0000_0000_0000_0000),
+            (0xfff0_0000_0000_0001, 0x0000_0000_0000_0000),
+            (0x3fd8_0000_0000_0001, 0x3fd8_0000_0000_0001),
+        ] {
+            assert_eq!(
+                normalize_current_speed_fraction(NativeF64Bits::from_bits(input)).bits(),
+                expected,
+                "input {input:#018x}"
+            );
+        }
+    }
+
+    #[test]
+    fn active_target_producer_widens_f32_and_applies_zero_unordered_negative_and_damage() {
+        let row = |track: NativeF32Bits| {
+            SpeedCostProfile::default().with_native_values([
+                NativeF32Bits::ONE,
+                track,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+            ])
+        };
+        let sample = |track: NativeF32Bits, damaged: bool| {
+            let terrain = ResolvedTerrainGrid::from_cells(
+                2,
+                1,
+                vec![terrain_cell(0, 0, row(NativeF32Bits::ONE)), terrain_cell(1, 0, row(track))],
+            );
+            compute_drive_target_speed_fraction(
+                SpeedType::Track,
+                LocomotorKind::Drive,
+                (0, 0),
+                (1, 0),
+                (128, 128),
+                false,
+                true,
+                &terrain,
+                &TerrainSpeedConfig::default(),
+                damaged,
+            )
+        };
+        let seventy = sample(NativeF32Bits::from_bits(0.7f32.to_bits()), false);
+        assert_eq!(seventy.bits(), 0x3fe6_6666_6000_0000);
+        assert_eq!(sample(NativeF32Bits::POSITIVE_ZERO, false), NativeF64Bits::HALF);
+        assert_eq!(
+            sample(NativeF32Bits::from_bits(0x7fc0_1234), false),
+            NativeF64Bits::HALF
+        );
+        assert_eq!(
+            sample(NativeF32Bits::from_bits((-0.25f32).to_bits()), false).bits(),
+            (-0.25f64).to_bits()
+        );
+        assert_eq!(
+            sample(NativeF32Bits::from_bits(0.7f32.to_bits()), true),
+            native_fraction_product(
+                seventy,
+                NativeF64Bits::from_bits(0.75f64.to_bits())
+            )
+        );
+    }
+
+    #[test]
+    fn active_target_producer_uses_signed_level_road_override_and_on_bridge_plus_four() {
+        let row = |track: f32| {
+            SpeedCostProfile::default().with_native_values([
+                NativeF32Bits::ONE,
+                NativeF32Bits::from_bits(track.to_bits()),
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+                NativeF32Bits::ONE,
+            ])
+        };
+        let mut config = TerrainSpeedConfig::default();
+        config.road_speed_costs = row(0.4);
+        config.tracked_uphill_native = NativeF64Bits::ONE;
+        config.tracked_downhill_native = NativeF64Bits::ONE;
+        let mut current = terrain_cell(0, 0, row(1.0));
+        current.level = 0xff;
+        let mut next = terrain_cell(1, 0, row(0.7));
+        next.level = 1;
+        let terrain = ResolvedTerrainGrid::from_cells(2, 1, vec![current, next]);
+        let signed = compute_drive_target_speed_fraction(
+            SpeedType::Track,
+            LocomotorKind::Drive,
+            (0, 0),
+            (1, 0),
+            (128, 128),
+            false,
+            true,
+            &terrain,
+            &config,
+            false,
+        );
+        assert_eq!(signed.bits(), (0.4f32 as f64).to_bits());
+
+        let terrain = ResolvedTerrainGrid::from_cells(
+            2,
+            1,
+            vec![terrain_cell(0, 0, row(1.0)), terrain_cell(1, 0, row(0.7))],
+        );
+        let bridged = compute_drive_target_speed_fraction(
+            SpeedType::Track,
+            LocomotorKind::Drive,
+            (0, 0),
+            (1, 0),
+            (128, 128),
+            true,
+            true,
+            &terrain,
+            &config,
+            false,
+        );
+        assert_eq!(bridged.bits(), (0.4f32 as f64).to_bits());
+    }
+
+    #[test]
+    fn forced_selector_preserves_target_and_routes_process_result_to_owner_only() {
+        let original_target = native_f64(0.375);
+        let mut drive = DriveLocomotionRuntime {
+            track_index: 67,
+            target_speed_fraction: original_target,
+            ..Default::default()
+        };
+        let mut current = native_f64(0.25);
+        update_drive_speed_fraction(
+            &mut drive,
+            &mut current,
+            native_f64(0.7),
+            true,
+            17,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1000,
+        );
+        assert_eq!(drive.target_speed_fraction, original_target);
+        assert_eq!(current, native_f64(0.7));
+
+        update_drive_speed_fraction(
+            &mut drive,
+            &mut current,
+            NativeF64Bits::from_bits(0x7ff8_0000_0000_1234),
+            true,
+            17,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1000,
+        );
+        assert_eq!(drive.target_speed_fraction, original_target);
+        assert_eq!(current, native_f64(0.7), "unordered compare skips owner write");
+    }
+
+    #[test]
+    fn active_ramp_closes_passive_alternate_crush_and_unordered_control_edges() {
+        let mut drive = DriveLocomotionRuntime::default();
+        let mut current = native_f64(0.4);
+        update_drive_speed_fraction_with_flags(
+            &mut drive,
+            &mut current,
+            native_f64(0.8),
+            true,
+            20,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1_000,
+            VehicleRampFlags {
+                passive: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(drive.target_speed_fraction, native_f64(0.8));
+        assert_eq!(current, native_f64(0.4), "Passive skips the owner setter");
+
+        update_drive_speed_fraction_with_flags(
+            &mut drive,
+            &mut current,
+            native_f64(0.8),
+            true,
+            20,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            500,
+            VehicleRampFlags {
+                alternate_brake: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            current,
+            native_sub_scaled(native_f64(0.4), 20, DRIVE_ALTERNATE_BRAKE_RATE),
+            "the 500 boundary excludes the arrival band and selects +0x3CD braking"
+        );
+
+        current = native_f64(0.11);
+        update_drive_speed_fraction_with_flags(
+            &mut drive,
+            &mut current,
+            native_f64(0.8),
+            true,
+            20,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            500,
+            VehicleRampFlags {
+                alternate_brake: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(current, DRIVE_ALTERNATE_BRAKE_FLOOR);
+
+        current = native_f64(0.7);
+        update_drive_speed_fraction_with_flags(
+            &mut drive,
+            &mut current,
+            native_f64(0.8),
+            true,
+            20,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1_000,
+            VehicleRampFlags {
+                currently_crushing: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(drive.target_speed_fraction, DRIVE_CRUSH_FRACTION);
+        assert_eq!(current, DRIVE_CRUSH_FRACTION);
+
+        current = NativeF64Bits::from_bits(0x7ff8_0000_0000_4321);
+        update_drive_speed_fraction(
+            &mut drive,
+            &mut current,
+            native_f64(0.6),
+            true,
+            20,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1_000,
+        );
+        assert_eq!(current, native_f64(0.6), "unordered acceleration caps to T");
+
+        current = native_f64(0.4);
+        update_drive_speed_fraction(
+            &mut drive,
+            &mut current,
+            NativeF64Bits::from_bits(0x7ff8_0000_0000_5678),
+            true,
+            20,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1_000,
+        );
+        assert_eq!(current, NativeF64Bits::POSITIVE_ZERO);
+    }
+
+    #[test]
+    fn active_ship_forced_selector_matches_drive_owner_only_routing() {
+        let original_target = native_f64(0.375);
+        let mut ship = ShipLocomotionRuntime {
+            track_index: 71,
+            target_speed_fraction: original_target,
+            ..Default::default()
+        };
+        let mut current = native_f64(0.25);
+        update_ship_speed_fraction(
+            &mut ship,
+            &mut current,
+            native_f64(0.7),
+            true,
+            17,
+            native_f64(0.03),
+            native_f64(0.002),
+            500,
+            1_000,
+        );
+        assert_eq!(ship.target_speed_fraction, original_target);
+        assert_eq!(current, native_f64(0.7));
+    }
+
+    #[test]
+    fn active_stored_destination_distance_uses_structural_bridge_z_and_zyx_order() {
+        let profile = SpeedCostProfile::default().with_native_values([NativeF32Bits::ONE; 8]);
+        let flat = terrain_cell(0, 0, profile.clone());
+        let mut bridge = terrain_cell(1, 0, profile);
+        bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        let terrain = ResolvedTerrainGrid::from_cells(2, 1, vec![flat, bridge]);
+        let owner = DriveCoord { x: 284, y: 128, z: 0 };
+        let destination = DriveCoord { x: 384, y: 128, z: 0 };
+
+        assert_eq!(
+            stored_destination_distance(owner, destination, Some(&terrain)),
+            427,
+            "sqrt_approx(chop((416^2 + 0^2) + 100^2))"
+        );
+        assert_eq!(stored_destination_distance(owner, destination, None), 100);
     }
 }

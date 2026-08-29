@@ -28,11 +28,12 @@ use crate::sim::components::{
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::movement::FacingClass;
+use crate::util::native_x87::NativeF64Bits;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::particles::{Particle, ParticleSystem};
 use crate::sim::pathfinding::PathGrid;
-use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 use glam::IVec3;
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
@@ -51,6 +52,7 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
         recruitable_a: true,
         recruitable_b: true,
         structure_upgrades: [None, None, None],
+        attached_tag_id: None,
     }
 }
 
@@ -128,6 +130,428 @@ fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
         MasterFrameTestRung::TeamScript,
         MasterFrameTestRung::LogicVector,
     ]));
+}
+
+#[test]
+fn mind_control_house_delta_preserves_independent_live_mutations() {
+    let mut sim = Simulation::new();
+    let old_owner = sim.interner.intern("OldOwner");
+    let new_owner = sim.interner.intern("NewOwner");
+    let mut staged_before = BTreeMap::new();
+    let mut old_before = crate::sim::house_state::HouseState::new(
+        old_owner, 0, None, false, 0, 10,
+    );
+    old_before.owned_building_count = 2;
+    old_before.owned_unit_count = 4;
+    old_before.tracked_infantry_count = 3;
+    old_before.build_const_order = vec![10, 20];
+    old_before.grinder_building_order = vec![10, 20];
+    old_before.absorber_building_order = vec![10, 20];
+    let mut new_before = crate::sim::house_state::HouseState::new(
+        new_owner, 1, None, false, 0, 10,
+    );
+    new_before.owned_building_count = 1;
+    new_before.tracked_infantry_count = 1;
+    new_before.build_const_order = vec![30];
+    new_before.grinder_building_order = vec![30];
+    new_before.absorber_building_order = vec![30, 40];
+    staged_before.insert(old_owner, old_before);
+    staged_before.insert(new_owner, new_before);
+    let ownership_before = capture_house_ownership_transaction_state(&staged_before);
+
+    let mut staged_after = staged_before.clone();
+    {
+        let old = staged_after.get_mut(&old_owner).unwrap();
+        old.owned_building_count = 1;
+        old.owned_unit_count = 3;
+        old.tracked_infantry_count = 2;
+        old.build_const_order = vec![20];
+        old.grinder_building_order = vec![20];
+        old.absorber_building_order = vec![20];
+        old.credits = -1;
+    }
+    {
+        let new = staged_after.get_mut(&new_owner).unwrap();
+        new.owned_building_count = 2;
+        new.owned_unit_count = 1;
+        new.tracked_infantry_count = 2;
+        new.build_const_order = vec![30, 10];
+        new.grinder_building_order = vec![30, 10];
+        // Stable remove/reappend of 30 deliberately changes the native tail
+        // order while transferring 10, so the combat replay must preserve
+        // both order operations rather than diffing membership alone.
+        new.absorber_building_order = vec![40, 30, 10];
+        new.waypoint_edge = 3;
+    }
+
+    let mut live = staged_before;
+    {
+        let old = live.get_mut(&old_owner).unwrap();
+        old.owned_building_count = 6;
+        old.owned_unit_count = 9;
+        old.tracked_infantry_count = 8;
+        old.build_const_order.push(99);
+        old.grinder_building_order.push(99);
+        old.absorber_building_order.push(99);
+        old.credits = 777;
+        old.grudge_scores.insert(new_owner, 42);
+        old.strategy_emergency.set_state_four();
+    }
+    {
+        let new = live.get_mut(&new_owner).unwrap();
+        new.owned_building_count = 8;
+        new.owned_unit_count = 6;
+        new.tracked_infantry_count = 5;
+        new.build_const_order.push(77);
+        new.grinder_building_order.push(77);
+        new.absorber_building_order.push(77);
+    }
+
+    apply_house_ownership_transaction_delta(&mut live, &ownership_before, &staged_after);
+
+    let old = &live[&old_owner];
+    assert_eq!(old.owned_building_count, 5);
+    assert_eq!(old.owned_unit_count, 8);
+    assert_eq!(old.tracked_infantry_count, 7);
+    assert_eq!(old.build_const_order, vec![20, 99]);
+    assert_eq!(old.grinder_building_order, vec![20, 99]);
+    assert_eq!(old.absorber_building_order, vec![20, 99]);
+    assert_eq!(old.credits, 777, "staged House replacement is forbidden");
+    assert_eq!(old.grudge_scores.get(&new_owner), Some(&42));
+    assert_eq!(old.strategy_emergency.mode(), 4);
+    let new = &live[&new_owner];
+    assert_eq!(new.owned_building_count, 9);
+    assert_eq!(new.owned_unit_count, 7);
+    assert_eq!(new.tracked_infantry_count, 6);
+    assert_eq!(new.build_const_order, vec![30, 77, 10]);
+    assert_eq!(new.grinder_building_order, vec![30, 77, 10]);
+    assert_eq!(new.absorber_building_order, vec![40, 77, 30, 10]);
+    assert_eq!(new.waypoint_edge, 3);
+}
+
+#[test]
+fn mind_control_projectile_detonation_commits_owner_and_link_synchronously() {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[General]\nControlledAnimationType=MINDANIM\n\
+         [AudioVisual]\nYuriMindControlSound=YuriCapture\nMindClearedSound=MindCleared\n\
+         [VehicleTypes]\n0=CTRL\n\
+         [InfantryTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=TARGET\n1=TARGET2\n\
+         [AI]\nBuildConst=TARGET,TARGET2\n\
+         [Warheads]\n0=CONTROLLER\n\
+         [CTRL]\nStrength=100\nPrimary=MIND\n\
+         [TARGET]\nStrength=100\nFoundation=1x1\nGrinding=yes\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
+         [TARGET2]\nStrength=100\nFoundation=1x1\nGrinding=yes\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\nImmuneToPsionics=no\nImmuneToPsionicWeapons=no\n\
+         [MIND]\nDamage=1\nROF=10\nRange=8\nSpeed=100\nProjectile=Invisible\nWarhead=CONTROLLER\n\
+         [CONTROLLER]\nMindControl=yes\n",
+    ))
+    .expect("active mind-control detonation rules");
+    let mut art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+        "[MINDANIM]\nEnd=1\nLoopEnd=1\nRate=1\n",
+    ));
+    art.bind_anim_frame_count_for_test("MINDANIM", 1);
+    rules.merge_art_data(&art);
+    rules.art_registry = art;
+    let mut sim = Simulation::new();
+    let controller_house = sim.interner.intern("Controller");
+    let allied_house = sim.interner.intern("AlliedTarget");
+    sim.houses.insert(
+        controller_house,
+        crate::sim::house_state::HouseState::new(
+            controller_house,
+            0,
+            None,
+            false,
+            0,
+            10,
+        ),
+    );
+    sim.houses.insert(
+        allied_house,
+        crate::sim::house_state::HouseState::new(allied_house, 1, None, false, 0, 10),
+    );
+    sim.session.house_order = vec![controller_house, allied_house];
+    sim.session.game_mode_nonzero = true;
+    sim.houses.get_mut(&controller_house).unwrap().player_control = true;
+    sim.house_alliances
+        .entry("CONTROLLER".to_string())
+        .or_default()
+        .insert("ALLIEDTARGET".to_string());
+    sim.house_alliances
+        .entry("ALLIEDTARGET".to_string())
+        .or_default()
+        .insert("CONTROLLER".to_string());
+    let controller_id = sim
+        .spawn_object("CTRL", "Controller", 5, 5, 0, &rules, &empty_heights())
+        .expect("controller reveals with its primary-derived CaptureManager");
+    let target_id = sim
+        .spawn_object(
+            "TARGET",
+            "AlliedTarget",
+            7,
+            5,
+            0,
+            &rules,
+            &empty_heights(),
+        )
+        .expect("allied target reveals");
+    let replacement_target_id = sim
+        .spawn_object(
+            "TARGET2",
+            "AlliedTarget",
+            9,
+            5,
+            0,
+            &rules,
+            &empty_heights(),
+        )
+        .expect("replacement BuildConst target reveals");
+    assert_eq!(sim.houses[&controller_house].owned_unit_count, 1);
+    assert_eq!(sim.houses[&allied_house].owned_building_count, 2);
+    assert_eq!(
+        sim.houses[&allied_house].build_const_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(
+        sim.houses[&allied_house].grinder_building_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(
+        sim.houses[&allied_house].absorber_building_order,
+        vec![target_id, replacement_target_id]
+    );
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 100,
+        source_id: controller_id,
+        target: crate::sim::projectile::ProjectileTarget::Entity(target_id),
+        impact: crate::sim::projectile::ProjectileCoord::new(7 * 256 + 128, 5 * 256 + 128, 0),
+        payload: crate::sim::projectile::ProjectilePayload {
+            base_damage: 1,
+            warhead: sim.interner.intern("CONTROLLER"),
+            weapon: sim.interner.intern("MIND"),
+            owner: controller_house,
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+
+    let result = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        None,
+        100,
+        &[controller_id, target_id, replacement_target_id],
+        &BTreeSet::new(),
+        &[detonation],
+        &[],
+    );
+
+    assert!(result.immediate_uninit_ids.is_empty());
+    let target = sim.substrate.entities.get(target_id).unwrap();
+    assert_eq!(target.owner, controller_house);
+    assert_eq!(
+        sim.houses[&controller_house].owned_building_count, 1,
+        "combat-path Added_To_Game must survive the staged House merge"
+    );
+    assert_eq!(
+        sim.houses[&allied_house].owned_building_count, 1,
+        "combat-path Removed_From_Game must survive the staged House merge"
+    );
+    assert_eq!(
+        sim.houses[&allied_house].build_const_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&controller_house].build_const_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&allied_house].grinder_building_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&controller_house].grinder_building_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&allied_house].absorber_building_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&controller_house].absorber_building_order, vec![target_id]);
+    assert_eq!(target.health.current, target.health.max, "MC does no ordinary damage");
+    assert_eq!(target.mind_control_controller_id, Some(controller_id));
+    let ring_id = target.mind_control_anim_id.expect("capture attaches MINDANIM");
+    assert_eq!(sim.anim(ring_id).unwrap().owner_entity, Some(target_id));
+    assert!(matches!(
+        sim.sound_events.as_slice(),
+        [SimSoundEvent::MindControlSound { sound_id, .. }] if sound_id == "YuriCapture"
+    ));
+    let bytes = crate::sim::snapshot::GameSnapshot::save(
+        &sim,
+        0,
+        0,
+        "mind-control-ring.map",
+        0,
+    );
+    let mut restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+        .expect("v117 capture snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("ring reciprocal references restore");
+    let restored_target = restored.substrate.entities.get(target_id).unwrap();
+    assert_eq!(restored_target.mind_control_anim_id, Some(ring_id));
+    assert_eq!(restored.anim(ring_id).unwrap().owner_entity, Some(target_id));
+    assert_eq!(
+        restored
+            .substrate
+            .entities
+            .get(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_ref()
+            .unwrap()
+            .controlled_nodes,
+        vec![crate::sim::capture_manager::CaptureNodeState {
+            victim_id: target_id,
+            original_owner: allied_house,
+            capture_frame: 0,
+            link_visible_frames: 20,
+        }]
+    );
+
+    let replacement_detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 101,
+        source_id: controller_id,
+        target: crate::sim::projectile::ProjectileTarget::Entity(replacement_target_id),
+        impact: crate::sim::projectile::ProjectileCoord::new(9 * 256 + 128, 5 * 256 + 128, 0),
+        payload: crate::sim::projectile::ProjectilePayload {
+            base_damage: 1,
+            warhead: sim.interner.intern("CONTROLLER"),
+            weapon: sim.interner.intern("MIND"),
+            owner: controller_house,
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+    let replacement_result = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        None,
+        100,
+        &[controller_id, target_id, replacement_target_id],
+        &BTreeSet::new(),
+        &[replacement_detonation],
+        &[],
+    );
+    assert!(replacement_result.immediate_uninit_ids.is_empty());
+    let first_target = sim.substrate.entities.get(target_id).unwrap();
+    let replacement_target = sim
+        .substrate
+        .entities
+        .get(replacement_target_id)
+        .unwrap();
+    assert_eq!(first_target.owner, allied_house);
+    assert_eq!(first_target.mind_control_controller_id, None);
+    assert_eq!(replacement_target.owner, controller_house);
+    assert_eq!(
+        replacement_target.mind_control_controller_id,
+        Some(controller_id)
+    );
+    let replacement_ring_id = replacement_target
+        .mind_control_anim_id
+        .expect("replacement capture attaches its ring");
+    assert!(sim.anim(ring_id).unwrap().runtime.inactive);
+    assert!(sim.substrate.pending_delete.contains(&ring_id));
+    assert_eq!(sim.houses[&controller_house].owned_building_count, 1);
+    assert_eq!(sim.houses[&allied_house].owned_building_count, 1);
+    assert_eq!(sim.houses[&allied_house].build_const_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&controller_house].build_const_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&allied_house].grinder_building_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&controller_house].grinder_building_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(sim.houses[&allied_house].absorber_building_order, vec![target_id]);
+    assert_eq!(
+        sim.houses[&controller_house].absorber_building_order,
+        vec![replacement_target_id]
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_ref()
+            .unwrap()
+            .controlled_nodes
+            .iter()
+            .map(|node| node.victim_id)
+            .collect::<Vec<_>>(),
+        vec![replacement_target_id],
+        "max-one release and replacement capture commit in one staged transaction"
+    );
+    sim.process_pending_delete();
+    assert!(sim.anim(ring_id).is_none());
+    assert!(sim.anim(replacement_ring_id).is_some());
+
+    sim.apply_fatal_lifecycle_stage(
+        &rules,
+        crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects,
+        controller_id,
+        EntityCategory::Unit,
+        None,
+    );
+    let released = sim
+        .substrate
+        .entities
+        .get(replacement_target_id)
+        .unwrap();
+    assert_eq!(released.owner, allied_house);
+    assert_eq!(sim.houses[&controller_house].owned_building_count, 0);
+    assert_eq!(sim.houses[&allied_house].owned_building_count, 2);
+    assert!(sim.houses[&controller_house].build_const_order.is_empty());
+    assert_eq!(
+        sim.houses[&allied_house].build_const_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(
+        sim.houses[&allied_house].grinder_building_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(
+        sim.houses[&allied_house].absorber_building_order,
+        vec![target_id, replacement_target_id]
+    );
+    assert_eq!(released.mind_control_controller_id, None);
+    assert!(released.mind_control_anim_id.is_none());
+    assert!(sim.anim(replacement_ring_id).unwrap().runtime.inactive);
+    assert!(sim.substrate.pending_delete.contains(&replacement_ring_id));
+    assert!(matches!(
+        sim.sound_events.as_slice(),
+        [
+            SimSoundEvent::MindControlSound { sound_id: capture, .. },
+            SimSoundEvent::AnimationStopped { anim_id: first_anim_id, .. },
+            SimSoundEvent::MindControlSound { sound_id: first_cleared, .. },
+            SimSoundEvent::MindControlSound { sound_id: replacement_capture, .. },
+            SimSoundEvent::AnimationStopped { anim_id: replacement_anim_id, .. },
+            SimSoundEvent::MindControlSound { sound_id: replacement_cleared, .. },
+        ] if capture == "YuriCapture"
+            && *first_anim_id == ring_id
+            && first_cleared == "MindCleared"
+            && replacement_capture == "YuriCapture"
+            && *replacement_anim_id == replacement_ring_id
+            && replacement_cleared == "MindCleared"
+    ));
+    sim.process_pending_delete();
+    assert!(sim.anim(replacement_ring_id).is_none());
+    assert!(
+        sim.substrate
+            .entities
+            .get(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_ref()
+            .unwrap()
+            .controlled_nodes
+            .is_empty(),
+        "fatal ReceiveDamage prelude mutates the live registry through FreeAll"
+    );
 }
 
 #[test]
@@ -557,6 +981,50 @@ fn advance_tick_finishes_dying_infantry_from_rules_catalog() {
         "the headless adapter must use RuleSet timing and drain the finished death",
     );
     assert_eq!(second.state_hash, sim.state_hash());
+}
+
+#[test]
+fn infantry_house_tracking_follows_spawn_owner_transfer_and_uninit_once() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [E1]\nStrength=100\n",
+    ))
+    .expect("Infantry tracking lifecycle rules");
+    let mut sim = Simulation::new();
+    let americans = sim.interner.intern("Americans");
+    let soviet = sim.interner.intern("Soviet");
+    sim.houses.insert(
+        americans,
+        crate::sim::house_state::HouseState::new(americans, 0, None, false, 0, 10),
+    );
+    sim.houses.insert(
+        soviet,
+        crate::sim::house_state::HouseState::new(soviet, 1, None, false, 0, 10),
+    );
+    let id = sim
+        .spawn_object("E1", "Americans", 4, 4, 0, &rules, &empty_heights())
+        .expect("spawn tracked Infantry");
+
+    assert!(sim.substrate.entities.get(id).unwrap().infantry_house_tracked);
+    assert_eq!(sim.houses[&americans].tracked_infantry_count, 1);
+    assert_eq!(sim.houses[&soviet].tracked_infantry_count, 0);
+
+    sim.change_owner(id, soviet);
+    assert!(sim.substrate.entities.get(id).unwrap().infantry_house_tracked);
+    assert_eq!(sim.houses[&americans].tracked_infantry_count, 0);
+    assert_eq!(sim.houses[&soviet].tracked_infantry_count, 1);
+
+    sim.uninit_with_rules(id, &rules);
+    assert!(!sim.substrate.entities.get(id).unwrap().infantry_house_tracked);
+    assert_eq!(sim.houses[&soviet].tracked_infantry_count, 0);
+    sim.uninit_with_rules(id, &rules);
+    assert_eq!(
+        sim.houses[&soviet].tracked_infantry_count, 0,
+        "repeat UnInit must not subtract the native House count twice",
+    );
 }
 
 #[test]
@@ -1842,6 +2310,15 @@ fn insert_house_with_counts(
     house.owned_building_count = buildings;
     house.owned_unit_count = units;
     sim.houses.insert(owner, house);
+    if !sim.session.house_order.contains(&owner) {
+        sim.session.house_order.push(owner);
+    }
+    // This shared fixture models the ordinary multiplayer defeat arm. Tests
+    // for campaign/pending behavior override the mode explicitly.
+    sim.session.game_mode_nonzero = true;
+    if sim.session.binary_frame == 0 {
+        sim.session.binary_frame = 1;
+    }
     owner
 }
 
@@ -1955,6 +2432,8 @@ fn gsi_04_10_clear_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
     let mut terrain = water_terrain(width, height);
     for cell in &mut terrain.cells {
@@ -2320,6 +2799,8 @@ fn water_terrain_with_land_type(
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
     let mut cells = Vec::new();
     for y in 0..height {
@@ -2525,6 +3006,8 @@ fn ew_high_bridge_strip_for_dispatch(
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
 
     let mut cells = Vec::with_capacity(width as usize * height as usize);
@@ -2822,8 +3305,8 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     let wave = sim.waves.get(wave_id).expect("registered Wave");
     assert_eq!(
         wave.target,
-        crate::sim::projectile::ProjectileCoord::new(-128, 1_920, 646),
-        "CellClass ground 2*90 plus structural +416 and Sonic +50",
+        crate::sim::projectile::ProjectileCoord::new(-128, 1_920, 674),
+        "CellClass ground 2*104 plus structural +416 and Sonic +50",
     );
     assert_eq!(process_dummy.snapshot().coord, (-1, 7));
 
@@ -2833,7 +3316,7 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     assert_eq!(
         context.target_position,
         Some(crate::sim::projectile::ProjectileCoord::new(
-            -128, 1_920, 596,
+            -128, 1_920, 624,
         )),
         "every live refresh re-enters GetCellClass then GetTargetCoords",
     );
@@ -2847,7 +3330,7 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     sim.visit_combat_appended_wave_tail(&BTreeSet::new(), &rules, None);
     let wave = sim.waves.get(wave_id).expect("Wave survives first live AI");
     assert_eq!(wave.lifetime, 99);
-    assert_eq!(wave.target.z, 646);
+    assert_eq!(wave.target.z, 674);
     assert_eq!(
         process_dummy.snapshot().coord,
         (0, 6),
@@ -3048,8 +3531,8 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
         "the appended tail ran in the firing pass"
     );
     assert_eq!(
-        wave.target.z, 646,
-        "level 2 CellClass target is 2*90 + structural 416 + Sonic 50",
+        wave.target.z, 674,
+        "level 2 CellClass target is 2*104 + structural 416 + Sonic 50",
     );
     assert_eq!(
         sim.substrate
@@ -3059,7 +3542,7 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
             .health
             .current,
         90,
-        "Wave Z 646 meets the level-2 equality threshold 624 and walks AltObject",
+        "Wave Z 674 meets the level-2 equality threshold 624 and walks AltObject",
     );
 }
 
@@ -3071,11 +3554,14 @@ fn short_game_defeat_test_rules() -> RuleSet {
          [AircraftTypes]\n\n\
          [BuildingTypes]\n0=GACNST\n\n\
          [E1]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
-         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nDieSound=BOOM\n\n\
          [AMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
          [SMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
          [PCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
-         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nConstructionYard=yes\nUndeploysInto=AMCV\n",
+         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nConstructionYard=yes\nUndeploysInto=AMCV\n\n\
+         [Warheads]\n0=SWEEPC4\n\n\
+         [SWEEPC4]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\n\
+         [CombatDamage]\nC4Warhead=SWEEPC4\n",
     );
     RuleSet::from_ini(&ini).expect("short game defeat test rules should parse")
 }
@@ -3207,7 +3693,7 @@ fn short_game_defeats_house_with_no_buildings_even_if_ordinary_units_remain() {
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
     insert_test_entity_for_owner(&mut sim, 1, owner, "MTNK", EntityCategory::Unit);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(sim.houses[&owner].is_defeated);
 }
@@ -3220,7 +3706,7 @@ fn short_game_keeps_house_alive_when_base_unit_remains() {
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
     insert_test_entity_for_owner(&mut sim, 1, owner, "AMCV", EntityCategory::Unit);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(!sim.houses[&owner].is_defeated);
 }
@@ -3238,7 +3724,7 @@ fn short_game_defeats_when_only_base_unit_is_dying() {
         .expect("AMCV inserted")
         .dying = true;
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(sim.houses[&owner].is_defeated);
 }
@@ -3250,7 +3736,7 @@ fn long_game_keeps_house_alive_when_units_remain() {
     sim.session.game_options.short_game = false;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(!sim.houses[&owner].is_defeated);
 }
@@ -3262,7 +3748,7 @@ fn long_game_defeats_when_no_owned_objects_remain() {
     sim.session.game_options.short_game = false;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(sim.houses[&owner].is_defeated);
 }
@@ -3276,14 +3762,14 @@ fn short_game_victory_resolution_uses_new_defeat_state() {
     let survivor = insert_house_with_counts(&mut sim, "Russians", 1, 0);
     insert_test_entity_for_owner(&mut sim, 1, defeated, "MTNK", EntityCategory::Unit);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(sim.houses[&defeated].is_defeated);
     assert!(sim.houses[&survivor].has_won);
 }
 
 #[test]
-fn defeated_house_is_flagged_has_lost_and_stragglers_survive() {
+fn defeated_house_sweeps_stragglers_before_flagging_the_result() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
     sim.session.game_options.short_game = true;
@@ -3291,17 +3777,140 @@ fn defeated_house_is_flagged_has_lost_and_stragglers_survive() {
     let survivor = insert_house_with_counts(&mut sim, "Russians", 1, 0);
     // A straggler vehicle owned by the losing house.
     insert_test_entity_for_owner(&mut sim, 1, defeated, "MTNK", EntityCategory::Unit);
+    {
+        let straggler = sim.substrate.entities.get_mut(1).unwrap();
+        straggler.is_voxel = true;
+        straggler.lifecycle.in_limbo = false;
+    }
+    sim.set_logic_order_for_test(vec![1]);
+    sim.resolve_type_handles(&rules);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     // The loser is flagged both defeated and has_lost; the winner is not.
     assert!(sim.houses[&defeated].is_defeated);
     assert!(sim.houses[&defeated].has_lost);
     assert!(!sim.houses[&survivor].has_lost);
     assert!(sim.houses[&survivor].has_won);
-    // Parity: gamemd scatters a defeated house's units (ScatterAllUnits); it does
-    // NOT hard-remove them. The straggler must still exist after defeat.
-    assert!(sim.entities().get(1).is_some());
+    assert!(
+        sim.entities().get(1).is_some_and(|straggler| straggler.dying),
+        "0x004F8F7B destroys the registered straggler before MPlayer_Defeated"
+    );
+    assert!(
+        !sim.tactical_registration_order().contains(&1),
+        "the fatal receiver compacted the live Techno registry before the result edge"
+    );
+    let died = sim
+        .sound_events
+        .iter()
+        .position(|event| matches!(event, SimSoundEvent::EntityDied { .. }))
+        .expect("fatal C4 receiver emitted DieSound");
+    let lost = sim
+        .sound_events
+        .iter()
+        .position(|event| matches!(event, SimSoundEvent::MatchOutcome { owner, .. } if *owner == defeated))
+        .expect("MPlayer_Defeated emitted result edge");
+    assert!(died < lost, "the sweep completes before MPlayer_Defeated");
+}
+
+#[test]
+fn pending_result_expiry_clears_then_sweeps_even_in_campaign_mode() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_mode_nonzero = false;
+    sim.session.binary_frame = 12;
+    let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    sim.session.game_mode_nonzero = false;
+    {
+        let house = sim.houses.get_mut(&owner).unwrap();
+        house.result_pending = true;
+        house.result_timer_start = 10;
+        house.result_timer_duration = 2;
+    }
+    insert_test_entity_for_owner(&mut sim, 1, owner, "MTNK", EntityCategory::Unit);
+    sim.set_logic_order_for_test(vec![1]);
+    sim.resolve_type_handles(&rules);
+
+    sim.check_defeat(Some(&rules), None);
+
+    assert!(!sim.houses[&owner].result_pending);
+    assert!(!sim.houses[&owner].is_defeated);
+    assert!(!sim.houses[&owner].has_lost);
+    assert!(sim.entities().get(1).is_some_and(|entity| entity.dying));
+}
+
+#[test]
+fn unexpired_or_paused_pending_result_never_sweeps() {
+    let rules = short_game_defeat_test_rules();
+    for (start, duration, frame) in [(10, 5, 14), (-1, -7, 99)] {
+        let mut sim = Simulation::new();
+        sim.session.binary_frame = frame as u32;
+        let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+        sim.session.game_mode_nonzero = false;
+        sim.session.binary_frame = frame as u32;
+        {
+            let house = sim.houses.get_mut(&owner).unwrap();
+            house.result_pending = true;
+            house.result_timer_start = start;
+            house.result_timer_duration = duration;
+        }
+        insert_test_entity_for_owner(&mut sim, 1, owner, "MTNK", EntityCategory::Unit);
+        sim.set_logic_order_for_test(vec![1]);
+        sim.resolve_type_handles(&rules);
+
+        sim.check_defeat(Some(&rules), None);
+
+        assert!(sim.houses[&owner].result_pending, "start={start} duration={duration}");
+        assert!(sim.entities().get(1).is_some_and(|entity| !entity.dying));
+    }
+}
+
+#[test]
+fn ordinary_defeat_requires_nonzero_game_mode_and_frame() {
+    let rules = short_game_defeat_test_rules();
+    for (game_mode_nonzero, binary_frame) in [(false, 1_u32), (true, 0_u32)] {
+        let mut sim = Simulation::new();
+        let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
+        sim.session.game_mode_nonzero = game_mode_nonzero;
+        sim.session.binary_frame = binary_frame;
+
+        sim.check_defeat(Some(&rules), None);
+
+        assert!(!sim.houses[&owner].is_defeated);
+        assert!(!sim.houses[&owner].has_lost);
+    }
+}
+
+#[test]
+fn earlier_house_pending_sweep_mutates_later_house_before_its_defeat_gate() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = false;
+    sim.session.binary_frame = 20;
+    let earlier = insert_house_with_counts(&mut sim, "Americans", 1, 0);
+    let later = insert_house_with_counts(&mut sim, "Russians", 0, 1);
+    sim.session.binary_frame = 20;
+    {
+        let house = sim.houses.get_mut(&earlier).unwrap();
+        house.result_pending = true;
+        house.result_timer_start = 20;
+        house.result_timer_duration = 0;
+    }
+    insert_test_entity_for_owner(&mut sim, 1, later, "MTNK", EntityCategory::Unit);
+    {
+        let unit = sim.substrate.entities.get_mut(1).unwrap();
+        unit.temporary_owner_transfer_marker = Some(later);
+        unit.temporary_owner_transfer_source = Some(earlier);
+    }
+    sim.set_logic_order_for_test(vec![1]);
+    sim.resolve_type_handles(&rules);
+
+    sim.check_defeat(Some(&rules), None);
+
+    assert!(!sim.houses[&earlier].result_pending);
+    assert_eq!(sim.houses[&later].owned_unit_count, 0);
+    assert!(sim.houses[&later].is_defeated);
+    assert!(sim.houses[&later].has_lost);
 }
 
 #[test]
@@ -3313,14 +3922,17 @@ fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
     let mut sim = Simulation::new();
     sim.session.game_options.short_game = false;
     sim.session.tick = 10;
+    sim.session.binary_frame = 10;
     let winner = insert_house_with_counts(&mut sim, "Americans", 1, 0);
     let loser = insert_house_with_counts(&mut sim, "Russians", 0, 0);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
-    let winner_outcome = sim.houses[&winner].outcome_state.expect("victory accepted");
+    let winner_outcome = sim.houses[&winner]
+        .outcome_state(10)
+        .expect("victory accepted");
     assert_eq!(winner_outcome.kind, HouseOutcomeKind::Victory);
-    assert_eq!(winner_outcome.savour_until_tick, 38);
+    assert_eq!(winner_outcome.savour_until_tick, 37);
     assert!(!winner_outcome.exit_ready);
     assert_eq!(
         sim.sound_events
@@ -3333,15 +3945,17 @@ fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
 
     sim.sound_events.clear();
     sim.session.tick = 36;
-    sim.check_defeat(Some(&rules));
-    assert!(!sim.houses[&winner].outcome_state.unwrap().exit_ready);
+    sim.session.binary_frame = 36;
+    sim.check_defeat(Some(&rules), None);
+    assert!(!sim.houses[&winner].outcome_state(36).unwrap().exit_ready);
     assert!(!sim.termination_frame_requested());
     assert!(sim.sound_events.is_empty(), "accepted edges never replay");
 
     sim.session.tick = 37;
-    sim.check_defeat(Some(&rules));
-    assert!(sim.houses[&winner].outcome_state.unwrap().exit_ready);
-    assert!(sim.houses[&loser].outcome_state.unwrap().exit_ready);
+    sim.session.binary_frame = 37;
+    sim.check_defeat(Some(&rules), None);
+    assert!(sim.houses[&winner].outcome_state(37).unwrap().exit_ready);
+    assert!(sim.houses[&loser].outcome_state(37).unwrap().exit_ready);
     assert!(sim.termination_frame_requested());
     assert!(sim.sound_events.is_empty(), "expiry does not replay EVA");
 }
@@ -3355,7 +3969,7 @@ fn short_game_base_unit_survivor_prevents_enemy_victory() {
     let enemy = insert_house_with_counts(&mut sim, "Russians", 1, 0);
     insert_test_entity_for_owner(&mut sim, 1, mcv_owner, "AMCV", EntityCategory::Unit);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(!sim.houses[&mcv_owner].is_defeated);
     assert!(!sim.houses[&enemy].has_won);
@@ -3374,7 +3988,7 @@ fn gsi_05_16_captured_garrison_building_prevents_short_game_defeat() {
     // The passenger reconciler uses this chokepoint when the first occupant
     // captures a civilian CanBeOccupied building.
     sim.change_owner(1, player);
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert_eq!(sim.houses[&civilian].owned_building_count, 0);
     assert_eq!(sim.houses[&player].owned_building_count, 1);
@@ -3424,7 +4038,7 @@ fn passive_house_owning_buildings_does_not_block_last_player_victory() {
     let loser = insert_house_with_counts(&mut sim, "Russians", 0, 0);
     insert_passive_house_with_counts(&mut sim, "Neutral", 7, 0);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(sim.houses[&loser].is_defeated);
     assert!(
@@ -3443,7 +4057,7 @@ fn passive_house_is_never_defeated_even_with_nothing_left() {
     let passive = insert_passive_house_with_counts(&mut sim, "Neutral", 0, 0);
     let player = insert_house_with_counts(&mut sim, "Americans", 2, 1);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(!sim.houses[&passive].is_defeated);
     assert!(!sim.houses[&passive].has_lost);
@@ -3480,7 +4094,7 @@ fn passive_houses_do_not_arm_the_termination_frame_for_a_tick_zero_win() {
     insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
     let player_house = sim.houses.get_mut(&player).expect("player house");
     assert!(player_house.flag_to_win(0, 0));
-    assert!(player_house.advance_outcome_savour(0));
+    assert!(player_house.advance_outcome_savour(0).terminal_ready);
 
     assert!(
         !sim.termination_frame_requested(),
@@ -3506,7 +4120,7 @@ fn one_way_alliance_does_not_end_the_game() {
     let b = insert_house_with_counts(&mut sim, "Russians", 1, 1);
     sim.house_alliances = directed_alliances(&[("Americans", "Russians")]);
 
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
 
     assert!(!sim.houses[&a].has_won, "one-way alliance must not win");
     assert!(!sim.houses[&b].has_won, "one-way alliance must not win");
@@ -3514,7 +4128,7 @@ fn one_way_alliance_does_not_end_the_game() {
     // Control: once the alliance is mutual the same board is a shared victory.
     sim.house_alliances =
         directed_alliances(&[("Americans", "Russians"), ("Russians", "Americans")]);
-    sim.check_defeat(Some(&rules));
+    sim.check_defeat(Some(&rules), None);
     assert!(sim.houses[&a].has_won);
     assert!(sim.houses[&b].has_won);
 }
@@ -3654,6 +4268,7 @@ fn test_spawn_from_map_high_unit_uses_bridge_layer_and_deck_level() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &heights,
@@ -3755,6 +4370,7 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &heights,
@@ -3964,6 +4580,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::from([((5, 5), 1)]),
@@ -4026,6 +4643,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -4093,6 +4711,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -4152,6 +4771,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -4214,6 +4834,7 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -4287,6 +4908,7 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -5571,6 +6193,7 @@ fn test_execute_tick_delay_blocks_early_execution() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         None,
         &empty_heights(),
@@ -5651,6 +6274,7 @@ fn test_move_queue_command_appends_waypoint() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         None,
         &empty_heights(),
@@ -5715,6 +6339,7 @@ fn test_stop_command_clears_move_and_attack_intent() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         None,
         &empty_heights(),
@@ -5775,6 +6400,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         None,
         &empty_heights(),
@@ -6009,6 +6635,7 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         None,
         &empty_heights(),
@@ -6048,9 +6675,9 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
     let committed_head = {
         let entity = sim.substrate.entities.get_mut(1).unwrap();
         assert!(entity.drive_track.is_some());
+        entity.current_speed_fraction = NativeF64Bits::from_bits(0.5f64.to_bits());
         let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
-        ship.target_speed_fraction = SIM_ONE;
-        ship.current_speed_fraction = SIM_HALF;
+        ship.target_speed_fraction = NativeF64Bits::ONE;
         ship.owner_current_speed = 10;
         ship.head_to.expect("Ship curve has a committed head")
     };
@@ -6077,8 +6704,14 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
     let ship = stopped.ship_locomotion.as_ref().expect("Ship runtime");
     assert_eq!(ship.destination, None);
     assert_eq!(ship.head_to, Some(committed_head));
-    assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
-    assert_eq!(ship.current_speed_fraction, SIM_HALF);
+    assert_eq!(
+        ship.target_speed_fraction,
+        NativeF64Bits::from_bits(0x3fd3_3333_4000_0000)
+    );
+    assert_eq!(
+        stopped.current_speed_fraction,
+        NativeF64Bits::from_bits(0.5f64.to_bits())
+    );
     assert_eq!(ship.owner_current_speed, 10);
 }
 
@@ -6115,6 +6748,7 @@ fn test_move_command_rejects_non_owned_entity() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         None,
         &empty_heights(),
@@ -6296,6 +6930,7 @@ fn test_attack_command_rejects_friendly_target() {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             },
             MapEntity {
                 owner: "British".to_string(),
@@ -6312,6 +6947,7 @@ fn test_attack_command_rejects_friendly_target() {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             },
         ],
         None,
@@ -6360,6 +6996,7 @@ fn test_attack_move_auto_acquires_enemy() {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             },
             MapEntity {
                 owner: "Russians".to_string(),
@@ -6376,6 +7013,7 @@ fn test_attack_move_auto_acquires_enemy() {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             },
         ],
         None,
@@ -6448,6 +7086,7 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             },
             MapEntity {
                 owner: "Russians".to_string(),
@@ -6464,6 +7103,7 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             },
         ],
         None,
@@ -6539,6 +7179,7 @@ fn test_guard_returns_to_anchor_when_displaced() {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }],
         None,
         &empty_heights(),
@@ -6874,6 +7515,8 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
     };
     ResolvedTerrainCell {
         rx,

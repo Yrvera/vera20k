@@ -629,9 +629,9 @@ impl OwnerOccupationFootprints {
 /// Independent CellClass-style vehicle-occupation bit planes.
 ///
 /// This is deliberately separate from [`OccupancyGrid`]: object-list identity
-/// and order come only from `CellOccupant`, while an accepted Drive track can
-/// mark its head-to cell before the unit is linked there. The index is transient
-/// and rebuilt from serialized entity/Drive state.
+/// and order come only from `CellOccupant`, while an accepted Drive or Ship
+/// track can mark its head-to cell before the unit is linked there. The index
+/// is transient and rebuilt from serialized entity/locomotor state.
 #[derive(Debug, Clone, Default)]
 pub struct CellOccupationGrid {
     cells: BTreeMap<(u16, u16), CellVehicleOccupation>,
@@ -655,7 +655,11 @@ impl CellOccupationGrid {
             let current_cleared = entity
                 .drive_locomotion
                 .as_ref()
-                .is_some_and(|drive| drive.current_occupation_cleared);
+                .is_some_and(|drive| drive.current_occupation_cleared)
+                || entity
+                    .ship_locomotion
+                    .as_ref()
+                    .is_some_and(|ship| ship.current_occupation_cleared);
             if !current_cleared && let Some(layer) = entity.occupancy_list_layer() {
                 grid.mark_vehicle_on_layer(
                     entity.position.rx,
@@ -669,6 +673,15 @@ impl CellOccupationGrid {
                 .as_ref()
                 .into_iter()
                 .flat_map(|drive| [drive.occupation_handoff, drive.occupation_head_to])
+                .chain(
+                    entity
+                        .ship_locomotion
+                        .as_ref()
+                        .into_iter()
+                        // Apply_Track_Occupation_Mode visits the RawTrack
+                        // handoff before the supplied endpoint.
+                        .flat_map(|ship| [ship.occupation_handoff, ship.occupation_head_to]),
+                )
                 .flatten()
             {
                 grid.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id, mark.layer);
@@ -702,7 +715,11 @@ impl CellOccupationGrid {
         let current_cleared = entity
             .drive_locomotion
             .as_ref()
-            .is_some_and(|drive| drive.current_occupation_cleared);
+            .is_some_and(|drive| drive.current_occupation_cleared)
+            || entity
+                .ship_locomotion
+                .as_ref()
+                .is_some_and(|ship| ship.current_occupation_cleared);
         if !current_cleared && let Some(layer) = entity.occupancy_list_layer() {
             self.mark_vehicle_on_layer(
                 entity.position.rx,
@@ -716,6 +733,13 @@ impl CellOccupationGrid {
             .as_ref()
             .into_iter()
             .flat_map(|drive| [drive.occupation_handoff, drive.occupation_head_to])
+            .chain(
+                entity
+                    .ship_locomotion
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|ship| [ship.occupation_handoff, ship.occupation_head_to]),
+            )
             .flatten()
         {
             self.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id, mark.layer);
@@ -836,6 +860,19 @@ impl CellOccupationGrid {
             .map_or(0, VehicleOccupationPlane::bits)
     }
 
+    #[cfg(test)]
+    pub(crate) fn owner_mark_order(
+        &self,
+        entity_id: u64,
+    ) -> Vec<(u16, u16, MovementLayer)> {
+        self.footprints_by_owner
+            .get(&entity_id)
+            .into_iter()
+            .flat_map(OwnerOccupationFootprints::iter)
+            .map(|mark| (mark.rx, mark.ry, mark.layer))
+            .collect()
+    }
+
     pub(crate) fn vehicle_bits_ignoring(
         &self,
         rx: u16,
@@ -893,6 +930,95 @@ pub(crate) fn replace_drive_head_to_occupation(
     }
     occupation.mark_vehicle_on_layer(next.rx, next.ry, entity_id, next.layer);
     drive.occupation_head_to = Some(next);
+}
+
+/// Replace the two Ship RawTrack occupation roles without touching a live
+/// post-callback body claim.
+///
+/// gamemd-derived: `ShipLocomotionClass::Process_Movement` dispatches pickup at
+/// `0x006A3D15`, then on One+unlimbo calls
+/// `Apply_Track_Occupation_Mode(endpoint, 1) @ 0x006A3D34` (callee
+/// `0x006A01A0`). The callee marks the transformed RawTrack handoff first and
+/// the supplied endpoint second. Neither operation writes object coordinates.
+pub(crate) fn replace_ship_track_occupation_mode_one(
+    ship: &mut crate::sim::components::ShipLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    marked_current: Option<DriveOccupationFootprint>,
+    handoff: Option<DriveOccupationFootprint>,
+    head: Option<DriveOccupationFootprint>,
+) {
+    // Release the previous pair before applying the new mode. A role that
+    // aliases the callback-moved live body is still backed by AddContent and
+    // must survive replacement.
+    for old in [
+        ship.occupation_handoff.take(),
+        ship.occupation_head_to.take(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if marked_current != Some(old) {
+            occupation.clear_vehicle_on_layer(old.rx, old.ry, entity_id, old.layer);
+        }
+    }
+
+    if let Some(handoff) = handoff {
+        occupation.mark_vehicle_on_layer(handoff.rx, handoff.ry, entity_id, handoff.layer);
+        ship.occupation_handoff = Some(handoff);
+    }
+    if let Some(head) = head {
+        occupation.mark_vehicle_on_layer(head.rx, head.ry, entity_id, head.layer);
+        ship.occupation_head_to = Some(head);
+    }
+}
+
+/// Normal Ship track completion retires both auxiliary roles while preserving
+/// the object's newly committed current-cell occupation.
+pub(crate) fn finish_ship_track_occupation(
+    ship: &mut crate::sim::components::ShipLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+) {
+    let current = DriveOccupationFootprint {
+        rx: current_cell.0,
+        ry: current_cell.1,
+        layer: current_layer,
+    };
+    for old in [
+        ship.occupation_handoff.take(),
+        ship.occupation_head_to.take(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if old != current {
+            occupation.clear_vehicle_on_layer(old.rx, old.ry, entity_id, old.layer);
+        }
+    }
+    occupation.mark_vehicle_on_layer(current.rx, current.ry, entity_id, current.layer);
+    ship.current_occupation_cleared = false;
+}
+
+/// Hard limbo/world removal clears Ship's auxiliary RawTrack pair before the
+/// ordinary current-cell RemoveContent clear.
+pub(crate) fn clear_ship_track_occupation_for_remove(
+    ship: &mut crate::sim::components::ShipLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+) {
+    for mark in [
+        ship.occupation_handoff.take(),
+        ship.occupation_head_to.take(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        occupation.clear_vehicle_on_layer(mark.rx, mark.ry, entity_id, mark.layer);
+    }
+    ship.current_occupation_cleared = true;
 }
 
 /// Install (or drop) the forward RawTrack handoff mark that accompanies a Drive
@@ -1485,6 +1611,27 @@ impl OccupancyGrid {
         self.cells
             .get(&(rx, ry))
             .is_some_and(|occ| occ.occupants.iter().any(|o| o.entity_id == entity_id))
+    }
+
+    /// Locate a mobile object's actual CellClass list membership.
+    ///
+    /// Object coordinates and object-list membership are independent during
+    /// native raw-coordinate continuations such as Drive ForceTrack: the
+    /// callback applies the requested XYZ before the forced curve's terminal
+    /// RemoveContent/AddContent relink.  Callers that own that interval must
+    /// query the object-list authority instead of deriving the old cell from
+    /// `GameEntity::position`.
+    pub(crate) fn registered_mobile_cell_layer(
+        &self,
+        entity_id: u64,
+    ) -> Option<((u16, u16), MovementLayer)> {
+        self.cells.iter().find_map(|(&cell, occupancy)| {
+            occupancy
+                .occupants
+                .iter()
+                .find(|occupant| occupant.entity_id == entity_id && !occupant.is_building)
+                .map(|occupant| (cell, occupant.layer))
+        })
     }
 
     /// Total number of occupied cells (for diagnostics).

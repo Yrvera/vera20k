@@ -22,7 +22,11 @@
 
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod anim_class;
+pub(crate) mod base_plan;
+pub(crate) mod base_plan_generation;
 pub mod capture_manager;
+pub(crate) mod capture_fate_facility;
+pub(crate) mod house_destruction;
 pub mod cloak_disguise;
 pub mod command;
 pub mod components;
@@ -106,6 +110,7 @@ pub mod radiation;
 // --- Passengers, transport, slaves ---
 pub mod parity_digest;
 pub mod passenger;
+pub mod parasite_attachment;
 pub mod slave_miner;
 pub mod spawn_manager;
 mod spawn_manager_tests;
@@ -129,6 +134,8 @@ pub mod trigger_runtime;
 
 // --- AI, replay, selection, debug ---
 pub mod ai;
+pub(crate) mod ai_buildable;
+pub(crate) mod naval_base_placement;
 pub mod debug_event_log;
 pub mod runtime;
 pub mod replay;

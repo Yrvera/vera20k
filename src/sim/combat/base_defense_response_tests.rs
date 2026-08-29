@@ -163,6 +163,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
         script_id,
         task_force_id,
         priority: 0,
+        mind_control_decision: 0,
         is_base_defense: false,
         combined_movement_zone: crate::rules::locomotor_type::MovementZone::Fly,
         base_zone_relation_enforced: true,
@@ -174,6 +175,7 @@ fn gsi_04_05_zero_budget_still_suspends_low_priority_teams_before_scan_exit() {
         &[TeamScriptMember {
             entity_id: 99,
             member_type: member_identity,
+            has_special_building_entry_intent: false,
         }],
         None,
         0,

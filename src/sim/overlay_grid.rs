@@ -316,6 +316,53 @@ impl OverlayGrid {
         }
     }
 
+    /// Stamp the two CellClass bytes owned by a successfully marked crate.
+    ///
+    /// gamemd-derived: `OverlayClass__Mark @ 0x005FC570` writes the crate
+    /// identity and `OverlayData=0xff`. The Rust-only wall-owner shadow is not
+    /// a CellClass byte and must survive both this specialized write and the
+    /// matching removal path. Ordinary overlay dirtiness is retained so the
+    /// app receives the new overlay identity at the established frame drain.
+    pub(crate) fn place_crate_overlay_bytes(&mut self, rx: u16, ry: u16, overlay_id: u8) -> bool {
+        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        self.cells[idx].overlay_id = Some(overlay_id);
+        self.cells[idx].overlay_data = u8::MAX;
+        self.dirty_cells.push((rx, ry));
+        true
+    }
+
+    /// Write only CellClass `OverlayData`, without creating a second
+    /// invalidation. This is the post-tail data store used by specific-cell
+    /// crate placement, including accepted ghosts.
+    ///
+    /// gamemd-derived: `MapClass__PlaceCrateAtCell @ 0x0056BEC0` performs the
+    /// low-byte write after placement, redraw, slot, and timer work.
+    pub(crate) fn write_crate_data_no_dirty(&mut self, rx: u16, ry: u16, data: u8) -> bool {
+        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        self.cells[idx].overlay_data = data;
+        true
+    }
+
+    /// Clear only the two native crate bytes and preserve every unrelated
+    /// Rust Cell shadow. Deliberately emits no ordinary dirty-cell event: the
+    /// native adapter owns its dirty-screen-before-mutation presentation and
+    /// emits neither CellRedraw nor radar dirty.
+    ///
+    /// gamemd-derived: `CrateSlot__RemoveCrateOverlayFromCell @ 0x004A1AA0`
+    /// and the mode-zero tail in `MapClass__RemoveCrateAtCell @ 0x0056C020`.
+    pub(crate) fn clear_crate_overlay_bytes(&mut self, rx: u16, ry: u16) -> bool {
+        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        self.cells[idx].overlay_id = None;
+        self.cells[idx].overlay_data = 0;
+        true
+    }
+
     /// Ordinary native-style runtime placement. Raw loaders and specialized
     /// writers retain [`OverlayGrid::place_overlay`] for intentional bypasses.
     pub fn place_overlay_native_runtime(
@@ -2603,6 +2650,17 @@ NoUseTileLandType=yes
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [
+                crate::util::native_x87::NativeF32Bits::from_bits(0.9f32.to_bits()),
+                crate::util::native_x87::NativeF32Bits::from_bits(0.7f32.to_bits()),
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+                crate::util::native_x87::NativeF32Bits::ONE,
+            ],
         };
         let mut overlay_grid = OverlayGrid::new(10, 10);
         let tib_lt = LandType::Tiberium.as_index();

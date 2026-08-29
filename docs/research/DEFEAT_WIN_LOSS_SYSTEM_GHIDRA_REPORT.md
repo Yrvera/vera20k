@@ -1,5 +1,11 @@
 # Multiplayer Defeat Detection & Win/Loss Borrowed Time System
 
+> **2026-08-29 active-binary correction.** Any `ScatterAllUnits` wording in
+> this report for `0x004FC6D0` is superseded. The function is the shared House
+> destruction sweep: it walks the live Techno registry, clears incoming
+> Temporal links, and calls concrete `ReceiveDamage` with current health and
+> Rules C4. See `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`.
+
 Source: Ghidra decompilation of `gamemd.exe` (Yuri's Revenge), `D:\ra2mdpost\House.CPP`
 
 Confidence: HIGH for MPlayer_Defeated, Flag_To_Win, Flag_To_Lose, and the active
@@ -783,6 +789,11 @@ if (this->HasLost) {  // +0x1f8
 ```
 
 ### Step 8: FlagToWinPending processing
+
+> **SUPERSEDED:** the pseudo-code and interpretation below are retained only as
+> historical context. Active `0x004FC6D0` destroys admitted Technos; it does
+> not scatter them or flag a win. The pending byte is cleared and the shared
+> destruction sweep runs when the exact signed timer reaches zero.
 
 ```c
 // Update step 8: Pending win → scatter units → actual win

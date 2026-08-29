@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use crate::rules::ini_parser::{IniFile, IniSection};
 use crate::rules::locomotor_type::SpeedType;
 use crate::util::fixed_math::{SIM_ONE, SimFixed};
+use crate::util::native_x87::NativeF32Bits;
 
 /// Canonical YR land types in their native numeric order.
 #[derive(
@@ -186,9 +187,7 @@ impl LandType {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SpeedCostProfile {
     pub foot: Option<u8>,
     pub track: Option<u8>,
@@ -197,6 +196,33 @@ pub struct SpeedCostProfile {
     pub amphibious: Option<u8>,
     pub float_beach: Option<u8>,
     pub hover: Option<u8>,
+    /// Native nine-dword land-row speed storage, kept in SpeedType enum order.
+    /// A false row is the image-BSS zero state for an absent section; a present
+    /// section fills every slot (missing keys default to exact f32 one).
+    #[serde(default)]
+    pub(crate) native_row_present: bool,
+    #[serde(default = "default_native_speed_row")]
+    pub(crate) native_speed_bits: [NativeF32Bits; 8],
+}
+
+const fn default_native_speed_row() -> [NativeF32Bits; 8] {
+    [NativeF32Bits::POSITIVE_ZERO; 8]
+}
+
+impl Default for SpeedCostProfile {
+    fn default() -> Self {
+        Self {
+            foot: None,
+            track: None,
+            wheel: None,
+            float: None,
+            amphibious: None,
+            float_beach: None,
+            hover: None,
+            native_row_present: false,
+            native_speed_bits: default_native_speed_row(),
+        }
+    }
 }
 
 impl SpeedCostProfile {
@@ -225,6 +251,21 @@ impl SpeedCostProfile {
             }
             None => SIM_ONE,
         }
+    }
+
+    /// Exact f32 table value used by Drive/Ship ProcessMovement.
+    pub fn native_multiplier_for(&self, speed_type: SpeedType) -> NativeF32Bits {
+        if !self.native_row_present {
+            return NativeF32Bits::POSITIVE_ZERO;
+        }
+        self.native_speed_bits[speed_type as usize]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_native_values(mut self, values: [NativeF32Bits; 8]) -> Self {
+        self.native_row_present = true;
+        self.native_speed_bits = values;
+        self
     }
 }
 
@@ -478,7 +519,29 @@ fn parse_speed_costs(section: &IniSection) -> SpeedCostProfile {
         amphibious: parse_cost(section, "Amphibious"),
         float_beach: parse_cost(section, "FloatBeach"),
         hover: parse_cost(section, "Hover"),
+        native_row_present: true,
+        native_speed_bits: [
+            parse_native_cost(section, "Foot"),
+            parse_native_cost(section, "Track"),
+            parse_native_cost(section, "Wheel"),
+            parse_native_cost(section, "Hover"),
+            NativeF32Bits::ONE,
+            parse_native_cost(section, "Float"),
+            parse_native_cost(section, "Amphibious"),
+            parse_native_cost(section, "FloatBeach"),
+        ],
     }
+}
+
+fn parse_native_cost(section: &IniSection, key: &str) -> NativeF32Bits {
+    let first = section.read_double(key, 1.0);
+    let selected = if first >= 1.0 {
+        1.0
+    } else {
+        // Native calls ReadDouble again on the lower/unordered arm.
+        section.read_double(key, 1.0)
+    };
+    NativeF32Bits::from_bits((selected as f32).to_bits())
 }
 
 /// One authored row, as a whole-percent 0..=100.
@@ -550,6 +613,53 @@ mod tests {
         assert_eq!(road.cost_for_speed_type(SpeedType::Foot), Some(100));
         // And an unauthored row defaults to full speed, not to zero.
         assert_eq!(road.cost_for_speed_type(SpeedType::Hover), Some(100));
+    }
+
+    #[test]
+    fn active_native_row_preserves_f32_width_upper_only_cap_and_missing_key_one() {
+        let ini = IniFile::from_str("[Road]\nTrack=70%\nWheel=-25%\nFoot=150%\n");
+        let terrain_rules = TerrainRules::from_ini(&ini);
+        let road = terrain_rules
+            .semantics_for_land_type(LandType::Road.as_index())
+            .expect("Road row");
+        assert_eq!(
+            road.speed_costs
+                .native_multiplier_for(SpeedType::Track)
+                .bits(),
+            0x3f33_3333
+        );
+        assert_eq!(
+            (f32::from_bits(
+                road.speed_costs
+                    .native_multiplier_for(SpeedType::Track)
+                    .bits()
+            ) as f64)
+                .to_bits(),
+            0x3fe6_6666_6000_0000
+        );
+        assert_eq!(
+            road.speed_costs
+                .native_multiplier_for(SpeedType::Wheel)
+                .bits(),
+            (-0.25f32).to_bits(),
+            "negative rows survive the upper-only cap"
+        );
+        assert_eq!(
+            road.speed_costs
+                .native_multiplier_for(SpeedType::Foot),
+            NativeF32Bits::ONE
+        );
+        assert_eq!(
+            road.speed_costs
+                .native_multiplier_for(SpeedType::Hover),
+            NativeF32Bits::ONE,
+            "a missing key inside a present row defaults to one"
+        );
+        assert_eq!(
+            SpeedCostProfile::default().native_multiplier_for(SpeedType::Track),
+            NativeF32Bits::POSITIVE_ZERO,
+            "an absent section retains the BSS-zero row"
+        );
     }
 
     #[test]

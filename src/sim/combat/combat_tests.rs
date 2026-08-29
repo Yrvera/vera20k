@@ -80,6 +80,7 @@ fn sonic_active_wave_gate_precedes_target_resolution_and_all_shot_work() {
         &rules,
         &mut interner,
         None,
+        &BTreeMap::new(),
         &mut resources,
         None,
         &OccupancyGrid::new(),
@@ -2996,11 +2997,11 @@ fn gsi_04_07_damage_full_capture_manager_blocks_retaliation() {
             let mut controlled = make_entity(id, "LINK", 10 + offset as u16, 5, 100);
             controlled.owner = victim_owner;
             controlled.type_ref = link_type;
-            controlled.mind_controlled = true;
+            controlled.mind_control_controller_id = Some(2);
             controlled.lifecycle.in_limbo = false;
             controlled.lifecycle.cell_marked = true;
             entities.insert(controlled);
-            manager.link_controlled_entity(id);
+            manager.link_controlled_entity(id, victim_owner, 0, 20);
         }
         victim.capture_manager = Some(manager);
         entities.insert(victim);
@@ -3045,8 +3046,10 @@ fn gsi_04_07_damage_full_capture_manager_blocks_retaliation() {
                 .capture_manager
                 .as_ref()
                 .expect("manager retained")
-                .controlled_entity_ids
-                .clone(),
+                .controlled_nodes
+                .iter()
+                .map(|node| node.victim_id)
+                .collect(),
         }
     }
 
@@ -5447,7 +5450,7 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
         veh.regular_crusher = obj.crusher;
         veh.omni_crusher = obj.omni_crusher;
         veh.locomotor =
-            Some(crate::sim::movement::locomotor::LocomotorState::from_object_type(obj, 0));
+            Some(crate::sim::movement::locomotor::LocomotorState::from_object_type(obj, 0, 0));
         veh.health = Health {
             current: 300,
             max: 300,
@@ -6777,7 +6780,7 @@ fn gsi_04_07_damage_hostile_building_hit_latches_was_attacked_for_ai_repair() {
     let ally_owner = sim.interner.intern("ALLY");
     let scenario_ini = IniFile::from_str("[Houses]\n0=AI\n[AI]\nIQ=1\n");
     let scenario_houses =
-        crate::map::houses::parse_house_roster(&scenario_ini, &rules.color_schemes);
+        crate::map::houses::parse_house_roster(&scenario_ini, &rules.color_schemes, Some(&rules));
     let mut ai_house = HouseState::new(ai_owner, 0, None, false, 0, 51);
     ai_house.current_iq =
         scenario_houses.houses[0].scenario_current_iq(rules.general.max_iq_levels);
@@ -7268,7 +7271,7 @@ fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
     use crate::sim::projectile::{
         ProjectileCoord, ProjectileTarget, dummy_cell_target_coord, projectile_random_shrapnel_cell,
     };
-    use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, cellclass_ground_height_leptons};
+    use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, ground_height_leptons};
 
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\n\n[PARENT]\nDamage=20\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\n[PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=3\n\n[CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\n[CHILDPROJ]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
@@ -7319,8 +7322,7 @@ fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
     let expected_target = |(rx, ry): (i32, i32), structural: bool| {
         let x = rx * 256 + 128;
         let y = ry * 256 + 128;
-        let z = cellclass_ground_height_leptons(2, 0, x, y)
-            .expect("flat CellClass surface is supported")
+        let z = ground_height_leptons(2, 0, x, y).expect("flat CellClass surface is supported")
             + if structural {
                 BRIDGE_HEIGHT_DELTA_LEPTONS as i32
             } else {
@@ -7388,7 +7390,7 @@ fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
     let later_target = dummy_cell_target_coord(&later_dummy);
     assert_eq!(later_target.x, 9 * 256 + 128);
     assert_eq!(later_target.y, 10 * 256 + 128);
-    assert_eq!(later_target.z, 2 * 90 + BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
+    assert_eq!(later_target.z, 2 * 104 + BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
     assert_ne!(
         later_target,
         out.projectile_spawns[2].initial_target_position

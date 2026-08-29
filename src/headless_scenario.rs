@@ -199,6 +199,9 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     // The process-shaped dummy was bound before OverlayPack stamping inside
     // the bootstrap. Every grid/sim clone inside this run now shares it;
     // separate loads remain isolated.
+    let defaultable_scheduler_roots =
+        crate::app::loading::init_helpers::building_destruction_anim_roots(&rules);
+    art.install_native_default_anim_types(defaultable_scheduler_roots.iter());
     let scheduler_roots = crate::app::loading::init_helpers::scheduler_anim_roots(
         &rules,
         terrain_bootstrap.resolved.tile_animations(),
@@ -221,8 +224,11 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
     rules.bind_terrain_spawner_assets(&rules_ini, &assets, theater.extension, &map.header.theater);
     rules.bind_animation_sequences(&infantry_sequences);
-    let house_roster =
-        crate::map::houses::parse_house_roster(&map.ini, rules.color_schemes.as_slice());
+    let house_roster = crate::map::houses::parse_house_roster(
+        &map.ini,
+        rules.color_schemes.as_slice(),
+        Some(&rules),
+    );
     let mut overlay_grid = OverlayGrid::from_overlay_entries(
         &map.overlays,
         terrain_bootstrap.resolved.width(),
@@ -252,6 +258,9 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         // A parity run stands in for a skirmish launch, which is a nonzero native mode.
         game_mode_nonzero: true,
         no_damage: false,
+        // Headless parity stands in for stock OfflineSkirmish, whose raw
+        // `[MultiplayerDialogSettings] AIDifficulty` is zero.
+        trigger_difficulty_raw: 0,
         // CANONICAL CELL-ARRAY FRAME, not [Map] Size= — see ScenarioDescriptor.
         map_width: terrain_bootstrap.resolved.width(),
         map_height: terrain_bootstrap.resolved.height(),
@@ -309,6 +318,27 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
             );
         },
     );
+    let trigger_program = crate::map::trigger_program::TriggerProgram::compile(
+        &map.ini,
+        &map.tags,
+        &map.triggers,
+        &map.events,
+        &map.actions,
+    )
+    .map_err(|error| format!("active trigger program rejected: {error}"))?;
+    let trigger_attachments = crate::sim::trigger_runtime::TriggerAttachmentPlan::from_loaded_map(
+        &trigger_program,
+        &map,
+        &sim,
+    );
+    sim.trigger_runtime = crate::sim::trigger_runtime::TriggerRuntime::materialize_fresh(
+        &trigger_program,
+        &map.local_variables,
+        &trigger_attachments,
+        sim.session.trigger_difficulty_raw,
+        sim.session.binary_frame,
+        &mut sim.scenario_rng,
+    );
     // F09: bind HVA-driven voxel animation frame counts through the same
     // GPU-free catalog the app uses; headless previously ran every voxel
     // animation at its 1-frame default.
@@ -350,9 +380,11 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
                 terrain_template: None,
                 rules,
                 trigger_graph: Default::default(),
+                trigger_program,
                 triggers: Default::default(),
                 events: Default::default(),
                 actions: Default::default(),
+                waypoints: map.waypoints.clone(),
             },
         },
         map,

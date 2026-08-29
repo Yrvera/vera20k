@@ -145,7 +145,7 @@ const THEATER_DEFS: &[(&str, TheaterDef)] = &[
 ];
 
 /// Start tile_id and count for one tileset section (e.g., [TileSet0013]).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TilesetBounds {
     /// First tile_id belonging to this tileset.
     pub start: u16,
@@ -311,7 +311,22 @@ pub struct TilesetLookup {
     /// `None` means the tile declared no `Tile%02dAnim`, matching the tile
     /// type's -1 animation index.
     tile_anims: Vec<Option<TileAnimAttachment>>,
+    /// Declaration-ordered compatibility records built from each unequal
+    /// `LastTilesInSet`. Values replace native's pointer-vector storage while
+    /// retaining its exact signed walk semantics.
+    legacy_tile_index_exceptions: Vec<LegacyTileIndexException>,
 }
+
+/// Immutable value projection of one native separately allocated eight-byte
+/// `LegacyException` record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LegacyTileIndexException {
+    legacy_boundary: i32,
+    delta: i32,
+}
+
+const MAX_USABLE_TILE_SLOTS: usize = u16::MAX as usize;
+const MAX_TILESET_ORDINAL: u32 = u16::MAX as u32;
 
 impl TilesetLookup {
     /// Get the TMP filename for a given tile index.
@@ -450,12 +465,57 @@ impl TilesetLookup {
             .copied()
             .unwrap_or(false)
     }
+
+    /// Translate one raw IsoMap tile index through the active theater's
+    /// declaration-ordered `LastTilesInSet` compatibility records.
+    ///
+    /// Retail provenance: `CalculateLegacyMapTileIndex @ 0x00544E30` keeps
+    /// positive 0xFFFF unchanged, compares every signed boundary with the
+    /// original raw input, stops on the first greater boundary, and wrapping-
+    /// adds every delta already reached.
+    pub(crate) fn translate_legacy_map_tile_index(&self, raw: i32) -> i32 {
+        if raw == i32::from(u16::MAX) {
+            return raw;
+        }
+        let mut result = raw;
+        for entry in &self.legacy_tile_index_exceptions {
+            if entry.legacy_boundary > raw {
+                break;
+            }
+            result = result.wrapping_add(entry.delta);
+        }
+        result
+    }
+}
+
+fn checked_tileset_ordinal(ordinal: u32) -> Result<u16, MapError> {
+    u16::try_from(ordinal).map_err(|_| MapError::TilesetOrdinalOverflow {
+        ordinal,
+        maximum: MAX_TILESET_ORDINAL,
+    })
+}
+
+fn read_tileset_row<'a>(
+    ini: &'a IniFile,
+    ordinal: u32,
+) -> Result<Option<(&'a IniSection, i32)>, MapError> {
+    let section_name = format!("TileSet{ordinal:04}");
+    let section = ini.section(&section_name);
+    let tiles_in_set = section.map_or(-1, |section| section.read_int("TilesInSet", -1));
+    if tiles_in_set == -1 {
+        return Ok(None);
+    }
+    checked_tileset_ordinal(ordinal)?;
+    Ok(Some((
+        section.expect("nonterminating TilesInSet requires a section"),
+        tiles_in_set,
+    )))
 }
 
 /// Parse a theater INI file into a TilesetLookup.
 ///
 /// Iterates [TileSet0000], [TileSet0001], ... sections in order.
-/// Each section's `TilesInSet` (default 1) advances the global tile_id counter.
+/// Each section's positive `TilesInSet` advances the global tile_id counter.
 /// The filename is `{FileName}{NN:02}.{extension}` where NN is 1-indexed.
 /// Blank FileName entries consume tile_id slots but map to None.
 pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLookup, MapError> {
@@ -468,26 +528,57 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
     let mut morphable_flags: Vec<bool> = Vec::new();
     let mut allow_tiberium_flags: Vec<bool> = Vec::new();
     let mut tile_anims: Vec<Option<TileAnimAttachment>> = Vec::new();
+    let mut legacy_tile_index_exceptions = Vec::new();
+    let mut actual_cursor = 0i32;
+    let mut legacy_cursor = 0i32;
 
-    // Iterate tileset sections in numerical order: TileSet0000, TileSet0001, ...
-    for idx in 0..10000u32 {
-        let section_name: String = format!("TileSet{:04}", idx);
-        let section: &IniSection = match ini.section(&section_name) {
-            Some(s) => s,
-            None => break, // No more tilesets.
+    // Retail provenance: `Read_Theater_TileSets_INI @ 0x00545150` publishes
+    // candidates in ordinal order and terminates only when ReadInt returns the
+    // exact signed -1 sentinel. `%04d` is a minimum width, not a 10,000-row cap.
+    let mut idx = 0u32;
+    loop {
+        let Some((section, tiles_in_set)) = read_tileset_row(&ini, idx)? else {
+            break;
         };
 
         let filename: &str = section.get("FileName").unwrap_or("");
-        let set_name: &str = section.get("SetName").unwrap_or("");
+        let set_name: &str = section.get("SetName").unwrap_or("No Name");
         let raw_tiles: Option<&str> = section.get("TilesInSet");
-        // TilesInSet=0 means empty tileset — consume 0 tile_id slots.
-        // Do NOT clamp to 1; that shifts all subsequent tile indices.
-        let tiles_in_set: u32 = section.get_i32("TilesInSet").unwrap_or(0).max(0) as u32;
+        let last_tiles_in_set = section.read_int("LastTilesInSet", -1);
+        if last_tiles_in_set != -1 && last_tiles_in_set != tiles_in_set {
+            let boundary = legacy_cursor.wrapping_add(last_tiles_in_set);
+            legacy_tile_index_exceptions.push(LegacyTileIndexException {
+                legacy_boundary: boundary,
+                delta: tiles_in_set.wrapping_sub(last_tiles_in_set),
+            });
+            legacy_cursor = boundary;
+        } else {
+            legacy_cursor = legacy_cursor.wrapping_add(tiles_in_set);
+        }
 
-        let start: u16 = entries.len() as u16;
+        // Native creates no tile objects for zero or negative counts other
+        // than the terminating -1, but its compatibility cursor above still
+        // advances. Positive counts retain missing/blank registry slots.
+        let represented_count = usize::try_from(tiles_in_set).unwrap_or(0);
+        let attempted_slots = entries
+            .len()
+            .checked_add(represented_count)
+            .unwrap_or(usize::MAX);
+        if attempted_slots > MAX_USABLE_TILE_SLOTS {
+            return Err(MapError::TilesetRegistryTooLarge {
+                attempted: attempted_slots,
+                maximum: MAX_USABLE_TILE_SLOTS,
+            });
+        }
+        let tiles_in_set = u16::try_from(represented_count)
+            .expect("registry limit proves each represented count fits u16");
+
+        let start = u16::try_from(actual_cursor)
+            .expect("safe registry domain proves the native actual cursor fits u16");
+        debug_assert_eq!(usize::from(start), entries.len());
         tileset_bounds.push(TilesetBounds {
             start,
-            count: tiles_in_set as u16,
+            count: tiles_in_set,
         });
         set_names.push(set_name.to_string());
         let morphable: bool = section.get_bool("Morphable").unwrap_or(false);
@@ -518,7 +609,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
 
         if filename.is_empty() {
             // Blank tileset — consume slots but produce None entries.
-            for _ in 0..tiles_in_set {
+            for _ in 0..usize::from(tiles_in_set) {
                 entries.push(None);
                 variant_filenames.push(Vec::new());
                 tile_anims.push(None);
@@ -527,13 +618,18 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
             // Each tile is named {prefix}{NN:02}.{ext}, 1-indexed. Sibling
             // discovery waits until load_theater has activated the theater
             // archives, keeping this parser asset-independent.
-            for i in 1..=tiles_in_set {
+            for i in 1..=u32::from(tiles_in_set) {
                 let main_name = format!("{}{:02}.{}", filename, i, extension);
                 entries.push(Some(main_name));
                 variant_filenames.push(Vec::new());
                 tile_anims.push(anim_section.and_then(|section| parse_tile_anim(section, i)));
             }
         }
+        actual_cursor = actual_cursor.wrapping_add(i32::from(tiles_in_set));
+        idx = idx.checked_add(1).ok_or(MapError::TilesetOrdinalOverflow {
+            ordinal: u32::MAX,
+            maximum: MAX_TILESET_ORDINAL,
+        })?;
     }
 
     // Diagnostic: log first 15 tilesets for debugging tile mapping.
@@ -570,6 +666,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
         morphable_flags,
         allow_tiberium_flags,
         tile_anims,
+        legacy_tile_index_exceptions,
     })
 }
 
@@ -1094,6 +1191,14 @@ fn resolve_contiguous_variant_chains(lookup: &mut TilesetLookup, asset_manager: 
         groups,
         max_total_files,
     );
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_contiguous_variant_chains_for_test(
+    lookup: &mut TilesetLookup,
+    asset_manager: &AssetManager,
+) {
+    resolve_contiguous_variant_chains(lookup, asset_manager);
 }
 
 fn resolve_tileset_start(lookup: &TilesetLookup, ordinal: Option<i32>) -> Option<u16> {

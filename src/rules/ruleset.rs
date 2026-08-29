@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::rules::combat_damage::CombatDamageDefaults;
+pub use crate::rules::crate_rules::{CrateEffect, CrateRules, PowerupEntry};
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerStack};
 use crate::rules::mission_data::MissionControl;
@@ -40,6 +41,7 @@ use crate::rules::voxel_anim_type::{VoxelAnimType, VoxelAnimTypeId};
 use crate::rules::warhead_type::WarheadType;
 use crate::rules::weapon_type::WeaponType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 
 /// Country-level fields needed by gameplay systems.
 #[derive(Debug, Clone)]
@@ -56,6 +58,21 @@ pub struct CountryRules {
     /// `Armor=` global country armor multiplier. Native stores this as a
     /// double and folds it into the house armor value when difficulty is set.
     pub armor: f64,
+    /// `Firepower=` global country firepower multiplier. Native stores this
+    /// as binary64 and folds it with the selected difficulty firepower when
+    /// HouseClass difficulty is installed.
+    pub firepower: f64,
+    /// HouseType category speed bonuses, stored as their native f32 words.
+    pub speed_infantry_mult: NativeF32Bits,
+    pub speed_units_mult: NativeF32Bits,
+    pub speed_aircraft_mult: NativeF32Bits,
+    /// HouseType category cost multipliers consumed by
+    /// `HouseClass::GetCostBonus @ 0x0050BDF0`. Native stores each as f32.
+    pub cost_infantry_mult: NativeF32Bits,
+    pub cost_units_mult: NativeF32Bits,
+    pub cost_aircraft_mult: NativeF32Bits,
+    pub cost_buildings_mult: NativeF32Bits,
+    pub cost_defenses_mult: NativeF32Bits,
     /// Per-target category armor multipliers. Native stores these as f32 and
     /// reads the selected slot live for every receiver call.
     pub armor_infantry_mult: f32,
@@ -85,6 +102,15 @@ impl Default for CountryRules {
             wall_owner: true,
             income_ppm: INCOME_PPM_SCALE,
             armor: 1.0,
+            firepower: 1.0,
+            speed_infantry_mult: NativeF32Bits::ONE,
+            speed_units_mult: NativeF32Bits::ONE,
+            speed_aircraft_mult: NativeF32Bits::ONE,
+            cost_infantry_mult: NativeF32Bits::ONE,
+            cost_units_mult: NativeF32Bits::ONE,
+            cost_aircraft_mult: NativeF32Bits::ONE,
+            cost_buildings_mult: NativeF32Bits::ONE,
+            cost_defenses_mult: NativeF32Bits::ONE,
             armor_infantry_mult: 1.0,
             armor_units_mult: 1.0,
             armor_aircraft_mult: 1.0,
@@ -108,6 +134,31 @@ impl CountryRules {
                 .map(|v| (v as f64 * INCOME_PPM_SCALE as f64).round() as i64)
                 .unwrap_or(INCOME_PPM_SCALE),
             armor: section.get_f64("Armor").unwrap_or(1.0),
+            firepower: section.get_f64("Firepower").unwrap_or(1.0),
+            speed_infantry_mult: NativeF32Bits::from_bits(
+                section.get_f32("SpeedInfantryMult").unwrap_or(1.0).to_bits(),
+            ),
+            speed_units_mult: NativeF32Bits::from_bits(
+                section.get_f32("SpeedUnitsMult").unwrap_or(1.0).to_bits(),
+            ),
+            speed_aircraft_mult: NativeF32Bits::from_bits(
+                section.get_f32("SpeedAircraftMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_infantry_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostInfantryMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_units_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostUnitsMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_aircraft_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostAircraftMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_buildings_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostBuildingsMult").unwrap_or(1.0).to_bits(),
+            ),
+            cost_defenses_mult: NativeF32Bits::from_bits(
+                section.get_f32("CostDefensesMult").unwrap_or(1.0).to_bits(),
+            ),
             armor_infantry_mult: section.get_f32("ArmorInfantryMult").unwrap_or(1.0),
             armor_units_mult: section.get_f32("ArmorUnitsMult").unwrap_or(1.0),
             armor_aircraft_mult: section.get_f32("ArmorAircraftMult").unwrap_or(1.0),
@@ -276,6 +327,9 @@ pub struct GeneralRules {
     /// Receiver-side divisor selected by the rank-specific `STRONGER`
     /// ability (`VeteranArmor=` in `[General]`).
     pub veteran_armor: f64,
+    /// `[General] VeteranSpeed=` parsed through native binary32 then widened
+    /// and stored as binary64. Stock bits are `0x3FF3333340000000`.
+    pub veteran_speed: NativeF64Bits,
     /// `[General] VeteranRatio=` — how many times its own cost an object must
     /// destroy to gain one rank. `RulesClass+0x668`, read at `0x0066EEB0`.
     pub veteran_ratio: f64,
@@ -285,9 +339,16 @@ pub struct GeneralRules {
     pub veteran_cap: f64,
     /// Difficulty armor doubles in native Hard/Normal/Easy table order.
     pub difficulty_armor: [f64; 3],
+    /// Difficulty firepower doubles in native Hard/Normal/Easy table order.
+    pub difficulty_firepower: [f64; 3],
     /// `[General] ComputerBaseDefenseResponse=`. The active House responder
     /// forms its signed/wrapping budget as `attacker Cost * this value`.
     pub computer_base_defense_response: i32,
+    /// Signed `[General] MaximumBuildingPlacementFailures=` at `Rules+0xE48`.
+    /// Native constructor default is `5`; both active retail rules files
+    /// override it with `3`. Building exit compares strictly after incrementing;
+    /// negative mod values remain literal.
+    pub maximum_building_placement_failures: i32,
     /// `[General] BaseDefenseDelay=` in minutes. A strict responder-budget
     /// overshoot arms the attacker cooldown for `ftol(value * 900)` frames.
     pub base_defense_delay_minutes: f64,
@@ -445,6 +506,37 @@ pub struct GeneralRules {
     /// `NavalUnitEmerge`; the native constructor's invalid Voc index is silence
     /// when the key is absent or cannot resolve.
     pub cloak_sound: Option<String>,
+    /// `[AudioVisual] YuriMindControlSound=`. The detonation caller emits it
+    /// only after a successful CaptureUnit and only when the old victim House
+    /// or controller House passes `HouseClass::IsHumanPlayer`.
+    pub yuri_mind_control_sound: Option<String>,
+    /// Global `[AudioVisual] MindClearedSound=` fallback used when the victim
+    /// type has no valid per-type override.
+    pub mind_cleared_sound: Option<String>,
+    /// `[AudioVisual] EnterGrinderSound=` emitted by the Grinder per-cell
+    /// transaction immediately before the victim's synchronous UnInit.
+    pub enter_grinder_sound: Option<String>,
+    /// `[AudioVisual] EnterBioReactorSound=` emitted by Infantry absorber
+    /// arrival after radio 0x15 accepts and before the victim is Limboed.
+    pub enter_bio_reactor_sound: Option<String>,
+    /// `[General] RefundPercent=`. RulesClass stores this as binary64; the
+    /// refund leaf narrows it once to f32 before multiplying a human refund.
+    pub refund_percent: NativeF64Bits,
+    /// `[General] ControlledAnimationType=` attached to reversible victims.
+    pub controlled_animation_type: Option<String>,
+    /// Signed `[CombatDamage] MindControlAttackLineFrames=` copied into each
+    /// native MCNode at construction.
+    pub mind_control_attack_line_frames: i32,
+    /// Source-width AI-capture fate weights. Native accepts custom vectors and
+    /// walks them in authored order rather than normalizing to four entries.
+    pub ai_capture_normal: Vec<i32>,
+    pub ai_capture_wounded: Vec<i32>,
+    pub ai_capture_low_power: Vec<i32>,
+    pub ai_capture_low_money: Vec<i32>,
+    /// Signed `[General] AICaptureLowMoneyMark=`.
+    pub ai_capture_low_money_mark: i32,
+    /// Raw binary32 `[General] AICaptureWoundedMark=` comparison threshold.
+    pub ai_capture_wounded_mark: NativeF32Bits,
     /// `IdleActionFrequency=` from `[AudioVisual]`, pre-scaled to integer ×1000.
     ///
     /// Scales how long an idle infantryman waits between fidgets: the wait is
@@ -675,6 +767,12 @@ pub struct GeneralRules {
     pub wheeled_uphill: SimFixed,
     /// Non-tracked vehicle downhill coefficient (`WheeledDownhill=`; vanilla 1.2).
     pub wheeled_downhill: SimFixed,
+    /// Native binary64 slope operands. Constructor is exact one; explicit INI
+    /// values are `%f` binary32 widened to binary64.
+    pub tracked_uphill_native: NativeF64Bits,
+    pub tracked_downhill_native: NativeF64Bits,
+    pub wheeled_uphill_native: NativeF64Bits,
+    pub wheeled_downhill_native: NativeF64Bits,
 
     // -- Per-object draw-light offsets --
     /// Signed `[AudioVisual] ExtraUnitLight=` body-light offset (`1000 == 1.0`).
@@ -729,6 +827,10 @@ pub struct GeneralRules {
     pub iq_scatter: i32,
     /// `[IQ] MaxIQLevels` stamped onto ordinary skirmish AI houses.
     pub max_iq_levels: i32,
+    /// Signed `[IQ] Production` threshold for the House-update AI activation
+    /// transaction. Native accepts the constructor default `5` or the parsed
+    /// dword verbatim, without clamping it to `MaxIQLevels`.
+    pub iq_production: i32,
     /// `[IQ] RepairSell` outer gate for BuildingClass repair/sell AI.
     pub iq_repair_sell: i32,
     /// `[IQ] SellBack` gate for the red-health low-credit sell decision.
@@ -916,10 +1018,14 @@ impl Default for GeneralRules {
             gravity: 3,
             veteran_sight: 0,
             veteran_armor: 1.0,
+            veteran_speed: NativeF64Bits::from_bits(0x3ff3_3333_4000_0000),
             veteran_ratio: VETERAN_RATIO_DEFAULT,
             veteran_cap: VETERAN_CAP_DEFAULT,
             difficulty_armor: [1.0; 3],
+            difficulty_firepower: [1.0; 3],
             computer_base_defense_response: 3,
+            // Native Rules+0xE48 constructor default; active retail overrides to 3.
+            maximum_building_placement_failures: 5,
             base_defense_delay_minutes: 0.25,
             suspend_priority: 20,
             suspend_delay_minutes: 2.0,
@@ -999,6 +1105,19 @@ impl Default for GeneralRules {
             cloaking_stages: 9,
             cloak_delay_frames: 18,
             cloak_sound: None,
+            yuri_mind_control_sound: None,
+            mind_cleared_sound: None,
+            enter_grinder_sound: None,
+            enter_bio_reactor_sound: None,
+            refund_percent: NativeF64Bits::HALF,
+            controlled_animation_type: None,
+            mind_control_attack_line_frames: 20,
+            ai_capture_normal: vec![75, 5, 5, 15],
+            ai_capture_wounded: vec![15, 40, 40, 5],
+            ai_capture_low_power: vec![15, 5, 75, 5],
+            ai_capture_low_money: vec![15, 75, 5, 5],
+            ai_capture_low_money_mark: 2000,
+            ai_capture_wounded_mark: NativeF32Bits::from_bits(0x3e80_0000),
             idle_action_frequency_x1000: STOCK_IDLE_ACTION_FREQUENCY_X1000,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
@@ -1068,9 +1187,13 @@ impl Default for GeneralRules {
             // Vanilla rulesmd.ini [General]: 1.0 uphill (no change) / 1.2 downhill (faster),
             // same for tracked and wheeled. Mods can override via [General].
             tracked_uphill: SimFixed::lit("1.0"),
-            tracked_downhill: SimFixed::lit("1.2"),
+            tracked_downhill: SimFixed::lit("1.0"),
             wheeled_uphill: SimFixed::lit("1.0"),
-            wheeled_downhill: SimFixed::lit("1.2"),
+            wheeled_downhill: SimFixed::lit("1.0"),
+            tracked_uphill_native: NativeF64Bits::ONE,
+            tracked_downhill_native: NativeF64Bits::ONE,
+            wheeled_uphill_native: NativeF64Bits::ONE,
+            wheeled_downhill_native: NativeF64Bits::ONE,
             extra_unit_light: 0,
             extra_infantry_light: 0,
             extra_aircraft_light: 0,
@@ -1091,6 +1214,7 @@ impl Default for GeneralRules {
             player_scatter: false,
             iq_scatter: 3,
             max_iq_levels: 5,
+            iq_production: 5,
             iq_repair_sell: 3,
             iq_sell_back: 2,
             credit_reserve: 1000,
@@ -1259,68 +1383,6 @@ impl BridgeRules {
     }
 }
 
-/// Scenario-start crate counts and crate overlay images from `[CrateRules]`.
-///
-/// gamemd reads these into RulesClass and `Post_Map_Init` clamps the lobby
-/// player count between `CrateMinimum` and `CrateMaximum` to decide how many
-/// crates to scatter. Pickup effects (`SilverCrate`, `UnitCrateType`, the
-/// per-goodie weights) belong to the crate system and are deliberately not
-/// parsed here.
-#[derive(Debug, Clone)]
-pub struct CrateRules {
-    /// `CrateMinimum=` — floor on the scenario-start crate count (stock 1).
-    pub minimum: u32,
-    /// `CrateMaximum=` — ceiling on the scenario-start crate count (stock 255).
-    pub maximum: u32,
-    /// `CrateImg=` — overlay type used for the ordinary land crate (stock CRATE).
-    pub crate_img: String,
-    /// `WoodCrateImg=` — overlay type used for random land crates (stock CRATE).
-    pub wood_crate_img: String,
-    /// `WaterCrateImg=` — overlay type used over water (stock WCRATE).
-    pub water_crate_img: String,
-}
-
-impl Default for CrateRules {
-    fn default() -> Self {
-        Self {
-            minimum: 1,
-            maximum: 255,
-            crate_img: "CRATE".to_string(),
-            wood_crate_img: "CRATE".to_string(),
-            water_crate_img: "WCRATE".to_string(),
-        }
-    }
-}
-
-impl CrateRules {
-    fn from_ini(ini: &IniFile) -> Self {
-        let defaults = Self::default();
-        let Some(section) = ini.section("CrateRules") else {
-            return defaults;
-        };
-        let name = |key: &str, fallback: String| -> String {
-            section
-                .get(key)
-                .map(|value| value.trim().to_uppercase())
-                .filter(|value| !value.is_empty())
-                .unwrap_or(fallback)
-        };
-        Self {
-            minimum: section
-                .get_i32("CrateMinimum")
-                .unwrap_or(defaults.minimum as i32)
-                .max(0) as u32,
-            maximum: section
-                .get_i32("CrateMaximum")
-                .unwrap_or(defaults.maximum as i32)
-                .max(0) as u32,
-            crate_img: name("CrateImg", defaults.crate_img),
-            wood_crate_img: name("WoodCrateImg", defaults.wood_crate_img),
-            water_crate_img: name("WaterCrateImg", defaults.water_crate_img),
-        }
-    }
-}
-
 /// Global radiation-field constants parsed from the `[Radiation]` section.
 /// Consumed by the per-cell radiation service (`sim::radiation`) and the
 /// per-foot-unit damage step. Render-only keys (light/tint/color) are parsed
@@ -1434,8 +1496,19 @@ impl GeneralRules {
     }
 
     fn from_ini(ini: &IniFile) -> Self {
+        let defaults = Self::default();
+        // gamemd-derived: `RulesClass__ReadIQ @ 0x00674240` reads signed
+        // `[IQ] Production` into `Rules+0x143C` at `0x006742C1`, independently
+        // of the `[General]` pass and without clamping the parsed dword.
+        let iq_production = ini
+            .section("IQ")
+            .and_then(|section| section.get_i32("Production"))
+            .unwrap_or(defaults.iq_production);
         let Some(general) = ini.section("General") else {
-            return Self::default();
+            return Self {
+                iq_production,
+                ..defaults
+            };
         };
         // ConditionYellow/ConditionRed live in [AudioVisual], not [General].
         let audio_visual = ini.section("AudioVisual");
@@ -1459,7 +1532,6 @@ impl GeneralRules {
                 .unwrap_or(default)
                 .to_string()
         };
-        let defaults = Self::default();
         let mut infantry_death_anims = defaults.infantry_death_anims.clone();
         for (index, key, fallback) in [
             (3, "InfantryExplode", "S_BANG34"),
@@ -1503,10 +1575,27 @@ impl GeneralRules {
                 .and_then(|section| section.get_f64("Armor"))
                 .unwrap_or(1.0)
         });
+        let difficulty_firepower = ["Difficult", "Normal", "Easy"].map(|section_name| {
+            ini.section(section_name)
+                .and_then(|section| section.get_f64("Firepower"))
+                .unwrap_or(1.0)
+        });
         // These are ReadDouble values (single-precision parse widened to f64)
         // and the consumer's ftol boundary chops toward zero.
         let ambient_change_rate = general.read_double("AmbientChangeRate", 0.2);
         let ambient_change_step = general.read_double("AmbientChangeStep", 0.2);
+        let parse_capture_weights = |key: &str, fallback: &[i32]| {
+            general
+                .get_list(key)
+                .map(|values| {
+                    values
+                        .into_iter()
+                        .filter_map(|value| value.trim().parse::<i32>().ok())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|values| !values.is_empty())
+                .unwrap_or_else(|| fallback.to_vec())
+        };
         Self {
             scroll_multiplier: audio_visual
                 .and_then(|s| s.get_f64("ScrollMultiplier"))
@@ -1554,18 +1643,28 @@ impl GeneralRules {
                 .unwrap_or(defaults.gravity),
             veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
             veteran_armor: general.get_f64("VeteranArmor").unwrap_or(1.0),
+            veteran_speed: NativeF64Bits::from_bits(
+                general
+                    .get_f64("VeteranSpeed")
+                    .unwrap_or(f64::from(1.2_f32))
+                    .to_bits(),
+            ),
             veteran_ratio: general
                 .get_f64("VeteranRatio")
                 .unwrap_or(VETERAN_RATIO_DEFAULT),
             veteran_cap: general.get_f64("VeteranCap").unwrap_or(VETERAN_CAP_DEFAULT),
             difficulty_armor,
+            difficulty_firepower,
             computer_base_defense_response: general
                 .get_i32("ComputerBaseDefenseResponse")
                 .unwrap_or(defaults.computer_base_defense_response),
-            base_defense_delay_minutes: general.read_double(
-                "BaseDefenseDelay",
-                defaults.base_defense_delay_minutes,
-            ),
+            // Signed [General] binding for native Rules+0xE48. The verified
+            // report establishes default 5 and active-retail override 3.
+            maximum_building_placement_failures: general
+                .get_i32("MaximumBuildingPlacementFailures")
+                .unwrap_or(defaults.maximum_building_placement_failures),
+            base_defense_delay_minutes: general
+                .read_double("BaseDefenseDelay", defaults.base_defense_delay_minutes),
             suspend_priority: general
                 .get_i32("SuspendPriority")
                 .unwrap_or(defaults.suspend_priority),
@@ -1711,6 +1810,83 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            yuri_mind_control_sound: audio_visual
+                .and_then(|s| s.get("YuriMindControlSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            mind_cleared_sound: audio_visual
+                .and_then(|s| s.get("MindClearedSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            enter_grinder_sound: audio_visual
+                .and_then(|s| s.get("EnterGrinderSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            enter_bio_reactor_sound: audio_visual
+                .and_then(|s| s.get("EnterBioReactorSound"))
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(str::to_string),
+            refund_percent: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "RefundPercent",
+                        f64::from_bits(defaults.refund_percent.bits()),
+                    )
+                    .to_bits(),
+            ),
+            controlled_animation_type: general
+                .get("ControlledAnimationType")
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !crate::rules::ini_parser::is_native_none_type_name(s)
+                })
+                .map(|s| s.to_ascii_uppercase()),
+            mind_control_attack_line_frames: combat_damage
+                .and_then(|s| s.get_i32("MindControlAttackLineFrames"))
+                .unwrap_or(defaults.mind_control_attack_line_frames),
+            ai_capture_normal: parse_capture_weights(
+                "AICaptureNormal",
+                &defaults.ai_capture_normal,
+            ),
+            ai_capture_wounded: parse_capture_weights(
+                "AICaptureWounded",
+                &defaults.ai_capture_wounded,
+            ),
+            ai_capture_low_power: parse_capture_weights(
+                "AICaptureLowPower",
+                &defaults.ai_capture_low_power,
+            ),
+            ai_capture_low_money: parse_capture_weights(
+                "AICaptureLowMoney",
+                &defaults.ai_capture_low_money,
+            ),
+            ai_capture_low_money_mark: general
+                .get_i32("AICaptureLowMoneyMark")
+                .unwrap_or(defaults.ai_capture_low_money_mark),
+            ai_capture_wounded_mark: NativeF32Bits::from_bits(
+                (general.read_double(
+                    "AICaptureWoundedMark",
+                    f32::from_bits(defaults.ai_capture_wounded_mark.bits()).into(),
+                ) as f32)
+                    .to_bits(),
+            ),
             idle_action_frequency_x1000: (audio_visual
                 .map(|s| {
                     s.read_double(
@@ -1933,6 +2109,38 @@ impl GeneralRules {
                 .get_f32("WheeledDownhill")
                 .map(sim_from_f32)
                 .unwrap_or(defaults.wheeled_downhill),
+            tracked_uphill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "TrackedUphill",
+                        f64::from_bits(defaults.tracked_uphill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
+            tracked_downhill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "TrackedDownhill",
+                        f64::from_bits(defaults.tracked_downhill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
+            wheeled_uphill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "WheeledUphill",
+                        f64::from_bits(defaults.wheeled_uphill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
+            wheeled_downhill_native: NativeF64Bits::from_bits(
+                general
+                    .read_double(
+                        "WheeledDownhill",
+                        f64::from_bits(defaults.wheeled_downhill_native.bits()),
+                    )
+                    .to_bits(),
+            ),
             // RulesClass's AudioVisual pass stores these ReadDouble values as
             // signed milliunits after the active x87 chop-toward-zero conversion.
             extra_unit_light: (audio_visual
@@ -2013,6 +2221,7 @@ impl GeneralRules {
             max_iq_levels: iq
                 .and_then(|s| s.get_i32("MaxIQLevels"))
                 .unwrap_or(defaults.max_iq_levels),
+            iq_production,
             iq_repair_sell: iq
                 .and_then(|s| s.get_i32("RepairSell"))
                 .unwrap_or(defaults.iq_repair_sell),
@@ -2240,6 +2449,8 @@ pub struct RuleSet {
     /// this retains distinct types when malformed/custom rules list the same
     /// ID in more than one category.
     object_category_index: HashMap<(ObjectCategory, String), TypeHandle>,
+    /// Case-insensitive native BuildingType registry identity to its ordered index.
+    building_type_indices: HashMap<String, i32>,
     /// All weapons indexed by ID (e.g., "105mm" → WeaponType).
     weapons: HashMap<String, WeaponType>,
     /// All warheads indexed by ID (e.g., "AP" → WarheadType).
@@ -2276,6 +2487,34 @@ pub struct RuleSet {
     pub general: GeneralRules,
     /// Signed, unclamped `[AI] AIBaseSpacing`; constructor default is 1.
     pub ai_base_spacing: i32,
+    /// Source-ordered `[General] Shipyard=` BuildingType identities.
+    pub shipyard_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildConst=` BuildingType identities.
+    pub build_const_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildPower=` BuildingType identities.
+    pub build_power_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildRefinery=` BuildingType identities.
+    pub build_refinery_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildBarracks=` BuildingType identities.
+    pub build_barracks_types: Vec<String>,
+    /// Source-ordered `[AI] BuildTech=` identities used by the native
+    /// FirstBuildableFromArray superweapon-disabled tail.
+    pub build_tech_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildWeapons=` BuildingType identities.
+    pub build_weapons_types: Vec<String>,
+    /// Source-ordered resolved `[AI] BuildRadar=` BuildingType identities.
+    pub build_radar_types: Vec<String>,
+    /// Source-ordered resolved `[General] HarvesterUnit=` UnitType identities.
+    pub harvester_unit_types: Vec<String>,
+    /// Signed Hard/Normal/Easy vectors consumed directly by BasePlan Recalc.
+    pub ai_slave_miner_number: Vec<i32>,
+    pub ai_extra_refineries: Vec<i32>,
+    pub allied_base_defense_counts: Vec<i32>,
+    pub soviet_base_defense_counts: Vec<i32>,
+    pub third_base_defense_counts: Vec<i32>,
+    /// Signed `[General] AINavalYardAdjacency=` in cells. Native constructor
+    /// default is 20 and the consumer shifts it left by eight without clamping.
+    pub ai_naval_yard_adjacency: i32,
     /// Reset value of `[SpecialFlags] InitialVeteran=`. The similarly named
     /// stock `[General]` key is not read by the native SpecialFlags parser.
     pub initial_veteran: bool,
@@ -2372,6 +2611,119 @@ pub struct RuleSet {
     source_ini_hash: u64,
 }
 
+/// Project one native AI planning type list through its `char[128]` reader.
+///
+/// gamemd-derived: `RulesClass__ReadAI @ 0x00672AE0`, seven list blocks
+/// `0x00672B14..0x00673058` and `0x0067368C..0x0067375B`, plus
+/// `RulesClass__ReadGeneral @ 0x0066D530` HarvesterUnit block
+/// `0x0066F8C8..0x0066F9CB`. Each calls `CCINIClass__ReadString @ 0x00528A10`
+/// with length `0x80`, trims the complete copied buffer, then tokenizes with
+/// comma as the sole `strtok` delimiter. `IniFile::from_bytes` stores each
+/// source byte as one zero-extended scalar, so narrowing before truncation
+/// preserves the native payload-byte boundary even when Rust UTF-8 would not.
+fn parse_native_type_list_source_tokens(value: &str) -> Vec<String> {
+    const NATIVE_PAYLOAD_BYTES: usize = 127;
+
+    let Some(mut copied) = value
+        .chars()
+        .map(|character| u8::try_from(u32::from(character)).ok())
+        .collect::<Option<Vec<_>>>()
+    else {
+        // Production INI values come through `IniFile::from_bytes` and are
+        // always in the reversible byte domain. A direct Unicode-only test
+        // value has no native narrow-byte identity and must not alias a
+        // registered BuildingType.
+        return Vec::new();
+    };
+    copied.truncate(NATIVE_PAYLOAD_BYTES);
+
+    let first = copied.iter().position(|byte| *byte > b' ');
+    let Some(first) = first else {
+        return Vec::new();
+    };
+    let last = copied
+        .iter()
+        .rposition(|byte| *byte > b' ')
+        .expect("the first non-control byte also supplies the last");
+
+    copied[first..=last]
+        .split(|byte| *byte == b',')
+        // CRT `strtok` coalesces repeated delimiters and emits no empty token
+        // for leading, repeated, or trailing commas.
+        .filter(|token| !token.is_empty())
+        .filter(|token| {
+            !token.eq_ignore_ascii_case(b"none") && !token.eq_ignore_ascii_case(b"<none>")
+        })
+        .map(crate::util::native_string::widen_bytes)
+        .collect()
+}
+
+/// Parse the signed DynamicVector payload used by Recalc difficulty tables.
+///
+/// gamemd-derived: `DifficultyClass__ReadINI_IntVector @ 0x00475D70`, reached
+/// by `RulesClass__ReadGeneral @ 0x0066D530` for AISlaveMinerNumber
+/// `0x00670585..0x006705B7`, AIExtraRefineries `0x006705F9..0x0067062A`, and
+/// the three BaseDefenseCounts vectors `0x00670013..0x006700BE`. The reader has
+/// a native `char[512]` buffer, whole-buffer trim, comma `strtok`, and CRT atoi.
+fn parse_native_difficulty_int_vector(value: &str) -> Vec<i32> {
+    const NATIVE_PAYLOAD_BYTES: usize = 511;
+
+    let Some(mut copied) = value
+        .chars()
+        .map(|character| u8::try_from(u32::from(character)).ok())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    copied.truncate(NATIVE_PAYLOAD_BYTES);
+
+    let Some(first) = copied.iter().position(|byte| *byte > b' ') else {
+        return Vec::new();
+    };
+    let last = copied
+        .iter()
+        .rposition(|byte| *byte > b' ')
+        .expect("the first non-control byte also supplies the last");
+
+    copied[first..=last]
+        .split(|byte| *byte == b',')
+        .filter(|token| !token.is_empty())
+        .map(native_atoi_bytes)
+        .collect()
+}
+
+/// CRT `atoi` byte-domain projection: skip exactly ASCII whitespace, accept an
+/// optional sign, consume the decimal prefix, and retain 32-bit wrapping.
+fn native_atoi_bytes(value: &[u8]) -> i32 {
+    let mut index = value
+        .iter()
+        .take_while(|&&byte| matches!(byte, b'\t'..=b'\r' | b' '))
+        .count();
+    let negative = value.get(index) == Some(&b'-');
+    if value
+        .get(index)
+        .is_some_and(|byte| matches!(*byte, b'-' | b'+'))
+    {
+        index += 1;
+    }
+    let mut result = 0u32;
+    let mut any = false;
+    while let Some(byte) = value.get(index).filter(|byte| byte.is_ascii_digit()) {
+        any = true;
+        result = result
+            .wrapping_mul(10)
+            .wrapping_add(u32::from(*byte - b'0'));
+        index += 1;
+    }
+    if !any {
+        0
+    } else if negative {
+        result.wrapping_neg() as i32
+    } else {
+        result as i32
+    }
+}
+
 impl RuleSet {
     /// Build from the active ordered rules sources.
     pub fn from_rules_layers(layers: &RulesLayerStack) -> Result<Self, RulesError> {
@@ -2382,7 +2734,9 @@ impl RuleSet {
     pub(crate) fn from_processed_rules(
         processed: &ProcessedRulesLayers,
     ) -> Result<Self, RulesError> {
-        let mut rules = Self::from_ini(processed.ini())?;
+        let mut rules = Self::from_ini_projection(processed.ini())?;
+        rules.crate_rules = processed.crate_rules().clone();
+        rules.crate_rules.powerups = processed.powerups().clone();
         rules.source_ini_hash = processed.content_hash();
         Ok(rules)
     }
@@ -2394,10 +2748,19 @@ impl RuleSet {
     /// are logged as warnings but don't cause errors — RA2's rules.ini
     /// sometimes references sections that don't exist.
     pub fn from_ini(ini: &IniFile) -> Result<Self, RulesError> {
+        let mut rules = Self::from_rules_layers(&RulesLayerStack::new(ini.clone()))?;
+        // Preserve the established one-source compatibility identity. Ordered
+        // production stacks use the boundary-sensitive stack hash instead.
+        rules.source_ini_hash = ini.content_hash();
+        Ok(rules)
+    }
+
+    fn from_ini_projection(ini: &IniFile) -> Result<Self, RulesError> {
         let mut object_list: Vec<ObjectType> = Vec::new();
         let mut object_index: HashMap<String, TypeHandle> = HashMap::new();
         let mut object_category_index: HashMap<(ObjectCategory, String), TypeHandle> =
             HashMap::new();
+        let mut building_type_indices: HashMap<String, i32> = HashMap::new();
         let mut infantry_ids: Vec<String> = Vec::new();
         let mut vehicle_ids: Vec<String> = Vec::new();
         let mut aircraft_ids: Vec<String> = Vec::new();
@@ -2408,6 +2771,54 @@ impl RuleSet {
             .section("AI")
             .and_then(|section| section.get_i32("AIBaseSpacing"))
             .unwrap_or(1);
+        let parse_named_list = |section: &str, key: &str| -> Vec<String> {
+            ini.section(section)
+                .and_then(|section| section.get_list(key))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let shipyard_types = parse_named_list("General", "Shipyard");
+        // gamemd-derived: `RulesClass__Process` reads type registries first
+        // (`ReadBuildingTypes` 0x00668E78), then `RulesClass__ReadAI @
+        // 0x00672AE0` (0x00668EC8). All seven BasePlan lists use the exact
+        // char[128]/whole-buffer-trim/comma-only path owned by their blocks at
+        // 0x00672B14..0x00673058 and 0x0067368C..0x0067375B. None falls back
+        // to `[General]`, and individual tokens are not trimmed.
+        let parse_planning_list = |section_name: &str, key: &str| {
+            ini.section(section_name)
+                .and_then(|section| section.get(key))
+                .map(parse_native_type_list_source_tokens)
+                .unwrap_or_default()
+        };
+        let build_const_source_tokens = parse_planning_list("AI", "BuildConst");
+        let build_power_source_tokens = parse_planning_list("AI", "BuildPower");
+        let build_refinery_source_tokens = parse_planning_list("AI", "BuildRefinery");
+        let build_barracks_source_tokens = parse_planning_list("AI", "BuildBarracks");
+        let build_tech_source_tokens = parse_planning_list("AI", "BuildTech");
+        let build_weapons_source_tokens = parse_planning_list("AI", "BuildWeapons");
+        let build_radar_source_tokens = parse_planning_list("AI", "BuildRadar");
+        let harvester_unit_source_tokens = parse_planning_list("General", "HarvesterUnit");
+        let parse_difficulty_vector = |key: &str| {
+            ini.section("General")
+                .and_then(|section| section.get(key))
+                .map(parse_native_difficulty_int_vector)
+                .unwrap_or_default()
+        };
+        let ai_slave_miner_number = parse_difficulty_vector("AISlaveMinerNumber");
+        let ai_extra_refineries = parse_difficulty_vector("AIExtraRefineries");
+        let allied_base_defense_counts = parse_difficulty_vector("AlliedBaseDefenseCounts");
+        let soviet_base_defense_counts = parse_difficulty_vector("SovietBaseDefenseCounts");
+        let third_base_defense_counts = parse_difficulty_vector("ThirdBaseDefenseCounts");
+        // gamemd-derived: `RulesClass::Constructor @ 0x00666922` stores 20 at
+        // +0xE0C; `RulesClass::ReadGeneral @ 0x006701D9..0x006701FE` reads the
+        // signed `AINavalYardAdjacency=` override.
+        let ai_naval_yard_adjacency = ini
+            .section("General")
+            .and_then(|section| section.get_i32("AINavalYardAdjacency"))
+            .unwrap_or(20);
         let initial_veteran = ini
             .section("SpecialFlags")
             .and_then(|section| section.get_bool("InitialVeteran"))
@@ -2431,7 +2842,8 @@ impl RuleSet {
         let terrain_rules: TerrainRules = TerrainRules::from_ini(ini);
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
-        let crate_rules: CrateRules = CrateRules::from_ini(ini);
+        // Replaced with the pass-local typed result by `from_processed_rules`.
+        let crate_rules = CrateRules::default();
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
@@ -2447,9 +2859,20 @@ impl RuleSet {
             let ids: Vec<String> = parse_registry(ini, registry_name);
             log::info!("Registry [{}]: {} entries", registry_name, ids.len());
 
-            for id in &ids {
+            for (registry_index, id) in ids.iter().enumerate() {
+                if category == ObjectCategory::Building {
+                    building_type_indices
+                        .entry(id.to_ascii_uppercase())
+                        .or_insert(registry_index as i32);
+                }
                 if let Some(section) = ini.section(id) {
                     let mut obj: ObjectType = ObjectType::from_ini_section(id, section, category);
+                    if category == ObjectCategory::Building {
+                        obj.base_plan_type_index = building_type_indices
+                            .get(&id.to_ascii_uppercase())
+                            .copied()
+                            .expect("BuildingType index was registered above");
+                    }
                     if obj.base_reservation_writer_eligible() {
                         obj.base_reservation_spacing = Some(ai_base_spacing);
                     }
@@ -2500,6 +2923,45 @@ impl RuleSet {
                 ObjectCategory::Aircraft => aircraft_ids = ids,
                 ObjectCategory::Building => building_ids = ids,
             }
+        }
+
+        // Native BuildingTypeClass__FindOrAllocate @ 0x004653C0 and
+        // UnitTypeClass__FindOrAllocate @ 0x007480D0 resolve the planning-list
+        // tokens case-insensitively while retaining source order and duplicate
+        // pointers. Active-retail tokens were allocated by the earlier type
+        // registry passes. Unknown custom allocation depends on every later
+        // ReadAI list and remains the approved stock-inactive exclusion, so the
+        // Rust projection resolves only within the matching registered family.
+        let resolve_registered = |source: Vec<String>, category: ObjectCategory| {
+            source
+                .into_iter()
+                .filter(|type_id| {
+                    object_category_index.contains_key(&(category, type_id.to_ascii_uppercase()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let build_const_types =
+            resolve_registered(build_const_source_tokens, ObjectCategory::Building);
+        let build_power_types =
+            resolve_registered(build_power_source_tokens, ObjectCategory::Building);
+        let build_refinery_types =
+            resolve_registered(build_refinery_source_tokens, ObjectCategory::Building);
+        let build_barracks_types =
+            resolve_registered(build_barracks_source_tokens, ObjectCategory::Building);
+        let build_tech_types =
+            resolve_registered(build_tech_source_tokens, ObjectCategory::Building);
+        let build_weapons_types =
+            resolve_registered(build_weapons_source_tokens, ObjectCategory::Building);
+        let build_radar_types =
+            resolve_registered(build_radar_source_tokens, ObjectCategory::Building);
+        let harvester_unit_types =
+            resolve_registered(harvester_unit_source_tokens, ObjectCategory::Vehicle);
+        for type_id in &build_const_types {
+            let handle = object_category_index
+                .get(&(ObjectCategory::Building, type_id.to_ascii_uppercase()))
+                .copied()
+                .expect("resolved BuildConst membership remains registered");
+            object_list[handle.0 as usize].build_const_eligible = true;
         }
 
         // Step 2: Collect all weapon and warhead IDs referenced by objects.
@@ -2810,6 +3272,7 @@ impl RuleSet {
             object_list,
             object_index,
             object_category_index,
+            building_type_indices,
             weapons,
             warheads,
             projectiles,
@@ -2825,6 +3288,21 @@ impl RuleSet {
             production,
             general,
             ai_base_spacing,
+            shipyard_types,
+            build_const_types,
+            build_power_types,
+            build_refinery_types,
+            build_barracks_types,
+            build_tech_types,
+            build_weapons_types,
+            build_radar_types,
+            harvester_unit_types,
+            ai_slave_miner_number,
+            ai_extra_refineries,
+            allied_base_defense_counts,
+            soviet_base_defense_counts,
+            third_base_defense_counts,
+            ai_naval_yard_adjacency,
             initial_veteran,
             infantry_ids,
             vehicle_ids,
@@ -2912,6 +3390,25 @@ impl RuleSet {
         self.object_category_index
             .get(&(category, id.to_ascii_uppercase()))
             .map(|handle| self.object_by_handle(*handle))
+    }
+
+    /// Native UnitType registry in construction/source order. Crate Unit
+    /// selection draws an index from this exact family, not the combined
+    /// Techno registry or a hash-map projection.
+    pub(crate) fn unit_types_in_order(&self) -> impl Iterator<Item = &ObjectType> {
+        self.object_list
+            .iter()
+            .filter(|object| object.category == ObjectCategory::Vehicle)
+    }
+
+    /// Resolve one scenario BasePlan token through the native BuildingType
+    /// registry only, matching
+    /// `BuildingTypeClass__FindIndexByName @ 0x0045E7B0` used by
+    /// `FUN_0042EBE0`, and return its ordered index.
+    pub(crate) fn building_type_index(&self, id: &str) -> Option<i32> {
+        self.building_type_indices
+            .get(&id.to_ascii_uppercase())
+            .copied()
     }
 
     /// Resolve a TaskForce member through the exact native family order used
@@ -3097,9 +3594,81 @@ impl RuleSet {
         (country.armor, f64::from(category))
     }
 
+    /// Country half of native HouseClass firepower installation. The caller
+    /// folds this with the House difficulty row before the per-Techno crate
+    /// qword and base damage enter the single x87 conversion boundary.
+    pub(crate) fn country_firepower(&self, id: &str) -> f64 {
+        self.country_rules(id).map_or(1.0, |country| country.firepower)
+    }
+
+    /// Raw HouseType f32 selected by `HouseClass::GetSpeedBonus` for the
+    /// supplied TechnoType category. Building/unknown categories use exact one.
+    pub(crate) fn country_speed_bonus(
+        &self,
+        id: &str,
+        category: ObjectCategory,
+    ) -> NativeF32Bits {
+        let Some(country) = self.country_rules(id) else {
+            return NativeF32Bits::ONE;
+        };
+        match category {
+            ObjectCategory::Infantry => country.speed_infantry_mult,
+            ObjectCategory::Vehicle => country.speed_units_mult,
+            ObjectCategory::Aircraft => country.speed_aircraft_mult,
+            ObjectCategory::Building => NativeF32Bits::ONE,
+        }
+    }
+
+    /// Raw HouseType f32 selected by `HouseClass::GetCostBonus @ 0x0050BDF0`.
+    /// Native's Unit RTTI branch uses SpeedType enum 5 (`Float`) for its
+    /// defense slot; other Units use the unit slot and every Building uses the
+    /// ordinary building slot.
+    pub(crate) fn country_cost_bonus(
+        &self,
+        id: &str,
+        object: &ObjectType,
+    ) -> NativeF32Bits {
+        let Some(country) = self.country_rules(id) else {
+            return NativeF32Bits::ONE;
+        };
+        match object.category {
+            ObjectCategory::Infantry => country.cost_infantry_mult,
+            ObjectCategory::Vehicle
+                if object.speed_type == crate::rules::locomotor_type::SpeedType::Float =>
+            {
+                country.cost_defenses_mult
+            }
+            ObjectCategory::Vehicle => country.cost_units_mult,
+            ObjectCategory::Aircraft => country.cost_aircraft_mult,
+            ObjectCategory::Building => country.cost_buildings_mult,
+        }
+    }
+
     /// Resolve a country name to its stable `[Countries]` registration index.
     pub fn country_index(&self, id: &str) -> Option<CountryIdx> {
         self.country_indices.get(&id.to_ascii_uppercase()).copied()
+    }
+
+    /// Resolve a trigger owner token to the canonical HouseType registration.
+    ///
+    /// gamemd-derived: `TriggerTypeClass::Read` resolves token 1 through
+    /// `HouseTypeClass__FindIndexOfName @ 0x005117D0`. The source-order scan
+    /// checks each HouseType's `Name=` alias (`+0x64`) before its registry ID
+    /// (`+0x24`). Native `<none>` selects the first registered HouseType.
+    pub fn trigger_house_type_index(&self, owner: &str) -> Option<CountryIdx> {
+        if owner.eq_ignore_ascii_case("<none>") {
+            return (!self.country_ids.is_empty()).then_some(CountryIdx(0));
+        }
+        self.country_ids.iter().enumerate().find_map(|(index, id)| {
+            let alias_matches = self
+                .countries
+                .get(id)
+                .and_then(|country| country.name.as_deref())
+                .is_some_and(|name| name.eq_ignore_ascii_case(owner));
+            (alias_matches || id.eq_ignore_ascii_case(owner)).then(|| {
+                CountryIdx(u16::try_from(index).expect("[Countries] exceeds u16 identity space"))
+            })
+        })
     }
 
     /// Resolve a country index back to its source spelling.
@@ -3950,8 +4519,7 @@ SpawnCount=3
         assert_eq!(parsed.cloak_delay_frames, 27);
         assert_eq!(parsed.cloak_sound.as_deref(), Some("NavalUnitEmerge"));
         assert_eq!(
-            GeneralRules::from_ini(&IniFile::from_str("[General]\nCloakingStages=9\n"))
-                .cloak_sound,
+            GeneralRules::from_ini(&IniFile::from_str("[General]\nCloakingStages=9\n")).cloak_sound,
             None,
             "missing CloakSound preserves the native invalid-index default"
         );
@@ -4086,6 +4654,55 @@ CellSpread=0
     }
 
     #[test]
+    fn capture_fate_refund_country_and_global_inputs_preserve_native_widths() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=TestCountry\n[General]\nRefundPercent=33.3%\n[AudioVisual]\nEnterGrinderSound=GrinderEnter\nEnterBioReactorSound=BioEnter\n[TestCountry]\nCostInfantryMult=.9\nCostUnitsMult=.75\nCostAircraftMult=1.25\nCostBuildingsMult=.8\nCostDefensesMult=.6\n[InfantryTypes]\n0=INF\n[VehicleTypes]\n0=UNIT\n1=DEFENSE\n[AircraftTypes]\n0=AIR\n[BuildingTypes]\n0=BUILDING\n[INF]\nName=Infantry\n[UNIT]\nSpeedType=Track\n[DEFENSE]\nSpeedType=Float\n[AIR]\nName=Aircraft\n[BUILDING]\nName=Building\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("capture refund rules parse");
+        let country = rules.country_rules("testcountry").expect("country exists");
+
+        assert_eq!(country.cost_infantry_mult.bits(), 0.9_f32.to_bits());
+        assert_eq!(country.cost_units_mult.bits(), 0.75_f32.to_bits());
+        assert_eq!(country.cost_aircraft_mult.bits(), 1.25_f32.to_bits());
+        assert_eq!(country.cost_buildings_mult.bits(), 0.8_f32.to_bits());
+        assert_eq!(country.cost_defenses_mult.bits(), 0.6_f32.to_bits());
+        for (id, expected) in [
+            ("INF", 0.9_f32),
+            ("UNIT", 0.75_f32),
+            ("DEFENSE", 0.6_f32),
+            ("AIR", 1.25_f32),
+            ("BUILDING", 0.8_f32),
+        ] {
+            assert_eq!(
+                rules
+                    .country_cost_bonus("TestCountry", rules.object(id).expect("fixture object"))
+                    .bits(),
+                expected.to_bits(),
+                "native country cost slot for {id}",
+            );
+        }
+        assert_eq!(
+            rules.general.refund_percent.bits(),
+            (33.3_f32 as f64 * 0.01).to_bits(),
+            "ReadDouble parses f32, applies percent scaling, and stores binary64",
+        );
+        assert_eq!(
+            rules.general.enter_grinder_sound.as_deref(),
+            Some("GrinderEnter")
+        );
+        assert_eq!(
+            rules.general.enter_bio_reactor_sound.as_deref(),
+            Some("BioEnter")
+        );
+
+        let defaults = RuleSet::from_ini(&IniFile::from_str("[General]\n"))
+            .expect("default capture refund rules parse");
+        assert_eq!(defaults.general.refund_percent, NativeF64Bits::HALF);
+        assert!(defaults.general.enter_grinder_sound.is_none());
+        assert!(defaults.general.enter_bio_reactor_sound.is_none());
+    }
+
+    #[test]
     fn gsi_04_07_placement_wall_owner_parses_exact_key_and_defaults_true() {
         assert!(CountryRules::default().wall_owner);
         let ini = IniFile::from_str(
@@ -4114,6 +4731,36 @@ CellSpread=0
         assert_eq!(rules.side_index("north"), Some(SideIdx(0)));
         assert_eq!(rules.side_index("SOUTH"), Some(SideIdx(1)));
         assert_eq!(rules.side_name(SideIdx(0)), Some("North"));
+    }
+
+    #[test]
+    fn trigger_house_type_owner_uses_alias_then_id_source_order_and_none_default() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=First\n1=Second\n2=Third\n\
+             [First]\nName=Shared Alias\n\
+             [Second]\nName=Shared Alias\n\
+             [Third]\nName=Third Alias\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("country aliases parse");
+
+        assert_eq!(
+            rules.trigger_house_type_index("shared alias"),
+            Some(CountryIdx(0)),
+            "duplicate aliases keep first registration order"
+        );
+        assert_eq!(
+            rules.trigger_house_type_index("second"),
+            Some(CountryIdx(1))
+        );
+        assert_eq!(
+            rules.trigger_house_type_index("THIRD ALIAS"),
+            Some(CountryIdx(2))
+        );
+        assert_eq!(
+            rules.trigger_house_type_index("<none>"),
+            Some(CountryIdx(0))
+        );
+        assert_eq!(rules.trigger_house_type_index("missing"), None);
     }
 
     #[test]
@@ -4251,6 +4898,37 @@ CellSpread=0
         assert_eq!(parsed.base_defense_delay_minutes, 0.125_f32 as f64);
         assert_eq!(parsed.suspend_priority, -2);
         assert_eq!(parsed.suspend_delay_minutes, 1.5_f32 as f64);
+    }
+
+    #[test]
+    fn gsi_04_05_base_plan_rules_preserve_signed_retry_limit_and_building_identity() {
+        assert_eq!(
+            GeneralRules::default().maximum_building_placement_failures,
+            5
+        );
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nMaximumBuildingPlacementFailures=-4\n\
+             [BuildingTypes]\n0=GAPOWR\n1=GACNST\n\
+             [GAPOWR]\nStrength=750\nIsBaseDefense=yes\n\
+             [GACNST]\nStrength=1000\nUndeploysInto=AMCV\n",
+        ))
+        .expect("base-plan rules");
+
+        assert_eq!(rules.general.maximum_building_placement_failures, -4);
+        assert_eq!(rules.building_type_index("gapowr"), Some(0));
+        assert_eq!(rules.building_type_index("GACNST"), Some(1));
+        let defense = rules
+            .object_in_category(ObjectCategory::Building, "GAPOWR")
+            .unwrap();
+        assert_eq!(defense.base_plan_type_index, 0);
+        assert!(defense.is_base_defense);
+        assert!(
+            rules
+                .object_in_category(ObjectCategory::Building, "GACNST")
+                .unwrap()
+                .undeploys_into
+                .is_some()
+        );
     }
 
     #[test]
@@ -5005,6 +5683,52 @@ ChuteSound=
     }
 
     #[test]
+    fn house_ai_activation_iq_production_preserves_native_signed_iq_binding() {
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str("")).iq_production,
+            5,
+            "missing [IQ] retains the RulesClass constructor default"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nProduction=-12\n[IQ]\nFixtureOnly=1\n"
+            ))
+            .iq_production,
+            5,
+            "the same key under [General] is not an IQ input"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[IQ]\nProduction=5\n"
+            ))
+            .iq_production,
+            5
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[IQ]\nProduction=-7\n"
+            ))
+            .iq_production,
+            -7,
+            "negative custom thresholds remain signed and unclamped"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nFixtureOnly=1\n[IQ]\nMaxIQLevels=5\nProduction=9\n"
+            ))
+            .iq_production,
+            9,
+            "Production is not clamped to MaxIQLevels"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str("[IQ]\nProduction=-3\n"))
+                .iq_production,
+            -3,
+            "ReadIQ remains authoritative when [General] is absent"
+        );
+    }
+
+    #[test]
     fn base_unit_types_parse_from_general() {
         let ini = IniFile::from_str("[General]\nBaseUnit=AMCV,SMCV,PCV\n");
         let general = GeneralRules::from_ini(&ini);
@@ -5744,6 +6468,245 @@ ZAdjust=-10
             |k| rules.super_weapon(k),
             "super_weapon",
         );
+    }
+
+    #[test]
+    fn naval_base_rules_preserve_source_order_defaults_and_buildconst_identity() {
+        let ini = IniFile::from_str(
+            "[General]\n\
+             Shipyard=GAYARD,nayard,YAYARD\n\
+             BuildConst=WRONG\n\
+             AINavalYardAdjacency=-7\n\
+             [AI]\nBuildConst=,gacnst,,NACNST,gacnst,none,<NoNe>,YACNST,,\n\
+             BuildTech=GAYARD,YAYARD\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAYARD\n1=NAYARD\n2=YAYARD\n3=GACNST\n4=NACNST\n5=YACNST\n6=WRONG\n\
+             [GAYARD]\nFoundation=4x4\n\
+             [NAYARD]\nFoundation=4x4\nAIBasePlanningSide=1\n\
+             [YAYARD]\nFoundation=4x4\nAIBasePlanningSide=-3\n\
+             [GACNST]\nFoundation=4x4\n\
+             [NACNST]\nFoundation=4x4\n\
+             [YACNST]\nFoundation=4x4\n\
+             [WRONG]\nFoundation=4x4\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("naval base rules");
+
+        assert_eq!(rules.shipyard_types, ["GAYARD", "nayard", "YAYARD"]);
+        assert_eq!(
+            rules.build_const_types,
+            ["gacnst", "NACNST", "gacnst", "YACNST"],
+            "ReadAI retains authored case, order, and duplicates while omitting null sentinels"
+        );
+        assert_eq!(rules.build_tech_types, ["GAYARD", "YAYARD"]);
+        assert_eq!(rules.ai_naval_yard_adjacency, -7);
+        assert_eq!(rules.object("GAYARD").unwrap().ai_base_planning_side, -1);
+        assert_eq!(rules.object("NAYARD").unwrap().ai_base_planning_side, 1);
+        assert_eq!(rules.object("YAYARD").unwrap().ai_base_planning_side, -3);
+        for id in ["GACNST", "NACNST", "YACNST"] {
+            assert!(
+                rules
+                    .object_in_category(ObjectCategory::Building, &id.to_ascii_lowercase())
+                    .unwrap()
+                    .build_const_eligible,
+                "{id}"
+            );
+        }
+        for id in ["GAYARD", "NAYARD", "YAYARD"] {
+            let object = rules.object(id).unwrap();
+            assert!(!object.build_const_eligible, "{id}");
+            assert_eq!(
+                crate::rules::foundation::foundation_dimensions(&object.foundation),
+                (4, 4)
+            );
+        }
+        assert!(
+            !rules.object("WRONG").unwrap().build_const_eligible,
+            "the poisoned General key must not contribute membership"
+        );
+
+        let defaults = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n0=YARD\n[YARD]\nFoundation=1x1\n",
+        ))
+        .expect("constructor defaults");
+        assert_eq!(defaults.ai_naval_yard_adjacency, 20);
+        assert_eq!(defaults.object("YARD").unwrap().ai_base_planning_side, -1);
+        assert!(defaults.build_const_types.is_empty());
+        assert!(!defaults.object("YARD").unwrap().build_const_eligible);
+    }
+
+    #[test]
+    fn build_const_readai_does_not_trim_individual_tokens() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[AI]\nBuildConst=GACNST, NACNST\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GACNST\n1=NACNST\n\
+             [GACNST]\nFoundation=1x1\n\
+             [NACNST]\nFoundation=1x1\n",
+        ))
+        .expect("BuildConst whitespace rules");
+
+        assert_eq!(rules.build_const_types, ["GACNST"]);
+        assert!(rules.object("GACNST").unwrap().build_const_eligible);
+        assert!(
+            !rules.object("NACNST").unwrap().build_const_eligible,
+            "the internally space-prefixed token must not alias registered NACNST"
+        );
+    }
+
+    #[test]
+    fn build_const_readai_uses_native_127_source_byte_prefix() {
+        let oversized = format!("GACNST,{},LATE", "X".repeat(120));
+        assert_eq!(oversized.as_bytes()[127], b',');
+        let rules = RuleSet::from_ini(&IniFile::from_str(&format!(
+            "[AI]\nBuildConst={oversized}\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GACNST\n1=LATE\n\
+             [GACNST]\nFoundation=1x1\n\
+             [LATE]\nFoundation=1x1\n"
+        )))
+        .expect("oversized BuildConst rules");
+        assert_eq!(rules.build_const_types, ["GACNST"]);
+        assert!(!rules.object("LATE").unwrap().build_const_eligible);
+
+        // `IniFile::from_bytes` widens 0xE9 to U+00E9, whose Rust UTF-8
+        // encoding is two bytes. It is nevertheless one native source byte at
+        // payload index 126; the comma at source byte 127 and LATE stay outside
+        // the copied buffer without a UTF-8 boundary slice or panic.
+        let mut bytes = b"[AI]\nBuildConst=GACNST,".to_vec();
+        bytes.extend(std::iter::repeat_n(b'X', 119));
+        bytes.push(0xE9);
+        bytes.extend_from_slice(
+            b",LATE\n[InfantryTypes]\n0=DUMMY\n[DUMMY]\nStrength=1\n\
+              [BuildingTypes]\n0=GACNST\n1=LATE\n\
+              [GACNST]\nFoundation=1x1\n[LATE]\nFoundation=1x1\n",
+        );
+        let ini = IniFile::from_bytes(&bytes).expect("byte-domain BuildConst rules");
+        let stored = ini.section("AI").unwrap().get("BuildConst").unwrap();
+        assert_eq!(stored.chars().nth(126), Some(char::from(0xE9)));
+        assert_eq!(stored.chars().nth(127), Some(','));
+        let rules = RuleSet::from_ini(&ini).expect("byte-domain BuildConst RuleSet");
+        assert_eq!(rules.build_const_types, ["GACNST"]);
+        assert!(!rules.object("LATE").unwrap().build_const_eligible);
+    }
+
+    #[test]
+    fn recalc_type_lists_share_native_parser_and_registered_family_resolution() {
+        let ini = IniFile::from_str(
+            "[General]\n\
+             HarvesterUnit=harv,,none,HARV,<none>, AUNIT\n\
+             BuildPower=POISON\n\
+             [AI]\n\
+             BuildConst=con,CON\n\
+             BuildPower=pow,none,POW\n\
+             BuildRefinery=ref\n\
+             BuildBarracks=bar\n\
+             BuildTech=tech, TECH\n\
+             BuildWeapons=weap\n\
+             BuildRadar=rad,<none>,RAD\n\
+             [VehicleTypes]\n0=HARV\n1=AUNIT\n\
+             [BuildingTypes]\n0=CON\n1=POW\n2=REF\n3=BAR\n4=TECH\n5=WEAP\n6=RAD\n7=POISON\n\
+             [HARV]\nStrength=1\n[AUNIT]\nStrength=1\n\
+             [CON]\nFoundation=1x1\n[POW]\nFoundation=1x1\n\
+             [REF]\nFoundation=1x1\n[BAR]\nFoundation=1x1\n\
+             [TECH]\nFoundation=1x1\n[WEAP]\nFoundation=1x1\n\
+             [RAD]\nFoundation=1x1\n[POISON]\nFoundation=1x1\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("all Recalc type lists");
+
+        assert_eq!(rules.build_const_types, ["con", "CON"]);
+        assert_eq!(rules.build_power_types, ["pow", "POW"]);
+        assert_eq!(rules.build_refinery_types, ["ref"]);
+        assert_eq!(rules.build_barracks_types, ["bar"]);
+        assert_eq!(
+            rules.build_tech_types,
+            ["tech"],
+            "the internally space-prefixed token is not individually trimmed"
+        );
+        assert_eq!(rules.build_weapons_types, ["weap"]);
+        assert_eq!(rules.build_radar_types, ["rad", "RAD"]);
+        assert_eq!(
+            rules.harvester_unit_types,
+            ["harv", "HARV"],
+            "sentinels are omitted, duplicates retained, and a space-prefixed Unit token is unresolved"
+        );
+        assert!(rules.object("CON").unwrap().build_const_eligible);
+        assert!(!rules.object("POISON").unwrap().build_const_eligible);
+    }
+
+    #[test]
+    fn recalc_type_lists_preserve_prior_layer_when_later_key_is_missing_or_empty() {
+        let mut layers = RulesLayerStack::new(IniFile::from_str(
+            "[General]\nHarvesterUnit=HARV\n\
+             [AI]\nBuildConst=CON\nBuildPower=POW\nBuildTech=TECH\n\
+             [VehicleTypes]\n0=HARV\n[HARV]\nStrength=1\n\
+             [BuildingTypes]\n0=CON\n1=POW\n2=TECH\n3=NEWPOW\n\
+             [CON]\nFoundation=1x1\n[POW]\nFoundation=1x1\n\
+             [TECH]\nFoundation=1x1\n[NEWPOW]\nFoundation=1x1\n",
+        ));
+        layers.push(
+            RulesLayerKind::Scenario,
+            IniFile::from_str(
+                "[General]\nHarvesterUnit=\nUnrelated=1\n\
+                 [AI]\nBuildConst=\nBuildPower=NEWPOW\n",
+            ),
+        );
+        let rules = RuleSet::from_rules_layers(&layers).expect("layered Recalc lists");
+        assert_eq!(rules.harvester_unit_types, ["HARV"]);
+        assert_eq!(rules.build_const_types, ["CON"]);
+        assert_eq!(rules.build_power_types, ["NEWPOW"]);
+        assert_eq!(rules.build_tech_types, ["TECH"]);
+    }
+
+    #[test]
+    fn recalc_difficulty_vectors_match_native_projection_and_atoi() {
+        assert_eq!(
+            parse_native_difficulty_int_vector(" \t1,,  -2junk,,+3,abc,4294967297,-2147483649  \n"),
+            [1, -2, 3, 0, 1, i32::MAX]
+        );
+        assert_eq!(parse_native_difficulty_int_vector("7"), [7]);
+        assert!(parse_native_difficulty_int_vector(" \t\r\n").is_empty());
+
+        let oversized = format!("1,{},7", "0".repeat(509));
+        assert_eq!(oversized.as_bytes()[511], b',');
+        assert_eq!(
+            parse_native_difficulty_int_vector(&oversized),
+            [1, 0],
+            "bytes beyond the char[512] payload cannot add another entry"
+        );
+    }
+
+    #[test]
+    fn recalc_difficulty_vectors_parse_exact_lengths_and_layer_defaults() {
+        let mut layers = RulesLayerStack::new(IniFile::from_str(
+            "[General]\n\
+             AISlaveMinerNumber=4,3\n\
+             AIExtraRefineries=2,1,0, -1\n\
+             AlliedBaseDefenseCounts=25\n\
+             SovietBaseDefenseCounts=25,22,6\n\
+             ThirdBaseDefenseCounts=25,22,6\n\
+             [BuildingTypes]\n0=DUMMY\n[DUMMY]\nFoundation=1x1\n",
+        ));
+        layers.push(
+            RulesLayerKind::Scenario,
+            IniFile::from_str(
+                "[General]\nAISlaveMinerNumber=\nAIExtraRefineries=9,,7\nUnrelated=1\n",
+            ),
+        );
+        let rules = RuleSet::from_rules_layers(&layers).expect("difficulty vectors");
+        assert_eq!(rules.ai_slave_miner_number, [4, 3]);
+        assert_eq!(rules.ai_extra_refineries, [9, 7]);
+        assert_eq!(rules.allied_base_defense_counts, [25]);
+        assert_eq!(rules.soviet_base_defense_counts, [25, 22, 6]);
+        assert_eq!(rules.third_base_defense_counts, [25, 22, 6]);
+
+        let missing = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=DUMMY\n[DUMMY]\nFoundation=1x1\n",
+        ))
+        .expect("missing vectors");
+        assert!(missing.ai_slave_miner_number.is_empty());
+        assert!(missing.ai_extra_refineries.is_empty());
+        assert!(missing.allied_base_defense_counts.is_empty());
     }
 
     /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id

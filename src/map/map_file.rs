@@ -57,6 +57,8 @@ pub enum MapError {
     Lzo(LzoError),
     Asset(AssetError),
     CellDataTruncated { expected: usize, actual: usize },
+    TilesetRegistryTooLarge { attempted: usize, maximum: usize },
+    TilesetOrdinalOverflow { ordinal: u32, maximum: u32 },
     Io(std::io::Error),
 }
 
@@ -79,6 +81,14 @@ impl std::fmt::Display for MapError {
                     expected, actual
                 )
             }
+            MapError::TilesetRegistryTooLarge { attempted, maximum } => write!(
+                f,
+                "Theater tileset registry requires {attempted} slots, but Rust can represent at most {maximum} usable tile IDs"
+            ),
+            MapError::TilesetOrdinalOverflow { ordinal, maximum } => write!(
+                f,
+                "Theater tileset ordinal {ordinal} exceeds the supported maximum {maximum}"
+            ),
             MapError::Io(e) => write!(f, "IO error: {}", e),
         }
     }

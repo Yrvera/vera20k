@@ -192,6 +192,8 @@ mod tests {
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
         };
         let mut cells = Vec::with_capacity(MAP_SIZE as usize * MAP_SIZE as usize);
         for ry in 0..MAP_SIZE {
@@ -418,6 +420,7 @@ mod tests {
                     player_control: Some(false),
                     iq: None,
                     allies: vec!["HouseB".to_string()],
+                    base_plan: Default::default(),
                 },
                 HouseDefinition {
                     name: "HouseB".to_string(),
@@ -427,6 +430,7 @@ mod tests {
                     player_control: Some(true),
                     iq: None,
                     allies: Vec::new(),
+                    base_plan: Default::default(),
                 },
             ],
         };

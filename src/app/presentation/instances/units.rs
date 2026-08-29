@@ -8,7 +8,8 @@
 
 use super::helpers::{
     EntityDrawBand, apply_bridge_depth_bias, compute_sprite_depth, entity_draw_band,
-    ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
+    entity_draw_layer, ground_sort_row, in_view, is_under_bridge_render_state,
+    tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -28,6 +29,7 @@ use crate::render::unit_slope_transition_cache::{
 };
 use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::components::HarvestOverlay;
+use crate::sim::movement::slope_transition::SLOPE_TRANSITION_FRAMES;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -93,7 +95,8 @@ enum UnitRenderSlopeState {
     Transition {
         from_slope: u8,
         to_slope: u8,
-        phase_num: u8,
+        phase_num: i32,
+        phase_den: u8,
     },
 }
 
@@ -143,17 +146,17 @@ fn terrain_slope_for_render(state: &AppState, rx: u16, ry: u16) -> u8 {
         .unwrap_or(0)
 }
 
-pub(crate) fn slope_transition_phase_num(remaining: u8) -> Option<u8> {
-    match remaining {
-        1..=3 => Some(3 - remaining),
-        _ => None,
-    }
-}
-
 fn unit_render_slope_state(
     state: &AppState,
     entity: &crate::sim::game_entity::GameEntity,
+    display_binary_frame: u32,
 ) -> UnitRenderSlopeState {
+    // Drive/Ship Draw_Matrix reads the locomotor-owned cache even when the
+    // cached slope is zero. Terrain is only a compatibility fallback for
+    // locomotor classes excluded from the native override pair.
+    if let Some(slope_state) = locomotor_render_slope_state(entity, display_binary_frame) {
+        return slope_state;
+    }
     if entity.category == EntityCategory::Aircraft {
         return UnitRenderSlopeState::Stable(0);
     }
@@ -166,29 +169,50 @@ fn unit_render_slope_state(
         return UnitRenderSlopeState::Stable(0);
     }
 
-    let terrain_slope = terrain_slope_for_render(state, entity.position.rx, entity.position.ry);
-    let Some(rocking) = entity.rocking.as_ref() else {
-        return UnitRenderSlopeState::Stable(terrain_slope);
-    };
+    UnitRenderSlopeState::Stable(terrain_slope_for_render(
+        state,
+        entity.position.rx,
+        entity.position.ry,
+    ))
+}
 
-    if let Some(phase_num) = slope_transition_phase_num(rocking.transition_ticks_remaining) {
-        let from_slope = clamp_slope_for_render(rocking.prev_slope);
-        let to_slope = clamp_slope_for_render(rocking.curr_slope);
-        if from_slope != to_slope {
-            return UnitRenderSlopeState::Transition {
+fn locomotor_render_slope_state(
+    entity: &crate::sim::game_entity::GameEntity,
+    display_binary_frame: u32,
+) -> Option<UnitRenderSlopeState> {
+    crate::sim::movement::slope_transition::state_for_entity(entity).map(|slope_state| {
+        match slope_state.render_phase(display_binary_frame) {
+            crate::sim::movement::slope_transition::SlopeRenderPhase::Stable(slope) => {
+                UnitRenderSlopeState::Stable(clamp_slope_for_render(slope))
+            }
+            crate::sim::movement::slope_transition::SlopeRenderPhase::Transition {
                 from_slope,
                 to_slope,
                 phase_num,
-            };
+                phase_den,
+            } => {
+                let from_slope = clamp_slope_for_render(from_slope);
+                let to_slope = clamp_slope_for_render(to_slope);
+                if from_slope == to_slope {
+                    UnitRenderSlopeState::Stable(to_slope)
+                } else {
+                    UnitRenderSlopeState::Transition {
+                        from_slope,
+                        to_slope,
+                        phase_num,
+                        phase_den,
+                    }
+                }
+            }
         }
-    }
+    })
+}
 
-    let stable_slope = clamp_slope_for_render(rocking.curr_slope);
-    if stable_slope == 0 && terrain_slope != 0 {
-        UnitRenderSlopeState::Stable(terrain_slope)
-    } else {
-        UnitRenderSlopeState::Stable(stable_slope)
-    }
+/// Presentation follows the just-committed simulation frame. Drive/Ship
+/// `Draw_Matrix` therefore observes the last frame whose Process entry has
+/// completed, including the unsigned wrap at the initial committed frame.
+const fn display_binary_frame_for_committed_session(committed_binary_frame: u32) -> u32 {
+    committed_binary_frame.wrapping_sub(1)
 }
 
 /// Depth key for one voxel body, from the screen row it was drawn at.
@@ -227,6 +251,8 @@ pub(crate) fn build_unit_instances(
     instance_pages: &mut Vec<usize>,
     top_instances: &mut Vec<SpriteInstance>,
     top_instance_pages: &mut Vec<usize>,
+    top_instance_ids: &mut Vec<u64>,
+    top_instance_layers: &mut Vec<u8>,
     bridge_instances: &mut Vec<SpriteInstance>,
     bridge_instance_pages: &mut Vec<usize>,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
@@ -240,6 +266,10 @@ pub(crate) fn build_unit_instances(
         _ => return,
     };
     let z = state.match_state.input.zoom_level;
+    // Presentation runs after the just-completed simulation frame; snapshot
+    // the one binary frame used by every Drive/Ship Draw_Matrix in this pass.
+    let display_binary_frame =
+        display_binary_frame_for_committed_session(sim.session.binary_frame);
     let (cam_x, cam_y, sw, sh) = (
         state.match_state.input.camera_x,
         state.match_state.input.camera_y,
@@ -322,7 +352,7 @@ pub(crate) fn build_unit_instances(
         // Render slope comes from the locomotor's cached previous/current
         // slope during gamemd's 3-frame transition, then falls back to the
         // stable terrain slope path.
-        let slope_state = unit_render_slope_state(state, entity);
+        let slope_state = unit_render_slope_state(state, entity, display_binary_frame);
         let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
         let interp_z = pos.z;
         if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 120.0) {
@@ -369,6 +399,7 @@ pub(crate) fn build_unit_instances(
             band == EntityDrawBand::Ground && is_under_bridge_render_state(state, entity);
         let collect_ground = band == EntityDrawBand::Ground && !is_bridge_unit;
         let mut ground_pieces = Vec::new();
+        let top_start = top_instances.len();
         let (target_instances, target_instance_pages) = match band {
             EntityDrawBand::Top => (&mut *top_instances, &mut *top_instance_pages),
             EntityDrawBand::Ground if is_bridge_unit => {
@@ -449,6 +480,12 @@ pub(crate) fn build_unit_instances(
             }
         }
 
+        if band == EntityDrawBand::Top {
+            let emitted = top_instances.len() - top_start;
+            top_instance_ids.extend(std::iter::repeat(entity.stable_id).take(emitted));
+            top_instance_layers.extend(std::iter::repeat(entity_draw_layer(entity)).take(emitted));
+        }
+
         // Emit harvest overlay (oregath.shp) if the miner is actively harvesting.
         // OREGATH is an SHP sprite from sprite_atlas, but remains an owned piece
         // of its harvester's Ground slot so atlas identity cannot re-sort it.
@@ -514,11 +551,16 @@ pub(crate) fn build_unit_instances(
 /// camera/slope/body-facing chain the hull was drawn with. That matters on ramps:
 /// the pivot is a point on the tilted hull, so it has to rise and fall with it
 /// rather than being nudged by a fixed screen-space vector.
-fn turret_screen_offset(turret_offset: i32, body_facing: u8, slope_type: u8) -> (f32, f32) {
-    crate::render::vxl_raster::turret_pivot_screen_offset(
+fn turret_screen_offset(
+    turret_offset: i32,
+    body_facing: u8,
+    slope_state: UnitRenderSlopeState,
+) -> (f32, f32) {
+    crate::render::vxl_raster::turret_pivot_screen_offset_for_slope_state(
         turret_offset,
         body_facing,
-        slope_type,
+        stable_slope_for_key(slope_state),
+        slope_blend_for_render_state(slope_state),
         crate::render::vxl_raster::VxlRenderParams::default().scale,
     )
 }
@@ -574,6 +616,25 @@ fn stable_slope_for_key(slope_state: UnitRenderSlopeState) -> u8 {
     }
 }
 
+fn slope_blend_for_render_state(
+    slope_state: UnitRenderSlopeState,
+) -> Option<crate::render::vxl_raster::VxlSlopeBlend> {
+    match slope_state {
+        UnitRenderSlopeState::Stable(_) => None,
+        UnitRenderSlopeState::Transition {
+            from_slope,
+            to_slope,
+            phase_num,
+            phase_den,
+        } => Some(crate::render::vxl_raster::VxlSlopeBlend {
+            from_slope,
+            to_slope,
+            phase_num,
+            phase_den,
+        }),
+    }
+}
+
 fn transition_key_for_unit(
     key: &UnitSpriteKey,
     slope_state: UnitRenderSlopeState,
@@ -584,6 +645,7 @@ fn transition_key_for_unit(
             from_slope,
             to_slope,
             phase_num,
+            phase_den,
         } => Some(TransitionUnitSpriteKey {
             type_id: key.type_id.clone(),
             facing: key.facing,
@@ -592,6 +654,7 @@ fn transition_key_for_unit(
             from_slope,
             to_slope,
             phase_num,
+            phase_den,
         }),
     }
 }
@@ -731,9 +794,9 @@ fn emit_turret_unit_sprites(
         .and_then(|a| a.get(type_id))
         .map(|e| e.turret_offset)
         .unwrap_or(0);
-    // Same slope the body sprite was keyed with, so the pivot cannot disagree with
-    // the hull it sits on.
-    let (tur_ox, tur_oy) = turret_screen_offset(art_offset, body_facing, slope_type);
+    // Use the same stable or quaternion-SLERP slope matrix as every hull,
+    // turret, and barrel raster layer in this presentation phase.
+    let (tur_ox, tur_oy) = turret_screen_offset(art_offset, body_facing, slope_state);
 
     // All layers of a turreted unit share one depth so insertion order
     // (body, then turret/barrel) controls visual stacking via stable sort.
@@ -917,10 +980,173 @@ pub(super) fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::InternedId;
+    use crate::sim::movement::locomotor::LocomotorState;
+    use crate::sim::snapshot::GameSnapshot;
     use crate::sim::spawn_manager::{
         SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
     };
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn drive_ship_slope_unit_extraction_uses_last_processed_frame_without_mutation() {
+        let mut sim = Simulation::new();
+        let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("DRIVE");
+        entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+            LocomotorKind::Drive,
+            39,
+        ));
+        let slope = entity
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .active_slope_transition_mut()
+            .unwrap();
+        slope.snap(3, 39);
+        slope.sample_process_entry(8, 40);
+        sim.substrate.entities.insert(entity);
+
+        assert_eq!(display_binary_frame_for_committed_session(0), u32::MAX);
+
+        for (committed_binary_frame, expected) in [
+            (
+                41,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 3,
+                    to_slope: 8,
+                    phase_num: 0,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
+                },
+            ),
+            (
+                42,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 3,
+                    to_slope: 8,
+                    phase_num: 1,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
+                },
+            ),
+            (
+                43,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 3,
+                    to_slope: 8,
+                    phase_num: 2,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
+                },
+            ),
+            (44, UnitRenderSlopeState::Stable(8)),
+        ] {
+            sim.session.binary_frame = committed_binary_frame;
+            let before_hash = sim.state_hash();
+            let display_binary_frame =
+                display_binary_frame_for_committed_session(sim.session.binary_frame);
+            assert_eq!(display_binary_frame, committed_binary_frame.wrapping_sub(1));
+            let entity = sim.substrate.entities.get(1).unwrap();
+            assert_eq!(
+                locomotor_render_slope_state(entity, display_binary_frame),
+                Some(expected)
+            );
+            assert_eq!(
+                locomotor_render_slope_state(entity, display_binary_frame),
+                Some(expected),
+                "repeated presentation extraction for one committed frame is stable"
+            );
+            assert_eq!(
+                display_binary_frame_for_committed_session(sim.session.binary_frame),
+                display_binary_frame,
+                "a paused presentation pass retains the same committed-frame selector"
+            );
+            assert_eq!(sim.state_hash(), before_hash, "presentation is read-only");
+        }
+    }
+
+    #[test]
+    fn drive_ship_slope_snapshot_uses_production_display_frame_selector() {
+        let mut sim = Simulation::with_seed(0);
+        sim.session.binary_frame = 51;
+        let mut entity = GameEntity::test_default(1, "SHIP", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("SHIP");
+        entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+            LocomotorKind::Ship,
+            40,
+        ));
+        let slope = entity
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .active_slope_transition_mut()
+            .unwrap();
+        slope.snap(4, 40);
+        slope.sample_process_entry(9, 49);
+        sim.substrate.entities.insert(entity);
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "slope display selector", 3);
+        let restored = GameSnapshot::load(&bytes).expect("current slope snapshot").sim;
+        let display_binary_frame =
+            display_binary_frame_for_committed_session(restored.session.binary_frame);
+        assert_eq!(display_binary_frame, 50);
+        assert_eq!(
+            locomotor_render_slope_state(
+                restored.substrate.entities.get(1).unwrap(),
+                display_binary_frame,
+            ),
+            Some(UnitRenderSlopeState::Transition {
+                from_slope: 4,
+                to_slope: 9,
+                phase_num: 1,
+                phase_den: SLOPE_TRANSITION_FRAMES,
+            }),
+            "session frame 51 presents processed frame 50, one third through a timer started at 49"
+        );
+    }
+
+    #[test]
+    fn turret_offset_pivot_uses_the_same_slope_blend_as_raster_layers() {
+        const OFFSET: i32 = 80;
+        const FACING: u8 = 0;
+        fn close(a: (f32, f32), b: (f32, f32)) -> bool {
+            (a.0 - b.0).abs() < 0.000_01 && (a.1 - b.1).abs() < 0.000_01
+        }
+
+        let stable_from = turret_screen_offset(OFFSET, FACING, UnitRenderSlopeState::Stable(0));
+        let stable_to = turret_screen_offset(OFFSET, FACING, UnitRenderSlopeState::Stable(4));
+        assert_eq!(
+            stable_to,
+            crate::render::vxl_raster::turret_pivot_screen_offset(OFFSET, FACING, 4, 1.0),
+            "the stable path remains the existing exact slope transform"
+        );
+
+        let blended = |phase_num| {
+            turret_screen_offset(
+                OFFSET,
+                FACING,
+                UnitRenderSlopeState::Transition {
+                    from_slope: 0,
+                    to_slope: 4,
+                    phase_num,
+                    phase_den: SLOPE_TRANSITION_FRAMES,
+                },
+            )
+        };
+        let phase_zero = blended(0);
+        let phase_one_third = blended(1);
+        let phase_two_thirds = blended(2);
+
+        assert!(close(phase_zero, stable_from));
+        assert!(!close(phase_zero, stable_to));
+        assert!(!close(phase_one_third, stable_from));
+        assert!(!close(phase_one_third, stable_to));
+        assert!(!close(phase_two_thirds, stable_from));
+        assert!(!close(phase_two_thirds, stable_to));
+        assert!(!close(phase_one_third, phase_two_thirds));
+    }
 
     fn spawn_manager(states: &[SpawnSlotState]) -> SpawnManagerState {
         SpawnManagerState {
@@ -1035,20 +1261,6 @@ mod tests {
             assert!((actual - expected).abs() < 0.0001);
         }
         assert_ne!(unit, aircraft);
-    }
-
-    #[test]
-    fn drive_vxl_slope_transition_phase_counts_three_visible_frames() {
-        assert_eq!(slope_transition_phase_num(3), Some(0));
-        assert_eq!(slope_transition_phase_num(2), Some(1));
-        assert_eq!(slope_transition_phase_num(1), Some(2));
-        assert_eq!(slope_transition_phase_num(0), None);
-    }
-
-    #[test]
-    fn drive_vxl_slope_transition_rejects_out_of_range_remaining() {
-        assert_eq!(slope_transition_phase_num(4), None);
-        assert_eq!(slope_transition_phase_num(u8::MAX), None);
     }
 
     #[test]

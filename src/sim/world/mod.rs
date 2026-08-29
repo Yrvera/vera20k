@@ -12,6 +12,7 @@
 
 pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
+mod display_layers;
 pub mod edge_cell;
 mod lifecycle;
 mod logic_vector;
@@ -27,6 +28,8 @@ mod world_spawn;
 #[cfg(test)]
 mod gsi_04_18_tests;
 #[cfg(test)]
+mod house_ai_activation_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod team_script_vm_tests;
@@ -34,6 +37,9 @@ mod team_script_vm_tests;
 pub(crate) use lifecycle::{
     ConcealOutcome, LifecycleOutput, NULL_TARGET_CELL_SENTINEL, PlacementEvidence, RevealOutcome,
     RevealPosition, RevealRequest, UninitContext,
+};
+pub(crate) use display_layers::{
+    NATIVE_AIR_LAYER, NATIVE_GROUND_LAYER, NATIVE_TOP_LAYER, entity_display_layer,
 };
 #[cfg(test)]
 pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
@@ -71,6 +77,7 @@ use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
+use crate::sim::house_strategy;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
@@ -298,6 +305,7 @@ pub(crate) struct SimFrameOutput {
     pub sound_events: Vec<SimSoundEvent>,
     pub fire_events: Vec<SimFireEvent>,
     pub invulnerability_impacts: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
+    pub crate_presentation: Vec<crate::sim::crates::CratePresentationEvent>,
 }
 
 /// Front-end admission lane for one Main_Tick call.
@@ -316,13 +324,21 @@ pub(crate) enum TickLane {
 /// state and evaluates it in the master-frame spine.
 #[derive(Clone, Copy)]
 pub(crate) struct TriggerInputs<'a> {
+    /// Source-ordered native program. `None` is retained only for legacy unit
+    /// fixtures that exercise the pre-migration aggregate executor directly.
+    pub program: Option<&'a crate::map::trigger_program::TriggerProgram>,
     pub graph: &'a TriggerGraph,
     pub triggers: &'a TriggerMap,
     pub events: &'a EventMap,
     pub actions: &'a ActionMap,
+    pub waypoints: &'a std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
     /// Bound match rules used by action callbacks that share ordinary Techno
     /// runtime calculations (not reparsed or substituted by trigger data).
     pub rules: Option<&'a RuleSet>,
+    pub overlay_registry: Option<&'a crate::rules::overlay_types::OverlayTypeRegistry>,
+    /// Per-client `g_PlayerPtr` identity. Result actions must never infer this
+    /// from trigger ownership, raising House, IsHuman, or PlayerControl.
+    pub local_player_owner: Option<InternedId>,
 }
 
 #[cfg(test)]
@@ -331,10 +347,21 @@ pub(crate) enum MasterFrameTestRung {
     SessionCommands,
     Triggers,
     LogicVector,
+    CrateRegeneration,
     Houses,
     TeamScript,
     FrameCommit,
     PendingDelete,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HouseAiActivationOrderTestEvent {
+    ProductionCompleted,
+    HouseAngerDecay(InternedId),
+    HouseActivation(InternedId),
+    DefeatProcessed,
+    AiGenerated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +380,16 @@ struct MovementSoundProbe {
 /// Pure data — no audio library dependency. Drained by the app layer each frame.
 #[derive(Debug, Clone)]
 pub enum SimSoundEvent {
+    /// Spatial crate-effect sound after the effect's native local-owner gate.
+    CrateEffect {
+        sound_id: String,
+        owner: InternedId,
+        rx: u16,
+        ry: u16,
+    },
+    /// Non-spatial crate upgrade EVA emitted after the complete live Ground
+    /// walk and before the picker-owned spatial crate sound.
+    CrateUpgradeEva { kind: CrateUpgradeEvaKind },
     /// Constructor-time animation start/report sound, keyed to object identity.
     AnimationStarted {
         anim_id: crate::sim::anim_class::AnimId,
@@ -438,6 +475,19 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         world_z_leptons: i32,
     },
+    /// CaptureManager positional sound. Capture success is local-human gated
+    /// by either pre-capture victim House or post-capture controller House;
+    /// FreeUnit's cleared sound is not gated.
+    MindControlSound {
+        sound_id: String,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
+    /// Capture-fate Grinder/Bio Reactor positional playback. Unlike the
+    /// mind-control cue, this has no local-House audibility gate.
+    CaptureFateSound {
+        sound_id: String,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// A base structure / harvester took enemy damage — the radar ping is
     /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
     /// result (the BridgeRepaired pattern). App gates the EVA voice to the
@@ -507,6 +557,13 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         z: u8,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrateUpgradeEvaKind {
+    Armor,
+    Speed,
+    Firepower,
 }
 
 impl SimSoundEvent {
@@ -715,6 +772,14 @@ pub struct Simulation {
     #[cfg(test)]
     #[serde(skip)]
     master_frame_test_trace: Vec<MasterFrameTestRung>,
+    /// Focused ordering observer for the bounded House-update activation seam.
+    #[cfg(test)]
+    #[serde(skip)]
+    house_ai_activation_order_test_trace: Vec<HouseAiActivationOrderTestEvent>,
+    /// One-shot fixture hook proving that the House loop reloads live length.
+    #[cfg(test)]
+    #[serde(skip)]
+    house_update_append_after_test: Option<(InternedId, InternedId)>,
     /// Sound events produced during the current tick and moved into the owned
     /// app-frame output batch.
     #[serde(skip)]
@@ -797,6 +862,16 @@ pub struct Simulation {
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
     pub overlay_grid: Option<crate::sim::overlay_grid::OverlayGrid>,
+    /// Persistent `MapClass+0x158` crate slots plus the pickup-any latch.
+    ///
+    /// gamemd-derived: `MapClass::Init_Clear @ 0x005659F0`, save/load through
+    /// the raw MapClass body, and crate lifecycle routines `0x0056BBE0..`.
+    #[serde(default)]
+    pub(crate) crate_authority: crate::sim::crates::CrateAuthority,
+    /// Ordered native crate invalidation facts. Presentation-only: neither
+    /// serialized nor hashed, and drained exactly once with frame output.
+    #[serde(skip)]
+    pub(crate) crate_presentation: Vec<crate::sim::crates::CratePresentationEvent>,
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
@@ -1094,14 +1169,199 @@ fn dispatch_smudge_inline(
     );
 }
 
+impl Simulation {
+    /// Run only the verified Building `Explosion=` caller's
+    /// `AnimClass::Start` scorch/crater/ore subset. The producer bit stored on
+    /// the Anim object prevents this from widening any other scheduler caller.
+    pub(crate) fn dispatch_building_explosion_anim_start_smudge(
+        &mut self,
+        anim_id: crate::sim::anim_class::AnimId,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        let Some((anim_name, world)) = self.anim(anim_id).and_then(|anim| {
+            self.anim_absolute_coord(anim_id)
+                .map(|world| (anim.type_id, world))
+        }) else {
+            return;
+        };
+        let (rx, ry, sub_x, sub_y, _) = world.to_cell_sub_z();
+        let request = crate::sim::combat::SmudgeSpawnRequest::Anim {
+            anim_name,
+            rx,
+            ry,
+            sub_x,
+            sub_y,
+            world_z_leptons: world.z,
+        };
+        let binary_frame = self.session.binary_frame;
+        let spread_enabled = self.production.ore_growth_config.spreads;
+        dispatch_smudge_inline(
+            &request,
+            rules,
+            overlay_registry,
+            &self.interner,
+            &self.substrate.occupancy,
+            &self.substrate.raw_cell_occupation,
+            &mut self.scenario_rng,
+            &mut self.production.resource_nodes,
+            self.overlay_grid.as_mut(),
+            self.resolved_terrain.as_mut(),
+            self.smudge_grid.as_mut(),
+            &mut self.production.ore_growth_state,
+            &self.production.tiberium_spawning_terrain_cells,
+            binary_frame,
+            spread_enabled,
+            &mut self.radar_terrain_dirty_cells,
+            &mut self.radar_terrain_dirty_generation,
+            &mut self.tactical_dirty_cells,
+        );
+        self.flush_smudge_dirty();
+    }
+}
+
 /// Single mutable bridge back into Simulation while combat owns the moved-out
 /// receiver transaction. It deliberately implements both lifecycle and smudge
 /// callbacks so no pair of closures can alias `&mut Simulation`.
-struct SimulationCombatInlineHooks<'a> {
-    sim: &'a mut Simulation,
+#[derive(Clone)]
+struct HouseOwnershipTransactionState {
+    owned_building_count: u32,
+    owned_unit_count: u32,
+    tracked_infantry_count: u32,
+    build_const_order: Vec<u64>,
+    grinder_building_order: Vec<u64>,
+    absorber_building_order: Vec<u64>,
+    waypoint_edge: u8,
 }
 
-impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
+fn capture_house_ownership_transaction_state(
+    houses: &BTreeMap<InternedId, HouseState>,
+) -> BTreeMap<InternedId, HouseOwnershipTransactionState> {
+    houses
+        .iter()
+        .map(|(&owner, house)| {
+            (
+                owner,
+                HouseOwnershipTransactionState {
+                    owned_building_count: house.owned_building_count,
+                    owned_unit_count: house.owned_unit_count,
+                    tracked_infantry_count: house.tracked_infantry_count,
+                    build_const_order: house.build_const_order.clone(),
+                    grinder_building_order: house.grinder_building_order.clone(),
+                    absorber_building_order: house.absorber_building_order.clone(),
+                    waypoint_edge: house.waypoint_edge,
+                },
+            )
+        })
+        .collect()
+}
+
+fn apply_owned_count_delta(live: &mut u32, before: u32, after: u32) {
+    if after >= before {
+        *live += after - before;
+    } else {
+        *live = live.saturating_sub(before - after);
+    }
+}
+
+fn apply_stable_order_delta(live: &mut Vec<u64>, before: &[u64], after: &[u64]) {
+    // These native vectors mutate only by stable removal and tail append. Find
+    // the longest `after` prefix that is still an ordered subsequence of the
+    // pre-transaction vector; it is the untouched spine. Every other old ID
+    // was removed (possibly to be re-appended), and every remaining after ID
+    // was appended in this transaction. Replaying that operation delta keeps
+    // independent live entries in their real relative position.
+    let mut before_cursor = 0;
+    let mut retained_prefix_len = 0;
+    for stable_id in after {
+        let Some(relative_index) = before[before_cursor..]
+            .iter()
+            .position(|candidate| candidate == stable_id)
+        else {
+            break;
+        };
+        before_cursor += relative_index + 1;
+        retained_prefix_len += 1;
+    }
+    let retained = &after[..retained_prefix_len];
+    for stable_id in before.iter().filter(|stable_id| !retained.contains(stable_id)) {
+        if let Some(index) = live.iter().position(|candidate| candidate == stable_id) {
+            live.remove(index);
+        }
+    }
+    for &stable_id in &after[retained_prefix_len..] {
+        if !live.contains(&stable_id) {
+            live.push(stable_id);
+        }
+    }
+}
+
+/// Combat starts from a House-map clone because receiver-owned combat writes
+/// must later merge around synchronous world lifecycle callbacks. Mind-control
+/// owner transfer is one such callback, but its Removed_From_Game /
+/// Added_To_Game writes run against that staged clone while the live map may
+/// already contain independent fatal-lifecycle mutations. Replay only the
+/// ownership delta into the live map; copying the staged House wholesale would
+/// discard those earlier live writes.
+fn apply_house_ownership_transaction_delta(
+    live_houses: &mut BTreeMap<InternedId, HouseState>,
+    before: &BTreeMap<InternedId, HouseOwnershipTransactionState>,
+    after: &BTreeMap<InternedId, HouseState>,
+) {
+    for (&owner, before_house) in before {
+        let (Some(after_house), Some(live_house)) =
+            (after.get(&owner), live_houses.get_mut(&owner))
+        else {
+            continue;
+        };
+        apply_owned_count_delta(
+            &mut live_house.owned_building_count,
+            before_house.owned_building_count,
+            after_house.owned_building_count,
+        );
+        apply_owned_count_delta(
+            &mut live_house.owned_unit_count,
+            before_house.owned_unit_count,
+            after_house.owned_unit_count,
+        );
+        apply_owned_count_delta(
+            &mut live_house.tracked_infantry_count,
+            before_house.tracked_infantry_count,
+            after_house.tracked_infantry_count,
+        );
+
+        apply_stable_order_delta(
+            &mut live_house.build_const_order,
+            &before_house.build_const_order,
+            &after_house.build_const_order,
+        );
+        apply_stable_order_delta(
+            &mut live_house.grinder_building_order,
+            &before_house.grinder_building_order,
+            &after_house.grinder_building_order,
+        );
+        apply_stable_order_delta(
+            &mut live_house.absorber_building_order,
+            &before_house.absorber_building_order,
+            &after_house.absorber_building_order,
+        );
+
+        if after_house.waypoint_edge != before_house.waypoint_edge {
+            live_house.waypoint_edge = after_house.waypoint_edge;
+        }
+    }
+}
+
+struct SimulationCombatInlineHooks<'sim, 'smudge> {
+    sim: &'sim mut Simulation,
+    /// WaveClass::DamageArea temporarily owns this authority while its cell
+    /// walk is in flight. BuildingClass::DestructionEffects can re-enter an
+    /// AnimClass::Start from that walk, so the detached grid must accompany
+    /// the other borrowed map authorities across the inline hook.
+    borrowed_smudge_grid: Option<&'smudge mut crate::sim::smudge_grid::SmudgeGrid>,
+}
+
+impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '_> {
     #[cfg(test)]
     fn trace_wave_receiver(&mut self, wave_id: u64, target_id: u64, scenario_rng_state: u64) {
         self.sim
@@ -1110,6 +1370,69 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
                 target_id,
                 scenario_rng_state,
             });
+    }
+
+    fn commit_mind_control_detonation(
+        &mut self,
+        rules: &RuleSet,
+        controller_id: u64,
+        target_id: u64,
+        current_frame: u32,
+        borrowed_entities: &mut EntityStore,
+        borrowed_occupancy: &mut OccupancyGrid,
+        borrowed_interner: &mut StringInterner,
+        borrowed_scenario_rng: &mut SimRng,
+        borrowed_houses: &mut BTreeMap<InternedId, HouseState>,
+        borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
+    ) -> bool {
+        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(&mut self.sim.houses, borrowed_houses);
+        let ownership_before = capture_house_ownership_transaction_state(&self.sim.houses);
+        let mut borrowed_sound_events = borrowed_sound_events;
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+        let target_was_human = self
+            .sim
+            .substrate
+            .entities
+            .get(target_id)
+            .is_some_and(|target| {
+                crate::sim::capture_manager::is_human_player_exact(self.sim, target.owner)
+            });
+        let captured = crate::sim::capture_manager::capture_unit(
+            self.sim,
+            rules,
+            controller_id,
+            target_id,
+            current_frame,
+        );
+        if captured {
+            crate::sim::capture_manager::emit_capture_sound_after_success(
+                self.sim,
+                rules,
+                controller_id,
+                target_id,
+                target_was_human,
+            );
+        }
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+        apply_house_ownership_transaction_delta(
+            borrowed_houses,
+            &ownership_before,
+            &self.sim.houses,
+        );
+        std::mem::swap(&mut self.sim.houses, borrowed_houses);
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
+        captured
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1253,6 +1576,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         }
     }
 
+    fn clear_cliff_smudge(&mut self, cell: (u16, u16)) {
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            let _ = grid.clear_cell_slot(cell.0, cell.1);
+        }
+    }
+
     fn spawn_cliff_anims(
         &mut self,
         rules: &RuleSet,
@@ -1273,6 +1602,117 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         std::mem::swap(&mut self.sim.sound_events, borrowed_sound_events);
         std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
         std::mem::swap(&mut self.sim.interner, borrowed_interner);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_building_destruction_anims(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        plan: &crate::sim::combat::BuildingDestructionAnimPlan,
+        borrowed_occupancy: &mut OccupancyGrid,
+        borrowed_interner: &mut StringInterner,
+        borrowed_scenario_rng: &mut SimRng,
+        borrowed_resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+        borrowed_overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
+        borrowed_terrain: Option<&mut ResolvedTerrainGrid>,
+        borrowed_terrain_area_state: Option<
+            &mut crate::sim::terrain_object::TerrainAreaState,
+        >,
+        borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
+    ) {
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(
+            &mut self.sim.production.resource_nodes,
+            borrowed_resource_nodes,
+        );
+
+        let mut borrowed_terrain_area_state = borrowed_terrain_area_state;
+        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
+            area_state.swap_authority(
+                &mut self.sim.production,
+                &mut self.sim.substrate.raw_cell_occupation,
+            );
+        }
+
+        let had_overlay = borrowed_overlay_grid.is_some();
+        let mut borrowed_overlay_grid = borrowed_overlay_grid;
+        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
+            debug_assert!(self.sim.overlay_grid.is_none());
+            self.sim.overlay_grid = Some(grid.clone());
+            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
+        }
+        let had_smudge = self.borrowed_smudge_grid.is_some();
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            debug_assert!(self.sim.smudge_grid.is_none());
+            self.sim.smudge_grid = Some(grid.clone());
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
+        let had_terrain = borrowed_terrain.is_some();
+        let mut borrowed_terrain = borrowed_terrain;
+        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
+            debug_assert!(self.sim.resolved_terrain.is_none());
+            self.sim.resolved_terrain = Some(terrain.clone());
+            std::mem::swap(
+                self.sim.resolved_terrain.as_mut().expect("installed"),
+                terrain,
+            );
+        }
+
+        let mut borrowed_sound_events = borrowed_sound_events;
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+
+        let _ = self.sim.spawn_building_destruction_anims(
+            rules,
+            overlay_registry,
+            plan.location,
+            &plan.foundation,
+            &plan.explosion_anims,
+            &plan.destroy_anims,
+        );
+
+        if let Some(sound_events) = borrowed_sound_events.as_deref_mut() {
+            std::mem::swap(&mut self.sim.sound_events, sound_events);
+        }
+        if let Some(terrain) = borrowed_terrain.as_deref_mut() {
+            std::mem::swap(
+                self.sim.resolved_terrain.as_mut().expect("installed"),
+                terrain,
+            );
+        }
+        if had_terrain {
+            self.sim.resolved_terrain = None;
+        }
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
+        if had_smudge {
+            self.sim.smudge_grid = None;
+        }
+        if let Some(grid) = borrowed_overlay_grid.as_deref_mut() {
+            std::mem::swap(self.sim.overlay_grid.as_mut().expect("installed"), grid);
+        }
+        if had_overlay {
+            self.sim.overlay_grid = None;
+        }
+        if let Some(area_state) = borrowed_terrain_area_state.as_deref_mut() {
+            area_state.swap_authority(
+                &mut self.sim.production,
+                &mut self.sim.substrate.raw_cell_occupation,
+            );
+        }
+
+        std::mem::swap(
+            &mut self.sim.production.resource_nodes,
+            borrowed_resource_nodes,
+        );
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1427,6 +1867,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         let Some(terrain_area_state) = terrain_area_state else {
             return;
         };
+        let had_smudge = self.borrowed_smudge_grid.is_some();
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            debug_assert!(self.sim.smudge_grid.is_none());
+            self.sim.smudge_grid = Some(grid.clone());
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
         let binary_frame = self.sim.session.binary_frame;
         let spread_enabled = self.sim.production.ore_growth_config.spreads;
         dispatch_smudge_inline(
@@ -1450,6 +1896,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
             &mut self.sim.tactical_dirty_cells,
         );
         self.sim.flush_smudge_dirty();
+        if let Some(grid) = self.borrowed_smudge_grid.as_deref_mut() {
+            std::mem::swap(self.sim.smudge_grid.as_mut().expect("installed"), grid);
+        }
+        if had_smudge {
+            self.sim.smudge_grid = None;
+        }
     }
 }
 
@@ -1537,6 +1989,11 @@ impl Simulation {
                 );
             }
             crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects => {
+                // TechnoClass::ReceiveDamage releases a controller's victims
+                // synchronously before its category death postlude. FreeAll's
+                // owner changes mutate the same live registry before any
+                // carried-object teardown or nested DeathWeapon can observe it.
+                crate::sim::capture_manager::free_all(self, rules, stable_id);
                 if !matches!(category, EntityCategory::Unit | EntityCategory::Structure) {
                     return;
                 }
@@ -1550,7 +2007,11 @@ impl Simulation {
                         .cargo()
                         .map(|cargo| cargo.passengers.clone())
                         .unwrap_or_default();
-                    if !object.can_be_occupied || passenger_ids.is_empty() {
+                    if !(object.can_be_occupied
+                        || object.infantry_absorb
+                        || object.unit_absorb)
+                        || passenger_ids.is_empty()
+                    {
                         return None;
                     }
                     let (foundation_w, foundation_h) =
@@ -1642,7 +2103,10 @@ impl Simulation {
         let require_playfield_membership = self.playfield_bounds.is_some();
 
         let combat_result = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: None,
+            };
             combat::tick_combat_with_fog_and_main_rng_with_terrain_area(
                 &mut entities,
                 &mut occupancy,
@@ -1744,7 +2208,10 @@ impl Simulation {
         let scenario_no_damage = self.session.no_damage;
 
         let commit = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: None,
+            };
             combat::commit_logic_projectile_detonations(
                 detonations,
                 &mut entities,
@@ -2005,7 +2472,10 @@ impl Simulation {
         let mut collapsed_terrain_cells = BTreeMap::new();
 
         {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: smudge_grid.as_mut(),
+            };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
             let mut sound_sink = Some(&mut sound_events);
@@ -2256,9 +2726,10 @@ impl Simulation {
                                     if let Some(grid) = overlay_grid.as_mut() {
                                         let _ = grid.clear_overlay(cell_x, cell_y);
                                     }
-                                    if let Some(grid) = smudge_grid.as_mut() {
-                                        let _ = grid.clear_cell_slot(cell_x, cell_y);
-                                    }
+                                    inline_hooks
+                                        .as_deref_mut()
+                                        .expect("world cliff hook")
+                                        .clear_cliff_smudge((cell_x, cell_y));
                                 },
                             )
                         })
@@ -2465,7 +2936,10 @@ impl Simulation {
         let scenario_no_damage = self.session.no_damage;
         let mut handled_deaths = Vec::new();
         let (effects, under_attack_events) = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                borrowed_smudge_grid: None,
+            };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
             let mut sound_sink = Some(&mut sound_events);
@@ -2964,6 +3438,10 @@ impl Simulation {
             trigger_effects: Vec::new(),
             #[cfg(test)]
             master_frame_test_trace: Vec::new(),
+            #[cfg(test)]
+            house_ai_activation_order_test_trace: Vec::new(),
+            #[cfg(test)]
+            house_update_append_after_test: None,
             sound_events: Vec::new(),
             fire_events: Vec::new(),
             invulnerability_impact_effects: Vec::new(),
@@ -2985,6 +3463,8 @@ impl Simulation {
             dynamic_terrain_cells: BTreeMap::new(),
             bridge_state: None,
             overlay_grid: None,
+            crate_authority: crate::sim::crates::CrateAuthority::default(),
+            crate_presentation: Vec::new(),
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,
@@ -3110,6 +3590,31 @@ impl Simulation {
     /// but must not reconstruct equal-key ordering from EntityStore keys.
     pub(crate) fn tactical_registration_order(&self) -> &[u64] {
         self.substrate.logic.as_slice()
+    }
+
+    /// Native unsorted DisplayClass submission order for Air (3) or Top (4).
+    /// This is independent of LogicClass construction/reveal order and moves
+    /// an object to the destination tail whenever its layer changes.
+    pub(crate) fn tactical_display_layer_order(&self, layer: u8) -> &[u64] {
+        self.substrate.flat_display_order.layer_order(layer)
+    }
+
+    /// Current native `TechnoClass` construction registry length.
+    ///
+    /// gamemd-derived: `HouseClass` destructive sweep @ `0x004FC6D0` reads
+    /// `g_TechnoClass_Array` at `0x004FC6EC` and reloads its count at
+    /// `0x004FC771`; it does not walk `LogicClass`. The EntityStore projection
+    /// preserves that independent lifecycle without duplicating persisted
+    /// authority. See [`EntityStore::techno_registration_id_at`].
+    pub(crate) fn techno_registration_len(&self) -> usize {
+        self.substrate.entities.techno_registration_len()
+    }
+
+    /// Resolve one live `TechnoClass` construction-registry slot. This is
+    /// deliberately an indexed re-read rather than a borrowed slice because
+    /// synchronous receivers may compact the registry or append new Technos.
+    pub(crate) fn techno_registration_id_at(&self, index: usize) -> Option<u64> {
+        self.substrate.entities.techno_registration_id_at(index)
     }
 
     /// Mutable entity-store access for above-sim callers.
@@ -3485,9 +3990,10 @@ impl Simulation {
 
     fn natural_outcome_exit_ready(&self) -> bool {
         let contending_houses = self.contending_house_count();
+        let current_frame = self.session.binary_frame as i32;
         self.houses.values().any(|house| {
             house.is_human
-                && house.outcome_state.is_some_and(|outcome| {
+                && house.outcome_state(current_frame).is_some_and(|outcome| {
                     outcome.exit_ready
                         && (outcome.kind == crate::sim::house_state::HouseOutcomeKind::Defeat
                             // VERA-internal opponent precondition; gamemd equivalent
@@ -3588,22 +4094,38 @@ impl Simulation {
     /// self-borrow conflict while actions read and mutate Simulation authority.
     fn advance_triggers(
         &mut self,
+        program: Option<&crate::map::trigger_program::TriggerProgram>,
         graph: &TriggerGraph,
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
+        waypoints: &std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
         rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
+        local_player_owner: Option<InternedId>,
     ) -> Vec<TriggerEffect> {
         let mut rt = std::mem::take(&mut self.trigger_runtime);
-        let effects = rt.advance_at_frame(
-            self.session.binary_frame,
-            graph,
-            triggers,
-            events,
-            actions,
-            Some(self),
-            rules,
-        );
+        let effects = if let Some(program) = program {
+            rt.advance_native_poll_for_client(
+                program,
+                self,
+                rules,
+                overlay_registry,
+                waypoints,
+                local_player_owner,
+            )
+        } else {
+            rt.advance_at_frame_with_waypoints(
+                self.session.binary_frame,
+                graph,
+                triggers,
+                events,
+                actions,
+                Some(self),
+                rules,
+                waypoints,
+            )
+        };
         self.trigger_runtime = rt;
         effects
     }
@@ -3825,13 +4347,62 @@ impl Simulation {
     fn poll_triggers_for_master_frame(&mut self, inputs: TriggerInputs<'_>) {
         // YR LogicClass::Update polls scenario triggers before the live-object walk.
         let effects = self.advance_triggers(
+            inputs.program,
             inputs.graph,
             inputs.triggers,
             inputs.events,
             inputs.actions,
+            inputs.waypoints,
             inputs.rules,
+            inputs.overlay_registry,
+            inputs.local_player_owner,
         );
         self.trigger_effects.extend(effects);
+    }
+
+    /// Synchronous Object/Building Tag delivery used by the native per-cell
+    /// capture-fate leaves. The runtime is temporarily moved out because
+    /// trigger actions may mutate the same Simulation and invalidate either
+    /// participant; callers must re-fetch stable IDs after this returns.
+    pub(crate) fn dispatch_attached_tag_event(
+        &mut self,
+        inputs: TriggerInputs<'_>,
+        tag_owner_id: u64,
+        object_id: u64,
+        event_id: i32,
+    ) -> bool {
+        let Some(program) = inputs.program else {
+            return false;
+        };
+        let Some(tag_index) = self.trigger_runtime.object_tags.get(&tag_owner_id).copied() else {
+            return false;
+        };
+        let raising_owner = self.substrate.entities.get(object_id).map(|object| object.owner);
+        let cell = self
+            .substrate
+            .entities
+            .get(object_id)
+            .map(|object| (object.position.rx, object.position.ry));
+        let mut runtime = std::mem::take(&mut self.trigger_runtime);
+        let (fired, effects) = runtime.dispatch_native_event(
+            program,
+            self,
+            inputs.rules,
+            inputs.overlay_registry,
+            inputs.waypoints,
+            tag_index,
+            crate::sim::trigger_runtime::NativeTriggerEvent {
+                event_id,
+                object_id: Some(object_id),
+                cell,
+                raising_owner,
+                data: 0,
+                editor_mode: false,
+            },
+        );
+        self.trigger_runtime = runtime;
+        self.trigger_effects.extend(effects);
+        fired
     }
 
     /// Drain app-owned outcomes after their authoritative trigger actions ran.
@@ -3902,6 +4473,29 @@ impl Simulation {
     #[cfg(test)]
     fn trace_master_frame_rung(&mut self, rung: MasterFrameTestRung) {
         self.master_frame_test_trace.push(rung);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_house_ai_activation_order_test_trace(
+        &mut self,
+    ) -> Vec<HouseAiActivationOrderTestEvent> {
+        std::mem::take(&mut self.house_ai_activation_order_test_trace)
+    }
+
+    #[cfg(test)]
+    fn trace_house_ai_activation_order(&mut self, event: HouseAiActivationOrderTestEvent) {
+        self.house_ai_activation_order_test_trace.push(event);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_house_order_after_for_test(
+        &mut self,
+        after_owner: InternedId,
+        appended_owner: InternedId,
+    ) {
+        debug_assert!(self.houses.contains_key(&appended_owner));
+        debug_assert!(!self.session.house_order.contains(&appended_owner));
+        self.house_update_append_after_test = Some((after_owner, appended_owner));
     }
 
     /// Returns true if the given house name is human-controlled.
@@ -4383,12 +4977,170 @@ impl Simulation {
         }
     }
 
+    /// Append one successfully committed BuildConst Building to its owning
+    /// House's native acquisition-ordered vector.
+    ///
+    /// gamemd-derived: `BuildingClass::Unlimbo @ 0x004411B6..0x00441223`.
+    pub(crate) fn append_live_build_const(&mut self, stable_id: u64) {
+        let Some(owner) = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Structure
+                && entity.build_const_eligible
+                && entity.lifecycle.object_alive
+                && !entity.lifecycle.in_limbo
+                && entity.lifecycle.cell_marked)
+                .then_some(entity.owner)
+        }) else {
+            return;
+        };
+        if let Some(house) = self.houses.get_mut(&owner)
+            && !house.build_const_order.contains(&stable_id)
+        {
+            house.build_const_order.push(stable_id);
+        }
+    }
+
+    /// Stable-remove a Building pointer from the owning House's BuildConst
+    /// vector before Limbo or owner transfer makes it unavailable.
+    ///
+    /// gamemd-derived: House pointer expiry around `0x004FBA1D` and
+    /// `BuildingClass::ChangeOwner @ 0x00448260`.
+    pub(crate) fn remove_build_const_from_owner(&mut self, stable_id: u64) {
+        let Some((owner, eligible)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .map(|entity| (entity.owner, entity.build_const_eligible))
+        else {
+            return;
+        };
+        if eligible
+            && let Some(house) = self.houses.get_mut(&owner)
+            && let Some(index) = house
+                .build_const_order
+                .iter()
+                .position(|&id| id == stable_id)
+        {
+            house.build_const_order.remove(index);
+        }
+    }
+
+    /// HouseClass::Add_Tracking's Infantry-count leaf. The distinct absorber
+    /// occupant byte suppresses re-add even while the object has successfully
+    /// returned from Limbo; Building unload owns the later one-shot restore.
+    pub(crate) fn add_infantry_tracking_once(&mut self, stable_id: u64) -> bool {
+        let Some(owner) = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Infantry
+                && !entity.infantry_house_tracked
+                && !entity.infantry_absorber_occupant)
+                .then_some(entity.owner)
+        }) else {
+            return false;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return false;
+        };
+        house.tracked_infantry_count = house.tracked_infantry_count.wrapping_add(1);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.infantry_house_tracked = true;
+        }
+        true
+    }
+
+    /// Remove one Infantry tracking contribution without changing Techno
+    /// ownership. Bio Reactor PerCell runs this only after its Limbo call.
+    pub(crate) fn remove_infantry_tracking_once(&mut self, stable_id: u64) -> bool {
+        let Some(owner) = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Infantry && entity.infantry_house_tracked)
+                .then_some(entity.owner)
+        }) else {
+            return false;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return false;
+        };
+        // Native is a 32-bit SUB, not a saturating bookkeeping operation.
+        house.tracked_infantry_count = house.tracked_infantry_count.wrapping_sub(1);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.infantry_house_tracked = false;
+        }
+        true
+    }
+
+    /// Append one successfully placed special Building to the exact native
+    /// House vectors consumed by CaptureManager DecideUnitFate. The immutable
+    /// type-membership bits live on GameEntity so rule-less re-entry can
+    /// preserve acquisition order.
+    pub(crate) fn append_live_capture_facilities(&mut self, stable_id: u64) {
+        let Some((owner, grinding, absorbing)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
+                (entity.category == EntityCategory::Structure
+                    && entity.lifecycle.object_alive
+                    && !entity.lifecycle.in_limbo
+                    && entity.lifecycle.cell_marked)
+                    .then_some((
+                        entity.owner,
+                        entity.grinding_facility,
+                        entity.absorber_facility,
+                    ))
+            })
+        else {
+            return;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return;
+        };
+        if grinding && !house.grinder_building_order.contains(&stable_id) {
+            house.grinder_building_order.push(stable_id);
+        }
+        if absorbing && !house.absorber_building_order.contains(&stable_id) {
+            house.absorber_building_order.push(stable_id);
+        }
+    }
+
+    /// Stable-remove a special Building from both possible House vectors while
+    /// its old owner and immutable BuildingType profile remain resolvable.
+    pub(crate) fn remove_capture_facilities_from_owner(&mut self, stable_id: u64) {
+        let Some((owner, grinding, absorbing)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .map(|entity| {
+                (
+                    entity.owner,
+                    entity.grinding_facility,
+                    entity.absorber_facility,
+                )
+            })
+        else {
+            return;
+        };
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return;
+        };
+        if grinding
+            && let Some(index) = house
+                .grinder_building_order
+                .iter()
+                .position(|&id| id == stable_id)
+        {
+            house.grinder_building_order.remove(index);
+        }
+        if absorbing
+            && let Some(index) = house
+                .absorber_building_order
+                .iter()
+                .position(|&id| id == stable_id)
+        {
+            house.absorber_building_order.remove(index);
+        }
+    }
+
     /// Change an entity's owner through the authoritative ownership chokepoint.
     /// House counts, the `by_owner` index, and the entity owner move exactly once
     /// for every live transfer, regardless of whether capture or garrison code
     /// requested it.
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
-        self.change_owner_impl(stable_id, new_owner, None);
+        self.change_owner_impl(stable_id, new_owner, None, None);
     }
 
     pub(crate) fn change_owner_with_rules(
@@ -4397,7 +5149,21 @@ impl Simulation {
         new_owner: InternedId,
         rules: &RuleSet,
     ) {
-        self.change_owner_impl(stable_id, new_owner, Some(rules));
+        self.change_owner_impl(stable_id, new_owner, Some(rules), None);
+    }
+
+    /// CaptureManagerClass::CaptureUnit's owner-change call carries a transient
+    /// manager target before the successful transfer creates its persistent
+    /// MCNode. Preserve that one controller through the detach sweep without
+    /// fabricating the node early.
+    pub(crate) fn change_owner_for_mind_control(
+        &mut self,
+        stable_id: u64,
+        new_owner: InternedId,
+        rules: &RuleSet,
+        controller_id: u64,
+    ) {
+        self.change_owner_impl(stable_id, new_owner, Some(rules), Some(controller_id));
     }
 
     fn change_owner_impl(
@@ -4405,13 +5171,16 @@ impl Simulation {
         stable_id: u64,
         new_owner: InternedId,
         rules: Option<&RuleSet>,
+        transient_capture_controller: Option<u64>,
     ) {
-        let Some((old_owner, category, has_spawn_manager)) =
+        let Some((old_owner, category, has_spawn_manager, build_const_eligible, infantry_tracked)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.owner,
                     entity.category,
                     entity.spawn_manager.is_some(),
+                    entity.build_const_eligible,
+                    entity.infantry_house_tracked,
                 )
             })
         else {
@@ -4445,16 +5214,44 @@ impl Simulation {
         if has_spawn_manager {
             crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
         }
+        // gamemd-derived: `BuildingClass::ChangeOwner @ 0x00448260` removes
+        // this pointer from the old House BuildConst vector before delegating
+        // the Techno owner swap, then appends it to the new House tail.
+        if build_const_eligible {
+            self.remove_build_const_from_owner(stable_id);
+        }
+        self.remove_capture_facilities_from_owner(stable_id);
         self.decrement_owned_count(&old_owner_name, category);
+        if infantry_tracked && let Some(house) = self.houses.get_mut(&old_owner) {
+            house.tracked_infantry_count = house.tracked_infantry_count.wrapping_sub(1);
+        }
         // `TechnoClass::ChangeOwner` runs the live-detach targeting sweep next,
         // before the house swap: everything shooting at this object is released
         // while the object still belongs to its old house. Engineer capture and
         // garrison transfer both come through here, so a squad that was firing
         // at a building stops the instant the building changes hands instead of
         // shooting at what is now its own structure.
-        self.stop_all_targeting_on_detach(stable_id);
+        self.stop_all_targeting_on_detach_except(stable_id, transient_capture_controller);
         self.substrate.entities.change_owner(stable_id, new_owner);
+        // TechnoClass::ChangeOwner clears the independent saved-source House
+        // at +0x2E0 but leaves the +0x2CC destination/current marker intact.
+        // Trigger Action123 samples the old House before this call and writes
+        // the source back afterward; ordinary owner changes therefore retain
+        // marker-with-null-source as a valid native state.
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.temporary_owner_transfer_source = None;
+        }
         self.increment_owned_count(&new_owner_name, category);
+        if infantry_tracked && let Some(house) = self.houses.get_mut(&new_owner) {
+            house.tracked_infantry_count = house.tracked_infantry_count.wrapping_add(1);
+        }
+        if build_const_eligible
+            && let Some(house) = self.houses.get_mut(&new_owner)
+            && !house.build_const_order.contains(&stable_id)
+        {
+            house.build_const_order.push(stable_id);
+        }
+        self.append_live_capture_facilities(stable_id);
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
     }
 
@@ -4466,20 +5263,59 @@ impl Simulation {
 
     /// Check each house for defeat and game completion
     /// (all remaining houses mutually allied).
-    fn check_defeat(&mut self, rules: Option<&RuleSet>) {
-        let outcome_tick = self.session.tick.saturating_add(1);
+    fn check_defeat(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        // Native always reaches HouseClass::Update with RulesClass installed.
+        // Rules-less synthetic lanes cannot substitute a hardcoded C4 warhead,
+        // so they do not run this result/destruction owner.
+        let Some(rules) = rules else {
+            return;
+        };
+        // Trigger commands and the later House result timer rung share the
+        // current signed Scenario frame. `tick + 1` is not equivalent here:
+        // it would expire a freshly armed one-frame result on the same tick.
+        let outcome_tick = self.session.binary_frame as i32;
         let savour_frames = crate::rules::ruleset::savour_delay_frames(
-            rules
-                .map(|rules| rules.general.savour_delay_minutes)
-                // RulesClass__Constructor @ 0x00665650 stores the exact f64
-                // default 0.03 before any optional INI ReadDouble override.
-                .unwrap_or(0.03),
-        );
-        // Short Game defeats houses with no buildings unless a BaseUnit remains.
-        // Long games wait for all owned objects.
-        let owners: Vec<InternedId> = self.houses.keys().copied().collect();
+            rules.general.savour_delay_minutes,
+        ) as i32;
+        let owners = self.session.house_order.clone();
+
+        // The ordinary annihilation/MPlayer_Defeated arm exists only outside
+        // campaign and after frame zero. Pending-result expiry above does not
+        // share either gate.
+        let defeat_enabled =
+            self.session.game_mode_nonzero && self.session.binary_frame != 0;
+
+        // LogicClass visits HouseClass objects in registration order. Each
+        // single House update runs pending expiry first and its defeat arm
+        // later before the next House is visited. The two operations cannot be
+        // split into global passes: an earlier sweep may free controlled
+        // victims or otherwise mutate a later House's ownership/count inputs.
         for &owner in &owners {
-            let house = &self.houses[&owner];
+            let pending_expired = self
+                .houses
+                .get_mut(&owner)
+                .is_some_and(|house| house.advance_outcome_savour(outcome_tick).pending_expired);
+            if pending_expired {
+                let _ = crate::sim::house_destruction::sweep_house_technos(
+                    self,
+                    rules,
+                    overlay_registry,
+                    owner,
+                );
+            }
+            if !defeat_enabled {
+                continue;
+            }
+
+            // Short Game defeats houses with no buildings unless a BaseUnit
+            // remains. Long games wait for all owned objects.
+            let Some(house) = self.houses.get(&owner) else {
+                continue;
+            };
             // gamemd gates its entire defeat block on the house type's
             // MultiplayPassive being clear, so Civilian/JP houses are never
             // evaluated for defeat no matter what they own or lose.
@@ -4487,21 +5323,27 @@ impl Simulation {
                 continue;
             }
             let should_defeat = if self.session.game_options.short_game {
-                house.owned_building_count == 0 && !self.house_has_live_base_unit(owner, rules)
+                house.owned_building_count == 0
+                    && !self.house_has_live_base_unit(owner, Some(rules))
             } else {
                 house.owned_building_count == 0 && house.owned_unit_count == 0
             };
             if should_defeat {
+                // HouseClass::Update @ 0x004F8F7B enters the same synchronous
+                // destruction sweep before MPlayer_Defeated mutates result
+                // bytes or emits its localized outcome edge.
+                let _ = crate::sim::house_destruction::sweep_house_technos(
+                    self,
+                    rules,
+                    overlay_registry,
+                    owner,
+                );
                 let accepted = if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
                     // A house that owns nothing (or, in Short Game, has no base
                     // left) has lost from its own perspective. Flag_To_Lose owns
-                    // the result transition and grace timer. NOTE: gamemd does
-                    // NOT destroy the
-                    // defeated house's remaining objects — it scatters surviving
-                    // units (ScatterAllUnits) and they persist; hard object
-                    // removal only happens under the non-standard SpecialFlags
-                    // 0x800 (HarvesterImmune). So no cleanup/destroy is done here.
+                    // the result transition and grace timer after the shared
+                    // destructive receiver loop has completed.
                     h.flag_to_lose(outcome_tick, savour_frames)
                 } else {
                     false
@@ -4515,16 +5357,23 @@ impl Simulation {
             }
         }
 
+        if !defeat_enabled {
+            return;
+        }
+
         // Check if all remaining alive houses are mutually allied → game over.
         // The native alive scan counts only houses that are neither defeated nor
         // passive; the Civilian/JP houses present in every skirmish own map
         // objects forever, so including them would keep the alive set above one
         // and the victory screen would never appear.
-        let alive: Vec<InternedId> = self
-            .houses
+        let alive: Vec<InternedId> = owners
             .iter()
-            .filter(|(_, h)| !h.is_defeated && !h.multiplay_passive)
-            .map(|(k, _)| *k)
+            .copied()
+            .filter(|owner| {
+                self.houses
+                    .get(owner)
+                    .is_some_and(|house| !house.is_defeated && !house.multiplay_passive)
+            })
             .collect();
 
         if alive.len() == 1 {
@@ -4567,12 +5416,6 @@ impl Simulation {
             }
         }
 
-        // HouseClass::Update @ 0x004F8440 advances the accepted result timer
-        // in the house rung. The expiry frame is terminal and therefore skips
-        // the wrapping frame commit below, matching Main_Tick's early return.
-        for house in self.houses.values_mut() {
-            house.advance_outcome_savour(outcome_tick);
-        }
     }
 
     /// Number of houses that can actually contend for the match outcome.
@@ -5233,6 +6076,60 @@ impl Simulation {
         }
         let effects = self.collect_active_vision_structures(rules);
         self.apply_active_vision_structures(&effects);
+    }
+
+    /// Visit the live House registry for the early House-update mechanisms.
+    ///
+    /// gamemd-derived: `LogicClass__PerTickUpdate @ 0x0055AFB0`, House loop
+    /// `0x0055B68D..0x0055B6B1`, walks the House array forward, skips nulls,
+    /// and reloads the live count after every `HouseClass__Update @ 0x004F8440`
+    /// call. The bounded Rust mechanisms are anger decay before the verified
+    /// AI-activation block `0x004F8564..0x004F85B7`.
+    fn update_houses_anger_and_activation(&mut self, rules: Option<&RuleSet>) {
+        let current_frame = self.session.binary_frame as i32;
+        let game_mode_nonzero = self.session.game_mode_nonzero;
+        let iq_production = rules.map(|rules| rules.general.iq_production);
+        let mut index = 0;
+        while index < self.session.house_order.len() {
+            let owner = self.session.house_order[index];
+            let represented = self.houses.contains_key(&owner);
+            if let Some(house) = self.houses.get_mut(&owner) {
+                house_strategy::decay_anger_scores(
+                    house,
+                    &self.session.house_order,
+                    current_frame,
+                );
+            }
+            if represented {
+                #[cfg(test)]
+                self.trace_house_ai_activation_order(
+                    HouseAiActivationOrderTestEvent::HouseAngerDecay(owner),
+                );
+                if let Some(iq_production) = iq_production {
+                    self.houses
+                        .get_mut(&owner)
+                        .expect("represented House remains registered during its update")
+                        .update_ai_activation(game_mode_nonzero, iq_production);
+                    #[cfg(test)]
+                    self.trace_house_ai_activation_order(
+                        HouseAiActivationOrderTestEvent::HouseActivation(owner),
+                    );
+                }
+
+                #[cfg(test)]
+                if self
+                    .house_update_append_after_test
+                    .is_some_and(|(after_owner, _)| after_owner == owner)
+                {
+                    let (_, appended_owner) = self
+                        .house_update_append_after_test
+                        .take()
+                        .expect("append injection was just matched");
+                    self.session.house_order.push(appended_owner);
+                }
+            }
+            index += 1;
+        }
     }
 
     fn refresh_fog(
@@ -5945,6 +6842,11 @@ impl Simulation {
         if let Some(rules) = rules {
             self.reconcile_active_vision_structures(rules);
         }
+        // Factory/production work has already completed in Phase 7. This early
+        // House update follows optional vision reconciliation and precedes both
+        // defeat processing and strategic AI command generation. Native anger
+        // decay is unconditional; only the activation substep needs RuleSet.
+        self.update_houses_anger_and_activation(rules);
         // --- Phase 8: Defeat detection (runs BEFORE AI) ---
         // gamemd evaluates each house's defeat before its AI manage/produce step,
         // so a house that lost its last building/unit this tick can issue NO AI
@@ -5952,7 +6854,11 @@ impl Simulation {
         // (but before this tick's AI spawns); tick_ai then skips any house already
         // flagged defeated via its is_defeated gate.
         if self.session.tick > 0 {
-            self.check_defeat(rules);
+            self.check_defeat(rules, overlay_registry);
+            #[cfg(test)]
+            self.trace_house_ai_activation_order(
+                HouseAiActivationOrderTestEvent::DefeatProcessed,
+            );
         }
 
         // --- Phase 8 (cont.): AI ---
@@ -5970,6 +6876,8 @@ impl Simulation {
                 height_map,
                 overlay_registry,
             );
+            #[cfg(test)]
+            self.trace_house_ai_activation_order(HouseAiActivationOrderTestEvent::AiGenerated);
             self.ai_players = ai_state;
             let mut ai_tail_path_grid = path_grid
                 .cloned()
@@ -6082,6 +6990,7 @@ impl Simulation {
         // collapse and physically finalize exactly once.
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::PendingDelete);
+        self.trigger_runtime.finalize_pending_tags();
         self.process_pending_delete();
 
         // Debug-mode safety net: rebuild occupancy after the drain so dead
@@ -6227,6 +7136,7 @@ impl Simulation {
         let overlay_updates = std::mem::take(&mut self.frame_overlay_updates);
         let fire_events = std::mem::take(&mut self.fire_events);
         let sound_events = std::mem::take(&mut self.sound_events);
+        let crate_presentation = std::mem::take(&mut self.crate_presentation);
         SimFrameOutput {
             tick,
             trigger_effects,
@@ -6235,6 +7145,7 @@ impl Simulation {
             sound_events,
             fire_events,
             invulnerability_impacts,
+            crate_presentation,
         }
     }
 
@@ -6370,6 +7281,31 @@ impl Simulation {
                 .get(stable_id)
                 .is_some_and(|entity| entity.category == EntityCategory::Structure);
             sim.object_ai_visit_one(stable_id, rules, object_ctx);
+            // ForceTrack is one of the verified native pickup callers. Its
+            // leaf recorded immutable request data before releasing the entity
+            // borrow; drain in insertion order before any ordinary locomotor
+            // work or alive short-circuit so dead tombstone postwrites remain
+            // possible. No other cell-change path flows through this seam.
+            let movement_crate_probes = sim
+                .substrate
+                .entities
+                .get_mut(stable_id)
+                .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                .unwrap_or_default();
+            if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                for probe in movement_crate_probes {
+                    let _ = sim.pickup_crate_from_movement_probe(
+                        stable_id,
+                        probe,
+                        crate::sim::crates::CratePickupInputs {
+                            rules,
+                            overlays,
+                            path_grid,
+                            event_49: None,
+                        },
+                    );
+                }
+            }
             if was_structure
                 && sim
                     .substrate
@@ -6395,60 +7331,83 @@ impl Simulation {
                 .get(stable_id)
                 .map(|entity| (entity.position.rx, entity.position.ry));
             let one = [stable_id];
-            movement_stats.merge(movement::tick_movement_object_with_grids(
-                &mut sim.substrate.entities,
-                stable_id,
-                path_grid,
-                &sim.terrain_costs,
-                &sim.house_alliances,
-                &mut sim.substrate.occupancy,
-                &mut sim.substrate.cell_occupation,
-                &mut sim.substrate.raw_cell_occupation,
-                &mut sim.substrate.next_occupancy_enter_order,
-                &mut sim.scenario_rng,
-                sim.session.tick,
-                sim.session.binary_frame,
-                sim.zone_grid.as_ref(),
-                sim.resolved_terrain.as_ref(),
-                sim.overlay_grid.as_ref(),
-                overlay_registry,
-                sim.playfield_bounds,
-                &sim.terrain_speed_config,
-                sim.close_enough,
-                sim.path_delay_ticks,
-                sim.blockage_path_delay_ticks,
-                &mut sim.interner,
-                rules,
-                &mut sim.sound_events,
-                &mut sim.pending_lifecycle_requests,
-            ));
-
-            // FootClass advances the SHP Unit body counter immediately after
-            // this object's locomotor Process, against the still-current
-            // absolute binary frame. The global frame commits only after the
-            // complete live-object pass.
-            if shp_vehicle_counter_admitted(tube_active_at_entry) {
-                let shp_vehicle_cadence =
-                    sim.substrate.entities.get(stable_id).and_then(|entity| {
-                        if entity.category != EntityCategory::Unit || entity.is_voxel {
-                            return None;
-                        }
-                        let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
-                        Some(crate::sim::animation::ShpVehicleCadence {
-                            walk_rate: object.walk_rate,
-                            idle_rate: object.idle_rate,
-                        })
-                    });
-                if let (Some(cadence), Some(entity)) = (
-                    shp_vehicle_cadence,
-                    sim.substrate.entities.get_mut(stable_id),
-                ) {
-                    crate::sim::animation::tick_shp_vehicle_body_frame_counter(
-                        entity,
-                        cadence,
-                        sim.session.binary_frame,
-                    );
+            let mut resume_crate_tail_only = false;
+            loop {
+                movement_stats.merge(movement::tick_movement_object_with_grids(
+                    &mut sim.substrate.entities,
+                    stable_id,
+                    path_grid,
+                    &sim.terrain_costs,
+                    &sim.house_alliances,
+                    &mut sim.substrate.occupancy,
+                    &mut sim.substrate.cell_occupation,
+                    &mut sim.substrate.raw_cell_occupation,
+                    &mut sim.substrate.next_occupancy_enter_order,
+                    &mut sim.scenario_rng,
+                    sim.session.tick,
+                    sim.session.binary_frame,
+                    sim.zone_grid.as_ref(),
+                    sim.resolved_terrain.as_ref(),
+                    sim.overlay_grid.as_ref(),
+                    overlay_registry,
+                    sim.playfield_bounds,
+                    &sim.terrain_speed_config,
+                    sim.close_enough,
+                    sim.path_delay_ticks,
+                    sim.blockage_path_delay_ticks,
+                    &mut sim.interner,
+                    rules,
+                    &sim.houses,
+                    &mut sim.sound_events,
+                    &mut sim.pending_lifecycle_requests,
+                    resume_crate_tail_only,
+                ));
+                let probes = sim
+                    .substrate
+                    .entities
+                    .get_mut(stable_id)
+                    .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                    .unwrap_or_default();
+                if probes.is_empty() {
+                    break;
                 }
+                for probe in probes {
+                    if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                        let _ = sim.pickup_crate_from_movement_probe(
+                            stable_id,
+                            probe,
+                            crate::sim::crates::CratePickupInputs {
+                                rules,
+                                overlays,
+                                path_grid,
+                                event_49: None,
+                            },
+                        );
+                    } else if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
+                        // A runtime without parsed rules/overlay types cannot
+                        // contain an active crate. The native dispatch is thus
+                        // the deterministic no-crate `One` path, but the exact
+                        // caller continuation still has to run so test/scenario
+                        // shells cannot strand an unadmitted suspension.
+                        let _ = crate::sim::movement::crate_callers::continue_after_pickup(
+                            entity,
+                            probe,
+                            crate::sim::crates::NativePickupReturn::One,
+                        );
+                        let _ = movement::complete_process_movement_final_pickup(
+                            entity,
+                            &mut sim.substrate.cell_occupation,
+                        );
+                    }
+                }
+                if !sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                    entity.pending_drive_track_crate_resume.is_some()
+                        || entity.pending_process_movement_crate_resume.is_some()
+                        || entity.pending_ground_crossing_crate_resume.is_some()
+                }) {
+                    break;
+                }
+                resume_crate_tail_only = true;
             }
 
             // A direction-8 producer also ends this object's ordinary turn as
@@ -6467,41 +7426,193 @@ impl Simulation {
                 return;
             }
 
-            sim.tick_air_movement_with_cell_lists_one(stable_id);
-            let teleport_relocating = sim
+            let locomotor_kind_at_process = sim
                 .substrate
                 .entities
                 .get(stable_id)
-                .and_then(|entity| entity.teleport_state.as_ref())
-                .is_some_and(|state| {
-                    state.phase == crate::sim::movement::teleport_movement::TeleportPhase::Relocate
+                .and_then(|entity| entity.locomotor.as_ref().map(|locomotor| locomotor.kind));
+            let tick_shp_counter = |sim: &mut Simulation| {
+                if !shp_vehicle_counter_admitted(tube_active_at_entry) {
+                    return;
+                }
+                let cadence = sim.substrate.entities.get(stable_id).and_then(|entity| {
+                    if entity.category != EntityCategory::Unit || entity.is_voxel {
+                        return None;
+                    }
+                    let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
+                    Some(crate::sim::animation::ShpVehicleCadence {
+                        walk_rate: object.walk_rate,
+                        idle_rate: object.idle_rate,
+                    })
                 });
-            if let Some(rules) = rules {
-                let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
-                let warp_out_total_frames = rules
-                    .effect_frame_count(&rules.general.warp_out.name)
-                    .unwrap_or(teleport_movement::FALLBACK_WARP_FRAME_COUNT);
-                let mut teleport_visuals = teleport_movement::TeleportVisuals {
-                    world_effects: &mut sim.world_effects,
-                    warp_out_type,
-                    warp_out_total_frames,
-                    warp_out_frame_delay: rules.general.warp_out.frame_delay,
-                };
-                teleport_movement::tick_teleport_movement(
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.occupancy,
-                    &one,
-                    sim.session.tick,
-                    Some(&mut teleport_visuals),
-                );
-            } else {
-                teleport_movement::tick_teleport_movement(
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.occupancy,
-                    &one,
-                    sim.session.tick,
-                    None,
-                );
+                if let (Some(cadence), Some(entity)) =
+                    (cadence, sim.substrate.entities.get_mut(stable_id))
+                {
+                    crate::sim::animation::tick_shp_vehicle_body_frame_counter(
+                        entity,
+                        cadence,
+                        sim.session.binary_frame,
+                    );
+                }
+            };
+            let air_owns_process = matches!(
+                locomotor_kind_at_process,
+                Some(
+                    crate::rules::locomotor_type::LocomotorKind::Fly
+                        | crate::rules::locomotor_type::LocomotorKind::Jumpjet
+                )
+            );
+            let teleport_owns_process = locomotor_kind_at_process
+                == Some(crate::rules::locomotor_type::LocomotorKind::Teleport);
+            let teleport_relocated_this_process = teleport_owns_process
+                && sim
+                    .substrate
+                    .entities
+                    .get(stable_id)
+                    .and_then(|entity| entity.teleport_state.as_ref())
+                    .is_some_and(|state| {
+                        state.phase
+                            == crate::sim::movement::teleport_movement::TeleportPhase::Relocate
+                    });
+            if !air_owns_process && !teleport_owns_process {
+                tick_shp_counter(sim);
+            }
+
+            let mut resume_air_crate_tail = false;
+            loop {
+                if resume_air_crate_tail {
+                    sim.resume_air_movement_crate_tail_one(stable_id);
+                } else {
+                    sim.tick_air_movement_with_cell_lists_one(stable_id);
+                }
+                let air_crate_probes = sim
+                    .substrate
+                    .entities
+                    .get_mut(stable_id)
+                    .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                    .unwrap_or_default();
+                if air_crate_probes.is_empty() {
+                    break;
+                }
+                for probe in air_crate_probes {
+                    if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                        let _ = sim.pickup_crate_from_movement_probe(
+                            stable_id,
+                            probe,
+                            crate::sim::crates::CratePickupInputs {
+                                rules,
+                                overlays,
+                                path_grid,
+                                event_49: None,
+                            },
+                        );
+                    } else if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
+                        let _ = crate::sim::movement::crate_callers::continue_after_pickup(
+                            entity,
+                            probe,
+                            crate::sim::crates::NativePickupReturn::One,
+                        );
+                    }
+                }
+                if !sim
+                    .substrate
+                    .entities
+                    .get(stable_id)
+                    .is_some_and(|entity| entity.pending_air_crate_resume.is_some())
+                {
+                    break;
+                }
+                resume_air_crate_tail = true;
+            }
+
+            if air_owns_process {
+                tick_shp_counter(sim);
+            }
+            let mut resume_teleport_crate_tail = false;
+            loop {
+                if let Some(rules) = rules {
+                    let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
+                    let warp_out_total_frames = rules
+                        .effect_frame_count(&rules.general.warp_out.name)
+                        .unwrap_or(teleport_movement::FALLBACK_WARP_FRAME_COUNT);
+                    let mut teleport_visuals = teleport_movement::TeleportVisuals {
+                        world_effects: &mut sim.world_effects,
+                        warp_out_type,
+                        warp_out_total_frames,
+                        warp_out_frame_delay: rules.general.warp_out.frame_delay,
+                    };
+                    if resume_teleport_crate_tail {
+                        teleport_movement::resume_teleport_crate_tail(
+                            &mut sim.substrate.entities,
+                            &mut sim.substrate.occupancy,
+                            &one,
+                            sim.session.tick,
+                            Some(&mut teleport_visuals),
+                        );
+                    } else {
+                        teleport_movement::tick_teleport_movement(
+                            &mut sim.substrate.entities,
+                            &mut sim.substrate.occupancy,
+                            &one,
+                            sim.session.tick,
+                            Some(&mut teleport_visuals),
+                        );
+                    }
+                } else if resume_teleport_crate_tail {
+                    teleport_movement::resume_teleport_crate_tail(
+                        &mut sim.substrate.entities,
+                        &mut sim.substrate.occupancy,
+                        &one,
+                        sim.session.tick,
+                        None,
+                    );
+                } else {
+                    teleport_movement::tick_teleport_movement(
+                        &mut sim.substrate.entities,
+                        &mut sim.substrate.occupancy,
+                        &one,
+                        sim.session.tick,
+                        None,
+                    );
+                }
+                let probes = sim
+                    .substrate
+                    .entities
+                    .get_mut(stable_id)
+                    .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                    .unwrap_or_default();
+                if probes.is_empty() {
+                    break;
+                }
+                for probe in probes {
+                    if let (Some(rules), Some(overlays)) = (rules, overlay_registry) {
+                        let _ = sim.pickup_crate_from_movement_probe(
+                            stable_id,
+                            probe,
+                            crate::sim::crates::CratePickupInputs {
+                                rules,
+                                overlays,
+                                path_grid,
+                                event_49: None,
+                            },
+                        );
+                    } else if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
+                        let _ = crate::sim::movement::crate_callers::continue_after_pickup(
+                            entity,
+                            probe,
+                            crate::sim::crates::NativePickupReturn::One,
+                        );
+                    }
+                }
+                if !sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                    entity.pending_teleport_crate_resume.is_some()
+                }) {
+                    break;
+                }
+                resume_teleport_crate_tail = true;
+            }
+            if teleport_owns_process {
+                tick_shp_counter(sim);
             }
             sim.pending_rocket_detonations
                 .extend(rocket_movement::tick_rocket_movement(
@@ -6531,15 +7642,35 @@ impl Simulation {
                 .entities
                 .get(stable_id)
                 .map(|entity| (entity.position.rx, entity.position.ry));
+            let mut capture_fate_concealed = false;
             if let Some(rules) = rules {
-                sim.move_unit_sensor_after_cell_change(
+                let capture_fate_result = crate::sim::capture_fate_facility::process_per_cell(
+                    sim,
                     stable_id,
                     cell_before_movement,
                     cell_after_movement,
                     rules,
+                    trigger_inputs,
                 );
+                capture_fate_concealed = matches!(
+                    capture_fate_result,
+                    crate::sim::capture_fate_facility::CaptureFatePerCellResult::GrinderConsumed
+                        | crate::sim::capture_fate_facility::CaptureFatePerCellResult::AbsorberBoarded
+                );
+                if !capture_fate_concealed {
+                    sim.move_unit_sensor_after_cell_change(
+                        stable_id,
+                        cell_before_movement,
+                        cell_after_movement,
+                        rules,
+                    );
+                }
             }
-            if teleport_relocating {
+            if capture_fate_concealed {
+                // PerCellProcess has already run the synchronous Limbo/UnInit
+                // transaction. Its cleared sensor, cell-list, and playfield
+                // state must not be re-promoted by the movement caller tail.
+            } else if teleport_relocated_this_process {
                 // `TeleportLocomotionClass` arrival owns the exceptional exact
                 // outside clear at 0x00719A99; it must not flow through the
                 // ordinary promote-only per-cell writer.
@@ -6607,18 +7738,14 @@ impl Simulation {
         // separate from the weapon-damage wall path. No-op when no crusher sits
         // on a wall, so it is hash-neutral for every non-crush scenario.
         self.apply_wall_crush_on_driveover(rules, overlay_registry);
-        // --- Phase 2.5: Body rocking + slope-transition advance ---
-        // DEPENDS ON: all movement above (slope_type lookups must see the
-        //   latest entity positions); rules.general.fallback_coefficient for
-        //   the moving-vehicle decay scale.
-        // PRODUCES: per-entity RockingState (angles, velocities, slope blend
-        //   state) consumed by the renderer to compose the body matrix.
-        // Aircraft skip slope tilting; infantry skip ship rocking. Wide-amplitude
-        // self-destruct uses NoopSelfDestruct until combat-side damage lands
-        // (Task 19); swap in a real hook then.
-        if let (Some(rules), Some(terrain)) = (rules, self.resolved_terrain.as_ref()) {
+        // --- Phase 2.5: body rocking ---
+        // Drive/Ship slope sampling now belongs to locomotor Process entry,
+        // before movement. Body rocking keeps its established post-movement
+        // order, rules/terrain gate, and fallback-coefficient input
+        // independently.
+        if let (Some(rules), Some(_terrain)) = (rules, self.resolved_terrain.as_ref()) {
             let mut hook = crate::sim::rocking::self_destruct::NoopSelfDestruct;
-            crate::sim::rocking::tick(&mut self.substrate.entities, terrain, rules, &mut hook);
+            crate::sim::rocking::tick(&mut self.substrate.entities, rules, &mut hook);
         }
 
         // Aircraft mission state machines — between movement and combat.
@@ -7146,6 +8273,14 @@ impl Simulation {
             // factory's per-step cost against the REAL wallet (house.credits) in
             // insertion_seq (temporal) order; the spawn/placement pass below then
             // delivers completed builds and advances the queue-of-record.
+            // `LogicClass__PerTickUpdate @ 0x0055AFB0` runs crate regeneration
+            // after live objects/effects/AlphaShape work and immediately before
+            // Tactical/Factory arrays, using the pre-increment master frame.
+            #[cfg(test)]
+            self.trace_master_frame_rung(MasterFrameTestRung::CrateRegeneration);
+            if let Some(overlay_registry) = overlay_registry {
+                self.update_crate_regeneration(rules, overlay_registry, phase_six_path_grid);
+            }
             {
                 let mut registry = std::mem::take(&mut self.production.factory_shadow);
                 // P6: prereq/factory-loss revalidation BEFORE the charge sweep. Builds whose
@@ -7179,6 +8314,10 @@ impl Simulation {
                 height_map,
                 phase_six_path_grid,
                 overlay_registry,
+            );
+            #[cfg(test)]
+            self.trace_house_ai_activation_order(
+                HouseAiActivationOrderTestEvent::ProductionCompleted,
             );
             production::tick_repairs(self, rules);
             building_dock::tick_building_docks(self, rules);

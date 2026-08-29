@@ -1,5 +1,13 @@
 # FactoryClass / HouseClass — Engine Substrate Service Study & Replacement-Boundary Design
 
+> **2026-08-29 active-binary correction.** This study's H9/defeat rows use the
+> stale `ScatterAllUnits` interpretation for `0x004FC6D0`. That function is the
+> shared live-Techno destruction sweep, not movement Scatter: it clears incoming
+> Temporal state and enters concrete `ReceiveDamage` with current health and
+> configured C4. Those rows are superseded by
+> `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`;
+> unrelated Factory/House substrate findings remain historical evidence.
+
 **Status:** STUDY + DESIGN (not an approved implementation plan). Read-only research; no Rust written.
 **Date:** 2026-06-04
 **v2 verification pass:** 2026-06-04 — live re-decompile of P0/UNRESOLVED/DOC-ONLY items; ledger §9 rebuilt.

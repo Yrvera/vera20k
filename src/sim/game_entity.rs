@@ -53,6 +53,29 @@ use crate::util::native_x87::NativeF64Bits;
 /// targeting delays.
 pub const PASSIVE_SCAN_CONSTRUCTION_DELAY_FRAMES: u32 = 45;
 
+/// Shared `BuildingClass::GetCoords @ 0x00447AC0` X/Y projection. Both live
+/// object-coordinate consumers (map-wall reconstruction and object NavCom)
+/// must shift the stored north-west anchor by the same foundation-center term.
+pub(crate) fn project_building_get_coords_xy(
+    northwest_x: i32,
+    northwest_y: i32,
+    foundation_width: u16,
+    foundation_height: u16,
+) -> (i32, i32) {
+    (
+        northwest_x.wrapping_add(
+            i32::from(foundation_width)
+                .wrapping_sub(1)
+                .wrapping_mul(128),
+        ),
+        northwest_y.wrapping_add(
+            i32::from(foundation_height)
+                .wrapping_sub(1)
+                .wrapping_mul(128),
+        ),
+    )
+}
+
 /// Infantry-only runtime fear/prone state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InfantryRuntime {
@@ -86,12 +109,14 @@ fn default_foundation() -> String {
     "1x1".to_string()
 }
 
+fn default_base_plan_type_index() -> i32 {
+    -1
+}
+
 /// Persistent TechnoClass state used by the active House base-defence
 /// responder. The two admission bytes are constructor-true; archive/cooldown
 /// writes occur only after a responder assignment or strict budget overshoot.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BaseDefenseResponseState {
     pub(crate) recruitable_a: bool,
     pub(crate) recruitable_b: bool,
@@ -114,6 +139,14 @@ impl Default for BaseDefenseResponseState {
 
 fn default_armor_multiplier() -> NativeF64Bits {
     NativeF64Bits::ONE
+}
+
+fn default_crate_multiplier() -> NativeF64Bits {
+    NativeF64Bits::ONE
+}
+
+fn default_current_speed_fraction() -> NativeF64Bits {
+    NativeF64Bits::POSITIVE_ZERO
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -275,6 +308,18 @@ pub struct PendingBuildingFire {
     pub weapon_slot: WeaponSlot,
 }
 
+/// Persistent native `TemporalClass` owned by this Techno.
+/// Each Techno owns at most one TemporalClass, so stable owner IDs are exact
+/// identities for the native target and doubly-linked chain pointers. Manager
+/// presence and `warp_points` exist even while the manager is detached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct TemporalManagerState {
+    pub warp_points: i32,
+    pub target_id: Option<u64>,
+    pub previous_owner_id: Option<u64>,
+    pub next_owner_id: Option<u64>,
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -361,6 +406,11 @@ pub struct GameEntity {
     pub health: Health,
     /// rules.ini section name (e.g., "HTNK", "E1", "GAPOWR") — interned for zero-cost clones.
     pub type_ref: InternedId,
+    /// Map-authored Techno AttachedTag identity. Native object-trigger
+    /// callbacks resolve this stable Tag reference synchronously; produced
+    /// objects construct with no AttachedTag.
+    #[serde(default)]
+    pub attached_tag_id: Option<InternedId>,
     /// Entity category: Unit, Infantry, Aircraft, or Structure.
     pub category: EntityCategory,
     /// Rules foundation string for structure footprint occupancy.
@@ -384,6 +434,30 @@ pub struct GameEntity {
     /// True only when the parsed type has `Factory=BuildingType`.
     #[serde(default)]
     pub determines_waypoint_edge: bool,
+    /// Immutable resolved membership in `[AI] BuildConst=`
+    /// (`RulesClass__ReadAI @ 0x00672AE0`, binding
+    /// `0x00672B14..0x00672C01`). Lifecycle authority copies this from
+    /// BuildingType so rule-less Limbo and owner transfer paths can maintain
+    /// native acquisition order exactly.
+    #[serde(default)]
+    pub build_const_eligible: bool,
+    /// Immutable BuildingType `Grinding=` membership used by the rule-less
+    /// House special-building vector lifecycle.
+    #[serde(default)]
+    pub grinding_facility: bool,
+    /// Immutable combined BuildingType `UnitAbsorb=`/`InfantryAbsorb=`
+    /// membership used by the rule-less House absorber-vector lifecycle.
+    #[serde(default)]
+    pub absorber_facility: bool,
+    /// Immutable native BuildingType registry index for BasePlan lifecycle writers.
+    #[serde(default = "default_base_plan_type_index")]
+    pub base_plan_type_index: i32,
+    /// Immutable BuildingType `IsBaseDefense=` fact.
+    #[serde(default)]
+    pub base_plan_is_defense: bool,
+    /// Immutable non-null `UndeploysInto` fact used by successful Unlimbo fallback.
+    #[serde(default)]
+    pub base_plan_has_undeploy_target: bool,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
     ///
     /// A projection of [`Self::veterancy_raw`], refreshed wherever the raw
@@ -409,6 +483,20 @@ pub struct GameEntity {
     /// this double to 1.0; armor powerups are its active non-neutral writer.
     #[serde(default = "default_armor_multiplier")]
     pub armor_multiplier: NativeF64Bits,
+    /// Persistent FootClass `+0x580` speed-crate multiplier.
+    #[serde(default = "default_crate_multiplier")]
+    pub speed_crate_multiplier: NativeF64Bits,
+    /// Authoritative FootClass `+0x578` current-speed fraction qword. Every
+    /// native owner setter canonicalizes it through ordered comparisons.
+    #[serde(default = "default_current_speed_fraction")]
+    pub current_speed_fraction: NativeF64Bits,
+    /// Persistent TechnoClass `+0x160` firepower-crate multiplier.
+    #[serde(default = "default_crate_multiplier")]
+    pub firepower_crate_multiplier: NativeF64Bits,
+    /// Distinct stock-disabled Cloak powerup anti-stack bit. It is not the
+    /// object's ordinary cloak-capability/runtime state.
+    #[serde(default)]
+    pub cloak_crate_applied: bool,
     /// House credited with destroying this object, captured at the instant its
     /// health reached zero.
     ///
@@ -499,7 +587,8 @@ pub struct GameEntity {
     pub air_spatial_enter_order: u64,
 
     // --- Optional subsystem components ---
-    /// Locomotor state — present on movable entities (speed > 0 in rules.ini).
+    /// Locomotor state — present on moving types and on zero-speed Foot
+    /// Drive/Ship types whose native class-local payload still exists.
     pub locomotor: Option<LocomotorState>,
     /// Active movement path — present when unit is moving along an A* path.
     pub movement_target: Option<MovementTarget>,
@@ -610,6 +699,10 @@ pub struct GameEntity {
     pub disguise: Option<DisguiseRuntime>,
     /// Teleport movement state machine (warp out/in phases).
     pub teleport_state: Option<TeleportState>,
+    /// Native TechnoClass `+0x280` pending warp phase. Teleport arrival clears
+    /// this only after the synchronous crate callback and arrival WarpOut row.
+    #[serde(default)]
+    pub pending_teleport_warp_phase: u32,
     /// Dormant YR TunnelLocomotionClass process state. Its underground depth
     /// lives in the typed runtime, because `Position::z` cannot represent -256.
     #[serde(default)]
@@ -619,11 +712,61 @@ pub struct GameEntity {
     /// legacy and was removed as unreachable in stock YR.
     #[serde(default)]
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
+    /// This Techno's own TemporalClass manager, target, and chain links.
+    #[serde(default)]
+    pub temporal_manager: Option<TemporalManagerState>,
+    /// Victim-side `Techno+0x278` pointer to the head TemporalClass owner.
+    #[serde(default)]
+    pub temporal_targeting_me_id: Option<u64>,
+    /// Victim-side `Techno+0x270` warped-out byte.
+    #[serde(default)]
+    pub being_temporally_warped_out: bool,
     /// Controller-owned reversible mind-control manager (`TechnoClass+0x2BC`).
     /// Capacity and ordered victim links are authoritative runtime state; they
-    /// cannot be reconstructed from victim-side `mind_controlled` flags.
+    /// cannot be reconstructed from the independent permanent-control byte.
     #[serde(default)]
     pub capture_manager: Option<crate::sim::capture_manager::CaptureManagerState>,
+    /// Victim-side reciprocal controller identity (`Techno+0x2C0`).
+    #[serde(default)]
+    pub mind_control_controller_id: Option<u64>,
+    /// Victim-owned attached control-ring pointer (`Techno+0x2C8`). The Anim
+    /// carries the reciprocal `owner_entity`; snapshot admission validates both
+    /// sides so FreeUnit removes exactly this ring rather than searching by type.
+    #[serde(default)]
+    pub mind_control_anim_id: Option<crate::sim::anim_class::AnimId>,
+    /// FootClass `+0x68F`, written by AI capture fate action 3 before the
+    /// Bio-Reactor Enter mission. A failed search clears it. This is separate
+    /// from the RadioClass contact and destination pointers.
+    #[serde(default)]
+    pub ai_absorb_enter_pending: bool,
+    /// Native `InfantryClass+0x438`: this infantry currently contributes to
+    /// its owner's `HouseClass+0x2F4` tracking count. Bio Reactor PerCell clears
+    /// it after Limbo; successful Building unload restores it exactly once.
+    #[serde(default)]
+    pub infantry_house_tracked: bool,
+    /// Native `InfantryClass+0x439`: this infantry is a Bio Reactor occupant.
+    /// House Add_Tracking rejects while this byte is set, allowing the exit
+    /// helper to own the single counter restoration after successful Unlimbo.
+    #[serde(default)]
+    pub infantry_absorber_occupant: bool,
+    /// Native temporary-transfer destination/current marker (`Techno+0x2CC`).
+    /// Action 123 writes the destination House after ChangeOwner; ChangeOwner
+    /// itself does not clear this pointer, so it is independent of `+0x2E0`.
+    #[serde(default)]
+    pub temporary_owner_transfer_marker: Option<InternedId>,
+    /// Native temporary-transfer source/original House (`Techno+0x2E0`).
+    /// ChangeOwner clears this pointer while leaving `+0x2CC` intact, so a
+    /// marker with no source is a representable native state.
+    #[serde(default)]
+    pub temporary_owner_transfer_source: Option<InternedId>,
+    /// Per-attacker Parasite manager identity. The crate prerequisite owns the
+    /// reciprocal victim only; the Ship/SQD mechanism extends the manager with
+    /// its timers, grapple FSM, and visual state.
+    #[serde(default)]
+    pub parasite_manager: Option<crate::sim::parasite_attachment::ParasiteManagerState>,
+    /// Victim-side `FootClass+0x694` Parasite attacker backlink.
+    #[serde(default)]
+    pub parasite_attacker_id: Option<u64>,
     /// Spawn-manager pool carried by a `Spawns=` parent (V3 Launcher,
     /// Dreadnought, Boomer, Aircraft Carrier, Destroyer). Mirrors the native
     /// `TechnoClass+0x2D0` manager pointer: present iff `Spawns=` resolved.
@@ -656,9 +799,11 @@ pub struct GameEntity {
     /// (except healing) until the timer expires. Applied by superweapon launch handlers.
     #[serde(default)]
     pub invulnerability: Option<InvulnerabilityState>,
-    /// Native `TechnoClass::IsMindControlled` gate surrogate.
+    /// Native permanent mind-control byte (`Techno+0x2C4`). Reversible
+    /// CaptureManager control is represented only by the controller pointer;
+    /// `TechnoClass::IsMindControlled @ 0x7105E0` ORs the two states.
     #[serde(default)]
-    pub mind_controlled: bool,
+    pub permanently_mind_controlled: bool,
     /// Psychedelic/chaos runtime, separate from reversible mind control.
     #[serde(default)]
     pub berserk: BerserkState,
@@ -674,6 +819,30 @@ pub struct GameEntity {
     /// One-shot forced drive track, independent of normal path movement.
     #[serde(default)]
     pub forced_drive_track: Option<ForcedDriveTrackState>,
+    /// Pass-local suspension record for a synchronous native movement crate
+    /// call. Never serialized: pickup plus continuation are one native stack.
+    #[serde(skip, default)]
+    pub(crate) pending_movement_crate_probes:
+        Vec<crate::sim::movement::crate_callers::MovementCrateProbe>,
+    /// Pass-local ProcessDriveTrack continuation suspended across synchronous
+    /// crate dispatch. Never serialized or hashed.
+    #[serde(skip, default)]
+      pub(crate) pending_drive_track_crate_resume:
+          Option<crate::sim::movement::crate_callers::DriveTrackPickupResume>,
+      /// Pass-local two-stage ProcessMovement candidate/final continuation.
+      /// Never serialized or hashed: each stage completes synchronously.
+      #[serde(skip, default)]
+      pub(crate) pending_process_movement_crate_resume:
+          Option<crate::sim::movement::crate_callers::ProcessMovementPickupResume>,
+      #[serde(skip, default)]
+      pub(crate) pending_air_crate_resume:
+          Option<crate::sim::movement::crate_callers::AirPickupResume>,
+    #[serde(skip, default)]
+    pub(crate) pending_teleport_crate_resume:
+        Option<crate::sim::movement::crate_callers::TeleportPickupResume>,
+    #[serde(skip, default)]
+    pub(crate) pending_ground_crossing_crate_resume:
+        Option<crate::sim::movement::crate_callers::GroundCrossingPickupResume>,
     /// Docking state machine — present when unit is approaching, waiting,
     /// or servicing at a repair depot.
     pub dock_state: Option<DockState>,
@@ -709,6 +878,14 @@ pub struct GameEntity {
     /// Parsed from `Accelerates=` and kept separate from raw `Speed=`.
     #[serde(default = "default_true")]
     pub drive_accelerates: bool,
+    /// Native owner `+0x3CD`: selects the promoted-f32 0.0015/0.1 alternate
+    /// Drive/Ship braking band outside the ordinary arrival slowdown radius.
+    #[serde(default)]
+    pub drive_alternate_brake: bool,
+    /// UnitClass `CurrentlyCrushing +0x6B5`. The active Drive/Ship ramp clamps
+    /// and writes its locomotor target to `min(target, 0.2)` while set.
+    #[serde(default)]
+    pub currently_crushing: bool,
     /// Whether this entity is immune to ALL crush types (OmniCrushResistant= in rules.ini).
     pub omni_crush_resistant: bool,
     /// Whether this entity ignores per-cell radiation damage (ImmuneToRadiation= in rules.ini).
@@ -808,9 +985,9 @@ pub struct GameEntity {
     /// Infantry fear/prone runtime. `None` for non-infantry entities.
     #[serde(default)]
     pub infantry: Option<InfantryRuntime>,
-    /// Body rocking + slope-transition state. `None` for entities that don't
-    /// rock (infantry, aircraft, SHP-bodied buildings). `Some(default)` for
-    /// vehicles and voxel-bodied buildings.
+    /// Optional body-rocking state only. Drive/Ship slope transitions belong
+    /// to their typed locomotor payloads. This defaults to `None` and becomes
+    /// present only when an explicit body-rocking producer activates it.
     #[serde(default)]
     pub rocking: Option<RockingState>,
     /// Exact native-width Mission state. All writes pass through a named legacy
@@ -844,6 +1021,15 @@ pub struct GameEntity {
     pub(crate) base_defense_response: BaseDefenseResponseState,
     /// ObjectClass falling-down byte read by Infantry readiness.
     pub(crate) object_is_falling_down: u8,
+    /// Foot +0x425/+0x427 and +0x6AE Jumpjet landing bytes. They are distinct:
+    /// EMP-style falling need not arm recovery, and successful state-4 landing
+    /// clears both before setting the restored marker.
+    #[serde(default)]
+    pub(crate) jumpjet_falling_crash_requested: bool,
+    #[serde(default)]
+    pub(crate) jumpjet_recovery_landing_armed: bool,
+    #[serde(default)]
+    pub(crate) jumpjet_post_landing_restored: bool,
     /// Sim-side model of gamemd's TechnoClass `+0x308` (`DamageSparkSystem`): the
     /// `session.tick` at which the live AI_Update damage-Spark particle system
     /// expires and the object may roll again. `0` = no live system (may roll;
@@ -1072,16 +1258,27 @@ impl GameEntity {
             owner,
             health,
             type_ref,
+            attached_tag_id: None,
             category,
             foundation: default_foundation(),
             building_hidden_occupancy: (category == EntityCategory::Structure)
                 .then(crate::rules::object_type::BuildingHiddenOccupancyProfile::default),
             base_reservation_spacing: None,
             determines_waypoint_edge: false,
+            build_const_eligible: false,
+            grinding_facility: false,
+            absorber_facility: false,
+            base_plan_type_index: -1,
+            base_plan_is_defense: false,
+            base_plan_has_undeploy_target: false,
             veterancy,
             veterancy_raw: crate::sim::combat::veterancy::raw_for_rank(veterancy),
             veterancy_rank_cache: veterancy_rank_cache_default(),
             armor_multiplier: NativeF64Bits::ONE,
+            speed_crate_multiplier: NativeF64Bits::ONE,
+            current_speed_fraction: NativeF64Bits::POSITIVE_ZERO,
+            firepower_crate_multiplier: NativeF64Bits::ONE,
+            cloak_crate_applied: false,
             vision_range,
             is_voxel,
             selected: false,
@@ -1129,9 +1326,22 @@ impl GameEntity {
             sensor_deposit: None,
             disguise: None,
             teleport_state: None,
+            pending_teleport_warp_phase: 0,
             tunnel_state: None,
             low_bridge_tube_state: None,
+            temporal_manager: None,
+            temporal_targeting_me_id: None,
+            being_temporally_warped_out: false,
             capture_manager: None,
+            mind_control_controller_id: None,
+            mind_control_anim_id: None,
+            ai_absorb_enter_pending: false,
+            infantry_house_tracked: false,
+            infantry_absorber_occupant: false,
+            temporary_owner_transfer_marker: None,
+            temporary_owner_transfer_source: None,
+            parasite_manager: None,
+            parasite_attacker_id: None,
             spawn_manager: None,
             spawn_owner_id: None,
             rocket_state: None,
@@ -1139,12 +1349,18 @@ impl GameEntity {
             homing_state: None,
             parachute_state: None,
             invulnerability: None,
-            mind_controlled: false,
+            permanently_mind_controlled: false,
             berserk: BerserkState::default(),
             drive_track: None,
             drive_locomotion: None,
             ship_locomotion: None,
             forced_drive_track: None,
+            pending_movement_crate_probes: Vec::new(),
+              pending_drive_track_crate_resume: None,
+              pending_process_movement_crate_resume: None,
+              pending_air_crate_resume: None,
+            pending_teleport_crate_resume: None,
+            pending_ground_crossing_crate_resume: None,
             dock_state: None,
             aircraft_ammo: None,
             aircraft_mission: None,
@@ -1161,6 +1377,8 @@ impl GameEntity {
             omni_crusher: false,
             regular_crusher: false,
             drive_accelerates: true,
+            drive_alternate_brake: false,
+            currently_crushing: false,
             omni_crush_resistant: false,
             immune_to_radiation: false,
             zfudge_bridge: 7,
@@ -1198,6 +1416,9 @@ impl GameEntity {
             suspended_attack_target: None,
             base_defense_response: BaseDefenseResponseState::default(),
             object_is_falling_down: 0,
+            jumpjet_falling_crash_requested: false,
+            jumpjet_recovery_landing_armed: false,
+            jumpjet_post_landing_restored: false,
             damage_particle_live_until: 0,
             damage_smoke_system_id: None,
             debug_log: None,
@@ -1392,6 +1613,13 @@ impl GameEntity {
     /// Whether this entity is alive (health > 0).
     pub fn is_alive(&self) -> bool {
         self.health.current > 0
+    }
+
+    /// Exact native `TechnoClass::IsMindControlled @ 0x7105E0` gate.
+    /// Reversible control is the victim controller pointer at `+0x2C0`;
+    /// Psychic Dominator control is the independent permanent byte at `+0x2C4`.
+    pub fn is_mind_controlled(&self) -> bool {
+        self.mind_control_controller_id.is_some() || self.permanently_mind_controlled
     }
 
     /// Whether ObjectClass native-alive state is set. This is intentionally

@@ -1473,12 +1473,14 @@ fn quicksave(state: &mut AppState) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let bytes = crate::sim::snapshot::GameSnapshot::save_validated(
+    let presentation = crate::app::input::camera::tactical_camera_presentation_snapshot(state);
+    let bytes = crate::sim::snapshot::GameSnapshot::save_validated_with_presentation(
         sim,
         map_hash,
         rules_h,
         &sim.session.map_name,
         now,
+        presentation,
     );
     let tick = sim.session.tick;
     let filename = format!("save_tick{tick}_{now}.bin");
@@ -1534,8 +1536,15 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let bytes =
-        crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, raw_name, now);
+    let presentation = crate::app::input::camera::tactical_camera_presentation_snapshot(state);
+    let bytes = crate::sim::snapshot::GameSnapshot::save_validated_with_presentation(
+        sim,
+        map_hash,
+        rules_h,
+        raw_name,
+        now,
+        presentation,
+    );
     let tick = sim.session.tick;
     let filename = format!("save_{sanitized}_tick{tick}_{now}.bin");
     match state.persistence.repository.write_named(&filename, &bytes) {
@@ -1748,6 +1757,7 @@ fn commit_prepared_load(
     prepared: crate::app::persistence::PreparedLoad,
 ) {
     let native_tiberium_stats = prepared.native_tiberium_stats();
+    let presentation = prepared.presentation();
     let (simulation, occupied_overlays, preserved_startup) = prepared.into_parts();
     log::info!(
         "Load: rebuilt native tiberium queues ({} growth, {} spread)",
@@ -1767,6 +1777,7 @@ fn commit_prepared_load(
         state.match_state.sim_runtime.take(),
         simulation,
     ));
+    crate::app::input::camera::restore_tactical_camera_presentation(state, presentation);
     crate::app::loading::transitions::sync_in_game_options_speed_from_sim(state);
     state.match_state.match_presentation.combat_lights.clear();
     crate::app::match_runtime::sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);

@@ -1,5 +1,10 @@
 # Core Service Profile — frontier-ai-house (HouseClass AI brain)
 
+> **2026-08-29 correction:** `0x004FC6D0` is a destructive House Techno sweep,
+> not movement Scatter. Its active callers and exact receiver transaction are
+> mapped in `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`;
+> older `ScatterAllUnits` labels below are superseded.
+
 **Service slug:** `frontier-ai-house`
 **Status:** FRONTIER — promoted from catalog stub (`_frontier.md` §F3) to a **STRUCTURAL** profile.
 **Scope note (project defers AI):** this profile maps the AI brain's **spine connectivity,
@@ -114,7 +119,7 @@ All identities below are taken from the cited verified docs (each doc records it
 
 **Non-AI co-resident stages inside the same tick (owned by `factory-house`, listed for context):**
 - `AI_AssessPower` 0x00508C30, `CheckSuperweaponReady` 0x00508DF0, `CheckLowPower` 0x00508F60,
-  `ScatterAllUnits` 0x004FC6D0, `MPlayer_Defeated` 0x004FC0B0, `SuperClass::AI_Ready` 0x006CBCA0
+  destructive House Techno sweep 0x004FC6D0, `MPlayer_Defeated` 0x004FC0B0, `SuperClass::AI_Ready` 0x006CBCA0
   (per-house super vector +0x258).
 
 **Spine plumbing:**

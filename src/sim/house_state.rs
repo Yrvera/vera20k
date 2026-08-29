@@ -61,16 +61,22 @@ pub enum HouseOutcomeKind {
     Defeat,
 }
 
-/// Persistent HouseClass result transition.
-///
-/// The absolute target keeps the remaining SavourDelay frame count stable
-/// across save/load. The wall-clock Vox drain that follows `exit_ready` belongs
-/// to the app and is deliberately not represented here.
+/// Derived view of one terminal House result. The serialized authority is the
+/// native trio of independent result bytes plus the shared signed timer on
+/// [`HouseState`]; this value is only the app-facing projection of that state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HouseOutcomeState {
     pub kind: HouseOutcomeKind,
     pub savour_until_tick: u64,
     pub exit_ready: bool,
+}
+
+/// One late House-result timer step. Pending expiry has a separate native tail
+/// from terminal routing, so callers must not collapse the two outcomes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct HouseResultAdvance {
+    pub pending_expired: bool,
+    pub terminal_ready: bool,
 }
 
 /// Persistent HouseClass strategy-emergency state.
@@ -210,6 +216,24 @@ impl BaseReservationState {
     }
 }
 
+/// Independent persistent House AI-activation latches. Successful AI base-unit
+/// deployment co-enables three of them; House update owns the separate
+/// AutocreateAllowed writer and its three-store activation transaction.
+///
+/// gamemd-derived: `HouseClass__Constructor` clears the corresponding bytes at
+/// `0x004F56F1`, `0x004F56F7`, `0x004F570A`, and `0x004F5710`;
+/// `HouseClass__Save @ 0x00504080` and `HouseClass__Load @ 0x00503040`
+/// persist the raw House block.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+pub struct HouseAiActivationLatches {
+    pub production: bool,
+    pub autocreate_allowed: bool,
+    pub ai_triggers_active: bool,
+    pub auto_base_building: bool,
+}
+
 /// Per-player game state.
 ///
 /// Created once per player at game start, lives for the duration of the match.
@@ -266,16 +290,28 @@ pub struct HouseState {
     pub has_won: bool,
     /// Defeat flag. Note: Flag_To_Lose clears HasWon first.
     pub has_lost: bool,
-    /// Accepted win/loss transition plus the deterministic SavourDelay target.
-    /// App-owned wall waits and audio teardown are intentionally excluded.
+    /// Independent native pending-result byte. It may be set while neither
+    /// terminal byte is set, which is why no optional outcome enum can own the
+    /// authoritative representation.
     #[serde(default)]
-    pub outcome_state: Option<HouseOutcomeState>,
+    pub result_pending: bool,
+    /// Shared signed native result timer start. `-1` is the paused/unarmed
+    /// sentinel repaired by trigger Action 69.
+    #[serde(default)]
+    pub result_timer_start: i32,
+    /// Shared signed native result timer duration in logic frames.
+    #[serde(default)]
+    pub result_timer_duration: i32,
     /// HouseClass map-clear byte folded by the retail multiplayer checksum.
     ///
     /// Defeat/reveal paths set this independently of the win/loss flags, and
     /// shroud restoration can clear it again.
     #[serde(default)]
     pub map_is_clear: bool,
+    /// Persistent HouseClass Visionary latch written by Reveal crates after
+    /// the first successful local map reveal.
+    #[serde(default)]
+    pub visionary: bool,
     /// Aggregate active SpySat state for this house.
     ///
     /// This is the edge-trigger authority for whole-map reveal/restoration.
@@ -288,8 +324,46 @@ pub struct HouseState {
     pub owned_building_count: u32,
     /// Running count of owned non-building units. Updated on spawn/despawn.
     pub owned_unit_count: u32,
+    /// Native `HouseClass+0x2F4` Infantry tracking count. This is independent
+    /// of the aggregate non-building ownership count above: Bio Reactor
+    /// occupants temporarily leave this count while remaining owned Techno.
+    #[serde(default)]
+    pub tracked_infantry_count: u32,
     /// Initial base location (MCV deploy point or first ConYard).
     pub base_center: Option<(u16, u16)>,
+    /// Alternate base-placement cell written by trigger actions 137/138.
+    ///
+    /// This is the packed-zero `HouseClass+0x5494` authority. It is distinct
+    /// from the launch/primary `base_center` (`HouseClass+0x5490`) and defaults
+    /// to the native invalid sentinel `(0, 0)`.
+    #[serde(default)]
+    pub alternate_base_center: (u16, u16),
+    /// Stable IDs in native HouseClass's owned `[AI] BuildConst=` vector order
+    /// (`RulesClass__ReadAI @ 0x00672AE0`, binding
+    /// `0x00672B14..0x00672C01`). Successful Unlimbo/re-entry and capture
+    /// append at the tail; Limbo and old-owner transfer stable-remove in place.
+    #[serde(default)]
+    pub build_const_order: Vec<u64>,
+    /// Native `HouseClass+0x9C` Grinding Building vector in successful
+    /// Unlimbo/capture acquisition order. DecideUnitFate action 2 scans this
+    /// tail-to-head; it is independent of BuildConst and global Logic order.
+    #[serde(default)]
+    pub grinder_building_order: Vec<u64>,
+    /// Native `HouseClass+0xB4` combined UnitAbsorb/InfantryAbsorb Building
+    /// vector. DecideUnitFate action 3 scans this independent vector
+    /// tail-to-head.
+    #[serde(default)]
+    pub absorber_building_order: Vec<u64>,
+    /// Ordered native `BaseClass` plan authority. Scenario nodes are installed
+    /// before map-object Unlimbo; later ordinary planning remains disconnected.
+    #[serde(default)]
+    pub base_plan: crate::sim::base_plan::BasePlanState,
+    /// Packed-zero-default center owned by native `BaseClass` at
+    /// `HouseClass+0x5750`. A successful non-controlled ConstructionYard
+    /// deploy writes this after anchoring BasePlan node zero; it is distinct
+    /// from the launch/primary `base_center` at `HouseClass+0x5490`.
+    #[serde(default)]
+    pub base_plan_center: (u16, u16),
     /// Native `HouseClass+0x5700` BaseClass reservation writer outputs.
     #[serde(default)]
     pub base_reservation: BaseReservationState,
@@ -340,6 +414,11 @@ pub struct HouseState {
     /// Snapshot/hash authority for the Strategy emergency-state block.
     #[serde(default)]
     pub strategy_emergency: HouseStrategyEmergencyState,
+    /// Native House bytes `+0x1EE`, `+0x1EF`, `+0x1F2`, and `+0x1F3`. All four
+    /// persist, while Production, AutocreateAllowed, and AITriggersActive
+    /// directly enter House CRC.
+    #[serde(default)]
+    pub ai_activation: HouseAiActivationLatches,
 }
 
 impl HouseState {
@@ -348,21 +427,70 @@ impl HouseState {
         self.is_human || self.player_control
     }
 
+    /// Native mode-aware House-control predicate shared by successful Building
+    /// Unlimbo BasePlan satisfaction and the early House-update activation.
+    /// `HouseClass::IsControlledByHuman @ 0x0050B730` supplies the former;
+    /// `HouseClass__Update @ 0x004F8440` inlines the same branch shape.
+    pub(crate) const fn is_controlled_by_human(&self, game_mode_nonzero: bool) -> bool {
+        self.is_human || (!game_mode_nonzero && self.player_control)
+    }
+
+    /// Co-enable the three successful AI base-unit deploy latches.
+    ///
+    /// gamemd-derived: `UnitClass__Deploy @ 0x007393C0` writes Production at
+    /// `0x007398FF`, AITriggersActive at `0x0073990C`, then AutoBaseBuilding at
+    /// `0x00739919`, with no branch or call between the stores.
+    pub(crate) fn enable_ai_deploy_latches(&mut self) {
+        self.ai_activation.production = true;
+        self.ai_activation.ai_triggers_active = true;
+        self.ai_activation.auto_base_building = true;
+    }
+
+    /// Run the early `HouseClass__Update` AI-activation transition.
+    ///
+    /// gamemd-derived: `HouseClass__Update @ 0x004F8440`, block
+    /// `0x004F8564..0x004F85B7`, rejects the mode-aware controlled House,
+    /// accepts any nonzero AutoBaseBuilding or signed `CurrentIQ >=
+    /// Rules+0x143C`, then writes AutoBaseBuilding, Production, and
+    /// AutocreateAllowed in that order without touching AITriggersActive.
+    pub(crate) fn update_ai_activation(
+        &mut self,
+        game_mode_nonzero: bool,
+        iq_production: i32,
+    ) {
+        if self.is_controlled_by_human(game_mode_nonzero)
+            || (!self.ai_activation.auto_base_building && self.current_iq < iq_production)
+        {
+            return;
+        }
+        self.ai_activation.auto_base_building = true;
+        self.ai_activation.production = true;
+        self.ai_activation.autocreate_allowed = true;
+    }
+
     /// Accept a victory and arm its deterministic grace interval.
     ///
     /// gamemd provenance: HouseClass::Flag_To_Win @ `0x004FC9E0` accepts only
     /// while Win/Draw/Lose are clear, sets HasWon, announces victory, and sets
     /// the house timer to `ftol(SavourDelay * 900)`.
-    pub(crate) fn flag_to_win(&mut self, current_tick: u64, savour_frames: u64) -> bool {
-        if self.has_won || self.has_lost {
+    pub(crate) fn flag_to_win(&mut self, current_frame: i32, savour_frames: i32) -> bool {
+        if self.result_pending || self.has_won || self.has_lost {
             return false;
         }
         self.has_won = true;
-        self.outcome_state = Some(HouseOutcomeState {
-            kind: HouseOutcomeKind::Victory,
-            savour_until_tick: current_tick.saturating_add(savour_frames),
-            exit_ready: false,
-        });
+        self.result_timer_start = current_frame;
+        self.result_timer_duration = savour_frames;
+        true
+    }
+
+    /// Trigger Action 67 calls Flag_To_Win with the skip-timer argument. The
+    /// transition gate is identical, but the shared timer remains byte-for-byte
+    /// unchanged.
+    pub(crate) fn flag_to_win_skip_timer(&mut self) -> bool {
+        if self.result_pending || self.has_won || self.has_lost {
+            return false;
+        }
+        self.has_won = true;
         true
     }
 
@@ -371,32 +499,106 @@ impl HouseState {
     /// gamemd provenance: HouseClass::Flag_To_Lose @ `0x004FCBD0` clears
     /// HasWon unconditionally, then (unless already Draw/Lost) sets HasLost,
     /// announces defeat, and re-arms the full SavourDelay interval.
-    pub(crate) fn flag_to_lose(&mut self, current_tick: u64, savour_frames: u64) -> bool {
+    pub(crate) fn flag_to_lose(&mut self, current_frame: i32, savour_frames: i32) -> bool {
         self.has_won = false;
-        if self.has_lost {
+        if self.result_pending || self.has_lost {
             return false;
         }
         self.has_lost = true;
-        self.outcome_state = Some(HouseOutcomeState {
-            kind: HouseOutcomeKind::Defeat,
-            savour_until_tick: current_tick.saturating_add(savour_frames),
-            exit_ready: false,
-        });
+        self.result_timer_start = current_frame;
+        self.result_timer_duration = savour_frames;
         true
+    }
+
+    /// Trigger Action 68 clears Win unconditionally and then performs the
+    /// pending/loss gate without touching the shared result timer.
+    pub(crate) fn flag_to_lose_skip_timer(&mut self) -> bool {
+        self.has_won = false;
+        if self.result_pending || self.has_lost {
+            return false;
+        }
+        self.has_lost = true;
+        true
+    }
+
+    /// Trigger Action 69 invokes normal Win when no terminal byte is set. A
+    /// pending byte can still reject that call. If a terminal result already
+    /// exists, only the native paused-start sentinel is repaired.
+    pub(crate) fn end_scenario_result(
+        &mut self,
+        current_frame: i32,
+        savour_frames: i32,
+    ) -> bool {
+        if !self.has_won && !self.has_lost {
+            return self.flag_to_win(current_frame, savour_frames);
+        }
+        if self.result_timer_start == -1 {
+            self.result_timer_start = current_frame;
+        }
+        false
+    }
+
+    /// Native TimerClass-style signed remaining duration. A paused start keeps
+    /// the signed duration verbatim. Running timers use a signed comparison on
+    /// the wrapping elapsed value and otherwise return a wrapping subtraction.
+    ///
+    /// gamemd provenance: `CDTimerClass__GetTimeRemaining @ 0x00426630`;
+    /// `HouseClass__Update @ 0x004F87CC..0x004F87EF` inlines the same helper
+    /// before testing the result for exact zero.
+    pub(crate) fn result_time_remaining(&self, current_frame: i32) -> i32 {
+        if self.result_timer_start == -1 {
+            return self.result_timer_duration;
+        }
+        let elapsed = current_frame.wrapping_sub(self.result_timer_start);
+        if elapsed >= self.result_timer_duration {
+            0
+        } else {
+            self.result_timer_duration.wrapping_sub(elapsed)
+        }
+    }
+
+    /// App-facing terminal result projection. It is deliberately derived from
+    /// the independent native bytes/timer and never serialized as a second
+    /// source of truth.
+    pub(crate) fn outcome_state(&self, current_frame: i32) -> Option<HouseOutcomeState> {
+        let kind = if self.has_lost {
+            HouseOutcomeKind::Defeat
+        } else if self.has_won {
+            HouseOutcomeKind::Victory
+        } else {
+            return None;
+        };
+        let remaining = self.result_time_remaining(current_frame);
+        // Negative native durations are not ready: only exact zero expires.
+        // The app deadline is a derived convenience, so represent that
+        // non-ready signed state explicitly instead of widening it into an
+        // accidental near-future deadline.
+        let savour_until_tick = if remaining < 0 {
+            u64::MAX
+        } else {
+            u64::from(current_frame as u32).saturating_add(remaining as u64)
+        };
+        Some(HouseOutcomeState {
+            kind,
+            savour_until_tick,
+            exit_ready: remaining == 0,
+        })
     }
 
     /// Advance the HouseClass result timer at the late house-update boundary.
     ///
     /// gamemd provenance: HouseClass::Update @ `0x004F8440` keeps the scenario
     /// running until this timer expires, then enters the bounded Vox wait.
-    pub(crate) fn advance_outcome_savour(&mut self, current_tick: u64) -> bool {
-        let Some(outcome) = self.outcome_state.as_mut() else {
-            return false;
-        };
-        if current_tick >= outcome.savour_until_tick {
-            outcome.exit_ready = true;
+    pub(crate) fn advance_outcome_savour(&mut self, current_frame: i32) -> HouseResultAdvance {
+        let expired = self.result_time_remaining(current_frame) == 0;
+        let pending_expired = self.result_pending && expired;
+        if pending_expired {
+            self.result_pending = false;
         }
-        outcome.exit_ready
+        HouseResultAdvance {
+            pending_expired,
+            terminal_ready: (self.has_won || self.has_lost) && expired,
+        }
     }
 
     pub fn new(
@@ -420,12 +622,22 @@ impl HouseState {
             is_defeated: false,
             has_won: false,
             has_lost: false,
-            outcome_state: None,
+            result_pending: false,
+            result_timer_start: 0,
+            result_timer_duration: 0,
             map_is_clear: false,
+            visionary: false,
             spy_sat_active: false,
             owned_building_count: 0,
             owned_unit_count: 0,
+            tracked_infantry_count: 0,
             base_center: None,
+            alternate_base_center: (0, 0),
+            build_const_order: Vec::new(),
+            grinder_building_order: Vec::new(),
+            absorber_building_order: Vec::new(),
+            base_plan: crate::sim::base_plan::BasePlanState::default(),
+            base_plan_center: (0, 0),
             base_reservation: BaseReservationState::default(),
             tech_level,
             current_iq: 0,
@@ -435,6 +647,7 @@ impl HouseState {
             stats: MatchStatistics::default(),
             economy: Economy::default(),
             strategy_emergency: HouseStrategyEmergencyState::default(),
+            ai_activation: HouseAiActivationLatches::default(),
         }
     }
 }
@@ -658,6 +871,188 @@ pub(crate) fn determine_waypoint_edge(anchor: (u16, u16), bounds: PlayfieldBound
 }
 
 #[cfg(test)]
+mod ai_activation_latch_tests {
+    use super::{HouseAiActivationLatches, HouseDifficulty, HouseState};
+
+    #[test]
+    fn house_ai_activation_latches_default_false() {
+        let house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        assert_eq!(house.ai_activation, HouseAiActivationLatches::default());
+        assert!(!house.ai_activation.production);
+        assert!(!house.ai_activation.autocreate_allowed);
+        assert!(!house.ai_activation.ai_triggers_active);
+        assert!(!house.ai_activation.auto_base_building);
+        assert_eq!(house.current_iq, 0);
+    }
+
+    #[test]
+    fn house_ai_activation_deploy_enable_is_ordered_and_idempotent() {
+        let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        house.ai_activation = HouseAiActivationLatches {
+            production: true,
+            autocreate_allowed: false,
+            ai_triggers_active: false,
+            auto_base_building: true,
+        };
+
+        house.enable_ai_deploy_latches();
+        assert_eq!(
+            house.ai_activation,
+            HouseAiActivationLatches {
+                production: true,
+                autocreate_allowed: false,
+                ai_triggers_active: true,
+                auto_base_building: true,
+            }
+        );
+        let once = house.ai_activation;
+        house.enable_ai_deploy_latches();
+        assert_eq!(house.ai_activation, once);
+    }
+
+    #[test]
+    fn house_ai_activation_signed_threshold_and_auto_base_bypass() {
+        for (current_iq, threshold, auto_base, expected) in [
+            (4, 5, false, false),
+            (5, 5, false, true),
+            (6, 5, false, true),
+            (0, -1, false, true),
+            (-100, 5, true, true),
+        ] {
+            let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+            house.current_iq = current_iq;
+            house.ai_activation.ai_triggers_active = true;
+            house.ai_activation.auto_base_building = auto_base;
+
+            house.update_ai_activation(true, threshold);
+
+            assert_eq!(house.ai_activation.production, expected);
+            assert_eq!(house.ai_activation.autocreate_allowed, expected);
+            assert_eq!(house.ai_activation.auto_base_building, expected);
+            assert!(
+                house.ai_activation.ai_triggers_active,
+                "House update never writes AITriggersActive"
+            );
+        }
+    }
+
+    #[test]
+    fn house_ai_activation_uses_mode_sensitive_control_predicate() {
+        let mut campaign_current =
+            HouseState::new(Default::default(), 0, None, true, 0, 10);
+        campaign_current.current_iq = 5;
+        campaign_current.update_ai_activation(false, 5);
+        assert_eq!(
+            campaign_current.ai_activation,
+            HouseAiActivationLatches::default()
+        );
+
+        let mut campaign_player_control =
+            HouseState::new(Default::default(), 0, None, false, 0, 10);
+        campaign_player_control.player_control = true;
+        campaign_player_control.current_iq = 5;
+        campaign_player_control.update_ai_activation(false, 5);
+        assert_eq!(
+            campaign_player_control.ai_activation,
+            HouseAiActivationLatches::default()
+        );
+
+        let mut skirmish_player_control = campaign_player_control.clone();
+        skirmish_player_control.update_ai_activation(true, 5);
+        assert!(skirmish_player_control.ai_activation.production);
+        assert!(skirmish_player_control.ai_activation.autocreate_allowed);
+        assert!(skirmish_player_control.ai_activation.auto_base_building);
+
+        let mut skirmish_current =
+            HouseState::new(Default::default(), 0, None, true, 0, 10);
+        skirmish_current.current_iq = 5;
+        skirmish_current.update_ai_activation(true, 5);
+        assert_eq!(
+            skirmish_current.ai_activation,
+            HouseAiActivationLatches::default()
+        );
+    }
+
+    #[test]
+    fn house_ai_activation_preserves_split_states_and_completes_deploy_state() {
+        let mut split = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        split.current_iq = 4;
+        split.ai_activation = HouseAiActivationLatches {
+            production: true,
+            autocreate_allowed: true,
+            ai_triggers_active: false,
+            auto_base_building: false,
+        };
+        let below_threshold = split.ai_activation;
+        split.update_ai_activation(true, 5);
+        assert_eq!(split.ai_activation, below_threshold);
+
+        split.current_iq = 5;
+        split.update_ai_activation(true, 5);
+        assert_eq!(
+            split.ai_activation,
+            HouseAiActivationLatches {
+                production: true,
+                autocreate_allowed: true,
+                ai_triggers_active: false,
+                auto_base_building: true,
+            }
+        );
+
+        let mut deployed = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        deployed.current_iq = i32::MIN;
+        deployed.enable_ai_deploy_latches();
+        assert!(!deployed.ai_activation.autocreate_allowed);
+        deployed.update_ai_activation(true, 5);
+        assert_eq!(
+            deployed.ai_activation,
+            HouseAiActivationLatches {
+                production: true,
+                autocreate_allowed: true,
+                ai_triggers_active: true,
+                auto_base_building: true,
+            }
+        );
+    }
+
+    #[test]
+    fn house_ai_activation_has_no_defeat_passive_or_difficulty_gate_and_is_idempotent() {
+        for difficulty in [HouseDifficulty::Hard, HouseDifficulty::Easy] {
+            let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+            house.current_iq = 5;
+            house.is_defeated = true;
+            house.multiplay_passive = true;
+            house.difficulty = difficulty;
+            house.credits = 4321;
+            house.owned_building_count = 7;
+            house.owned_unit_count = 11;
+
+            house.update_ai_activation(true, 5);
+            let once = house.ai_activation;
+            house.update_ai_activation(true, 5);
+
+            assert_eq!(house.ai_activation, once);
+            assert_eq!(
+                once,
+                HouseAiActivationLatches {
+                    production: true,
+                    autocreate_allowed: true,
+                    ai_triggers_active: false,
+                    auto_base_building: true,
+                }
+            );
+            assert_eq!(house.current_iq, 5);
+            assert_eq!(house.credits, 4321);
+            assert_eq!(house.owned_building_count, 7);
+            assert_eq!(house.owned_unit_count, 11);
+            assert!(house.is_defeated);
+            assert!(house.multiplay_passive);
+            assert_eq!(house.difficulty, difficulty);
+        }
+    }
+}
+
+#[cfg(test)]
 mod outcome_tests {
     use super::{HouseOutcomeKind, HouseState};
 
@@ -665,8 +1060,8 @@ mod outcome_tests {
     fn gsi_01_04_savour_gates_exact_frame_and_defeat_restarts_pending_victory() {
         let mut house = HouseState::new(Default::default(), 0, None, true, 0, 10);
         assert!(house.flag_to_win(100, 90));
-        assert!(!house.advance_outcome_savour(189));
-        assert!(house.advance_outcome_savour(190));
+        assert!(!house.advance_outcome_savour(189).terminal_ready);
+        assert!(house.advance_outcome_savour(190).terminal_ready);
 
         let mut replaced = HouseState::new(Default::default(), 0, None, true, 0, 10);
         assert!(replaced.flag_to_win(100, 90));
@@ -674,12 +1069,12 @@ mod outcome_tests {
         assert!(!replaced.has_won);
         assert!(replaced.has_lost);
         assert_eq!(
-            replaced.outcome_state.expect("defeat outcome").kind,
+            replaced.outcome_state(150).expect("defeat outcome").kind,
             HouseOutcomeKind::Defeat
         );
         assert_eq!(
             replaced
-                .outcome_state
+                .outcome_state(150)
                 .expect("restarted defeat outcome")
                 .savour_until_tick,
             240
@@ -688,10 +1083,53 @@ mod outcome_tests {
         assert!(!replaced.flag_to_lose(170, 90));
         assert_eq!(
             replaced
-                .outcome_state
+                .outcome_state(170)
                 .expect("unchanged defeat outcome")
                 .savour_until_tick,
             240
+        );
+    }
+
+    #[test]
+    fn result_timer_uses_the_current_binary_frame_at_zero_and_one_frame_boundaries() {
+        let mut immediate = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        assert!(immediate.flag_to_win(77, 0));
+        assert!(immediate.advance_outcome_savour(77).terminal_ready);
+
+        let mut one_frame = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        assert!(one_frame.flag_to_win(77, 1));
+        assert!(!one_frame.advance_outcome_savour(77).terminal_ready);
+        assert!(one_frame.advance_outcome_savour(78).terminal_ready);
+    }
+
+    #[test]
+    fn result_timer_preserves_signed_wrapping_timerclass_edges() {
+        let mut paused_negative = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        paused_negative.has_won = true;
+        paused_negative.result_timer_start = -1;
+        paused_negative.result_timer_duration = -37;
+        assert_eq!(paused_negative.result_time_remaining(500), -37);
+        assert!(!paused_negative.advance_outcome_savour(500).terminal_ready);
+        let projection = paused_negative.outcome_state(500).expect("terminal projection");
+        assert_eq!(projection.savour_until_tick, u64::MAX);
+        assert!(!projection.exit_ready);
+
+        let mut wrapped_positive = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        wrapped_positive.result_timer_start = 10;
+        wrapped_positive.result_timer_duration = i32::MAX;
+        assert_eq!(
+            wrapped_positive.result_time_remaining(9),
+            i32::MIN,
+            "INT_MAX duration minus signed elapsed -1 wraps to INT_MIN",
+        );
+
+        let mut wrapped_negative = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        wrapped_negative.result_timer_start = 10;
+        wrapped_negative.result_timer_duration = i32::MIN;
+        assert_eq!(
+            wrapped_negative.result_time_remaining(11),
+            0,
+            "signed elapsed 1 is already >= INT_MIN duration",
         );
     }
 }

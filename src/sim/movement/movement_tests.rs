@@ -14,7 +14,8 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, CellOccupationGrid, OccupancyGrid};
 use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
-use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+use crate::util::native_x87::NativeF64Bits;
 
 // --- Facing calculation tests ---
 // Computed deltas use the high byte of the active-retail 65,534-scale word.
@@ -229,12 +230,15 @@ fn gsi_04_05_tick_production_movement(
     let live_order = [1];
     let mut sound_events = Vec::new();
     let mut lifecycle_requests = Vec::new();
+    let terrain_costs = Default::default();
+    let alliances = Default::default();
+    let empty_houses = Default::default();
     tick_movement_with_grids(
         &mut sim.substrate.entities,
         Some(&live_order),
         path_grid,
-        &Default::default(),
-        &Default::default(),
+        &terrain_costs,
+        &alliances,
         &mut sim.substrate.occupancy,
         &mut sim.substrate.cell_occupation,
         &mut sim.substrate.raw_cell_occupation,
@@ -253,6 +257,392 @@ fn gsi_04_05_tick_production_movement(
         None,
         &mut sound_events,
         &mut lifecycle_requests,
+    );
+    loop {
+        let probes = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+            .unwrap_or_default();
+        if probes.is_empty() {
+            break;
+        }
+        for probe in probes {
+            if let Some(entity) = sim.substrate.entities.get_mut(1) {
+                let _ = super::crate_callers::continue_after_pickup(
+                    entity,
+                    probe,
+                    crate::sim::crates::NativePickupReturn::One,
+                );
+                let _ = super::complete_process_movement_final_pickup(
+                    entity,
+                    &mut sim.substrate.cell_occupation,
+                );
+            }
+        }
+        if !sim.substrate.entities.get(1).is_some_and(|entity| {
+            entity.pending_drive_track_crate_resume.is_some()
+                || entity.pending_process_movement_crate_resume.is_some()
+                || entity.pending_ground_crossing_crate_resume.is_some()
+        }) {
+            break;
+        }
+        let _ = tick_movement_object_with_grids(
+            &mut sim.substrate.entities,
+            1,
+            path_grid,
+            &terrain_costs,
+            &alliances,
+            &mut sim.substrate.occupancy,
+            &mut sim.substrate.cell_occupation,
+            &mut sim.substrate.raw_cell_occupation,
+            &mut sim.substrate.next_occupancy_enter_order,
+            &mut sim.scenario_rng,
+            u64::from(native_frame),
+            native_frame,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            SIM_ZERO,
+            9,
+            60,
+            &mut sim.interner,
+            None,
+            &empty_houses,
+            &mut sound_events,
+            &mut lifecycle_requests,
+            true,
+        );
+    }
+}
+
+fn drive_ship_slope_process_tick(
+    sim: &mut Simulation,
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    native_frame: u32,
+) {
+    let live_order = [1];
+    let mut sound_events = Vec::new();
+    let mut lifecycle_requests = Vec::new();
+    tick_movement_with_grids(
+        &mut sim.substrate.entities,
+        Some(&live_order),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &mut sim.substrate.occupancy,
+        &mut sim.substrate.cell_occupation,
+        &mut sim.substrate.raw_cell_occupation,
+        &mut sim.substrate.next_occupancy_enter_order,
+        &mut sim.scenario_rng,
+        u64::from(native_frame),
+        native_frame,
+        None,
+        Some(terrain),
+        None,
+        &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+        SIM_ZERO,
+        9,
+        60,
+        &mut sim.interner,
+        None,
+        &mut sound_events,
+        &mut lifecycle_requests,
+    );
+}
+
+fn slope_cell(rx: u16, slope_type: u8) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    slope_cell_at(rx, 0, slope_type)
+}
+
+fn slope_cell_at(
+    rx: u16,
+    ry: u16,
+    slope_type: u8,
+) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    crate::map::resolved_terrain::ResolvedTerrainCell {
+        slope_type,
+        ..drive_speed_test_cell(rx, ry, Default::default())
+    }
+}
+
+#[test]
+fn drive_ship_slope_process_samples_stationary_retargets_and_keeps_rng() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        2,
+        1,
+        vec![slope_cell(0, 5), slope_cell(1, 11)],
+    );
+    for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+        let mut sim = Simulation::with_seed(0x51_0f_e);
+        let mut entity = GameEntity::test_default(1, "SLOPE", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("SLOPE");
+        entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(kind, 2));
+        entity
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .active_slope_transition_mut()
+            .unwrap()
+            .snap(2, 2);
+        sim.substrate.entities.insert(entity);
+        let rng_before = sim.scenario_rng.logical_state();
+
+        drive_ship_slope_process_tick(&mut sim, &terrain, 10);
+        let first = crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap(),
+        )
+        .unwrap()
+        .hash_fields();
+        assert_eq!(first, (2, 5, 10, 3));
+        drive_ship_slope_process_tick(&mut sim, &terrain, 11);
+        assert_eq!(
+            crate::sim::movement::slope_transition::state_for_entity(
+                sim.substrate.entities.get(1).unwrap()
+            )
+            .unwrap()
+            .hash_fields(),
+            first,
+            "equal stationary Process is a complete no-write"
+        );
+
+        sim.substrate.entities.get_mut(1).unwrap().position.rx = 1;
+        drive_ship_slope_process_tick(&mut sim, &terrain, 12);
+        assert_eq!(
+            crate::sim::movement::slope_transition::state_for_entity(
+                sim.substrate.entities.get(1).unwrap()
+            )
+            .unwrap()
+            .hash_fields(),
+            (5, 11, 12, 3),
+            "mid-transition retarget starts from the prior target slope"
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+}
+
+#[test]
+fn drive_slope_boundary_is_detected_on_process_after_ordinary_crossing() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        2,
+        1,
+        vec![slope_cell(0, 3), slope_cell(1, 8)],
+    );
+    let mut sim = Simulation::with_seed(3);
+    let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+    entity.owner = sim.intern("Americans");
+    entity.type_ref = sim.intern("DRIVE");
+    entity.facing = 64;
+    entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+        LocomotorKind::Drive,
+        0,
+    ));
+    entity
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .active_slope_transition_mut()
+        .unwrap()
+        .snap(3, 0);
+    entity.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+        target_speed_fraction: NativeF64Bits::ONE,
+        ..Default::default()
+    });
+    entity.current_speed_fraction = NativeF64Bits::ONE;
+    entity.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(15_360),
+        current_speed: SimFixed::from_num(15_360),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((1, 0)),
+        ..Default::default()
+    });
+    sim.substrate.entities.insert(entity);
+
+    let crossing_frame = (20..80)
+        .find(|frame| {
+            drive_ship_slope_process_tick(&mut sim, &terrain, *frame);
+            sim.substrate.entities.get(1).unwrap().position.rx == 1
+        })
+        .expect("ordinary movement crosses into the adjacent cell");
+    assert_eq!(sim.substrate.entities.get(1).unwrap().position.rx, 1);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (3, 3, 0, 0),
+        "the crossing frame has already sampled the old containing cell"
+    );
+    drive_ship_slope_process_tick(&mut sim, &terrain, crossing_frame + 1);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (3, 8, (crossing_frame + 1) as i32, 3)
+    );
+}
+
+#[test]
+fn drive_slope_boundary_is_detected_on_process_after_forced_track_crossing() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        1,
+        2,
+        vec![slope_cell_at(0, 0, 4), slope_cell_at(0, 1, 10)],
+    );
+    let mut sim = Simulation::with_seed(4);
+    let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+    entity.owner = sim.intern("Americans");
+    entity.type_ref = sim.intern("DRIVE");
+    entity.locomotor = Some(LocomotorState::for_test_kind_at_frame(
+        LocomotorKind::Drive,
+        0,
+    ));
+    entity.drive_locomotion = Some(Default::default());
+    sim.substrate.entities.insert(entity);
+    assert!(matches!(
+        sim.reveal(1),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .locomotor
+        .as_mut()
+        .unwrap()
+        .active_slope_transition_mut()
+        .unwrap()
+        .snap(4, 0);
+    let forced = drive_track::begin_forced_turn_track(
+        0x47,
+        0,
+        256,
+        SimFixed::from_num(128),
+        false,
+    )
+    .expect("retail southbound force track");
+    {
+        let (entities, cell_occupation) = (
+            &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        assert!(install_forced_drive_track(
+            entities.get_mut(1).unwrap(),
+            cell_occupation,
+            forced,
+        ));
+    }
+    assert_eq!(
+        sim.substrate.entities.get(1).unwrap().pending_movement_crate_probes[0].callsite,
+        super::crate_callers::MovementCrateCallsite::DriveForceTrack,
+        "the forced-track installer is the exact Drive ForceTrack pickup producer"
+    );
+
+    let crossing_frame = (40..120)
+        .find(|frame| {
+            drive_ship_slope_process_tick(&mut sim, &terrain, *frame);
+            sim.substrate.entities.get(1).unwrap().position.ry == 1
+        })
+        .expect("forced track crosses into the adjacent cell");
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (4, 4, 0, 0),
+        "the crossing frame samples before the forced track advances"
+    );
+    drive_ship_slope_process_tick(&mut sim, &terrain, crossing_frame + 1);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (4, 10, (crossing_frame + 1) as i32, 3)
+    );
+}
+
+#[test]
+fn drive_ship_slope_process_uses_foot_class_boundary_not_object_speed_or_art() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        1,
+        1,
+        vec![slope_cell(0, 12)],
+    );
+    for (category, kind, expected) in [
+        (EntityCategory::Unit, LocomotorKind::Drive, 12),
+        (EntityCategory::Unit, LocomotorKind::Ship, 12),
+        (EntityCategory::Infantry, LocomotorKind::Drive, 12),
+        (EntityCategory::Aircraft, LocomotorKind::Ship, 12),
+        (EntityCategory::Structure, LocomotorKind::Drive, 0),
+    ] {
+        let mut sim = Simulation::new();
+        let mut entity = GameEntity::test_default(1, "MODDED", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("MODDED");
+        entity.category = category;
+        entity.locomotor = Some(LocomotorState::for_test_kind(kind));
+        sim.substrate.entities.insert(entity);
+
+        drive_ship_slope_process_tick(&mut sim, &terrain, 7);
+        let state = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap()
+            .active_slope_transition()
+            .unwrap();
+        assert_eq!(state.hash_fields().1, expected, "{category:?} {kind:?}");
+    }
+}
+
+#[test]
+fn entry_active_tube_excludes_drive_slope_process_for_the_whole_turn() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        1,
+        1,
+        vec![slope_cell(0, 9)],
+    );
+    let mut sim = Simulation::new();
+    let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
+    entity.owner = sim.intern("Americans");
+    entity.type_ref = sim.intern("DRIVE");
+    entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    entity.low_bridge_tube_state = Some(
+        crate::sim::movement::tube_movement::LowBridgeTubeMovementState {
+            tube_id: crate::map::tube_facts::TubeId(0),
+            cursor: 0,
+            target: DriveCoord::cell(0, 0, 0),
+        },
+    );
+    sim.substrate.entities.insert(entity);
+
+    drive_ship_slope_process_tick(&mut sim, &terrain, 30);
+    assert_eq!(
+        crate::sim::movement::slope_transition::state_for_entity(
+            sim.substrate.entities.get(1).unwrap()
+        )
+        .unwrap()
+        .hash_fields(),
+        (0, 0, 0, 0)
     );
 }
 
@@ -490,7 +880,10 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
     assert_eq!(drive.head_to, Some(head));
     assert_eq!(drive.track_index, 0x47);
     assert!(drive.track_valid);
-    assert_eq!(drive.owner_current_speed, 8);
+    assert_eq!(
+        drive.owner_current_speed, 0,
+        "Force_Track writes its locomotor target fraction, not Foot current speed"
+    );
     assert_eq!(drive.residual_budget, 5);
     assert_eq!(
         sim.substrate
@@ -519,6 +912,39 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
             .vehicle_bits(13, 12, MovementLayer::Ground),
         crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
     );
+
+    // `install_forced_drive_track` suspends at the exact ForceTrack crate
+    // caller.  Service it before entering Process_Drive_Track, just as the
+    // production Simulation owner does; the One continuation raw-applies the
+    // requested coordinate while the object-list relink remains deferred.
+    let probes = std::mem::take(
+        &mut sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .pending_movement_crate_probes,
+    );
+    assert_eq!(probes.len(), 1);
+    assert_eq!(
+        probes[0].callsite,
+        super::crate_callers::MovementCrateCallsite::DriveForceTrack
+    );
+    assert!(super::crate_callers::continue_after_pickup(
+        sim.substrate.entities.get_mut(1).unwrap(),
+        probes[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert_eq!(
+        (
+            sim.substrate.entities.get(1).unwrap().position.rx,
+            sim.substrate.entities.get(1).unwrap().position.ry,
+        ),
+        (13, 12),
+        "the raw ForceTrack callback coordinate is not an object-list relink"
+    );
+    assert!(sim.substrate.occupancy.contains_entity(13, 11, 1));
+    assert!(!sim.substrate.occupancy.contains_entity(13, 12, 1));
 
     gsi_04_05_tick_production_movement(&mut sim, None, 0);
     let after_paid_point = sim.substrate.entities.get(1).unwrap();
@@ -1389,6 +1815,7 @@ fn test_reissue_mid_curve_does_not_snap_position_backward() {
 
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", 2, 3);
     e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.lifecycle.in_limbo = false;
     e.facing = 64;
     // No rules are loaded, so `accel_factor` is 0 and the Accelerates= ramp
     // would hold the speed fraction at 0 forever; drive at constant speed.
@@ -1896,6 +2323,7 @@ fn blocked_override_fires_once_for(mover_kind: crate::rules::locomotor_type::Loc
 
     let mut mover = GameEntity::test_default(1, "E1", "Americans", 1, 1);
     mover.category = EntityCategory::Infantry;
+    mover.lifecycle.in_limbo = false;
     mover.mission_leaf = MissionLeafState::for_entity_category(EntityCategory::Infantry);
     mover.locomotor = Some(LocomotorState::for_test_kind(mover_kind));
     let timer = mover.mission.dispatch_timer();
@@ -1935,6 +2363,7 @@ fn blocked_override_fires_once_for(mover_kind: crate::rules::locomotor_type::Loc
     // cell-entry class 5, blocking-object arm.
     let mut blocker = GameEntity::test_default(2, "E1", "Soviets", 2, 1);
     blocker.category = EntityCategory::Infantry;
+    blocker.lifecycle.in_limbo = false;
     blocker.mission_leaf = MissionLeafState::for_entity_category(EntityCategory::Infantry);
     blocker.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
     entities.insert(blocker);
@@ -3294,6 +3723,7 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
         piggyback: None,
         runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
             LocomotorKind::Drive,
+            0,
         ),
         layer: MovementLayer::Ground,
         phase: GroundMovePhase::Idle,
@@ -3307,6 +3737,7 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
         jumpjet_speed: SIM_ZERO,
         jumpjet_accel: SIM_ZERO,
         jumpjet_current_speed: SIM_ZERO,
+        jumpjet_destination: None,
         jumpjet_deviation: 0,
         jumpjet_crash_speed: SIM_ZERO,
         jumpjet_turn_rate: 0,
@@ -3319,6 +3750,7 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
         infantry_wobble_phase: 0.0,
         subcell_dest: None,
         hover_throttle: crate::util::fixed_math::SIM_ZERO,
+        hover_destination: None,
         hover_speed_request: crate::util::fixed_math::SIM_ZERO,
         hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
     }
@@ -3643,6 +4075,9 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
     let mut interner = test_interner();
     let mut sounds = Vec::new();
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
+    let mut cell_occupation = crate::sim::occupancy::CellOccupationGrid::new();
+    let mut raw_cell_occupation = crate::sim::occupancy::RawCellOccupationGrid::new();
+    let alliances = Default::default();
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
@@ -3654,10 +4089,10 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
         None,
         None,
         &terrain_costs,
-        &Default::default(),
+        &alliances,
         &mut occupancy,
-        &mut crate::sim::occupancy::CellOccupationGrid::new(),
-        &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
+        &mut cell_occupation,
+        &mut raw_cell_occupation,
         &mut next_occupancy_enter_order,
         &mut rng,
         0,
@@ -3677,8 +4112,14 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
 
     let entity = entities.get(1).expect("mover exists");
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
-    assert_eq!(drive.target_speed_fraction, SIM_HALF);
-    assert_eq!(drive.current_speed_fraction, SIM_HALF);
+    assert_eq!(
+        drive.target_speed_fraction,
+        NativeF64Bits::from_bits(0.5f64.to_bits())
+    );
+    assert_eq!(
+        entity.current_speed_fraction,
+        NativeF64Bits::from_bits(0.5f64.to_bits())
+    );
     assert_eq!(
         entity.movement_target.as_ref().expect("still moving").speed,
         SimFixed::from_num(100),
@@ -3690,8 +4131,9 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
             .as_ref()
             .expect("still moving")
             .current_speed,
-        SimFixed::from_num(50),
-        "Drive current speed should be raw speed scaled by current fraction"
+        SimFixed::from_num(45),
+        "the no-rules fallback preserves Foot::GetCurrentSpeed's integer type-speed boundary: \
+         floor(100/15) * 0.5 -> 3, then 3 * 15"
     );
 }
 
@@ -3758,15 +4200,22 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
 
     let entity = entities.get(1).expect("mover exists");
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
-    assert_eq!(drive.target_speed_fraction, SIM_ONE);
-    assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.03"));
+    assert_eq!(drive.target_speed_fraction, NativeF64Bits::ONE);
+    assert_eq!(
+        entity.current_speed_fraction,
+        super::drive_locomotion::native_fraction_from_sim(SimFixed::lit("0.03")),
+        "a no-rules unit-test harness uses the explicitly quantized SimFixed fallback; \
+         production rules supply the parsed NativeF64Bits value"
+    );
     assert_eq!(
         entity
             .movement_target
             .as_ref()
             .expect("still moving")
             .current_speed,
-        SimFixed::from_num(100) * SimFixed::lit("0.03"),
+        SIM_ZERO,
+        "the no-rules fallback retains the native integer speed boundary before restoring \
+         the per-second unit: floor((100 * quantized 0.03) / 15) * 15"
     );
 }
 
@@ -3944,7 +4393,12 @@ fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
         &grid,
         1,
         (40, 2),
-        SimFixed::from_num(15360), // very fast — exhausts segment quickly
+        // Keep the native frame budget below one cell.  The corrected
+        // ProcessMovement final continuation installs occupation only; it no
+        // longer teleports to each curve endpoint, so a huge legacy fixture
+        // speed can exhaust and consume the replacement segment in the same
+        // observed tick and hide the repath this test is meant to inspect.
+        SimFixed::from_num(1536),
         false,
         None,
         None,
@@ -3958,7 +4412,7 @@ fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
     let mut occupancy = OccupancyGrid::rebuild(&entities);
     let mut post_repath_path: Option<Vec<(u16, u16)>> = None;
     let mut lifecycle_requests = Vec::new();
-    for _ in 0..40 {
+    for _ in 0..160 {
         tick_movement_with_grid(
             &mut entities,
             Some(&grid),
@@ -4013,6 +4467,7 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
         piggyback: None,
         runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
             LocomotorKind::Drive,
+            0,
         ),
         layer,
         phase: GroundMovePhase::Idle,
@@ -4026,6 +4481,7 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
         jumpjet_speed: SIM_ZERO,
         jumpjet_accel: SIM_ZERO,
         jumpjet_current_speed: SIM_ZERO,
+        jumpjet_destination: None,
         jumpjet_deviation: 0,
         jumpjet_crash_speed: SIM_ZERO,
         jumpjet_turn_rate: 4,
@@ -4038,6 +4494,7 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
         infantry_wobble_phase: 0.0,
         subcell_dest: None,
         hover_throttle: crate::util::fixed_math::SIM_ZERO,
+        hover_destination: None,
         hover_speed_request: crate::util::fixed_math::SIM_ZERO,
         hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
     }
@@ -4286,6 +4743,11 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
     e.facing = 0x40;
     e.bridge_occupancy = Some(BridgeOccupancy { deck_level: 4 });
     e.locomotor = Some(make_drive_loco(MovementLayer::Bridge));
+    // No RuleSet is installed in this bridge fixture, so use the exact
+    // Accelerates=no arm instead of a zero acceleration factor that would
+    // leave the Foot current-speed fraction at rest after track selection.
+    e.drive_accelerates = false;
+    e.lifecycle.in_limbo = false;
     e.movement_target = Some(MovementTarget {
         path: vec![(1, 1), (2, 1), (3, 1)],
         // body→ramp goes on Ground layer per is_at_bridge_level
@@ -4579,6 +5041,7 @@ fn make_hover_mover(path: Vec<(u16, u16)>, sub_x: i32) -> GameEntity {
         5,
         false,
     );
+    entity.lifecycle.in_limbo = false;
     entity.position.sub_x = SimFixed::from_num(sub_x);
     entity.position.sub_y = SimFixed::from_num(128);
     entity.locomotor = Some(
@@ -4614,6 +5077,10 @@ fn tick_hover_world(
     let mut occupancy = OccupancyGrid::new();
     let mut sounds = Vec::new();
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
+    let mut cell_occupation = crate::sim::occupancy::CellOccupationGrid::new();
+    let mut raw_cell_occupation = crate::sim::occupancy::RawCellOccupationGrid::new();
+    let alliances = Default::default();
+    let houses = Default::default();
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
@@ -4623,10 +5090,10 @@ fn tick_hover_world(
         None,
         None,
         &terrain_costs,
-        &Default::default(),
+        &alliances,
         &mut occupancy,
-        &mut crate::sim::occupancy::CellOccupationGrid::new(),
-        &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
+        &mut cell_occupation,
+        &mut raw_cell_occupation,
         &mut next_occupancy_enter_order,
         &mut rng,
         0,
@@ -4643,6 +5110,55 @@ fn tick_hover_world(
         &mut sounds,
         lifecycle_requests,
     );
+    let probes = entities
+        .get_mut(1)
+        .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+        .unwrap_or_default();
+    for probe in probes {
+        // The caller-specific boolean is part of the native leaf contract, not
+        // a generic "pickup succeeded" flag.  In particular Hover may return
+        // false while the staged continuation still owns the normal refusal /
+        // falling tail.  Production drains that tail regardless, so this
+        // legacy movement harness must do the same.
+        let _ = super::crate_callers::continue_after_pickup(
+            entities.get_mut(1).expect("hover mover"),
+            probe,
+            crate::sim::crates::NativePickupReturn::One,
+        );
+    }
+    if entities.get(1).is_some_and(|entity| {
+        entity.pending_ground_crossing_crate_resume.is_some()
+    }) {
+        let _ = tick_movement_object_with_grids(
+            entities,
+            1,
+            None,
+            &terrain_costs,
+            &alliances,
+            &mut occupancy,
+            &mut cell_occupation,
+            &mut raw_cell_occupation,
+            &mut next_occupancy_enter_order,
+            &mut rng,
+            0,
+            native_frame,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            SIM_ZERO,
+            9,
+            60,
+            &mut interner,
+            None,
+            &houses,
+            &mut sounds,
+            lifecycle_requests,
+            true,
+        );
+    }
 }
 
 #[test]
@@ -4965,6 +5481,13 @@ fn gsi_06_13_fixture_mover(
 ) -> GameEntity {
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", start.0, start.1);
     e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    // This fixture has no RuleSet, hence no native acceleration factor.  The
+    // real test subject is curve selection/paid-point continuity, not the
+    // independently covered Accelerates= ramp; request the native constant-
+    // fraction arm so the owner speed cannot be reset to zero after the first
+    // ProcessMovement pickup.
+    e.drive_accelerates = false;
+    e.lifecycle.in_limbo = false;
     e.facing = facing;
     let goal = *path.last().expect("non-empty path");
     let layers = vec![MovementLayer::Ground; path.len()];
@@ -4986,11 +5509,897 @@ fn gsi_06_13_fixture_mover(
             cursor: 0,
             reference_cell: Some((start.0 as i16, start.1 as i16)),
         },
-        target_speed_fraction: SIM_ONE,
-        current_speed_fraction: SIM_ONE,
+        target_speed_fraction: NativeF64Bits::ONE,
         ..Default::default()
     });
+    e.current_speed_fraction = NativeF64Bits::ONE;
     e
+}
+
+struct GroundCrateMovementHarness {
+    occupancy: OccupancyGrid,
+    cell_occupation: CellOccupationGrid,
+    raw_cell_occupation: crate::sim::occupancy::RawCellOccupationGrid,
+    enter_order: crate::sim::world::EnterOrderCounter,
+    rng: SimRng,
+    interner: crate::sim::intern::StringInterner,
+    sound_events: Vec<crate::sim::world::SimSoundEvent>,
+    lifecycle_requests: Vec<LifecycleRequest>,
+}
+
+impl GroundCrateMovementHarness {
+    fn new(entities: &EntityStore) -> Self {
+        Self {
+            occupancy: OccupancyGrid::rebuild(entities),
+            cell_occupation: CellOccupationGrid::rebuild(entities),
+            raw_cell_occupation: Default::default(),
+            enter_order: crate::sim::world::EnterOrderCounter::new(),
+            rng: SimRng::new(0x4352_4154),
+            interner: test_interner(),
+            sound_events: Vec::new(),
+            lifecycle_requests: Vec::new(),
+        }
+    }
+
+    fn tick(&mut self, entities: &mut EntityStore, resume: bool) -> MovementTickStats {
+        tick_movement_object_with_grids(
+            entities,
+            1,
+            None,
+            &Default::default(),
+            &Default::default(),
+            &mut self.occupancy,
+            &mut self.cell_occupation,
+            &mut self.raw_cell_occupation,
+            &mut self.enter_order,
+            &mut self.rng,
+            99,
+            99,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            SIM_ZERO,
+            9,
+            60,
+            &mut self.interner,
+            None,
+            &Default::default(),
+            &mut self.sound_events,
+            &mut self.lifecycle_requests,
+            resume,
+        )
+    }
+}
+
+#[test]
+fn hover_leaf_suspends_before_can_enter_and_resumes_from_callback_xyz_once() {
+    let mut entities = EntityStore::new();
+    let mut mover = make_hover_mover(vec![(0, 0), (1, 0)], 255);
+    mover.facing = 0x40;
+    mover.lifecycle.in_limbo = false;
+    mover.lifecycle.cell_marked = true;
+    mover.locomotor.as_mut().unwrap().hover_throttle = SIM_ONE;
+    mover.movement_target.as_mut().unwrap().speed = SimFixed::from_num(768);
+    entities.insert(mover);
+    let mut harness = GroundCrateMovementHarness::new(&entities);
+
+    let first = harness.tick(&mut entities, false);
+    assert_eq!(first.movers_total, 1);
+    assert_eq!(first.moved_steps, 0, "CanEnter/cell commit wait for pickup");
+    let probes = std::mem::take(
+        &mut entities
+            .get_mut(1)
+            .unwrap()
+            .pending_movement_crate_probes,
+    );
+    assert_eq!(probes.len(), 1);
+    assert_eq!(
+        probes[0].callsite,
+        super::crate_callers::MovementCrateCallsite::HoverMovement
+    );
+
+    harness.occupancy.move_entity(
+        0,
+        0,
+        10,
+        10,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+    let callback_retarget = DriveCoord::cell(20, 20, 3);
+    {
+        let mover = entities.get_mut(1).unwrap();
+        mover.position.rx = 10;
+        mover.position.ry = 10;
+        mover.position.sub_x = SimFixed::from_num(256);
+        mover.position.sub_y = SimFixed::from_num(128);
+        mover.locomotor.as_mut().unwrap().hover_destination = Some(callback_retarget);
+        assert!(super::crate_callers::continue_after_pickup(
+            mover,
+            probes[0],
+            crate::sim::crates::NativePickupReturn::One,
+        ));
+    }
+
+    let resumed = harness.tick(&mut entities, true);
+    let mover = entities.get(1).unwrap();
+    assert_eq!(resumed.movers_total, 0, "resume is not another Process visit");
+    assert_eq!(resumed.moved_steps, 1);
+    assert_eq!((mover.position.rx, mover.position.ry), (11, 10));
+    assert_eq!(
+        mover.locomotor.as_ref().unwrap().hover_destination,
+        Some(callback_retarget),
+        "admitted Hover tail preserves callback retarget"
+    );
+    assert!(mover.pending_ground_crossing_crate_resume.is_none());
+}
+
+#[test]
+fn walk_leaf_suspends_after_reservation_and_resumes_tail_without_duplicate_occupancy() {
+    let mut entities = EntityStore::new();
+    let mut mover = GameEntity::test_default(1, "E1", "Americans", 0, 0);
+    mover.category = EntityCategory::Infantry;
+    mover.sub_cell = Some(2);
+    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+    mover.position.sub_x = SimFixed::from_num(255);
+    mover.position.sub_y = SimFixed::from_num(128);
+    mover.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(768),
+        current_speed: SimFixed::from_num(768),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((1, 0)),
+        ..Default::default()
+    });
+    entities.insert(mover);
+    let mut harness = GroundCrateMovementHarness::new(&entities);
+
+    let first = harness.tick(&mut entities, false);
+    assert_eq!(first.moved_steps, 0, "post-xref stats/configuration are suspended");
+    assert_eq!(
+        harness
+            .occupancy
+            .get(1, 0)
+            .expect("reserved cell")
+            .count_on(MovementLayer::Ground),
+        1,
+        "pre-xref occupancy committed exactly once"
+    );
+    let probes = std::mem::take(
+        &mut entities
+            .get_mut(1)
+            .unwrap()
+            .pending_movement_crate_probes,
+    );
+    assert_eq!(probes.len(), 1);
+    assert_eq!(
+        probes[0].callsite,
+        super::crate_callers::MovementCrateCallsite::WalkFindSubCellDest
+    );
+    let callback_retarget = (SimFixed::from_num(33), SimFixed::from_num(44));
+    {
+        let mover = entities.get_mut(1).unwrap();
+        mover.locomotor.as_mut().unwrap().subcell_dest = Some(callback_retarget);
+        assert!(super::crate_callers::continue_after_pickup(
+            mover,
+            probes[0],
+            crate::sim::crates::NativePickupReturn::One,
+        ));
+    }
+
+    let resumed = harness.tick(&mut entities, true);
+    let mover = entities.get(1).unwrap();
+    assert_eq!(resumed.movers_total, 0);
+    assert_eq!(resumed.moved_steps, 1);
+    assert_eq!(mover.movement_target.as_ref().unwrap().next_index, 2);
+    assert_eq!(
+        harness.occupancy.get(1, 0).unwrap().count_on(MovementLayer::Ground),
+        1,
+        "resume does not replay the object-list move"
+    );
+    assert_eq!(mover.locomotor.as_ref().unwrap().subcell_dest, Some(callback_retarget));
+    assert!(mover.pending_ground_crossing_crate_resume.is_none());
+}
+
+/// Re-entering after ProcessDriveTrack's synchronous crate xref resumes at the
+/// saved native tail. It must not run the enclosing Process entry a second
+/// time: delay timers, speed ramp, scenario RNG, and mover accounting already
+/// ran before the leaf suspended.
+#[test]
+fn process_drive_track_crate_resume_does_not_repeat_process_preamble() {
+    let mut entities = EntityStore::new();
+    let mut mover = gsi_06_13_fixture_mover(
+        (10, 10),
+        0x40,
+        vec![(10, 10), (11, 10), (12, 10)],
+        vec![2, 2],
+    );
+    let target = mover.movement_target.as_mut().expect("movement target");
+    target.movement_delay = 7;
+    target.blocked_delay = 11;
+    target.current_speed = SimFixed::from_num(321);
+    target.accel_factor = SimFixed::from_num(13);
+    mover.pending_drive_track_crate_resume = Some(
+        super::crate_callers::DriveTrackPickupResume {
+            advance: super::drive_track::DriveTrackAdvance {
+                sub_x: SimFixed::from_num(144),
+                sub_y: SimFixed::from_num(128),
+                facing: 0x40,
+                cell_jump: false,
+                cell_jump_dx: 0,
+                cell_jump_dy: 0,
+                chain_ready: false,
+                finished: false,
+                next_step_delta_x: 0,
+                next_step_delta_y: 0,
+                had_next_step: false,
+            },
+            admitted: true,
+        },
+    );
+    entities.insert(mover);
+
+    let mut occupancy = OccupancyGrid::rebuild(&entities);
+    let mut cell_occupation = CellOccupationGrid::rebuild(&entities);
+    let mut raw_cell_occupation = crate::sim::occupancy::RawCellOccupationGrid::new();
+    let mut enter_order = crate::sim::world::EnterOrderCounter::new();
+    let mut rng = SimRng::new(0x51ce);
+    let rng_before = rng.state();
+    let mut interner = test_interner();
+    let mut sound_events = Vec::new();
+    let mut lifecycle_requests = Vec::new();
+    let stats = tick_movement_object_with_grids(
+        &mut entities,
+        1,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &mut occupancy,
+        &mut cell_occupation,
+        &mut raw_cell_occupation,
+        &mut enter_order,
+        &mut rng,
+        99,
+        99,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+        SIM_ZERO,
+        9,
+        60,
+        &mut interner,
+        None,
+        &Default::default(),
+        &mut sound_events,
+        &mut lifecycle_requests,
+        true,
+    );
+
+    let mover = entities.get(1).expect("mover survives");
+    let target = mover.movement_target.as_ref().expect("movement continues");
+    assert_eq!(target.movement_delay, 7, "resume must not tick delay twice");
+    assert_eq!(target.blocked_delay, 11, "resume must not tick block delay twice");
+    assert_eq!(
+        target.current_speed,
+        SimFixed::from_num(321),
+        "resume must not run acceleration twice"
+    );
+    assert_eq!(rng.state(), rng_before, "resume must not consume scenario RNG");
+    assert_eq!(stats.movers_total, 0, "resume is not another object visit");
+    assert!(mover.pending_drive_track_crate_resume.is_none());
+    assert_eq!(mover.position.sub_x, SimFixed::from_num(144));
+}
+
+#[test]
+fn process_movement_descriptor_first_and_final_are_two_synchronous_suspensions() {
+    fn advance_once(
+        mover: &mut GameEntity,
+        occupation: &mut CellOccupationGrid,
+    ) -> super::movement_step::AdvanceResult {
+        let category = mover.category;
+        let saved = mover.current_speed_fraction;
+        let target = mover.movement_target.as_mut().expect("movement target");
+        super::movement_step::advance_lepton_position_with_crate_probes(
+            target,
+            &mut mover.position,
+            &mut mover.facing,
+            &mut mover.facing_target,
+            &mut mover.drive_track,
+            &mut mover.drive_locomotion,
+            &mut mover.ship_locomotion,
+            &mut mover.locomotor,
+            category,
+            SimFixed::from_num(768),
+            51,
+            crate::util::fixed_math::native_movement_frame_fraction(),
+            mover.stable_id,
+            Some(occupation),
+            super::movement_step::DriveCellAdmission::default(),
+            MovementLayer::Ground,
+            None,
+            &mut mover.pending_movement_crate_probes,
+            saved,
+            &mut mover.pending_drive_track_crate_resume,
+            &mut mover.pending_process_movement_crate_resume,
+        )
+    }
+
+    for (kind, first_callsite, final_callsite) in [
+        (
+            LocomotorKind::Drive,
+            super::crate_callers::MovementCrateCallsite::DriveProcessMovementFirst,
+            super::crate_callers::MovementCrateCallsite::DriveProcessMovementFinal,
+        ),
+        (
+            LocomotorKind::Ship,
+            super::crate_callers::MovementCrateCallsite::ShipProcessMovementFirst,
+            super::crate_callers::MovementCrateCallsite::ShipProcessMovementFinal,
+        ),
+    ] {
+        let mut mover = gsi_06_13_fixture_mover(
+            (10, 10),
+            0x40,
+            vec![(10, 10), (11, 10), (11, 11)],
+            vec![2, 4],
+        );
+        mover.lifecycle.in_limbo = false;
+        if kind == LocomotorKind::Ship {
+            let drive = mover.drive_locomotion.take().expect("drive fixture runtime");
+            mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+            mover.ship_locomotion = Some(crate::sim::components::ShipLocomotionRuntime {
+                path: drive.path,
+                target_speed_fraction: drive.target_speed_fraction,
+                ..Default::default()
+            });
+        }
+        let mut occupation = CellOccupationGrid::rebuild(&{
+            let mut entities = EntityStore::new();
+            entities.insert(mover.clone());
+            entities
+        });
+
+        assert!(matches!(
+            advance_once(&mut mover, &mut occupation),
+            super::movement_step::AdvanceResult::CrateSuspended
+        ));
+        let first = std::mem::take(&mut mover.pending_movement_crate_probes);
+        assert_eq!(first.len(), 1, "the leaf stops at the first xref");
+        assert_eq!(first[0].callsite, first_callsite);
+        let destination = if kind == LocomotorKind::Ship {
+            mover.ship_locomotion.as_ref().unwrap().destination
+        } else {
+            mover.drive_locomotion.as_ref().unwrap().destination
+        };
+        assert!(
+            destination.is_none(),
+            "the first xref must not install a live destination"
+        );
+        assert!(super::crate_callers::continue_after_pickup(
+            &mut mover,
+            first[0],
+            crate::sim::crates::NativePickupReturn::One,
+        ));
+
+        assert!(matches!(
+            advance_once(&mut mover, &mut occupation),
+            super::movement_step::AdvanceResult::CrateSuspended
+        ));
+        let final_probe = std::mem::take(&mut mover.pending_movement_crate_probes);
+        assert_eq!(final_probe.len(), 1, "resume stops at the final xref");
+        assert_eq!(final_probe[0].callsite, final_callsite);
+        let destination = if kind == LocomotorKind::Ship {
+            mover.ship_locomotion.as_ref().unwrap().destination
+        } else {
+            mover.drive_locomotion.as_ref().unwrap().destination
+        };
+        assert_eq!(
+            destination,
+            Some(final_probe[0].requested),
+            "the final xref sees the immutable original endpoint installed"
+        );
+        let endpoint_cell = final_probe[0].cell().expect("track endpoint cell");
+        if kind == LocomotorKind::Drive {
+            assert_eq!(
+                occupation.vehicle_bits(
+                    endpoint_cell.0,
+                    endpoint_cell.1,
+                    MovementLayer::Ground,
+                ),
+                0,
+                "ProcessMovement final applies the endpoint occupation only after pickup"
+            );
+
+            // Model an event-49 callback that moved the collector and left an
+            // older auxiliary claim aliased with its new body cell.  The
+            // immutable RawTrack endpoint does not change, but replacement
+            // must compare the old claim to the post-callback body rather than
+            // ProcessMovement's pre-dispatch origin.
+            mover.position.rx = 14;
+            mover.position.ry = 13;
+            mover.lifecycle.cell_marked = true;
+            mover
+                .drive_locomotion
+                .as_mut()
+                .expect("Drive runtime")
+                .current_occupation_cleared = false;
+            occupation.reconcile_entity(&mover);
+            let callback_body = crate::sim::components::DriveOccupationFootprint {
+                rx: mover.position.rx,
+                ry: mover.position.ry,
+                layer: MovementLayer::Ground,
+            };
+            mover
+                .drive_locomotion
+                .as_mut()
+                .expect("Drive runtime")
+                .occupation_head_to = Some(callback_body);
+            occupation.reconcile_entity(&mover);
+            assert_eq!(
+                occupation.vehicle_bits(14, 13, MovementLayer::Ground),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "the callback-moved body owns its new cell before the native tail"
+            );
+
+            let mut dead_unlimbo = mover.clone();
+            let mut dead_occupation = occupation.clone();
+            dead_unlimbo.lifecycle.object_alive = false;
+            dead_unlimbo.lifecycle.cell_marked = false;
+            dead_unlimbo
+                .drive_locomotion
+                .as_mut()
+                .expect("Drive runtime")
+                .current_occupation_cleared = true;
+            dead_occupation.reconcile_entity(&dead_unlimbo);
+            let dead_position = (
+                dead_unlimbo.position.rx,
+                dead_unlimbo.position.ry,
+                dead_unlimbo.position.sub_x,
+                dead_unlimbo.position.sub_y,
+            );
+            assert!(!super::crate_callers::continue_after_pickup(
+                &mut dead_unlimbo,
+                final_probe[0],
+                crate::sim::crates::NativePickupReturn::One,
+            ));
+            assert!(super::complete_process_movement_final_pickup(
+                &mut dead_unlimbo,
+                &mut dead_occupation,
+            ));
+            assert_eq!(
+                dead_occupation.vehicle_bits(
+                    endpoint_cell.0,
+                    endpoint_cell.1,
+                    MovementLayer::Ground,
+                ),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "dead/unlimbo One still calls Apply_Track_Occupation_Mode"
+            );
+            assert_eq!(
+                dead_occupation.vehicle_bits(14, 13, MovementLayer::Ground),
+                0,
+                "an unmarked tombstone has no current-body claim to preserve"
+            );
+            assert_eq!(
+                (
+                    dead_unlimbo.position.rx,
+                    dead_unlimbo.position.ry,
+                    dead_unlimbo.position.sub_x,
+                    dead_unlimbo.position.sub_y,
+                ),
+                dead_position,
+                "the no-alive-check occupation call still does not move the tombstone"
+            );
+        }
+        let position_before_tail = (
+            mover.position.rx,
+            mover.position.ry,
+            mover.position.sub_x,
+            mover.position.sub_y,
+        );
+        assert!(!super::crate_callers::continue_after_pickup(
+            &mut mover,
+            final_probe[0],
+            crate::sim::crates::NativePickupReturn::One,
+        ));
+        assert_eq!(
+            (
+                mover.position.rx,
+                mover.position.ry,
+                mover.position.sub_x,
+                mover.position.sub_y,
+            ),
+            position_before_tail,
+            "0x004B4705/0x006A3D34 applies track occupation; it must not teleport the object"
+        );
+        assert!(super::complete_process_movement_final_pickup(
+            &mut mover,
+            &mut occupation,
+        ));
+        if kind == LocomotorKind::Drive {
+            assert_eq!(
+                occupation.vehicle_bits(
+                    endpoint_cell.0,
+                    endpoint_cell.1,
+                    MovementLayer::Ground,
+                ),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "successful final pickup resumes Apply_Track_Occupation_Mode(endpoint, 1)"
+            );
+            assert_eq!(
+                occupation.vehicle_bits(14, 13, MovementLayer::Ground),
+                crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                "replacing the old auxiliary claim preserves the live post-callback body"
+            );
+        }
+        assert!(mover.pending_process_movement_crate_resume.is_none());
+    }
+}
+
+#[test]
+fn drive_and_ship_final_rejection_cannot_restart_the_discarded_path_next_tick() {
+    for (kind, callsite) in [
+        (
+            LocomotorKind::Drive,
+            super::crate_callers::MovementCrateCallsite::DriveProcessMovementFinal,
+        ),
+        (
+            LocomotorKind::Ship,
+            super::crate_callers::MovementCrateCallsite::ShipProcessMovementFinal,
+        ),
+    ] {
+        for (pickup, limbo_during_callback) in [
+            (crate::sim::crates::NativePickupReturn::Zero, false),
+            (crate::sim::crates::NativePickupReturn::One, true),
+        ] {
+            let mut mover = gsi_06_13_fixture_mover(
+                (10, 10),
+                0x40,
+                vec![(10, 10), (11, 10), (12, 10)],
+                vec![2, 2],
+            );
+            mover.lifecycle.in_limbo = limbo_during_callback;
+            mover.drive_track = Some(
+                super::drive_track::begin_drive_track(1, 0, 1, 0, 0x40)
+                    .expect("fixture curve"),
+            );
+            if kind == LocomotorKind::Ship {
+                let drive = mover.drive_locomotion.take().expect("Drive fixture runtime");
+                mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+                mover.ship_locomotion = Some(crate::sim::components::ShipLocomotionRuntime {
+                    path: drive.path,
+                    destination: Some(DriveCoord::cell(12, 10, 0)),
+                    track_index: 6,
+                    target_speed_fraction: drive.target_speed_fraction,
+                    ..Default::default()
+                });
+            } else {
+                let drive = mover.drive_locomotion.as_mut().expect("Drive runtime");
+                drive.destination = Some(DriveCoord::cell(12, 10, 0));
+                drive.track_index = 6;
+                drive.track_valid = true;
+            }
+            let probe = super::crate_callers::MovementCrateProbe::at_entity(callsite, &mover);
+            assert!(!super::crate_callers::continue_after_pickup(
+                &mut mover,
+                probe,
+                pickup,
+            ));
+
+            // One+limbo can later become live again.  The rejected native
+            // stack has already discarded its curve and Foot path head, so
+            // that later Process visit must finish instead of auto-repathing
+            // to MovementTarget::final_goal.
+            mover.lifecycle.in_limbo = false;
+            let position_before = mover.position.clone();
+            let mut entities = EntityStore::new();
+            entities.insert(mover);
+            let mut harness = GroundCrateMovementHarness::new(&entities);
+
+            let stats = harness.tick(&mut entities, false);
+            let mover = entities.get(1).expect("mover survives stop");
+            assert_eq!(stats.moved_steps, 0);
+            assert_eq!(mover.position.rx, position_before.rx);
+            assert_eq!(mover.position.ry, position_before.ry);
+            assert_eq!(mover.position.sub_x, position_before.sub_x);
+            assert_eq!(mover.position.sub_y, position_before.sub_y);
+            assert!(mover.pending_movement_crate_probes.is_empty());
+            assert!(mover.drive_track.is_none());
+            assert!(mover.movement_target.is_none());
+        }
+    }
+}
+
+#[test]
+fn ship_process_movement_final_marks_handoff_then_head_after_callback_without_teleport() {
+    fn advance_once(
+        mover: &mut GameEntity,
+        occupation: &mut CellOccupationGrid,
+    ) -> super::movement_step::AdvanceResult {
+        let category = mover.category;
+        let saved = mover.current_speed_fraction;
+        let target = mover.movement_target.as_mut().expect("movement target");
+        super::movement_step::advance_lepton_position_with_crate_probes(
+            target,
+            &mut mover.position,
+            &mut mover.facing,
+            &mut mover.facing_target,
+            &mut mover.drive_track,
+            &mut mover.drive_locomotion,
+            &mut mover.ship_locomotion,
+            &mut mover.locomotor,
+            category,
+            SimFixed::from_num(768),
+            51,
+            crate::util::fixed_math::native_movement_frame_fraction(),
+            mover.stable_id,
+            Some(occupation),
+            super::movement_step::DriveCellAdmission::default(),
+            MovementLayer::Ground,
+            None,
+            &mut mover.pending_movement_crate_probes,
+            saved,
+            &mut mover.pending_drive_track_crate_resume,
+            &mut mover.pending_process_movement_crate_resume,
+        )
+    }
+
+    let mut mover = gsi_06_13_fixture_mover(
+        (10, 10),
+        0x40,
+        vec![(10, 10), (11, 10), (11, 11)],
+        vec![2, 4],
+    );
+    mover.lifecycle.in_limbo = false;
+    let drive = mover.drive_locomotion.take().expect("drive fixture runtime");
+    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+    mover.ship_locomotion = Some(crate::sim::components::ShipLocomotionRuntime {
+        path: drive.path,
+        target_speed_fraction: drive.target_speed_fraction,
+        ..Default::default()
+    });
+    let mut occupation = CellOccupationGrid::rebuild(&{
+        let mut entities = EntityStore::new();
+        entities.insert(mover.clone());
+        entities
+    });
+
+    assert!(matches!(
+        advance_once(&mut mover, &mut occupation),
+        super::movement_step::AdvanceResult::CrateSuspended
+    ));
+    let first = std::mem::take(&mut mover.pending_movement_crate_probes);
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].callsite,
+        super::crate_callers::MovementCrateCallsite::ShipProcessMovementFirst
+    );
+    assert!(super::crate_callers::continue_after_pickup(
+        &mut mover,
+        first[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert!(matches!(
+        advance_once(&mut mover, &mut occupation),
+        super::movement_step::AdvanceResult::CrateSuspended
+    ));
+    let final_probe = std::mem::take(&mut mover.pending_movement_crate_probes);
+    assert_eq!(final_probe.len(), 1);
+    assert_eq!(
+        final_probe[0].callsite,
+        super::crate_callers::MovementCrateCallsite::ShipProcessMovementFinal
+    );
+    let resume = mover
+        .pending_process_movement_crate_resume
+        .expect("final resume");
+    let endpoint = crate::sim::components::DriveOccupationFootprint {
+        rx: resume.endpoint.0 as u16,
+        ry: resume.endpoint.1 as u16,
+        layer: MovementLayer::Ground,
+    };
+    let handoff = resume
+        .handoff_occupation
+        .expect("turning Ship track has a handoff");
+    assert_ne!(handoff, endpoint, "fixture must expose the two native roles");
+    let ship_before = mover.ship_locomotion.as_ref().expect("Ship runtime");
+    assert_eq!(ship_before.occupation_handoff, None);
+    assert_eq!(ship_before.occupation_head_to, None);
+    assert_eq!(
+        occupation.vehicle_bits(endpoint.rx, endpoint.ry, endpoint.layer),
+        0,
+        "Ship final applies neither role before pickup returns"
+    );
+
+    // The event-49 callback moves and retargets the collector. The final tail
+    // must preserve both while applying the immutable RawTrack occupation pair.
+    mover.position.rx = 14;
+    mover.position.ry = 13;
+    let callback_destination = crate::sim::components::DriveCoord::cell(17, 16, 0);
+    mover
+        .ship_locomotion
+        .as_mut()
+        .expect("Ship runtime")
+        .destination = Some(callback_destination);
+    let callback_track = super::drive_track::begin_drive_track(1, 0, 1, 0, 0x40)
+        .expect("callback replacement track");
+    let callback_track_index = callback_track.raw_track_index;
+    assert_ne!(
+        callback_track_index,
+        mover.drive_track.as_ref().expect("original track").raw_track_index,
+        "fixture must prove the staged handoff is independent of callback repath"
+    );
+    mover.drive_track = Some(callback_track);
+    occupation.reconcile_entity(&mover);
+
+    let mut dead = mover.clone();
+    let mut dead_occupation = occupation.clone();
+    dead.lifecycle.object_alive = false;
+    dead.lifecycle.cell_marked = false;
+    dead_occupation.reconcile_entity(&dead);
+    let dead_position = (dead.position.rx, dead.position.ry, dead.position.sub_x, dead.position.sub_y);
+    assert!(!super::crate_callers::continue_after_pickup(
+        &mut dead,
+        final_probe[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert!(super::complete_process_movement_final_pickup(
+        &mut dead,
+        &mut dead_occupation,
+    ));
+    let dead_ship = dead.ship_locomotion.as_ref().expect("dead Ship runtime");
+    assert_eq!(dead_ship.occupation_handoff, Some(handoff));
+    assert_eq!(dead_ship.occupation_head_to, Some(endpoint));
+    assert_eq!(
+        dead_occupation.owner_mark_order(dead.stable_id),
+        vec![
+            (handoff.rx, handoff.ry, handoff.layer),
+            (endpoint.rx, endpoint.ry, endpoint.layer),
+        ],
+        "dead/unlimbo mode 1 still marks handoff before head"
+    );
+    assert_eq!(
+        (dead.position.rx, dead.position.ry, dead.position.sub_x, dead.position.sub_y),
+        dead_position,
+        "Ship occupation mode never teleports a dead tombstone"
+    );
+    assert_eq!(dead_ship.destination, Some(callback_destination));
+
+    let live_position = (
+        mover.position.rx,
+        mover.position.ry,
+        mover.position.sub_x,
+        mover.position.sub_y,
+    );
+    assert!(!super::crate_callers::continue_after_pickup(
+        &mut mover,
+        final_probe[0],
+        crate::sim::crates::NativePickupReturn::One,
+    ));
+    assert!(super::complete_process_movement_final_pickup(
+        &mut mover,
+        &mut occupation,
+    ));
+    let ship_after = mover.ship_locomotion.as_ref().expect("Ship runtime");
+    assert_eq!(ship_after.destination, Some(callback_destination));
+    assert_eq!(ship_after.occupation_handoff, Some(handoff));
+    assert_eq!(ship_after.occupation_head_to, Some(endpoint));
+    assert_eq!(
+        mover.drive_track.as_ref().expect("callback track survives").raw_track_index,
+        callback_track_index,
+        "the final occupation tail must not restore the pre-callback RawTrack"
+    );
+    assert_eq!(
+        (
+            mover.position.rx,
+            mover.position.ry,
+            mover.position.sub_x,
+            mover.position.sub_y,
+        ),
+        live_position,
+        "Ship mode 1 preserves callback movement"
+    );
+    let order = occupation.owner_mark_order(mover.stable_id);
+    let handoff_index = order
+        .iter()
+        .position(|mark| *mark == (handoff.rx, handoff.ry, handoff.layer))
+        .expect("handoff mark");
+    let head_index = order
+        .iter()
+        .position(|mark| *mark == (endpoint.rx, endpoint.ry, endpoint.layer))
+        .expect("head mark");
+    assert!(
+        handoff_index < head_index,
+        "Ship Apply_Track_Occupation_Mode marks handoff before head: {order:?}"
+    );
+}
+
+#[test]
+fn drive_and_ship_process_drive_track_emit_distinct_exact_producers() {
+    fn advance_once(
+        mover: &mut GameEntity,
+        occupation: &mut CellOccupationGrid,
+    ) -> super::movement_step::AdvanceResult {
+        let category = mover.category;
+        let saved = mover.current_speed_fraction;
+        let target = mover.movement_target.as_mut().expect("movement target");
+        super::movement_step::advance_lepton_position_with_crate_probes(
+            target,
+            &mut mover.position,
+            &mut mover.facing,
+            &mut mover.facing_target,
+            &mut mover.drive_track,
+            &mut mover.drive_locomotion,
+            &mut mover.ship_locomotion,
+            &mut mover.locomotor,
+            category,
+            SimFixed::from_num(768),
+            51,
+            crate::util::fixed_math::native_movement_frame_fraction(),
+            mover.stable_id,
+            Some(occupation),
+            super::movement_step::DriveCellAdmission::default(),
+            MovementLayer::Ground,
+            None,
+            &mut mover.pending_movement_crate_probes,
+            saved,
+            &mut mover.pending_drive_track_crate_resume,
+            &mut mover.pending_process_movement_crate_resume,
+        )
+    }
+
+    for (kind, callsite) in [
+        (
+            LocomotorKind::Drive,
+            super::crate_callers::MovementCrateCallsite::DriveProcessDriveTrack,
+        ),
+        (
+            LocomotorKind::Ship,
+            super::crate_callers::MovementCrateCallsite::ShipProcessDriveTrack,
+        ),
+    ] {
+        let mut mover = gsi_06_13_fixture_mover(
+            (10, 10),
+            0x40,
+            vec![(10, 10), (11, 10), (12, 10)],
+            vec![2, 2],
+        );
+        mover.lifecycle.in_limbo = false;
+        mover.drive_track = super::drive_track::begin_drive_track(1, 0, 1, 0, 0x40);
+        if kind == LocomotorKind::Ship {
+            let drive = mover.drive_locomotion.take().expect("drive fixture runtime");
+            mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+            mover.ship_locomotion = Some(crate::sim::components::ShipLocomotionRuntime {
+                path: drive.path,
+                target_speed_fraction: drive.target_speed_fraction,
+                ..Default::default()
+            });
+        }
+        let mut occupation = CellOccupationGrid::rebuild(&{
+            let mut entities = EntityStore::new();
+            entities.insert(mover.clone());
+            entities
+        });
+
+        assert!(matches!(
+            advance_once(&mut mover, &mut occupation),
+            super::movement_step::AdvanceResult::CrateSuspended
+        ));
+        let probes = std::mem::take(&mut mover.pending_movement_crate_probes);
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0].callsite, callsite);
+        assert!(mover.pending_drive_track_crate_resume.is_some());
+    }
 }
 
 /// Fixture A, end to end. Tank at (10,10) facing E, route (10,10) → (11,10) →

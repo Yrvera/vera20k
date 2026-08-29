@@ -51,7 +51,8 @@ impl App {
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
-        let combat_light_renderer = crate::render::combat_light::CombatLightRenderer::new(&gpu);
+        let combat_light_renderer =
+            crate::render::combat_light::CombatLightRenderer::new(&gpu, &batch_renderer);
         let mut bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
         let shell_surface_presenter =
@@ -379,6 +380,8 @@ impl App {
             building_placement_preview: None,
                 camera_x: 0.0,
                 camera_y: 0.0,
+                tactical_camera_motion:
+                    crate::app::input::camera::TacticalCameraMotion::default(),
                 zoom_level: 1.0,
                 zoom_target: 1.0,
                 zoom_anchor_world: [0.0, 0.0],

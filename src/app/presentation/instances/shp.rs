@@ -9,8 +9,8 @@
 
 use super::helpers::{
     ANIM_DRAW_DEPTH_BIAS_PX, EntityDrawBand, apply_bridge_depth_bias, apply_shape_z_adjust,
-    compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, ground_sort_row, in_view,
-    is_under_bridge_render_state, tactical_entity_render_admission,
+    compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, entity_draw_layer,
+    ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
@@ -81,6 +81,7 @@ pub(crate) fn build_shp_instances(
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
+    top_layers: &mut Vec<u8>,
     parachute_body_depths: &mut ParachuteBodyDepths,
     selected_building_depth_paged: &mut [Vec<SpriteInstance>],
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
@@ -385,6 +386,7 @@ pub(crate) fn build_shp_instances(
             top_instances.push(body);
             top_pages.push(entry.page as usize);
             top_ids.push(entity.stable_id);
+            top_layers.push(entity_draw_layer(entity));
         } else {
             target_pages.expect("Ground SHP target was selected")[entry.page as usize].push(body);
         }

@@ -1,5 +1,12 @@
 # Skirmish Short Game Defeat Design
 
+> **2026-08-29 active-binary correction.** The function this design calls
+> `ScatterAllUnits @ 0x004FC6D0` is a House-wide destructive Techno sweep, not
+> movement Scatter. It clears incoming Temporal state and calls concrete
+> `ReceiveDamage` with current health and the configured C4 warhead before
+> `MPlayer_Defeated`. The authoritative correction and implementation handoff
+> is `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`.
+
 ## Goal
 
 Make Rust's deterministic sim defeat condition match standard YR Skirmish Short Game behavior for last-building loss.
@@ -60,7 +67,10 @@ This matches the verified player-visible gap for standard YR Skirmish: with Shor
 - With Short Game off, YR uses the longer defeat condition: no buildings plus no owned object totals. Source: `SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`.
 - Existing Rust `owned_building_count` and `owned_unit_count` are updated on spawn/despawn through deterministic house counters. Source: `src/sim/world/mod.rs`, `src/sim/house_state.rs`.
 - The exact YR "counted ConYard-style instances" term in the Short Game branch is not fully represented in current Rust evidence. This design intentionally handles the verified common output, `last building gone while ordinary units remain`, and leaves exact counted-instance modeling as a documented follow-up rather than guessing. Source: `SKIRMISH_SHORT_GAME_LAST_BUILDING_DEFEAT_TRACE.md`, `SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`.
-- YR calls `ScatterAllUnits` and then `MPlayer_Defeated` when the condition is true. This design scopes only the sim defeat condition (`is_defeated` and consequent win resolution); player-facing aftermath is deferred. Source: `SKIRMISH_SHORT_GAME_LAST_BUILDING_DEFEAT_TRACE.md`, `MULTIPLAYER_DEFEAT_VICTORY_GHIDRA_REPORT.md`.
+- YR calls the House destruction sweep at `0x004FC6D0` and then
+  `MPlayer_Defeated` when the condition is true. The original design deferred
+  that aftermath; the 2026-08-29 correction above supersedes the old
+  movement-Scatter interpretation.
 
 ## Design
 

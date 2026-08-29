@@ -23,6 +23,7 @@ use crate::sim::movement::FacingClass;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::native_x87::NativeF64Bits;
 
 /// Helper: create a SequenceDef for tests.
 fn test_def(
@@ -232,13 +233,13 @@ fn gsi_13_06_active_shp_unit(kind: LocomotorKind) -> GameEntity {
     entity.is_voxel = false;
     entity.lifecycle.in_limbo = false;
     entity.locomotor = Some(LocomotorState::for_test_kind(kind));
+    entity.current_speed_fraction = NativeF64Bits::ONE;
     let head = DriveCoord::cell(6, 5, 0);
     match kind {
         LocomotorKind::Drive => {
             entity.drive_locomotion = Some(DriveLocomotionRuntime {
                 destination: Some(head),
                 head_to: Some(head),
-                current_speed_fraction: SimFixed::from_num(1),
                 owner_current_speed: 1,
                 ..Default::default()
             });
@@ -247,7 +248,6 @@ fn gsi_13_06_active_shp_unit(kind: LocomotorKind) -> GameEntity {
             entity.ship_locomotion = Some(ShipLocomotionRuntime {
                 destination: Some(head),
                 head_to: Some(head),
-                current_speed_fraction: SimFixed::from_num(1),
                 owner_current_speed: 1,
                 ..Default::default()
             });
@@ -295,10 +295,10 @@ fn gsi_13_06_body_counter_wraps_and_survives_moving_idle_transitions() {
     assert_eq!(entity.body_frame_counter, 0, "native dword wraps");
 
     entity.body_frame_counter = 9;
+    entity.current_speed_fraction = NativeF64Bits::POSITIVE_ZERO;
     if let Some(drive) = entity.drive_locomotion.as_mut() {
         drive.destination = None;
         drive.head_to = None;
-        drive.current_speed_fraction = SIM_ZERO;
         drive.owner_current_speed = 0;
     }
     tick_shp_vehicle_body_frame_counter(
@@ -361,7 +361,7 @@ fn gsi_13_06_counter_suppressions_hold_the_persistent_value() {
             .locomotor
             .as_mut()
             .expect("locomotor")
-            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground)
+            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground, 0)
     );
     variants.push(("piggyback", piggyback));
 
@@ -430,15 +430,15 @@ fn gsi_13_06_positive_fraction_below_get_current_speed_threshold_is_idle() {
             fraction,
         );
         assert_eq!(owner_speed, 0, "{name} +0x538 truncation");
+        entity.current_speed_fraction =
+            NativeF64Bits::from_bits(fraction.to_num::<f64>().to_bits());
         match kind {
             LocomotorKind::Drive => {
                 let drive = entity.drive_locomotion.as_mut().expect("Drive runtime");
-                drive.current_speed_fraction = fraction;
                 drive.owner_current_speed = owner_speed;
             }
             LocomotorKind::Ship => {
                 let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
-                ship.current_speed_fraction = fraction;
                 ship.owner_current_speed = owner_speed;
             }
             _ => unreachable!(),
@@ -477,7 +477,6 @@ fn gsi_13_06_shp_movement_predicates_ignore_path_execution_surrogates() {
             LocomotorKind::Drive => {
                 entity.drive_locomotion = Some(DriveLocomotionRuntime {
                     head_to: Some(owner),
-                    current_speed_fraction: SimFixed::from_num(1),
                     owner_current_speed: 1,
                     ..Default::default()
                 });
@@ -485,7 +484,6 @@ fn gsi_13_06_shp_movement_predicates_ignore_path_execution_surrogates() {
             LocomotorKind::Ship => {
                 entity.ship_locomotion = Some(ShipLocomotionRuntime {
                     head_to: Some(owner),
-                    current_speed_fraction: SimFixed::from_num(1),
                     owner_current_speed: 1,
                     ..Default::default()
                 });
@@ -506,7 +504,6 @@ fn gsi_13_06_shp_movement_predicates_ignore_path_execution_surrogates() {
                 entity.drive_locomotion = Some(DriveLocomotionRuntime {
                     destination: Some(head),
                     head_to: Some(head),
-                    current_speed_fraction: SimFixed::from_num(1),
                     owner_current_speed: 1,
                     ..Default::default()
                 });
@@ -515,7 +512,6 @@ fn gsi_13_06_shp_movement_predicates_ignore_path_execution_surrogates() {
                 entity.ship_locomotion = Some(ShipLocomotionRuntime {
                     destination: Some(head),
                     head_to: Some(head),
-                    current_speed_fraction: SimFixed::from_num(1),
                     owner_current_speed: 1,
                     ..Default::default()
                 });

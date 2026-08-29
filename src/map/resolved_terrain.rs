@@ -33,7 +33,7 @@ use crate::map::overlay_types::{
     uses_early_recalc_land_branch,
 };
 use crate::map::rmg::preview::Playfield;
-use crate::map::theater::{self, TheaterData, TileKey};
+use crate::map::theater::{self, TheaterData, TileKey, TilesetLookup};
 use crate::map::tile_variant_selector::TileVariantSelectionContext;
 use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_object_type::TerrainObjectType;
@@ -427,6 +427,17 @@ pub struct SharedCellDummySnapshot {
     pub bridge_flags_0x1180: u32,
 }
 
+/// One `MapClass::Get_CellClass` result as consumed by FNPC's isometric
+/// projection helper.
+///
+/// Keeping the signed level and raw bridge subset in one value prevents callers
+/// from accidentally performing two dummy-stamping lookups for one native probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CellClassProjectionView {
+    pub signed_level: i32,
+    pub raw_flags_0x1180: u32,
+}
+
 const UNALLOCATED_REAL_CELL_BRIDGE_FLAGS: u16 = u16::MAX;
 
 /// Serialized value authority for the exact `CellClass+0x140 & 0x1180`
@@ -483,6 +494,21 @@ impl RealCellBridgeFlags0x1180 {
         };
         debug_assert_ne!(*slot, UNALLOCATED_REAL_CELL_BRIDGE_FLAGS);
         *slot = (flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16;
+    }
+
+    pub(crate) fn flags_at(&self, coord: (u16, u16)) -> u32 {
+        native_resolved_cell_index(
+            self.width,
+            self.height,
+            None,
+            self.flags_or_unallocated.len(),
+            i32::from(coord.0),
+            i32::from(coord.1),
+        )
+        .and_then(|index| self.flags_or_unallocated.get(index).copied())
+        .filter(|flags| *flags != UNALLOCATED_REAL_CELL_BRIDGE_FLAGS)
+        .map(u32::from)
+        .unwrap_or(0)
     }
 }
 
@@ -1208,9 +1234,13 @@ impl ResolvedTerrainGrid {
         true
     }
 
-    /// Stamping lookup view for later CellClass flag consumers such as FNPC.
-    /// A miss updates the dummy coordinate before exposing its live `0x1180`.
-    pub(crate) fn cellclass_bridge_flags_0x1180(&self, x: i32, y: i32) -> u32 {
+    /// One stamping lookup for FNPC's level-plus-flags projection probe.
+    ///
+    /// Native `MapClass::Get_CellClass @ 0x005657A0` returns one real CellClass
+    /// or stamps `+0x24` on the process-global dummy before returning that same
+    /// live object (`0x005657C8..0x005657D5`). `FUN_006D6410` then reads signed
+    /// level `+0x11B` and, conditionally, flags `+0x140` from that one result.
+    pub(crate) fn cellclass_projection_view(&self, x: i32, y: i32) -> CellClassProjectionView {
         let (x, y) = crate::map::cell_index::packed_cell_coord(x, y);
         if let Some(index) = native_resolved_cell_index(
             self.width,
@@ -1220,10 +1250,24 @@ impl ResolvedTerrainGrid {
             x,
             y,
         ) {
-            return self.cells[index].bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+            let cell = &self.cells[index];
+            return CellClassProjectionView {
+                signed_level: i32::from(cell.level as i8),
+                raw_flags_0x1180: cell.bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            };
         }
         self.shared_cell_dummy.stamp_coord(x, y);
-        self.shared_cell_dummy.bridge_flags_0x1180()
+        let dummy = self.shared_cell_dummy.snapshot();
+        CellClassProjectionView {
+            signed_level: i32::from(dummy.level),
+            raw_flags_0x1180: dummy.bridge_flags_0x1180,
+        }
+    }
+
+    /// Stamping lookup view for later CellClass flag-only consumers.
+    /// A miss updates the dummy coordinate before exposing its live `0x1180`.
+    pub(crate) fn cellclass_bridge_flags_0x1180(&self, x: i32, y: i32) -> u32 {
+        self.cellclass_projection_view(x, y).raw_flags_0x1180
     }
 
     pub(crate) fn dummy_cell_level_slope(&self) -> (i8, u8) {
@@ -1918,11 +1962,18 @@ impl ResolvedTerrainGrid {
             variant_selector.as_deref_mut(),
             scenario_fill_ranged.as_deref_mut(),
         ) {
-            materialize_map_load_cells(map, selector, fill_ranged, &shared_cell_dummy)
+            materialize_map_load_cells(
+                map,
+                theater_data.map(|theater| &theater.lookup),
+                selector,
+                fill_ranged,
+                &shared_cell_dummy,
+            )
         } else {
             // The selector-free constructor is retained for focused tests and
-            // synthetic grids. Production always takes the native load path.
-            map.cells.clone()
+            // synthetic grids. Pack-derived fixtures still cross the native
+            // compatibility seam, while manual/RMG actual IDs stay untouched.
+            selector_free_map_cells(map, theater_data.map(|theater| &theater.lookup))
         };
         let (width, height) = grid_dimensions(&raw_cells);
         if width == 0 || height == 0 {
@@ -3660,8 +3711,23 @@ fn wheel_speed_at_or_below_one_percent(wheel: Option<u8>) -> bool {
 
 /// Reproduce the active map-load order: initialize every allocated Size-diamond
 /// CellClass, then let IsoMapPack records overwrite those cells in stream order.
+fn selector_free_map_cells(map: &MapFile, lookup: Option<&TilesetLookup>) -> Vec<MapCell> {
+    let translate_raw_pack_cells = !map.iso_map_pack_lookups.is_empty();
+    map.cells
+        .iter()
+        .cloned()
+        .map(|mut cell| {
+            if translate_raw_pack_cells && let Some(lookup) = lookup {
+                cell.tile_index = lookup.translate_legacy_map_tile_index(cell.tile_index);
+            }
+            cell
+        })
+        .collect()
+}
+
 fn materialize_map_load_cells(
     map: &MapFile,
+    lookup: Option<&TilesetLookup>,
     selector: &mut TileVariantSelectionContext<'_, '_>,
     scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
     shared_cell_dummy: &SharedCellDummy,
@@ -3739,11 +3805,22 @@ fn materialize_map_load_cells(
         }
     }
 
+    let translate_raw_pack_cells = !map.iso_map_pack_lookups.is_empty();
     for explicit in &map.cells {
         let Some(&index) = index_by_coord.get(&(explicit.rx, explicit.ry)) else {
             continue;
         };
-        cells[index] = explicit.clone();
+        let mut materialized = explicit.clone();
+        if translate_raw_pack_cells && let Some(lookup) = lookup {
+            // Retail provenance: Pack5 callsite 0x0056BB68 reaches
+            // `CalculateLegacyMapTileIndex @ 0x00544E30` only after the
+            // destination CellClass was accepted, and before Cell+0x38 becomes
+            // authoritative for variant/LAT/Recalc consumers. Fill, RMG, and
+            // manual/runtime actual IDs never cross this seam.
+            materialized.tile_index =
+                lookup.translate_legacy_map_tile_index(materialized.tile_index);
+        }
+        cells[index] = materialized;
     }
     cells
 }
@@ -3852,6 +3929,71 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         data
+    }
+
+    fn gsi_04_02_last_tiles_tmp_bytes(
+        terrain_type: u8,
+        radar_left: [u8; 3],
+        radar_right: [u8; 3],
+    ) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&8u32.to_le_bytes());
+        data.extend_from_slice(&4u32.to_le_bytes());
+        data.extend_from_slice(&20u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 40]);
+        data.push(3);
+        data.push(terrain_type);
+        data.push(0);
+        data.extend_from_slice(&radar_left);
+        data.extend_from_slice(&radar_right);
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend(1u8..=16);
+        data
+    }
+
+    fn gsi_04_02_last_tiles_theater() -> TheaterData {
+        synthetic_theater_from_ini(
+            b"[General]\nRoughTile=2\nClearToRoughLat=3\n\
+              [TileSet0000]\nTilesInSet=3\nFileName=base\nSetName=Clear\n\
+              [TileSet0001]\nTilesInSet=5\nLastTilesInSet=2\nFileName=old\nSetName=Clear\n\
+              [TileSet0002]\nTilesInSet=1\nFileName=rough\nSetName=Rough\n\
+              [TileSet0003]\nTilesInSet=16\nFileName=lat\nSetName=Rough LAT\n",
+        )
+    }
+
+    fn gsi_04_02_asset_manager_with_loose_tmps(
+        files: &[(&str, &[u8])],
+    ) -> (Gsi0404AssetDirectory, AssetManager) {
+        let directory = Gsi0404AssetDirectory::new();
+        let empty_mix = gsi_04_04_mix_bytes("gsi0402.bin", b"fixture");
+        for name in [
+            "ra2md.mix",
+            "ra2.mix",
+            "cachemd.mix",
+            "cache.mix",
+            "localmd.mix",
+            "local.mix",
+            "conqmd.mix",
+            "conquer.mix",
+            "cameomd.mix",
+            "cameo.mix",
+            "mapsmd03.mix",
+            "multimd.mix",
+            "movmd03.mix",
+        ] {
+            directory.write(name, &empty_mix);
+        }
+        for &(name, bytes) in files {
+            directory.write(name, bytes);
+        }
+        let manager = AssetManager::new_with_media_mode(
+            directory.path(),
+            MediaArchiveMode::Numbered { media_index: 2 },
+        )
+        .expect("construct compatibility-translation asset stack");
+        (directory, manager)
     }
 
     fn make_map(
@@ -4278,6 +4420,247 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_02_last_tiles_pack_materialization_precedes_tmp_lat_and_final_state() {
+        let mut theater = gsi_04_02_last_tiles_theater();
+        let raw_legacy = gsi_04_02_last_tiles_tmp_bytes(6, [11, 12, 13], [14, 15, 16]);
+        let rough = gsi_04_02_last_tiles_tmp_bytes(3, [1, 2, 3], [4, 5, 6]);
+        let rough_suffix =
+            gsi_04_02_last_tiles_tmp_bytes(9, [31, 32, 33], [34, 35, 36]);
+        let lat = gsi_04_02_last_tiles_tmp_bytes(7, [21, 22, 23], [24, 25, 26]);
+        let (_directory, assets) = gsi_04_02_asset_manager_with_loose_tmps(&[
+            ("old03.tem", &raw_legacy),
+            ("rough01.tem", &rough),
+            ("rough01a.tem", &rough_suffix),
+            ("lat16.tem", &lat),
+        ]);
+        crate::map::theater::resolve_contiguous_variant_chains_for_test(
+            &mut theater.lookup,
+            &assets,
+        );
+        assert_eq!(theater.lookup.translate_legacy_map_tile_index(5), 8);
+        assert_eq!(theater.lookup.total_file_count(8), 2);
+        let mut map = make_map(
+            vec![MapCell {
+                rx: 3,
+                ry: 2,
+                tile_index: 5,
+                sub_tile: 0,
+                z: 4,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 3;
+        map.header.height = 2;
+        map.iso_map_pack_lookups = vec![crate::map::map_file::IsoMapPackLookup {
+            raw_x: -509,
+            raw_y: 3,
+            canonical: Some((3, 2)),
+        }];
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        cache.complete_theater_registry_load(Some(5), None);
+        let mut deterministic_main = || 0;
+        let mut fill = |_low, _high| 0;
+        let without_lat = {
+            let mut selector = cache.begin_load(&mut deterministic_main);
+            ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                Some(&assets),
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut fill,
+                &mut selector,
+            )
+        };
+        let translated = without_lat.cell(3, 2).expect("accepted Pack5 cell");
+        assert_eq!(translated.source_tile_index, 8);
+        assert_eq!(translated.final_tile_index, 8);
+        assert_eq!(translated.tileset_index, Some(2));
+        assert!(translated.variant > 0);
+        assert_eq!(translated.variant, 1);
+        assert_eq!(translated.radar_left, [31, 32, 33]);
+        assert_eq!(translated.radar_right, [34, 35, 36]);
+        assert_eq!(translated.level, 4);
+
+        let fill_cell = without_lat.cell(1, 3).expect("prefilled real CellClass");
+        assert_eq!(fill_cell.source_tile_index, 5);
+        assert_ne!(fill_cell.source_tile_index, 8);
+
+        let with_lat = {
+            let mut selector = cache.begin_load(&mut deterministic_main);
+            ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                Some(&assets),
+                None,
+                None,
+                None,
+                true,
+                0,
+                &mut fill,
+                &mut selector,
+            )
+        };
+        let lat_fixed = with_lat.cell(3, 2).expect("LAT-fixed Pack5 cell");
+        assert_eq!(lat_fixed.source_tile_index, 8);
+        assert_eq!(lat_fixed.final_tile_index, 24);
+        assert_eq!(lat_fixed.tileset_index, Some(3));
+        assert_eq!(lat_fixed.radar_left, [21, 22, 23]);
+        assert_eq!(lat_fixed.radar_right, [24, 25, 26]);
+    }
+
+    #[test]
+    fn gsi_04_02_last_tiles_provenance_gates_both_materialization_paths() {
+        let theater = gsi_04_02_last_tiles_theater();
+        let mut pack = make_map(
+            vec![MapCell {
+                rx: 2,
+                ry: 2,
+                tile_index: 5,
+                sub_tile: 0,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        pack.iso_map_pack_lookups = vec![crate::map::map_file::IsoMapPackLookup {
+            raw_x: -510,
+            raw_y: 3,
+            canonical: Some((2, 2)),
+        }];
+        pack.header.width = 3;
+        pack.header.height = 2;
+
+        let selector_free_pack =
+            ResolvedTerrainGrid::build(&pack, Some(&theater), None, None, None, false, 0);
+        assert_eq!(
+            selector_free_pack
+                .cell(2, 2)
+                .expect("selector-free Pack5 cell")
+                .source_tile_index,
+            8
+        );
+
+        let mut manual = make_map(pack.cells.clone(), Vec::new(), Vec::new());
+        manual.header.width = 3;
+        manual.header.height = 2;
+        let selector_free_manual =
+            ResolvedTerrainGrid::build(&manual, Some(&theater), None, None, None, false, 0);
+        assert_eq!(
+            selector_free_manual
+                .cell(2, 2)
+                .expect("manual actual-ID cell")
+                .source_tile_index,
+            5
+        );
+
+        let theaterless_pack = ResolvedTerrainGrid::build(&pack, None, None, None, None, false, 0);
+        assert_eq!(
+            theaterless_pack
+                .cell(2, 2)
+                .expect("theater-less synthetic Pack cell")
+                .source_tile_index,
+            5
+        );
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        cache.complete_theater_registry_load(Some(5), None);
+        let mut forbidden_main = || panic!("compatibility fixture has no variants");
+        let mut fill = |_low, _high| 0;
+        let production_manual = {
+            let mut selector = cache.begin_load(&mut forbidden_main);
+            ResolvedTerrainGrid::build_with_variant_selector(
+                &manual,
+                Some(&theater),
+                None,
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut fill,
+                &mut selector,
+            )
+        };
+        assert_eq!(
+            production_manual
+                .cell(2, 2)
+                .expect("production manual actual-ID cell")
+                .source_tile_index,
+            5
+        );
+        let production_pack = {
+            let mut selector = cache.begin_load(&mut forbidden_main);
+            ResolvedTerrainGrid::build_with_variant_selector(
+                &pack,
+                Some(&theater),
+                None,
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut fill,
+                &mut selector,
+            )
+        };
+        assert_eq!(
+            production_pack
+                .cell(2, 2)
+                .expect("production Pack5 cell")
+                .source_tile_index,
+            8
+        );
+    }
+
+    #[test]
+    fn gsi_04_02_last_tiles_does_not_translate_fill_or_dummy_only_pack_misses() {
+        let theater = gsi_04_02_last_tiles_theater();
+        let mut map = make_map(
+            vec![MapCell {
+                rx: 99,
+                ry: 99,
+                tile_index: 5,
+                sub_tile: 7,
+                z: 9,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 3;
+        map.header.height = 2;
+        map.iso_map_pack_lookups = vec![crate::map::map_file::IsoMapPackLookup {
+            raw_x: 99,
+            raw_y: 99,
+            canonical: None,
+        }];
+        let dummy = SharedCellDummy::fresh();
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        cache.complete_theater_registry_load(Some(5), None);
+        let mut forbidden_main = || panic!("Fill and misses do not draw Main");
+        let mut selector = cache.begin_load(&mut forbidden_main);
+        let mut fill = |_low, _high| 0;
+
+        let cells = materialize_map_load_cells(
+            &map,
+            Some(&theater.lookup),
+            &mut selector,
+            &mut fill,
+            &dummy,
+        );
+
+        assert!(!cells.is_empty());
+        assert!(cells.iter().all(|cell| cell.tile_index == 5));
+        assert!(cells.iter().all(|cell| cell.tile_index != 8));
+        assert_eq!(dummy.snapshot().coord, (99, 99));
+    }
+
+    #[test]
     fn gsi_04_01_resize_clears_bridge_bits_without_replacing_dummy_identity() {
         let dummy = SharedCellDummy::fresh();
         let retained = dummy.clone();
@@ -4354,7 +4737,7 @@ mod tests {
         let mut selector = cache.begin_load(&mut forbidden_main);
         let mut fill = |_low, _high| 0;
 
-        let cells = materialize_map_load_cells(&map, &mut selector, &mut fill, &dummy);
+        let cells = materialize_map_load_cells(&map, None, &mut selector, &mut fill, &dummy);
 
         let real = cells
             .iter()
@@ -4408,7 +4791,7 @@ mod tests {
         let mut selector = cache.begin_load(&mut forbidden_main);
         let mut fill = |_low, _high| 0;
 
-        let cells = materialize_map_load_cells(&map, &mut selector, &mut fill, &dummy);
+        let cells = materialize_map_load_cells(&map, None, &mut selector, &mut fill, &dummy);
 
         assert_eq!(dummy.snapshot(), expected_dummy);
         assert_eq!(
@@ -4671,6 +5054,7 @@ mod tests {
             let mut selector = cache.begin_load(&mut main_draw);
             let cells = materialize_map_load_cells(
                 &map,
+                None,
                 &mut selector,
                 &mut scenario_fill_ranged,
                 &SharedCellDummy::fresh(),
@@ -4747,6 +5131,7 @@ mod tests {
             };
             let cells = materialize_map_load_cells(
                 &map,
+                None,
                 &mut selector,
                 &mut scenario_fill_ranged,
                 &SharedCellDummy::fresh(),

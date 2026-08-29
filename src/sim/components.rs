@@ -19,6 +19,7 @@ use crate::map::entities::EntityCategory;
 use crate::sim::intern::InternedId;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::native_x87::NativeF64Bits;
 
 /// World position in isometric cell coordinates plus sub-cell lepton offset.
 ///
@@ -384,12 +385,13 @@ pub struct DrivePathQueue {
     pub reference_cell: Option<(i16, i16)>,
 }
 
-/// ShipLocomotion-owned destination, committed head, speed, and path replay state.
+/// ShipLocomotion-owned destination, committed head, speed, path replay, and
+/// track-occupation state.
 ///
 /// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
-/// fractions, and cached owner-speed result with Drive, but do not own Drive's
-/// tube, forced-track, or raw-occupation state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// fractions, cached owner-speed result, and RawTrack occupation pair with
+/// Drive, but do not own Drive's tube or forced-track state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShipLocomotionRuntime {
     #[serde(default)]
     pub destination: Option<DriveCoord>,
@@ -397,13 +399,54 @@ pub struct ShipLocomotionRuntime {
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
     pub path: DrivePathQueue,
+    /// Native Ship locomotor track-facing/selector dword `+0x54`.
     #[serde(default)]
-    pub target_speed_fraction: SimFixed,
-    #[serde(default)]
-    pub current_speed_fraction: SimFixed,
+    pub track_facing: i32,
+    /// Native Ship locomotor track index `+0x58`; values >=64 bypass the
+    /// ordinary target/ramp owner path exactly like Drive.
+    #[serde(default = "default_drive_track_index")]
+    pub track_index: i16,
+    #[serde(default = "default_native_fraction")]
+    pub target_speed_fraction: NativeF64Bits,
     /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
     #[serde(default)]
     pub owner_current_speed: i32,
+    /// Ship's forward RawTrack handoff occupation. Active
+    /// `ShipLocomotionClass::Process_Movement` reaches
+    /// `Apply_Track_Occupation_Mode @ 0x006A01A0` at `0x006A3D34`; that
+    /// helper applies mode 1 to this transformed RawTrack point before the
+    /// supplied endpoint.
+    #[serde(default)]
+    pub occupation_handoff: Option<DriveOccupationFootprint>,
+    /// Ship's independently marked track endpoint. It is not an object
+    /// coordinate write: the RawTrack moves the body on later paid points.
+    #[serde(default)]
+    pub occupation_head_to: Option<DriveOccupationFootprint>,
+    /// A paid Ship RawTrack point clears the standing cell's vehicle bit before
+    /// coordinate commit; AddContent at the next crossing restores it.
+    #[serde(default)]
+    pub current_occupation_cleared: bool,
+}
+
+impl Default for ShipLocomotionRuntime {
+    fn default() -> Self {
+        Self {
+            destination: None,
+            head_to: None,
+            path: DrivePathQueue::default(),
+            track_facing: 0,
+            track_index: -1,
+            target_speed_fraction: NativeF64Bits::POSITIVE_ZERO,
+            owner_current_speed: 0,
+            occupation_handoff: None,
+            occupation_head_to: None,
+            current_occupation_cleared: false,
+        }
+    }
+}
+
+fn default_native_fraction() -> NativeF64Bits {
+    NativeF64Bits::POSITIVE_ZERO
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -459,10 +502,8 @@ pub struct DriveLocomotionRuntime {
     pub track_valid: bool,
     #[serde(default)]
     pub is_reversed: bool,
-    #[serde(default)]
-    pub target_speed_fraction: SimFixed,
-    #[serde(default)]
-    pub current_speed_fraction: SimFixed,
+    #[serde(default = "default_native_fraction")]
+    pub target_speed_fraction: NativeF64Bits,
     /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
     #[serde(default)]
     pub owner_current_speed: i32,
@@ -498,8 +539,7 @@ impl Default for DriveLocomotionRuntime {
             point_index: 0,
             track_valid: false,
             is_reversed: false,
-            target_speed_fraction: SIM_ZERO,
-            current_speed_fraction: SIM_ZERO,
+            target_speed_fraction: NativeF64Bits::POSITIVE_ZERO,
             owner_current_speed: 0,
             residual_budget: 0,
             occupation_head_to: None,
@@ -847,6 +887,11 @@ pub struct AnimClassSpawnDescriptor {
     /// AnimClass `+0x197`: marks the instance as terrain-attached.
     #[serde(default)]
     pub terrain_attached: bool,
+    /// Producer-scoped `AnimClass::Start` work for the verified Building
+    /// `Explosion=` constructor. Generic scheduler anims deliberately leave
+    /// this false until their own Start side effects are audited.
+    #[serde(default)]
+    pub building_explosion_start_smudge: bool,
     /// Instance draw-state bytes supplied by the native producer.
     pub draw_runtime: crate::sim::anim_class::AnimDrawRuntime,
 }
@@ -874,6 +919,7 @@ impl AnimClassSpawnDescriptor {
             reverse: false,
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             draw_runtime: crate::sim::anim_class::AnimDrawRuntime::default(),
         }
     }
@@ -1069,11 +1115,11 @@ pub struct C4PlantState {
     pub target_building_id: u64,
 }
 
-/// Body rocking and slope-transition state for voxel-bodied units.
+/// Body rocking state for voxel-bodied units.
 ///
-/// Tracks both the spring-damped roll/pitch angles (driven by weapon impacts
-/// and EMP wobble) and the 3-tick quaternion-SLERP slope transition when the
-/// unit moves to a cell with a different slope_type.
+/// Tracks spring-damped roll/pitch angles driven by weapon impacts and EMP
+/// wobble. Drive/Ship slope interpolation is locomotor-owned state and is
+/// intentionally independent from this optional component.
 ///
 /// Optional component on `GameEntity` — present on vehicles, ships, and
 /// voxel-bodied buildings; `None` for infantry, aircraft, SHP-bodied
@@ -1090,12 +1136,6 @@ pub struct RockingState {
     pub vel_forwards: SimFixed,
     /// If true, integrate without damping (EMP wobble, naval continuous rocking).
     pub is_ship_rocking: bool,
-    /// Slope_type before the current transition (== curr_slope when no transition).
-    pub prev_slope: u8,
-    /// Current cell's slope_type.
-    pub curr_slope: u8,
-    /// Counts down from 3 to 0. Nonzero ⇒ render-time SLERP between prev and curr.
-    pub transition_ticks_remaining: u8,
 }
 
 impl RockingState {
@@ -1103,11 +1143,9 @@ impl RockingState {
     /// renders via the static atlas path.
     pub const DEADBAND: SimFixed = SimFixed::lit("0.00002");
 
-    /// Returns true when the unit can render via the static atlas path
-    /// (no active rocking, no in-progress slope transition).
+    /// Returns true when the body-rocking transform is neutral.
     pub fn is_neutral(&self) -> bool {
         !self.is_ship_rocking
-            && self.transition_ticks_remaining == 0
             && self.angle_sideways.abs() <= Self::DEADBAND
             && self.angle_forwards.abs() <= Self::DEADBAND
     }
@@ -1235,8 +1273,10 @@ mod tests {
         assert_eq!(drive.point_index, 0);
         assert!(!drive.track_valid);
         assert!(!drive.is_reversed);
-        assert_eq!(drive.target_speed_fraction, SIM_ZERO);
-        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(
+            drive.target_speed_fraction,
+            NativeF64Bits::POSITIVE_ZERO
+        );
         assert_eq!(drive.owner_current_speed, 0);
         assert_eq!(drive.residual_budget, 0);
     }
@@ -1317,13 +1357,6 @@ mod tests {
         // DEADBAND is 2e-5; SIM_EPSILON is ~1.5e-5 — exactly one delta below.
         r.angle_sideways = SimFixed::DELTA;
         assert!(r.is_neutral());
-    }
-
-    #[test]
-    fn rocking_transition_is_not_neutral() {
-        let mut r = RockingState::default();
-        r.transition_ticks_remaining = 1;
-        assert!(!r.is_neutral());
     }
 
     #[test]

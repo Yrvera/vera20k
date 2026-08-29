@@ -11,6 +11,9 @@ use winit::keyboard::{KeyCode, ModifiersState};
 pub(crate) struct MatchInputState {
     pub(crate) camera_x: f32,
     pub(crate) camera_y: f32,
+    /// App-local TacticalClass glide/committed/requested authority. It is saved
+    /// in the presentation adjunct and excluded from Simulation identity.
+    pub(crate) tactical_camera_motion: crate::app::input::camera::TacticalCameraMotion,
     /// Current zoom level for the game viewport. 1.0 = native pixel scale,
     /// >1.0 = zoomed in (world appears larger), <1.0 = zoomed out (see more map).
     /// Animated each frame toward `zoom_target`.

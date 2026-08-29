@@ -102,6 +102,51 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         return;
     }
 
+    // `FootClass::Mission_Enter @ 0x004D9290` sends directed radio 0x0E on
+    // every due dispatch. ROGER continues; the common Foot +0x418 force-enter
+    // state may also continue after a hard reply. Every remaining refusal sends BREAK before
+    // clearing the destination. This is intentionally separate from arrival:
+    // Unit arrival repeats full 0x0F while Infantry later sends contact-only
+    // 0x15, and those class-asymmetric callbacks live in the per-cell adapter.
+    let capture_fate_enter = input.mission == Some(MissionType::Enter)
+        && sim
+            .substrate
+            .entities
+            .get(id)
+            .is_some_and(|entity| entity.ai_absorb_enter_pending);
+    if capture_fate_enter {
+        let target = sim.substrate.entities.get(id).and_then(|entity| {
+            match entity.navigation.nav_com {
+                Some(crate::sim::components::NavTargetRef::Building { id }) => Some(id),
+                _ => None,
+            }
+        });
+        if let Some(target) = target {
+            let response = crate::sim::radio::transmit(
+                sim,
+                id,
+                target,
+                crate::sim::radio::RadioMessage::CanDock,
+                crate::sim::radio::RadioPayload::default(),
+            );
+            let force_enter = crate::sim::capture_manager::capture_fate_force_enter(sim, id);
+            if response != crate::sim::radio::RadioResponse::Roger && !force_enter {
+                crate::sim::radio::transmit(
+                    sim,
+                    id,
+                    target,
+                    crate::sim::radio::RadioMessage::Break,
+                    crate::sim::radio::RadioPayload::default(),
+                );
+                if let Some(entity) = sim.substrate.entities.get_mut(id) {
+                    crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                        entity, None,
+                    );
+                }
+            }
+        }
+    }
+
     let evaluation = match (input.category, input.mission) {
         // `FootClass::Mission_Move` is the native named location for this
         // handler-return cadence; movement execution remains in movement/.
@@ -286,23 +331,38 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
-            // **VERA-internal, gamemd equivalent UNCHECKED — this mapping is
-            // wrong and the arm is dead.** The "three byte latches, then
-            // `Assign_Mission(5, 0)`, then `return 1`" shape lives at
-            // `0x00740A90`, which is vtable `+0x22C` — the **Move** slot, not
-            // Guard — reads `[this+0x6E0]`/`+0x6E1`/`+0x6E2`, and queues
-            // **Guard**, not Harvest or Unload. `UnitClass`'s real Guard
-            // override `0x00740810` gates its `Queue_Mission(10)`/`return 1` on
-            // `UnitTypeClass+0xE0E`/`+0xE0F` plus house and refinery checks, and
-            // its `Queue_Mission(0x10)` path returns `ftol(Rate) + Rand(0, 2)`
-            // rather than 1.
-            //
-            // Trigger: none today — both latch bytes have only `#[cfg(test)]`
-            // writers (`sim::mission::leaf`), so production never reaches
-            // either arm. Player effect: none. Frequency: zero. Downstream
-            // risk: the wrong native mapping would be carried straight into any
-            // future deploy work; the shape belongs on the Move arm.
-            if input.unit_deploy_begin_active {
+            // `FootClass::Mission_Guard @ 0x004D5070`: persistent Foot
+            // `+0x68F` dispatches class vslot `+0x340` before every other
+            // Guard branch, then returns the plain Guard mission rate. The
+            // selector itself draws no RNG and this early return skips Guard's
+            // ordinary `(0, 2)` cadence jitter.
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.ai_absorb_enter_pending)
+            {
+                let _ = crate::sim::capture_manager::select_capture_fate_absorber(
+                    sim, rules, id, now,
+                );
+                MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Guard))
+            } else if input.unit_deploy_begin_active {
+                // **VERA-internal, gamemd equivalent UNCHECKED — this mapping is
+                // wrong and the arm is dead.** The "three byte latches, then
+                // `Assign_Mission(5, 0)`, then `return 1`" shape lives at
+                // `0x00740A90`, which is vtable `+0x22C` — the **Move** slot, not
+                // Guard — reads `[this+0x6E0]`/`+0x6E1`/`+0x6E2`, and queues
+                // **Guard**, not Harvest or Unload. `UnitClass`'s real Guard
+                // override `0x00740810` gates its `Queue_Mission(10)`/`return 1`
+                // on `UnitTypeClass+0xE0E`/`+0xE0F` plus house and refinery
+                // checks, and its `Queue_Mission(0x10)` path returns
+                // `ftol(Rate) + Rand(0, 2)` rather than 1.
+                //
+                // Trigger: none today — both latch bytes have only `#[cfg(test)]`
+                // writers (`sim::mission::leaf`), so production never reaches
+                // either arm. Player effect: none. Frequency: zero. Downstream
+                // risk: the wrong native mapping would be carried straight into
+                // any future deploy work; the shape belongs on the Move arm.
                 MissionHandlerEvaluation::queue(1, MissionType::Harvest)
             } else if input.unit_deploy_reverse_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Unload)
@@ -311,7 +371,19 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         (EntityCategory::Infantry, Some(MissionType::Guard)) => {
-            evaluate_foot_guard_cadence(sim, rules, MissionType::Guard, input.bunker_delegate)
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.ai_absorb_enter_pending)
+            {
+                let _ = crate::sim::capture_manager::select_capture_fate_absorber(
+                    sim, rules, id, now,
+                );
+                MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Guard))
+            } else {
+                evaluate_foot_guard_cadence(sim, rules, MissionType::Guard, input.bunker_delegate)
+            }
         }
         // Sticky dispatches through the SAME slot as Guard — one handler, two
         // selectors — so it runs the Guard body. The cadence still comes from
@@ -342,7 +414,25 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         //   Frequency: zero today (no slave miners), continuous once they land.
         // The Foot body's own slave-recall arm is absent for the same reason.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::AreaGuard)) => {
-            evaluate_foot_area_guard(sim, id, rules)
+            // `FootClass::Mission_AreaGuard @ 0x004D6AA0` owns the identical
+            // `+0x68F` head branch: vslot `+0x340`, then the plain Area Guard
+            // rate with no `(1, 5)` draw and none of the normal handler body.
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.ai_absorb_enter_pending)
+            {
+                let _ = crate::sim::capture_manager::select_capture_fate_absorber(
+                    sim, rules, id, now,
+                );
+                MissionHandlerEvaluation::cadence(mission_cadence(
+                    rules,
+                    MissionType::AreaGuard,
+                ))
+            } else {
+                evaluate_foot_area_guard(sim, id, rules)
+            }
         }
         // `FootClass::Mission_Hunt`: the observed Capture/Sabotage/Move routes
         // need an authoritative selector. Until one exists, retain its cadence
@@ -385,6 +475,15 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         (EntityCategory::Unit, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
             jittered_mission_cadence(sim, rules, MissionType::Hunt),
         ),
+        // `FootClass::Mission_Eaten @ 0x004D4CB0` and
+        // `FootClass::Mission_Enter @ 0x004D9290` both return
+        // `ftol([Mission]Rate * 900.0) + RandomRanged(0,2)`. Capture-fate
+        // arrival remains independent in the per-cell owner; this dispatch only
+        // owns the due retry/radio cadence and therefore draws exactly once.
+        (
+            EntityCategory::Unit | EntityCategory::Infantry,
+            Some(mission @ (MissionType::Eaten | MissionType::Enter)),
+        ) => MissionHandlerEvaluation::cadence(jittered_mission_cadence(sim, rules, mission)),
         // Everything else: the object still reaches a handler and still re-arms
         // its timer. Where that handler is the un-overridden base one, the
         // return value is a verified constant and no RNG is drawn; where the

@@ -205,7 +205,7 @@ impl Simulation {
     ) -> bool {
         if self.substrate.anims.contains_key(id) {
             if let Some(rules) = rules {
-                self.visit_anim(id, rules);
+                self.visit_anim_with_overlay_registry(id, rules, ctx.overlay_registry);
             }
             return true;
         }
@@ -874,7 +874,7 @@ fn can_acquire_target(sim: &Simulation, id: u64, rules: &RuleSet) -> bool {
     {
         return false;
     }
-    if entity.mind_controlled {
+    if entity.is_mind_controlled() {
         return false;
     }
     obj.primary.is_some() || obj.secondary.is_some()
@@ -1676,6 +1676,7 @@ mod tests {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }
     }
 
@@ -1824,7 +1825,11 @@ mod tests {
                 group_id: None,
             },
         );
-        for tick in 60..260u64 {
+        // ProcessMovement-final now correctly installs the accepted RawTrack's
+        // occupation mark instead of teleporting the scout to that endpoint.
+        // Keep this scanner regression's observation window long enough for
+        // ordinary paid track points to carry it well outside weapon range.
+        for tick in 60..600u64 {
             let due: Vec<crate::sim::command::CommandEnvelope> = if tick + 1 == 61 {
                 vec![scram.clone()]
             } else {
@@ -2155,7 +2160,10 @@ mod tests {
                 group_id: None,
             },
         );
-        for tick in 0..220u64 {
+        // The move must complete through ordinary paid RawTrack points.  The
+        // former 220-frame budget accidentally depended on treating the final
+        // ProcessMovement crate continuation as an endpoint SetCoords call.
+        for tick in 0..600u64 {
             let due: Vec<crate::sim::command::CommandEnvelope> = if tick + 1 == 2 {
                 vec![order.clone()]
             } else {
@@ -2829,7 +2837,7 @@ mod tests {
         // be one that does NOT qualify. `CLOSEINF` and `SHORTVEH` below are the
         // two qualifying shapes.
         RuleSet::from_ini(&IniFile::from_str(
-            "[General]\n\n[Move]\nRate=.016\n\n[Attack]\nRate=.016\n\n             [Guard]\nRate=.016\n\n[Hunt]\nRate=.016\n\n             [VehicleTypes]\n0=TEST\n1=SHORTVEH\n\n             [InfantryTypes]\n0=CLOSEINF\n\n             [TEST]\nStrength=300\nPrimary=LONGGUN\n\n             [SHORTVEH]\nStrength=300\nPrimary=SHORTGUN\n\n             [CLOSEINF]\nStrength=100\nCloseRange=yes\nPrimary=LONGGUN\n\n             [LONGGUN]\nDamage=10\nROF=20\nRange=5\nWarhead=WH\n\n             [SHORTGUN]\nDamage=10\nROF=20\nRange=1\nWarhead=WH\n\n             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+            "[General]\n\n[Move]\nRate=.016\n\n[Attack]\nRate=.016\n\n             [Guard]\nRate=.016\n\n[Hunt]\nRate=.016\n\n[Enter]\nRate=.016\n\n[Eaten]\nRate=.016\n\n             [VehicleTypes]\n0=TEST\n1=SHORTVEH\n\n             [InfantryTypes]\n0=CLOSEINF\n\n             [TEST]\nStrength=300\nPrimary=LONGGUN\n\n             [SHORTVEH]\nStrength=300\nPrimary=SHORTGUN\n\n             [CLOSEINF]\nStrength=100\nCloseRange=yes\nPrimary=LONGGUN\n\n             [LONGGUN]\nDamage=10\nROF=20\nRange=5\nWarhead=WH\n\n             [SHORTGUN]\nDamage=10\nROF=20\nRange=1\nWarhead=WH\n\n             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
         ))
         .expect("representative Foot handler rules parse")
     }
@@ -3524,11 +3532,9 @@ mod tests {
             None
         );
         for (category, mission) in [
-            (EntityCategory::Unit, MissionType::Enter),
             (EntityCategory::Unit, MissionType::Unload),
             // Repair overrides on Units even though it is a stub on Infantry.
             (EntityCategory::Unit, MissionType::Repair),
-            (EntityCategory::Infantry, MissionType::Enter),
         ] {
             assert_eq!(
                 base_mission_handler_delay(category, Some(mission)),
@@ -3557,6 +3563,230 @@ mod tests {
                 "{category:?} on {mission:?} must keep its untouched timer"
             );
         }
+    }
+
+    fn capture_fate_enter_fixture(
+        category: EntityCategory,
+        capture_intent: bool,
+        contact: bool,
+        force_enter: bool,
+    ) -> (Simulation, RuleSet) {
+        let rules = representative_foot_handler_rules();
+        let mut sim = Simulation::with_seed(0x4D92_90);
+        let mut victim = entity_of(1, category);
+        victim.ai_absorb_enter_pending = capture_intent;
+        victim.navigation.nav_com = Some(NavTargetRef::building(2));
+        victim.dock_entered_with = force_enter.then_some(2);
+        update_mission_test_fixture(&mut victim.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Enter);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        let mut building = entity_of(2, EntityCategory::Structure);
+        building.absorber_facility = true;
+        if contact {
+            victim.radio_contacts.insert(2);
+            building.radio_contacts.insert(1);
+        }
+        register_entity(&mut sim, victim);
+        register_entity(&mut sim, building);
+        (sim, rules)
+    }
+
+    fn capture_fate_absorber_redispatch_fixture(
+        category: EntityCategory,
+        mission: MissionType,
+    ) -> (Simulation, RuleSet) {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\n[Guard]\nRate=.030\n\n[Area Guard]\nRate=.040\n\
+             [VehicleTypes]\n0=TEST\n[BuildingTypes]\n0=BIO\n\
+             [TEST]\nStrength=100\nSize=1\nMovementZone=Normal\n\
+             [BIO]\nStrength=500\nInfantryAbsorb=yes\nUnitAbsorb=yes\nPassengers=5\nSizeLimit=15\n",
+        ))
+        .expect("capture-fate redispatch rules");
+        let mut sim = Simulation::with_seed(0x68F);
+        let owner = sim.interner.intern("Americans");
+        let test_type = sim.interner.intern("TEST");
+        let bio_type = sim.interner.intern("BIO");
+        let mut house = crate::sim::house_state::HouseState::new(
+            owner, 0, None, false, 0, 10,
+        );
+        house.absorber_building_order.push(2);
+        sim.houses.insert(owner, house);
+
+        let mut victim = entity_of(1, category);
+        victim.owner = owner;
+        victim.type_ref = test_type;
+        victim.ai_absorb_enter_pending = true;
+        update_mission_test_fixture(&mut victim.mission, |fixture| {
+            fixture.current = MissionId::from_known(mission);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        let mut bio = entity_of(2, EntityCategory::Structure);
+        bio.owner = owner;
+        bio.type_ref = bio_type;
+        bio.absorber_facility = true;
+        bio.passenger_role = crate::sim::passenger::PassengerRole::Transport {
+            cargo: crate::sim::passenger::PassengerCargo::new(5, 15),
+        };
+        sim.substrate.entities.insert(victim);
+        sim.substrate.entities.insert(bio);
+        (sim, rules)
+    }
+
+    #[test]
+    fn capture_fate_absorb_intent_guard_and_area_guard_redispatch_without_rng() {
+        for (category, mission, expected_delay) in [
+            (EntityCategory::Unit, MissionType::Guard, 26),
+            (EntityCategory::Infantry, MissionType::Guard, 26),
+            (EntityCategory::Unit, MissionType::AreaGuard, 35),
+            (EntityCategory::Infantry, MissionType::AreaGuard, 35),
+        ] {
+            let (mut sim, rules) = capture_fate_absorber_redispatch_fixture(category, mission);
+            let before_rng = sim.scenario_rng.logical_state();
+
+            dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+
+            let victim = sim.substrate.entities.get(1).expect("redispatched victim");
+            assert_eq!(victim.mission.current().known(), Some(MissionType::Enter));
+            assert_eq!(victim.navigation.nav_com, Some(NavTargetRef::building(2)));
+            assert!(victim.ai_absorb_enter_pending);
+            assert_eq!(
+                victim.mission.dispatch_timer(),
+                MissionDispatchTimer::from_raw(0, expected_delay),
+                "the {mission:?} handler returns its plain native rate after +0x340",
+            );
+            assert_eq!(
+                sim.scenario_rng.logical_state(),
+                before_rng,
+                "the +0x68F head branch draws no cadence RNG",
+            );
+        }
+    }
+
+    #[test]
+    fn failed_guard_absorber_redispatch_clears_intent_without_inventing_hunt() {
+        let (mut sim, rules) =
+            capture_fate_absorber_redispatch_fixture(EntityCategory::Unit, MissionType::Guard);
+        sim.houses
+            .values_mut()
+            .next()
+            .expect("fixture House")
+            .absorber_building_order
+            .clear();
+        let before_rng = sim.scenario_rng.logical_state();
+
+        dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+
+        let victim = sim.substrate.entities.get(1).expect("failed redispatch victim");
+        assert_eq!(victim.mission.current().known(), Some(MissionType::Guard));
+        assert!(!victim.ai_absorb_enter_pending);
+        assert_eq!(
+            victim.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 26),
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn capture_fate_enter_due_sends_one_0x0e_and_rearms_exact_jitter() {
+        let (mut sim, rules) =
+            capture_fate_enter_fixture(EntityCategory::Infantry, true, true, false);
+        let mut expected_rng = sim.scenario_rng.clone();
+        let jitter = expected_rng.next_range_u32_inclusive(0, 2) as i32;
+        crate::sim::radio::clear_test_trace();
+
+        dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+
+        assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 14 + jitter)
+        );
+        assert_eq!(
+            crate::sim::radio::take_test_trace(),
+            vec![crate::sim::radio::RadioTestEvent::Transmit {
+                sender_sid: 1,
+                target_sid: 2,
+                message: crate::sim::radio::RadioMessage::CanDock,
+            }]
+        );
+    }
+
+    #[test]
+    fn capture_fate_enter_not_due_sends_no_radio_and_draws_no_rng() {
+        let (mut sim, rules) =
+            capture_fate_enter_fixture(EntityCategory::Infantry, true, true, false);
+        update_mission_test_fixture(
+            &mut sim.substrate.entities.get_mut(1).unwrap().mission,
+            |fixture| fixture.dispatch_timer = MissionDispatchTimer::from_raw(0, 20),
+        );
+        let before_rng = sim.scenario_rng.logical_state();
+        crate::sim::radio::clear_test_trace();
+        dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+        assert!(crate::sim::radio::take_test_trace().is_empty());
+    }
+
+    #[test]
+    fn capture_fate_enter_hard_refusal_breaks_then_clears_destination() {
+        let (mut sim, rules) =
+            capture_fate_enter_fixture(EntityCategory::Infantry, true, false, false);
+        crate::sim::radio::clear_test_trace();
+        dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().navigation.nav_com, None);
+        assert_eq!(
+            crate::sim::radio::take_test_trace(),
+            vec![
+                crate::sim::radio::RadioTestEvent::Transmit {
+                    sender_sid: 1,
+                    target_sid: 2,
+                    message: crate::sim::radio::RadioMessage::CanDock,
+                },
+                crate::sim::radio::RadioTestEvent::Transmit {
+                    sender_sid: 1,
+                    target_sid: 2,
+                    message: crate::sim::radio::RadioMessage::Break,
+                },
+                crate::sim::radio::RadioTestEvent::SenderBreakCleared {
+                    sender_sid: 1,
+                    target_sid: 2,
+                },
+                crate::sim::radio::RadioTestEvent::ReceiverClassEffect {
+                    receiver_sid: 2,
+                    sender_sid: 1,
+                },
+                crate::sim::radio::RadioTestEvent::ReceiverCommonCleared {
+                    receiver_sid: 2,
+                    sender_sid: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn foot_common_0x418_force_enter_continues_after_refusal() {
+        let (mut sim, rules) =
+            capture_fate_enter_fixture(EntityCategory::Infantry, true, false, true);
+        crate::sim::radio::clear_test_trace();
+        dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().navigation.nav_com,
+            Some(NavTargetRef::building(2))
+        );
+        assert_eq!(crate::sim::radio::take_test_trace().len(), 1);
+    }
+
+    #[test]
+    fn non_capture_enter_does_not_inherit_absorber_radio_or_refusal_tail() {
+        let (mut sim, rules) =
+            capture_fate_enter_fixture(EntityCategory::Unit, false, false, false);
+        crate::sim::radio::clear_test_trace();
+        dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().navigation.nav_com,
+            Some(NavTargetRef::building(2))
+        );
+        assert!(crate::sim::radio::take_test_trace().is_empty());
     }
 
     /// Sticky and Guard dispatch through the same slot, so Sticky runs the
@@ -4917,7 +5147,7 @@ mod tests {
             .locomotor
             .as_mut()
             .unwrap()
-            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground);
+            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground, 0);
         assert_ordinary_drive_host_error(
             &piggyback,
             &control,

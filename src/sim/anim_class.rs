@@ -2,16 +2,17 @@
 //!
 //! `AnimStore` owns animation storage while `world::LogicVector` owns live AI
 //! order. This module implements only the verified ordinary non-bouncer
-//! AnimClass lifecycle needed by building damage fire: constructor/reveal,
-//! first-AI guard, logic-frame timing, loops, reverse/ping-pong, Next, trailer,
-//! sound identity, conceal, and deferred deletion.
+//! AnimClass lifecycle needed by building damage fire and destruction effects:
+//! constructor/reveal, first-AI guard, logic-frame timing, loops,
+//! reverse/ping-pong, Next, trailer, sound identity, conceal, and deferred
+//! deletion.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::rules::art_data::AnimTypeRuntimeConfig;
+use crate::rules::art_data::{AnimLayer, AnimTypeRuntimeConfig};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::intern::InternedId;
@@ -70,6 +71,8 @@ const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const ANIM_HEIGHT_LEVEL_LEPTONS: i32 = 128;
 const TRAILER_DRAW_FLAGS: u32 = 0x600;
 const BUILDING_RENDER_ORIGIN_LEPTONS: i32 = 128;
+const BUILDING_DESTRUCTION_SCATTER_RADIUS: i32 = 0x40;
+const BUILDING_DESTRUCTION_DRAW_FLAGS: u32 = 0x600;
 const DAMAGE_FIRE_SLOT_COUNT: usize = 8;
 // Retained with the verified multiplayer-feedback spawn seam until command
 // feedback owns its production call site.
@@ -309,6 +312,9 @@ pub struct AnimObject {
     pub stable_id: AnimId,
     pub native_unique_id: i32,
     pub type_id: InternedId,
+    /// Constructor-bound `AnimTypeClass+0x364` layer. Owner attachment still
+    /// overrides this to Ground at query time, exactly as GetLayer does.
+    pub native_display_layer: i8,
     /// World leptons — but **owner-relative whenever `owner_entity` is set**,
     /// exactly as `AnimClass::SetOwnerObject @ 0x00424B50` stores it. Read it
     /// through [`Simulation::anim_absolute_coord`] for a world position; read
@@ -330,6 +336,11 @@ pub struct AnimObject {
     /// AnimClass `+0x197`: created from a terrain tile animation descriptor.
     #[serde(default)]
     pub terrain_attached: bool,
+    /// Exact producer identity for Building `Explosion=` Start scorch/crater
+    /// work. This cannot be inferred from AnimType because the same type may be
+    /// constructed by a caller whose Start subset has not yet been audited.
+    #[serde(default)]
+    pub building_explosion_start_smudge: bool,
     /// LogicClass membership is reconstructed from the serialized vector.
     /// ObjectClass::Save does not persist its local membership byte.
     #[serde(skip)]
@@ -337,6 +348,15 @@ pub struct AnimObject {
     pub owner_entity: Option<u64>,
     pub start_sound_active: bool,
     pub stop_sound_id: Option<InternedId>,
+}
+
+fn native_anim_display_layer(layer: AnimLayer) -> i8 {
+    match layer {
+        AnimLayer::Ground => 2,
+        AnimLayer::Air => 3,
+        AnimLayer::Top => 4,
+        AnimLayer::Other(layer) => i8::try_from(layer).unwrap_or(-1),
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -529,6 +549,16 @@ impl Simulation {
         descriptor: AnimClassSpawnDescriptor,
         world_coord: AnimWorldCoord,
     ) -> Result<AnimId, AnimSpawnError> {
+        self.spawn_anim_at_world_with_overlay_registry(rules, descriptor, world_coord, None)
+    }
+
+    pub(crate) fn spawn_anim_at_world_with_overlay_registry(
+        &mut self,
+        rules: &RuleSet,
+        descriptor: AnimClassSpawnDescriptor,
+        world_coord: AnimWorldCoord,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> Result<AnimId, AnimSpawnError> {
         let type_name = self
             .interner
             .resolve(descriptor.type_name)
@@ -557,6 +587,7 @@ impl Simulation {
             stable_id,
             native_unique_id: stable_id as i32,
             type_id: descriptor.type_name,
+            native_display_layer: native_anim_display_layer(config.layer),
             world_coord,
             draw_flags: descriptor.draw_flags,
             z_adjust: descriptor.z_adjust,
@@ -580,6 +611,7 @@ impl Simulation {
             draw_runtime: descriptor.draw_runtime,
             use_cell_drawer: descriptor.use_cell_drawer,
             terrain_attached: descriptor.terrain_attached,
+            building_explosion_start_smudge: descriptor.building_explosion_start_smudge,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -590,9 +622,112 @@ impl Simulation {
         // delay-zero constructor-time Middle call.
         self.reveal_anim(stable_id);
         if descriptor.delay == 0 {
-            self.anim_middle(stable_id, &config);
+            self.anim_middle(stable_id, rules, &config, overlay_registry);
         }
         Ok(stable_id)
+    }
+
+    /// Construct the two verified Building destruction animation arms inline.
+    /// The returned IDs are in native construction order and exist mainly for
+    /// focused executable checks; production ownership is the AnimStore and
+    /// global LogicVector established by `spawn_anim_at_world`.
+    ///
+    /// gamemd-derived: `BuildingClass::DestructionEffects @ 0x004415F0`.
+    /// The per-foundation arm is `0x0044194D..0x00441A24`; the DestroyAnim arm
+    /// is `0x00441CB2..0x00441D66`.
+    pub(crate) fn spawn_building_destruction_anims(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        location: AnimWorldCoord,
+        foundation: &str,
+        explosion_anims: &[String],
+        destroy_anims: &[String],
+    ) -> Vec<AnimId> {
+        let mut spawned = Vec::new();
+        let render_x = location.x.wrapping_sub(BUILDING_RENDER_ORIGIN_LEPTONS);
+        let render_y = location.y.wrapping_sub(BUILDING_RENDER_ORIGIN_LEPTONS);
+
+        for (dx, dy) in crate::rules::foundation::foundation_cell_offsets(foundation) {
+            if explosion_anims.is_empty() {
+                continue;
+            }
+
+            let center_x = (render_x >> 8)
+                .wrapping_add(i32::from(dx))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(crate::util::lepton::CELL_CENTER_LEPTON_I32);
+            let center_y = (render_y >> 8)
+                .wrapping_add(i32::from(dy))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(crate::util::lepton::CELL_CENTER_LEPTON_I32);
+            let (world_x, world_y) = crate::sim::combat::random_direction_coord(
+                &mut self.scenario_rng,
+                center_x,
+                center_y,
+                BUILDING_DESTRUCTION_SCATTER_RADIUS,
+            );
+
+            // Rust's allocator has no recoverable native null-allocation seam.
+            // On the ordinary success path the ranged delay and raw modulo
+            // selection follow the already-consumed scatter draw exactly.
+            let delay = self.scenario_rng.next_range_u32_inclusive(0, 3) as u16;
+            let index = (self.scenario_rng.next_u32() % explosion_anims.len() as u32) as usize;
+            let type_name = self.interner.intern(&explosion_anims[index]);
+            let mut descriptor = AnimClassSpawnDescriptor::new(
+                type_name,
+                0,
+                0,
+                crate::util::fixed_math::SIM_ZERO,
+                crate::util::fixed_math::SIM_ZERO,
+                0,
+            );
+            descriptor.delay = delay;
+            descriptor.draw_flags = BUILDING_DESTRUCTION_DRAW_FLAGS;
+            descriptor.building_explosion_start_smudge = true;
+            let id = self
+                .spawn_anim_at_world_with_overlay_registry(
+                    rules,
+                    descriptor,
+                    AnimWorldCoord {
+                        x: world_x,
+                        y: world_y,
+                        z: location.z,
+                    },
+                    overlay_registry,
+                )
+                .expect("Building Explosion AnimType roots must be bound during scenario load");
+            spawned.push(id);
+        }
+
+        if !destroy_anims.is_empty() {
+            let index = (self.scenario_rng.next_u32() % destroy_anims.len() as u32) as usize;
+            let type_name = self.interner.intern(&destroy_anims[index]);
+            let mut descriptor = AnimClassSpawnDescriptor::new(
+                type_name,
+                0,
+                0,
+                crate::util::fixed_math::SIM_ZERO,
+                crate::util::fixed_math::SIM_ZERO,
+                0,
+            );
+            descriptor.draw_flags = BUILDING_DESTRUCTION_DRAW_FLAGS;
+            let id = self
+                .spawn_anim_at_world_with_overlay_registry(
+                    rules,
+                    descriptor,
+                    AnimWorldCoord {
+                        x: render_x,
+                        y: render_y,
+                        z: location.z,
+                    },
+                    overlay_registry,
+                )
+                .expect("Building DestroyAnim roots must be bound during scenario load");
+            spawned.push(id);
+        }
+
+        spawned
     }
 
     // The move-feedback producer is not wired yet; keep the verified
@@ -633,6 +768,7 @@ impl Simulation {
             stable_id,
             native_unique_id: SYNC_EXEMPT_NATIVE_UNIQUE_ID,
             type_id,
+            native_display_layer: native_anim_display_layer(config.layer),
             world_coord,
             draw_flags: TRAILER_DRAW_FLAGS,
             z_adjust: MULTIPLAYER_FEEDBACK_Z_ADJUST,
@@ -656,6 +792,7 @@ impl Simulation {
             draw_runtime: AnimDrawRuntime::default(),
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -667,7 +804,7 @@ impl Simulation {
                 .insert(object)
                 .is_none()
         );
-        self.anim_middle(stable_id, &config);
+        self.anim_middle(stable_id, rules, &config, None);
         Ok(stable_id)
     }
 
@@ -686,6 +823,15 @@ impl Simulation {
     }
 
     pub(crate) fn visit_anim(&mut self, id: AnimId, rules: &RuleSet) {
+        self.visit_anim_with_overlay_registry(id, rules, None);
+    }
+
+    pub(crate) fn visit_anim_with_overlay_registry(
+        &mut self,
+        id: AnimId,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
         // `AnimClass::GetCoords @ 0x00422BE0`, not the stored field: an
         // owner-attached anim stores an owner-relative delta.
         let Some(world_coord) = self.anim_absolute_coord(id) else {
@@ -741,6 +887,7 @@ impl Simulation {
                     reverse: false,
                     use_cell_drawer: false,
                     terrain_attached: false,
+                    building_explosion_start_smudge: false,
                     draw_runtime: AnimDrawRuntime::default(),
                 };
                 self.spawn_anim_at_world(rules, descriptor, world_coord)
@@ -758,14 +905,29 @@ impl Simulation {
         let mut action = VisitAction::None;
         let mut random_loop_delay = None;
         let current_frame = self.session.binary_frame as i32;
-        {
+        let delay_transition = {
             let Some(anim) = self.anim_mut_by_id(id) else {
                 return;
             };
             if anim.runtime.delay_remaining > 0 {
                 anim.runtime.delay_remaining -= 1;
-                return;
+                Some(anim.runtime.delay_remaining == 0)
+            } else {
+                None
             }
+        };
+        if let Some(reached_zero) = delay_transition {
+            if reached_zero {
+                self.anim_middle(id, rules, &config, overlay_registry);
+            }
+            // Native returns from the AI visit that handles the delay whether
+            // or not it reached zero; frame advancement begins on a later visit.
+            return;
+        }
+        {
+            let Some(anim) = self.anim_mut_by_id(id) else {
+                return;
+            };
             if anim.runtime.rate_reload == 0 {
                 return;
             }
@@ -826,7 +988,7 @@ impl Simulation {
                 );
                 self.destroy_anim(id);
             }
-            VisitAction::Next(next) => self.switch_anim_type(id, &next, rules),
+            VisitAction::Next(next) => self.switch_anim_type(id, &next, rules, overlay_registry),
         }
     }
 
@@ -906,9 +1068,8 @@ impl Simulation {
     ///   producer must read `+0x17C` on that class before reusing this.
     /// - The `DisplayClass::RemoveFromLayer` / `Submit_Object` re-registration
     ///   pair either side of the pointer write (`0x004A9770` / `0x004A9720`).
-    ///   Layer membership is rebuilt from `tactical_registration_order` every
-    ///   frame in this engine rather than held as a persistent container, so
-    ///   there is no registration to move.
+    ///   The persistent flat-display registry below performs that exact
+    ///   remove/reappend when owner attachment changes GetLayer.
     ///
     /// Returns `false` when the anim does not exist, or when the requested
     /// owner does not.
@@ -942,6 +1103,7 @@ impl Simulation {
                 anim.owner_entity = Some(owner_id);
             }
         }
+        self.sync_display_layer_for_object(id);
         true
     }
 
@@ -987,24 +1149,12 @@ impl Simulation {
     /// `world/lifecycle.rs`'s `object_get_coords_cell` and `combat`'s
     /// `target_coords` use.
     ///
-    /// Z deliberately uses the anim height-level scale
-    /// (`ANIM_HEIGHT_LEVEL_LEPTONS`, 128), NOT `Position::exact_z_leptons` and
-    /// NOT the 104-lepton `LevelHeight` the locomotor and combat use. Native
-    /// has one Z frame and this engine has two: an anim's own Z is stored in
-    /// 128-per-level units (see [`AnimWorldCoord::to_cell_sub_z`] and the anim
-    /// constructor), so the owner's Z must be converted into that same frame or
-    /// the subtraction native performs would compare two different scales.
-    /// Feeding `exact_z_leptons` in here would look more faithful and be wrong.
-    ///
-    /// The consequence, recorded rather than hidden: this reads the owner's
-    /// coarse height level only. An owner with a non-zero locomotor altitude —
-    /// a flying or falling attach target — would contribute no altitude to the
-    /// delta. No attach producer in this engine targets a moving or airborne
-    /// owner (the sole producer is building damage fire), so the term has zero
-    /// occurrences today; the first airborne-owner producer must reconcile the
-    /// two Z frames before relying on it. The attach/detach round trip is exact
-    /// regardless, because the same value is subtracted and added back.
-    fn anim_owner_coords(&self, owner_id: u64) -> Option<AnimWorldCoord> {
+    /// Z is native ObjectClass coordinate leptons. Descriptor construction from
+    /// an authored AnimType height level uses 128 per level at that separate
+    /// boundary, but owner attachment subtracts the owner's exact live Object
+    /// coordinate. This distinction becomes active for CaptureUnit rings on
+    /// airborne/moving victims.
+    pub(crate) fn anim_owner_coords(&self, owner_id: u64) -> Option<AnimWorldCoord> {
         let owner = self.substrate.entities.get(owner_id)?;
         let mut x = i32::from(owner.position.rx)
             .wrapping_mul(LEPTONS_PER_CELL)
@@ -1025,7 +1175,10 @@ impl Simulation {
         Some(AnimWorldCoord {
             x,
             y,
-            z: i32::from(owner.position.z).wrapping_mul(ANIM_HEIGHT_LEVEL_LEPTONS),
+            z: owner.position.exact_z_leptons.unwrap_or_else(|| {
+                i32::from(owner.position.z)
+                    .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
+            }),
         })
     }
 
@@ -1041,6 +1194,9 @@ impl Simulation {
                 if *slot == Some(id) {
                     *slot = None;
                 }
+            }
+            if owner.mind_control_anim_id == Some(id) {
+                owner.mind_control_anim_id = None;
             }
         }
         self.set_anim_owner_object(id, None);
@@ -1157,6 +1313,7 @@ impl Simulation {
         }
         self.lifecycle_outputs
             .push(LifecycleOutput::DisplayRemove { stable_id: id });
+        self.substrate.flat_display_order.remove(id);
         self.detach_anim_from_owner(id);
         if let Some(anim) = self.anim_mut_by_id(id) {
             anim.runtime.inactive = true;
@@ -1286,6 +1443,7 @@ impl Simulation {
                 reverse: false,
                 use_cell_drawer: false,
                 terrain_attached: false,
+                building_explosion_start_smudge: false,
                 draw_runtime: AnimDrawRuntime::default(),
             };
             let world = AnimWorldCoord {
@@ -1357,30 +1515,47 @@ impl Simulation {
         }
     }
 
-    fn anim_middle(&mut self, id: AnimId, config: &AnimTypeRuntimeConfig) {
+    fn anim_middle(
+        &mut self,
+        id: AnimId,
+        rules: &RuleSet,
+        config: &AnimTypeRuntimeConfig,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
         let sound_name = config
             .start_sound
             .as_ref()
             .or(config.report.as_ref())
             .cloned();
-        let Some(sound_name) = sound_name else {
-            return;
-        };
-        let sound_id = self.interner.intern(&sound_name);
-        let Some(world) = self.anim_absolute_coord(id) else {
-            return;
-        };
-        if let Some(anim) = self.anim_mut_by_id(id) {
-            anim.start_sound_active = true;
+        if let Some(sound_name) = sound_name {
+            let sound_id = self.interner.intern(&sound_name);
+            if let Some(world) = self.anim_absolute_coord(id) {
+                if let Some(anim) = self.anim_mut_by_id(id) {
+                    anim.start_sound_active = true;
+                }
+                self.sound_events.push(SimSoundEvent::AnimationStarted {
+                    anim_id: id,
+                    sound_id,
+                    world,
+                });
+            }
         }
-        self.sound_events.push(SimSoundEvent::AnimationStarted {
-            anim_id: id,
-            sound_id,
-            world,
-        });
+        if config.start == 0
+            && self
+                .anim(id)
+                .is_some_and(|anim| anim.building_explosion_start_smudge)
+        {
+            self.dispatch_building_explosion_anim_start_smudge(id, rules, overlay_registry);
+        }
     }
 
-    fn switch_anim_type(&mut self, id: AnimId, next: &str, rules: &RuleSet) {
+    fn switch_anim_type(
+        &mut self,
+        id: AnimId,
+        next: &str,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
         let Some(config) = rules.art_registry.anim_runtime_config(next).cloned() else {
             self.destroy_anim(id);
             return;
@@ -1419,7 +1594,7 @@ impl Simulation {
             anim.runtime.first_ai_guard = false;
             anim.runtime.inactive = false;
         }
-        self.anim_middle(id, &config);
+        self.anim_middle(id, rules, &config, overlay_registry);
     }
 }
 
@@ -1558,6 +1733,7 @@ mod long_tail_contract_tests {
 mod tests {
     use super::*;
     use crate::map::entities::EntityCategory;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
@@ -1647,6 +1823,132 @@ mod tests {
         rules
     }
 
+    fn building_start_smudge_rules() -> (
+        RuleSet,
+        crate::map::overlay_types::OverlayTypeRegistry,
+    ) {
+        let ini = IniFile::from_str(
+            "[Tiberiums]\n0=Riparius\n\
+             [Riparius]\nImage=1\nValue=25\n\
+             [OverlayTypes]\n0=ORE\n\
+             [ORE]\nTiberium=yes\n\
+             [SmudgeTypes]\n1=CR1\n2=BURN1\n\
+             [CR1]\nCrater=yes\nWidth=1\nHeight=1\n\
+             [BURN1]\nBurn=yes\nWidth=1\nHeight=1\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).expect("Building Start-smudge rules");
+        let mut art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[EXP]\nRate=450\nEnd=4\nScorch=yes\nCrater=yes\n\
+             FrameWidth=100\nFrameHeight=100\n",
+        ));
+        art.bind_anim_frame_count_for_test("EXP", 4);
+        rules.art_registry = art;
+        let overlay_registry =
+            crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+        (rules, overlay_registry)
+    }
+
+    fn building_start_flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for ry in 0..height {
+            for rx in 0..width {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: false,
+                    level: 0,
+                    filled_clear: true,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    yr_cell_land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    height_in_pixels: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: Default::default(),
+                    speed_costs: crate::rules::terrain_rules::SpeedCostProfile {
+                        track: Some(100),
+                        ..Default::default()
+                    },
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: true,
+                    allows_tiberium: true,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    terrain_object_occupation: None,
+                    overlay_blocks: false,
+                    overlay_zone_type: None,
+                    outside_playfield: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    base_land_type: 0,
+                    base_yr_cell_land_type: 0,
+                    base_terrain_class: Default::default(),
+                    base_speed_costs: Default::default(),
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
+                    radar_left: [0; 3],
+                    radar_right: [0; 3],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    fn install_building_start_authorities(
+        sim: &mut Simulation,
+        overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+        ore_cells: &[(u16, u16)],
+    ) {
+        const MAP_SIZE: u16 = 32;
+        let ore_id = overlay_registry.id_for_name("ORE").expect("ORE overlay");
+        let mut overlay_grid = crate::sim::overlay_grid::OverlayGrid::new(MAP_SIZE, MAP_SIZE);
+        for &(rx, ry) in ore_cells {
+            overlay_grid.place_overlay(rx, ry, ore_id, 5);
+        }
+        sim.overlay_grid = Some(overlay_grid);
+        sim.resolved_terrain = Some(building_start_flat_terrain(MAP_SIZE, MAP_SIZE));
+        sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::new(
+            MAP_SIZE, MAP_SIZE,
+        ));
+        sim.production.ore_growth_state =
+            crate::sim::ore_growth::OreGrowthState::new(MAP_SIZE, MAP_SIZE);
+    }
+
+    fn oracle_building_scatter(
+        rng: &mut crate::sim::rng::SimRng,
+        center_x: i32,
+        center_y: i32,
+    ) -> (i32, i32) {
+        let byte = (rng.next_u32() & 0xff) as u8;
+        crate::sim::combat::random_direction_coord_for_byte(
+            byte,
+            center_x,
+            center_y,
+            BUILDING_DESTRUCTION_SCATTER_RADIUS,
+        )
+    }
+
     fn runtime_descriptor(type_name: InternedId, delay: u16) -> AnimClassSpawnDescriptor {
         AnimClassSpawnDescriptor {
             type_name,
@@ -1662,6 +1964,7 @@ mod tests {
             reverse: false,
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             draw_runtime: AnimDrawRuntime::default(),
         }
     }
@@ -1705,6 +2008,7 @@ mod tests {
         };
         descriptor.use_cell_drawer = true;
         descriptor.terrain_attached = true;
+        descriptor.building_explosion_start_smudge = true;
         let draw_runtime = descriptor.draw_runtime;
         let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
         assert_eq!(sim.anim(id).unwrap().draw_runtime, draw_runtime);
@@ -1714,9 +2018,12 @@ mod tests {
         assert_eq!(restored.get(id).unwrap().draw_runtime, draw_runtime);
         assert!(restored.get(id).unwrap().use_cell_drawer);
         assert!(restored.get(id).unwrap().terrain_attached);
+        assert!(restored.get(id).unwrap().building_explosion_start_smudge);
 
         let before = sim.state_hash();
-        sim.anim_mut_by_id(id).unwrap().terrain_attached = false;
+        sim.anim_mut_by_id(id)
+            .unwrap()
+            .building_explosion_start_smudge = false;
         assert_ne!(sim.state_hash(), before);
     }
 
@@ -1865,6 +2172,373 @@ mod tests {
         sim.visit_anim(id, &rules); // a second visit in the same frame cannot advance again
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
         assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+
+    #[test]
+    fn building_explosion_delays_one_through_three_run_middle_on_zero_transition_once() {
+        let rules = runtime_rules(
+            "[TEST]\nRate=450\nEnd=3\nLoopCount=1\nReport=ExplosionReport\n",
+            &[("TEST", 3)],
+        );
+
+        for delay in 1..=3 {
+            let mut sim = Simulation::new();
+            let type_id = sim.interner.intern("TEST");
+            let id = sim
+                .spawn_anim_object(&rules, runtime_descriptor(type_id, delay))
+                .unwrap();
+            assert!(sim.sound_events.is_empty());
+
+            sim.visit_anim(id, &rules); // constructor first-AI guard
+            assert!(sim.sound_events.is_empty());
+            for visit in 1..=delay {
+                sim.session.binary_frame = u32::from(visit);
+                sim.visit_anim(id, &rules);
+                if visit < delay {
+                    assert!(sim.sound_events.is_empty());
+                }
+            }
+
+            assert_eq!(sim.anim(id).unwrap().runtime.delay_remaining, 0);
+            assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
+            assert!(matches!(
+                sim.sound_events.as_slice(),
+                [SimSoundEvent::AnimationStarted { anim_id, .. }] if *anim_id == id
+            ));
+
+            sim.visit_anim(id, &rules);
+            assert_eq!(
+                sim.sound_events.len(),
+                1,
+                "Middle must not repeat after delay {delay} reaches zero"
+            );
+        }
+    }
+
+    #[test]
+    fn phase3_building_delay_zero_start_smudge_interleaves_before_next_foundation_cell() {
+        let (rules, overlay_registry) = building_start_smudge_rules();
+        const SEED: u64 = 17;
+        let mut sim = Simulation::new();
+        sim.scenario_rng = crate::sim::rng::SimRng::new(SEED);
+        install_building_start_authorities(&mut sim, &overlay_registry, &[(10, 20)]);
+
+        let location = AnimWorldCoord {
+            x: 10 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+            y: 20 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+            z: 0,
+        };
+        let mut oracle = crate::sim::rng::SimRng::new(SEED);
+        let first_world = oracle_building_scatter(
+            &mut oracle,
+            10 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        assert_eq!(oracle.next_range_u32_inclusive(0, 3), 0);
+        oracle.next_u32(); // raw modulo selection from the one-entry Explosion list
+        let start_roll = oracle.next_range_u32_inclusive(0, 0x7fff_fffe);
+        assert!(
+            start_roll >= 0x4000_0000,
+            "fixture takes the crater arm so the production ore authority mutates"
+        );
+        let state_after_first_start = oracle.logical_state();
+        let second_world = oracle_building_scatter(
+            &mut oracle,
+            11 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        let second_delay = oracle.next_range_u32_inclusive(0, 3) as u16;
+        assert_ne!(second_delay, 0, "only cell 1 may Start during construction");
+        oracle.next_u32(); // cell 2 raw list selection
+
+        let mut incorrectly_deferred = crate::sim::rng::SimRng::new(SEED);
+        incorrectly_deferred.next_u32();
+        incorrectly_deferred.next_range_u32_inclusive(0, 3);
+        incorrectly_deferred.next_u32();
+        let incorrectly_deferred_second_world = oracle_building_scatter(
+            &mut incorrectly_deferred,
+            11 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        let incorrectly_deferred_second_delay =
+            incorrectly_deferred.next_range_u32_inclusive(0, 3) as u16;
+        incorrectly_deferred.next_u32();
+        incorrectly_deferred.next_range_u32_inclusive(0, 0x7fff_fffe);
+
+        let ids = sim.spawn_building_destruction_anims(
+            &rules,
+            Some(&overlay_registry),
+            location,
+            "2x1",
+            &["EXP".to_string()],
+            &[],
+        );
+
+        assert_eq!(ids.len(), 2);
+        assert_eq!(
+            sim.anim(ids[0]).unwrap().world_coord,
+            AnimWorldCoord {
+                x: first_world.0,
+                y: first_world.1,
+                z: 0,
+            }
+        );
+        assert_eq!(
+            sim.anim(ids[1]).unwrap().world_coord,
+            AnimWorldCoord {
+                x: second_world.0,
+                y: second_world.1,
+                z: 0,
+            },
+            "cell 2 scatter must observe cell 1's synchronous Start RNG draw"
+        );
+        assert_eq!(sim.anim(ids[0]).unwrap().runtime.delay_remaining, 0);
+        assert_eq!(
+            sim.anim(ids[1]).unwrap().runtime.delay_remaining,
+            second_delay
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), oracle.logical_state());
+        assert_ne!(
+            (second_world, second_delay),
+            (
+                incorrectly_deferred_second_world,
+                incorrectly_deferred_second_delay
+            ),
+            "deferring Start would assign its RNG draw to cell 2 scatter/delay instead"
+        );
+        assert_ne!(
+            sim.scenario_rng.logical_state(),
+            state_after_first_start,
+            "cell 2 scatter/delay/selection must follow the synchronous Start"
+        );
+
+        let crater_id = rules.smudge_types.find_by_name("CR1").unwrap();
+        assert_eq!(
+            sim.smudge_grid.as_ref().unwrap().cell(10, 20).type_id,
+            Some(crater_id)
+        );
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_id,
+            None,
+            "AnimClass::Start crater removes retail-style ore density 5 before smudge placement"
+        );
+    }
+
+    #[test]
+    fn phase3_building_delay_one_start_smudge_waits_for_zero_transition_once() {
+        let (rules, overlay_registry) = building_start_smudge_rules();
+        const SEED: u64 = 14;
+        let mut sim = Simulation::new();
+        sim.scenario_rng = crate::sim::rng::SimRng::new(SEED);
+        install_building_start_authorities(&mut sim, &overlay_registry, &[(10, 20)]);
+        let mut oracle = crate::sim::rng::SimRng::new(SEED);
+        let world = oracle_building_scatter(
+            &mut oracle,
+            10 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+            20 * LEPTONS_PER_CELL + crate::util::lepton::CELL_CENTER_LEPTON_I32,
+        );
+        assert_eq!(oracle.next_range_u32_inclusive(0, 3), 1);
+        oracle.next_u32(); // raw one-entry list selection
+        let construction_state = oracle.logical_state();
+
+        let ids = sim.spawn_building_destruction_anims(
+            &rules,
+            Some(&overlay_registry),
+            AnimWorldCoord {
+                x: 10 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+                y: 20 * LEPTONS_PER_CELL + BUILDING_RENDER_ORIGIN_LEPTONS,
+                z: 0,
+            },
+            "1x1",
+            &["EXP".to_string()],
+            &[],
+        );
+        let id = ids[0];
+        assert_eq!(
+            sim.anim(id).unwrap().world_coord,
+            AnimWorldCoord {
+                x: world.0,
+                y: world.1,
+                z: 0,
+            }
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), construction_state);
+        assert!(sim.smudge_grid.as_ref().unwrap().iter_occupied().next().is_none());
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_data,
+            5
+        );
+
+        sim.visit_anim_with_overlay_registry(id, &rules, Some(&overlay_registry));
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            construction_state,
+            "constructor first-AI guard must not run Start or consume RNG"
+        );
+        assert!(sim.smudge_grid.as_ref().unwrap().iter_occupied().next().is_none());
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_data,
+            5
+        );
+
+        sim.session.binary_frame = 1;
+        let start_roll = oracle.next_range_u32_inclusive(0, 0x7fff_fffe);
+        assert!(start_roll >= 0x4000_0000, "fixture takes the crater arm");
+        sim.visit_anim_with_overlay_registry(id, &rules, Some(&overlay_registry));
+        assert_eq!(sim.anim(id).unwrap().runtime.delay_remaining, 0);
+        assert_eq!(sim.scenario_rng.logical_state(), oracle.logical_state());
+        let crater_id = rules.smudge_types.find_by_name("CR1").unwrap();
+        assert_eq!(
+            sim.smudge_grid.as_ref().unwrap().cell(10, 20).type_id,
+            Some(crater_id)
+        );
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_id,
+            None
+        );
+
+        let state_after_start = sim.scenario_rng.logical_state();
+        sim.visit_anim_with_overlay_registry(id, &rules, Some(&overlay_registry));
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            state_after_start,
+            "Start must not repeat after the delay transition reaches zero"
+        );
+        assert_eq!(sim.smudge_grid.as_ref().unwrap().iter_occupied().count(), 1);
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(10, 20).overlay_id,
+            None
+        );
+    }
+
+    #[test]
+    fn phase3_building_destruction_walk_is_row_major_scenario_owned_and_scheduler_persistent() {
+        let rules = runtime_rules(
+            "[EXP_A]\nRate=450\nEnd=4\nReport=ExplosionA\n\
+             [EXP_B]\nRate=450\nEnd=4\nReport=ExplosionB\n\
+             [DEST]\nRate=300\nEnd=6\nShadow=yes\nAltPalette=yes\nLayer=ground\n",
+            &[("EXP_A", 4), ("EXP_B", 4), ("DEST", 12)],
+        );
+        let mut sim = Simulation::new();
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        sim.main_rng = crate::sim::rng::SimRng::new(91);
+        let main_before = sim.main_rng.logical_state();
+        let mut expected_rng = sim.scenario_rng.clone();
+        let location = AnimWorldCoord {
+            x: 10 * LEPTONS_PER_CELL + 128,
+            y: 20 * LEPTONS_PER_CELL + 128,
+            z: 731,
+        };
+        let explosions = vec!["EXP_A".to_string(), "EXP_B".to_string()];
+        let destroys = vec!["DEST".to_string()];
+        let mut expected = Vec::new();
+        for (dx, dy) in crate::rules::foundation::foundation_cell_offsets("3x3Refinery") {
+            let center_x = (location.x.wrapping_sub(128) >> 8)
+                .wrapping_add(i32::from(dx))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(128);
+            let center_y = (location.y.wrapping_sub(128) >> 8)
+                .wrapping_add(i32::from(dy))
+                .wrapping_mul(LEPTONS_PER_CELL)
+                .wrapping_add(128);
+            let (x, y) = crate::sim::combat::random_direction_coord(
+                &mut expected_rng,
+                center_x,
+                center_y,
+                BUILDING_DESTRUCTION_SCATTER_RADIUS,
+            );
+            let delay = expected_rng.next_range_u32_inclusive(0, 3) as u16;
+            let index = (expected_rng.next_u32() % explosions.len() as u32) as usize;
+            expected.push((
+                explosions[index].clone(),
+                AnimWorldCoord { x, y, z: 731 },
+                delay,
+            ));
+        }
+        let destroy_index = (expected_rng.next_u32() % destroys.len() as u32) as usize;
+        expected.push((
+            destroys[destroy_index].clone(),
+            AnimWorldCoord {
+                x: location.x - 128,
+                y: location.y - 128,
+                z: 731,
+            },
+            0,
+        ));
+
+        let ids = sim.spawn_building_destruction_anims(
+            &rules,
+            None,
+            location,
+            "3x3Refinery",
+            &explosions,
+            &destroys,
+        );
+
+        assert_eq!(
+            ids.len(),
+            9,
+            "eight holed-foundation cells plus DestroyAnim"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+        assert_eq!(sim.main_rng.logical_state(), main_before);
+        assert_eq!(sim.live_object_order_snapshot(), ids);
+        for (index, (&id, (name, world, delay))) in ids.iter().zip(&expected).enumerate() {
+            let anim = sim.anim(id).expect("scheduler-owned building AnimClass");
+            assert_eq!(sim.interner.resolve(anim.type_id), name);
+            assert_eq!(anim.world_coord, *world);
+            assert_eq!(anim.draw_flags, 0x600);
+            assert_eq!(anim.z_adjust, 0);
+            assert_eq!(anim.runtime.delay_remaining, *delay);
+            assert_eq!(anim.runtime.loop_remaining, 1);
+            assert_eq!(anim.runtime.constructor_reverse, false);
+            assert_eq!(anim.building_explosion_start_smudge, index < 8);
+            assert!(anim.in_logic_vector);
+        }
+        assert!(
+            expected[..8].iter().any(|(_, _, delay)| *delay == 0),
+            "fixture must exercise synchronous constructor-time Middle"
+        );
+        let destroy = sim.anim(*ids.last().expect("DestroyAnim id")).unwrap();
+        let destroy_config = rules.art_registry.anim_runtime_config("DEST").unwrap();
+        assert_eq!(destroy.effective_end, 6, "Shadow halves the SHP body range");
+        assert_eq!(
+            destroy_config.layer,
+            crate::rules::art_data::AnimLayer::Ground
+        );
+        assert!(destroy_config.shadow);
+        assert!(destroy_config.alt_palette);
+
+        let snapshot =
+            crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "building-destruction-anims", 0);
+        let mut restored = crate::sim::snapshot::GameSnapshot::load(&snapshot)
+            .expect("building animation snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("building animation scheduler restore");
+        assert_eq!(restored.live_object_order_snapshot(), ids);
+        for &id in &ids {
+            let before = sim.anim(id).unwrap();
+            let after = restored.anim(id).unwrap();
+            assert_eq!(after.type_id, before.type_id);
+            assert_eq!(after.world_coord, before.world_coord);
+            assert_eq!(after.draw_flags, before.draw_flags);
+            assert_eq!(
+                after.runtime.delay_remaining,
+                before.runtime.delay_remaining
+            );
+            assert_eq!(
+                after.building_explosion_start_smudge,
+                before.building_explosion_start_smudge,
+            );
+        }
+        let restored_hash = restored.state_hash();
+        restored.anim_mut_by_id(ids[0]).unwrap().world_coord.x += 1;
+        assert_ne!(restored.state_hash(), restored_hash);
     }
 
     #[test]
@@ -2338,6 +3012,7 @@ mod tests {
                     reverse: false,
                     use_cell_drawer: false,
                     terrain_attached: false,
+                    building_explosion_start_smudge: false,
                     draw_runtime: AnimDrawRuntime::default(),
                 },
                 AnimWorldCoord { x: 0, y: 0, z: 0 },

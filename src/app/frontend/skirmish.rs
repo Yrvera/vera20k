@@ -639,6 +639,7 @@ mod tests {
                     player_control: None,
                     iq: None,
                     allies: Vec::new(),
+                    base_plan: Default::default(),
                 },
                 HouseDefinition {
                     name: "Americans".to_string(),
@@ -648,6 +649,7 @@ mod tests {
                     player_control: Some(true),
                     iq: None,
                     allies: Vec::new(),
+                    base_plan: Default::default(),
                 },
             ],
         }
@@ -1096,6 +1098,7 @@ mod tests {
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
+                attached_tag_id: None,
             }],
             Some(&rules),
             &BTreeMap::new(),
@@ -1712,6 +1715,7 @@ mod tests {
                 player_control: Some(true),
                 iq: None,
                 allies: Vec::new(),
+                base_plan: Default::default(),
             }],
         };
 

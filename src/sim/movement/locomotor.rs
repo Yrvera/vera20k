@@ -25,10 +25,12 @@
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
+use crate::sim::components::DriveCoord;
 use crate::sim::movement::locomotion::LocomotorSlot;
 use crate::sim::movement::locomotion::piggyback::{
     self, EndGateContext, LocomotorRuntimePayload, StashedLocomotor,
 };
+use crate::sim::movement::slope_transition::SlopeTransitionState;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// Which spatial layer the unit currently occupies.
@@ -153,7 +155,6 @@ pub struct LocomotorState {
     pub piggyback: Option<StashedLocomotor>,
     /// Class-local state of the locomotor currently driving this entity.
     /// Piggyback BEGIN/END transfers this value with the complete runtime.
-    #[serde(default)]
     pub runtime_payload: LocomotorRuntimePayload,
     /// Which spatial layer the unit currently occupies.
     pub layer: MovementLayer,
@@ -187,6 +188,10 @@ pub struct LocomotorState {
     pub jumpjet_accel: SimFixed,
     /// Current speed during jumpjet flight (ramps via accel/decel).
     pub jumpjet_current_speed: SimFixed,
+    /// JumpjetLocomotion-owned stored destination. This is separate from the
+    /// Foot movement order and is raw-written by both native crate callers.
+    #[serde(default)]
+    pub jumpjet_destination: Option<DriveCoord>,
     /// Max lateral deviation in leptons during hover wobble (JumpjetDeviation).
     pub jumpjet_deviation: i32,
     /// Combined crash descent speed: climb + crash (leptons/sec, scaled).
@@ -235,6 +240,12 @@ pub struct LocomotorState {
     #[serde(default)]
     pub hover_throttle: SimFixed,
 
+    /// HoverLocomotion-owned resolved destination. A synchronous crate
+    /// callback may retarget this field; the admitted continuation does not
+    /// reinstall its original candidate.
+    #[serde(default)]
+    pub hover_destination: Option<DriveCoord>,
+
     /// Hover speed *request* — the unramped throttle target, distinct from
     /// `hover_throttle` (the ramped value that lags it).
     ///
@@ -259,7 +270,7 @@ impl LocomotorState {
     /// `flight_level` is the cruise altitude in leptons from `[General] FlightLevel=`
     /// (typically `rules.general.flight_level`). Fly/Rocket locomotors use this
     /// as their target altitude.
-    pub fn from_object_type(obj: &ObjectType, flight_level: i32) -> Self {
+    pub fn from_object_type(obj: &ObjectType, flight_level: i32, binary_frame: u32) -> Self {
         let kind: LocomotorKind = obj.locomotor;
         let sim_one: SimFixed = SimFixed::from_num(1);
 
@@ -305,7 +316,7 @@ impl LocomotorState {
             slot: LocomotorSlot::from_kind(kind),
             powered: true,
             piggyback: None,
-            runtime_payload: LocomotorRuntimePayload::for_kind(kind),
+            runtime_payload: LocomotorRuntimePayload::for_kind(kind, binary_frame),
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -318,6 +329,7 @@ impl LocomotorState {
             jumpjet_speed: jj_speed,
             jumpjet_accel: jj_accel,
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: jj_deviation,
             jumpjet_crash_speed: jj_crash_speed,
             jumpjet_turn_rate: jj_turn_rate,
@@ -330,6 +342,7 @@ impl LocomotorState {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: SIM_ZERO,
             hover_bob_offset: SIM_ZERO,
         }
@@ -362,6 +375,11 @@ impl LocomotorState {
 
     #[cfg(test)]
     pub(crate) fn for_test_kind(kind: LocomotorKind) -> Self {
+        Self::for_test_kind_at_frame(kind, 0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_kind_at_frame(kind: LocomotorKind, binary_frame: u32) -> Self {
         let (layer, speed_multiplier) = match kind {
             LocomotorKind::Fly
             | LocomotorKind::Jumpjet
@@ -376,7 +394,7 @@ impl LocomotorState {
             slot: LocomotorSlot::from_kind(kind),
             powered: true,
             piggyback: None,
-            runtime_payload: LocomotorRuntimePayload::for_kind(kind),
+            runtime_payload: LocomotorRuntimePayload::for_kind(kind, binary_frame),
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -389,6 +407,7 @@ impl LocomotorState {
             jumpjet_speed: SIM_ZERO,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: 0,
             jumpjet_crash_speed: SIM_ZERO,
             jumpjet_turn_rate: 4,
@@ -401,6 +420,7 @@ impl LocomotorState {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: SIM_ZERO,
             hover_bob_offset: SIM_ZERO,
         }
@@ -441,6 +461,24 @@ impl LocomotorState {
         self.kind
     }
 
+    pub(crate) fn active_slope_transition(&self) -> Option<&SlopeTransitionState> {
+        match (self.active_kind(), &self.runtime_payload) {
+            (LocomotorKind::Drive, LocomotorRuntimePayload::Drive(state))
+            | (LocomotorKind::Ship, LocomotorRuntimePayload::Ship(state)) => Some(state),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn active_slope_transition_mut(
+        &mut self,
+    ) -> Option<&mut SlopeTransitionState> {
+        match (self.kind, &mut self.runtime_payload) {
+            (LocomotorKind::Drive, LocomotorRuntimePayload::Drive(state))
+            | (LocomotorKind::Ship, LocomotorRuntimePayload::Ship(state)) => Some(state),
+            _ => None,
+        }
+    }
+
     /// The unit's identity for mission-level decisions: the installed class,
     /// seen through any piggyback that is currently driving it.
     ///
@@ -459,7 +497,7 @@ impl LocomotorState {
     /// Activate Drive over a stashed Teleport locomotor — the Chrono Miner
     /// bridge model: the unit stays a Teleport unit, Drive temporarily drives it
     /// for destinations that need ground movement.
-    pub fn begin_drive_piggyback_for_teleporter(&mut self) -> bool {
+    pub fn begin_drive_piggyback_for_teleporter(&mut self, binary_frame: u32) -> bool {
         if self.effective_kind() != LocomotorKind::Teleport {
             return false;
         }
@@ -468,7 +506,11 @@ impl LocomotorState {
             // ownership; it never reconstructs a missing Teleport COM object.
             return self.piggyback.is_some();
         }
-        self.begin_piggyback(LocomotorKind::Drive, MovementLayer::Ground)
+        self.begin_piggyback(
+            LocomotorKind::Drive,
+            MovementLayer::Ground,
+            binary_frame,
+        )
     }
 
     /// Return from an active piggyback to the stashed locomotor.
@@ -499,8 +541,13 @@ impl LocomotorState {
     ///
     /// Refuses, changing nothing, if a stash is already present — the native
     /// BEGIN returns `E_FAIL` in exactly that case.
-    pub fn begin_piggyback(&mut self, kind: LocomotorKind, layer: MovementLayer) -> bool {
-        piggyback::begin(self, kind, layer) == piggyback::BeginOutcome::Installed
+    pub fn begin_piggyback(
+        &mut self,
+        kind: LocomotorKind,
+        layer: MovementLayer,
+        binary_frame: u32,
+    ) -> bool {
+        piggyback::begin(self, kind, layer, binary_frame) == piggyback::BeginOutcome::Installed
     }
 
     /// End the active piggyback, restoring the stashed locomotor.

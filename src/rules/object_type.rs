@@ -32,6 +32,7 @@ use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::terrain_rules::LandType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 
 /// Which type registry an object belongs to.
 ///
@@ -39,16 +40,7 @@ use crate::util::fixed_math::{SimFixed, sim_from_f32};
 /// which game behaviors apply (e.g., only buildings have power, only
 /// infantry can garrison).
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub enum ObjectCategory {
     Infantry,
@@ -196,18 +188,25 @@ pub struct ObjectType {
     pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
-    /// `Explosion=` — the type's OWN death animations, one chosen at random.
+    /// Signed `TechnoTypeClass::Soylent=` refund override. Nonzero values take
+    /// the native dedicated Grinder branch and bypass both FactoryPlant and
+    /// global RefundPercent multipliers.
+    pub soylent: i32,
+    /// `Explosion=` — the type's own death-animation vector.
     ///
     /// gamemd-derived: `UnitClass::Death_Explosion @ 0x00738680` picks
     /// `Explosion[Random__Next() % len]` at the object's coordinate, after the
-    /// killing warhead's own `AnimList=` anim. 487 stock sections author it.
+    /// killing warhead's own `AnimList=` anim. `BuildingClass::DestructionEffects
+    /// @ 0x004415F0` instead selects once per ordered foundation cell after
+    /// scatter and a random constructor delay. 487 stock sections author it.
     pub explosion_anims: Vec<String>,
     /// `DestroyAnim=` — a second list, drawn from after the explosion.
     ///
-    /// gamemd-derived: same function; the vector is `TechnoTypeClass+0x748`
+    /// gamemd-derived: the vector is `TechnoTypeClass+0x748`
     /// (items `+0x74C`, count `+0x758`, key push at `0x00713A97`) and native
-    /// takes `Random__Next() % count` from it, exactly as it does for
-    /// `Explosion=` — one draw each, explosion first.
+    /// Unit/Aircraft death takes `Random__Next() % count` after `Explosion=`.
+    /// Building destruction takes one raw Scenario draw after its intervening
+    /// destruction branches and constructs at `GetRenderCoords`.
     pub destroy_anims: Vec<String>,
     /// `Trainable=` — whether this object can gain veterancy from its kills.
     ///
@@ -215,6 +214,14 @@ pub struct ObjectType {
     /// experience award entirely for an untrainable killer. 82 stock sections
     /// set `Trainable=no`. Default true.
     pub trainable: bool,
+    /// `CrateGoodie=yes` admits this UnitType to random Unit-crate selection.
+    pub crate_goodie: bool,
+    /// `CarriesCrate=yes` participates in the Truck/Train death producer gate.
+    pub carries_crate: bool,
+    /// `CrateBeneath=yes` drops a specific crate after fatal Building UnInit.
+    pub crate_beneath: bool,
+    /// `CrateBeneathIsMoney=yes` passes data zero instead of random sentinel 20.
+    pub crate_beneath_is_money: bool,
     /// Hit points (health). 0 = invincible or not applicable.
     pub strength: i32,
     /// `DontScore=` — this object's destruction is invisible to the end-of-match
@@ -231,6 +238,11 @@ pub struct ObjectType {
     pub armor: String,
     /// Movement speed (0 = immobile, e.g., buildings).
     pub speed: i32,
+    /// Native TechnoType speed dword used by FootClass::GetCurrentSpeed.
+    /// `Speed=` is clamped to 0..100, scaled by `(raw << 8) / 100`, and
+    /// capped at 255; this is intentionally distinct from Rust's lepton-rate
+    /// movement adapter.
+    pub native_speed: i32,
     /// `WalkRate=` — signed native-frame divisor for Foot body animation.
     /// TechnoTypeClass owns this value; art.ini owns only the frame layout.
     pub walk_rate: i32,
@@ -245,13 +257,23 @@ pub struct ObjectType {
     /// Fraction of max speed gained per tick during acceleration (AccelerationFactor=).
     /// Default 0.03. At 15 fps, reaches max speed in ~2 seconds.
     pub accel_factor: SimFixed,
+    /// Native Drive/Ship qword. Constructor 0.03 is true binary64; an authored
+    /// override passes through ReadDouble's f32-widening boundary.
+    pub accel_factor_native: NativeF64Bits,
     /// Fraction of max speed lost per tick during braking (DeaccelerationFactor=).
     /// Default 0.02. Applied when within slowdown_distance of destination.
     pub decel_factor: SimFixed,
+    /// Native Drive/Ship qword. Constructor 0.002 is true binary64; an authored
+    /// override passes through ReadDouble's f32-widening boundary.
+    pub decel_factor_native: NativeF64Bits,
     /// Whether Drive/Ship locomotors ramp toward target speed (`Accelerates=`).
     /// Defaults to true; `Accelerates=false` is handled by locomotor speed
     /// fraction ownership, not by mutating raw `Speed=`.
     pub accelerates: bool,
+    /// UnitTypeClass `Passive +0xE0C`. Accelerating Drive/Ship locomotors skip
+    /// every current-fraction write while this byte is set. Constructor false;
+    /// installed retail authors no override.
+    pub passive: bool,
     /// Lepton distance from destination at which braking begins (SlowdownDistance=).
     /// Default 512 (~2 cells). Original engine default is 500.
     pub slowdown_distance: i32,
@@ -270,6 +292,12 @@ pub struct ObjectType {
     /// Countries explicitly forbidden from building this (ForbiddenHouses= in rules.ini).
     /// Inverse of Owner — if the player's country is in this list, they cannot build.
     pub forbidden_houses: Vec<String>,
+    /// Signed `TechnoTypeClass+0x6D0` side filter used only by native AI base
+    /// planning selectors. The constructor seed is `-1` (all sides).
+    pub ai_base_planning_side: i32,
+    /// Native `BuildingTypeClass+0x1705` AI plan-generation eligibility bit.
+    /// The BuildingType constructor clears it and `AIBuildThis=` may set it.
+    pub ai_build_this: bool,
     /// Whether this type may appear in multiplayer starting-unit generation.
     pub allowed_to_start_in_multiplayer: bool,
     /// Building prerequisites required before this can be built.
@@ -301,6 +329,14 @@ pub struct ObjectType {
     /// Art.ini image reference. Defaults to the object's ID if not specified.
     /// Used to look up sprite/voxel filenames in art.ini.
     pub image: String,
+    /// Native `TechnoTypeClass+0x60C`, parsed from `MindControlRingOffset=`.
+    /// CaptureUnit adds this signed lepton offset to non-building victims'
+    /// object-coordinate Z before constructing the attached control ring.
+    pub mind_control_ring_offset: i32,
+    /// Per-type `MindClearedSound=` override (`TechnoTypeClass+0x5B0`). An
+    /// absent/empty/native `none` value keeps the invalid Voc sentinel and
+    /// makes FreeUnit use the global AudioVisual fallback.
+    pub mind_cleared_sound: Option<String>,
     /// Power generation (positive) or consumption (negative). Buildings only.
     pub power: i32,
     /// Extra power bonus per occupant for `InfantryAbsorb`/`UnitAbsorb`
@@ -435,6 +471,10 @@ pub struct ObjectType {
     /// separate `VeteranArmor` divide.
     pub veteran_stronger: bool,
     pub elite_stronger: bool,
+    /// `FASTER` in the independently parsed rank ability lists. Elite runtime
+    /// inherits the veteran byte and additionally consults the elite byte.
+    pub veteran_faster: bool,
+    pub elite_faster: bool,
     /// `SCATTER` in the rank-selected ability list lets player-owned Infantry
     /// accept an unforced direct Scatter call even when PlayerScatter is off.
     pub veteran_scatter: bool,
@@ -657,14 +697,30 @@ pub struct ObjectType {
     /// What this unit deploys into (e.g., AMCV DeploysInto=GACNST).
     /// Parsed from rules.ini `DeploysInto=`. Used for MCV→ConYard and similar transforms.
     pub deploys_into: Option<String>,
-    /// What this building undeploys into (e.g., GACNST UndeploysInto=AMCV).
-    /// Parsed from rules.ini `UndeploysInto=`. Used for ConYard→MCV sell-back.
+    /// Resolved non-null `UndeploysInto=` UnitType identity (e.g. GACNST→AMCV).
+    /// `TechnoTypeClass__ReadINI @ 0x00712170`, block
+    /// `0x0071329D..0x007132E4`, calls
+    /// `UnitTypeClass__FindOrAllocate @ 0x007480D0` and stores its pointer at
+    /// `BuildingType+0x408`; native `none`/`<none>` therefore remain `None`.
     pub undeploys_into: Option<String>,
     /// Raw 8-bit facing required before a unit can deploy into this building type.
     /// Parsed from building-side `DeployFacing=` as INI value << 5; default is 0x80.
     pub deploy_facing: u8,
     /// Whether this building is a construction yard. Enables ConYard-only MCV repack gates.
     pub construction_yard: bool,
+    /// Immutable membership in the resolved `[AI] BuildConst=` BuildingType
+    /// pointer vector (`RulesClass__ReadAI @ 0x00672AE0`, binding
+    /// `0x00672B14..0x00672C01`). `RuleSet` stamps this after all type
+    /// registries exist.
+    pub build_const_eligible: bool,
+    /// Native BuildingType registry index used by ordered House BasePlan nodes.
+    /// Non-building types retain `-1`.
+    pub base_plan_type_index: i32,
+    /// BuildingType `IsBaseDefense=` immutable lifecycle input at
+    /// `BuildingType+0x1706`. The BuildingType constructor store at
+    /// `0x0045E225` defaults it false; reader block
+    /// `0x00460FFC..0x00461010` binds it.
+    pub is_base_defense: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.
     /// Default: false for all types. Parsed from `Crushable=` in rules.ini.
@@ -710,6 +766,14 @@ pub struct ObjectType {
     /// None for non-factory buildings/units. Data-driven replacement for
     /// hardcoded building-name checks in production queue logic.
     pub factory: Option<FactoryType>,
+    /// `FactoryPlant=yes` contributes the five category cost multipliers to
+    /// its live owner's accumulated f32 cost slots.
+    pub factory_plant: bool,
+    pub infantry_cost_bonus: NativeF32Bits,
+    pub units_cost_bonus: NativeF32Bits,
+    pub aircraft_cost_bonus: NativeF32Bits,
+    pub buildings_cost_bonus: NativeF32Bits,
+    pub defenses_cost_bonus: NativeF32Bits,
     /// Native BuildingType `WeaponsFactory=` classification used by Unit
     /// ReadyToCommence. Independent from `Factory=` and `Naval=`.
     pub weapons_factory: bool,
@@ -784,6 +848,11 @@ pub struct ObjectType {
     /// Parsed from `OpenTopped=yes` in rules.ini.
     pub open_topped: bool,
 
+    /// UnitTypeClass `+0xE13`, parsed from `IsSimpleDeployer=`. CaptureUnit's
+    /// shared clear-order continuation skips a Unit on raw mission `0x10`
+    /// only when this exact byte is set.
+    pub is_simple_deployer: bool,
+
     /// Whether this transport uses the Gunner system (IFV weapon swap).
     /// Parsed from `Gunner=yes` in rules.ini. When a passenger enters, the
     /// transport's active weapon changes based on the passenger's IFVMode.
@@ -851,6 +920,11 @@ pub struct ObjectType {
     /// Whether this building absorbs vehicles.
     /// Parsed from `UnitAbsorb=yes` in rules.ini.
     pub unit_absorb: bool,
+
+    /// BuildingTypeClass `Grinding=` identity used by the AI capture-fate
+    /// Grinder search. This is distinct from the absorb flags used by the
+    /// Bio Reactor vector.
+    pub grinding: bool,
 
     /// Whether this techno type can enter a Tank Bunker.
     /// Parsed from `Bunkerable=` in rules.ini. UnitTypeClass entries default
@@ -1093,6 +1167,21 @@ fn native_minutes_to_ticks(value: f32) -> u32 {
     }
 }
 
+/// Convert authored `Speed=` to the exact TechnoType dword consumed by native
+/// Foot movement. This is a shared authority for every category; callers must
+/// not reconstruct it from leptons-per-second.
+pub const fn native_scaled_speed(raw_speed: i32) -> i32 {
+    let clamped = if raw_speed < 0 {
+        0
+    } else if raw_speed > 100 {
+        100
+    } else {
+        raw_speed
+    };
+    let scaled = (clamped << 8) / 100;
+    if scaled > 255 { 255 } else { scaled }
+}
+
 impl ObjectType {
     /// BuildingType virtual used by the Building receive-damage prelude and
     /// the native base-reservation writer.
@@ -1127,6 +1216,22 @@ impl ObjectType {
             Some(FactoryType::InfantryType | FactoryType::UnitType)
         ) || self.unit_repair
             || self.cloning
+    }
+
+    /// FactoryPlant f32 slot selected by
+    /// `HouseClass::CalculateCostMultipliers @ 0x0050BF60` for a refunded
+    /// TechnoType. The defense split is the native Unit+SpeedType::Float leaf;
+    /// Buildings always use the ordinary building slot.
+    pub(crate) fn factory_cost_bonus_for(&self, refunded: &ObjectType) -> NativeF32Bits {
+        match refunded.category {
+            ObjectCategory::Infantry => self.infantry_cost_bonus,
+            ObjectCategory::Vehicle if refunded.speed_type == SpeedType::Float => {
+                self.defenses_cost_bonus
+            }
+            ObjectCategory::Vehicle => self.units_cost_bonus,
+            ObjectCategory::Aircraft => self.aircraft_cost_bonus,
+            ObjectCategory::Building => self.buildings_cost_bonus,
+        }
     }
 
     /// Parse an ObjectType from a rules.ini section.
@@ -1186,6 +1291,7 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
+            soylent: section.get_i32("Soylent").unwrap_or(0),
             explosion_anims: section
                 .get_list("Explosion")
                 .unwrap_or_default()
@@ -1201,11 +1307,16 @@ impl ObjectType {
                 .map(|entry| entry.to_string())
                 .collect(),
             trainable: section.get_bool("Trainable").unwrap_or(true),
+            crate_goodie: section.get_bool("CrateGoodie").unwrap_or(false),
+            carries_crate: section.get_bool("CarriesCrate").unwrap_or(false),
+            crate_beneath: section.get_bool("CrateBeneath").unwrap_or(false),
+            crate_beneath_is_money: section.get_bool("CrateBeneathIsMoney").unwrap_or(false),
             strength: section.get_i32("Strength").unwrap_or(0),
             dont_score: section.get_bool("DontScore").unwrap_or(false),
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
+            native_speed: native_scaled_speed(section.get_i32("Speed").unwrap_or(0)),
             // TechnoTypeClass ctor/read contract: raw signed ints, with no
             // clamp or conversion. A zero WalkRate is invalid content natively
             // (the live consumer executes IDIV without a zero guard).
@@ -1219,11 +1330,24 @@ impl ObjectType {
                 .get_f32("AccelerationFactor")
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.03")),
+            accel_factor_native: NativeF64Bits::from_bits(
+                section
+                    .get_f64("AccelerationFactor")
+                    .unwrap_or(0.03_f64)
+                    .to_bits(),
+            ),
             decel_factor: section
                 .get_f32("DeaccelerationFactor")
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.002")),
+            decel_factor_native: NativeF64Bits::from_bits(
+                section
+                    .get_f64("DeaccelerationFactor")
+                    .unwrap_or(0.002_f64)
+                    .to_bits(),
+            ),
             accelerates: section.get_bool("Accelerates").unwrap_or(true),
+            passive: section.get_bool("Passive").unwrap_or(false),
             slowdown_distance: section.get_i32("SlowdownDistance").unwrap_or(500),
             sight: section.get_i32("Sight").unwrap_or(0),
             // TechnoTypeClass ctor @ gamemd.exe 0x00711082 initializes
@@ -1236,6 +1360,14 @@ impl ObjectType {
             owner,
             required_houses,
             forbidden_houses,
+            // gamemd-derived: `TechnoTypeClass__Constructor @ 0x00710FF0`
+            // seeds +0x6D0 to -1; `TechnoTypeClass::ReadINI` around 0x007149FB
+            // applies the signed `AIBasePlanningSide=` override.
+            ai_base_planning_side: section.get_i32("AIBasePlanningSide").unwrap_or(-1),
+            // gamemd-derived: `BuildingTypeClass__Constructor` clears
+            // `AIBuildThis` at 0x0045E21F; `BuildingTypeClass__ReadINI`
+            // 0x00460FE2..0x00460FF6 binds `AIBuildThis=`.
+            ai_build_this: section.get_bool("AIBuildThis").unwrap_or(false),
             allowed_to_start_in_multiplayer: section
                 .get_bool("AllowedToStartInMultiplayer")
                 .unwrap_or(true),
@@ -1256,6 +1388,14 @@ impl ObjectType {
             elite_primary: section.get("ElitePrimary").map(|s| s.to_string()),
             elite_secondary: section.get("EliteSecondary").map(|s| s.to_string()),
             image: section.get("Image").unwrap_or(id).to_string(),
+            mind_control_ring_offset: section.get_i32("MindControlRingOffset").unwrap_or(140),
+            mind_cleared_sound: section
+                .get("MindClearedSound")
+                .map(str::trim)
+                .filter(|sound| {
+                    !sound.is_empty() && !crate::rules::ini_parser::is_native_none_type_name(sound)
+                })
+                .map(str::to_string),
             power: section.get_i32("Power").unwrap_or(0),
             extra_power: section.get_i32("ExtraPower").unwrap_or(0),
             // The original resolves Foundation= through a fixed name table.
@@ -1319,6 +1459,8 @@ impl ObjectType {
             elite_explodes: ability_list_has(section.get_list("EliteAbilities"), "EXPLODES"),
             veteran_stronger: ability_list_has(section.get_list("VeteranAbilities"), "STRONGER"),
             elite_stronger: ability_list_has(section.get_list("EliteAbilities"), "STRONGER"),
+            veteran_faster: ability_list_has(section.get_list("VeteranAbilities"), "FASTER"),
+            elite_faster: ability_list_has(section.get_list("EliteAbilities"), "FASTER"),
             veteran_scatter: ability_list_has(section.get_list("VeteranAbilities"), "SCATTER"),
             elite_scatter: ability_list_has(section.get_list("EliteAbilities"), "SCATTER"),
             veteran_cloak: ability_list_has(section.get_list("VeteranAbilities"), "CLOAK"),
@@ -1474,13 +1616,49 @@ impl ObjectType {
             immune_to_poison: section.get_bool("ImmuneToPoison").unwrap_or(false),
 
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
-            undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),
+            undeploys_into: section
+                .get("UndeploysInto")
+                .filter(|target| !crate::rules::ini_parser::is_native_none_type_name(target))
+                .map(str::to_string),
             deploy_facing: section
                 .get_i32("DeployFacing")
                 .map(|v| (v.clamp(0, 7) as u8) << 5)
                 .unwrap_or(0x80),
             construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
+            build_const_eligible: false,
+            base_plan_type_index: -1,
+            // BuildingTypeClass__ReadINI 0x00460FFC..0x00461010 writes
+            // `IsBaseDefense=` to BuildingType+0x1706; constructor default false.
+            is_base_defense: section.get_bool("IsBaseDefense").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
+            factory_plant: section.get_bool("FactoryPlant").unwrap_or(false),
+            infantry_cost_bonus: NativeF32Bits::from_bits(
+                section
+                    .get_f32("InfantryCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
+            ),
+            units_cost_bonus: NativeF32Bits::from_bits(
+                section.get_f32("UnitsCostBonus").unwrap_or(1.0).to_bits(),
+            ),
+            aircraft_cost_bonus: NativeF32Bits::from_bits(
+                section
+                    .get_f32("AircraftCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
+            ),
+            buildings_cost_bonus: NativeF32Bits::from_bits(
+                section
+                    .get_f32("BuildingsCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
+            ),
+            defenses_cost_bonus: NativeF32Bits::from_bits(
+                section
+                    .get_f32("DefensesCostBonus")
+                    .unwrap_or(1.0)
+                    .to_bits(),
+            ),
             weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),
             exit_coord: parse_exit_coord(section.get("ExitCoord")),
@@ -1507,6 +1685,7 @@ impl ObjectType {
                 })
                 .max(0) as u32,
             open_topped: section.get_bool("OpenTopped").unwrap_or(false),
+            is_simple_deployer: section.get_bool("IsSimpleDeployer").unwrap_or(false),
             gunner: section.get_bool("Gunner").unwrap_or(false),
             ifv_mode: section.get_i32("IFVMode").unwrap_or(0).max(0) as u32,
             open_transport_weapon: section.get_i32("OpenTransportWeapon").unwrap_or(-1),
@@ -1535,6 +1714,7 @@ impl ObjectType {
                 .unwrap_or_default(),
             infantry_absorb: section.get_bool("InfantryAbsorb").unwrap_or(false),
             unit_absorb: section.get_bool("UnitAbsorb").unwrap_or(false),
+            grinding: section.get_bool("Grinding").unwrap_or(false),
             bunkerable: section
                 .get_bool("Bunkerable")
                 .unwrap_or(category == ObjectCategory::Vehicle),
@@ -1674,9 +1854,7 @@ impl ObjectType {
             cloakable: section.get_bool("Cloakable").unwrap_or(false),
             cloaking_speed: section.get_i32("CloakingSpeed").unwrap_or(1),
             cloak_stop: section.get_bool("CloakStop").unwrap_or(false),
-            cloak_radius_in_cells: section
-                .get_i32("CloakRadiusInCells")
-                .unwrap_or(20) as i8,
+            cloak_radius_in_cells: section.get_i32("CloakRadiusInCells").unwrap_or(20) as i8,
             cloak_generator: section.get_bool("CloakGenerator").unwrap_or(false),
         }
     }
@@ -2169,6 +2347,19 @@ mod tests {
     }
 
     #[test]
+    fn ai_build_this_defaults_false_and_reads_native_boolean() {
+        let ini = IniFile::from_str(
+            "[DEFAULT]\nFixtureOnly=1\n[YES]\nAIBuildThis=yes\n[NO]\nAIBuildThis=no\n",
+        );
+        let parse = |id| {
+            ObjectType::from_ini_section(id, ini.section(id).unwrap(), ObjectCategory::Building)
+        };
+        assert!(!parse("DEFAULT").ai_build_this);
+        assert!(parse("YES").ai_build_this);
+        assert!(!parse("NO").ai_build_this);
+    }
+
+    #[test]
     fn test_parse_slave_miner_fields() {
         let ini: IniFile = IniFile::from_str(
             "[SMIN]\nEnslaves=SLAV\nSlavesNumber=5\nSlaveRegenRate=500\n\
@@ -2487,6 +2678,54 @@ mod tests {
     }
 
     #[test]
+    fn capture_fate_refund_type_inputs_parse_as_native_widths() {
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[FP]\nCost=1000\nSoylent=-17\nFactoryPlant=yes\nInfantryCostBonus=.9\nUnitsCostBonus=.75\nAircraftCostBonus=1.25\nBuildingsCostBonus=.8\nDefensesCostBonus=.6\n[INF]\nName=Infantry\n[UNIT]\nSpeedType=Track\n[DEFENSE]\nSpeedType=Float\n[AIR]\nName=Aircraft\n[BUILDING]\nName=Building\n",
+        );
+        let object = ObjectType::from_ini_section(
+            "FP",
+            ini.section("FP").expect("fixture section"),
+            ObjectCategory::Building,
+        );
+
+        assert_eq!(object.soylent, -17);
+        assert!(object.factory_plant);
+        assert_eq!(object.infantry_cost_bonus.bits(), 0.9_f32.to_bits());
+        assert_eq!(object.units_cost_bonus.bits(), 0.75_f32.to_bits());
+        assert_eq!(object.aircraft_cost_bonus.bits(), 1.25_f32.to_bits());
+        assert_eq!(object.buildings_cost_bonus.bits(), 0.8_f32.to_bits());
+        assert_eq!(object.defenses_cost_bonus.bits(), 0.6_f32.to_bits());
+        for (id, category, expected) in [
+            ("INF", ObjectCategory::Infantry, 0.9_f32),
+            ("UNIT", ObjectCategory::Vehicle, 0.75_f32),
+            ("DEFENSE", ObjectCategory::Vehicle, 0.6_f32),
+            ("AIR", ObjectCategory::Aircraft, 1.25_f32),
+            ("BUILDING", ObjectCategory::Building, 0.8_f32),
+        ] {
+            let refunded = ObjectType::from_ini_section(
+                id,
+                ini.section(id).expect("refunded fixture section"),
+                category,
+            );
+            assert_eq!(
+                object.factory_cost_bonus_for(&refunded).bits(),
+                expected.to_bits(),
+                "native FactoryPlant cost slot for {id}",
+            );
+        }
+
+        let missing = crate::rules::ini_parser::IniFile::from_str("[DEFAULT]\nName=Default\n");
+        let object = ObjectType::from_ini_section(
+            "DEFAULT",
+            missing.section("DEFAULT").expect("fixture section"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(object.soylent, 0);
+        assert!(!object.factory_plant);
+        assert_eq!(object.units_cost_bonus, NativeF32Bits::ONE);
+    }
+
+    #[test]
     fn test_size_defaults_by_category() {
         // Infantry defaults to Size=1
         let ini: IniFile = IniFile::from_str("[INF]\nFixtureOnly=1\n");
@@ -2625,16 +2864,10 @@ mod tests {
             "[A]\nInsignificant=yes\nRadarVisible=no\n\
              [B]\nInsignificant=no\nRadarVisible=yes\n",
         );
-        let a = ObjectType::from_ini_section(
-            "A",
-            ini.section("A").unwrap(),
-            ObjectCategory::Vehicle,
-        );
-        let b = ObjectType::from_ini_section(
-            "B",
-            ini.section("B").unwrap(),
-            ObjectCategory::Vehicle,
-        );
+        let a =
+            ObjectType::from_ini_section("A", ini.section("A").unwrap(), ObjectCategory::Vehicle);
+        let b =
+            ObjectType::from_ini_section("B", ini.section("B").unwrap(), ObjectCategory::Vehicle);
         assert!(a.insignificant);
         assert!(!a.radar_visible);
         assert!(!b.insignificant);
@@ -2937,12 +3170,7 @@ mod tests {
              [RANKED]\nVeteranAbilities=CLOAK\nEliteAbilities=STRONGER,CLOAK\n\
              [DEFAULTS]\nFixtureOnly=yes\n",
         );
-        for (id, speed, sight) in [
-            ("DLPH", 1, 8),
-            ("SUB", 1, 7),
-            ("SQD", 5, 8),
-            ("BSUB", 1, 8),
-        ] {
+        for (id, speed, sight) in [("DLPH", 1, 8), ("SUB", 1, 7), ("SQD", 5, 8), ("BSUB", 1, 8)] {
             let object = ObjectType::from_ini_section(
                 id,
                 ini.section(id).expect("stock-shaped cloak section"),
@@ -3142,5 +3370,16 @@ mod tests {
             ObjectCategory::Vehicle,
         );
         assert_eq!(mtnk.weight, SimFixed::lit("2.0"));
+    }
+
+    #[test]
+    fn active_native_speed_scaling_clamps_before_integer_scale() {
+        assert_eq!(native_scaled_speed(-2), 0);
+        assert_eq!(native_scaled_speed(-1), 0);
+        assert_eq!(native_scaled_speed(4), 10);
+        assert_eq!(native_scaled_speed(7), 17);
+        assert_eq!(native_scaled_speed(99), 253);
+        assert_eq!(native_scaled_speed(100), 255);
+        assert_eq!(native_scaled_speed(101), 255);
     }
 }

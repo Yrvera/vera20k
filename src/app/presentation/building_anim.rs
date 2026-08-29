@@ -203,6 +203,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             GameSoundEvent::BuildingReady { .. }
             | GameSoundEvent::UnitReady { .. }
             | GameSoundEvent::CannotDeployHere { .. }
+            | GameSoundEvent::CrateUpgradeEva { .. }
             | GameSoundEvent::OutcomeEva { .. } => {
                 sfx.play_standard_eva_sound(
                     event.sound_id(),

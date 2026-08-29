@@ -1357,6 +1357,12 @@ impl BatchRenderer {
         &self.camera_bind_group_layout
     }
 
+    /// Access the ordinary RGBA sprite texture layout for encoded destination
+    /// compositors that consume the same atlas pages as the batch renderer.
+    pub(crate) fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.texture_bind_group_layout
+    }
+
     /// Access the UI camera bind group (zoom=1.0) for screen-fixed elements.
     pub fn ui_camera_bind_group(&self) -> &wgpu::BindGroup {
         &self.ui_camera_bind_group

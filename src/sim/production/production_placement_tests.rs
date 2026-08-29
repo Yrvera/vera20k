@@ -270,6 +270,17 @@ fn resolved_clear_grid_with_override(
         amphibious: Some(100),
         float_beach: Some(100),
         hover: Some(100),
+        native_row_present: true,
+        native_speed_bits: [
+            crate::util::native_x87::NativeF32Bits::ONE,
+            crate::util::native_x87::NativeF32Bits::ONE,
+            crate::util::native_x87::NativeF32Bits::ONE,
+            crate::util::native_x87::NativeF32Bits::ONE,
+            crate::util::native_x87::NativeF32Bits::ONE,
+            crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
+            crate::util::native_x87::NativeF32Bits::ONE,
+            crate::util::native_x87::NativeF32Bits::ONE,
+        ],
     };
     let mut cells = Vec::with_capacity((width as usize) * (height as usize));
     for ry in 0..height {

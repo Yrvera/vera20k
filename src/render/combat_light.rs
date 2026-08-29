@@ -21,6 +21,7 @@ use crate::render::batch::CameraUniform;
 use crate::render::gpu::GpuContext;
 
 const SHADER: &str = include_str!("combat_light.wgsl");
+const ANIM_SHADOW_SHADER: &str = include_str!("anim_shadow.wgsl");
 const MASK_WIDTH: u32 = 256;
 const MASK_HEIGHT: u32 = 128;
 const MASK_LAYER_COUNT: u32 = 64;
@@ -49,6 +50,9 @@ struct CompositionTargets {
 /// App-owned renderer for the native persistent combat-light vector.
 pub(crate) struct CombatLightRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// Exact encoded-destination compositor for ordinary AnimClass
+    /// `Shadow=yes` draws (native flags 0x601).
+    anim_shadow_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     mask_bind_group: wgpu::BindGroup,
@@ -62,7 +66,10 @@ pub(crate) struct CombatLightRenderer {
 }
 
 impl CombatLightRenderer {
-    pub(crate) fn new(gpu: &GpuContext) -> Self {
+    pub(crate) fn new(
+        gpu: &GpuContext,
+        batch: &crate::render::batch::BatchRenderer,
+    ) -> Self {
         let encoded_format = gpu.surface_format.remove_srgb_suffix();
         let camera_layout = gpu
             .device
@@ -191,6 +198,68 @@ impl CombatLightRenderer {
                 cache: None,
             });
 
+        let anim_shadow_shader =
+            gpu.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("AnimClass Exact Encoded Shadow Shader"),
+                    source: wgpu::ShaderSource::Wgsl(ANIM_SHADOW_SHADER.into()),
+                });
+        let anim_shadow_layout =
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("AnimClass Exact Encoded Shadow Pipeline Layout"),
+                    bind_group_layouts: &[
+                        batch.camera_bind_group_layout(),
+                        batch.texture_bind_group_layout(),
+                        &scene_bind_group_layout,
+                    ],
+                    push_constant_ranges: &[],
+                });
+        let anim_shadow_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2,
+            1 => Float32x2,
+            2 => Float32x2,
+            3 => Float32x2,
+            4 => Float32
+        ];
+        let anim_shadow_pipeline =
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("AnimClass Exact Encoded Shadow Pipeline"),
+                    layout: Some(&anim_shadow_layout),
+                    vertex: wgpu::VertexState {
+                        module: &anim_shadow_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<
+                                crate::render::batch::SpriteInstance,
+                            >() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &anim_shadow_attributes,
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &anim_shadow_shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            // No sRGB conversion is allowed here: 0x601 edits
+                            // the stored encoded destination, not linear light.
+                            format: encoded_format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    // Native shadow flags 0x601 Z-test at the depth computed
+                    // by AnimClass::DrawIt but never write the Z surface.
+                    depth_stencil: Some(anim_shadow_depth_stencil_state()),
+                    multisample: Default::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
         let instance_buffer = allocate_instance_buffer(gpu, INITIAL_CAPACITY);
         let targets = create_composition_targets(
             gpu,
@@ -202,6 +271,7 @@ impl CombatLightRenderer {
         );
         Self {
             pipeline,
+            anim_shadow_pipeline,
             camera_buffer,
             camera_bind_group,
             mask_bind_group,
@@ -275,6 +345,79 @@ impl CombatLightRenderer {
     /// it at the UI/cursor boundary before the cursor pass modifies it.
     pub(crate) fn composition_texture(&self) -> &wgpu::Texture {
         &self.targets.texture
+    }
+
+    /// Apply a contiguous native-ordered run of AnimClass shadow stencils.
+    ///
+    /// A fresh destination snapshot precedes *every* instance. That is
+    /// load-bearing for overlapping DestroyAnim shadows: two nonzero stencils
+    /// halve the already-halved encoded destination rather than both reading
+    /// the same pre-run colour.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_anim_shadow_run(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        depth_view: &wgpu::TextureView,
+        batch: &crate::render::batch::BatchRenderer,
+        stencil: &crate::render::batch::BatchTexture,
+        buffer: &wgpu::Buffer,
+        start: u32,
+        count: u32,
+        tactical: [u32; 4],
+    ) {
+        let extent = wgpu::Extent3d {
+            width: self.targets.width,
+            height: self.targets.height,
+            depth_or_array_layers: 1,
+        };
+        for index in anim_shadow_instance_indices(start, count) {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.targets.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.targets.scratch_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                extent,
+            );
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("AnimClass Native 0x601 Encoded Shadow Edit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.targets.encoded_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        // The pipeline disables depth writes, and Store keeps
+                        // the loaded tactical surface intact for later draws.
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.anim_shadow_pipeline);
+            pass.set_bind_group(0, batch.camera_bind_group(), &[]);
+            pass.set_bind_group(1, &stencil.bind_group, &[]);
+            pass.set_bind_group(2, &self.targets.scene_bind_group, &[]);
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.set_scissor_rect(tactical[0], tactical[1], tactical[2], tactical[3]);
+            pass.draw(0..6, index..index + 1);
+        }
     }
 
     /// Apply the vector after tactical objects and before later tactical
@@ -353,6 +496,20 @@ impl CombatLightRenderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+}
+
+fn anim_shadow_instance_indices(start: u32, count: u32) -> std::ops::Range<u32> {
+    start..start.saturating_add(count)
+}
+
+fn anim_shadow_depth_stencil_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: false,
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
     }
 }
 
@@ -662,5 +819,153 @@ mod tests {
         assert_eq!(native_channel(160, 64, 6, 2), 160);
         assert_eq!(native_channel(160, 64, 6, 4), 160);
         assert_eq!(native_channel(160, 64, 6, 8), 200);
+    }
+
+    #[test]
+    fn phase3_anim_shadow_pipeline_halves_packed_rgb565_destination_per_nonzero_stencil() {
+        wgpu::naga::front::wgsl::parse_str(ANIM_SHADOW_SHADER)
+            .expect("the production encoded-shadow WGSL must validate");
+
+        fn pack_rgb565(rgba: [u8; 4]) -> u16 {
+            use crate::render::native_surface_format::RGB565;
+
+            ((u16::from(rgba[0]) >> RGB565.red_loss) << RGB565.red_shift)
+                | ((u16::from(rgba[1]) >> RGB565.green_loss) << RGB565.green_shift)
+                | ((u16::from(rgba[2]) >> RGB565.blue_loss) << RGB565.blue_shift)
+        }
+
+        // Machine-derived oracle for the native packed-word operation. Keeping
+        // it word-shaped makes it independent from the shader's channel path.
+        fn native_word_halve(rgba: [u8; 4]) -> [u8; 4] {
+            let word = (pack_rgb565(rgba) >> 1) & 0x7bef;
+            [
+                (((word >> 11) & 0x1f) << 3) as u8,
+                (((word >> 5) & 0x3f) << 2) as u8,
+                ((word & 0x1f) << 3) as u8,
+                rgba[3],
+            ]
+        }
+
+        // CPU mirror of the production shader's explicit R5/G6/B5 channel
+        // extraction, integer halve, and zero-filled storage expansion.
+        fn shader_channel_model(rgba: [u8; 4]) -> [u8; 4] {
+            [
+                ((rgba[0] >> 3) >> 1) << 3,
+                ((rgba[1] >> 2) >> 1) << 2,
+                ((rgba[2] >> 3) >> 1) << 3,
+                rgba[3],
+            ]
+        }
+
+        // Exhaust every incoming byte of every active-retail component bin.
+        // The packed-word oracle catches both component bleed and rounding.
+        for channel in u8::MIN..=u8::MAX {
+            for destination in [
+                [channel, 0xa7, 0x5b, 0x6d],
+                [0xc3, channel, 0x5b, 0x6d],
+                [0xc3, 0xa7, channel, 0x6d],
+            ] {
+                assert_eq!(
+                    shader_channel_model(destination),
+                    native_word_halve(destination)
+                );
+            }
+        }
+
+        assert_eq!(
+            native_word_halve([255, 255, 255, 0xa5]),
+            [120, 124, 120, 0xa5]
+        );
+
+        // Every overlap is a fresh packed-surface edit. Compare independent
+        // formulations across multiple colors and repeated shadow counts.
+        for (destination, expected_overlaps) in [
+            (
+                [255, 255, 255, 0xa5],
+                [
+                    [120, 124, 120, 0xa5],
+                    [56, 60, 56, 0xa5],
+                    [24, 28, 24, 0xa5],
+                    [8, 12, 8, 0xa5],
+                    [0, 4, 0, 0xa5],
+                ],
+            ),
+            (
+                [128, 128, 128, 0x33],
+                [
+                    [64, 64, 64, 0x33],
+                    [32, 32, 32, 0x33],
+                    [16, 16, 16, 0x33],
+                    [8, 8, 8, 0x33],
+                    [0, 4, 0, 0x33],
+                ],
+            ),
+            (
+                [17, 101, 249, 0xff],
+                [
+                    [8, 48, 120, 0xff],
+                    [0, 24, 56, 0xff],
+                    [0, 12, 24, 0xff],
+                    [0, 4, 8, 0xff],
+                    [0, 0, 0, 0xff],
+                ],
+            ),
+            ([7, 3, 7, 0x00], [[0, 0, 0, 0x00]; 5]),
+        ] {
+            let mut oracle = destination;
+            let mut shader = destination;
+            for expected in expected_overlaps {
+                oracle = native_word_halve(oracle);
+                shader = shader_channel_model(shader);
+                assert_eq!(oracle, expected);
+                assert_eq!(shader, oracle);
+                assert_eq!(shader[3], destination[3], "shadow edits must preserve alpha");
+            }
+        }
+
+        assert!(ANIM_SHADOW_SHADER.contains("textureLoad(destination_snapshot"));
+        assert!(ANIM_SHADOW_SHADER.contains("(packed >> 1u) & 0x7befu"));
+        assert!(!ANIM_SHADOW_SHADER.contains("destination.rgb * 0.5"));
+        assert!(ANIM_SHADOW_SHADER.contains("discard"));
+    }
+
+    #[test]
+    fn phase3_anim_shadow_compositor_snapshots_before_every_overlapping_instance() {
+        assert_eq!(
+            anim_shadow_instance_indices(7, 3).collect::<Vec<_>>(),
+            vec![7, 8, 9],
+            "each instance gets its own copy-then-edit iteration",
+        );
+        assert!(anim_shadow_instance_indices(4, 0).is_empty());
+    }
+
+    #[test]
+    fn phase3_anim_shadow_depth_tests_less_and_never_writes() {
+        fn apply_depth(
+            state: &wgpu::DepthStencilState,
+            incoming: f32,
+            stored: &mut f32,
+        ) -> bool {
+            let accepted = match state.depth_compare {
+                wgpu::CompareFunction::Less => incoming < *stored,
+                other => panic!("unexpected AnimClass shadow depth compare {other:?}"),
+            };
+            if accepted && state.depth_write_enabled {
+                *stored = incoming;
+            }
+            accepted
+        }
+
+        let state = anim_shadow_depth_stencil_state();
+        assert_eq!(state.format, wgpu::TextureFormat::Depth32Float);
+        assert_eq!(state.depth_compare, wgpu::CompareFunction::Less);
+        assert!(!state.depth_write_enabled, "native flags 0x601 are Z-test-only");
+
+        let mut stored = 0.5;
+        assert!(apply_depth(&state, 0.499, &mut stored));
+        assert_eq!(stored, 0.5, "an accepted shadow must not replace tactical Z");
+        assert!(!apply_depth(&state, 0.5, &mut stored));
+        assert!(!apply_depth(&state, 0.501, &mut stored));
+        assert_eq!(stored, 0.5, "rejected shadows must also leave tactical Z intact");
     }
 }

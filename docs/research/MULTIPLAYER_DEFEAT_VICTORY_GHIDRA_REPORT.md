@@ -1,5 +1,13 @@
 # Multiplayer Defeat/Victory System — Ghidra Report
 
+> **SUPERSEDED FOR `0x004FC6D0` (2026-08-29).** The `ScatterAllUnits` section,
+> pseudo-code, and movement interpretation are wrong. Active assembly proves a
+> live global-Techno destruction sweep: effective-House resolution, reversible
+> mind-control Civilian rewrite/spare, incoming Temporal-chain clear, then
+> concrete `ReceiveDamage(current_health, 0, Rules.C4, NULL, true, true, NULL)`.
+> Use `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`
+> as the authority for this function and its callers.
+
 Source: `D:\ra2mdpost\House.CPP` (confirmed from debug strings in binary)
 Binary: `gamemd.exe` (Yuri's Revenge)
 
@@ -517,7 +525,11 @@ processing in the main game loop (FUN_006e3180 calls ScatterAllUnits).
 
 ---
 
-## 3. ScatterAllUnits (0x4FC6D0)
+## 3. `0x4FC6D0` destructive House Techno sweep — superseded section
+
+> The pseudo-code in this historical section is wrong. It must not be used as
+> movement-Scatter evidence; the active replacement is the 2026-08-29 gap scan
+> linked at the top of this report.
 
 **Size:** 181 bytes
 **Signature:** `void __fastcall HouseClass::ScatterAllUnits(HouseClass *this)`

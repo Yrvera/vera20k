@@ -306,7 +306,60 @@ use crate::sim::world::Simulation;
 // and destroyable-cliff replacement persists exact changed CellClass values.
 // Bumped 103 -> 104: every Techno persists its constructor Scenario-RNG low
 // word, and authored structure-upgrade Technos persist their parent/slot link.
-const SNAPSHOT_VERSION: u32 = 104;
+// Bumped 104 -> 105: HouseState gains the serialized/hash-authoritative packed
+// alternate base cell written by trigger actions 137/138. Bincode encodes the
+// HouseState layout positionally, so an older record cannot supply this field.
+// Bumped 105 -> 106: persist the lifecycle-maintained per-House BuildConst
+// acquisition order and each entity's immutable resolved membership bit.
+// Bumped 106 -> 107: persist ordered House BasePlan authority and the immutable
+// BuildingType facts consumed by its Unlimbo/Limbo lifecycle writers.
+// Bumped 107 -> 108: persist the distinct BaseClass plan center written after
+// a successful non-controlled ConstructionYard deployment.
+// Bumped 108 -> 109: persist the three independent House AI activation
+// latches co-enabled by successful qualifying base-unit deployment.
+// Bumped 109 -> 110: persist House AutocreateAllowed beside the three deploy
+// latches in native conceptual byte order.
+// Bumped 110 -> 111: persist active and stashed Drive/Ship locomotor slope
+// cache/global-frame timer state; the positional payload enum changed shape.
+// Bumped 111 -> 112: active-retail Cell ground is one 104-lepton numeric
+// authority rather than the false 90-lepton duplicate. Shape is unchanged,
+// but retained Cell targets/world state would resume with different Z results.
+// Bumped 112 -> 113: behavior-3 Spark now consumes the shared CellClass dummy's
+// persistent Level and Slope without requiring a retained dummy projectile.
+// The wire shape remains unchanged, but older saves do not certify the same
+// future-affecting lockstep hash authority for those live process-global bytes.
+// Bumped 113 -> 114: the completed active-retail crate runtime persists its
+// slot/trigger state and replaces the derived House outcome enum with the
+// independent pending/win/loss bytes plus the shared signed result timer.
+// Bincode encodes these records positionally, so v113 cannot be admitted.
+// Bumped 114 -> 115: GameEntity persists reversible mind-control controller
+// identity, the independent permanent-control byte, ordered MCNodes with saved
+// original Houses, the two independent temporary-transfer House pointers, and
+// TemporalClass manager/warp/reciprocal-chain state. Bincode encodes every
+// GameEntity positionally, so a v114 record cannot safely supply these fields.
+// Bumped 115 -> 116: persist capture timing/presentation links, the victim AI
+// absorb-enter latch, and TeamType mind-control decision state. These additions
+// are positional, so a v115 record cannot safely supply them.
+// Bumped 116 -> 117: HouseState persists the two distinct acquisition-ordered
+// Grinder/Absorber Building vectors, and GameEntity persists their immutable
+// type-membership bits. DecideUnitFate consumes vector order after load.
+// Bumped 117 -> 118: the active Grinder parasite detach continuation persists
+// WarpAttach's signed start frame and 0x32 duration beside its victim link.
+// PassengerRole also gains the independently nested CargoClass relation used by
+// Unit Grinder/absorber continuations, so v117 cannot be admitted.
+// Bumped 118 -> 119: ShipLocomotionRuntime persists the independently marked
+// RawTrack handoff and endpoint installed by Apply_Track_Occupation_Mode plus
+// the paid-point current-cell-clear latch. The skipped owner-aware
+// CellOccupationGrid rebuilds those roles after load.
+// Bumped 119 -> 120: Infantry persists its independent House-tracked and Bio
+// Reactor occupant bytes; HouseState persists the distinct +0x2F4 Infantry
+// tracking count that absorber entry temporarily removes.
+// Bumped 120 -> 121: scheduler AnimClass records persist the explicit Building
+// `Explosion=` Start-smudge producer identity. The bit gates future Scenario
+// RNG and smudge/ore mutation when a delayed animation reaches Middle.
+// Bumped 121 -> 122: Anim records persist their constructor layer and the
+// substrate persists native flat DisplayClass submission history.
+const SNAPSHOT_VERSION: u32 = 122;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -333,8 +386,28 @@ pub struct GameSnapshot {
     pub save_timestamp: u64,
     /// Map name at save time — stored in header for quick preview.
     pub map_name: String,
+    /// App-local TacticalClass presentation adjunct. It is serialized for
+    /// in-scenario continuity but is deliberately outside `Simulation`, the
+    /// deterministic world hash, and the retail multiplayer checksum.
+    pub presentation: SnapshotPresentationState,
     /// The full authoritative simulation state (caches excluded via serde skip).
     pub sim: Simulation,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotPresentationState {
+    pub tactical_camera: SnapshotTacticalCamera,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotTacticalCamera {
+    pub glide_start: [i32; 2],
+    pub glide_target: [i32; 2],
+    pub committed: [i32; 2],
+    pub requested: [i32; 2],
+    pub speed_bits: u32,
+    pub progress_bits: u32,
+    pub last_processed_frame: Option<u32>,
 }
 
 /// Lightweight header extracted from a save file without deserializing the
@@ -427,6 +500,18 @@ pub enum SnapshotRestoreError {
     DuplicateLogicIdentity { object_id: u64 },
     #[error("LogicVector object id {object_id} has no restored registry identity")]
     MissingLogicIdentity { object_id: u64 },
+    #[error("display layers contain duplicate object id {object_id}")]
+    DuplicateDisplayLayerIdentity { object_id: u64 },
+    #[error("display layers reference missing object id {object_id}")]
+    MissingDisplayLayerIdentity { object_id: u64 },
+    #[error(
+        "display object {object_id} vector layer {vector_layer} disagrees with stored layer {stored_layer:?}"
+    )]
+    DisplayLayerMembershipMismatch {
+        object_id: u64,
+        vector_layer: u8,
+        stored_layer: Option<u8>,
+    },
     #[error("live {registry} object id {object_id} is absent from LogicVector")]
     MissingRequiredLogicIdentity {
         registry: &'static str,
@@ -456,6 +541,39 @@ pub enum SnapshotRestoreError {
         field: &'static str,
         target_registry: &'static str,
         target_id: u64,
+    },
+    #[error("entity {entity_id} has invalid Parasite reciprocal state: {reason}")]
+    InvalidParasiteReciprocalState {
+        entity_id: u64,
+        reason: &'static str,
+    },
+    #[error("entity {entity_id} has invalid mind-control reciprocal state: {reason}")]
+    InvalidMindControlReciprocalState {
+        entity_id: u64,
+        reason: &'static str,
+    },
+    #[error("House {owner} field {field} has invalid Building {building_id}: {reason}")]
+    InvalidHouseFacilityReference {
+        owner: crate::sim::intern::InternedId,
+        field: &'static str,
+        building_id: u64,
+        reason: &'static str,
+    },
+    #[error("entity {entity_id} has invalid Infantry tracking state: {reason}")]
+    InvalidInfantryTrackingState {
+        entity_id: u64,
+        reason: &'static str,
+    },
+    #[error("entity {entity_id} has invalid temporal reciprocal state: {reason}")]
+    InvalidTemporalReciprocalState {
+        entity_id: u64,
+        reason: &'static str,
+    },
+    #[error("entity {entity_id} field {field} references missing House {owner}")]
+    UnresolvedHouseReference {
+        entity_id: u64,
+        field: &'static str,
+        owner: crate::sim::intern::InternedId,
     },
     #[error(
         "carrier {carrier_id} has {passenger_count} passengers but {size_count} saved Size entries"
@@ -494,7 +612,9 @@ pub enum SnapshotRestoreError {
     MapAuthorityCellStorageMismatch { expected: usize, found: usize },
     #[error("snapshot real-cell bridge flags do not match restored CellClass allocation")]
     RealCellBridgeFlagAuthorityMismatch,
-    #[error("snapshot dynamic terrain cell ({rx},{ry}) is absent from restored CellClass allocation")]
+    #[error(
+        "snapshot dynamic terrain cell ({rx},{ry}) is absent from restored CellClass allocation"
+    )]
     DynamicTerrainCellMissing { rx: u16, ry: u16 },
 }
 
@@ -517,6 +637,7 @@ struct GameSnapshotRef<'a> {
     tick: u64,
     save_timestamp: u64,
     map_name: String,
+    presentation: SnapshotPresentationState,
     sim: &'a Simulation,
 }
 
@@ -528,6 +649,7 @@ impl GameSnapshot {
         map_name: &str,
         description: &str,
         save_timestamp: u64,
+        presentation: SnapshotPresentationState,
     ) -> Vec<u8> {
         // Retail provenance: Save_Game_To_File @ 0x0067CEF0 supplies a distinct
         // outer file identity; Write_Savegame_Metadata_To_Storage @ 0x006812E0
@@ -545,6 +667,7 @@ impl GameSnapshot {
             tick: sim.session.tick,
             save_timestamp,
             map_name: map_name.to_string(),
+            presentation,
             sim,
         };
         bincode::serialize(&snapshot).expect("snapshot serialization should not fail")
@@ -570,6 +693,29 @@ impl GameSnapshot {
             &sim.session.map_name,
             description,
             save_timestamp,
+            SnapshotPresentationState::default(),
+        )
+    }
+
+    /// Serialize production simulation plus the app-owned TacticalClass save
+    /// adjunct. The adjunct resumes local presentation only; it is not part of
+    /// synchronized gameplay identity.
+    pub(crate) fn save_validated_with_presentation(
+        sim: &Simulation,
+        map_hash: u64,
+        rules_hash: u64,
+        description: &str,
+        save_timestamp: u64,
+        presentation: SnapshotPresentationState,
+    ) -> Vec<u8> {
+        Self::serialize(
+            sim,
+            map_hash,
+            rules_hash,
+            &sim.session.map_name,
+            description,
+            save_timestamp,
+            presentation,
         )
     }
 
@@ -589,6 +735,7 @@ impl GameSnapshot {
             map_name,
             map_name,
             save_timestamp,
+            SnapshotPresentationState::default(),
         )
     }
 
@@ -825,8 +972,7 @@ fn validate_nav_reference(
 
 fn validate_passenger_size_tables(sim: &Simulation) -> Result<(), SnapshotRestoreError> {
     for (carrier_id, entity) in sim.substrate.entities.iter_sorted() {
-        let crate::sim::passenger::PassengerRole::Transport { cargo } = &entity.passenger_role
-        else {
+        let Some(cargo) = entity.passenger_role.cargo() else {
             continue;
         };
         if cargo.passengers.len() != cargo.passenger_sizes.len() {
@@ -852,6 +998,57 @@ fn validate_passenger_size_tables(sim: &Simulation) -> Result<(), SnapshotRestor
     Ok(())
 }
 
+fn validate_house_capture_facility_vector(
+    sim: &Simulation,
+    owner: crate::sim::intern::InternedId,
+    field: &'static str,
+    building_ids: &[u64],
+    is_member: impl Fn(&crate::sim::game_entity::GameEntity) -> bool,
+) -> Result<(), SnapshotRestoreError> {
+    let mut seen = BTreeSet::new();
+    for &building_id in building_ids {
+        if !seen.insert(building_id) {
+            return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                owner,
+                field,
+                building_id,
+                reason: "duplicate identity",
+            });
+        }
+        let Some(building) = sim.substrate.entities.get(building_id) else {
+            return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                owner,
+                field,
+                building_id,
+                reason: "identity does not resolve",
+            });
+        };
+        let reason = if building.category != crate::map::entities::EntityCategory::Structure {
+            Some("identity is not a Building")
+        } else if building.owner != owner {
+            Some("Building owner does not match House")
+        } else if !building.lifecycle.object_alive
+            || building.lifecycle.in_limbo
+            || !building.lifecycle.cell_marked
+        {
+            Some("Building is not live and placed")
+        } else if !is_member(building) {
+            Some("Building type lacks vector membership")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                owner,
+                field,
+                building_id,
+                reason,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn restore_object_references(
     sim: &mut Simulation,
     identities: &BTreeMap<u64, &'static str>,
@@ -863,6 +1060,8 @@ fn restore_object_references(
     use crate::sim::projectile::ProjectileTarget;
 
     let entity_ids: BTreeSet<u64> = sim.substrate.entities.keys_sorted().into_iter().collect();
+    let house_ids: BTreeSet<crate::sim::intern::InternedId> =
+        sim.houses.keys().copied().collect();
     let anim_ids: BTreeSet<u64> = sim.substrate.anims.iter().map(|(&id, _)| id).collect();
     let particle_system_ids: BTreeSet<u64> = sim
         .substrate
@@ -871,10 +1070,118 @@ fn restore_object_references(
         .map(|(&id, _)| id)
         .collect();
 
+    for (&owner, house) in &sim.houses {
+        validate_house_capture_facility_vector(
+            sim,
+            owner,
+            "grinder_building_order",
+            &house.grinder_building_order,
+            |building| building.grinding_facility,
+        )?;
+        validate_house_capture_facility_vector(
+            sim,
+            owner,
+            "absorber_building_order",
+            &house.absorber_building_order,
+            |building| building.absorber_facility,
+        )?;
+    }
+    for (building_id, building) in sim.substrate.entities.iter_sorted() {
+        if building.category != crate::map::entities::EntityCategory::Structure
+            || !building.lifecycle.object_alive
+            || building.lifecycle.in_limbo
+            || !building.lifecycle.cell_marked
+        {
+            continue;
+        }
+        let Some(house) = sim.houses.get(&building.owner) else {
+            if building.grinding_facility || building.absorber_facility {
+                return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                    owner: building.owner,
+                    field: if building.grinding_facility {
+                        "grinder_building_order"
+                    } else {
+                        "absorber_building_order"
+                    },
+                    building_id,
+                    reason: "owning House does not resolve",
+                });
+            }
+            continue;
+        };
+        for (enabled, field, vector) in [
+            (
+                building.grinding_facility,
+                "grinder_building_order",
+                &house.grinder_building_order,
+            ),
+            (
+                building.absorber_facility,
+                "absorber_building_order",
+                &house.absorber_building_order,
+            ),
+        ] {
+            if enabled && !vector.contains(&building_id) {
+                return Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                    owner: building.owner,
+                    field,
+                    building_id,
+                    reason: "live placed member is absent from House vector",
+                });
+            }
+        }
+    }
+
     // Swizzle::Apply has no unmatched-reference recovery path. Validate the
     // complete modeled pointer graph before mutating even weak references or
     // derived caches, so a failed restore remains an atomic rejection.
     for (entity_id, entity) in sim.substrate.entities.iter_sorted() {
+        if entity.infantry_house_tracked || entity.infantry_absorber_occupant {
+            if entity.category != crate::map::entities::EntityCategory::Infantry {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "tracking bytes are set on a non-Infantry entity",
+                });
+            }
+            if !house_ids.contains(&entity.owner) {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "tracked Infantry owner House does not resolve",
+                });
+            }
+        }
+        if entity.infantry_absorber_occupant {
+            if entity.infantry_house_tracked {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "absorber occupant still contributes to House tracking",
+                });
+            }
+            let Some(transport_id) = entity.passenger_role.inside_transport_id() else {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "absorber occupant has no enclosing Building",
+                });
+            };
+            let valid_absorber = sim
+                .substrate
+                .entities
+                .get(transport_id)
+                .is_some_and(|building| {
+                    building.category == crate::map::entities::EntityCategory::Structure
+                        && building.absorber_facility
+                        && building
+                            .passenger_role
+                            .cargo()
+                            .is_some_and(|cargo| cargo.passengers.contains(&entity_id))
+                });
+            if !valid_absorber {
+                return Err(SnapshotRestoreError::InvalidInfantryTrackingState {
+                    entity_id,
+                    reason: "absorber occupant lacks reciprocal absorber cargo membership",
+                });
+            }
+        }
         for contact_id in entity.radio_contacts.iter_live() {
             require_resolved_reference(
                 entity_ids.contains(&contact_id),
@@ -886,7 +1193,7 @@ fn restore_object_references(
             )?;
         }
 
-        if let PassengerRole::Transport { cargo } = &entity.passenger_role {
+        if let Some(cargo) = entity.passenger_role.cargo() {
             for &passenger_id in &cargo.passengers {
                 require_resolved_reference(
                     entity_ids.contains(&passenger_id),
@@ -1034,15 +1341,329 @@ fn restore_object_references(
             )?;
         }
         if let Some(manager) = entity.capture_manager.as_ref() {
-            for &target_id in &manager.controlled_entity_ids {
+            let mut seen_victims = BTreeSet::new();
+            for node in &manager.controlled_nodes {
+                let target_id = node.victim_id;
                 require_resolved_reference(
                     entity_ids.contains(&target_id),
                     "EntityStore",
                     entity_id,
-                    "capture_manager.controlled_entity_ids",
+                    "capture_manager.controlled_nodes.victim_id",
                     "EntityStore",
                     target_id,
                 )?;
+                if !house_ids.contains(&node.original_owner) {
+                    return Err(SnapshotRestoreError::UnresolvedHouseReference {
+                        entity_id,
+                        field: "capture_manager.controlled_nodes.original_owner",
+                        owner: node.original_owner,
+                    });
+                }
+                if target_id == entity_id || !seen_victims.insert(target_id) {
+                    return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                        entity_id,
+                        reason: "manager has a self or duplicate victim node",
+                    });
+                }
+                let victim = sim
+                    .substrate
+                    .entities
+                    .get(target_id)
+                    .expect("validated mind-control victim disappeared");
+                if victim.mind_control_controller_id != Some(entity_id) {
+                    return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                        entity_id,
+                        reason: "manager victim lacks matching active controller backlink",
+                    });
+                }
+            }
+        }
+        if let Some(controller_id) = entity.mind_control_controller_id {
+            require_resolved_reference(
+                entity_ids.contains(&controller_id),
+                "EntityStore",
+                entity_id,
+                "mind_control_controller_id",
+                "EntityStore",
+                controller_id,
+            )?;
+            let reciprocal = sim
+                .substrate
+                .entities
+                .get(controller_id)
+                .and_then(|controller| controller.capture_manager.as_ref())
+                .is_some_and(|manager| {
+                    manager
+                        .controlled_nodes
+                        .iter()
+                        .any(|node| node.victim_id == entity_id)
+                });
+            if controller_id == entity_id || !reciprocal {
+                return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                    entity_id,
+                    reason: "victim controller lacks matching MCNode",
+                });
+            }
+        }
+        if let Some(anim_id) = entity.mind_control_anim_id {
+            require_resolved_reference(
+                anim_ids.contains(&anim_id),
+                "EntityStore",
+                entity_id,
+                "mind_control_anim_id",
+                "AnimStore",
+                anim_id,
+            )?;
+            if sim
+                .substrate
+                .anims
+                .get(anim_id)
+                .is_none_or(|anim| anim.owner_entity != Some(entity_id))
+            {
+                return Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                    entity_id,
+                    reason: "mind-control anim lacks matching owner backlink",
+                });
+            }
+        }
+        if let Some(marker) = entity.temporary_owner_transfer_marker {
+            if !house_ids.contains(&marker) {
+                return Err(SnapshotRestoreError::UnresolvedHouseReference {
+                    entity_id,
+                    field: "temporary_owner_transfer_marker",
+                    owner: marker,
+                });
+            }
+        }
+        if let Some(source) = entity.temporary_owner_transfer_source {
+            if !house_ids.contains(&source) {
+                return Err(SnapshotRestoreError::UnresolvedHouseReference {
+                    entity_id,
+                    field: "temporary_owner_transfer_source",
+                    owner: source,
+                });
+            }
+        }
+        if let Some(link) = entity.temporal_manager {
+            if link.target_id.is_none()
+                && (link.previous_owner_id.is_some() || link.next_owner_id.is_some())
+            {
+                return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                    entity_id,
+                    reason: "detached TemporalClass retains chain links",
+                });
+            }
+            if let Some(target_id) = link.target_id {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "temporal_manager.target_id",
+                    "EntityStore",
+                    target_id,
+                )?;
+                if target_id == entity_id {
+                    return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                        entity_id,
+                        reason: "TemporalClass targets its own owner",
+                    });
+                }
+                let target = sim
+                    .substrate
+                    .entities
+                    .get(target_id)
+                    .expect("validated temporal target disappeared");
+                match link.previous_owner_id {
+                    None => {
+                        if target.temporal_targeting_me_id != Some(entity_id)
+                            || !target.being_temporally_warped_out
+                        {
+                            return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                                entity_id,
+                                reason: "head lacks matching target backlink and warped byte",
+                            });
+                        }
+                    }
+                    Some(previous_id) => {
+                        require_resolved_reference(
+                            entity_ids.contains(&previous_id),
+                            "EntityStore",
+                            entity_id,
+                            "temporal_manager.previous_owner_id",
+                            "EntityStore",
+                            previous_id,
+                        )?;
+                        let previous = sim
+                            .substrate
+                            .entities
+                            .get(previous_id)
+                            .and_then(|owner| owner.temporal_manager);
+                        if previous_id == entity_id
+                            || previous.is_none_or(|previous| {
+                                previous.target_id != Some(target_id)
+                                    || previous.next_owner_id != Some(entity_id)
+                            })
+                        {
+                            return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                                entity_id,
+                                reason: "previous TemporalClass link is not reciprocal",
+                            });
+                        }
+                    }
+                }
+                if let Some(next_id) = link.next_owner_id {
+                    require_resolved_reference(
+                        entity_ids.contains(&next_id),
+                        "EntityStore",
+                        entity_id,
+                        "temporal_manager.next_owner_id",
+                        "EntityStore",
+                        next_id,
+                    )?;
+                    let next = sim
+                        .substrate
+                        .entities
+                        .get(next_id)
+                        .and_then(|owner| owner.temporal_manager);
+                    if next_id == entity_id
+                        || next.is_none_or(|next| {
+                            next.target_id != Some(target_id)
+                                || next.previous_owner_id != Some(entity_id)
+                        })
+                    {
+                        return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                            entity_id,
+                            reason: "next TemporalClass link is not reciprocal",
+                        });
+                    }
+                }
+                let mut chain_cursor = entity_id;
+                let mut visited = BTreeSet::new();
+                loop {
+                    if !visited.insert(chain_cursor) {
+                        return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                            entity_id,
+                            reason: "TemporalClass chain contains a previous-link cycle",
+                        });
+                    }
+                    let chain_link = sim
+                        .substrate
+                        .entities
+                        .get(chain_cursor)
+                        .and_then(|owner| owner.temporal_manager)
+                        .expect("validated temporal chain member disappeared");
+                    match chain_link.previous_owner_id {
+                        Some(previous_id) => chain_cursor = previous_id,
+                        None => {
+                            if target.temporal_targeting_me_id != Some(chain_cursor) {
+                                return Err(
+                                    SnapshotRestoreError::InvalidTemporalReciprocalState {
+                                        entity_id,
+                                        reason: "TemporalClass chain does not reach victim head",
+                                    },
+                                );
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        match (
+            entity.temporal_targeting_me_id,
+            entity.being_temporally_warped_out,
+        ) {
+            (None, false) => {}
+            (Some(head_id), true) => {
+                require_resolved_reference(
+                    entity_ids.contains(&head_id),
+                    "EntityStore",
+                    entity_id,
+                    "temporal_targeting_me_id",
+                    "EntityStore",
+                    head_id,
+                )?;
+                let valid_head = sim
+                    .substrate
+                    .entities
+                    .get(head_id)
+                    .and_then(|head| head.temporal_manager)
+                    .is_some_and(|head| {
+                        head.target_id == Some(entity_id) && head.previous_owner_id.is_none()
+                    });
+                if head_id == entity_id || !valid_head {
+                    return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                        entity_id,
+                        reason: "target backlink does not resolve to its chain head",
+                    });
+                }
+            }
+            _ => {
+                return Err(SnapshotRestoreError::InvalidTemporalReciprocalState {
+                    entity_id,
+                    reason: "target backlink and warped-out byte disagree",
+                });
+            }
+        }
+        if let Some(victim_id) = entity
+            .parasite_manager
+            .as_ref()
+            .and_then(|manager| manager.victim_id)
+        {
+            require_resolved_reference(
+                entity_ids.contains(&victim_id),
+                "EntityStore",
+                entity_id,
+                "parasite_manager.victim_id",
+                "EntityStore",
+                victim_id,
+            )?;
+            if victim_id == entity_id {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "manager victim is self",
+                });
+            }
+            if sim
+                .substrate
+                .entities
+                .get(victim_id)
+                .and_then(|victim| victim.parasite_attacker_id)
+                != Some(entity_id)
+            {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "manager victim lacks matching attacker backlink",
+                });
+            }
+        }
+        if let Some(attacker_id) = entity.parasite_attacker_id {
+            require_resolved_reference(
+                entity_ids.contains(&attacker_id),
+                "EntityStore",
+                entity_id,
+                "parasite_attacker_id",
+                "EntityStore",
+                attacker_id,
+            )?;
+            if attacker_id == entity_id {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "victim attacker is self",
+                });
+            }
+            if sim
+                .substrate
+                .entities
+                .get(attacker_id)
+                .and_then(|attacker| attacker.parasite_manager.as_ref())
+                .and_then(|manager| manager.victim_id)
+                != Some(entity_id)
+            {
+                return Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                    entity_id,
+                    reason: "victim backlink lacks matching manager victim",
+                });
             }
         }
         if let Some(plant) = entity.c4_plant.as_ref() {
@@ -1118,6 +1739,9 @@ fn restore_object_references(
             } => Some((*target_transport_id, "passenger_role.boarding")),
             PassengerRole::Inside { transport_id } => {
                 Some((*transport_id, "passenger_role.inside"))
+            }
+            PassengerRole::TransportInside { transport_id, .. } => {
+                Some((*transport_id, "passenger_role.transport_inside"))
             }
             PassengerRole::None | PassengerRole::Transport { .. } => None,
         };
@@ -1387,39 +2011,13 @@ impl Simulation {
     /// order.
     pub(crate) fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
         for (&owner, house) in &self.houses {
-            let Some(outcome) = house.outcome_state else {
-                if house.is_defeated || house.has_won || house.has_lost {
-                    return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                        owner,
-                        reason: "terminal flags require serialized outcome authority",
-                    });
-                }
-                continue;
-            };
-            let flags_match = match outcome.kind {
-                crate::sim::house_state::HouseOutcomeKind::Victory => {
-                    house.has_won && !house.has_lost && !house.is_defeated
-                }
-                crate::sim::house_state::HouseOutcomeKind::Defeat => {
-                    house.has_lost && !house.has_won
-                }
-            };
-            if !flags_match {
+            // These are independent native HouseClass bytes, but the active
+            // writers can never leave both terminal bytes set: Lose clears Win
+            // before its own gate and Win rejects an existing Lose byte.
+            if house.has_won && house.has_lost {
                 return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
                     owner,
-                    reason: "kind disagrees with terminal house flags",
-                });
-            }
-            let next_tick = self.session.tick.saturating_add(1);
-            let timer_position_is_valid = if outcome.exit_ready {
-                outcome.savour_until_tick <= next_tick
-            } else {
-                outcome.savour_until_tick > self.session.tick
-            };
-            if !timer_position_is_valid {
-                return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                    owner,
-                    reason: "SavourDelay target disagrees with expiry latch",
+                    reason: "win and loss terminal bytes cannot both be set",
                 });
             }
         }
@@ -2597,7 +3195,7 @@ mod tests {
         let wrong_internal = GameSnapshotPreamble {
             product_magic: SNAPSHOT_PRODUCT_MAGIC,
             envelope_version: SNAPSHOT_ENVELOPE_VERSION,
-            version: SNAPSHOT_VERSION - 1,
+            version: 111,
         };
         let preamble_only = bincode::serialize(&wrong_internal).expect("schema-version preamble");
         assert!(matches!(
@@ -2605,7 +3203,7 @@ mod tests {
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
                 found,
-            }) if found == SNAPSHOT_VERSION - 1
+            }) if found == 111
         ));
     }
 
@@ -2708,10 +3306,32 @@ mod tests {
     /// adds category-distinct resolved AITrigger token-6 identities; 102 -> 103
     /// adds WaveClass state and destroyable-cliff replacement CellClass values;
     /// 103 -> 104 adds the persistent Techno constructor word and authored
-    /// structure-upgrade parent/slot identity.
+    /// structure-upgrade parent/slot identity; 104 -> 105 adds the packed House
+    /// alternate base cell; 105 -> 106 adds the ordered House BuildConst vector
+    /// and immutable entity membership; 106 -> 107 adds ordered BasePlan state
+    /// and immutable BuildingType facts; 107 -> 108 adds the distinct BaseClass
+    /// plan center; 108 -> 109 adds the three House AI activation latches;
+    /// 109 -> 110 adds House AutocreateAllowed; 110 -> 111 adds active/stashed
+    /// Drive/Ship slope-transition state; 111 -> 112 adopts the corrected
+    /// one-authority 104-lepton Cell ground formula; 112 -> 113 adds shared-
+    /// dummy level/slope hash authority for active Spark queries; 113 -> 114
+    /// adds the active-retail crate/result authority and the local Tactical
+    /// camera presentation adjunct envelope; 114 -> 115 adds the mind-control,
+    /// temporary-transfer, and TemporalClass state required by native House-wide
+    /// destruction ownership and synchronous detachment; 115 -> 116 adds the
+    /// capture continuation timing, presentation links, AI absorb-enter latch,
+    /// and TeamType mind-control decision state; 116 -> 117 adds the distinct
+    /// House Grinder/Absorber vectors and immutable entity membership bits
+    /// consumed by DecideUnitFate; 117 -> 118 adds WarpAttach Grinder-detach
+    /// timer state and the independently nested CargoClass relation exercised
+    /// by Unit Grinder/absorber continuations; 118 -> 119 adds Ship's RawTrack
+    /// handoff/endpoint occupation pair; 119 -> 120 adds Bio Reactor Infantry
+    /// tracking/occupant bytes and the House +0x2F4 count; 120 -> 121 adds the
+    /// Building Explosion Start-smudge producer bit; 121 -> 122 adds Anim's
+    /// constructor layer plus saved native flat DisplayClass submission history.
     #[test]
-    fn techno_constructor_snapshot_version_is_104() {
-        assert_eq!(super::SNAPSHOT_VERSION, 104);
+    fn phase3_combined_snapshot_version_is_122() {
+        assert_eq!(super::SNAPSHOT_VERSION, 122);
     }
 
     #[test]
@@ -2838,25 +3458,523 @@ mod tests {
     }
 
     #[test]
+    fn drive_ship_active_and_stashed_slope_phase_roundtrip_without_resample_or_rng() {
+        use crate::map::entities::EntityCategory;
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::movement::locomotion::LocomotorRuntimePayload;
+        use crate::sim::movement::locomotor::LocomotorState;
+
+        // Full snapshot load restarts Scenario RNG from Seed0. Start on that
+        // canonical cursor so the slope-only round trip can prove no draw.
+        let mut sim = Simulation::with_seed(0);
+        sim.session.binary_frame = 51;
+        let mut entity = GameEntity::test_default(1, "SLOPE", "Americans", 0, 0);
+        entity.owner = sim.intern("Americans");
+        entity.type_ref = sim.intern("SLOPE");
+        entity.category = EntityCategory::Unit;
+        let mut locomotor = LocomotorState::for_test_kind_at_frame(LocomotorKind::Drive, 40);
+        let drive = locomotor.active_slope_transition_mut().unwrap();
+        drive.snap(2, 40);
+        drive.sample_process_entry(7, 49);
+        assert!(locomotor.begin_piggyback(LocomotorKind::Ship, MovementLayer::Ground, 50));
+        let ship = locomotor.active_slope_transition_mut().unwrap();
+        ship.snap(4, 40);
+        ship.sample_process_entry(9, 49);
+        entity.locomotor = Some(locomotor);
+        sim.substrate.entities.insert(entity);
+
+        let before_hash = sim.state_hash();
+        let before_rng = sim.scenario_rng.logical_state();
+        let before = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap();
+        let active_before = before.runtime_payload.clone();
+        let stashed_before = before.piggyback.clone();
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "Drive Ship slope", 3);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("current slope snapshot")
+            .sim;
+        let loaded = restored
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .locomotor
+            .as_ref()
+            .unwrap();
+        assert_eq!(loaded.runtime_payload, active_before);
+        assert_eq!(loaded.piggyback, stashed_before);
+        assert_eq!(restored.session.binary_frame, 51);
+        assert_eq!(restored.state_hash(), before_hash);
+        assert_eq!(restored.scenario_rng.logical_state(), before_rng);
+        assert_eq!(
+            loaded.active_slope_transition().unwrap().hash_fields(),
+            (4, 9, 49, 3),
+            "the saved active timer starts two committed frames before session frame 51"
+        );
+        assert!(matches!(
+            loaded.piggyback.as_deref().map(|runtime| &runtime.payload),
+            Some(LocomotorRuntimePayload::Drive(state))
+                if state.hash_fields() == (2, 7, 49, 3)
+        ));
+
+        let mut live_cell = clear_terrain_cell(0, 0);
+        live_cell.slope_type = 12;
+        let live_terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![live_cell]);
+        restored.resolved_terrain = Some(live_terrain.clone());
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .active_slope_transition()
+                .unwrap()
+                .hash_fields(),
+            (4, 9, 49, 3),
+            "load/rebuild trusts the saved cache instead of resampling live terrain"
+        );
+
+        let mut sound_events = Vec::new();
+        let mut lifecycle_requests = Vec::new();
+        crate::sim::movement::tick_movement_with_grids(
+            &mut restored.substrate.entities,
+            Some(&[1]),
+            None,
+            &Default::default(),
+            &Default::default(),
+            &mut restored.substrate.occupancy,
+            &mut restored.substrate.cell_occupation,
+            &mut restored.substrate.raw_cell_occupation,
+            &mut restored.substrate.next_occupancy_enter_order,
+            &mut restored.scenario_rng,
+            52,
+            52,
+            None,
+            Some(&live_terrain),
+            None,
+            &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            crate::util::fixed_math::SIM_ZERO,
+            9,
+            60,
+            &mut restored.interner,
+            None,
+            &mut sound_events,
+            &mut lifecycle_requests,
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .active_slope_transition()
+                .unwrap()
+                .hash_fields(),
+            (9, 12, 52, 3),
+            "only the next eligible Process restarts against live terrain"
+        );
+        assert_eq!(restored.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn house_ai_activation_all_combinations_roundtrip_current() {
+        use crate::sim::house_state::{HouseAiActivationLatches, HouseState};
+
+        for bits in 0u8..16 {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Computer1");
+            let latches = HouseAiActivationLatches {
+                production: bits & 1 != 0,
+                autocreate_allowed: bits & 2 != 0,
+                ai_triggers_active: bits & 4 != 0,
+                auto_base_building: bits & 8 != 0,
+            };
+            let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+            house.ai_activation = latches;
+            sim.houses.insert(owner, house);
+            sim.session.house_order.push(owner);
+
+            let description = format!("house-ai-activation-{bits}");
+            let bytes = GameSnapshot::save(&sim, 0, 0, &description, 0);
+            assert_eq!(
+                GameSnapshot::read_header(&bytes).unwrap().version,
+                super::SNAPSHOT_VERSION
+            );
+            let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+            assert_eq!(restored.houses[&owner].ai_activation, latches);
+        }
+    }
+
+    #[test]
+    fn alternate_base_center_roundtrips_with_primary_center_and_hash() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let country = sim.interner.intern("Americans");
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
+        house.base_center = Some((40, 50));
+        house.alternate_base_center = (93, 106);
+        house.base_plan_center = (19, 21);
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "alternate-base-center", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+
+        assert_eq!(restored.houses[&owner].base_center, Some((40, 50)));
+        assert_eq!(restored.houses[&owner].alternate_base_center, (93, 106));
+        assert_eq!(restored.houses[&owner].base_plan_center, (19, 21));
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn naval_build_const_order_and_membership_roundtrip_with_current_hash_only() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let country = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("GACNST");
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
+        house.build_const_order = vec![9, 3];
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let mut entity = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+            9,
+            4,
+            5,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            crate::map::entities::EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.build_const_eligible = true;
+        sim.substrate.entities.insert(entity);
+
+        let ordered_hash = sim.state_hash();
+        let historical_pre_v28 = sim.state_hash_before_lifecycle_v28_and_mission_v29();
+        let historical_pre_v29 = sim.state_hash_without_mission_v29();
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .build_const_order
+            .swap(0, 1);
+        assert_ne!(
+            sim.state_hash(),
+            ordered_hash,
+            "stored vector order is hashed"
+        );
+        assert_eq!(
+            sim.state_hash_before_lifecycle_v28_and_mission_v29(),
+            historical_pre_v28,
+            "the historical pre-v28 probe excludes v107 state"
+        );
+        assert_eq!(
+            sim.state_hash_without_mission_v29(),
+            historical_pre_v29,
+            "the historical pre-v29 probe excludes v107 state"
+        );
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .build_const_order
+            .swap(0, 1);
+
+        sim.substrate
+            .entities
+            .get_mut(9)
+            .unwrap()
+            .build_const_eligible = false;
+        assert_ne!(
+            sim.state_hash(),
+            ordered_hash,
+            "entity membership is hashed"
+        );
+        assert_eq!(
+            sim.state_hash_before_lifecycle_v28_and_mission_v29(),
+            historical_pre_v28
+        );
+        assert_eq!(sim.state_hash_without_mission_v29(), historical_pre_v29);
+        sim.substrate
+            .entities
+            .get_mut(9)
+            .unwrap()
+            .build_const_eligible = true;
+        assert_eq!(sim.state_hash(), ordered_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "naval-build-const", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+
+        assert_eq!(restored.houses[&owner].build_const_order, vec![9, 3]);
+        assert!(
+            restored
+                .substrate
+                .entities
+                .get(9)
+                .unwrap()
+                .build_const_eligible
+        );
+        assert_eq!(restored.state_hash(), ordered_hash);
+    }
+
+    #[test]
+    fn capture_facility_vectors_roundtrip_hash_order_and_reject_bad_references() {
+        let rules = crate::rules::ruleset::RuleSet::from_ini(
+            &crate::rules::ini_parser::IniFile::from_str(
+                "[VehicleTypes]\n\
+                 [InfantryTypes]\n\
+                 [AircraftTypes]\n\
+                 [BuildingTypes]\n0=FACILITY\n\
+                 [FACILITY]\nStrength=500\nGrinding=yes\nInfantryAbsorb=yes\nPassengers=5\nSizeLimit=1\n",
+            ),
+        )
+        .unwrap();
+        let mut sim = Simulation::with_seed(0);
+        let owner = sim.interner.intern("Owner");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 10),
+        );
+        sim.session.house_order.push(owner);
+        let older_id = sim
+            .spawn_object("FACILITY", "Owner", 4, 4, 0, &rules, &Default::default())
+            .unwrap();
+        let newer_id = sim
+            .spawn_object("FACILITY", "Owner", 5, 4, 0, &rules, &Default::default())
+            .unwrap();
+        assert_eq!(
+            sim.houses[&owner].grinder_building_order,
+            vec![older_id, newer_id]
+        );
+        assert_eq!(
+            sim.houses[&owner].absorber_building_order,
+            vec![older_id, newer_id]
+        );
+
+        // Native load reconstructs Scenario RNG at Seed(0). This fixture is
+        // proving facility persistence, not the separate constructor draws.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let ordered_hash = sim.state_hash();
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .swap(0, 1);
+        assert_ne!(sim.state_hash(), ordered_hash, "House vector order hashes");
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .swap(0, 1);
+        sim.substrate
+            .entities
+            .get_mut(older_id)
+            .unwrap()
+            .grinding_facility = false;
+        assert_ne!(sim.state_hash(), ordered_hash, "immutable membership hashes");
+        sim.substrate
+            .entities
+            .get_mut(older_id)
+            .unwrap()
+            .grinding_facility = true;
+        assert_eq!(sim.state_hash(), ordered_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "capture-facilities", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("v122 facility references resolve");
+        assert_eq!(
+            restored.houses[&owner].grinder_building_order,
+            vec![older_id, newer_id]
+        );
+        assert_eq!(
+            restored.houses[&owner].absorber_building_order,
+            vec![older_id, newer_id]
+        );
+        assert_eq!(restored.state_hash(), ordered_hash);
+
+        let mut duplicate = GameSnapshot::load(&bytes).unwrap().sim;
+        duplicate
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .push(older_id);
+        assert!(matches!(
+            duplicate.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "grinder_building_order",
+                building_id,
+                reason: "duplicate identity",
+                ..
+            }) if building_id == older_id
+        ));
+
+        let mut missing = GameSnapshot::load(&bytes).unwrap().sim;
+        missing
+            .houses
+            .get_mut(&owner)
+            .unwrap()
+            .grinder_building_order
+            .retain(|&building_id| building_id != older_id);
+        assert!(matches!(
+            missing.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "grinder_building_order",
+                building_id,
+                reason: "live placed member is absent from House vector",
+                ..
+            }) if building_id == older_id
+        ));
+
+        let mut foreign = GameSnapshot::load(&bytes).unwrap().sim;
+        let other = foreign.interner.intern("OtherOwner");
+        foreign.houses.insert(
+            other,
+            crate::sim::house_state::HouseState::new(other, 1, None, false, 0, 10),
+        );
+        foreign.substrate.entities.get_mut(older_id).unwrap().owner = other;
+        assert!(matches!(
+            foreign.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "grinder_building_order",
+                building_id,
+                reason: "Building owner does not match House",
+                ..
+            }) if building_id == older_id
+        ));
+
+        let mut wrong_profile = GameSnapshot::load(&bytes).unwrap().sim;
+        wrong_profile
+            .substrate
+            .entities
+            .get_mut(older_id)
+            .unwrap()
+            .absorber_facility = false;
+        assert!(matches!(
+            wrong_profile.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseFacilityReference {
+                field: "absorber_building_order",
+                building_id,
+                reason: "Building type lacks vector membership",
+                ..
+            }) if building_id == older_id
+        ));
+    }
+
+    #[test]
+    fn gsi_04_05_base_plan_and_building_facts_roundtrip_current_snapshot() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let type_ref = sim.interner.intern("GAPOWR");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 10);
+        house.base_plan.percent_built = -17;
+        house.base_plan.nodes = vec![
+            crate::sim::base_plan::BasePlanNode {
+                type_or_control: 2,
+                packed_cell: crate::sim::base_plan::pack_base_plan_cell(-4, 9),
+                filled: true,
+                retry_count: -8,
+            },
+            crate::sim::base_plan::BasePlanNode {
+                type_or_control: -3,
+                packed_cell: 0,
+                filled: false,
+                retry_count: 6,
+            },
+        ];
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        let mut entity = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+            1,
+            12,
+            14,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 750,
+                max: 750,
+            },
+            type_ref,
+            crate::map::entities::EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.base_plan_type_index = 2;
+        entity.base_plan_is_defense = true;
+        entity.base_plan_has_undeploy_target = true;
+        sim.substrate.entities.insert(entity);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "base-plan", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert_eq!(restored.houses[&owner].base_plan.percent_built, -17);
+        assert_eq!(restored.houses[&owner].base_plan.nodes.len(), 2);
+        assert_eq!(restored.houses[&owner].base_plan.nodes[0].retry_count, -8);
+        let restored_entity = restored.substrate.entities.get(1).unwrap();
+        assert_eq!(restored_entity.base_plan_type_index, 2);
+        assert!(restored_entity.base_plan_is_defense);
+        assert!(restored_entity.base_plan_has_undeploy_target);
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
     fn gsi_04_05_house_and_techno_base_defense_state_roundtrip_with_hash() {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Computer1");
-        let mut house = crate::sim::house_state::HouseState::new(
-            owner, 0, None, false, 10_000, 10,
-        );
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 10_000, 10);
         house.strategy_emergency.set_state_four();
         house.strategy_emergency.set_all_to_hunt_bias();
         house.strategy_emergency.note_building_attack(-17);
         house.strategy_emergency.note_building_attacker(3);
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
-        let mut responder = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "E1",
-            "Computer1",
-            4,
-            5,
-        );
+        let mut responder =
+            crate::sim::game_entity::GameEntity::test_default(1, "E1", "Computer1", 4, 5);
         responder.base_defense_response.recruitable_a = false;
         responder.base_defense_response.recruitable_b = true;
         responder.base_defense_response.archive_target =
@@ -2873,16 +3991,15 @@ mod tests {
             category: crate::rules::object_type::ObjectCategory::Infantry,
             id: member_type,
         };
-        sim.team_script_vm.register_script(
-            crate::sim::team_script_vm::TeamScriptDefinition {
+        sim.team_script_vm
+            .register_script(crate::sim::team_script_vm::TeamScriptDefinition {
                 id: script_id,
                 source: crate::rules::team_ai_ini::TeamAiDefinitionSource::FixedAimd,
                 actions: vec![crate::sim::team_script_vm::TeamScriptAction {
                     action_id: 2,
                     argument: 0,
                 }],
-            },
-        );
+            });
         sim.team_script_vm.register_task_force(
             crate::sim::team_script_vm::TeamTaskForceDefinition {
                 id: task_force_id,
@@ -2894,19 +4011,18 @@ mod tests {
                 }],
             },
         );
-        sim.team_script_vm.register_team_type(
-            crate::sim::team_script_vm::TeamTypeDefinition {
+        sim.team_script_vm
+            .register_team_type(crate::sim::team_script_vm::TeamTypeDefinition {
                 id: team_type_id,
                 script_id,
                 task_force_id,
                 priority: 0,
+                mind_control_decision: 0,
                 is_base_defense: true,
-                combined_movement_zone:
-                    crate::rules::locomotor_type::MovementZone::Amphibious,
+                combined_movement_zone: crate::rules::locomotor_type::MovementZone::Amphibious,
                 base_zone_relation_enforced: false,
                 transport_crossing_required: true,
-            },
-        );
+            });
         sim.team_script_vm.register_ai_trigger(
             crate::sim::team_script_vm::TeamAiTriggerDefinition {
                 id: ai_trigger_id,
@@ -2940,6 +4056,7 @@ mod tests {
             &[crate::sim::team_script_vm::TeamScriptMember {
                 entity_id: 1,
                 member_type: member_identity,
+                has_special_building_entry_intent: false,
             }],
             None,
             sim.session.binary_frame as i32,
@@ -2980,10 +4097,7 @@ mod tests {
         let team = restored.team_script_vm.team(team_id).unwrap();
         assert!(team.members().is_empty());
         assert_eq!(restored.team_script_vm.registry_counts(), (1, 1, 1, 1));
-        assert_eq!(
-            restored.team_script_vm.team_type_order(),
-            &[team_type_id]
-        );
+        assert_eq!(restored.team_script_vm.team_type_order(), &[team_type_id]);
         let restored_team_type = restored
             .team_script_vm
             .team_type(team_type_id)
@@ -2994,18 +4108,9 @@ mod tests {
         );
         assert!(!restored_team_type.base_zone_relation_enforced);
         assert!(restored_team_type.transport_crossing_required);
-        assert_eq!(
-            restored.team_script_vm.script_order(),
-            &[script_id]
-        );
-        assert_eq!(
-            restored.team_script_vm.task_force_order(),
-            &[task_force_id]
-        );
-        assert_eq!(
-            restored.team_script_vm.ai_trigger_order(),
-            &[ai_trigger_id]
-        );
+        assert_eq!(restored.team_script_vm.script_order(), &[script_id]);
+        assert_eq!(restored.team_script_vm.task_force_order(), &[task_force_id]);
+        assert_eq!(restored.team_script_vm.ai_trigger_order(), &[ai_trigger_id]);
         let restored_script = restored
             .team_script_vm
             .script(script_id)
@@ -3028,10 +4133,7 @@ mod tests {
         assert_eq!(restored_task_force.entries.len(), 1);
         assert_eq!(restored_task_force.entries[0].member_type, member_identity);
         assert_eq!(restored_task_force.entries[0].count, 1);
-        assert_eq!(
-            restored_task_force.group,
-            7
-        );
+        assert_eq!(restored_task_force.group, 7);
         let restored_trigger = restored
             .team_script_vm
             .ai_trigger(ai_trigger_id)
@@ -3255,8 +4357,7 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
-        let header =
-            GameSnapshot::read_header(&bytes).expect("current building-overlay header");
+        let header = GameSnapshot::read_header(&bytes).expect("current building-overlay header");
         assert_eq!(header.version, SNAPSHOT_VERSION);
         let mut restored = GameSnapshot::load(&bytes)
             .expect("current building-overlay snapshot")
@@ -3287,9 +4388,11 @@ mod tests {
     #[test]
     fn gsi_13_06_body_frame_counter_roundtrips_and_changes_hash() {
         use crate::map::entities::EntityCategory;
-        use crate::sim::components::{DriveCoord, Health, ShipLocomotionRuntime};
+        use crate::sim::components::{
+            DriveCoord, DriveOccupationFootprint, Health, ShipLocomotionRuntime,
+        };
+        use crate::sim::movement::locomotor::MovementLayer;
         use crate::sim::game_entity::GameEntity;
-        use crate::util::fixed_math::{SIM_HALF, SIM_ONE};
 
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Soviet");
@@ -3324,20 +4427,58 @@ mod tests {
         assert_ne!(populated_counter_hash, zero_counter_hash);
 
         let ship_head = DriveCoord::cell(6, 5, 0);
-        sim.substrate
+        let ship_handoff_occupation = DriveOccupationFootprint {
+            rx: 5,
+            ry: 6,
+            layer: MovementLayer::Ground,
+        };
+        let ship_head_occupation = DriveOccupationFootprint {
+            rx: 6,
+            ry: 5,
+            layer: MovementLayer::Ground,
+        };
+        let shp_unit = sim
+            .substrate
             .entities
             .get_mut(1)
-            .expect("SHP unit")
-            .ship_locomotion = Some(ShipLocomotionRuntime {
+            .expect("SHP unit");
+        shp_unit.lifecycle.in_limbo = false;
+        shp_unit.lifecycle.cell_marked = true;
+        shp_unit.current_speed_fraction =
+            crate::util::native_x87::NativeF64Bits::from_bits(0.5f64.to_bits());
+        shp_unit.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(ship_head),
             head_to: Some(ship_head),
-            target_speed_fraction: SIM_ONE,
-            current_speed_fraction: SIM_HALF,
+            target_speed_fraction: crate::util::native_x87::NativeF64Bits::ONE,
             owner_current_speed: 10,
+            occupation_handoff: Some(ship_handoff_occupation),
+            occupation_head_to: Some(ship_head_occupation),
+            current_occupation_cleared: true,
             ..Default::default()
         });
         let populated_shp_state_hash = sim.state_hash();
         assert_ne!(populated_shp_state_hash, populated_counter_hash);
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .expect("SHP unit")
+            .ship_locomotion
+            .as_mut()
+            .expect("Ship runtime")
+            .occupation_handoff = None;
+        assert_ne!(
+            sim.state_hash(),
+            populated_shp_state_hash,
+            "Ship handoff occupation participates in the broader deterministic hash"
+        );
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .expect("SHP unit")
+            .ship_locomotion
+            .as_mut()
+            .expect("Ship runtime")
+            .occupation_handoff = Some(ship_handoff_occupation);
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
         let restored = GameSnapshot::load(&bytes)
@@ -3362,9 +4503,39 @@ mod tests {
             .expect("restored Ship runtime");
         assert_eq!(restored_ship.destination, Some(ship_head));
         assert_eq!(restored_ship.head_to, Some(ship_head));
-        assert_eq!(restored_ship.target_speed_fraction, SIM_ONE);
-        assert_eq!(restored_ship.current_speed_fraction, SIM_HALF);
+        assert_eq!(
+            restored_ship.occupation_handoff,
+            Some(ship_handoff_occupation)
+        );
+        assert_eq!(
+            restored_ship.occupation_head_to,
+            Some(ship_head_occupation)
+        );
+        assert!(restored_ship.current_occupation_cleared);
+        assert_eq!(
+            restored_ship.target_speed_fraction,
+            crate::util::native_x87::NativeF64Bits::ONE
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .expect("restored SHP unit")
+                .current_speed_fraction,
+            crate::util::native_x87::NativeF64Bits::from_bits(0.5f64.to_bits())
+        );
         assert_eq!(restored_ship.owner_current_speed, 10);
+        let rebuilt_ship_occupation =
+            crate::sim::occupancy::CellOccupationGrid::rebuild(&restored.substrate.entities);
+        assert_eq!(
+            rebuilt_ship_occupation.owner_mark_order(1),
+            vec![
+                (5, 6, MovementLayer::Ground),
+                (6, 5, MovementLayer::Ground),
+            ],
+            "load rebuild preserves paid-point clear, then Ship handoff/head order"
+        );
         assert_eq!(restored.state_hash(), populated_shp_state_hash);
     }
 
@@ -3526,6 +4697,7 @@ mod tests {
 
         let mut original = Simulation::with_seed(0x104);
         original.session.tick = 145;
+        original.session.binary_frame = 145;
         let owner = original.interner.intern("Americans");
         original
             .houses
@@ -3547,9 +4719,8 @@ mod tests {
         original
             .houses
             .get_mut(&owner)
-            .and_then(|house| house.outcome_state.as_mut())
             .expect("outcome")
-            .savour_until_tick += 1;
+            .result_timer_duration += 1;
         assert_ne!(
             original.state_hash(),
             accepted_hash,
@@ -3558,9 +4729,8 @@ mod tests {
         original
             .houses
             .get_mut(&owner)
-            .and_then(|house| house.outcome_state.as_mut())
             .expect("outcome")
-            .savour_until_tick -= 1;
+            .result_timer_duration -= 1;
         original.sound_events.push(SimSoundEvent::MatchOutcome {
             owner,
             kind: HouseOutcomeKind::Victory,
@@ -3582,43 +4752,72 @@ mod tests {
         assert_eq!(restored.state_hash(), saved_hash);
 
         let restored_house = restored.houses.get(&owner).expect("restored house");
-        let outcome = restored_house.outcome_state.expect("accepted outcome");
+        let outcome = restored_house
+            .outcome_state(restored.session.binary_frame as i32)
+            .expect("accepted outcome");
         assert_eq!(outcome.kind, HouseOutcomeKind::Victory);
         assert!(!outcome.exit_ready);
         assert_eq!(outcome.savour_until_tick - restored.session.tick, 45);
 
         let mut boundary = restored_house.clone();
-        assert!(!boundary.advance_outcome_savour(189));
-        assert!(boundary.advance_outcome_savour(190));
+        assert!(!boundary.advance_outcome_savour(189).terminal_ready);
+        assert!(boundary.advance_outcome_savour(190).terminal_ready);
     }
 
     #[test]
-    fn gsi_01_04_malformed_current_snapshot_naked_terminal_flags_are_rejected() {
+    fn gsi_01_04_independent_result_bytes_and_timer_roundtrip_without_derived_authority() {
         use crate::sim::house_state::HouseState;
 
-        for terminal_flag in ["is_defeated", "has_won", "has_lost"] {
-            let mut malformed = Simulation::new();
-            let owner = malformed.interner.intern("Americans");
+        for terminal_flag in ["is_defeated", "result_pending", "has_won", "has_lost"] {
+            let mut original = Simulation::new();
+            let owner = original.interner.intern("Americans");
             let mut house = HouseState::new(owner, 0, None, true, 10_000, 10);
             match terminal_flag {
                 "is_defeated" => house.is_defeated = true,
+                "result_pending" => house.result_pending = true,
                 "has_won" => house.has_won = true,
                 "has_lost" => house.has_lost = true,
                 _ => unreachable!(),
             }
-            malformed.houses.insert(owner, house);
+            house.result_timer_start = -1;
+            house.result_timer_duration = -37;
+            original.houses.insert(owner, house.clone());
 
-            let bytes = GameSnapshot::save(&malformed, 11, 22, "", 33);
+            let bytes = GameSnapshot::save(&original, 11, 22, "", 33);
             let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
-            assert_eq!(
-                restored.restore_after_snapshot_load(),
-                Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                    owner,
-                    reason: "terminal flags require serialized outcome authority",
-                }),
-                "naked {terminal_flag} must not enter a world whose app bridge can only consume outcome_state"
-            );
+            restored
+                .restore_after_snapshot_load()
+                .expect("independent native result state");
+            let loaded = &restored.houses[&owner];
+            assert_eq!(loaded.is_defeated, house.is_defeated, "{terminal_flag}");
+            assert_eq!(loaded.result_pending, house.result_pending, "{terminal_flag}");
+            assert_eq!(loaded.has_won, house.has_won, "{terminal_flag}");
+            assert_eq!(loaded.has_lost, house.has_lost, "{terminal_flag}");
+            assert_eq!(loaded.result_timer_start, -1, "{terminal_flag}");
+            assert_eq!(loaded.result_timer_duration, -37, "{terminal_flag}");
         }
+    }
+
+    #[test]
+    fn gsi_01_04_malformed_current_snapshot_rejects_both_terminal_bytes() {
+        use crate::sim::house_state::HouseState;
+
+        let mut malformed = Simulation::new();
+        let owner = malformed.interner.intern("Americans");
+        let mut house = HouseState::new(owner, 0, None, true, 10_000, 10);
+        house.has_won = true;
+        house.has_lost = true;
+        malformed.houses.insert(owner, house);
+
+        let bytes = GameSnapshot::save(&malformed, 11, 22, "", 33);
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert_eq!(
+            restored.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidHouseOutcomeState {
+                owner,
+                reason: "win and loss terminal bytes cannot both be set",
+            })
+        );
     }
 
     #[test]
@@ -3818,6 +5017,8 @@ mod tests {
     fn gsi_04_07_damage_v60_air_spatial_armor_berserk_hostile_hit_iq_smoke_capture_anger_and_delay_roundtrip_hash()
      {
         let mut sim = Simulation::new();
+        let owner = sim.interner.intern("ComputerIQ");
+        let threat_peer = sim.interner.intern("ThreatPeer");
         let entity_id = sim.allocate_stable_id();
         let mut aircraft = crate::sim::game_entity::GameEntity::test_default(
             entity_id,
@@ -3837,7 +5038,20 @@ mod tests {
         aircraft.capture_manager = Some(crate::sim::capture_manager::CaptureManagerState {
             max_control: 3,
             infinite_mind_control: false,
-            controlled_entity_ids: vec![3, 4],
+            controlled_nodes: vec![
+                crate::sim::capture_manager::CaptureNodeState {
+                    victim_id: 3,
+                    original_owner: owner,
+                    capture_frame: 111,
+                    link_visible_frames: 20,
+                },
+                crate::sim::capture_manager::CaptureNodeState {
+                    victim_id: 4,
+                    original_owner: owner,
+                    capture_frame: 222,
+                    link_visible_frames: 30,
+                },
+            ],
         });
         aircraft.pending_c4_detonation = Some(crate::sim::components::PendingC4Detonation {
             start_frame: 11,
@@ -3845,24 +5059,17 @@ mod tests {
             source_entity_id: Some(3),
         });
         sim.substrate.entities.insert(aircraft);
-        sim.substrate
-            .entities
-            .insert(crate::sim::game_entity::GameEntity::test_default(
-                3,
+        for (victim_id, rx) in [(3, 12), (4, 13)] {
+            let mut victim = crate::sim::game_entity::GameEntity::test_default(
+                victim_id,
                 "E1",
                 "AMERICANS",
-                12,
+                rx,
                 7,
-            ));
-        sim.substrate
-            .entities
-            .insert(crate::sim::game_entity::GameEntity::test_default(
-                4,
-                "E1",
-                "AMERICANS",
-                13,
-                7,
-            ));
+            );
+            victim.mind_control_controller_id = Some(entity_id);
+            sim.substrate.entities.insert(victim);
+        }
         sim.substrate
             .particle_systems
             .insert(crate::sim::particles::ParticleSystem {
@@ -3884,10 +5091,8 @@ mod tests {
                 done_spawning: false,
             });
         sim.substrate.next_stable_object_id = 5;
-        let owner = sim.interner.intern("ComputerIQ");
         let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 51);
         house.current_iq = 2;
-        let threat_peer = sim.interner.intern("ThreatPeer");
         house.grudge_scores.insert(threat_peer, 350);
         house.enemy_house = Some(threat_peer);
         sim.houses.insert(owner, house);
@@ -4011,7 +5216,7 @@ mod tests {
             .capture_manager
             .as_mut()
             .unwrap()
-            .controlled_entity_ids
+            .controlled_nodes
             .reverse();
         assert_ne!(sim.state_hash(), expected_hash, "MCNode order is hashed");
         sim.substrate
@@ -4021,7 +5226,7 @@ mod tests {
             .capture_manager
             .as_mut()
             .unwrap()
-            .controlled_entity_ids
+            .controlled_nodes
             .reverse();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_07_air_spatial", 0);
@@ -4053,8 +5258,24 @@ mod tests {
             entity
                 .capture_manager
                 .as_ref()
-                .map(|manager| manager.controlled_entity_ids.as_slice()),
-            Some([3, 4].as_slice())
+                .map(|manager| manager.controlled_nodes.as_slice()),
+            Some(
+                [
+                    crate::sim::capture_manager::CaptureNodeState {
+                        victim_id: 3,
+                        original_owner: owner,
+                        capture_frame: 111,
+                        link_visible_frames: 20,
+                    },
+                    crate::sim::capture_manager::CaptureNodeState {
+                        victim_id: 4,
+                        original_owner: owner,
+                        capture_frame: 222,
+                        link_visible_frames: 30,
+                    },
+                ]
+                .as_slice()
+            )
         );
         assert_eq!(restored.houses.get(&owner).unwrap().current_iq, 2);
         assert_eq!(
@@ -4194,7 +5415,11 @@ mod tests {
         );
         assert_eq!(
             restored_entity.sensor_deposit,
-            sim.substrate.entities.get(entity_id).unwrap().sensor_deposit
+            sim.substrate
+                .entities
+                .get(entity_id)
+                .unwrap()
+                .sensor_deposit
         );
         let same_hash = restored.state_hash();
         restored
@@ -4406,7 +5631,9 @@ mod tests {
             .clear(sim.resolved_terrain.as_ref(), 2, 0, 1);
         let expected_loaded_hash = sim.state_hash();
 
-        let mut restored = GameSnapshot::load(&bytes).expect("reservation snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("reservation snapshot")
+            .sim;
         restored
             .restore_after_snapshot_load()
             .expect("restore transient caches without rebuilding reservations");
@@ -4628,6 +5855,59 @@ mod tests {
     }
 
     #[test]
+    fn tactical_camera_adjunct_roundtrips_without_entering_simulation_hash() {
+        let mut sim = Simulation::new();
+        sim.session.map_name = "CAMERA.MAP".to_string();
+        // Full in-scenario load resets the serialized Scenario RNG to Seed0;
+        // isolate presentation exclusion on that canonical post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let hash = sim.state_hash();
+        let presentation = SnapshotPresentationState {
+            tactical_camera: SnapshotTacticalCamera {
+                glide_start: [-17, 29],
+                glide_target: [4_000, -2_000],
+                committed: [311, 727],
+                requested: [313, 733],
+                speed_bits: 0x3bf5_c28f,
+                progress_bits: 0x3e80_0000,
+                last_processed_frame: Some(71),
+            },
+        };
+        let bytes = GameSnapshot::save_validated_with_presentation(
+            &sim,
+            0x11,
+            0x22,
+            "camera adjunct",
+            0x33,
+            presentation,
+        );
+        let restored =
+            GameSnapshot::load_validated(&bytes, 0x11, 0x22, "CAMERA.MAP").unwrap();
+
+        assert_eq!(restored.presentation, presentation);
+        assert_eq!(restored.sim.state_hash(), hash);
+
+        let different = SnapshotPresentationState {
+            tactical_camera: SnapshotTacticalCamera {
+                committed: [999, 888],
+                ..presentation.tactical_camera
+            },
+        };
+        let different_bytes = GameSnapshot::save_validated_with_presentation(
+            &sim,
+            0x11,
+            0x22,
+            "camera adjunct",
+            0x33,
+            different,
+        );
+        let different_restored =
+            GameSnapshot::load_validated(&different_bytes, 0x11, 0x22, "CAMERA.MAP").unwrap();
+        assert_ne!(bytes, different_bytes);
+        assert_eq!(different_restored.sim.state_hash(), hash);
+    }
+
+    #[test]
     fn restore_validates_references_then_rebuilds_logic_particles_and_cells() {
         use crate::rules::particle_system_type::ParticleSystemTypeId;
         use crate::sim::game_entity::GameEntity;
@@ -4782,6 +6062,40 @@ mod tests {
                 .attached_entity,
             Some(999),
             "failed restoration must not sanitize the unresolved strong reference"
+        );
+    }
+
+    #[test]
+    fn parasite_snapshot_validation_requires_exact_reciprocal_links() {
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::parasite_attachment::ParasiteManagerState;
+
+        let mut sim = Simulation::new();
+        let mut attacker = GameEntity::test_default(1, "SQD", "RUSSIANS", 1, 1);
+        attacker.parasite_manager = Some(ParasiteManagerState {
+            victim_id: Some(2),
+            detach_started_frame: 41,
+            detach_duration_frames: 50,
+        });
+        let mut victim = GameEntity::test_default(2, "DEST", "AMERICANS", 2, 2);
+        victim.parasite_attacker_id = Some(1);
+        sim.substrate.entities.insert(attacker);
+        sim.substrate.entities.insert(victim);
+        let identities = BTreeMap::from([(1, "EntityStore"), (2, "EntityStore")]);
+
+        assert_eq!(restore_object_references(&mut sim, &identities), Ok(()));
+
+        sim.substrate
+            .entities
+            .get_mut(2)
+            .unwrap()
+            .parasite_attacker_id = None;
+        assert_eq!(
+            restore_object_references(&mut sim, &identities),
+            Err(SnapshotRestoreError::InvalidParasiteReciprocalState {
+                entity_id: 1,
+                reason: "manager victim lacks matching attacker backlink",
+            })
         );
     }
 
@@ -5143,18 +6457,14 @@ mod tests {
             let pristine_bridge_cell = map_load_terrain.cell_mut(1, 1).unwrap();
             pristine_bridge_cell.level = 2;
             pristine_bridge_cell.slope_type = 1;
-            pristine_bridge_cell.bridge_facts.raw_flags =
-                MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+            pristine_bridge_cell.bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
         }
         let pristine_load_template = map_load_terrain.clone();
         let expected_ground_z = {
-            let target = crate::sim::projectile::cell_target_coord(
-                Some(&pristine_load_template),
-                1,
-                1,
-            );
+            let target =
+                crate::sim::projectile::cell_target_coord(Some(&pristine_load_template), 1, 1);
             let cell = pristine_load_template.cell(1, 1).unwrap();
-            crate::util::lepton::cellclass_ground_height_leptons(
+            crate::util::lepton::ground_height_leptons(
                 cell.level,
                 cell.slope_type,
                 target.x,
@@ -5207,8 +6517,7 @@ mod tests {
         process_dummy.reconstruct_for_map_resize();
         let hash_after_runtime_clear = live.state_hash();
         assert_ne!(
-            hash_after_runtime_clear,
-            hash_with_pristine_bridge,
+            hash_after_runtime_clear, hash_with_pristine_bridge,
             "the future-affecting real-cell value authority is hashed even with a clear dummy"
         );
         process_dummy.stamp_coord(-23, 17);
@@ -5242,16 +6551,14 @@ mod tests {
             expected_ground_z + crate::util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS as i32,
             "before direct value restore the pristine raw 0x100 selects the +416 target surface"
         );
-        let pristine_candidate_authority =
-            rebuilt_terrain.capture_real_cell_bridge_flags_0x1180();
+        let pristine_candidate_authority = rebuilt_terrain.capture_real_cell_bridge_flags_0x1180();
         let serialized_cleared_authority = restored.real_cell_bridge_flags_0x1180.clone();
         assert_ne!(serialized_cleared_authority, pristine_candidate_authority);
         let hash_with_serialized_clear = restored.state_hash();
         restored.real_cell_bridge_flags_0x1180 = pristine_candidate_authority.clone();
         let hash_if_pristine_template_were_authority = restored.state_hash();
         assert_ne!(
-            hash_with_serialized_clear,
-            hash_if_pristine_template_were_authority,
+            hash_with_serialized_clear, hash_if_pristine_template_were_authority,
             "the canonical hash distinguishes the saved clear from the pristine nonzero template"
         );
         restored.real_cell_bridge_flags_0x1180 = serialized_cleared_authority.clone();
@@ -5289,7 +6596,7 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(Some(restored_terrain), 1, 1).z,
             expected_ground_z,
-            "restored raw 0x100 clear removes +416 while retaining the 90-lepton ground kernel"
+            "restored raw 0x100 clear removes +416 while retaining the 104-lepton ground kernel"
         );
         assert_eq!(
             restored.state_hash(),
@@ -5345,11 +6652,10 @@ mod tests {
         assert_eq!(
             crate::sim::projectile::cell_target_coord(restored.resolved_terrain.as_ref(), 1, 1,).z,
             expected_ground_z,
-            "accepted Resize keeps the restored real CellClass on the 90-lepton ground surface"
+            "accepted Resize keeps the restored real CellClass on the 104-lepton ground surface"
         );
         assert_eq!(
-            restored.real_cell_bridge_flags_0x1180,
-            serialized_cleared_authority,
+            restored.real_cell_bridge_flags_0x1180, serialized_cleared_authority,
             "accepted Resize clears only the dummy and retains saved real-cell hash authority"
         );
     }
@@ -6533,5 +7839,409 @@ mod tests {
             .map(|o| (o.entity_id, o.layer))
             .collect();
         assert_eq!(rebuilt_again_list, rebuilt_list, "rebuild is deterministic");
+    }
+
+    fn result_destruction_link_fixture(
+    ) -> (
+        Simulation,
+        [u64; 4],
+        [crate::sim::intern::InternedId; 3],
+    ) {
+        use crate::sim::capture_manager::{CaptureManagerState, CaptureNodeState};
+        use crate::sim::game_entity::{GameEntity, TemporalManagerState};
+        use crate::sim::house_state::HouseState;
+
+        let mut sim = Simulation::new();
+        let controller_house = sim.interner.intern("ControllerHouse");
+        let original_house = sim.interner.intern("OriginalHouse");
+        let alternate_house = sim.interner.intern("AlternateHouse");
+        for (side, owner) in [controller_house, original_house, alternate_house]
+            .into_iter()
+            .enumerate()
+        {
+            sim.houses.insert(
+                owner,
+                HouseState::new(owner, side as u8, None, false, 0, 10),
+            );
+            sim.session.house_order.push(owner);
+        }
+
+        let controller_id = sim.allocate_stable_id();
+        let victim_id = sim.allocate_stable_id();
+        let target_id = sim.allocate_stable_id();
+        let marker_tail_id = sim.allocate_stable_id();
+
+        let mut controller =
+            GameEntity::test_default(controller_id, "YURI", "ControllerHouse", 5, 5);
+        controller.owner = controller_house;
+        controller.capture_manager = Some(CaptureManagerState {
+            max_control: 1,
+            infinite_mind_control: false,
+            controlled_nodes: vec![CaptureNodeState {
+                victim_id,
+                original_owner: original_house,
+                capture_frame: -7,
+                link_visible_frames: 20,
+            }],
+        });
+        controller.temporal_manager = Some(TemporalManagerState {
+            warp_points: 100,
+            target_id: Some(target_id),
+            previous_owner_id: None,
+            next_owner_id: Some(marker_tail_id),
+        });
+
+        let mut victim = GameEntity::test_default(victim_id, "MTNK", "ControllerHouse", 6, 5);
+        victim.owner = controller_house;
+        victim.mind_control_controller_id = Some(controller_id);
+        victim.ai_absorb_enter_pending = true;
+
+        let mut target = GameEntity::test_default(target_id, "HTNK", "ControllerHouse", 7, 5);
+        target.owner = controller_house;
+        target.temporary_owner_transfer_marker = Some(controller_house);
+        target.temporary_owner_transfer_source = Some(original_house);
+        target.temporal_manager = Some(TemporalManagerState {
+            warp_points: 40,
+            ..TemporalManagerState::default()
+        });
+        target.temporal_targeting_me_id = Some(controller_id);
+        target.being_temporally_warped_out = true;
+
+        let mut marker_tail =
+            GameEntity::test_default(marker_tail_id, "E1", "AlternateHouse", 8, 5);
+        marker_tail.owner = alternate_house;
+        marker_tail.temporal_manager = Some(TemporalManagerState {
+            warp_points: 75,
+            target_id: Some(target_id),
+            previous_owner_id: Some(controller_id),
+            next_owner_id: None,
+        });
+
+        for entity in [controller, victim, target, marker_tail] {
+            sim.substrate.entities.insert(entity);
+        }
+        // Native in-scenario load restarts Scenario RNG from Seed0. Keep the
+        // pre-save future-state cursor on that same canonical projection so
+        // this fixture isolates the new link authority.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        (
+            sim,
+            [controller_id, victim_id, target_id, marker_tail_id],
+            [controller_house, original_house, alternate_house],
+        )
+    }
+
+    #[test]
+    fn result_destruction_prerequisite_links_roundtrip_and_hash_all_authority() {
+        let (sim, [controller_id, victim_id, target_id, marker_tail_id], owners) =
+            result_destruction_link_fixture();
+        let baseline = sim.state_hash();
+        let copy_fixture = || {
+            bincode::deserialize::<Simulation>(
+                &bincode::serialize(&sim).expect("serialize link fixture"),
+            )
+            .expect("deserialize link fixture")
+        };
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes[0]
+            .original_owner = owners[2];
+        assert_ne!(changed.state_hash(), baseline, "MCNode original owner hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .mind_control_controller_id = None;
+        assert_ne!(changed.state_hash(), baseline, "victim controller hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .ai_absorb_enter_pending = false;
+        assert_ne!(changed.state_hash(), baseline, "AI absorb-enter byte hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes[0]
+            .capture_frame = -8;
+        assert_ne!(changed.state_hash(), baseline, "MCNode capture frame hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .permanently_mind_controlled = true;
+        assert_ne!(changed.state_hash(), baseline, "permanent-control byte hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_source = Some(owners[2]);
+        assert_ne!(changed.state_hash(), baseline, "transfer source hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_marker = Some(owners[2]);
+        assert_ne!(changed.state_hash(), baseline, "transfer marker hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(marker_tail_id)
+            .unwrap()
+            .temporal_manager
+            .as_mut()
+            .unwrap()
+            .previous_owner_id = None;
+        assert_ne!(changed.state_hash(), baseline, "temporal chain links hash");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .temporal_manager
+            .as_mut()
+            .unwrap()
+            .warp_points = 101;
+        assert_ne!(changed.state_hash(), baseline, "temporal warp points hash");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporal_targeting_me_id = None;
+        assert_ne!(changed.state_hash(), baseline, "temporal target backlink hashes");
+
+        let mut changed = copy_fixture();
+        changed
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .being_temporally_warped_out = false;
+        assert_ne!(changed.state_hash(), baseline, "temporal warped byte hashes");
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "result_link_fixture", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("v122 link snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("all reciprocal references resolve");
+        assert_eq!(restored.state_hash(), baseline);
+        let controller = restored.substrate.entities.get(controller_id).unwrap();
+        assert_eq!(
+            controller
+                .capture_manager
+                .as_ref()
+                .unwrap()
+                .controlled_nodes[0]
+                .original_owner,
+            owners[1],
+        );
+        let restored_victim = restored.substrate.entities.get(victim_id).unwrap();
+        assert_eq!(restored_victim.mind_control_controller_id, Some(controller_id));
+        assert!(restored_victim.ai_absorb_enter_pending);
+        assert!(!restored_victim.permanently_mind_controlled);
+        assert!(restored_victim.is_mind_controlled());
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(target_id)
+                .unwrap()
+                .temporary_owner_transfer_marker,
+            Some(owners[0]),
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(target_id)
+                .unwrap()
+                .temporal_manager
+                .expect("detached Temporal manager persists")
+                .warp_points,
+            40,
+        );
+    }
+
+    #[test]
+    fn result_destruction_prerequisite_restore_rejects_bad_reciprocals_and_refs() {
+        let (mut loaded_coexistence, [_, victim_id, _, _], _) =
+            result_destruction_link_fixture();
+        loaded_coexistence
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .permanently_mind_controlled = true;
+        loaded_coexistence
+            .restore_after_snapshot_load()
+            .expect("loader preserves independent permanent byte with valid MCNode");
+
+        let (mut standalone, [controller_id, victim_id, _, _], _) =
+            result_destruction_link_fixture();
+        standalone
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes
+            .clear();
+        standalone
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .mind_control_controller_id = None;
+        standalone
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .permanently_mind_controlled = true;
+        assert!(standalone
+            .substrate
+            .entities
+            .get(victim_id)
+            .unwrap()
+            .is_mind_controlled());
+        standalone
+            .restore_after_snapshot_load()
+            .expect("standalone permanent control needs no controller");
+
+        let (mut marker_without_source, [_, _, target_id, _], _) =
+            result_destruction_link_fixture();
+        marker_without_source
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_source = None;
+        marker_without_source
+            .restore_after_snapshot_load()
+            .expect("ChangeOwner can clear source while retaining marker");
+
+        let (mut bad_mc, [controller_id, victim_id, _, _], _) =
+            result_destruction_link_fixture();
+        bad_mc
+            .substrate
+            .entities
+            .get_mut(victim_id)
+            .unwrap()
+            .mind_control_controller_id = None;
+        assert!(matches!(
+            bad_mc.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidMindControlReciprocalState {
+                entity_id,
+                ..
+            }) if entity_id == controller_id
+        ));
+
+        let (mut bad_owner, [controller_id, _, _, _], _) = result_destruction_link_fixture();
+        bad_owner
+            .substrate
+            .entities
+            .get_mut(controller_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_nodes[0]
+            .original_owner = crate::sim::intern::InternedId::from_index(u32::MAX);
+        assert!(matches!(
+            bad_owner.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedHouseReference {
+                entity_id,
+                field: "capture_manager.controlled_nodes.original_owner",
+                ..
+            }) if entity_id == controller_id
+        ));
+
+        let (mut bad_transfer, [_, _, target_id, _], _) = result_destruction_link_fixture();
+        bad_transfer
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_marker =
+            Some(crate::sim::intern::InternedId::from_index(u32::MAX));
+        assert!(matches!(
+            bad_transfer.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedHouseReference {
+                entity_id,
+                field: "temporary_owner_transfer_marker",
+                ..
+            }) if entity_id == target_id
+        ));
+
+        let (mut bad_transfer, [_, _, target_id, _], _) = result_destruction_link_fixture();
+        bad_transfer
+            .substrate
+            .entities
+            .get_mut(target_id)
+            .unwrap()
+            .temporary_owner_transfer_source =
+            Some(crate::sim::intern::InternedId::from_index(u32::MAX));
+        assert!(matches!(
+            bad_transfer.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedHouseReference {
+                entity_id,
+                field: "temporary_owner_transfer_source",
+                ..
+            }) if entity_id == target_id
+        ));
+
+        let (mut bad_temporal, [_, _, _, tail_id], _) = result_destruction_link_fixture();
+        bad_temporal
+            .substrate
+            .entities
+            .get_mut(tail_id)
+            .unwrap()
+            .temporal_manager
+            .as_mut()
+            .unwrap()
+            .previous_owner_id = None;
+        assert!(matches!(
+            bad_temporal.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::InvalidTemporalReciprocalState { .. })
+        ));
     }
 }

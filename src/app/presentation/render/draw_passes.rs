@@ -34,8 +34,7 @@ pub(super) struct DrawPassData<'a> {
     pub unit_pages: &'a [usize],
     pub unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub shp_paged: &'a [Vec<SpriteInstance>],
-    pub top_unit_pages: &'a [usize],
-    pub top_shp_pages: &'a [usize],
+    pub flat_layer_draws: &'a [super::draw_plan_lowering::FlatLayerDraw],
     pub ghost_page: u8,
 }
 
@@ -218,17 +217,53 @@ pub(super) fn dispatch_draw_passes(
     // Terrain, units, infantry, and building-owned pieces share the exact
     // signed X+Y + stable-registration order. Atlas bindings dispatch only
     // after the parent slot has been selected.
-    merge_passes::draw_native_ground_object_pass(
-        &mut pass,
-        &state.renderer.batch_renderer,
-        pool,
-        data.ground,
-        state.match_state.match_presentation.overlay_atlas.as_ref(),
-        state.match_state.match_presentation.unit_atlas.as_ref(),
-        &transition_cache,
-        state.match_state.match_presentation.sprite_atlas.as_ref(),
-        state.match_state.match_presentation.palette_set.as_ref(),
-    );
+    if let Some((ground_buffer, ground_count)) = pool.get("ground_objects") {
+        assert_eq!(
+            ground_count as usize,
+            data.ground.instances.len(),
+            "native Ground upload must preserve every lowered instance",
+        );
+        for run in &data.ground.runs {
+            if let super::draw_plan_lowering::GroundTexture::AnimShadowShpPage(page) = run.target {
+                // Native DrawIt submits this immediately after its body. End
+                // the sRGB pass, edit the aliased encoded destination once per
+                // stencil instance, then resume both colour and depth state.
+                drop(pass);
+                if let Some(texture) = state
+                    .match_state
+                    .match_presentation
+                    .sprite_atlas
+                    .as_ref()
+                    .and_then(|atlas| atlas.page(page))
+                {
+                    state.renderer.combat_light_renderer.draw_anim_shadow_run(
+                        encoder,
+                        &state.renderer.depth_view,
+                        &state.renderer.batch_renderer,
+                        &texture.texture,
+                        ground_buffer,
+                        run.start,
+                        run.count,
+                        [tac_x, tac_y, tac_w, tac_h],
+                    );
+                }
+                pass = begin_main_load_pass(encoder, view, &state.renderer.depth_view);
+                pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
+            } else {
+                merge_passes::draw_native_ground_object_standard_run(
+                    &mut pass,
+                    &state.renderer.batch_renderer,
+                    run,
+                    ground_buffer,
+                    state.match_state.match_presentation.overlay_atlas.as_ref(),
+                    state.match_state.match_presentation.unit_atlas.as_ref(),
+                    &transition_cache,
+                    state.match_state.match_presentation.sprite_atlas.as_ref(),
+                    state.match_state.match_presentation.palette_set.as_ref(),
+                );
+            }
+        }
+    }
 
     // Scheduler-owned effects not yet carrying verified class-specific
     // YSortAdjust remain in the pre-existing residual SHP stream.
@@ -309,14 +344,10 @@ pub(super) fn dispatch_draw_passes(
     }
 
     // --- Step 7.7: The band above Ground (gamemd layers 3 and 4) ---
-    // The native object loop walks its display layers in index order and only
-    // layer 2 is kept sorted, so everything an air locomotor puts in layers 3
-    // and 4 is drawn after every ground object, in submission order. That is
-    // the whole reason this pass exists: an aircraft off its pad must never be
-    // covered by a building or a unit, whatever iso row it happens to be over.
-    //
-    // Instance order inside the band is emission order, not depth — see the
-    // note on `top_unit` in build_instances.
+    // The native object loop walks its display layers in numeric order and only
+    // layer 2 is sorted. The tagged schedule consumes layer 3 completely before
+    // layer 4 and uses the saved persistent Submit_Object order inside each
+    // layer, interrupting atlas families without changing order.
     //
     // The SHP half goes through passthrough, which does no depth test at all —
     // the same thing the native sprite blitters do for these layers. The voxel
@@ -325,36 +356,88 @@ pub(super) fn dispatch_draw_passes(
     // row (see helpers::ground_sort_row) that test passes for everything the
     // body flies over, so the residual is a cliff face standing in a *nearer*
     // iso row than the body's own cell, which its lifted sprite does not reach.
-    if let (Some(unit_atlas), Some(palette_set)) =
-        (state.match_state.match_presentation.unit_atlas.as_ref(), state.match_state.match_presentation.palette_set.as_ref())
-    {
-        if let Some((buf, count)) = pool.get("unit_top") {
-            if count > 0 {
-                merge_passes::draw_unit_atlas_page_runs(
+    let unit_top = pool.get("unit_top");
+    let shp_top = pool.get("shp_top");
+    for draw in data.flat_layer_draws {
+        match draw.target {
+            super::draw_plan_lowering::FlatDrawTarget::Unit { page, index } => {
+                let (Some(unit_atlas), Some(palette_set), Some((buffer, count))) = (
+                    state.match_state.match_presentation.unit_atlas.as_ref(),
+                    state.match_state.match_presentation.palette_set.as_ref(),
+                    unit_top,
+                ) else {
+                    continue;
+                };
+                assert!(
+                    index < count,
+                    "flat VXL draw index must fit its GPU buffer"
+                );
+                let texture = unit_atlas.page_texture(page).unwrap_or_else(|| {
+                    panic!(
+                        "flat VXL draw references missing UnitAtlas page {} of {}",
+                        page,
+                        unit_atlas.page_count(),
+                    )
+                });
+                state.renderer.batch_renderer.draw_voxel_sprites_range(
                     &mut pass,
-                    &state.renderer.batch_renderer,
-                    unit_atlas,
-                    palette_set,
-                    buf,
-                    data.top_unit_pages,
-                    0,
-                    count,
+                    texture,
+                    &palette_set.bind_group,
+                    buffer,
+                    index,
+                    1,
                 );
             }
+            super::draw_plan_lowering::FlatDrawTarget::Shp {
+                page,
+                index,
+                mode,
+            } => {
+                let (Some(atlas), Some((buffer, count))) = (
+                    state.match_state.match_presentation.sprite_atlas.as_ref(),
+                    shp_top,
+                ) else {
+                    continue;
+                };
+                assert!(
+                    index < count,
+                    "flat SHP draw index must fit its GPU buffer"
+                );
+                let texture = atlas.page(page).unwrap_or_else(|| {
+                    panic!(
+                        "flat SHP draw references missing SpriteAtlas page {} of {}",
+                        page,
+                        atlas.page_count(),
+                    )
+                });
+                match mode {
+                    super::draw_plan_lowering::ShpCompositeMode::Standard => {
+                        state.renderer.batch_renderer.draw_passthrough_range(
+                            &mut pass,
+                            &texture.texture,
+                            buffer,
+                            index,
+                            1,
+                        );
+                    }
+                    super::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve => {
+                        drop(pass);
+                        state.renderer.combat_light_renderer.draw_anim_shadow_run(
+                            encoder,
+                            &state.renderer.depth_view,
+                            &state.renderer.batch_renderer,
+                            &texture.texture,
+                            buffer,
+                            index,
+                            1,
+                            [tac_x, tac_y, tac_w, tac_h],
+                        );
+                        pass = begin_main_load_pass(encoder, view, &state.renderer.depth_view);
+                        pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
+                    }
+                }
+            }
         }
-    }
-    if let (Some(atlas), Some((buffer, count))) = (state.match_state.match_presentation.sprite_atlas.as_ref(), pool.get("shp_top"))
-        && count > 0
-    {
-        merge_passes::draw_shp_atlas_page_runs(
-            &mut pass,
-            &state.renderer.batch_renderer,
-            atlas,
-            buffer,
-            data.top_shp_pages,
-            0,
-            count,
-        );
     }
 
     // --- Step 7.8: Persistent combat-light vector ---

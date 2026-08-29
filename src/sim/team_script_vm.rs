@@ -76,6 +76,10 @@ pub struct TeamTypeDefinition {
     pub priority: i32,
     /// TeamType `IsBaseDefense=` byte used by responder admission/assignment.
     pub is_base_defense: bool,
+    /// Signed `TeamTypeClass+0xC0`, parsed from `MindControlDecision=`. Zero
+    /// keeps CaptureManager's weighted roll; any nonzero signed value replaces
+    /// the selected 1-based fate action after the roll has already consumed RNG.
+    pub mind_control_decision: i32,
     /// `TeamTypeClass+0xEC`: post-load fold of resolved TaskForce movement rows.
     pub combined_movement_zone: MovementZone,
     /// `TeamTypeClass+0xF0`: whether AI eligibility compares House base zones.
@@ -195,6 +199,12 @@ impl TeamAiInstallDiagnostic {
 pub struct TeamScriptMember {
     pub entity_id: u64,
     pub member_type: TeamMemberTypeIdentity,
+    /// `FootClass::HasSpecialBuildingEntryIntent @ 0x004E0080` as observed by
+    /// Team recruitment at `0x006EA79D`. Rust currently represents the active
+    /// `+0x68F` Bio Reactor intent; future `+0x690/+0x691` owners must feed the
+    /// same admission bit rather than widening TeamScriptVm state.
+    #[serde(default)]
+    pub has_special_building_entry_intent: bool,
 }
 
 /// Action-19 side effect emitted in TeamClass member-list order.
@@ -444,7 +454,9 @@ impl TeamScriptVm {
             for _ in 0..entry.count.max(0) {
                 let Some((index, candidate)) =
                     candidates.iter().enumerate().find(|(index, candidate)| {
-                        !used[*index] && candidate.member_type == entry.member_type
+                        !used[*index]
+                            && !candidate.has_special_building_entry_intent
+                            && candidate.member_type == entry.member_type
                     })
                 else {
                     break;
@@ -483,6 +495,79 @@ impl TeamScriptVm {
                 (team.id, is_base_defense)
             })
         })
+    }
+
+    /// Resolve the active TeamType override for one controller through its
+    /// live TeamClass membership. Absence and an authored zero are equivalent
+    /// at the CaptureManager callsite, but the signed field remains preserved
+    /// in the registered TeamType and snapshot.
+    pub(crate) fn mind_control_decision_for_member(&self, entity_id: u64) -> i32 {
+        self.teams
+            .values()
+            .find(|team| team.members.contains(&entity_id))
+            .and_then(|team| team.team_type_id)
+            .and_then(|team_type_id| self.team_types.get(&team_type_id))
+            .map_or(0, |team_type| team_type.mind_control_decision)
+    }
+
+    /// `TeamClass::RemoveMember` prerequisite for capture fate. Native removes
+    /// a victim from its current Team before human-House and weighted-action
+    /// gates, so this visit is in Team construction order and updates the
+    /// type-count summary atomically with the member vector.
+    pub(crate) fn remove_member(
+        &mut self,
+        entity_id: u64,
+        member_type: TeamMemberTypeIdentity,
+    ) -> bool {
+        let Some(team) = self
+            .teams
+            .values_mut()
+            .find(|team| team.members.contains(&entity_id))
+        else {
+            return false;
+        };
+        let Some(index) = team.members.iter().position(|id| *id == entity_id) else {
+            return false;
+        };
+        team.members.remove(index);
+        if let Some(count_index) = team
+            .member_type_counts
+            .iter()
+            .position(|(identity, _)| *identity == member_type)
+        {
+            let count = &mut team.member_type_counts[count_index].1;
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                team.member_type_counts.remove(count_index);
+            }
+        }
+        true
+    }
+
+    /// Capture fate's forced `TeamClass::Add_Member(..., 1)` path. The victim
+    /// head-links ahead of the old member list and the flag suppresses the
+    /// ordinary TaskForce/type-count increment.
+    pub(crate) fn add_member_to_controller_team(
+        &mut self,
+        controller_id: u64,
+        victim: TeamScriptMember,
+    ) -> bool {
+        if self
+            .teams
+            .values()
+            .any(|team| team.members.contains(&victim.entity_id))
+        {
+            return false;
+        }
+        let Some(team) = self
+            .teams
+            .values_mut()
+            .find(|team| team.members.contains(&controller_id))
+        else {
+            return false;
+        };
+        team.members.insert(0, victim.entity_id);
+        true
     }
 
     /// Native `FUN_006EC250`: visit TeamClass instances in creation order,
@@ -980,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn task_force_admission_uses_entry_then_candidate_order() {
+    fn task_force_admission_uses_entry_order_and_rejects_special_building_intent() {
         let owner = InternedId::from_index(1);
         let script = InternedId::from_index(2);
         let task_force = InternedId::from_index(3);
@@ -1021,6 +1106,7 @@ mod tests {
             script_id: script,
             task_force_id: task_force,
             priority: 0,
+            mind_control_decision: 0,
             is_base_defense: false,
             combined_movement_zone: MovementZone::Fly,
             base_zone_relation_enforced: true,
@@ -1033,14 +1119,22 @@ mod tests {
                 TeamScriptMember {
                     entity_id: 10,
                     member_type: tank_identity,
+                    has_special_building_entry_intent: false,
                 },
                 TeamScriptMember {
                     entity_id: 20,
                     member_type: infantry_identity,
+                    has_special_building_entry_intent: true,
                 },
                 TeamScriptMember {
                     entity_id: 30,
                     member_type: infantry_identity,
+                    has_special_building_entry_intent: false,
+                },
+                TeamScriptMember {
+                    entity_id: 40,
+                    member_type: infantry_identity,
+                    has_special_building_entry_intent: false,
                 },
             ],
             None,
@@ -1048,9 +1142,71 @@ mod tests {
         );
 
         let state = vm.team(team).expect("team");
-        assert_eq!(state.members(), &[20, 30, 10]);
+        assert_eq!(state.members(), &[30, 40, 10]);
         assert!(state.member_type_counts().contains(&(infantry_identity, 2)));
         assert!(state.member_type_counts().contains(&(tank_identity, 1)));
+    }
+
+    #[test]
+    fn capture_forced_add_head_links_without_task_force_count_increment() {
+        let owner = InternedId::from_index(1);
+        let script = InternedId::from_index(2);
+        let task_force = InternedId::from_index(3);
+        let team_type = InternedId::from_index(4);
+        let infantry = TeamMemberTypeIdentity {
+            category: ObjectCategory::Infantry,
+            id: InternedId::from_index(5),
+        };
+        let mut vm = TeamScriptVm::default();
+        vm.register_script(TeamScriptDefinition {
+            id: script,
+            source: TeamAiDefinitionSource::FixedAimd,
+            actions: vec![action(2, 0)],
+        });
+        vm.register_task_force(TeamTaskForceDefinition {
+            id: task_force,
+            source: TeamAiDefinitionSource::FixedAimd,
+            group: -1,
+            entries: vec![TeamTaskForceEntry {
+                member_type: infantry,
+                count: 1,
+            }],
+        });
+        vm.register_team_type(TeamTypeDefinition {
+            id: team_type,
+            script_id: script,
+            task_force_id: task_force,
+            priority: 0,
+            is_base_defense: false,
+            mind_control_decision: 1,
+            combined_movement_zone: MovementZone::Infantry,
+            base_zone_relation_enforced: false,
+            transport_crossing_required: false,
+        });
+        let team = vm.create_team_from_type(
+            owner,
+            team_type,
+            &[TeamScriptMember {
+                entity_id: 10,
+                member_type: infantry,
+                has_special_building_entry_intent: false,
+            }],
+            None,
+            0,
+        );
+        let counts_before = vm.team(team).unwrap().member_type_counts().to_vec();
+        assert!(vm.add_member_to_controller_team(
+            10,
+            TeamScriptMember {
+                entity_id: 20,
+                member_type: infantry,
+                has_special_building_entry_intent: false,
+            },
+        ));
+        let state = vm.team(team).unwrap();
+        assert_eq!(state.members(), &[20, 10]);
+        assert_eq!(state.member_type_counts(), counts_before);
+        assert_eq!(vm.mind_control_decision_for_member(10), 1);
     }
 
     #[test]
@@ -1088,6 +1244,7 @@ mod tests {
             script_id: script,
             task_force_id: task_force,
             priority: 0,
+            mind_control_decision: 0,
             is_base_defense: false,
             combined_movement_zone: MovementZone::Fly,
             base_zone_relation_enforced: true,
@@ -1101,10 +1258,12 @@ mod tests {
                 TeamScriptMember {
                     entity_id: 10,
                     member_type: vehicle_identity,
+                    has_special_building_entry_intent: false,
                 },
                 TeamScriptMember {
                     entity_id: 20,
                     member_type: infantry_identity,
+                    has_special_building_entry_intent: false,
                 },
             ],
             None,
@@ -1157,6 +1316,7 @@ mod tests {
                 script_id: script,
                 task_force_id: task_force,
                 priority,
+                mind_control_decision: 0,
                 is_base_defense,
                 combined_movement_zone: MovementZone::Fly,
                 base_zone_relation_enforced: !is_base_defense,
@@ -1168,6 +1328,7 @@ mod tests {
                 .map(|entity_id| TeamScriptMember {
                     entity_id,
                     member_type: member_identity,
+                    has_special_building_entry_intent: false,
                 })
                 .collect::<Vec<_>>();
             vm.create_team_from_type(owner, team_type, &candidates, None, 0)
@@ -1259,6 +1420,7 @@ mod tests {
             script_id: script,
             task_force_id: task_force,
             priority: 0,
+            mind_control_decision: 0,
             is_base_defense: false,
             combined_movement_zone: MovementZone::Fly,
             base_zone_relation_enforced: true,
@@ -1325,6 +1487,7 @@ mod tests {
             script_id: script,
             task_force_id: task_force,
             priority: 0,
+            mind_control_decision: 0,
             is_base_defense: false,
             combined_movement_zone: MovementZone::Fly,
             base_zone_relation_enforced: true,
@@ -1336,6 +1499,7 @@ mod tests {
             &[TeamScriptMember {
                 entity_id: 10,
                 member_type: member_identity,
+                has_special_building_entry_intent: false,
             }],
             None,
             99,

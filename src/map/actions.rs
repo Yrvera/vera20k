@@ -7,11 +7,47 @@
 use std::collections::HashMap;
 
 use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_value::atoi_lenient;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaterializedActionOperand {
+    Value(i32),
+    UnresolvedRegistry { param_type: i32, token: String },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionEntry {
     pub kind: i32,
     pub params: Vec<String>,
+    /// Materialized native `TActionClass+0x44` waypoint destination.
+    ///
+    /// `Some(0)` includes the constructor default retained by a missing token
+    /// and parameter types 5/9/11. `None` safely represents native `-1` from
+    /// a present non-alphabetic token.
+    pub waypoint_index: Option<u32>,
+}
+
+impl ActionEntry {
+    pub fn param_type(&self) -> i32 {
+        self.params.first().map_or(0, |value| atoi_lenient(value))
+    }
+
+    pub fn materialized_operand(&self) -> MaterializedActionOperand {
+        let param_type = self.param_type();
+        match param_type {
+            0 | 11 => MaterializedActionOperand::Value(
+                self.params.get(1).map_or(0, |value| atoi_lenient(value)),
+            ),
+            5 | 9 => MaterializedActionOperand::Value(
+                self.params.get(6).map_or(0, |value| atoi_lenient(value)),
+            ),
+            6 | 7 | 8 => MaterializedActionOperand::UnresolvedRegistry {
+                param_type,
+                token: self.params.get(1).cloned().unwrap_or_default(),
+            },
+            _ => MaterializedActionOperand::Value(0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +58,45 @@ pub struct MapAction {
 }
 
 pub type ActionMap = HashMap<String, MapAction>;
+
+/// Decode the alphabetic waypoint token stored in action field 8.
+///
+/// gamemd-derived: `TActionClass::Read @ 0x006DD5B0` routes non-numeric
+/// parameter types through `FUN_00763690`. That helper examines at most two
+/// ASCII letters, case-insensitively: `A..Z` are `0..25`, and a second letter
+/// extends the index as `26 * first + second + 26`. A non-letter first byte is
+/// the native `-1` sentinel, represented safely as `None` here.
+pub fn decode_waypoint_token(token: &str) -> Option<u32> {
+    let bytes = token.as_bytes();
+    let first = ascii_waypoint_letter(*bytes.first()?)?;
+    let Some(&second_byte) = bytes.get(1) else {
+        return Some(first);
+    };
+    let Some(second) = ascii_waypoint_letter(second_byte) else {
+        return Some(first);
+    };
+    Some(26 * first + second + 26)
+}
+
+/// Apply the `TActionClass` constructor/read contract around the decoder.
+///
+/// The constructor initializes the destination to waypoint 0. `Read` replaces
+/// it only when `strtok` returns token 8, so an absent or empty-at-end token
+/// retains zero. A present whitespace/non-letter token does reach the decoder
+/// and is invalid.
+pub fn read_waypoint_token(token: Option<&str>) -> Option<u32> {
+    match token {
+        None | Some("") => Some(0),
+        Some(token) => decode_waypoint_token(token),
+    }
+}
+
+fn ascii_waypoint_letter(byte: u8) -> Option<u32> {
+    byte.to_ascii_uppercase()
+        .checked_sub(b'A')
+        .filter(|value| *value < 26)
+        .map(u32::from)
+}
 
 /// Parse `[Actions]` into an id -> action record map.
 pub fn parse_actions(ini: &IniFile) -> ActionMap {
@@ -39,11 +114,12 @@ pub fn parse_actions(ini: &IniFile) -> ActionMap {
             continue;
         }
         let id = id.to_ascii_uppercase();
-        let fields: Vec<String> = raw_value
-            .split(',')
+        let raw_fields: Vec<&str> = raw_value.split(',').collect();
+        let fields: Vec<String> = raw_fields
+            .iter()
             .map(|part| part.trim().to_string())
             .collect();
-        let entries = parse_action_entries(&fields);
+        let entries = parse_action_entries(&fields, &raw_fields);
         actions.insert(
             id.clone(),
             MapAction {
@@ -60,7 +136,7 @@ pub fn parse_actions(ini: &IniFile) -> ActionMap {
     actions
 }
 
-fn parse_action_entries(fields: &[String]) -> Vec<ActionEntry> {
+fn parse_action_entries(fields: &[String], raw_fields: &[&str]) -> Vec<ActionEntry> {
     if fields.is_empty() {
         return Vec::new();
     }
@@ -69,31 +145,77 @@ fn parse_action_entries(fields: &[String]) -> Vec<ActionEntry> {
     if let Some(count) = declared_count {
         let payload = &fields[1..];
         let chunk_len = 8;
-        let max_chunks = payload.len() / chunk_len;
-        let chunk_count = count.min(max_chunks);
-        if chunk_count > 0 {
-            return payload
-                .chunks_exact(chunk_len)
-                .take(chunk_count)
-                .filter_map(|chunk| {
-                    let kind = chunk[0].trim().parse::<i32>().ok()?;
-                    Some(ActionEntry {
-                        kind,
-                        params: chunk[1..].to_vec(),
-                    })
-                })
-                .collect();
+        if count > 0
+            && payload
+                .first()
+                .is_some_and(|kind| kind.parse::<i32>().is_ok())
+        {
+            let raw_payload = &raw_fields[1..];
+            let mut cursor = 0usize;
+            let mut parsed = Vec::with_capacity(count);
+            for index in 0..count {
+                let remaining_actions = count - index - 1;
+                let remaining = payload.len().saturating_sub(cursor);
+                if remaining < 7 {
+                    break;
+                }
+                // Only a trailing-final empty/missing waypoint can disappear
+                // through strtok. Earlier chunks must retain all eight tokens
+                // so the next ActionID is not consumed as their waypoint.
+                let take = if remaining >= chunk_len + remaining_actions * chunk_len {
+                    chunk_len
+                } else if remaining_actions == 0 {
+                    7
+                } else {
+                    break;
+                };
+                let chunk = &payload[cursor..cursor + take];
+                let raw_chunk = &raw_payload[cursor..cursor + take];
+                cursor += take;
+                let Some(kind) = chunk[0].trim().parse::<i32>().ok() else {
+                    break;
+                };
+                let params = chunk[1..].to_vec();
+                let waypoint_index = materialize_waypoint_index(
+                    chunk.get(1).map(String::as_str),
+                    raw_chunk.get(7).copied(),
+                );
+                parsed.push(ActionEntry {
+                    kind,
+                    params,
+                    waypoint_index,
+                });
+            }
+            return parsed;
         }
     }
 
     let kind = fields[0].trim().parse::<i32>().ok();
     kind.map(|kind| {
+        let params = fields[1..].to_vec();
+        let waypoint_index = materialize_waypoint_index(
+            fields.get(1).map(String::as_str),
+            raw_fields.get(7).copied(),
+        );
         vec![ActionEntry {
             kind,
-            params: fields[1..].to_vec(),
+            params,
+            waypoint_index,
         }]
     })
     .unwrap_or_default()
+}
+
+fn materialize_waypoint_index(param_type: Option<&str>, token_8: Option<&str>) -> Option<u32> {
+    if matches!(
+        param_type.and_then(|value| value.trim().parse::<i32>().ok()),
+        Some(5 | 9 | 11)
+    ) {
+        // These parameter types parse token 8 numerically into other TAction
+        // fields and leave the constructor-initialized +0x44 untouched.
+        return Some(0);
+    }
+    read_waypoint_token(token_8)
 }
 
 #[cfg(test)]
@@ -142,6 +264,7 @@ mod tests {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                     ActionEntry {
                         kind: 112,
@@ -154,6 +277,7 @@ mod tests {
                             "0".to_string(),
                             "9".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                 ],
             })
@@ -168,6 +292,7 @@ mod tests {
                 &[ActionEntry {
                     kind: 11,
                     params: vec!["Americans".to_string(), "5".to_string()],
+                    waypoint_index: Some(0),
                 }][..]
             )
         );
@@ -177,5 +302,76 @@ mod tests {
     fn test_missing_actions_is_empty() {
         let ini = IniFile::from_str("[Map]\nTheater=TEMPERATE\n");
         assert!(parse_actions(&ini).is_empty());
+    }
+
+    #[test]
+    fn waypoint_tokens_follow_the_native_two_letter_decoder() {
+        for (token, expected) in [
+            ("A", Some(0)),
+            ("Z", Some(25)),
+            ("a", Some(0)),
+            ("P", Some(15)),
+            ("AA", Some(26)),
+            ("aa", Some(26)),
+            ("NZ", Some(389)),
+            ("ZZ", Some(701)),
+            ("", None),
+            ("7", None),
+            ("   ", None),
+            ("A7", Some(0)),
+            ("NZignored", Some(389)),
+        ] {
+            assert_eq!(decode_waypoint_token(token), expected, "token {token:?}");
+        }
+    }
+
+    #[test]
+    fn action_read_preserves_ctor_zero_but_not_present_whitespace() {
+        assert_eq!(read_waypoint_token(None), Some(0));
+        assert_eq!(read_waypoint_token(Some("")), Some(0));
+        assert_eq!(read_waypoint_token(Some("   ")), None);
+
+        let ini = IniFile::from_str(
+            "[Actions]\n\
+             EMPTY=1,137,0,0,0,0,0,0,\n\
+             MISSING=1,112,0,0,0,0,0,0\n\
+             ALPHA=2,48,0,0,0,0,0,0,NZ,112,0,0,0,0,0,0,7\n\
+             NUMERIC=3,48,5,0,0,0,0,0,P,112,9,0,0,0,0,0,NZ,137,11,0,0,0,0,0,AA\n",
+        );
+        let actions = parse_actions(&ini);
+        assert_eq!(actions["EMPTY"].entries[0].waypoint_index, Some(0));
+        assert_eq!(actions["MISSING"].entries[0].kind, 112);
+        assert_eq!(actions["MISSING"].entries[0].params.len(), 6);
+        assert_eq!(actions["MISSING"].entries[0].waypoint_index, Some(0));
+        assert_eq!(actions["ALPHA"].entries[0].waypoint_index, Some(389));
+        assert_eq!(actions["ALPHA"].entries[1].waypoint_index, None);
+        assert_eq!(
+            actions["NUMERIC"]
+                .entries
+                .iter()
+                .map(|entry| (entry.kind, entry.waypoint_index))
+                .collect::<Vec<_>>(),
+            vec![(48, Some(0)), (112, Some(0)), (137, Some(0))]
+        );
+    }
+
+    #[test]
+    fn action_108_materializes_full_signed_operand_before_byte_use() {
+        let actions = parse_actions(&IniFile::from_str(
+            "[Actions]\nA=2,108,0,276,0,0,0,0,CA,108,7,SoundName,0,0,0,0,CB\n",
+        ));
+        let entries = &actions["A"].entries;
+        assert_eq!(
+            entries[0].materialized_operand(),
+            MaterializedActionOperand::Value(276)
+        );
+        assert_eq!(entries[0].waypoint_index, Some(78));
+        assert_eq!(
+            entries[1].materialized_operand(),
+            MaterializedActionOperand::UnresolvedRegistry {
+                param_type: 7,
+                token: "SoundName".to_string(),
+            }
+        );
     }
 }

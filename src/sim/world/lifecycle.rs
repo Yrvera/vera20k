@@ -23,6 +23,7 @@ use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 
 use super::Simulation;
+use super::display_layers::entity_display_layer;
 use super::substrate::ObjectKind;
 
 /// Borrowed map authority carried through one synchronous ObjectClass UnInit
@@ -722,6 +723,10 @@ impl Simulation {
                 }
                 return RevealOutcome::Failed(RevealFailure::MarkFailed);
             }
+            // Native HouseClass::Add_Tracking suppresses this re-add while the
+            // Infantry absorber-occupant byte is set. Ordinary newly materialized
+            // infantry establish their +0x438/count contribution here.
+            self.add_infantry_tracking_once(stable_id);
             if let Some(entity) = self.substrate.entities.get_mut(stable_id)
                 && entity.spotlight_capable
                 && entity.category == crate::map::entities::EntityCategory::Structure
@@ -733,7 +738,27 @@ impl Simulation {
                     target_id: None,
                 });
             }
+            // FootClass::Unlimbo @ 0x004D7170 dispatches active Drive/Ship
+            // Force_Slope at 0x004D71A9 only after TechnoClass placement succeeds.
+            // This precedes display/Logic exposure and must not run on either
+            // failed placement path above or for attached Building upgrades.
+            let reveal_slope = self.substrate.entities.get(stable_id).and_then(|entity| {
+                self.resolved_terrain
+                    .as_ref()?
+                    .cell(entity.position.rx, entity.position.ry)
+                    .map(|cell| cell.slope_type)
+            });
+            if let Some(sampled_slope) = reveal_slope
+                && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+            {
+                crate::sim::movement::slope_transition::snap_after_successful_unlimbo(
+                    entity,
+                    sampled_slope,
+                    self.session.binary_frame,
+                );
+            }
         }
+        self.fill_base_plan_from_successful_building_unlimbo(stable_id);
         if !self
             .substrate
             .entities
@@ -745,11 +770,14 @@ impl Simulation {
             };
         }
         if !attached_upgrade {
+            self.append_live_build_const(stable_id);
+            self.append_live_capture_facilities(stable_id);
             self.refresh_waypoint_edge_from_committed_structure(stable_id);
             self.mark_building_base_reservation(stable_id);
         }
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
+        self.submit_display_object(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealDisplayBoundary);
 
@@ -759,6 +787,73 @@ impl Simulation {
             false
         };
         RevealOutcome::Revealed { logic_registered }
+    }
+
+    /// `BuildingClass::Unlimbo @ 0x00440580` calls
+    /// `FUN_0042F260 @ 0x0042F260` at `0x0044159D..0x004415B3` for
+    /// successful non-human BasePlan satisfaction.
+    fn fill_base_plan_from_successful_building_unlimbo(&mut self, stable_id: u64) {
+        let Some((owner, type_index, packed_cell, has_undeploy_target)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
+                (entity.category == EntityCategory::Structure && entity.base_plan_type_index >= 0)
+                    .then_some((
+                        entity.owner,
+                        entity.base_plan_type_index,
+                        crate::sim::base_plan::pack_base_plan_cell(
+                            i32::from(entity.position.rx),
+                            i32::from(entity.position.ry),
+                        ),
+                        entity.base_plan_has_undeploy_target,
+                    ))
+            })
+        else {
+            return;
+        };
+        let game_mode_nonzero = self.session.game_mode_nonzero;
+        let Some(house) = self.houses.get_mut(&owner) else {
+            return;
+        };
+        if house.is_controlled_by_human(game_mode_nonzero) {
+            return;
+        }
+        house
+            .base_plan
+            .fill_successful_building(type_index, packed_cell, has_undeploy_target);
+    }
+
+    /// `BuildingClass__Limbo @ 0x00445880` calls
+    /// `FUN_0050A490 @ 0x0050A490` for BasePlan invalidation before the common
+    /// Techno/Object concealment path. VERA has no map-editor runtime; every
+    /// call to this lifecycle seam is therefore outside editor mode.
+    fn invalidate_base_plan_from_building_limbo(&mut self, stable_id: u64) {
+        let Some((owner, type_index, packed_cell, is_base_defense, in_limbo)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
+                (entity.category == EntityCategory::Structure && entity.base_plan_type_index >= 0)
+                    .then_some((
+                        entity.owner,
+                        entity.base_plan_type_index,
+                        crate::sim::base_plan::pack_base_plan_cell(
+                            i32::from(entity.position.rx),
+                            i32::from(entity.position.ry),
+                        ),
+                        entity.base_plan_is_defense,
+                        entity.lifecycle.in_limbo,
+                    ))
+            })
+        else {
+            return;
+        };
+        if in_limbo {
+            return;
+        }
+        if let Some(house) = self.houses.get_mut(&owner) {
+            house.base_plan.invalidate_limbo_building(
+                type_index,
+                packed_cell,
+                is_base_defense,
+                self.session.game_mode_nonzero,
+            );
+        }
     }
 
     /// Refresh the owning house's navigation edge from a live, map-committed
@@ -1183,6 +1278,13 @@ impl Simulation {
                 crate::sim::occupancy::clear_drive_head_to_occupation_for_remove(
                     drive, occupation, stable_id,
                 );
+            } else if let Some(ship) = entities
+                .get_mut(stable_id)
+                .and_then(|entity| entity.ship_locomotion.as_mut())
+            {
+                crate::sim::occupancy::clear_ship_track_occupation_for_remove(
+                    ship, occupation, stable_id,
+                );
             }
         }
         if let Some(layer) = layer {
@@ -1244,6 +1346,9 @@ impl Simulation {
             }
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 drive.current_occupation_cleared = true;
+            }
+            if let Some(ship) = entity.ship_locomotion.as_mut() {
+                ship.current_occupation_cleared = true;
             }
         }
         true
@@ -1392,6 +1497,24 @@ impl Simulation {
             self.add_entity_occupancy(stable_id);
         }
         self.sync_air_spatial_membership(stable_id);
+        self.sync_display_layer_for_object(stable_id);
+        stats
+    }
+
+    /// Resume only the Jumpjet tail suspended at its crate xref. The ordinary
+    /// altitude/speed/object-list process entry has already run on this stack.
+    pub(crate) fn resume_air_movement_crate_tail_one(
+        &mut self,
+        stable_id: u64,
+    ) -> crate::sim::movement::air_movement::AirMovementTickStats {
+        let stats = crate::sim::movement::air_movement::resume_air_movement_crate_tail(
+            &mut self.substrate.entities,
+            &[stable_id],
+            self.session.tick,
+        );
+        self.sync_fly_object_height(stable_id);
+        self.sync_air_spatial_membership(stable_id);
+        self.sync_display_layer_for_object(stable_id);
         stats
     }
 
@@ -1416,6 +1539,46 @@ impl Simulation {
         } else {
             None
         }
+    }
+
+    /// Current native display-layer answer for the object families whose
+    /// VXL/SHP bodies share the flat renderer schedule. Anim constructor data
+    /// is bound once; owner attachment overrides it to Ground.
+    fn display_layer_for_object(&self, stable_id: u64) -> Option<u8> {
+        if let Some(entity) = self.substrate.entities.get(stable_id) {
+            return Some(entity_display_layer(entity));
+        }
+        let anim = self.substrate.anims.get(stable_id)?;
+        if anim.owner_entity.is_some() {
+            return Some(super::display_layers::NATIVE_GROUND_LAYER);
+        }
+        u8::try_from(anim.native_display_layer)
+            .ok()
+            .filter(|layer| *layer <= super::display_layers::NATIVE_TOP_LAYER)
+    }
+
+    fn submit_display_object(&mut self, stable_id: u64) -> bool {
+        let Some(layer) = self.display_layer_for_object(stable_id) else {
+            return false;
+        };
+        self.substrate.flat_display_order.submit(stable_id, layer);
+        true
+    }
+
+    fn remove_display_object(&mut self, stable_id: u64) -> bool {
+        self.substrate.flat_display_order.remove(stable_id)
+    }
+
+    /// Production ObjectClass-AI re-layer seam. A stable answer is a no-op;
+    /// a changed answer removes the prior vector slot and appends the object to
+    /// its new unsorted layer tail.
+    pub(crate) fn sync_display_layer_for_object(&mut self, stable_id: u64) -> bool {
+        let Some(layer) = self.display_layer_for_object(stable_id) else {
+            return false;
+        };
+        self.substrate
+            .flat_display_order
+            .transition(stable_id, layer)
     }
 
     /// Read the per-object `in_logic_vector` membership flag for a classified
@@ -1554,10 +1717,12 @@ impl Simulation {
         {
             return false;
         }
+        self.submit_display_object(stable_id);
         self.register_logic_object(stable_id)
     }
 
     pub(crate) fn conceal_anim(&mut self, stable_id: u64) -> bool {
+        self.remove_display_object(stable_id);
         self.unregister_logic_object(stable_id)
     }
 
@@ -1710,6 +1875,7 @@ impl Simulation {
 
         self.lifecycle_outputs
             .push(LifecycleOutput::DisplayRemove { stable_id });
+        self.remove_display_object(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealDisplayBoundary);
         self.lifecycle_outputs
@@ -1779,6 +1945,9 @@ impl Simulation {
         if !self.substrate.entities.contains(stable_id) {
             return ConcealOutcome::MissingOrDead;
         }
+        // BuildingClass owns this pass before the common TechnoClass Limbo can
+        // clear committed type/cell facts or broadcast another expiry callback.
+        self.invalidate_base_plan_from_building_limbo(stable_id);
         // FootClass::Limbo @ 0x004DB260 and BuildingClass::Limbo @
         // 0x00445880 remove the exact deposited footprint before conceal.
         if let Some(rules) = context.rules() {
@@ -1814,6 +1983,7 @@ impl Simulation {
         if already_released {
             return;
         }
+        self.remove_infantry_tracking_once(stable_id);
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.owned_count_released = true;
         }
@@ -1999,12 +2169,7 @@ impl Simulation {
                 continue;
             }
             if let Some(passenger) = self.substrate.entities.get_mut(passenger_id) {
-                if matches!(
-                    passenger.passenger_role,
-                    PassengerRole::Inside { transport_id } if transport_id == carrier_id
-                ) {
-                    passenger.passenger_role = PassengerRole::None;
-                }
+                let _ = passenger.passenger_role.leave_transport_if(carrier_id);
                 passenger.health.current = 0;
             }
             self.uninit_with_context(passenger_id, context);
@@ -2103,17 +2268,10 @@ impl Simulation {
     /// went through a blocked-step Override.
     ///
     /// RESIDUALS, recorded rather than guessed:
-    /// - The native suppression clause skips the whole block for a listener
-    ///   whose manager sub-object points at the detaching object while that
-    ///   object is still alive and active — a mind-control / capture link
-    ///   holding its live victim as its target. It exists precisely so that the
-    ///   owner change *performed by* mind control does not make the controller
-    ///   drop its own new victim. VERA models mind control as a per-entity flag
-    ///   with no controller-to-victim link, so the clause cannot be evaluated
-    ///   and is omitted. Consequence: once VERA gives mind control a controller
-    ///   link, a controller will lose its target here where the original keeps
-    ///   it — every control event. Today the arm is unreachable because no
-    ///   controller link exists to hold the victim as a target.
+    /// - The native manager suppression clause is represented: while the
+    ///   detaching target is alive and active, a controller whose reciprocal
+    ///   MCNode owns that victim skips the whole restore/clear block. This is
+    ///   what lets CaptureUnit's owner change preserve its own new target.
     /// - The aircraft-Patrol arm, which clears two patrol-cursor fields on an
     ///   aircraft whose committed mission is Patrol. Neither field is
     ///   represented; the arm is a no-op for every ground object.
@@ -2121,10 +2279,44 @@ impl Simulation {
     ///   pointer slots that match the detaching object. Its element class is
     ///   UNKNOWN, so it is not modelled.
     pub(crate) fn stop_all_targeting_on_detach(&mut self, detach_id: u64) {
+        self.stop_all_targeting_on_detach_except(detach_id, None);
+    }
+
+    /// CaptureUnit holds the not-yet-linked target in its manager transaction
+    /// while ChangeOwner runs. That transient native pointer is stack-local in
+    /// Rust, so the mind-control caller supplies the controller identity here;
+    /// established MCNodes continue to suppress through persistent state.
+    pub(crate) fn stop_all_targeting_on_detach_except(
+        &mut self,
+        detach_id: u64,
+        transient_capture_controller: Option<u64>,
+    ) {
         let mut listeners = self.substrate.entities.keys_sorted();
         listeners.reverse();
 
+        let detach_is_live_and_active = self
+            .substrate
+            .entities
+            .get(detach_id)
+            .is_some_and(|target| target.is_object_alive() && target.in_logic_vector);
+
         for listener_id in listeners {
+            let manager_owns_detaching_target = detach_is_live_and_active
+                && (transient_capture_controller == Some(listener_id)
+                    || self
+                        .substrate
+                        .entities
+                        .get(listener_id)
+                        .and_then(|listener| listener.capture_manager.as_ref())
+                        .is_some_and(|manager| {
+                            manager
+                                .controlled_nodes
+                                .iter()
+                                .any(|node| node.victim_id == detach_id)
+                        }));
+            if manager_owns_detaching_target {
+                continue;
+            }
             if !self.listener_targets(listener_id, detach_id) {
                 continue;
             }
@@ -2206,7 +2398,7 @@ impl Simulation {
 
             // TechnoClass removes an expiring passenger from its CargoClass before
             // clearing its target/archive/manager reference family.
-            if let PassengerRole::Transport { cargo } = &mut listener.passenger_role {
+            if let Some(cargo) = listener.passenger_role.cargo_mut() {
                 let _ = cargo.disembark(expired_id);
             }
         }
@@ -2305,17 +2497,14 @@ impl Simulation {
             }
         }
 
-        let clear_passenger_role = match &listener.passenger_role {
-            PassengerRole::Transport { .. } => false,
-            PassengerRole::Boarding {
-                target_transport_id,
-                ..
-            } => *target_transport_id == expired_id,
-            PassengerRole::Inside { transport_id } => *transport_id == expired_id,
-            PassengerRole::None => false,
-        };
-        if clear_passenger_role {
+        let boarding_expired = matches!(
+            listener.passenger_role,
+            PassengerRole::Boarding { target_transport_id, .. } if target_transport_id == expired_id
+        );
+        if boarding_expired {
             listener.passenger_role = PassengerRole::None;
+        } else {
+            let _ = listener.passenger_role.leave_transport_if(expired_id);
         }
 
         if let Some(homing) = listener.homing_state.as_mut() {
@@ -2376,6 +2565,14 @@ impl Simulation {
         else {
             return;
         };
+
+        // gamemd-derived: the House pointer-expiry handler reached by this
+        // synchronous broadcast stable-removes a BuildConst Building while it
+        // is still alive, marked, and resolvable. Keeping the House mutation
+        // at this callback boundary also covers direct UnInit/destruction;
+        // Conceal's already-limbo return never reaches it.
+        self.remove_build_const_from_owner(expired_id);
+        self.remove_capture_facilities_from_owner(expired_id);
 
         // `BulletClass::PointerExpired @ 0x004684E0` performs the packed
         // `MapClass::Get_CellClass @ 0x005657A0` lookup only for a matching
@@ -2533,6 +2730,20 @@ impl Simulation {
             return;
         }
 
+        // FootClass::UnInit releases every reversible mind-control victim
+        // before ObjectClass pointer expiry. Fatal paths already enter the same
+        // idempotent transaction at the ReceiveDamage pre-death rung; direct
+        // represented UnInit (transport/sell/script teardown) reaches it here.
+        if let Some(rules) = context.rules()
+            && self
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| entity.capture_manager.is_some())
+        {
+            crate::sim::capture_manager::free_all(self, rules, stable_id);
+        }
+
         self.run_represented_uninit_pre_hook(stable_id);
         self.uninit_carried_passengers(stable_id, context);
         // `SpawnManagerClass::PointerExpired`, owner arm: `Kill_All_Spawns()`
@@ -2632,6 +2843,24 @@ impl Simulation {
             self.conceal_anim(stable_id);
             self.detach_anim_from_owner(stable_id);
         }
+        // A successful Ship final-pickup continuation still runs its native
+        // occupation call on a dead, already-unmarked tombstone. Its later
+        // scalar destruction therefore owns the final auxiliary-pair release;
+        // the ordinary RemoveContent gate has already returned on cell_marked.
+        let (entities, cell_occupation) = (
+            &mut self.substrate.entities,
+            &mut self.substrate.cell_occupation,
+        );
+        if let Some(ship) = entities
+            .get_mut(stable_id)
+            .and_then(|entity| entity.ship_locomotion.as_mut())
+        {
+            crate::sim::occupancy::clear_ship_track_occupation_for_remove(
+                ship,
+                cell_occupation,
+                stable_id,
+            );
+        }
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);
         let particle_system = self.substrate.particle_systems.finalize_remove(stable_id);
@@ -2721,5 +2950,272 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn flush_pending_delete(&mut self) {
         self.process_pending_delete();
+    }
+}
+
+#[cfg(test)]
+mod base_plan_lifecycle_tests {
+    use std::collections::BTreeMap;
+
+    use crate::map::entities::EntityCategory;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::object_type::ObjectCategory as RulesObjectCategory;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::base_plan::{BasePlanNode, pack_base_plan_cell};
+    use crate::sim::house_state::HouseState;
+    use crate::sim::scenario_bootstrap::initialize_map_roster_houses;
+    use crate::sim::world::Simulation;
+
+    fn rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nMaximumBuildingPlacementFailures=3\n\
+             [BuildingTypes]\n0=GAPOWR\n1=GACNST\n\
+             [GAPOWR]\nStrength=750\nIsBaseDefense=yes\n\
+             [GACNST]\nStrength=1000\nUndeploysInto=AMCV\n",
+        ))
+        .expect("base-plan lifecycle rules")
+    }
+
+    #[test]
+    fn gsi_04_05_scenario_plan_precedes_unlimbo_and_human_unlimbo_is_excluded() {
+        let rules = rules();
+        let scenario = IniFile::from_str(
+            "[Houses]\n0=Computer1\n\
+             [Computer1]\nPercentBuilt=44\nNodeCount=1\n000=GACNST,10,11\n",
+        );
+        let roster =
+            crate::map::houses::parse_house_roster(&scenario, &rules.color_schemes, Some(&rules));
+        let mut sim = Simulation::new();
+        initialize_map_roster_houses(&mut sim, &roster, Some(&rules));
+        let ai = sim.interner.get("Computer1").unwrap();
+        assert_eq!(sim.houses[&ai].base_plan.percent_built, 44);
+        assert!(!sim.houses[&ai].base_plan.nodes[0].filled);
+
+        let building = sim
+            .spawn_object("GACNST", "Computer1", 10, 11, 0, &rules, &BTreeMap::new())
+            .expect("scenario building");
+        assert!(sim.houses[&ai].base_plan.nodes[0].filled);
+        assert_eq!(sim.houses[&ai].base_plan.nodes[0].retry_count, 0);
+        let entity = sim.entities().get(building).unwrap();
+        assert_eq!(entity.category, EntityCategory::Structure);
+        assert_eq!(entity.base_plan_type_index, 1);
+        assert!(!entity.base_plan_is_defense);
+        assert!(entity.base_plan_has_undeploy_target);
+
+        let human = sim.interner.intern("Human1");
+        let mut human_house = HouseState::new(human, 0, None, true, 0, 10);
+        human_house.base_plan.nodes.push(BasePlanNode {
+            type_or_control: 0,
+            packed_cell: pack_base_plan_cell(20, 21),
+            filled: false,
+            retry_count: 7,
+        });
+        sim.houses.insert(human, human_house);
+        sim.session.house_order.push(human);
+        sim.spawn_object("GAPOWR", "Human1", 20, 21, 0, &rules, &BTreeMap::new())
+            .expect("human building");
+        assert!(!sim.houses[&human].base_plan.nodes[0].filled);
+        assert_eq!(sim.houses[&human].base_plan.nodes[0].retry_count, 7);
+    }
+
+    #[test]
+    fn gsi_04_05_unlimbo_human_control_gate_is_mode_sensitive() {
+        fn player_control_only_house(
+            sim: &mut Simulation,
+            owner_name: &str,
+            packed_cell: u32,
+        ) -> crate::sim::intern::InternedId {
+            let owner = sim.interner.intern(owner_name);
+            let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+            house.player_control = true;
+            house.base_plan.nodes.push(BasePlanNode {
+                type_or_control: 0,
+                packed_cell,
+                filled: false,
+                retry_count: 6,
+            });
+            sim.houses.insert(owner, house);
+            sim.session.house_order.push(owner);
+            owner
+        }
+
+        let rules = rules();
+        let mut nonzero = Simulation::new();
+        nonzero.session.game_mode_nonzero = true;
+        let nonzero_owner =
+            player_control_only_house(&mut nonzero, "SkirmishSlot", pack_base_plan_cell(40, 41));
+        nonzero
+            .spawn_object(
+                "GAPOWR",
+                "SkirmishSlot",
+                40,
+                41,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
+            .expect("nonzero-mode Building");
+        assert!(nonzero.houses[&nonzero_owner].base_plan.nodes[0].filled);
+        assert_eq!(
+            nonzero.houses[&nonzero_owner].base_plan.nodes[0].retry_count,
+            0
+        );
+
+        let mut campaign = Simulation::new();
+        let campaign_owner =
+            player_control_only_house(&mut campaign, "CampaignPlayer", pack_base_plan_cell(50, 51));
+        campaign
+            .spawn_object(
+                "GAPOWR",
+                "CampaignPlayer",
+                50,
+                51,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
+            .expect("campaign Building");
+        assert!(!campaign.houses[&campaign_owner].base_plan.nodes[0].filled);
+        assert_eq!(
+            campaign.houses[&campaign_owner].base_plan.nodes[0].retry_count,
+            6
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_undeploys_into_resolution_controls_base_plan_fallback() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=AMCV\n\
+             [BuildingTypes]\n0=NONEYARD\n1=ANGLEYARD\n2=REALYARD\n\
+             [AMCV]\nStrength=1000\n\
+             [NONEYARD]\nStrength=1000\nUndeploysInto=NoNe\n\
+             [ANGLEYARD]\nStrength=1000\nUndeploysInto=<nOnE>\n\
+             [REALYARD]\nStrength=1000\nUndeploysInto=amcv\n",
+        ))
+        .expect("UndeploysInto resolution rules");
+
+        assert!(rules.object("NONEYARD").unwrap().undeploys_into.is_none());
+        assert!(rules.object("ANGLEYARD").unwrap().undeploys_into.is_none());
+        let resolved = rules
+            .object("REALYARD")
+            .unwrap()
+            .undeploys_into
+            .as_deref()
+            .expect("real UnitType identity remains resolved");
+        assert!(
+            rules
+                .object_in_category(RulesObjectCategory::Vehicle, resolved)
+                .is_some()
+        );
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+        house.base_plan.nodes = vec![
+            BasePlanNode {
+                type_or_control: 0,
+                packed_cell: pack_base_plan_cell(70, 71),
+                filled: false,
+                retry_count: 4,
+            },
+            BasePlanNode {
+                type_or_control: 1,
+                packed_cell: pack_base_plan_cell(80, 81),
+                filled: false,
+                retry_count: 5,
+            },
+            BasePlanNode {
+                type_or_control: 2,
+                packed_cell: pack_base_plan_cell(90, 91),
+                filled: false,
+                retry_count: 6,
+            },
+        ];
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+
+        let none = sim
+            .spawn_object("NONEYARD", "Computer1", 10, 11, 0, &rules, &BTreeMap::new())
+            .expect("none-sentinel Building");
+        let angle = sim
+            .spawn_object(
+                "ANGLEYARD",
+                "Computer1",
+                12,
+                13,
+                0,
+                &rules,
+                &BTreeMap::new(),
+            )
+            .expect("angle-sentinel Building");
+        let real = sim
+            .spawn_object("REALYARD", "Computer1", 14, 15, 0, &rules, &BTreeMap::new())
+            .expect("resolved-undeploy Building");
+
+        assert!(
+            !sim.entities()
+                .get(none)
+                .unwrap()
+                .base_plan_has_undeploy_target
+        );
+        assert!(
+            !sim.entities()
+                .get(angle)
+                .unwrap()
+                .base_plan_has_undeploy_target
+        );
+        assert!(
+            sim.entities()
+                .get(real)
+                .unwrap()
+                .base_plan_has_undeploy_target
+        );
+        let plan = &sim.houses[&owner].base_plan.nodes;
+        assert!(!plan[0].filled, "none sentinel must not enable fallback");
+        assert_eq!(plan[0].retry_count, 4);
+        assert!(!plan[1].filled, "<none> sentinel must not enable fallback");
+        assert_eq!(plan[1].retry_count, 5);
+        assert!(plan[2].filled, "resolved UnitType enables fallback");
+        assert_eq!(plan[2].retry_count, 0);
+    }
+
+    #[test]
+    fn gsi_04_05_building_limbo_runs_base_plan_invalidation_before_conceal() {
+        let rules = rules();
+        let mut sim = Simulation::new();
+        sim.session.game_mode_nonzero = true;
+        let owner = sim.interner.intern("Computer1");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, false, 0, 10));
+        let building = sim
+            .spawn_object("GAPOWR", "Computer1", 30, 31, 0, &rules, &BTreeMap::new())
+            .expect("defense building");
+        let cell = pack_base_plan_cell(30, 31);
+        sim.houses.get_mut(&owner).unwrap().base_plan.nodes = vec![
+            BasePlanNode {
+                type_or_control: 0,
+                packed_cell: cell,
+                filled: true,
+                retry_count: 8,
+            },
+            BasePlanNode {
+                type_or_control: 1,
+                packed_cell: cell,
+                filled: false,
+                retry_count: -2,
+            },
+        ];
+
+        assert_eq!(sim.techno_limbo(building), super::ConcealOutcome::Concealed);
+        let plan = &sim.houses[&owner].base_plan;
+        assert_eq!(plan.nodes[0].type_or_control, -1);
+        assert_eq!(plan.nodes[0].packed_cell, 0);
+        assert!(plan.nodes[0].filled);
+        assert_eq!(plan.nodes[0].retry_count, 8);
+        assert_eq!(plan.nodes[1].type_or_control, 1);
+        assert_eq!(plan.nodes[1].packed_cell, 0);
+        assert!(!plan.nodes[1].filled);
+        assert_eq!(plan.nodes[1].retry_count, -2);
+        assert!(sim.entities().get(building).unwrap().lifecycle.in_limbo);
     }
 }

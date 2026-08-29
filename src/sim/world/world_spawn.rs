@@ -14,9 +14,12 @@ use super::{
 };
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{Animation, SequenceKind};
+use crate::sim::base_plan::pack_base_plan_cell;
+use crate::sim::base_plan_generation::{preflight_recalc, recalc_base_plan};
 use crate::sim::components::{
     BridgeOccupancy, BuildingDown, BuildingUp, HarvestOverlay, Health, VoxelAnimation,
 };
@@ -171,6 +174,20 @@ fn object_uses_voxel(type_id: &str, object: &ObjectType, rules: &RuleSet) -> boo
             object.category,
             ObjectCategory::Vehicle | ObjectCategory::Aircraft
         ))
+}
+
+/// A Foot object owns its configured locomotor independently of the parsed
+/// `Speed=` scalar. `DriveLocomotionClass::Process @ 0x004B0500` and
+/// `ShipLocomotionClass::Process @ 0x0069FC10` consume their class-local state
+/// without a Speed gate. That state is therefore load-bearing at Speed=0,
+/// while Structures remain outside Foot and other zero-speed custom
+/// locomotors retain the existing inactive compatibility behavior.
+fn should_construct_locomotor(category: EntityCategory, object: &ObjectType) -> bool {
+    object.speed > 0
+        || (matches!(
+            category,
+            EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Aircraft
+        ) && matches!(object.locomotor, LocomotorKind::Drive | LocomotorKind::Ship))
 }
 
 impl Simulation {
@@ -460,6 +477,10 @@ impl Simulation {
                 self.session.binary_frame,
                 techno_ctor_random_word,
             );
+            ge.attached_tag_id = map_ent
+                .attached_tag_id
+                .as_deref()
+                .map(|tag_id| self.interner.intern(tag_id));
             ge.base_defense_response.recruitable_a = map_ent.recruitable_a;
             ge.base_defense_response.recruitable_b = map_ent.recruitable_b;
 
@@ -520,9 +541,13 @@ impl Simulation {
             }
             // Locomotor for movable entities.
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
-                if obj.speed > 0 {
+                if should_construct_locomotor(map_ent.category, obj) {
                     let flight_level = rules.map_or(1500, |r| r.general.flight_level);
-                    let mut loco = LocomotorState::from_object_type(obj, flight_level);
+                    let mut loco = LocomotorState::from_object_type(
+                        obj,
+                        flight_level,
+                        self.session.binary_frame,
+                    );
                     if bridge_spawn.is_some() {
                         loco.layer = MovementLayer::Bridge;
                     }
@@ -967,10 +992,11 @@ impl Simulation {
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
-        if obj.speed > 0 {
+        if should_construct_locomotor(category, obj) {
             ge.locomotor = Some(LocomotorState::from_object_type(
                 obj,
                 rules.general.flight_level,
+                self.session.binary_frame,
             ));
             if ge.locomotor.as_ref().is_some_and(|locomotor| {
                 locomotor.kind == crate::rules::locomotor_type::LocomotorKind::Ship
@@ -1156,10 +1182,11 @@ impl Simulation {
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
-        if obj.speed > 0 {
+        if should_construct_locomotor(category, obj) {
             ge.locomotor = Some(LocomotorState::from_object_type(
                 obj,
                 rules.general.flight_level,
+                self.session.binary_frame,
             ));
             if ge.locomotor.as_ref().is_some_and(|locomotor| {
                 locomotor.kind == crate::rules::locomotor_type::LocomotorKind::Ship
@@ -1436,6 +1463,7 @@ impl Simulation {
 
         self.substrate.entities.insert(ge);
         self.increment_owned_count(&owner, category);
+        self.add_infantry_tracking_once(stable_id);
         stable_id
     }
 
@@ -1796,6 +1824,7 @@ impl Simulation {
                 entity.selected,
                 yard_obj.foundation.clone(),
                 entity.facing,
+                yard_obj.construction_yard,
             ))
         });
         let Some((
@@ -1808,6 +1837,7 @@ impl Simulation {
             was_selected,
             foundation,
             source_facing,
+            is_construction_yard,
         )) = deploy_data
         else {
             return false;
@@ -1870,6 +1900,37 @@ impl Simulation {
             return true;
         }
 
+        // Native successful deploy transaction:
+        // `UnitClass__Deploy @ 0x007393C0`, block `0x00739855..0x00739926`,
+        // calls `FUN_00505180 @ 0x00505180` only for a non-controlled
+        // ConstructionYard in a nonzero game mode. VERA preflights only the
+        // directly indexed Recalc vectors before the destructive MCV removal.
+        let recalc_context = self.houses.get(&owner_id).and_then(|house| {
+            (is_construction_yard
+                && self.session.game_mode_nonzero
+                && !house.is_controlled_by_human(true))
+            .then(|| {
+                let country_name = house
+                    .country
+                    .map(|country| self.interner.resolve(country).to_owned());
+                (
+                    country_name,
+                    house.side_index,
+                    house.difficulty,
+                    house.tech_level,
+                    house.base_plan.nodes.is_empty(),
+                )
+            })
+        });
+        if let Some((country_name, side_index, difficulty, _, true)) = &recalc_context {
+            let Some(country_name) = country_name.as_deref() else {
+                return false;
+            };
+            if preflight_recalc(rules, country_name, *side_index, *difficulty).is_err() {
+                return false;
+            }
+        }
+
         // Despawn the MCV.
         self.uninit_with_rules(stable_id, rules);
 
@@ -1888,6 +1949,37 @@ impl Simulation {
                 elapsed_ticks: 0,
                 total_ticks: 30,
             });
+        }
+
+        if let Some((country_name, side_index, difficulty, tech_level, _)) = recalc_context {
+            // The new Building's committed north-west anchor is the native
+            // `+0x9C/+0xA0` source. This bounded write order is load-bearing:
+            // primary center, optional Recalc, node zero, BasePlan center,
+            // then the three independent House AI activation latches.
+            let house = self
+                .houses
+                .get_mut(&owner_id)
+                .expect("qualifying deploy owner remains registered");
+            house.base_center = Some((rx, ry));
+            if house.base_plan.nodes.is_empty() {
+                recalc_base_plan(
+                    &mut house.base_plan,
+                    rules,
+                    country_name
+                        .as_deref()
+                        .expect("empty qualifying plan was preflighted with a country"),
+                    side_index,
+                    difficulty,
+                    tech_level,
+                    self.session.game_options.super_weapons,
+                    &mut self.scenario_rng,
+                );
+            }
+            if let Some(node_zero) = house.base_plan.nodes.first_mut() {
+                node_zero.packed_cell = pack_base_plan_cell(i32::from(rx), i32::from(ry));
+            }
+            house.base_plan_center = (rx, ry);
+            house.enable_ai_deploy_latches();
         }
 
         true
@@ -2114,6 +2206,15 @@ fn stamp_building_cell_profile(
         ge.building_hidden_occupancy = Some(obj.hidden_occupancy);
         ge.base_reservation_spacing = obj.base_reservation_spacing;
         ge.determines_waypoint_edge = obj.factory == Some(FactoryType::BuildingType);
+        ge.build_const_eligible = obj.build_const_eligible;
+        ge.grinding_facility = obj.grinding;
+        ge.absorber_facility = obj.unit_absorb || obj.infantry_absorb;
+        ge.base_plan_type_index = obj.base_plan_type_index;
+        ge.base_plan_is_defense = obj.is_base_defense;
+        // Projection of native BuildingType+0x408 after
+        // UnitTypeClass__FindOrAllocate @ 0x007480D0 has resolved
+        // `none`/`<none>` to a null pointer.
+        ge.base_plan_has_undeploy_target = obj.undeploys_into.is_some();
     }
 }
 
@@ -2163,6 +2264,7 @@ mod techno_constructor_tests {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         }
     }
 
@@ -2195,6 +2297,8 @@ mod techno_constructor_tests {
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
         };
         let cells = (0..10)
             .flat_map(|ry| {

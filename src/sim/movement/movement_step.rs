@@ -477,6 +477,9 @@ pub(super) fn handle_vehicle_rotation(
 
 /// Result of lepton position advancement.
 pub(super) enum AdvanceResult {
+    /// A native crate xref suspended the movement leaf. The Simulation owner
+    /// must dispatch/re-fetch, then re-enter with the stored resume tail.
+    CrateSuspended,
     /// Drive track is active — caller should `continue` (skip cell crossings).
     DriveTrackActive,
     /// Drive track crossed a cell boundary — caller must handle the cell
@@ -1043,6 +1046,8 @@ fn drive_track_handoff_footprint(
 enum FreshTrackOutcome {
     /// A curve was installed and the head cell reserved.
     Installed,
+    /// Selection stopped at one of ProcessMovement's synchronous crate xrefs.
+    CrateSuspended,
     /// The body is not on the head node's octant. gamemd commands the turn and
     /// returns without consuming a node or taking a step.
     TurnFirst(u8),
@@ -1169,6 +1174,135 @@ impl DriveCellAdmission<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn finish_fresh_track_after_first_pickup(
+    drive_locomotion: &mut Option<DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<ShipLocomotionRuntime>,
+    crate_probes: &mut Vec<super::crate_callers::MovementCrateProbe>,
+    process_crate_resume: &mut Option<super::crate_callers::ProcessMovementPickupResume>,
+    mut resume: super::crate_callers::ProcessMovementPickupResume,
+) -> FreshTrackOutcome {
+    // The second/final caller clears any callback destination, installs the
+    // immutable local endpoint, resolves it, and only then dispatches.
+    match resume.shared_kind {
+        LocomotorKind::Drive => {
+            if let Some(drive) = drive_locomotion.as_mut() {
+                drive.destination = None;
+                drive.destination = Some(resume.endpoint_coord);
+                drive.point_index = 0;
+                drive.track_valid = true;
+            }
+        }
+        LocomotorKind::Ship => {
+            if let Some(ship) = ship_locomotion.as_mut() {
+                ship.destination = None;
+                ship.destination = Some(resume.endpoint_coord);
+            }
+        }
+        _ => unreachable!("only Drive/Ship own ProcessMovement crate tails"),
+    }
+    accept_shared_track(
+        resume.shared_kind,
+        drive_locomotion,
+        ship_locomotion,
+        resume.endpoint,
+        resume.endpoint_coord,
+        resume.plan.nodes,
+    );
+    crate_probes.push(super::crate_callers::MovementCrateProbe {
+        callsite: if resume.shared_kind == LocomotorKind::Ship {
+            super::crate_callers::MovementCrateCallsite::ShipProcessMovementFinal
+        } else {
+            super::crate_callers::MovementCrateCallsite::DriveProcessMovementFinal
+        },
+        requested: resume.endpoint_coord,
+        saved_current_speed_fraction: resume.saved_current_speed_fraction,
+    });
+    resume.stage = super::crate_callers::ProcessMovementPickupStage::Final;
+    resume.admitted = false;
+    *process_crate_resume = Some(resume);
+    FreshTrackOutcome::CrateSuspended
+}
+
+/// Resume the successful second/final ProcessMovement crate caller after the
+/// synchronous callback has released every Simulation borrow.
+///
+/// Active `gamemd.exe` does **not** move the object to the installed endpoint
+/// here. Drive calls `Apply_Track_Occupation_Mode(endpoint, 1) @ 0x004B4705`;
+/// Ship dispatches pickup at `0x006A3D15` and reaches the same helper (callee
+/// `0x006A01A0`) at `0x006A3D34`. The object remains at its callback-visible
+/// coordinate and the already-installed RawTrack advances it on later paid
+/// points. Keeping this tail on `CellOccupationGrid` also preserves the
+/// required callback-before-mark order without splitting Position from the
+/// object-list occupancy owner.
+pub(crate) fn complete_process_movement_final_pickup(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    cell_occupation: &mut CellOccupationGrid,
+) -> bool {
+    let Some(resume) = entity.pending_process_movement_crate_resume.take() else {
+        return false;
+    };
+    if resume.stage != super::crate_callers::ProcessMovementPickupStage::Final {
+        entity.pending_process_movement_crate_resume = Some(resume);
+        return false;
+    }
+    debug_assert!(resume.admitted, "only an admitted final pickup tail may resume");
+
+    let next_occupation = (resume.endpoint_layer == MovementLayer::Ground)
+        .then(|| {
+            Some(DriveOccupationFootprint {
+                rx: u16::try_from(resume.endpoint.0).ok()?,
+                ry: u16::try_from(resume.endpoint.1).ok()?,
+                layer: MovementLayer::Ground,
+            })
+        })
+        .flatten();
+    let handoff_occupation = resume.handoff_occupation;
+    // The callback may have moved the object without changing the immutable
+    // RawTrack selection.  Apply_Track_Occupation_Mode still uses that
+    // original track endpoint/handoff, but replacement bookkeeping must
+    // preserve a coincident *live post-callback* body claim rather than the
+    // cell ProcessMovement occupied before dispatch.
+    let current_cell = (entity.position.rx, entity.position.ry);
+    let current_layer = entity.occupancy_list_layer().unwrap_or(resume.origin_layer);
+    if resume.shared_kind == LocomotorKind::Ship {
+        let current_occupation_cleared = entity
+            .ship_locomotion
+            .as_ref()
+            .is_some_and(|ship| ship.current_occupation_cleared);
+        let marked_current = (entity.lifecycle.cell_marked
+            && !entity.passenger_role.is_inside_transport()
+            && !current_occupation_cleared)
+        .then_some(DriveOccupationFootprint {
+            rx: current_cell.0,
+            ry: current_cell.1,
+            layer: current_layer,
+        });
+        if let Some(ship) = entity.ship_locomotion.as_mut() {
+            crate::sim::occupancy::replace_ship_track_occupation_mode_one(
+                ship,
+                cell_occupation,
+                entity.stable_id,
+                marked_current,
+                handoff_occupation,
+                next_occupation,
+            );
+        }
+    } else {
+        let mut occupation = Some(cell_occupation);
+        install_drive_head_to_occupation(
+            &mut entity.drive_locomotion,
+            &mut occupation,
+            entity.stable_id,
+            current_cell,
+            current_layer,
+            next_occupation,
+            handoff_occupation,
+        );
+    }
+    true
+}
+
 /// Run the fresh Drive/Ship curve selection for a mover standing on its own
 /// cell: index the turn table by the two leading path directions, install the
 /// curve at cursor 0, and reserve its head cell (two cells ahead for a turning
@@ -1188,6 +1322,9 @@ fn select_fresh_drive_track_at_current_cell(
     current_occupation_layer: MovementLayer,
     path_grid: Option<&PathGrid>,
     shared_kind: LocomotorKind,
+    crate_probes: &mut Vec<super::crate_callers::MovementCrateProbe>,
+    saved_current_speed_fraction: crate::util::native_x87::NativeF64Bits,
+    process_crate_resume: &mut Option<super::crate_callers::ProcessMovementPickupResume>,
 ) -> FreshTrackOutcome {
     let Some(next) = target.path.get(target.next_index).copied() else {
         return FreshTrackOutcome::None;
@@ -1238,10 +1375,11 @@ fn select_fresh_drive_track_at_current_cell(
     // the head node's octant turns in place and never reaches the cell test — is
     // answered before the cell question.
     //
-    // Ships keep their previous behaviour: they carry no Drive runtime and stamp
-    // no occupation mark, so there is nothing here for them to contend over.
-    // The ShipLocomotion equivalent is UNCHECKED. The forward RawTrack handoff
-    // cell is marked but NOT tested here; whether it can be doubly claimed is
+    // Ship's final ProcessMovement tail now stamps its own RawTrack handoff and
+    // endpoint pair. This pre-selection collision gate remains Drive-only: the
+    // exact Ship CanEnter/mask refusal branch is outside this corrected native
+    // final-tail call and remains UNCHECKED. The forward RawTrack handoff cell
+    // is marked but NOT tested here; whether it can be doubly claimed is also
     // UNCHECKED.
     if drive_locomotion.is_some() {
         let plan_head_index = target.next_index + plan.nodes - 1;
@@ -1320,9 +1458,16 @@ fn select_fresh_drive_track_at_current_cell(
     target.move_dir_len = d_len;
     *drive_track_state = Some(new_track);
     *facing_target = None;
+    if is_ship {
+        if let Some(ship) = ship_locomotion.as_mut() {
+            ship.track_index = i16::from(plan.selection.raw_track_index);
+        }
+    } else if let Some(drive) = drive_locomotion.as_mut() {
+        drive.track_index = i16::from(plan.selection.raw_track_index);
+        drive.point_index = 0;
+        drive.track_valid = true;
+    }
 
-    // The reserved head is the curve's endpoint: the head node for a straight
-    // run, the node after it for a turning curve.
     let head_index = target.next_index + plan.nodes - 1;
     let endpoint = (
         (i32::from(position.rx) + plan.head_dx) as i16,
@@ -1330,41 +1475,58 @@ fn select_fresh_drive_track_at_current_cell(
     );
     let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
     let endpoint_layer = target.layer_at(head_index);
-    accept_shared_track(
+    let mut resume = super::crate_callers::ProcessMovementPickupResume {
+        stage: super::crate_callers::ProcessMovementPickupStage::First,
+        plan,
         shared_kind,
-        drive_locomotion,
-        ship_locomotion,
+        origin_layer: current_occupation_layer,
         endpoint,
-        resolved_track_endpoint(
+        endpoint_layer,
+        endpoint_coord: resolved_track_endpoint(
             path_grid,
             endpoint_cell,
             current_occupation_layer == MovementLayer::Bridge,
             position.z,
         ),
-        plan.nodes,
-    );
-    let next_occupation = (endpoint_layer == MovementLayer::Ground)
-        .then(|| {
-            Some(DriveOccupationFootprint {
-                rx: u16::try_from(endpoint.0).ok()?,
-                ry: u16::try_from(endpoint.1).ok()?,
-                layer: MovementLayer::Ground,
-            })
-        })
-        .flatten();
-    let handoff_occupation = drive_track_state.as_ref().and_then(|track| {
-        drive_track_handoff_footprint(track, (position.rx, position.ry), endpoint_layer)
-    });
-    install_drive_head_to_occupation(
+        handoff_occupation: drive_track_state.as_ref().and_then(|track| {
+            drive_track_handoff_footprint(track, (position.rx, position.ry), endpoint_layer)
+        }),
+        saved_current_speed_fraction,
+        admitted: false,
+    };
+
+    // ProcessMovement's first xref is descriptor-bit-3 gated and owns the
+    // already-computed first candidate without installing a live destination.
+    if plan.selection.flags & 8 != 0 {
+        let callsite = if is_ship {
+            super::crate_callers::MovementCrateCallsite::ShipProcessMovementFirst
+        } else {
+            super::crate_callers::MovementCrateCallsite::DriveProcessMovementFirst
+        };
+        crate_probes.push(super::crate_callers::MovementCrateProbe {
+            callsite,
+            requested: resolved_track_endpoint(
+                path_grid,
+                next,
+                current_occupation_layer == MovementLayer::Bridge,
+                position.z,
+            ),
+            saved_current_speed_fraction,
+        });
+        *process_crate_resume = Some(resume);
+        return FreshTrackOutcome::CrateSuspended;
+    }
+
+    // A descriptor without bit 3 skips the first xref but still suspends at the
+    // independently verified final call after endpoint installation.
+    resume.admitted = true;
+    finish_fresh_track_after_first_pickup(
         drive_locomotion,
-        cell_occupation,
-        entity_id,
-        (position.rx, position.ry),
-        current_occupation_layer,
-        next_occupation,
-        handoff_occupation,
-    );
-    FreshTrackOutcome::Installed
+        ship_locomotion,
+        crate_probes,
+        process_crate_resume,
+        resume,
+    )
 }
 
 fn advance_drive_track_retry_after_selection(
@@ -1461,7 +1623,56 @@ fn advance_drive_track_retry_after_selection(
 ///
 /// Takes individual entity fields to avoid borrow conflicts with
 /// `entity.movement_target` (which the caller holds as `ref mut target`).
-pub(super) fn advance_lepton_position(
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn advance_lepton_position(
+    target: &mut MovementTarget,
+    position: &mut Position,
+    facing: &mut u8,
+    facing_target: &mut Option<u8>,
+    drive_track_state: &mut Option<DriveTrackState>,
+    drive_locomotion: &mut Option<DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<ShipLocomotionRuntime>,
+    locomotor: &mut Option<LocomotorState>,
+    category: EntityCategory,
+    effective_speed: SimFixed,
+    frame_budget: i32,
+    dt: SimFixed,
+    entity_id: u64,
+    cell_occupation: Option<&mut CellOccupationGrid>,
+    admission: DriveCellAdmission<'_>,
+    current_occupation_layer: MovementLayer,
+    path_grid: Option<&PathGrid>,
+) -> AdvanceResult {
+    let mut probes = Vec::new();
+    let mut resume = None;
+    let mut process_resume = None;
+    advance_lepton_position_with_crate_probes(
+        target,
+        position,
+        facing,
+        facing_target,
+        drive_track_state,
+        drive_locomotion,
+        ship_locomotion,
+        locomotor,
+        category,
+        effective_speed,
+        frame_budget,
+        dt,
+        entity_id,
+        cell_occupation,
+        admission,
+        current_occupation_layer,
+        path_grid,
+        &mut probes,
+        crate::util::native_x87::NativeF64Bits::ONE,
+        &mut resume,
+        &mut process_resume,
+    )
+}
+
+pub(super) fn advance_lepton_position_with_crate_probes(
     target: &mut MovementTarget,
     position: &mut Position,
     facing: &mut u8,
@@ -1479,7 +1690,69 @@ pub(super) fn advance_lepton_position(
     admission: DriveCellAdmission<'_>,
     current_occupation_layer: MovementLayer,
     path_grid: Option<&PathGrid>,
+    crate_probes: &mut Vec<super::crate_callers::MovementCrateProbe>,
+    saved_current_speed_fraction: crate::util::native_x87::NativeF64Bits,
+    drive_crate_resume: &mut Option<super::crate_callers::DriveTrackPickupResume>,
+    process_crate_resume: &mut Option<super::crate_callers::ProcessMovementPickupResume>,
 ) -> AdvanceResult {
+    if let Some(resume) = process_crate_resume.take() {
+        debug_assert_eq!(
+            resume.stage,
+            super::crate_callers::ProcessMovementPickupStage::First
+        );
+        debug_assert!(resume.admitted, "only an admitted first-candidate tail may resume");
+        return match finish_fresh_track_after_first_pickup(
+            drive_locomotion,
+            ship_locomotion,
+            crate_probes,
+            process_crate_resume,
+            resume,
+        ) {
+            FreshTrackOutcome::CrateSuspended => AdvanceResult::CrateSuspended,
+            _ => unreachable!("accepted first-candidate tail always reaches final xref"),
+        };
+    }
+    if let Some(resume) = drive_crate_resume.take() {
+        debug_assert!(resume.admitted, "only an admitted pickup tail may resume");
+        let advance = resume.advance;
+        *facing = advance.facing;
+        *facing_target = None;
+        if advance.cell_jump && target.next_index < target.path.len() {
+            position.sub_x = advance.sub_x;
+            position.sub_y = advance.sub_y;
+            return AdvanceResult::DriveTrackCellJump {
+                cell_dx: advance.cell_jump_dx,
+                cell_dy: advance.cell_jump_dy,
+            };
+        }
+        if advance.chain_ready && target.next_index < target.path.len() {
+            position.sub_x = advance.sub_x;
+            position.sub_y = advance.sub_y;
+            return AdvanceResult::DriveTrackChainReady;
+        }
+        if advance.finished {
+            *drive_track_state = None;
+            position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
+            position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
+            return AdvanceResult::ReadyForCrossings;
+        }
+        position.sub_x = advance.sub_x;
+        position.sub_y = advance.sub_y;
+        if let Some(track_state) = drive_track_state.as_ref()
+            && let Some(interp) = drive_track::interp_sub_step(
+                advance.sub_x,
+                advance.sub_y,
+                advance.next_step_delta_x,
+                advance.next_step_delta_y,
+                track_state.residual,
+                advance.had_next_step,
+            )
+        {
+            position.sub_x = interp.sub_x;
+            position.sub_y = interp.sub_y;
+        }
+        return AdvanceResult::DriveTrackActive;
+    }
     if let Some(track_state) = drive_track_state {
         // Drive track advancement: step through pre-computed curve points.
         // The track handles position AND facing, producing smooth turns.
@@ -1513,6 +1786,37 @@ pub(super) fn advance_lepton_position(
                     (position.rx, position.ry),
                     current_occupation_layer,
                 );
+            } else if let Some(ship) = ship_locomotion.as_mut() {
+                if let Some(occupation) = cell_occupation.as_deref_mut() {
+                    occupation.clear_vehicle_on_layer(
+                        position.rx,
+                        position.ry,
+                        entity_id,
+                        current_occupation_layer,
+                    );
+                }
+                ship.current_occupation_cleared = true;
+            }
+            if let Some(kind) = shared_track_kind(locomotor) {
+                let probe = super::crate_callers::MovementCrateProbe {
+                    callsite: if kind == LocomotorKind::Ship {
+                        super::crate_callers::MovementCrateCallsite::ShipProcessDriveTrack
+                    } else {
+                        super::crate_callers::MovementCrateCallsite::DriveProcessDriveTrack
+                    },
+                    requested: DriveCoord {
+                        x: i32::from(position.rx) * 256 + advance.sub_x.to_num::<i32>(),
+                        y: i32::from(position.ry) * 256 + advance.sub_y.to_num::<i32>(),
+                        z: i32::from(position.z),
+                    },
+                    saved_current_speed_fraction,
+                };
+                crate_probes.push(probe);
+                *drive_crate_resume = Some(super::crate_callers::DriveTrackPickupResume {
+                    advance,
+                    admitted: false,
+                });
+                return AdvanceResult::CrateSuspended;
             }
         }
         *facing = advance.facing;
@@ -1549,9 +1853,10 @@ pub(super) fn advance_lepton_position(
             let shared_kind = shared_track_kind(locomotor);
             let uses_drive_tracks = shared_kind.is_some();
             let is_ship = shared_kind == Some(LocomotorKind::Ship);
-            if uses_drive_tracks
-                && category != EntityCategory::Infantry
-                && let Some(kind) = shared_kind
+            // The active locomotor owns the Process/track family. Retail
+            // Teleporter Infantry temporarily install Drive for Building
+            // destinations, so Infantry RTTI cannot suppress this leaf.
+            if uses_drive_tracks && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
                     target,
@@ -1565,8 +1870,11 @@ pub(super) fn advance_lepton_position(
                     admission,
                     entity_id,
                     current_occupation_layer,
-                    path_grid,
-                    kind,
+            path_grid,
+            kind,
+            crate_probes,
+            saved_current_speed_fraction,
+            process_crate_resume,
                 ) {
                     FreshTrackOutcome::Installed => {
                         return advance_drive_track_retry_after_selection(
@@ -1589,6 +1897,9 @@ pub(super) fn advance_lepton_position(
                     }
                     FreshTrackOutcome::BlockedByOccupation(refusal) => {
                         return AdvanceResult::DriveTrackFreshBlocked(refusal);
+                    }
+                    FreshTrackOutcome::CrateSuspended => {
+                        return AdvanceResult::CrateSuspended;
                     }
                     FreshTrackOutcome::None => {
                         if is_ship && let Some(ship) = ship_locomotion.as_mut() {
@@ -1641,9 +1952,9 @@ pub(super) fn advance_lepton_position(
                 return AdvanceResult::ReadyForCrossings;
             }
             let uses_drive_tracks = shared_kind.is_some();
-            if uses_drive_tracks
-                && category != EntityCategory::Infantry
-                && let Some(kind) = shared_kind
+            // Same active-locomotor rule as the completed-track continuation
+            // above: Drive-primary/piggyback Infantry still select RawTrack.
+            if uses_drive_tracks && let Some(kind) = shared_kind
             {
                 match select_fresh_drive_track_at_current_cell(
                     target,
@@ -1659,6 +1970,9 @@ pub(super) fn advance_lepton_position(
                     current_occupation_layer,
                     path_grid,
                     kind,
+                    crate_probes,
+                    saved_current_speed_fraction,
+                    process_crate_resume,
                 ) {
                     FreshTrackOutcome::Installed => {
                         return advance_drive_track_retry_after_selection(
@@ -1678,6 +1992,9 @@ pub(super) fn advance_lepton_position(
                     }
                     FreshTrackOutcome::BlockedByOccupation(refusal) => {
                         return AdvanceResult::DriveTrackFreshBlocked(refusal);
+                    }
+                    FreshTrackOutcome::CrateSuspended => {
+                        return AdvanceResult::CrateSuspended;
                     }
                     FreshTrackOutcome::None => {
                         if is_ship && let Some(ship) = ship_locomotion.as_mut() {
@@ -1782,6 +2099,86 @@ pub(super) fn advance_lepton_position(
     AdvanceResult::ReadyForCrossings
 }
 
+#[allow(clippy::too_many_arguments)]
+fn finish_crossing_after_pickup(
+    target: &mut MovementTarget,
+    position: &Position,
+    facing: &mut u8,
+    facing_target: &mut Option<u8>,
+    locomotor: &mut Option<LocomotorState>,
+    drive_track_state: &mut Option<DriveTrackState>,
+    drive_locomotion: &mut Option<DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<ShipLocomotionRuntime>,
+    sub_cell: Option<u8>,
+    category: EntityCategory,
+    entity_id: u64,
+    snap: &MoverSnapshot,
+    path_grid: Option<&PathGrid>,
+    occupancy: &mut OccupancyGrid,
+    stats: &mut MovementTickStats,
+    rng: &mut SimRng,
+    active_layer: MovementLayer,
+    committed_cell: (u16, u16),
+    on_bridge: bool,
+) {
+    if category == EntityCategory::Infantry {
+        occupancy.update_sub_cell(committed_cell.0, committed_cell.1, entity_id, sub_cell);
+    }
+    stats.moved_steps = stats.moved_steps.saturating_add(1);
+
+    configure_motion_after_transition(
+        target,
+        locomotor,
+        drive_track_state,
+        drive_locomotion,
+        ship_locomotion,
+        facing,
+        facing_target,
+        category,
+        snap.rot,
+        committed_cell,
+        (position.sub_x, position.sub_y),
+        path_grid,
+        position.z,
+        on_bridge,
+    );
+
+    // Walk FindSubCellDest's caller continues into the existing look-ahead
+    // reservation only after its synchronous pickup callback has returned.
+    if category == EntityCategory::Infantry && target.next_index < target.path.len() {
+        let next_cell = target.path[target.next_index];
+        let pre_priority =
+            snap.sub_cell_priority_mission && snap.nav_com_cell == Some(next_cell);
+        let pre_slot = if pre_priority {
+            Some(bump_crush::priority_sub_cell(position.sub_x, position.sub_y))
+        } else {
+            bump_crush::allocate_sub_cell_with_preference(
+                occupancy.get(next_cell.0, next_cell.1),
+                active_layer,
+                None,
+                position.sub_x,
+                position.sub_y,
+                rng,
+            )
+        };
+        if let Some(pre_sub) = pre_slot {
+            let (sc_x, sc_y) = crate::util::lepton::subcell_lepton_offset(Some(pre_sub));
+            if let Some(loco) = locomotor {
+                loco.subcell_dest = Some((sc_x, sc_y));
+            }
+            let ndx = next_cell.0 as i32 - committed_cell.0 as i32;
+            let ndy = next_cell.1 as i32 - committed_cell.1 as i32;
+            let dest_x = SimFixed::from_num(ndx * 256) + sc_x;
+            let dest_y = SimFixed::from_num(ndy * 256) + sc_y;
+            let dx = dest_x - position.sub_x;
+            let dy = dest_y - position.sub_y;
+            target.move_dir_x = dx;
+            target.move_dir_y = dy;
+            target.move_dir_len = fixed_distance(dx, dy);
+        }
+    }
+}
+
 /// Output from the cell boundary crossing loop.
 pub(super) struct CrossingOutput {
     /// If set, the caller must handle deferred occupancy outside the entity borrow.
@@ -1795,6 +2192,8 @@ pub(super) struct CrossingOutput {
     /// Whether the entity was marked as stuck and should abort.
     pub aborted_for_stuck: bool,
     pub runtime_bridge_transition: super::movement_bridge::RuntimeBridgeTransitionState,
+    /// An exact Hover/Walk pickup xref still owns the logical stack.
+    pub crate_suspended: bool,
 }
 
 /// Process cell boundary crossings — the inner loop that checks whether
@@ -1837,6 +2236,9 @@ pub(super) fn process_cell_crossings(
     mcfg: MovementConfig,
     sim_tick: u64,
     marker_context: Option<super::path_markers::BridgeMarkerContext<'_>>,
+    crate_probes: &mut Vec<super::crate_callers::MovementCrateProbe>,
+    saved_current_speed_fraction: crate::util::native_x87::NativeF64Bits,
+    ground_crate_resume: &mut Option<super::crate_callers::GroundCrossingPickupResume>,
 ) -> CrossingOutput {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
@@ -1845,16 +2247,103 @@ pub(super) fn process_cell_crossings(
         super::movement_bridge::BridgeStateUpdate::Unchanged;
     let mut projected_on_bridge_state = snap.on_bridge;
     let mut aborted_for_stuck: bool = false;
+    let mut crate_suspended = false;
+
+    if let Some(resume) = ground_crate_resume.as_ref().copied()
+        && let super::crate_callers::GroundCrossingPickupStage::Walk {
+            committed_cell,
+            active_layer: resumed_layer,
+            pending_bridge_update: resumed_bridge_update,
+            projected_on_bridge,
+            runtime_bridge_transition: resumed_runtime_transition,
+        } = resume.stage
+    {
+        let resume = ground_crate_resume
+            .take()
+            .expect("observed Walk crate continuation");
+        active_layer = resumed_layer;
+        pending_bridge_update = resumed_bridge_update;
+        projected_on_bridge_state = projected_on_bridge;
+        runtime_bridge_transition = resumed_runtime_transition;
+        if resume.admitted {
+            finish_crossing_after_pickup(
+                target,
+                position,
+                facing,
+                facing_target,
+                locomotor,
+                drive_track_state,
+                drive_locomotion,
+                ship_locomotion,
+                *sub_cell,
+                category,
+                entity_id,
+                snap,
+                path_grid,
+                occupancy,
+                stats,
+                rng,
+                active_layer,
+                committed_cell,
+                projected_on_bridge_state,
+            );
+        } else {
+            return CrossingOutput {
+                deferred_cell_check,
+                pending_bridge_update,
+                active_layer,
+                debug_events,
+                aborted_for_stuck,
+                runtime_bridge_transition,
+                crate_suspended,
+            };
+        }
+    }
 
     loop {
-        if target.next_index >= target.path.len() {
+        let hover_resume = ground_crate_resume.as_ref().copied().and_then(|resume| {
+            if let super::crate_callers::GroundCrossingPickupStage::Hover {
+                direction,
+                next_layer,
+            } = resume.stage
+            {
+                Some((resume.admitted, direction, next_layer))
+            } else {
+                None
+            }
+        });
+        if target.next_index >= target.path.len() && hover_resume.is_none() {
             break;
         }
         let old_rx = position.rx;
         let old_ry = position.ry;
-        let (nx, ny): (u16, u16) = target.path[target.next_index];
-        let dx_cell: i32 = nx as i32 - position.rx as i32;
-        let dy_cell: i32 = ny as i32 - position.ry as i32;
+        let (nx, ny, dx_cell, dy_cell, next_layer, resuming_hover) =
+            if let Some((admitted, direction, resumed_layer)) = hover_resume {
+                let _ = ground_crate_resume
+                    .take()
+                    .expect("observed Hover crate continuation");
+                if !admitted {
+                    break;
+                }
+                (
+                    position.rx.saturating_add_signed(i16::from(direction.0)),
+                    position.ry.saturating_add_signed(i16::from(direction.1)),
+                    i32::from(direction.0),
+                    i32::from(direction.1),
+                    resumed_layer,
+                    true,
+                )
+            } else {
+                let (nx, ny) = target.path[target.next_index];
+                (
+                    nx,
+                    ny,
+                    nx as i32 - position.rx as i32,
+                    ny as i32 - position.ry as i32,
+                    target.layer_at(target.next_index),
+                    false,
+                )
+            };
 
         // Check if sub_x/sub_y have crossed cell boundaries on each axis.
         let crossed_x: bool = match dx_cell.signum() {
@@ -1867,11 +2356,41 @@ pub(super) fn process_cell_crossings(
             -1 => position.sub_y <= SIM_ZERO,
             _ => true,
         };
-        if !(crossed_x && crossed_y) {
+        if !resuming_hover && !(crossed_x && crossed_y) {
             break;
         }
 
-        let next_layer = target.layer_at(target.next_index);
+        let is_hover = snap
+            .locomotor
+            .as_ref()
+            .is_some_and(|locomotor| locomotor.kind == LocomotorKind::Hover);
+        if is_hover && !resuming_hover {
+                let candidate = resolved_track_endpoint(
+                    path_grid,
+                    (nx, ny),
+                    projected_on_bridge_state,
+                    position.z,
+                );
+                if let Some(locomotor) = locomotor.as_mut() {
+                    locomotor.hover_destination = Some(candidate);
+                }
+                *ground_crate_resume = Some(
+                    super::crate_callers::GroundCrossingPickupResume {
+                        stage: super::crate_callers::GroundCrossingPickupStage::Hover {
+                            direction: (dx_cell.signum() as i8, dy_cell.signum() as i8),
+                            next_layer,
+                        },
+                        admitted: false,
+                    },
+                );
+                crate_probes.push(super::crate_callers::MovementCrateProbe {
+                    callsite: super::crate_callers::MovementCrateCallsite::HoverMovement,
+                    requested: candidate,
+                    saved_current_speed_fraction,
+                });
+                crate_suspended = true;
+                break;
+        }
         let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
             path_grid,
             next_layer,
@@ -2225,73 +2744,55 @@ pub(super) fn process_cell_crossings(
             occupancy,
             snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
         );
-        // After reservation, infantry sub_cell may have changed.
-        if category == EntityCategory::Infantry {
-            occupancy.update_sub_cell(nx, ny, entity_id, *sub_cell);
+        let is_walk = snap
+            .locomotor
+            .as_ref()
+            .is_some_and(|locomotor| locomotor.kind == LocomotorKind::Walk);
+        if is_walk {
+            *ground_crate_resume = Some(super::crate_callers::GroundCrossingPickupResume {
+                stage: super::crate_callers::GroundCrossingPickupStage::Walk {
+                    committed_cell: (nx, ny),
+                    active_layer,
+                    pending_bridge_update,
+                    projected_on_bridge: projected_on_bridge_state,
+                    runtime_bridge_transition,
+                },
+                admitted: false,
+            });
+            crate_probes.push(super::crate_callers::MovementCrateProbe {
+                callsite: super::crate_callers::MovementCrateCallsite::WalkFindSubCellDest,
+                requested: DriveCoord {
+                    x: i32::from(position.rx) * 256 + position.sub_x.to_num::<i32>(),
+                    y: i32::from(position.ry) * 256 + position.sub_y.to_num::<i32>(),
+                    z: i32::from(position.z),
+                },
+                saved_current_speed_fraction,
+            });
+            crate_suspended = true;
+            break;
         }
-        stats.moved_steps = stats.moved_steps.saturating_add(1);
-
-        configure_motion_after_transition(
+        finish_crossing_after_pickup(
             target,
+            position,
+            facing,
+            facing_target,
             locomotor,
             drive_track_state,
             drive_locomotion,
             ship_locomotion,
-            facing,
-            facing_target,
+            *sub_cell,
             category,
-            snap.rot,
-            (nx, ny),
-            (position.sub_x, position.sub_y),
+            entity_id,
+            snap,
             path_grid,
-            position.z,
+            occupancy,
+            stats,
+            rng,
+            active_layer,
+            (nx, ny),
             projected_on_bridge_state,
         );
 
-        // Pre-allocate subcell in the NEXT path cell for infantry direction targeting.
-        // FindSubCellDest reserves a subcell in the destination cell before walking,
-        // so each infantry targets its own subcell position based on the destination
-        // cell's occupancy rather than carrying the current cell's.
-        if category == EntityCategory::Infantry && target.next_index < target.path.len() {
-            let next_cell = target.path[target.next_index];
-            // Missions Enter / Capture / Eaten / Area Guard / Patrol whose
-            // NavCom sits in the cell being reserved place unconditionally,
-            // skipping the occupancy, blocker and garrison gates and taking no
-            // random draw — matching the original engine's priority branch.
-            let pre_priority =
-                snap.sub_cell_priority_mission && snap.nav_com_cell == Some(next_cell);
-            let pre_slot = if pre_priority {
-                Some(bump_crush::priority_sub_cell(
-                    position.sub_x,
-                    position.sub_y,
-                ))
-            } else {
-                bump_crush::allocate_sub_cell_with_preference(
-                    occupancy.get(next_cell.0, next_cell.1),
-                    active_layer,
-                    None,
-                    position.sub_x,
-                    position.sub_y,
-                    rng,
-                )
-            };
-            if let Some(pre_sub) = pre_slot {
-                let (sc_x, sc_y) = crate::util::lepton::subcell_lepton_offset(Some(pre_sub));
-                if let Some(loco) = locomotor {
-                    loco.subcell_dest = Some((sc_x, sc_y));
-                }
-                // Recompute direction toward the destination cell's subcell.
-                let ndx = next_cell.0 as i32 - nx as i32;
-                let ndy = next_cell.1 as i32 - ny as i32;
-                let dest_x = SimFixed::from_num(ndx * 256) + sc_x;
-                let dest_y = SimFixed::from_num(ndy * 256) + sc_y;
-                let dx = dest_x - position.sub_x;
-                let dy = dest_y - position.sub_y;
-                target.move_dir_x = dx;
-                target.move_dir_y = dy;
-                target.move_dir_len = fixed_distance(dx, dy);
-            }
-        }
     }
 
     CrossingOutput {
@@ -2301,5 +2802,6 @@ pub(super) fn process_cell_crossings(
         debug_events,
         aborted_for_stuck,
         runtime_bridge_transition,
+        crate_suspended,
     }
 }

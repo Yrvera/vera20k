@@ -224,7 +224,7 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
         };
         let outcome = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).and_then(|sim| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
-                .and_then(|house| house.outcome_state)
+                .and_then(|house| house.outcome_state(sim.session.binary_frame as i32))
                 .filter(|outcome| outcome.exit_ready)
         });
         let Some(outcome) = outcome else {
@@ -872,8 +872,13 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
         let local_owner_for_fog = preferred_local_owner_name(state);
-        // Cache local owner name before mutable sim borrow (avoids borrow conflict).
+        // Cache the legacy preferred owner for unrelated HUD/audio consumers.
         let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
+        // Result actions are per-client g_PlayerPtr calls. Only the identity
+        // pinned by launch may enter that path; sandbox/preferred fallbacks are
+        // deliberately excluded and validation occurs against the live sim.
+        let pinned_result_owner_name = state.match_state.local_player_owner.clone();
+        let mut camera_binary_frame: Option<u32> = None;
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         let mut drained_combat_lights = Vec::new();
@@ -883,6 +888,12 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut census_tick: Option<u64> = None;
         if let Some(rt) = state.match_state.sim_runtime.as_mut() {
             let sim = &mut rt.simulation;
+            camera_binary_frame = Some(sim.session.binary_frame);
+            let validated_result_owner_name = pinned_result_owner_name
+                .as_deref()
+                .and_then(|name| sim.interner.get(name).map(|owner| (name, owner)))
+                .filter(|(_, owner)| sim.houses.contains_key(owner))
+                .map(|(name, _)| name.to_string());
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
             // `drain(..)` below still consumes every event exactly once.
@@ -901,7 +912,13 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 sound_events: frame_sound_events,
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
-            } = rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane);
+                crate_presentation: _crate_presentation,
+            } = rt.advance_frame_for_client(
+                &due_commands,
+                SIM_TICK_MS,
+                tick_lane,
+                validated_result_owner_name.as_deref(),
+            );
             let resources = &rt.resources;
             let sim = &mut rt.simulation;
             trigger_effects = frame_trigger_effects;
@@ -943,6 +960,44 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             // Convert sim sound events to app-layer sound events for playback.
             for sim_event in frame_sound_events {
                 let app_event: GameSoundEvent = match sim_event {
+                    SimSoundEvent::CrateEffect {
+                        sound_id,
+                        owner: _,
+                        rx,
+                        ry,
+                    } => {
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::WeaponFired {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
+                    SimSoundEvent::CrateUpgradeEva { kind } => {
+                        let Some(owner_name) = local_owner_name.as_deref() else {
+                            continue;
+                        };
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
+                            owner_name,
+                            &state.match_state.match_presentation.house_roster,
+                        );
+                        let key = match kind {
+                            crate::sim::world::CrateUpgradeEvaKind::Armor => {
+                                "EVA_UnitArmorUpgraded"
+                            }
+                            crate::sim::world::CrateUpgradeEvaKind::Speed => {
+                                "EVA_UnitSpeedUpgraded"
+                            }
+                            crate::sim::world::CrateUpgradeEvaKind::Firepower => {
+                                "EVA_UnitFirePowerUpgraded"
+                            }
+                        };
+                        let Some(eva_sound_id) = state.audio.eva_registry.get(key, faction) else {
+                            continue;
+                        };
+                        GameSoundEvent::CrateUpgradeEva {
+                            eva_sound_id: eva_sound_id.to_owned(),
+                        }
+                    }
                     SimSoundEvent::AnimationStarted {
                         anim_id,
                         sound_id,
@@ -1050,6 +1105,14 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         sub_y,
                         world_z_leptons,
                     ),
+                    SimSoundEvent::MindControlSound { sound_id, world }
+                    | SimSoundEvent::CaptureFateSound { sound_id, world } => {
+                        let (sx, sy) = anim_world_sound_screen(world);
+                        GameSoundEvent::WeaponFired {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                     SimSoundEvent::BuildingComplete { owner } => {
                         // Only play EVA for the local player's production.
                         let owner_str = sim.interner.resolve(owner);
@@ -1099,7 +1162,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     }
                     SimSoundEvent::MatchOutcome { owner, kind } => {
                         let owner_str = sim.interner.resolve(owner);
-                        if !local_owner_name
+                        if !validated_result_owner_name
                             .as_deref()
                             .is_some_and(|local| local.eq_ignore_ascii_case(owner_str))
                         {
@@ -1401,10 +1464,30 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             state.match_state.match_presentation.combat_lights.commit_frame(drained_combat_lights);
         }
         crate::app::input::dispatch::reconcile_selection_order_after_sim(state);
-        // Native drives the follow camera from the tail of
-        // LogicClass__PerTickUpdate 0x0055B6B8, after every object has updated,
-        // so the view lands on this tick's position rather than the last one's.
-        crate::app::input::camera::update_follow_camera(state);
+        let camera_frame = camera_binary_frame.unwrap_or(0);
+        let scenario_active = state.match_state.sim_runtime.is_some();
+        for owner in CAMERA_OWNER_ORDER {
+            match owner {
+                CameraOwnerStep::TriggerCommands => {
+                    apply_trigger_effects(state, &trigger_effects);
+                }
+                CameraOwnerStep::TacticalAi => {
+                    // The trigger commands and Tactical AI step both belong to
+                    // frame N. Simulation has already committed N+1 here.
+                    crate::app::input::camera::advance_tactical_camera_motion(
+                        state,
+                        camera_frame,
+                        scenario_active,
+                        false,
+                    );
+                }
+                CameraOwnerStep::FollowCamera => {
+                    // LogicClass__PerTickUpdate 0x0055B6B8 drives follow view
+                    // after every object and every Tactical owner has updated.
+                    crate::app::input::camera::update_follow_camera(state);
+                }
+            }
+        }
         // Rendering is rebuilt from lifecycle facts every frame. Replay the
         // app-owned transactions in native emission order for state that has a
         // direct attachment or retained audio handle.
@@ -1445,8 +1528,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         if census_tick.is_some_and(|tick| tick == 150 || (tick > 150 && tick % 900 == 0)) {
             crate::app::input::dispatch::report_black_cell_causes(state);
         }
-
-        apply_trigger_effects(state, &trigger_effects);
 
         // Simulation has already finalized identity, passability, navigation,
         // and the returned hash. The app only updates its render-side list.
@@ -1570,40 +1651,31 @@ fn finish_fire_effect_batch(pending: &mut Vec<SimFireEvent>) {
     pending.clear();
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CameraOwnerStep {
+    TriggerCommands,
+    TacticalAi,
+    FollowCamera,
+}
+
+// gamemd-derived: TriggerAction execution mutates TacticalClass first, the
+// same Logic rung then runs TacticalClass AI, and follow-camera is the final
+// view writer. Production consumes this table directly so the ordering test
+// cannot drift away from the call sequence it certifies.
+const CAMERA_OWNER_ORDER: [CameraOwnerStep; 3] = [
+    CameraOwnerStep::TriggerCommands,
+    CameraOwnerStep::TacticalAi,
+    CameraOwnerStep::FollowCamera,
+];
+
 fn apply_trigger_effects(state: &mut AppState, effects: &[TriggerEffect]) {
     for effect in effects {
         match effect {
-            TriggerEffect::CenterCameraAtWaypoint {
-                waypoint,
-                immediate: _,
-            } => center_camera_on_waypoint(state, *waypoint),
-            TriggerEffect::MissionAnnouncement { text } => {
-                // gamemd routes trigger text through the message list
-                // (contract lane §4.5: the native trigger-text path is a
-                // message-list producer).
-                crate::app::input::messages::post_system_message(state, text);
-            }
-            TriggerEffect::MissionResult { title, detail } => {
-                state.frontend.screen = GameScreen::MissionResult {
-                    title: title.clone(),
-                    detail: detail.clone(),
-                };
+            TriggerEffect::TacticalCamera(command) => {
+                crate::app::input::camera::apply_tactical_camera_command(state, *command)
             }
         }
     }
-}
-
-fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
-    let Some(waypoint) = state.match_state.match_presentation.waypoints.get(&waypoint_index) else {
-        log::warn!(
-            "Trigger action requested missing waypoint {} for camera centering",
-            waypoint_index
-        );
-        return;
-    };
-    let (rx, ry) = (waypoint.rx, waypoint.ry);
-    // Centres on the tactical viewport, not the window.
-    crate::app::input::camera::center_camera_on_cell(state, rx, ry);
 }
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
@@ -1947,8 +2019,9 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        cloak_sound_for_app, finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
+        CAMERA_OWNER_ORDER, CameraOwnerStep, ExactStepError, ExactStepReceipt,
+        append_fire_effect_batch, begin_fire_effect_batch, cloak_sound_for_app,
+        finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
         validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
@@ -1991,6 +2064,18 @@ mod tests {
         assert_eq!(
             outcome_eva_entry(HouseOutcomeKind::Defeat, "Yuri"),
             ("EVA_YouHaveLost", "cyur023")
+        );
+    }
+
+    #[test]
+    fn tactical_camera_owner_order_leaves_follow_camera_as_the_final_writer() {
+        assert_eq!(
+            CAMERA_OWNER_ORDER,
+            [
+                CameraOwnerStep::TriggerCommands,
+                CameraOwnerStep::TacticalAi,
+                CameraOwnerStep::FollowCamera,
+            ]
         );
     }
 
@@ -2061,6 +2146,8 @@ mod tests {
             amphibious: Some(100),
             float_beach: Some(100),
             hover: Some(100),
+            native_row_present: true,
+            native_speed_bits: [crate::util::native_x87::NativeF32Bits::ONE; 8],
         };
         let terrain = ResolvedTerrainGrid::from_cells(
             1,

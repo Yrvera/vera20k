@@ -17,7 +17,7 @@ use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
-use crate::render::sprite_atlas::ShpSpriteKey;
+use crate::render::sprite_atlas::{ShpSpriteEntry, ShpSpriteKey};
 use crate::render::tactical_draw_plan::{
     BlitPolicy, ObjectDraw, RenderZPolicy, SpriteEncoding, TacticalCoord,
 };
@@ -237,8 +237,208 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnimRenderDestination {
     Ground(ObjectDraw),
-    Top,
+    Flat(u8),
     Existing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimClassDrawPieceKind {
+    Body,
+    Shadow,
+}
+
+/// One standard non-flat/non-tiled `AnimClass::DrawIt` SHP submission.
+/// Retaining native flags here makes the body -> shadow call order and the
+/// forced shadow payload executable even though the current GPU backend lowers
+/// the shadow blitter to a predecoded black stencil.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AnimClassDrawPiece {
+    kind: AnimClassDrawPieceKind,
+    frame: u16,
+    native_draw_flags: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RenderedAnimClassPiece {
+    page: usize,
+    kind: AnimClassDrawPieceKind,
+    instance: SpriteInstance,
+}
+
+fn standard_anim_body_draw_flags(mut flags: u32) -> u32 {
+    // `AnimClass::DrawIt @ 0x00422CA0`: 0x004230FE..0x00423103 adds
+    // 0x800 when the low bit is clear; 0x00423806 adds 0x2000 before the
+    // standard body call.
+    if flags & 1 == 0 {
+        flags |= 0x800;
+    }
+    flags | 0x2000
+}
+
+fn anim_class_standard_draw_pieces(
+    body_frame: u16,
+    raw_frame_count: u16,
+    shadow: bool,
+    selected_flags: u32,
+) -> Vec<AnimClassDrawPiece> {
+    let body_flags = standard_anim_body_draw_flags(selected_flags);
+    let mut pieces = vec![AnimClassDrawPiece {
+        kind: AnimClassDrawPieceKind::Body,
+        frame: body_frame,
+        native_draw_flags: body_flags,
+    }];
+    if shadow {
+        pieces.push(AnimClassDrawPiece {
+            kind: AnimClassDrawPieceKind::Shadow,
+            frame: body_frame.wrapping_add(raw_frame_count / 2),
+            // `0x00423872..0x00423876`: clear translucency bits, then force
+            // the shadow blitter/centering payload. All other DrawIt bits stay.
+            native_draw_flags: (body_flags & !0x6) | 0x601,
+        });
+    }
+    pieces
+}
+
+fn anim_class_piece_z_adjust(piece: AnimClassDrawPieceKind, instance_z_adjust: i32) -> i32 {
+    match piece {
+        AnimClassDrawPieceKind::Body => {
+            instance_z_adjust.wrapping_add(ANIM_DRAW_DEPTH_BIAS_PX)
+        }
+        // Native shadow depth is `-2 - Tactical__AdjustForZ()`: it ignores
+        // both the instance ZAdjust and AnimType YDrawOffset.
+        AnimClassDrawPieceKind::Shadow => ANIM_DRAW_DEPTH_BIAS_PX,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_anim_class_draw_pieces(
+    type_name: &str,
+    draw_pieces: &[AnimClassDrawPiece],
+    mut atlas_lookup: impl FnMut(&ShpSpriteKey) -> Option<ShpSpriteEntry>,
+    center_x: f32,
+    center_y: f32,
+    fire_depth: f32,
+    world_height: f32,
+    body_tint: [f32; 3],
+    body_material: AnimInstanceMaterial,
+    instance_z_adjust: i32,
+) -> Vec<RenderedAnimClassPiece> {
+    // Scheduler roots and SpriteAtlas keys are canonical uppercase, while
+    // Rules/ObjectType and the simulation interner deliberately preserve the
+    // authored spelling (active retail includes lowercase gtpowexp/tstlexp).
+    // Canonicalize only this presentation lookup boundary so sim identity and
+    // native-default/NewTheater asset binding remain untouched.
+    let atlas_type_id = type_name.to_ascii_uppercase();
+    draw_pieces
+        .iter()
+        .filter_map(|piece| {
+            let key = ShpSpriteKey {
+                type_id: atlas_type_id.clone(),
+                facing: 0,
+                frame: piece.frame,
+                house_color: HouseColorIndex(0),
+            };
+            let entry = atlas_lookup(&key)?;
+            let is_shadow = piece.kind == AnimClassDrawPieceKind::Shadow;
+            if is_shadow {
+                debug_assert_eq!(
+                    piece.native_draw_flags,
+                    (standard_anim_body_draw_flags(body_material.native_flags) & !0x6) | 0x601,
+                );
+            }
+            Some(RenderedAnimClassPiece {
+                page: entry.page as usize,
+                kind: piece.kind,
+                instance: SpriteInstance {
+                    position: [center_x + entry.offset_x, center_y + entry.offset_y],
+                    size: entry.pixel_size,
+                    uv_origin: entry.uv_origin,
+                    uv_size: entry.uv_size,
+                    depth: apply_shape_z_adjust(
+                        fire_depth,
+                        anim_class_piece_z_adjust(piece.kind, instance_z_adjust),
+                        world_height,
+                    ),
+                    // The resident shadow half is a black 0x601 stencil;
+                    // type/cell palette and body translucency do not apply.
+                    tint: if is_shadow { DEFAULT_TINT } else { body_tint },
+                    // The encoded compositor ignores this alpha. Keeping 0.5
+                    // here preserves the pre-existing approximate fallback for
+                    // unverified non-retail `Layer=other` shadow anims; every
+                    // scoped retail DestroyAnim routes to an exact Ground,
+                    // Air, or Top destination instead.
+                    alpha: if is_shadow { 0.5 } else { body_material.alpha },
+                    ..Default::default()
+                },
+            })
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_anim_class_rendered_pieces(
+    stable_id: u64,
+    destination: Option<AnimRenderDestination>,
+    rendered_pieces: Vec<RenderedAnimClassPiece>,
+    paged: &mut [Vec<SpriteInstance>],
+    top_instances: &mut Vec<SpriteInstance>,
+    top_pages: &mut Vec<usize>,
+    top_ids: &mut Vec<u64>,
+    top_layers: &mut Vec<u8>,
+    top_modes: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode,
+    >,
+    ground_objects: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance,
+    >,
+) {
+    match destination {
+        Some(AnimRenderDestination::Ground(parent)) => {
+            let pieces = rendered_pieces
+                .into_iter()
+                .map(|piece| {
+                    crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
+                        target: match piece.kind {
+                            AnimClassDrawPieceKind::Body => crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
+                                piece.page,
+                            ),
+                            AnimClassDrawPieceKind::Shadow => crate::app::presentation::render::draw_plan_lowering::GroundTexture::AnimShadowShpPage(
+                                piece.page,
+                            ),
+                        },
+                        instance: piece.instance,
+                    }
+                })
+                .collect();
+            ground_objects.push(
+                crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                    parent, pieces,
+                ),
+            );
+        }
+        Some(AnimRenderDestination::Flat(layer)) => {
+            for piece in rendered_pieces {
+                top_instances.push(piece.instance);
+                top_pages.push(piece.page);
+                top_ids.push(stable_id);
+                top_layers.push(layer);
+                top_modes.push(match piece.kind {
+                    AnimClassDrawPieceKind::Body => {
+                        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard
+                    }
+                    AnimClassDrawPieceKind::Shadow => {
+                        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve
+                    }
+                });
+            }
+        }
+        Some(AnimRenderDestination::Existing) => {
+            for piece in rendered_pieces {
+                paged[piece.page].push(piece.instance);
+            }
+        }
+        None => {}
+    }
 }
 
 fn anim_render_destination(
@@ -250,8 +450,8 @@ fn anim_render_destination(
 ) -> Option<AnimRenderDestination> {
     // gamemd-derived: `AnimClass::GetLayer @ 0x00424CB0` forces layer 2
     // (Ground) for ANY anim carrying an owner at `Anim+0xCC`, ahead of both the
-    // AnimType `Layer=` read and the Top default — so an attached anim joins the
-    // sorted ground layer whatever its type asked for. Layer 2 is the only
+    // AnimType `Layer=` read and the numeric layer-3 default — so an attached
+    // anim joins the sorted ground layer whatever its type asked for. Layer 2 is the only
     // sorted `DisplayClass` layer: `Submit_Object @ 0x004A9720` sets the sorted
     // flag with `CMP EDI,0x2` at `0x004A9747` / `SETZ CL` at `0x004A974D`, and every other layer
     // plain-appends, so a layer-2 member is inserted in ascending y-sort against
@@ -290,7 +490,12 @@ fn anim_render_destination(
                 config.y_sort_adjust,
             )
             .map(AnimRenderDestination::Ground),
-        AnimLayer::Top => Some(AnimRenderDestination::Top),
+        AnimLayer::Air => Some(AnimRenderDestination::Flat(
+            super::helpers::NATIVE_AIR_LAYER,
+        )),
+        AnimLayer::Top => Some(AnimRenderDestination::Flat(
+            super::helpers::NATIVE_TOP_LAYER,
+        )),
         AnimLayer::Other(_) => Some(AnimRenderDestination::Existing),
     }
 }
@@ -302,6 +507,10 @@ pub(crate) fn build_anim_class_instances(
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
+    top_layers: &mut Vec<u8>,
+    top_modes: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode,
+    >,
     ground_objects: &mut Vec<
         crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance,
     >,
@@ -374,16 +583,12 @@ pub(crate) fn build_anim_class_instances(
             .match_presentation
             .lighting_grid
             .anim_tint_at((rx, ry), config);
-        let key = ShpSpriteKey {
-            type_id: type_name.to_string(),
-            facing: 0,
-            frame,
-            house_color: HouseColorIndex(0),
-        };
-        let Some(entry) = atlas.get(&key) else {
-            continue;
-        };
-        let Some(alpha) = anim_instance_alpha_with_flags(
+        let raw_frame_count = config
+            .and_then(|value| value.raw_shp_frame_count)
+            .and_then(|count| u16::try_from(count).ok())
+            .or_else(|| presentation_anim_frame_count(&atlas.active_anim_frame_counts, type_name))
+            .unwrap_or(0);
+        let Some(material) = anim_instance_material_with_flags(
             config,
             anim.draw_flags,
             anim.runtime.current_frame,
@@ -409,48 +614,45 @@ pub(crate) fn build_anim_class_instances(
             .unwrap_or((0.0, 1.0));
         let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
         debug_assert!(!anim.terrain_attached || anim.use_cell_drawer);
-        let instance = SpriteInstance {
-            position: [center_x + entry.offset_x, center_y + entry.offset_y],
-            size: entry.pixel_size,
-            uv_origin: entry.uv_origin,
-            uv_size: entry.uv_size,
-            depth: apply_shape_z_adjust(
-                fire_depth,
-                anim.z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
-                world_height,
-            ),
+        let draw_pieces = anim_class_standard_draw_pieces(
+            frame,
+            raw_frame_count,
+            config.is_some_and(|value| value.shadow) && raw_frame_count >= 2,
+            material.native_flags,
+        );
+        let rendered_pieces = lower_anim_class_draw_pieces(
+            type_name,
+            &draw_pieces,
+            |key| atlas.get(key).copied(),
+            center_x,
+            center_y,
+            fire_depth,
+            world_height,
             tint,
-            alpha,
-            ..Default::default()
-        };
-        match anim_render_destination(
-            anim.stable_id,
-            anim.owner_entity,
-            anim_coord,
-            config,
-            ground_order,
-        ) {
-            Some(AnimRenderDestination::Ground(parent)) => ground_objects.push(
-                crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance::object(
-                    parent,
-                    vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
-                        target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
-                            entry.page as usize,
-                        ),
-                        instance,
-                    }],
-                ),
-            ),
-            Some(AnimRenderDestination::Top) => {
-                top_instances.push(instance);
-                top_pages.push(entry.page as usize);
-                top_ids.push(anim.stable_id);
-            }
-            Some(AnimRenderDestination::Existing) => {
-                paged[entry.page as usize].push(instance);
-            }
-            None => {}
+            material,
+            anim.z_adjust,
+        );
+        if rendered_pieces.is_empty() {
+            continue;
         }
+        emit_anim_class_rendered_pieces(
+            anim.stable_id,
+            anim_render_destination(
+                anim.stable_id,
+                anim.owner_entity,
+                anim_coord,
+                config,
+                ground_order,
+            ),
+            rendered_pieces,
+            paged,
+            top_instances,
+            top_pages,
+            top_ids,
+            top_layers,
+            top_modes,
+            ground_objects,
+        );
     }
 }
 
@@ -466,7 +668,7 @@ fn anim_instance_alpha(
     current_frame: i32,
     shp_frame_count: i32,
 ) -> f32 {
-    anim_instance_alpha_with_flags(
+    anim_instance_material_with_flags(
         config,
         0,
         current_frame,
@@ -474,17 +676,24 @@ fn anim_instance_alpha(
         2,
         crate::sim::anim_class::AnimDrawRuntime::default(),
     )
+    .map(|material| material.alpha)
     .unwrap_or(0.0)
 }
 
-fn anim_instance_alpha_with_flags(
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AnimInstanceMaterial {
+    alpha: f32,
+    native_flags: u32,
+}
+
+fn anim_instance_material_with_flags(
     config: Option<&AnimTypeRuntimeConfig>,
     base_flags: u32,
     current_frame: i32,
     shp_frame_count: i32,
     game_detail_level: i32,
     draw_runtime: crate::sim::anim_class::AnimDrawRuntime,
-) -> Option<f32> {
+) -> Option<AnimInstanceMaterial> {
     let result = crate::sim::anim_class::anim_translucency_selection(
         crate::sim::anim_class::AnimTranslucencyInput {
             base_flags,
@@ -502,9 +711,10 @@ fn anim_instance_alpha_with_flags(
             instance_ramp: i32::from(draw_runtime.translucency_ramp),
         },
     );
-    result
-        .draw
-        .then(|| anim_translucency_source_alpha(result.flags))
+    result.draw.then(|| AnimInstanceMaterial {
+        alpha: anim_translucency_source_alpha(result.flags),
+        native_flags: result.flags,
+    })
 }
 
 /// SHP header frame count for an animation type, as the translucency resolver
@@ -1385,8 +1595,11 @@ pub(crate) fn build_parachute_instances(
 #[cfg(test)]
 mod tests {
     use super::{
-        ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, anim_instance_alpha,
-        anim_render_destination, apply_shape_z_adjust, garrison_flash_depth, overlay_body_frame,
+        ANIM_DRAW_DEPTH_BIAS_PX, AnimClassDrawPiece, AnimClassDrawPieceKind,
+        AnimInstanceMaterial, AnimRenderDestination, CRATE_BODY_FRAME,
+        anim_class_piece_z_adjust, anim_class_standard_draw_pieces, anim_instance_alpha,
+        anim_render_destination, apply_shape_z_adjust, emit_anim_class_rendered_pieces,
+        garrison_flash_depth, lower_anim_class_draw_pieces, overlay_body_frame,
         overlay_display_identity, overlay_render_identity, terrain_object_is_render_visible,
         weapon_muzzle_flash_key, world_effect_screen_position,
     };
@@ -1407,8 +1620,8 @@ mod tests {
     fn gsi_05_12_owner_attached_anim_is_forced_onto_the_sorted_ground_layer() {
         // `AnimClass::GetLayer @ 0x00424CB0` tests the owner at `Anim+0xCC`
         // FIRST and returns 2 (Ground); only an ownerless anim reaches the
-        // AnimType `Layer=` read or the Top default. Layer 2 is the one sorted
-        // `DisplayClass` layer (`Submit_Object @ 0x004A9720`,
+        // AnimType `Layer=` read or the numeric layer-3 default. Layer 2 is the
+        // one sorted `DisplayClass` layer (`Submit_Object @ 0x004A9720`,
         // `CMP EDI,0x2` at `0x004A9747` / `SETZ CL` at `0x004A974D`), so an attached anim is
         // y-sorted against ordinary ground objects rather than appended.
         let art = ArtRegistry::from_ini(&IniFile::from_str(
@@ -1432,7 +1645,9 @@ mod tests {
         let top_config = art.anim_runtime_config("FIRE_TOP");
         assert_eq!(
             anim_render_destination(10, None, resolved, top_config, &order),
-            Some(AnimRenderDestination::Top),
+            Some(AnimRenderDestination::Flat(
+                crate::app::presentation::instances::helpers::NATIVE_TOP_LAYER,
+            )),
             "without an owner the type's Layer=top still wins"
         );
 
@@ -1489,7 +1704,9 @@ mod tests {
 
         assert_eq!(
             anim_render_destination(10, None, world, wa, &order),
-            Some(AnimRenderDestination::Top)
+            Some(AnimRenderDestination::Flat(
+                crate::app::presentation::instances::helpers::NATIVE_AIR_LAYER,
+            ))
         );
         let Some(AnimRenderDestination::Ground(tunnel_draw)) =
             anim_render_destination(20, None, world, tuntop, &order)
@@ -1834,6 +2051,245 @@ mod tests {
     #[test]
     fn anim_draw_bias_constant_matches_native() {
         assert_eq!(ANIM_DRAW_DEPTH_BIAS_PX, -2);
+    }
+
+    #[test]
+    fn phase3_shadowed_animclass_emits_body_then_raw_half_shadow_with_native_flags() {
+        let pieces = anim_class_standard_draw_pieces(2, 12, true, 0x604);
+        assert_eq!(
+            pieces,
+            vec![
+                AnimClassDrawPiece {
+                    kind: AnimClassDrawPieceKind::Body,
+                    frame: 2,
+                    native_draw_flags: 0x2E04,
+                },
+                AnimClassDrawPiece {
+                    kind: AnimClassDrawPieceKind::Shadow,
+                    frame: 8,
+                    native_draw_flags: 0x2E01,
+                },
+            ],
+            "DrawIt submits the body first, then frame + raw_count/2 with (flags & !6) | 0x601",
+        );
+        assert_eq!(anim_class_piece_z_adjust(pieces[0].kind, -200), -202);
+        assert_eq!(
+            anim_class_piece_z_adjust(pieces[1].kind, -200),
+            -2,
+            "the shadow branch ignores the instance ZAdjust",
+        );
+
+        assert_eq!(
+            anim_class_standard_draw_pieces(2, 12, false, 0x600),
+            vec![AnimClassDrawPiece {
+                kind: AnimClassDrawPieceKind::Body,
+                frame: 2,
+                native_draw_flags: 0x2E00,
+            }],
+            "non-shadow AnimTypes remain one draw",
+        );
+
+        let lowered = lower_anim_class_draw_pieces(
+            "DEST",
+            &pieces,
+            |key| {
+                Some(crate::render::sprite_atlas::ShpSpriteEntry {
+                    uv_origin: [f32::from(key.frame) / 100.0, 0.0],
+                    uv_size: [0.1, 0.2],
+                    pixel_size: [20.0, 30.0],
+                    offset_x: -10.0,
+                    offset_y: -15.0,
+                    page: if key.frame < 6 { 0 } else { 1 },
+                })
+            },
+            100.0,
+            200.0,
+            0.5,
+            1_000.0,
+            [0.8, 0.7, 0.6],
+            AnimInstanceMaterial {
+                alpha: 0.5,
+                native_flags: 0x604,
+            },
+            -200,
+        );
+        assert_eq!(lowered.len(), 2, "the builder lowering emits two sprites");
+        assert_eq!(
+            lowered.iter().map(|piece| piece.page).collect::<Vec<_>>(),
+            vec![0, 1],
+        );
+        assert_eq!(
+            lowered[0].instance.uv_origin[0], 0.02,
+            "body frame is first",
+        );
+        assert_eq!(
+            lowered[1].instance.uv_origin[0], 0.08,
+            "shadow frame is second",
+        );
+        assert_eq!(lowered[0].instance.alpha, 0.5);
+        assert_eq!(lowered[1].instance.alpha, 0.5);
+        assert_eq!(lowered[0].instance.tint, [0.8, 0.7, 0.6]);
+        assert_eq!(lowered[1].instance.tint, crate::map::lighting::DEFAULT_TINT);
+        assert!(lowered[0].instance.depth < lowered[1].instance.depth);
+
+        let order =
+            crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder::new(&[77]);
+        let parent = order
+            .anim_object_draw(
+                77,
+                crate::render::tactical_draw_plan::TacticalCoord { x: 0, y: 0, z: 0 },
+                0,
+            )
+            .unwrap();
+        let mut paged = vec![Vec::new(), Vec::new()];
+        let mut top_instances = Vec::new();
+        let mut top_pages = Vec::new();
+        let mut top_ids = Vec::new();
+        let mut top_layers = Vec::new();
+        let mut top_modes = Vec::new();
+        let mut ground_objects = Vec::new();
+        emit_anim_class_rendered_pieces(
+            77,
+            Some(AnimRenderDestination::Ground(parent)),
+            lowered.clone(),
+            &mut paged,
+            &mut top_instances,
+            &mut top_pages,
+            &mut top_ids,
+            &mut top_layers,
+            &mut top_modes,
+            &mut ground_objects,
+        );
+        assert_eq!(ground_objects.len(), 1);
+        assert_eq!(ground_objects[0].pieces.len(), 2);
+        assert_eq!(ground_objects[0].pieces[0].instance.uv_origin[0], 0.02);
+        assert_eq!(ground_objects[0].pieces[1].instance.uv_origin[0], 0.08);
+        assert_eq!(
+            ground_objects[0].pieces[0].target,
+            crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(0),
+        );
+        assert_eq!(
+            ground_objects[0].pieces[1].target,
+            crate::app::presentation::render::draw_plan_lowering::GroundTexture::AnimShadowShpPage(
+                1,
+            ),
+        );
+
+        emit_anim_class_rendered_pieces(
+            77,
+            Some(AnimRenderDestination::Flat(
+                crate::app::presentation::instances::helpers::NATIVE_AIR_LAYER,
+            )),
+            lowered,
+            &mut paged,
+            &mut top_instances,
+            &mut top_pages,
+            &mut top_ids,
+            &mut top_layers,
+            &mut top_modes,
+            &mut ground_objects,
+        );
+        assert_eq!(top_instances.len(), 2);
+        assert_eq!(top_pages, vec![0, 1]);
+        assert_eq!(top_ids, vec![77, 77]);
+        assert_eq!(top_layers, vec![3, 3]);
+        assert_eq!(top_instances[0].uv_origin[0], 0.02);
+        assert_eq!(top_instances[1].uv_origin[0], 0.08);
+        assert_eq!(
+            top_modes,
+            vec![
+                crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::Standard,
+                crate::app::presentation::render::draw_plan_lowering::ShpCompositeMode::AnimShadowDestinationHalve,
+            ],
+        );
+
+        let non_shadow = anim_class_standard_draw_pieces(2, 12, false, 0x600);
+        let lowered_non_shadow = lower_anim_class_draw_pieces(
+            "EXP",
+            &non_shadow,
+            |_| {
+                Some(crate::render::sprite_atlas::ShpSpriteEntry {
+                    uv_origin: [0.5, 0.0],
+                    uv_size: [0.1, 0.2],
+                    pixel_size: [20.0, 30.0],
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    page: 0,
+                })
+            },
+            0.0,
+            0.0,
+            0.5,
+            1_000.0,
+            [1.0; 3],
+            AnimInstanceMaterial {
+                alpha: 1.0,
+                native_flags: 0x600,
+            },
+            0,
+        );
+        assert_eq!(
+            lowered_non_shadow.len(),
+            1,
+            "the same concrete builder lowering emits one sprite without Shadow=yes",
+        );
+    }
+
+    #[test]
+    fn phase3_lowercase_native_default_anims_resolve_uppercase_scheduler_atlas_body() {
+        let mut art = ArtRegistry::empty();
+        let default_roots = vec!["gtpowexp".to_string(), "tstlexp".to_string()];
+        art.install_native_default_anim_types(default_roots.iter());
+        art.bind_anim_frame_count_for_test("GTPOWEXP", 29);
+        art.bind_anim_frame_count_for_test("TSTLEXP", 33);
+
+        for (authored_name, canonical_name, raw_count) in
+            [("gtpowexp", "GTPOWEXP", 29), ("tstlexp", "TSTLEXP", 33)]
+        {
+            let config = art
+                .anim_runtime_config(authored_name)
+                .expect("lowercase rules reference must retain native-default AnimType metadata");
+            assert_eq!(config.raw_shp_frame_count, Some(raw_count));
+            assert!(!config.shadow);
+
+            let frame = u16::try_from(raw_count - 1).unwrap();
+            let atlas_entry = crate::render::sprite_atlas::ShpSpriteEntry {
+                uv_origin: [0.25, 0.5],
+                uv_size: [0.1, 0.2],
+                pixel_size: [24.0, 32.0],
+                offset_x: -12.0,
+                offset_y: -16.0,
+                page: 3,
+            };
+            let atlas_key = crate::render::sprite_atlas::ShpSpriteKey {
+                type_id: canonical_name.to_string(),
+                facing: 0,
+                frame,
+                house_color: crate::rules::house_colors::HouseColorIndex(0),
+            };
+            let atlas_entries = std::collections::HashMap::from([(atlas_key, atlas_entry)]);
+            let pieces = anim_class_standard_draw_pieces(frame, raw_count as u16, false, 0x600);
+            let lowered = lower_anim_class_draw_pieces(
+                authored_name,
+                &pieces,
+                |key| atlas_entries.get(key).copied(),
+                100.0,
+                200.0,
+                0.5,
+                1_000.0,
+                [1.0; 3],
+                AnimInstanceMaterial {
+                    alpha: 1.0,
+                    native_flags: 0x600,
+                },
+                0,
+            );
+
+            assert_eq!(lowered.len(), 1, "{authored_name} body must be visible");
+            assert_eq!(lowered[0].kind, AnimClassDrawPieceKind::Body);
+            assert_eq!(lowered[0].page, 3);
+            assert_eq!(lowered[0].instance.uv_origin, [0.25, 0.5]);
+        }
     }
 
     #[test]

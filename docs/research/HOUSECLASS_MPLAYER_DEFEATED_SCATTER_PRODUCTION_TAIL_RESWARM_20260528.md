@@ -1,5 +1,14 @@
 # HouseClass MPlayer Defeated / Scatter / Production Tail - Re-Swarm Report
 
+> **SUPERSEDED FOR `0x004FC6D0` (2026-08-29).** The report's movement-Scatter
+> interpretation, coordinate labels, and proposed mission handoff are wrong.
+> Active assembly proves a mutable live-Techno destruction loop using current
+> health, incoming Temporal detach, Rules C4, and concrete vtable `+0x16C`
+> `ReceiveDamage`. Use
+> `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`
+> for this callee and its callers. Factory/House ordering claims outside that
+> callee remain historical evidence.
+
 **Date:** 2026-05-28  
 **Target:** `HOUSECLASS_MPLAYER_DEFEATED_SCATTER_PRODUCTION_TAIL`  
 **Investigation Mode:** coverage-map  

@@ -36,9 +36,12 @@ pub struct SimResources {
     /// machine lives in the simulation, these are bound once (F07: the app
     /// no longer passes definitions each frame).
     pub trigger_graph: crate::map::trigger_graph::TriggerGraph,
+    pub trigger_program: crate::map::trigger_program::TriggerProgram,
     pub triggers: crate::map::triggers::TriggerMap,
     pub events: crate::map::events::EventMap,
     pub actions: crate::map::actions::ActionMap,
+    /// Complete immutable scenario waypoint table used by trigger actions.
+    pub waypoints: std::collections::HashMap<u32, crate::map::waypoints::Waypoint>,
 }
 
 impl SimResources {
@@ -54,9 +57,11 @@ impl SimResources {
             .expect("empty rules parse"),
             terrain_template: None,
             trigger_graph: Default::default(),
+            trigger_program: Default::default(),
             triggers: Default::default(),
             events: Default::default(),
             actions: Default::default(),
+            waypoints: Default::default(),
         }
     }
 }
@@ -151,6 +156,11 @@ impl<'a> SimView<'a> {
         self.simulation.tactical_registration_order()
     }
 
+    /// Persistent native append order for unsorted Air/Top display layers.
+    pub(crate) fn tactical_display_layer_order(&self, layer: u8) -> &'a [u64] {
+        self.simulation.tactical_display_layer_order(layer)
+    }
+
     /// Pending radar-terrain batch for the minimap dirty gate. Presentation
     /// acknowledges this exact generation only after a completed update.
     pub(crate) fn radar_terrain_dirty(&self) -> (&'a [(u16, u16)], u64) {
@@ -205,6 +215,20 @@ impl SimRuntime {
         tick_ms: u32,
         lane: crate::sim::world::TickLane,
     ) -> crate::sim::world::SimFrameOutput {
+        self.advance_frame_for_client(commands, tick_ms, lane, None)
+    }
+
+    /// Production client frame. `local_player_owner` is the app-pinned launch
+    /// identity used only by native per-client trigger result actions.
+    pub(crate) fn advance_frame_for_client(
+        &mut self,
+        commands: &[crate::sim::command::CommandEnvelope],
+        tick_ms: u32,
+        lane: crate::sim::world::TickLane,
+        local_player_owner: Option<&str>,
+    ) -> crate::sim::world::SimFrameOutput {
+        let local_player_owner = local_player_owner
+            .and_then(|owner| self.simulation.interner.get(owner));
         self.simulation.advance_app_frame(
             commands,
             Some(&self.resources.rules),
@@ -213,11 +237,15 @@ impl SimRuntime {
             tick_ms,
             lane,
             Some(crate::sim::world::TriggerInputs {
+                program: Some(&self.resources.trigger_program),
                 graph: &self.resources.trigger_graph,
                 triggers: &self.resources.triggers,
                 events: &self.resources.events,
                 actions: &self.resources.actions,
+                waypoints: &self.resources.waypoints,
                 rules: Some(&self.resources.rules),
+                overlay_registry: Some(&self.resources.overlay_registry),
+                local_player_owner,
             }),
         )
     }
@@ -252,6 +280,23 @@ mod tests {
     fn runtime_always_uses_bound_navigation_and_resources() {
         let mut resources = SimResources::empty();
         resources.height_map.insert((3, 4), 7);
+        resources.waypoints.insert(
+            0,
+            crate::map::waypoints::Waypoint {
+                index: 0,
+                rx: 93,
+                ry: 106,
+            },
+        );
+        resources.waypoints.insert(
+            701,
+            crate::map::waypoints::Waypoint {
+                index: 701,
+                rx: 122,
+                ry: 135,
+            },
+        );
+        let expected_waypoints = resources.waypoints.clone();
         let original = SimRuntime {
             simulation: Simulation::new(),
             resources,
@@ -263,11 +308,13 @@ mod tests {
             Some(&7),
             "restore must carry the match resources, never rebind empty"
         );
+        assert_eq!(rebound.resources.waypoints, expected_waypoints);
 
         // Without a surviving runtime (fixture-only path) the rebind is
         // explicitly empty rather than partially bound.
         let fresh = SimRuntime::rebind_restored(None, Simulation::new());
         assert!(fresh.resources.height_map.is_empty());
+        assert!(fresh.resources.waypoints.is_empty());
     }
 
     #[test]
@@ -296,6 +343,7 @@ mod tests {
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
+            attached_tag_id: None,
         };
         let inits = GeneratedTechnoInitTable::try_new([GeneratedTechnoInit {
             entity_index: 0,
@@ -406,6 +454,7 @@ pub(crate) fn spawn_terrain_tile_animations(
             reverse: false,
             use_cell_drawer: true,
             terrain_attached: true,
+            building_explosion_start_smudge: false,
             draw_runtime: AnimDrawRuntime::default(),
         };
         let id = sim
@@ -537,6 +586,19 @@ where
                 rules.general.wheeled_uphill,
                 rules.general.wheeled_downhill,
             );
+        sim.terrain_speed_config.install_native(
+            rules.general.tracked_uphill_native,
+            rules.general.tracked_downhill_native,
+            rules.general.wheeled_uphill_native,
+            rules.general.wheeled_downhill_native,
+            rules
+                .terrain_rules
+                .semantics_for_land_type(
+                    crate::rules::terrain_rules::LandType::Road.as_index(),
+                )
+                .map(|row| row.speed_costs)
+                .unwrap_or_default(),
+        );
         sim.radar_events =
             crate::sim::radar::RadarEventQueue::from_config(&rules.radar_event_config);
     }
@@ -641,26 +703,6 @@ where
     Ok(sim)
 }
 
-/// BuildingClass::GetCoords projects the stored north-west anchor to the
-/// foundation centre before distance consumers receive it.
-fn project_building_get_coords_xy(
-    northwest_x: i32,
-    northwest_y: i32,
-    foundation_width: u16,
-    foundation_height: u16,
-) -> (i32, i32) {
-    let x_offset = i32::from(foundation_width)
-        .wrapping_sub(1)
-        .wrapping_mul(128);
-    let y_offset = i32::from(foundation_height)
-        .wrapping_sub(1)
-        .wrapping_mul(128);
-    (
-        northwest_x.wrapping_add(x_offset),
-        northwest_y.wrapping_add(y_offset),
-    )
-}
-
 pub(crate) fn map_wall_owner_candidate_from_building(
     entity: &crate::sim::game_entity::GameEntity,
     resolved_terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
@@ -686,7 +728,7 @@ pub(crate) fn map_wall_owner_candidate_from_building(
         .unwrap_or(i32::from(entity.position.z) * crate::util::lepton::LEPTONS_PER_LEVEL as i32);
     let (foundation_width, foundation_height) =
         crate::sim::production::foundation_dimensions(&entity.foundation);
-    let (world_x, world_y) = project_building_get_coords_xy(
+    let (world_x, world_y) = crate::sim::game_entity::project_building_get_coords_xy(
         northwest_x,
         northwest_y,
         foundation_width,

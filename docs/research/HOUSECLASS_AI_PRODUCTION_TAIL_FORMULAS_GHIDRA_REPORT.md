@@ -1,5 +1,11 @@
 # HouseClass AI Production Tail Formulas - Ghidra Report
 
+> **2026-08-29 correction:** any defeat/`ScatterAllUnits` wording retained here
+> for `0x004FC6D0` names the ordering slot only and must not be read as movement
+> behavior. The callee is the shared destructive House Techno/C4 receiver sweep
+> documented in
+> `docs/gap-scans/2026-08-29-disparity-scan-action-119-house-destruction.md`.
+
 **Date:** 2026-05-28  
 **Target:** `HOUSECLASS_AI_PRODUCTION_TAIL_FORMULAS`  
 **Investigation Mode:** coverage-map  

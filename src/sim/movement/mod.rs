@@ -47,12 +47,13 @@ use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 #[cfg(test)]
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
+use crate::util::fixed_math::{SimFixed, facing_from_delta_int};
 #[cfg(test)]
 use crate::util::fixed_math::SIM_ZERO;
 
 // --- Internal submodules ---
 mod drive_locomotion;
+pub(crate) mod crate_callers;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
 pub(crate) mod movement_bridge;
@@ -61,10 +62,12 @@ mod movement_occupancy;
 mod movement_path;
 mod movement_reservation;
 mod movement_step;
+pub(crate) use movement_step::complete_process_movement_final_pickup;
 mod movement_tick;
 mod navcom;
 mod path_markers;
 pub(crate) mod ready_producer;
+pub(crate) mod slope_transition;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;
@@ -102,6 +105,7 @@ pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_
 
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub(crate) use movement_commands::issue_move_command_with_layered;
+pub(crate) use movement_commands::preprocess_building_destination_locomotor;
 pub use movement_commands::{
     clear_navigation_for_entity, issue_direct_move, issue_move_command,
     set_destination_for_teleporter_entity,
@@ -116,6 +120,8 @@ pub(crate) use movement_tick::{
 // Legacy batch tick used by focused movement fixtures.
 #[cfg(test)]
 pub(crate) use movement_tick::tick_movement_with_grids;
+pub(crate) use navcom::resolve_entity_nav_target_drive_coord;
+pub(crate) use navcom::capture_fate_stop_moving;
 
 /// Install the active-YR `DriveLocomotion::Force_Track` state for a flat-ground
 /// unit. The caller supplies head offsets from the unit's current cell origin;
@@ -166,10 +172,9 @@ pub(crate) fn install_forced_drive_track(
     drive.track_index = i16::from(forced.turn_track_index);
     drive.point_index = forced.track.point_index;
     drive.track_valid = true;
-    drive.target_speed_fraction = SIM_ONE;
-    drive.current_speed_fraction = SIM_ONE;
-    drive.owner_current_speed =
-        drive_locomotion::owner_current_speed_from_fraction(forced.speed, SIM_ONE);
+    // Force_Track writes its locomotor-owned target qword only. Verified
+    // callers own any separate Foot current-fraction write.
+    drive.target_speed_fraction = crate::util::native_x87::NativeF64Bits::ONE;
     // Force_Track directly installs the new head mark. Its active retail callers
     // enter with no old head — but nothing in this function's signature enforces
     // that, and a caller that reached a mid-curve mover would otherwise strand
@@ -201,6 +206,11 @@ pub(crate) fn install_forced_drive_track(
 
     entity.drive_track = None;
     entity.forced_drive_track = Some(forced);
+    entity.pending_movement_crate_probes.push(crate_callers::MovementCrateProbe {
+        callsite: crate_callers::MovementCrateCallsite::DriveForceTrack,
+        requested: head,
+        saved_current_speed_fraction: entity.current_speed_fraction,
+    });
     entity.facing_target = None;
     true
 }
@@ -510,7 +520,8 @@ pub(crate) fn tick_movement_with_grid(
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let mut cell_occupation = crate::sim::occupancy::CellOccupationGrid::rebuild(entities);
     let mut raw_cell_occupation = crate::sim::occupancy::RawCellOccupationGrid::new();
-    tick_movement_with_grids(
+    let empty_houses = BTreeMap::new();
+    let mut stats = tick_movement_with_grids(
         entities,
         None,
         path_grid,
@@ -531,10 +542,76 @@ pub(crate) fn tick_movement_with_grid(
         9,        // Default PathDelay
         60,       // Default BlockagePathDelay
         interner,
-        None, // No RuleSet in legacy wrapper — crush sounds suppressed
+        None, // No RuleSet: deterministic native no-crate return One
         &mut sound_events,
         lifecycle_requests,
-    )
+    );
+    let entity_order = entities.keys_sorted();
+
+    // This wrapper predates the synchronous movement-crate call stream.  Run
+    // the same suspend/drain/resume transaction as Simulation's production
+    // owner so older movement fixtures remain valid no-crate shells instead of
+    // re-entering an unadmitted continuation on the next test tick.  Keep the
+    // legacy batch as the initial pass: several old multi-object fixtures rely
+    // on its deferred crush/finished-target commit after the full Logic order.
+    for entity_id in entity_order {
+        loop {
+            let probes = entities
+                .get_mut(entity_id)
+                .map(|entity| std::mem::take(&mut entity.pending_movement_crate_probes))
+                .unwrap_or_default();
+            if probes.is_empty() {
+                break;
+            }
+            for probe in probes {
+                if let Some(entity) = entities.get_mut(entity_id) {
+                    let _ = crate_callers::continue_after_pickup(
+                        entity,
+                        probe,
+                        crate::sim::crates::NativePickupReturn::One,
+                    );
+                    let _ = complete_process_movement_final_pickup(entity, &mut cell_occupation);
+                }
+            }
+            if !entities.get(entity_id).is_some_and(|entity| {
+                entity.pending_drive_track_crate_resume.is_some()
+                    || entity.pending_process_movement_crate_resume.is_some()
+                    || entity.pending_ground_crossing_crate_resume.is_some()
+            }) {
+                break;
+            }
+            stats.merge(tick_movement_object_with_grids(
+                entities,
+                entity_id,
+                path_grid,
+                terrain_costs,
+                alliances,
+                occupancy,
+                &mut cell_occupation,
+                &mut raw_cell_occupation,
+                &mut next_occupancy_enter_order,
+                rng,
+                sim_tick,
+                sim_tick as u32,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &TerrainSpeedConfig::default(),
+                SIM_ZERO,
+                9,
+                60,
+                interner,
+                None,
+                &empty_houses,
+                &mut sound_events,
+                lifecycle_requests,
+                true,
+            ));
+        }
+    }
+    stats
 }
 
 // ---------------------------------------------------------------------------

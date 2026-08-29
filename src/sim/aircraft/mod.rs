@@ -349,6 +349,7 @@ pub fn tick_aircraft_missions(
                                 crate::sim::movement::locomotor::LocomotorState::from_object_type(
                                     obj,
                                     rules.general.flight_level,
+                                    sim.session.binary_frame,
                                 )
                                 .target_altitude;
                             m.set_target_altitude = Some(cruise);

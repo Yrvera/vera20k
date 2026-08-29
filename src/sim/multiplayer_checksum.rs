@@ -239,8 +239,9 @@ impl Simulation {
     /// Compute one active-retail multiplayer checksum.
     ///
     /// `display_layers` must be the five native display vectors in their stored
-    /// order. Rust does not currently own those vectors in `sim`, so the
-    /// presentation owner supplies the exact point-in-time views.
+    /// order. Simulation now owns exact Air/Top identity order, but the checksum
+    /// caller still supplies the five point-in-time `ChecksumObject` projections
+    /// because Ground/object-coordinate folding is wider than that registry.
     /// This method must be called only by the admitted multiplayer-frame path:
     /// it consumes exactly two Scenario RNG samples and therefore must never run
     /// for an offline frame or a diagnostic-only `state_hash()` request.
@@ -377,6 +378,7 @@ mod tests {
             stable_id,
             native_unique_id,
             type_id: InternedId::from_index(0),
+            native_display_layer: 3,
             world_coord: AnimWorldCoord { x, y, z: 0 },
             draw_flags: 0,
             z_adjust: 0,
@@ -396,6 +398,7 @@ mod tests {
             draw_runtime: AnimDrawRuntime::default(),
             use_cell_drawer: false,
             terrain_attached: false,
+            building_explosion_start_smudge: false,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -588,6 +591,49 @@ mod tests {
         assert_eq!(frame.value, checksum_sample);
         assert_eq!(frame.diagnostic_rng_sample, diagnostic_sample);
         assert_eq!(sim.scenario_rng.next_u32(), reference.next_u32());
+    }
+
+    fn one_house_result_checksum_fixture() -> Simulation {
+        let mut sim = Simulation::with_seed(0x67_68_69);
+        sim.session.binary_frame = 100;
+        let owner = sim.interner.intern("Americans");
+        let house = crate::sim::house_state::HouseState::new(
+            owner, 0, None, true, 10_000, 10,
+        );
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim
+    }
+
+    #[test]
+    fn house_quick_crc_folds_map_clear_but_omits_all_result_timer_state() {
+        let compute = |mut sim: Simulation| {
+            sim.compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]])
+                .expect("one registered House")
+                .value
+        };
+        let baseline_fixture = one_house_result_checksum_fixture();
+        let owner = baseline_fixture.session.house_order[0];
+        let baseline = compute(baseline_fixture);
+
+        let mut pending = one_house_result_checksum_fixture();
+        pending.houses.get_mut(&owner).unwrap().result_pending = true;
+        let mut won = one_house_result_checksum_fixture();
+        won.houses.get_mut(&owner).unwrap().has_won = true;
+        let mut lost = one_house_result_checksum_fixture();
+        lost.houses.get_mut(&owner).unwrap().has_lost = true;
+        let mut timer = one_house_result_checksum_fixture();
+        let timer_house = timer.houses.get_mut(&owner).unwrap();
+        timer_house.result_timer_start = -1;
+        timer_house.result_timer_duration = -37;
+
+        for changed in [pending, won, lost, timer] {
+            assert_eq!(compute(changed), baseline);
+        }
+
+        let mut map_clear = one_house_result_checksum_fixture();
+        map_clear.houses.get_mut(&owner).unwrap().map_is_clear = true;
+        assert_ne!(compute(map_clear), baseline);
     }
 
     #[test]

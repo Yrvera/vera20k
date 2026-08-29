@@ -88,11 +88,10 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
     // direction-0..7 recursion. Outcomes retain that pre-order per event.
     // Keep this sequence until the collapse dirty set is known so the Rust
     // presentation generation advances once for the native damage batch.
-    let damaged_variant_dirty: Vec<(u16, u16)> =
-        outcomes
-            .iter()
-            .flat_map(|outcome| outcome.damaged_variant_cells().iter().copied())
-            .collect();
+    let damaged_variant_dirty: Vec<(u16, u16)> = outcomes
+        .iter()
+        .flat_map(|outcome| outcome.damaged_variant_cells().iter().copied())
+        .collect();
     project_pending_low_bridge_overlay_writes(sim, overlay_registry);
 
     // Aggregate destroyed cells + the subset receiving BlowUpBridge from
@@ -508,11 +507,10 @@ fn apply_hut_bridge_execution(
         apply_runtime_bridge_flag_transcript_from_outcome(sim, outcome);
     }
 
-    let damaged_variant_dirty: Vec<(u16, u16)> =
-        outcomes
-            .iter()
-            .flat_map(|outcome| outcome.damaged_variant_cells().iter().copied())
-            .collect();
+    let damaged_variant_dirty: Vec<(u16, u16)> = outcomes
+        .iter()
+        .flat_map(|outcome| outcome.damaged_variant_cells().iter().copied())
+        .collect();
 
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
@@ -2351,6 +2349,7 @@ mod tests {
             piggyback: None,
             runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
                 LocomotorKind::Drive,
+                0,
             ),
             layer: MovementLayer::Bridge,
             phase: GroundMovePhase::Cruising,
@@ -2364,6 +2363,7 @@ mod tests {
             jumpjet_speed: SIM_ZERO,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
+            jumpjet_destination: None,
             jumpjet_deviation: 0,
             jumpjet_crash_speed: SIM_ZERO,
             jumpjet_turn_rate: 4,
@@ -2376,6 +2376,7 @@ mod tests {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_destination: None,
             hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
@@ -3069,8 +3070,7 @@ mod tests {
         let mut sim = Simulation::new();
         let mut terrain = water_below_bridge_terrain(4);
         terrain.test_set_native_allocated_cells(&[(3, 2)]);
-        terrain.cell_mut(3, 2).unwrap().bridge_facts.raw_flags =
-            MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
+        terrain.cell_mut(3, 2).unwrap().bridge_facts.raw_flags = MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
         terrain.test_set_dummy_cell_level_slope(2, 0);
         let dummy = terrain.shared_cell_dummy();
         dummy.set_bridge_flags_0x1180(MODELED_CELLCLASS_BRIDGE_FLAG_MASK);
@@ -3098,11 +3098,7 @@ mod tests {
         };
         assert_eq!(
             outcome.setter_transcript,
-            vec![BridgeFlagStamp::new(
-                (3, 2),
-                Direction::N as u8,
-                false
-            )]
+            vec![BridgeFlagStamp::new((3, 2), Direction::N as u8, false)]
         );
         let dummy_after_planning = dummy.snapshot();
         assert_eq!(
@@ -3111,8 +3107,7 @@ mod tests {
             "the independent AboutToFall recursion's later GetCell miss wins after the setter's final slot"
         );
         assert_eq!(
-            dummy_after_planning.bridge_flags_0x1180,
-            BRIDGE_FLAG_ANCHOR_SELF,
+            dummy_after_planning.bridge_flags_0x1180, BRIDGE_FLAG_ANCHOR_SELF,
             "the synchronous setter clears missing-slot 0x1100 while preserving non-anchor 0x80"
         );
         let retained_target = crate::sim::projectile::ProjectileTarget::DummyCell;
@@ -3124,7 +3119,7 @@ mod tests {
         };
         assert_eq!(
             observed_target,
-            crate::sim::projectile::ProjectileCoord::new(4 * 256 + 128, 2 * 256 + 128, 2 * 90)
+            crate::sim::projectile::ProjectileCoord::new(4 * 256 + 128, 2 * 256 + 128, 2 * 104,)
         );
 
         for &stamp in &outcome.setter_transcript {
@@ -3137,8 +3132,7 @@ mod tests {
         );
         let terrain = sim.resolved_terrain.as_ref().unwrap();
         assert_eq!(
-            terrain.cell(3, 2).unwrap().bridge_facts.raw_flags
-                & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
+            terrain.cell(3, 2).unwrap().bridge_facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK,
             0
         );
         assert_eq!(
@@ -3329,8 +3323,7 @@ mod tests {
         );
         let dummy_after_planning = dummy.snapshot();
         assert_eq!(
-            dummy_after_planning.bridge_flags_0x1180,
-            BRIDGE_FLAG_ANCHOR_SELF,
+            dummy_after_planning.bridge_flags_0x1180, BRIDGE_FLAG_ANCHOR_SELF,
             "the first setter's missing non-anchor slots are live during later CABHUT retries"
         );
 

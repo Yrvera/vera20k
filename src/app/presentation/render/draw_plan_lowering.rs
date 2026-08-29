@@ -41,6 +41,39 @@ pub(crate) enum GroundTexture {
     UnitAtlasPage(usize),
     UnitTransitionPage(usize),
     ShpPage(usize),
+    /// Scheduler `AnimClass::DrawIt` shadow half. This must interrupt the
+    /// ordinary sRGB pass and edit the encoded tactical destination through
+    /// the native 0x601 compositor.
+    AnimShadowShpPage(usize),
+}
+
+/// Material carried alongside the flat Top-layer SHP stream. The shadow mode
+/// selects an encoded destination edit rather than ordinary source-alpha
+/// sampling; atlas page remains payload, never an ordering authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShpCompositeMode {
+    Standard,
+    AnimShadowDestinationHalve,
+}
+
+/// One draw from an unsorted native flat display layer. Buffer index and atlas
+/// page stay payload; neither may reorder the layer's append vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlatDrawTarget {
+    Unit { page: usize, index: u32 },
+    Shp {
+        page: usize,
+        index: u32,
+        mode: ShpCompositeMode,
+    },
+}
+
+/// Cross-pipeline lowering of native display layers 3 and 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FlatLayerDraw {
+    pub layer: u8,
+    pub owner: DrawId,
+    pub target: FlatDrawTarget,
 }
 
 /// One already-resolved sprite owned by one Ground-layer parent object.

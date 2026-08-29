@@ -70,6 +70,7 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
         recruitable_a: true,
         recruitable_b: true,
         structure_upgrades: [None, None, None],
+        attached_tag_id: None,
     }
 }
 

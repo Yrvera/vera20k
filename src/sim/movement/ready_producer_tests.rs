@@ -9,6 +9,7 @@ use crate::sim::components::{
 };
 use crate::sim::movement::teleport_movement::TeleportState;
 use crate::util::fixed_math::{SIM_ONE, SimFixed};
+use crate::util::native_x87::NativeF64Bits;
 
 fn entity_with(kind: LocomotorKind) -> GameEntity {
     let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
@@ -51,10 +52,10 @@ fn driving_unit_reports_moving() {
     entity.drive_locomotion = Some(DriveLocomotionRuntime {
         destination: Some(head),
         head_to: Some(head),
-        current_speed_fraction: SIM_ONE,
         owner_current_speed: 25,
         ..DriveLocomotionRuntime::default()
     });
+    entity.current_speed_fraction = NativeF64Bits::ONE;
 
     let state = ready_state_for(&entity, 100).expect("Drive has a producer");
     assert!(state.is_moving_now(), "a driving tank must report moving");
@@ -88,10 +89,10 @@ fn ship_mirrors_drive_but_keeps_its_own_variant() {
     entity.ship_locomotion = Some(ShipLocomotionRuntime {
         destination: Some(head),
         head_to: Some(head),
-        current_speed_fraction: SIM_ONE,
         owner_current_speed: 20,
         ..Default::default()
     });
+    entity.current_speed_fraction = NativeF64Bits::ONE;
     let state = ready_state_for(&entity, 100).expect("Ship has a producer");
     assert!(matches!(state, LocomotorReadyState::Ship { .. }));
     assert!(state.is_moving_now());
