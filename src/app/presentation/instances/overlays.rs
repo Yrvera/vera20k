@@ -323,11 +323,17 @@ fn lower_anim_class_draw_pieces(
     body_material: AnimInstanceMaterial,
     instance_z_adjust: i32,
 ) -> Vec<RenderedAnimClassPiece> {
+    // Scheduler roots and SpriteAtlas keys are canonical uppercase, while
+    // Rules/ObjectType and the simulation interner deliberately preserve the
+    // authored spelling (active retail includes lowercase gtpowexp/tstlexp).
+    // Canonicalize only this presentation lookup boundary so sim identity and
+    // native-default/NewTheater asset binding remain untouched.
+    let atlas_type_id = type_name.to_ascii_uppercase();
     draw_pieces
         .iter()
         .filter_map(|piece| {
             let key = ShpSpriteKey {
-                type_id: type_name.to_string(),
+                type_id: atlas_type_id.clone(),
                 facing: 0,
                 frame: piece.frame,
                 house_color: HouseColorIndex(0),
@@ -2208,6 +2214,63 @@ mod tests {
             1,
             "the same concrete builder lowering emits one sprite without Shadow=yes",
         );
+    }
+
+    #[test]
+    fn phase3_lowercase_native_default_anims_resolve_uppercase_scheduler_atlas_body() {
+        let mut art = ArtRegistry::empty();
+        let default_roots = vec!["gtpowexp".to_string(), "tstlexp".to_string()];
+        art.install_native_default_anim_types(default_roots.iter());
+        art.bind_anim_frame_count_for_test("GTPOWEXP", 29);
+        art.bind_anim_frame_count_for_test("TSTLEXP", 33);
+
+        for (authored_name, canonical_name, raw_count) in
+            [("gtpowexp", "GTPOWEXP", 29), ("tstlexp", "TSTLEXP", 33)]
+        {
+            let config = art
+                .anim_runtime_config(authored_name)
+                .expect("lowercase rules reference must retain native-default AnimType metadata");
+            assert_eq!(config.raw_shp_frame_count, Some(raw_count));
+            assert!(!config.shadow);
+
+            let frame = u16::try_from(raw_count - 1).unwrap();
+            let atlas_entry = crate::render::sprite_atlas::ShpSpriteEntry {
+                uv_origin: [0.25, 0.5],
+                uv_size: [0.1, 0.2],
+                pixel_size: [24.0, 32.0],
+                offset_x: -12.0,
+                offset_y: -16.0,
+                page: 3,
+            };
+            let atlas_key = crate::render::sprite_atlas::ShpSpriteKey {
+                type_id: canonical_name.to_string(),
+                facing: 0,
+                frame,
+                house_color: crate::rules::house_colors::HouseColorIndex(0),
+            };
+            let atlas_entries = std::collections::HashMap::from([(atlas_key, atlas_entry)]);
+            let pieces = anim_class_standard_draw_pieces(frame, raw_count as u16, false, 0x600);
+            let lowered = lower_anim_class_draw_pieces(
+                authored_name,
+                &pieces,
+                |key| atlas_entries.get(key).copied(),
+                100.0,
+                200.0,
+                0.5,
+                1_000.0,
+                [1.0; 3],
+                AnimInstanceMaterial {
+                    alpha: 1.0,
+                    native_flags: 0x600,
+                },
+                0,
+            );
+
+            assert_eq!(lowered.len(), 1, "{authored_name} body must be visible");
+            assert_eq!(lowered[0].kind, AnimClassDrawPieceKind::Body);
+            assert_eq!(lowered[0].page, 3);
+            assert_eq!(lowered[0].instance.uv_origin, [0.25, 0.5]);
+        }
     }
 
     #[test]
