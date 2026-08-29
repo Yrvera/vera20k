@@ -35,6 +35,20 @@ committed HEAD `ba7bf4a3`.
 This report is a dated disparity snapshot and implementation handoff, not a
 phase completion certificate.
 
+> **Post-implementation registry correction (2026-08-29):** the first repair
+> incorrectly mapped the global Techno array to Rust's `LogicVector` via
+> `Simulation::tactical_registration_order`. Active assembly reads
+> `g_TechnoClass_Array` at `0x004FC6EC` and reloads
+> `g_TechnoClass_Count` at `0x004FC771`; Conceal/limbo does not remove a
+> Techno from that class registry. The repair now uses the independent alive
+> `EntityStore` construction-order projection (`techno_registration_len` /
+> `techno_registration_id_at`). Stable IDs are monotonic construction
+> identities, every `GameEntity` is one of the four Techno analogues, UnInit
+> clears `object_alive` synchronously, and deferred physical deletion does not
+> keep a dead tombstone in the projected registry. This note supersedes the
+> dated prerequisite and implementation wording below wherever it names
+> `LogicVector` as the House sweep source.
+
 ## Verified gaps
 
 ### 1. The shared House destruction sweep is absent
@@ -50,8 +64,9 @@ attacker, and receiver flags `(0,1,1,0)`.
 The loop deliberately does not increment its live-array index after a receiver
 call. It remembers that pointer: synchronous removal exposes the compacted next
 entry at the same index, while a surviving receiver is recognized on the next
-iteration and advances once. Rust has the necessary live order and synchronous
-damage/lifecycle path, but no equivalent House sweep.
+iteration and advances once. At scanned HEAD, Rust had the synchronous
+damage/lifecycle path but only exposed `LogicVector` order; that is not the
+independent class registry required by this operation.
 
 ### 2. Trigger Action 119 is unsupported
 
@@ -143,7 +158,7 @@ behavior and require synthetic acceptance coverage.
 
 | Required authority | Current Rust state |
 |---|---|
-| Global forward Techno order with synchronous compacting lifecycle | `Simulation::tactical_registration_order` plus `commit_noncombat_aoe_hits` / represented UnInit already provide the necessary live mutation boundary. |
+| Global forward Techno order with synchronous compacting lifecycle | Corrected after implementation review: `EntityStore` is the four-Techno typed store and stable IDs preserve monotonic construction order; the alive projection must be re-read after each `commit_noncombat_aoe_hits` callback. `LogicVector` is explicitly not this authority because Conceal removes from Logic without destroying the Techno. |
 | Reversible MC node and reciprocal victim link | `CaptureManagerState.controlled_nodes`, `CaptureNodeState.original_owner`, and `GameEntity.mind_control_controller_id` are persisted and restore-validated. |
 | Temporary owner-transfer precedence inputs | `temporary_owner_transfer_marker` and `temporary_owner_transfer_source` are persisted, hashed, and restore-validated. |
 | Incoming/outgoing Temporal chain state | `TemporalManagerState`, `temporal_targeting_me_id`, and `being_temporally_warped_out` are persisted, hashed, and reciprocal-validated. |
