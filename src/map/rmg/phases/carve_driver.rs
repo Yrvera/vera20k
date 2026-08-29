@@ -129,7 +129,7 @@ pub(crate) fn carve_connectors_for_region(
 ) -> bool {
     if region.waterish {
         let mut placed_any = false;
-        for (first_id, second_id) in qualified_land_pairs(regions, region) {
+        for (first_id, second_id) in qualified_deck_pairs(regions, region) {
             placed_any |= bridge_deck::place_low_bridge_deck(
                 ctx, region.id, first_id, second_id, structures, trace,
             );
@@ -189,7 +189,7 @@ pub(crate) fn carve_connectors_for_region(
     carved_any
 }
 
-fn qualified_land_pairs(regions: &[ConnectorRegion], flood: &ConnectorRegion) -> Vec<(i32, i32)> {
+fn qualified_deck_pairs(regions: &[ConnectorRegion], flood: &ConnectorRegion) -> Vec<(i32, i32)> {
     if !flood.waterish {
         return Vec::new();
     }
@@ -201,7 +201,9 @@ fn qualified_land_pairs(regions: &[ConnectorRegion], flood: &ConnectorRegion) ->
         else {
             continue;
         };
-        if first.waterish || (first.neighbours.len() <= 1 && first.cell_count <= 50) {
+        // gamemd 0x00590648..0x0059065f checks only substantiality
+        // for the first ordered slot. Its class field is not read here.
+        if first.neighbours.len() <= 1 && first.cell_count <= 50 {
             continue;
         }
         for &second_id in &flood.neighbours[first_index + 1..] {
@@ -294,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn flood_branch_visits_exact_qualified_unordered_land_pairs_in_order() {
+    fn flood_branch_visits_exact_qualified_ordered_slot_pairs_in_order() {
         let flood = region(0, 4, true, 90, &[1, 2, 3, 4, 5, 6]);
         let regions = vec![
             flood.clone(),
@@ -304,16 +306,34 @@ mod tests {
             region(2, 4, false, 1, &[0, 9]),
             // 51 cells qualifies with one neighbour.
             region(3, 4, false, 51, &[0]),
-            // Water endpoint is excluded.
+            // Water is allowed in the first ordered slot, but excluded when it
+            // appears as the second slot of an earlier pair.
             region(4, 4, true, 90, &[0, 9]),
             // Wrong level is excluded.
             region(5, 5, false, 90, &[0, 9]),
             region(6, 4, false, 90, &[0, 9]),
         ];
         assert_eq!(
-            qualified_land_pairs(&regions, &flood),
-            vec![(2, 3), (2, 6), (3, 6)]
+            qualified_deck_pairs(&regions, &flood),
+            vec![(2, 3), (2, 6), (3, 6), (4, 6)]
         );
-        assert!(qualified_land_pairs(&regions, &regions[2]).is_empty());
+        assert!(qualified_deck_pairs(&regions, &regions[2]).is_empty());
+    }
+
+    #[test]
+    fn flood_pair_class_gate_is_second_neighbor_only() {
+        let flood = region(0, 4, true, 90, &[1, 2]);
+        let water = region(1, 4, true, 90, &[0, 9]);
+        let land = region(2, 4, false, 90, &[0, 9]);
+        let other_land = region(3, 4, false, 90, &[0, 9]);
+        let regions = vec![flood.clone(), water, land, other_land];
+
+        assert_eq!(qualified_deck_pairs(&regions, &flood), vec![(1, 2)]);
+
+        let reverse = region(0, 4, true, 90, &[2, 1]);
+        assert!(qualified_deck_pairs(&regions, &reverse).is_empty());
+
+        let both_land = region(0, 4, true, 90, &[2, 3]);
+        assert_eq!(qualified_deck_pairs(&regions, &both_land), vec![(2, 3)]);
     }
 }

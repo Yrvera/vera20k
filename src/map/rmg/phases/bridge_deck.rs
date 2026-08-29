@@ -758,6 +758,39 @@ mod tests {
         }
     }
 
+    /// Drive the real flood-region owner into the real low-deck placer on a
+    /// clear fixture that cannot reach either endpoint region. Every dispatched
+    /// pair therefore exhausts its 200 attempts without mutating the map.
+    fn next_word_after_failed_production_driver(
+        regions: &[ConnectorRegion],
+        flood: &ConnectorRegion,
+        seed: u16,
+    ) -> (u32, RmgScratch) {
+        let (mut grid, mut scratch) = harness();
+        let blocks = OneByOne::new();
+        let playfield = playfield();
+        let identity = ids();
+        let mut rng = RmgRng::new(seed);
+        let mut structures = Vec::new();
+        let mut trace = RmgConstructionTrace::default();
+        let placed = {
+            let mut ctx = CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                playfield: &playfield,
+                ramp_end_block: -1,
+            };
+            carve_connectors_for_region(&mut ctx, regions, flood, 0, &mut structures, &mut trace)
+        };
+
+        assert!(!placed);
+        assert!(structures.is_empty() && trace.events.is_empty());
+        (rng.next_u32(), scratch)
+    }
+
     #[test]
     fn the_seed_cell_is_always_one_the_region_owns() {
         let owned = [(40, 48), (41, 48), (42, 49)];
@@ -1049,41 +1082,29 @@ mod tests {
             connector_region(2, 4, false, 90, &[0, 9]),
             connector_region(3, 4, false, 90, &[0, 9]),
         ];
-        let (mut grid, mut scratch) = harness();
-        let blocks = OneByOne::new();
-        let playfield = playfield();
-        let identity = ids();
-        let mut rng = RmgRng::new(41);
+        let (next, scratch) = next_word_after_failed_production_driver(&qualified, &flood, 41);
         let mut probe = RmgRng::new(41);
-        let mut structures = Vec::new();
-        let mut trace = RmgConstructionTrace::default();
-        let placed = {
-            let mut ctx = CarveCtx {
-                grid: &mut grid,
-                scratch: &mut scratch,
-                ids: &identity,
-                blocks: &blocks,
-                rng: &mut rng,
-                playfield: &playfield,
-                ramp_end_block: -1,
-            };
-            carve_connectors_for_region(
-                &mut ctx,
-                &qualified,
-                &flood,
-                0,
-                &mut structures,
-                &mut trace,
-            )
-        };
-
-        assert!(!placed);
-        assert!(structures.is_empty() && trace.events.is_empty());
         walk_accepted_seeds(&mut probe, &scratch, 0, 3 * MAX_DECK_ATTEMPTS as usize);
         assert_eq!(
-            rng.next_u32(),
+            next,
             probe.next_u32(),
             "three qualified unordered pairs must each enter the real 200-attempt placer once"
+        );
+
+        let water_first = connector_region(0, 4, true, 90, &[1, 2]);
+        let water_first_regions = vec![
+            water_first.clone(),
+            connector_region(1, 4, true, 90, &[0, 9]),
+            connector_region(2, 4, false, 90, &[0, 9]),
+        ];
+        let (next, scratch) =
+            next_word_after_failed_production_driver(&water_first_regions, &water_first, 42);
+        let mut probe = RmgRng::new(42);
+        walk_accepted_seeds(&mut probe, &scratch, 0, MAX_DECK_ATTEMPTS as usize);
+        assert_eq!(
+            next,
+            probe.next_u32(),
+            "water-first/land-second must dispatch the real placer exactly once"
         );
 
         let ineligible_flood = connector_region(0, 4, true, 90, &[1, 2, 3]);
@@ -1093,36 +1114,28 @@ mod tests {
             connector_region(2, 4, true, 90, &[0, 9]),
             connector_region(3, 5, false, 90, &[0, 9]),
         ];
-        let (mut grid, mut scratch) = harness();
-        let mut rng = RmgRng::new(43);
+        let (next, _scratch) =
+            next_word_after_failed_production_driver(&ineligible, &ineligible_flood, 43);
         let mut unchanged = RmgRng::new(43);
-        let mut structures = Vec::new();
-        let mut trace = RmgConstructionTrace::default();
-        let placed = {
-            let mut ctx = CarveCtx {
-                grid: &mut grid,
-                scratch: &mut scratch,
-                ids: &identity,
-                blocks: &blocks,
-                rng: &mut rng,
-                playfield: &playfield,
-                ramp_end_block: -1,
-            };
-            carve_connectors_for_region(
-                &mut ctx,
-                &ineligible,
-                &ineligible_flood,
-                0,
-                &mut structures,
-                &mut trace,
-            )
-        };
-        assert!(!placed);
-        assert!(structures.is_empty() && trace.events.is_empty());
         assert_eq!(
-            rng.next_u32(),
+            next,
             unchanged.next_u32(),
             "pair gates run before the placer and spend no MapGen draw"
+        );
+
+        let water_second = connector_region(0, 4, true, 90, &[1, 2]);
+        let water_second_regions = vec![
+            water_second.clone(),
+            connector_region(1, 4, false, 90, &[0, 9]),
+            connector_region(2, 4, true, 90, &[0, 9]),
+        ];
+        let (next, _scratch) =
+            next_word_after_failed_production_driver(&water_second_regions, &water_second, 44);
+        let mut unchanged = RmgRng::new(44);
+        assert_eq!(
+            next,
+            unchanged.next_u32(),
+            "land-first/water-second must be rejected before the real placer"
         );
     }
 

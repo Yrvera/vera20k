@@ -464,7 +464,7 @@ TS-only/dormant data lead and is excluded.
 
 | Rust owner | Current state | Verified mismatch / required ownership |
 |---|---|---|
-| `src/map/rmg/phases/carve_driver.rs` | active flood branch exists, but rejects `first.waterish` as well as `second.waterish` | native class-gates only the second ordered neighbor; remove the extra first-slot rejection while retaining both substantiality and all level gates |
+| `src/map/rmg/phases/carve_driver.rs` | active flood branch preserves the ordered neighbor list, both substantiality gates, the second-slot-only class gate, and triple-level equality | preserve the literal asymmetry and production-path RNG coverage; do not restore a first-slot class rejection |
 | `src/map/rmg/pipeline.rs` | rebuilds regions and iterates a simplified `ConnectorRegion`; adjacency prepass is only implicit | must provide ordered neighbor/cell-count/flood-class facts and run both land ramp and water deck branches in native pass order |
 | `src/map/rmg/phases/bridge_deck.rs` | seed picker plus two validators only; header calls RMG dormant | mechanism is active for type 3/4; implement full search, stamp, ends, huts, and exact predicate |
 | `TileIds::is_bridge_absorbable` | six WaterSet variants + shore; waterfall deferred | exact helper is WaterSet span 14 + shore 42 + four waterfall spans 4 |
@@ -597,7 +597,7 @@ The pass changed no conclusion and produced no deferred material question.
 
 | Verified requirement | Current Rust delta | Required effect | Acceptance gate | Forbidden shortcut |
 |---|---|---|---|---|
-| Process every active flood-region neighbor pair through the literal ordered-slot gates. | active driver adds a non-native first-neighbor class rejection | retain ordered neighbor facts/counts; require both substantial, class-gate only the second, and call the placer after the full adjacency prepass | water-first/land-second dispatches once; land-first/water-second does not; both-land dispatches once | do not symmetrize the second-slot class gate or infer water solely from runtime land type |
+| Process every active flood-region neighbor pair through the literal ordered-slot gates. | implemented with ordered facts/counts and the second-slot-only class gate | preserve both substantiality tests and call the placer after the full adjacency prepass | water-first/land-second dispatches once; land-first/water-second does not; both-land dispatches once, including production RNG cursor proof | do not symmetrize the second-slot class gate or infer water solely from runtime land type |
 | Preserve exact MapGen draw order. | no deck calls/draws | rejection-draw seed, then conditional end coins only | fixture asserts accepted cell, rejection count, coin count, and post-phase cursor | do not draw coins on failed end areas |
 | Reproduce NS/EW search and choice. | absent | exact strip/approach gates, region pair, EW tie, strict length bands | fixtures cover one-axis, two-axis shorter, tie, and each threshold boundary | do not collapse into nearest-end search |
 | Validate exact absorbable families. | six water + shore only | water span 14, shore 42, four waterfall spans 4; no extra special families | boundary test at every base-1/base/base+last/base+span | do not reuse sub-tile-sensitive special-terrain predicate |
