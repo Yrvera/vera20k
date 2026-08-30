@@ -75,7 +75,7 @@ from a baked intermediate matrix. No RNG participates.
   The transient atlas already keys a numerator with denominator `3`, so its
   ownership remains usable, but the numerator type and rasterizer's lower clamp
   must change to preserve signed native extrapolation.
-- `Simulation` is serialized positionally with bincode. Snapshot version `109`
+- `Simulation` is serialized positionally with bincode. Snapshot version `104`
   is strict; `#[serde(default)]` cannot migrate a changed mid-record shape.
   `world_hash.rs` already hashes both the active locomotor payload and a nested
   stashed runtime, but Drive/Ship payloads contain no state. It separately hashes
@@ -104,7 +104,7 @@ new exhaustive report are authoritative for this design.
   payload may no longer be invented without a kind and construction frame.
 - `src/sim/movement/locomotor.rs`: add active-payload accessors and thread the
   construction frame through normal locomotor and piggyback construction.
-  Remove `#[serde(default)]` from `runtime_payload`; strict schema 110 requires
+  Remove `#[serde(default)]` from `runtime_payload`; strict schema 105 requires
   the payload. `active_kind()`, never `effective_kind()`, gates the class half
   of the mechanism.
 - Production/test callers of `LocomotorState::from_object_type`,
@@ -143,7 +143,7 @@ new exhaustive report are authoritative for this design.
 - `src/sim/world/world_hash.rs`: remove the retired slope bytes from the body
   rocking fold and hash every dedicated field under both active Drive/Ship
   payloads and any stashed Drive/Ship runtime.
-- `src/sim/snapshot.rs`: bump the strict internal schema from `109` to `110`
+- `src/sim/snapshot.rs`: bump the strict internal schema from `104` to `105`
   (or from the then-current value to its next coordinated value if another
   authorized snapshot change lands first) and add the exact reason.
 - Existing rocking, locomotor/piggyback, movement, lifecycle, presentation,
@@ -444,14 +444,14 @@ the stable-matrix rules of excluded classes.
   `0|3`. Keep fields private so normal Rust writers cannot create anything
   else. Debug assertions may flag internal incoherence, but gameplay code does
   not repair it by borrowing terrain or another component.
-- There is no payload default. Missing payload bytes in a version-110 record
+- There is no payload default. Missing payload bytes in a version-105 record
   are a decode error, and no fallback constructs Drive state at frame zero.
 - A missing terrain grid or out-of-grid current cell in synthetic fixtures is
   a no-write result. It must not become a slope-zero transition and must not
   make ordinary movement fail.
 - Do not clamp raw slope bytes in sim. Existing presentation handling for
   unpopulated native matrix-table slots remains at the app/render boundary.
-- No cross-version bincode migration is attempted. Version `109` snapshots are
+- No cross-version bincode migration is attempted. Version `104` snapshots are
   rejected cleanly after the bump. Mapping their `RockingState` counter into the
   new payload would promote known-wrong post-movement/countdown data and still
   could not reconstruct active versus stashed native ownership. Current-version
@@ -516,8 +516,8 @@ production-path discriminating rather than manually attaching `RockingState`.
     tests with body-only `RockingState`. Prove slope construction leaves
     `entity.rocking` unchanged and body rocking never writes the locomotor
     payload.
-14. **Schema boundary:** current snapshots report version `110`; a version
-    `109` preamble is rejected before body decode. The round trip includes both
+14. **Schema boundary:** current snapshots report version `105`; a version
+    `104` preamble is rejected before body decode. The round trip includes both
     an active and a stashed Drive/Ship slope payload. A nonzero-frame ordinary
     constructor and fresh piggyback replacement must retain that frame before
     reveal/sampling; no default/omitted payload path may create frame zero.
