@@ -2,15 +2,15 @@
 
 ## Goal
 
-Parity-close VERA20k's complete active-retail Yuri's Revenge bridge system, including GSI-04.12 high bridges, GSI-04.13 low/water bridges, GSI-04.14 destruction/repair/CABHUT behavior, GSI-04.15 TubeClass, and every active cross-system bridge consumer established by the frozen coverage map.
+Parity-close VERA20k's complete active-retail Yuri's Revenge bridge system, including GSI-04.12 high bridges, GSI-04.13 low/water bridges, GSI-04.14 destruction/repair/CABHUT behavior, GSI-04.15 TubeClass, and every active cross-system bridge consumer established by the bounded coverage baseline and its living follow-up inventory.
 
 The result must preserve behavior that already matches, replace behavior that conflicts with active `gamemd.exe` or retail data, implement missing behavior, and leave no approximate, unchecked, missing, or residual bridge mechanism behind.
 
 ## Status and Scope Decision
 
-**Revision 14 after the fifth 2026-08-30 REVISE design-review verdict; pending a new fresh re-review. No further Rust implementation is authorized by this document until that review passes.**
+**Revision 15 after the sixth 2026-08-30 REVISE design-review verdict; pending a new fresh re-review. No further Rust implementation is authorized by this document until that review passes.**
 
-Discovery is frozen by `docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a`. Ten successive read-only omission audits expanded the boundary to 27 mechanism rows and 31 explicit open questions; the tenth pass added nothing.
+`docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows and 31 explicit open questions; the tenth pass added nothing. The working inventory is nevertheless living: before every transaction it is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
 
 The fourth review's random-map blocker and the Revision-4/Revision-5 critics' launch, projection,
 trace-schema and authored-constructor blockers are closed by
@@ -30,19 +30,30 @@ it needs a persistent owner. Those generator-phase findings remain closed; the s
 pre-Fill House/Gather prefix and non-offline Mark-entry contexts are routed below.
 
 The design treats those rows as a coverage map, not as implementation modules. It uses 21 narrower
-implementation transactions to preserve dependency order, but the 27 `BR-M` rows are the closure,
-builder, critic, and publication gates required by this project. A transaction may supply part of
-more than one mechanism, and a mechanism may span more than one transaction; neither fact permits a
-mechanism to inherit another row's pass.
+implementation transactions to preserve dependency order. Each transaction is its own branch,
+builder, critic, validation, PR, and merge gate; the 27 `BR-M` rows remain the cumulative behavior-
+closure gates. A transaction may supply part of more than one mechanism, and a mechanism may span
+more than one transaction; neither fact permits a mechanism to inherit another row's pass.
 
-Current implementation baseline is `origin/main` commit `a3e4ce9a` (2026-08-30), not the pre-implementation
-snapshot used by Revision 7. PR #170 has merged P0, transaction 1 (load inputs/raw facts), and
+Current implementation baseline is freshly fetched `origin/main` commit
+`5062bceaf15fe5139218d7f3375d34cc8e1d6139` (2026-08-30), with PR #170 merge
+`f4baff6e` confirmed as an ancestor. PR #170 merged P0, transaction 1 (load inputs/raw facts), and
 transaction 2 (RMG low-bridge launch construction), including their focused validation and critic
 corrections. Later merged work also changed ground-height ownership, Drive/Ship slope handling,
-radar-overlay projection, FNPC bridge projection, and waypoint handling. Those changes are evidence
-to preserve, not proof that any remaining `BR-M` row is closed. Before each remaining mechanism is
-contracted, its owner must run a fresh direct disparity scan against then-current `main`; stale Rust
-gap descriptions in the frozen coverage report are historical hypotheses only.
+radar-overlay projection, FNPC bridge projection, waypoint handling, final House `BasePlan`/AI state,
+snapshot schema v113, lifecycle/deploy seams, and bridge-harness hashes. No post-`a3e4ce9a` merge
+closed a remaining core bridge, Tube, RMG, pathfinding, combat, or render mechanism. Those changes are
+evidence to preserve, not proof that any remaining `BR-M` row is closed. Before each remaining
+transaction is contracted, its builder runs a fresh direct disparity scan against then-current
+`main`; stale Rust gap descriptions in the bounded coverage report are historical hypotheses only.
+
+Living status at this baseline is explicit. P0 and transactions 1 and 2 are merged. BR-M02 and
+BR-M03 passed their bounded PR #170 gates but remain subject to the final reverse audit. BR-M01,
+BR-M06, and BR-M24 have landed contributions but remain open at their routed later consumer or
+reverse-audit gates. P0-R1 is reopened as the next prerequisite. Every other required contribution
+remains open, and GSI-04.12, GSI-04.13, GSI-04.14, and GSI-04.15 remain aggregate-open until all of
+their mechanisms and cross-system consumers pass. This ledger is replaced with current evidence
+after each merged transaction rather than appended as historical prose.
 
 The completed P0-R1 reinvestigation disproves Revision 9's eligible/ineligible split. Current `main`
 does not reproduce the active stock-offline prefix even when a `PreloadedBattleStartPlan` exists:
@@ -56,6 +67,13 @@ passes plus common `+0x80`, with LAN using selected `+0x84` and WOL state `2` us
 noncampaign family; stream restore and generated `.SED` do not run Mark; and shipped
 `gamemd.exe` has no persistent editor load mode. Transaction 3 must use this typed matrix rather
 than allowing any non-offline context to inherit the stock-offline plan by analogy.
+
+The first House pass is disposable except for its Scenario cursor effect. It cannot overwrite or
+leak into the final House `BasePlan`, AI activation latches, lifecycle state, or snapshot/hash state.
+The zero-draw reset deletes that pass, and only the second pass supplies final House state. A focused
+oracle must continue past installation through Fill, any applicable Mark/generated replay,
+authored/Post-Map work, and the current runtime `recalc_base_plan` Scenario consumer so the new
+BasePlan path proves both state preservation and downstream cursor continuity.
 
 In scope:
 
@@ -273,15 +291,41 @@ it must not consult later resolved terrain, overlays, occupancy, or bridge state
 start entries below the target count remain in order and the plan retains both Gather vectors and the
 final assignment/chooser result rather than collapsing them into one completed vector.
 
+App setup normalizes the constructor roster before compact launch-session projection; it cannot be
+reconstructed from `opponents.len()` or from the one-local-human `SkirmishLaunchSession` shape. The
+simulation-facing value has the following semantic fields (exact Rust names may follow existing
+style):
+
+```rust
+struct PreFillHouseRoster {
+    human_nodes_in_native_priority_order: Vec<PreFillHumanHouse>, // observers retained
+    ai_slots_in_native_slot_order: Vec<PreFillAiHouseSlot>,       // validity retained
+    neutral: PreFillHouse,
+    special: PreFillHouse,
+}
+```
+
+Both passes traverse that same immutable value. Each human node consumes regardless of observer
+status; only valid AI slots construct and consume; invalid AI slots remain represented so a compacted
+opponent vector cannot silently change order or count. Neutral and Special are always last. Final
+House `BasePlan`, AI latches, lifecycle fields, snapshots, and hashes are installed only from the
+second pass; first-pass outcomes may be retained in the plan for cursor/equivalence proof but are
+never projected into the live world.
+
 The accepted generated-map path is not a filename/content inference. A valid preview writes start
 staging in `Scenario + 0x11C0`; successful Start copies that staging before `.SED` regeneration.
-The plan records explicit `AcceptedRmgStartStaging` provenance (or the separately proved authored
-source) so a fresh external `.SED`, a cancelled preview, and an authored map cannot borrow those
-entries. This provenance is independent of the later generated-vs-authored overlay load-source
-discriminator.
+Setup acceptance extracts only those staged start entries plus explicit
+`AcceptedRmgStartStaging` provenance into a consumed-once loading value. Preview terrain, MapGen
+continuation, constructor bindings, and display entities remain presentation/file artifacts and are
+not carried as gameplay authority. Loading consumes the staged-start value exactly once when making
+the prefix plan. A cancelled/replaced preview, authored map, fresh external `.SED`, regenerated
+waypoint inference, construction-trace presence, or unsupported generated/mode combination cannot
+manufacture or borrow this provenance. This gate is independent of the later generated-vs-authored
+overlay load-source discriminator.
 
-The plan contains the complete logical pre-state/fingerprint `S0`, pass-1 House outcomes, both
-Gather outcomes, final assignments, pass-2 House outcomes, and complete post-state/cursor `S1`.
+The plan contains the complete logical pre-state/fingerprint `S0`, pass-1 House outcomes for
+equivalence checking only, both Gather outcomes, final assignments, pass-2 House outcomes as the
+sole live-House projection source, and complete post-state/cursor `S1`.
 `MapLoadInitial` creates one `ScenarioBootstrapRng` from the same match seed, requires exact full-state
 equality with `S0`, installs `S1` once, and rejects a second installation because the pre-state no
 longer matches. The plan exposes no RNG interface and is consumed from `LoadingRequest`; later House
@@ -582,11 +626,13 @@ architecture layers and not mechanism pass gates.
 
 ### Mechanism closure gates
 
-Every `BR-M` row has one persistent builder identity, one complete mechanism contract, and its own
-fresh-critic chain. The builder may work through several dependency transactions, but another
-builder's transaction or critic result cannot close the row. If a builder must be replaced, the
-handoff records the reason, complete evidence/diff/output bundle, and new owner; the row is then
-recriticized from its full requirement rather than only the replacement's last diff.
+Every dependency-coherent transaction has one builder and its own fresh read-only critic chain on a
+short-lived transaction branch. Builder identity need not persist across nonadjacent transactions;
+the durable owner is the cumulative evidence bundle for each `BR-M` row. A transaction critic checks
+the full transaction requirement and every mechanism contribution it touches. When a transaction is
+the last contributor to a split row, a fresh critic also receives that row's complete native/retail
+requirement, all earlier contributing diffs and outputs, routed questions, exclusions, and current
+preservation evidence. No earlier transaction or different row's critic result can close it.
 
 | Mechanism gate | Contributing transaction(s) |
 |---|---|
@@ -621,17 +667,17 @@ recriticized from its full requirement rather than only the replacement's last d
 A row passes only after all of its contributing transactions, preservation tests, routed open
 questions, and negative facts are exact and a critic who did not build it returns no material
 finding. Split rows therefore remain open after an early transaction. Bundled transactions must be
-decomposed into reviewable mechanism-scoped deltas or a separately named prerequisite commit; a
-shared commit never grants a shared pass.
+decomposed into reviewable mechanism-scoped deltas or a separately named prerequisite commit within
+that transaction; a shared commit never grants a shared pass.
 
-BR-M04's persistent builder begins its shared high-load contribution in transaction 3 and continues
-the same mechanism through transaction 4. Transaction 3 cannot close BR-M04. Its evidence/output
-bundle must nevertheless include the native interleaving, OverlayData/global-Recalc order,
-finalized-payload handoff and high-anchor retail preservation fixtures; BR-M05's fresh critic checks
-that contribution for escaped high-load regressions. After transaction 4, a different fresh critic
-receives BR-M04's complete transactions-3-and-4 requirement, native evidence, cumulative diff and
-validation output. Neither the BR-M05 pass nor the earlier preservation check substitutes for that
-full BR-M04 critic gate.
+Transaction 3 begins BR-M04's shared high-load contribution but cannot close BR-M04. Its
+evidence/output bundle must nevertheless include the native interleaving,
+OverlayData/global-Recalc order, finalized-payload handoff and high-anchor retail preservation
+fixtures; transaction 3's fresh critic checks that contribution for escaped high-load regressions.
+After transaction 3 merges, transaction 4 uses a new short-lived branch and may use a different
+builder. Its fresh critic receives BR-M04's complete transactions-3-and-4 requirement, native
+evidence, cumulative diff and validation output. Neither BR-M05's pass nor transaction 3's
+preservation check substitutes for that full BR-M04 critic gate.
 
 ### Open-question routing
 
@@ -710,21 +756,22 @@ Negative facts are closure requirements, not prose-only cautions. Each routed un
 
 ## Builder, Critic, and Publication Protocol
 
-For every `BR-M` mechanism:
+For every dependency-coherent implementation transaction:
 
-1. Resolve every contributing transaction and open question against live `gamemd.exe` and retail data into one sourced mechanism contract. OpenTS may locate functions but supplies no required behavior.
-2. Assign one persistent builder for the mechanism. The builder may preserve correct code, replace wrong code, and implement missing code only within that mechanism and its smallest verified prerequisite.
-3. Check `cargo`/`rustc` ownership before validation. Run focused `cargo test -p vera20k --lib <filter>` commands only; never a bare Cargo test.
-4. Commit the coherent evidence-backed slice after focused validation.
-5. Give a fresh read-only critic who did not build the mechanism its complete requirement, native/retail evidence, exact diff, and literal validation output. For a split mechanism, the bundle includes every earlier contributing transaction and preservation test.
-6. If it fails, fix the largest finding, commit the correction, and give the full updated bundle to a new critic. The new critic must recheck prior findings as well as the new diff.
-7. Repeat until a fresh critic passes with no material finding. Approximate or unverified behavior cannot be relabeled residual; the mechanism and every owning row stay open.
-8. After the mechanism pass, push its dedicated `feature/<mechanism>` branch and open a draft PR targeting `main`; publication is preauthorized. Record the contract, exact commits, critic pass, and focused literal output in the PR.
-9. A mechanism PR remains draft because `ENGINE.md` reserves the one full `cargo test -p vera20k --lib` certification for the bridge-wide completion boundary. Do not declare an intermediate PR ready by substituting focused tests for that suite. Opening is authorized here; readiness and merging are not. After opening the first such PR, this autonomous run must stop, report the authority blocker, and request the user/reviewer decision needed to certify and merge it. It may resume the next mechanism only after then-current `main` contains the preceding mechanism; stacking or rewriting around the boundary is forbidden. The design does not claim an internally automatic draft-to-merge transition.
+1. Refresh its living-inventory rows against then-current `main`. Resolve every material behavior and routed open question needed by the transaction against active `gamemd.exe` and retail data into one sourced transaction contract. OpenTS may locate functions but supplies no required behavior.
+2. Create one short-lived `feature/<transaction>` branch from freshly fetched current `origin/main`. Assign one builder for the transaction. It may preserve correct code, replace wrong code, and implement missing code only within that transaction and its smallest verified prerequisite.
+3. Check `cargo`/`rustc` ownership before validation. While building, run focused `cargo test -p vera20k --lib <filter>` commands only; never a bare Cargo test.
+4. Commit each coherent evidence-backed slice after focused validation. Keep the branch reviewable and buildable; do not defer a multi-slice transaction into one giant commit.
+5. Give a fresh read-only critic who did not build the transaction its complete requirement, native/retail evidence, exact cumulative diff, preservation obligations, and literal validation output. If the transaction is the last contributor to a split mechanism, include that mechanism's complete earlier transaction history and row-level closure bundle.
+6. If it fails, the builder fixes the largest finding and commits the correction. Give the full updated bundle to a new fresh critic, who must recheck every prior finding plus the new diff. Repeat until a fresh critic passes with no material finding.
+7. After the fresh pass, check Cargo ownership and run `cargo test -p vera20k --lib` exactly once as that PR's full readiness certification. Do not rerun it for the same PR unless a later code correction invalidates the certification; such a correction reopens readiness and requires the rule in `ENGINE.md` to decide the new certification boundary.
+8. Push the dedicated branch and open or update its PR targeting `main`; publication is preauthorized by this goal. Record the contract, exact commits, critic chain, focused literal output, and full-suite literal output. Take the PR through review and merge before beginning any dependent transaction. Never stack a dependent branch or rewrite around this boundary.
+9. Refresh the living inventory from the resulting `main`. A passed transaction closes only the exact contributions it contains. Approximate, unverified, missing, or residual behavior keeps its mechanism and owning GSI row open; a split mechanism closes only at its final cumulative row review.
 
-Critics do not edit. Builders do not self-approve. A critic pass proves only the bounded mechanism,
-not the bridge system. The final bridge-wide audit runs the full `--lib` suite exactly once and is the
-only point at which the aggregate completion PR may be declared ready for `main`.
+Critics do not edit. Builders do not self-approve. A critic pass and PR certification prove only the
+bounded transaction and any explicitly completed cumulative row gate, not the bridge system. The
+final bridge-wide reverse audit consumes the per-PR certifications; it does not rerun a blanket full
+suite unless it discovers a correction requiring a new transaction and PR.
 
 ## Player-Experience Detail Ledger
 
@@ -780,7 +827,10 @@ only point at which the aggregate completion PR may be declared ready for `main`
 
 ## Validation Strategy
 
-During mechanism work, use only focused `--lib` tests after confirming no other session owns Cargo. Favor native-trace tables and small retail fixtures over broad certification matrices.
+During transaction implementation and critic correction, use only focused `--lib` tests after
+confirming no other session owns Cargo. Favor native-trace tables and small retail fixtures over
+broad certification matrices. After the final fresh critic passes and before that transaction PR is
+declared ready, run the full `cargo test -p vera20k --lib` exactly once for that PR.
 
 Required fixture families:
 
@@ -793,7 +843,10 @@ Required fixture families:
   including observer and invalid-AI-slot cases, two independent Battle/Cooperative Gathers, sparse and
   deficient default-cell inputs, zero-draw reset, accepted-RMG staging provenance permitted only for
   Battle id `1`/FFA id `2`, rejection for other generated/mode combinations, exact full-state single
-  installation, duplicate/tampered rejection, and draw-free later assignment projection;
+  installation, duplicate/tampered rejection, and draw-free later assignment projection; the first
+  pass must leave no live `BasePlan`/AI/lifecycle/snapshot/hash state, the second pass must preserve
+  current final-House state, and the reference cursor must match through Fill, applicable Mark or
+  generated replay, authored/Post-Map work, and runtime `recalc_base_plan`;
 - typed non-offline fresh-load-context fixtures: campaign single House pass and no Gather; LAN full
   House1/`+0x80`/selected-`+0x84`/reset/House2 sequence; WOL full House1/`+0x80`/common-assignment/
   reset/House2 sequence with both gated chooser arms; replay adds zero before its recorded family;
@@ -806,7 +859,9 @@ Required fixture families:
   draw zero, and no ranged helper or cloned cursor is accepted;
 - source mapping fixtures: Loose and Mix map to authored Mark; Generated maps to materialized/no-Mark
   even with missing or empty construction trace; LegacyFallback and untyped Generic reject rather
-  than guessing; accepted generated start staging is distinct from both map source and trace;
+  than guessing; accepted generated start staging is distinct from both map source and trace,
+  consumed once, and cannot be inferred from a cancelled/replaced preview, authored map, external
+  `.SED`, regenerated waypoints, or generated construction events;
 - one interleaved authored OverlayPack fixture where an earlier low trigger writes cells and a later
   packed coordinate observes/overwrites them, including a high anchor in the same y/x traversal;
   then a conflicting OverlayData byte must win before the final global Recalc produces the exact Road,
@@ -847,9 +902,9 @@ Required fixture families:
   seed-zero Scenario poststate and separately contracted Main/MapGen behavior rather than unchanged
   generic RNG continuation.
 
-The full suite `cargo test -p vera20k --lib` runs exactly once after P0 and all 27 bridge mechanisms
-and their critic cycles pass, immediately before the bridge-wide reverse audit is declared ready. It
-is not rerun per transaction, mechanism iteration, or intermediate draft PR.
+The full suite is a per-transaction PR readiness gate, not a per-edit or per-critic-iteration tool.
+Each transaction records its one final literal full-library result after focused validation and its
+fresh critic chain. A later dependent transaction begins only after that PR merges into `main`.
 
 ## Bridge-Wide Reverse Audit
 
@@ -860,7 +915,7 @@ After P0 and all bridge-mechanism passes:
 3. Re-run the OpenTS correspondence ledger as leads and confirm no active YR mechanism disappeared between unit boundaries.
 4. Recheck all 27 mechanism rows, all 31 open questions, and every entry in the complete frozen negative-fact ledger; every open item must be resolved and every exclusion preserved, not deferred.
 5. Re-run named retail fixture traces for load, move, target, damage, collapse, repair, render and restore.
-6. Run the full `--lib` suite once, record literal output, update only verified System Map connections, and produce the final handoff.
+6. Reconcile every merged transaction's full-suite certification and current `main` ancestry, update only verified System Map connections, and produce the final handoff. If the audit discovers any code correction, route it through a new dependency-coherent transaction, fresh critic chain, one PR-readiness full-suite run, and merge before repeating the affected audit rows.
 
 Any omission or regression reopens its owning unit and requires the builder/fresh-critic loop again.
 
@@ -901,7 +956,10 @@ The preferred approach is distributed exact-delta closure in current owners. It 
 - the universal stock-offline pre-Fill substitution includes both House passes, both mode-family
   Gather calls, exact default-cell deficient retries, zero-draw reset and explicit generated-staging
   provenance limited to accepted Battle/FFA on one native Scenario stream, and cannot install stale
-  state, install twice, or leave a parallel downstream owner;
+  state, install twice, or leave a parallel downstream owner; its normalized roster preserves native-
+  priority human nodes including observers, AI slot identity/validity, Neutral and Special without an
+  `opponents.len()` reconstruction; pass 1 leaks no final House state, pass 2 preserves current
+  `BasePlan`/AI/lifecycle/snapshot/hash state, and the cursor oracle reaches runtime BasePlan draws;
 - the app-owned fresh-load-context descriptor is orthogonal to physical `LoadedMapSource` and has no
   restore variant; persistence owns a separate no-Mark restore context with no conversion into the
   fresh pipeline; Loose/Mix map
@@ -915,8 +973,9 @@ The preferred approach is distributed exact-delta closure in current owners. It 
   clone or reseed, and edge writes alias one extended persistent shared dummy;
 - restore asserts Scenario's verified seed-zero poststate while leaving Main/MapGen explicitly
   OQ-19-gated rather than claiming generic unchanged continuation;
-- intermediate mechanism publication remains draft and merge-gated, while the full `--lib` suite
-  runs exactly once at bridge-wide completion;
+- each dependency-coherent transaction owns one short-lived branch, builder, fresh-critic chain,
+  one final full `--lib` PR-readiness run, and merge before dependent work; split mechanism rows
+  remain open until their cumulative final-contributor review;
 - P0 has a bounded all-ingress constructor requirement and its merged builder/fresh-critic evidence;
   P0-R1's universal stock-offline prefix correction and fresh critic pass before transaction 3 uses
   that shared Scenario cursor; and transaction 3 preserves the completed campaign/LAN/WOL/replay/
@@ -935,6 +994,7 @@ Until that review passes, implementation remains blocked by design rather than b
 - `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_SCENARIO_LOAD_ACTIVATION_BOUNDARY_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_ALL_LOAD_CONTEXT_SCENARIO_RNG_LIFECYCLE_GHIDRA_REPORT.md`
 - active `gamemd.exe` addresses and retail inputs enumerated by that report
-- current Rust owners at `origin/main` snapshot `a3e4ce9a`
+- current Rust owners at freshly fetched `origin/main` snapshot
+  `5062bceaf15fe5139218d7f3375d34cc8e1d6139`
 - `docs/system-map/topology.v2.json` `bridge-helpers` service boundary
 - `C:\Users\enok\Documents\OpenTS` correspondence ledger, as navigation leads only
