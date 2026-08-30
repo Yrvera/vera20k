@@ -218,9 +218,7 @@ impl BaseReservationState {
 /// `0x004F56F1`, `0x004F56F7`, `0x004F570A`, and `0x004F5710`;
 /// `HouseClass__Save @ 0x00504080` and `HouseClass__Load @ 0x00503040`
 /// persist the raw House block.
-#[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HouseAiActivationLatches {
     pub production: bool,
     pub autocreate_allowed: bool,
@@ -420,11 +418,7 @@ impl HouseState {
     /// accepts any nonzero AutoBaseBuilding or signed `CurrentIQ >=
     /// Rules+0x143C`, then writes AutoBaseBuilding, Production, and
     /// AutocreateAllowed in that order without touching AITriggersActive.
-    pub(crate) fn update_ai_activation(
-        &mut self,
-        game_mode_nonzero: bool,
-        iq_production: i32,
-    ) {
+    pub(crate) fn update_ai_activation(&mut self, game_mode_nonzero: bool, iq_production: i32) {
         if self.is_controlled_by_human(game_mode_nonzero)
             || (!self.ai_activation.auto_base_building && self.current_iq < iq_production)
         {
@@ -817,8 +811,7 @@ mod ai_activation_latch_tests {
 
     #[test]
     fn house_ai_activation_uses_mode_sensitive_control_predicate() {
-        let mut campaign_current =
-            HouseState::new(Default::default(), 0, None, true, 0, 10);
+        let mut campaign_current = HouseState::new(Default::default(), 0, None, true, 0, 10);
         campaign_current.current_iq = 5;
         campaign_current.update_ai_activation(false, 5);
         assert_eq!(
@@ -842,8 +835,7 @@ mod ai_activation_latch_tests {
         assert!(skirmish_player_control.ai_activation.autocreate_allowed);
         assert!(skirmish_player_control.ai_activation.auto_base_building);
 
-        let mut skirmish_current =
-            HouseState::new(Default::default(), 0, None, true, 0, 10);
+        let mut skirmish_current = HouseState::new(Default::default(), 0, None, true, 0, 10);
         skirmish_current.current_iq = 5;
         skirmish_current.update_ai_activation(true, 5);
         assert_eq!(

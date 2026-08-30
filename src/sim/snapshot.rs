@@ -3027,7 +3027,9 @@ mod tests {
                 GameSnapshot::read_header(&bytes).unwrap().version,
                 super::SNAPSHOT_VERSION
             );
-            let restored = GameSnapshot::load(&bytes).expect("current v113 snapshot").sim;
+            let restored = GameSnapshot::load(&bytes)
+                .expect("current v113 snapshot")
+                .sim;
             assert_eq!(restored.houses[&owner].ai_activation, latches);
         }
     }

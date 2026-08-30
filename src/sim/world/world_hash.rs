@@ -423,8 +423,8 @@ impl Simulation {
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true,
         )
     }
 
@@ -457,8 +457,8 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false, false, false,
+            true, true, true, true, true, true, true, true, true, true, true, true, false, false,
+            false, false, false, false, false,
         )
     }
 
@@ -488,8 +488,8 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false, false, false,
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, false, false, false,
         )
     }
 
@@ -497,8 +497,8 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, false, false,
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, false, false,
         )
     }
 
@@ -507,8 +507,8 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, false,
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, false,
         )
     }
 

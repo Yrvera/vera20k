@@ -1,10 +1,10 @@
 # Phase 3 House-update AI activation — exhaustive active-retail Ghidra report
 
-**Date:** 2026-08-27  
-**Binary:** installed active Yuri's Revenge `gamemd.exe` in live project `testProsjekt`  
-**Primary code:** `HouseClass__Update @ 0x004F8440`, activation block `0x004F8564..0x004F85B7`  
-**Investigation class:** exhaustive-slice; research only  
-**Status:** COMPLETE for the bounded House-update activation mechanism  
+**Date:** 2026-08-27
+**Binary:** installed active Yuri's Revenge `gamemd.exe` in live project `testProsjekt`
+**Primary code:** `HouseClass__Update @ 0x004F8440`, activation block `0x004F8564..0x004F85B7`
+**Investigation class:** exhaustive-slice; research only
+**Status:** COMPLETE for the bounded House-update activation mechanism
 **Confidence:** High. The transition, direct field census, tick owner, initialization, parsers,
 save/load/CRC lifecycle, retail inputs, and current Rust delta were all checked directly.
 
@@ -367,7 +367,8 @@ could gate it. Do not connect the two merely because their names resemble each o
 ### Evidence-backed exclusions
 
 - No TS executable or TS-only behavior is used as authority. The report is based on active YR
-  `gamemd.exe`; installed base/RA2 INI is consulted only because YR's effective data inherits it.
+  `gamemd.exe`; installed base/RA2 INI is only a comparative, non-authoritative reference. Active
+  YR loads standalone `RULESMD.INI`, whose explicit `Production=5` is authoritative here.
 - No hidden “autocreate team selector” is inferred. The exhaustive field census disproves a direct
   House-byte consumer in this binary.
 - Trigger action 13 is absent from shipped mounted maps. It is a valid compiled/custom-map writer,

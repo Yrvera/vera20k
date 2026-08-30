@@ -1,8 +1,8 @@
 # House-update AI activation design
 
-**Date:** 2026-08-27  
-**Phase:** 3 / GSI-04.05 bounded mechanism  
-**Status:** Approved after read-only design review  
+**Date:** 2026-08-27
+**Phase:** 3 / GSI-04.05 bounded mechanism
+**Status:** Approved after read-only design review
 **Native evidence:** `docs/research/PHASE3_HOUSE_UPDATE_AI_ACTIVATION_GHIDRA_REPORT.md`
 
 ## Goal

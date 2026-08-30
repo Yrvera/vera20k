@@ -5419,8 +5419,7 @@ ChuteSound=
             "Production is not clamped to MaxIQLevels"
         );
         assert_eq!(
-            GeneralRules::from_ini(&IniFile::from_str("[IQ]\nProduction=-3\n"))
-                .iq_production,
+            GeneralRules::from_ini(&IniFile::from_str("[IQ]\nProduction=-3\n")).iq_production,
             -3,
             "ReadIQ remains authoritative when [General] is absent"
         );
