@@ -322,7 +322,9 @@ use crate::sim::world::Simulation;
 // acquisition order and each entity's immutable resolved membership bit.
 // Bumped 109 -> 110: persist ordered House BasePlan authority and the immutable
 // BuildingType facts consumed by its Unlimbo/Limbo lifecycle writers.
-const SNAPSHOT_VERSION: u32 = 110;
+// Bumped 110 -> 111: persist the distinct BaseClass plan center written after
+// a successful non-controlled ConstructionYard deployment.
+const SNAPSHOT_VERSION: u32 = 111;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2733,10 +2735,11 @@ mod tests {
     /// dummy level/slope hash authority for active Spark queries; 107 -> 108
     /// adds the packed House alternate base cell; 108 -> 109 adds the ordered
     /// House BuildConst vector and immutable entity membership; 109 -> 110
-    /// adds ordered BasePlan state and immutable BuildingType facts.
+    /// adds ordered BasePlan state and immutable BuildingType facts; 110 -> 111
+    /// adds the distinct BaseClass plan center.
     #[test]
-    fn phase3_base_plan_snapshot_version_is_110() {
-        assert_eq!(super::SNAPSHOT_VERSION, 110);
+    fn phase3_base_plan_center_snapshot_version_is_111() {
+        assert_eq!(super::SNAPSHOT_VERSION, 111);
     }
 
     #[test]
@@ -3004,17 +3007,22 @@ mod tests {
             crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
         house.base_center = Some((40, 50));
         house.alternate_base_center = (93, 106);
+        house.base_plan_center = (19, 21);
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "alternate-base-center", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 110);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.houses[&owner].base_center, Some((40, 50)));
         assert_eq!(restored.houses[&owner].alternate_base_center, (93, 106));
+        assert_eq!(restored.houses[&owner].base_plan_center, (19, 21));
         assert_eq!(restored.state_hash(), expected_hash);
     }
 
@@ -3143,7 +3151,10 @@ mod tests {
         assert_eq!(sim.state_hash_without_base_plan_v110(), v109_ordered_hash);
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "naval-build-const", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 110);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.houses[&owner].build_const_order, vec![9, 3]);
@@ -3206,8 +3217,11 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "base-plan", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 110);
-        let restored = GameSnapshot::load(&bytes).expect("v110 snapshot").sim;
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         assert_eq!(restored.houses[&owner].base_plan.percent_built, -17);
         assert_eq!(restored.houses[&owner].base_plan.nodes.len(), 2);
         assert_eq!(restored.houses[&owner].base_plan.nodes[0].retry_count, -8);

@@ -18,6 +18,8 @@ use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{Animation, SequenceKind};
+use crate::sim::base_plan::pack_base_plan_cell;
+use crate::sim::base_plan_generation::{preflight_recalc, recalc_base_plan};
 use crate::sim::components::{
     BridgeOccupancy, BuildingDown, BuildingUp, HarvestOverlay, Health, VoxelAnimation,
 };
@@ -1817,6 +1819,7 @@ impl Simulation {
                 entity.selected,
                 yard_obj.foundation.clone(),
                 entity.facing,
+                yard_obj.construction_yard,
             ))
         });
         let Some((
@@ -1829,6 +1832,7 @@ impl Simulation {
             was_selected,
             foundation,
             source_facing,
+            is_construction_yard,
         )) = deploy_data
         else {
             return false;
@@ -1891,16 +1895,48 @@ impl Simulation {
             return true;
         }
 
-        // Despawn the MCV.
-        self.uninit_with_rules(stable_id, rules);
+        // Native successful deploy transaction:
+        // `UnitClass__Deploy @ 0x007393C0`, block `0x00739855..0x00739926`,
+        // calls `FUN_00505180 @ 0x00505180` only for a non-controlled
+        // ConstructionYard in a nonzero game mode. VERA preflights only the
+        // directly indexed Recalc vectors before the destructive MCV removal.
+        let recalc_context = self.houses.get(&owner_id).and_then(|house| {
+            (is_construction_yard
+                && self.session.game_mode_nonzero
+                && !house.is_controlled_by_human(true))
+            .then(|| {
+                let country_name = house
+                    .country
+                    .map(|country| self.interner.resolve(country).to_owned());
+                (
+                    country_name,
+                    house.side_index,
+                    house.difficulty,
+                    house.tech_level,
+                    house.base_plan.nodes.is_empty(),
+                )
+            })
+        });
+        if let Some((country_name, side_index, difficulty, _, true)) = &recalc_context {
+            let Some(country_name) = country_name.as_deref() else {
+                return false;
+            };
+            if preflight_recalc(rules, country_name, *side_index, *difficulty).is_err() {
+                return false;
+            }
+        }
 
-        // Spawn the construction yard.
+        // Native reaches the bounded post-deploy transaction only after the
+        // target Building was created successfully. Keep the source MCV live
+        // until target Unlimbo commits so a late placement rejection is atomic.
         let owner_str = self.interner.resolve(owner_id).to_string();
         let Some(new_sid) =
             self.spawn_object_at_height(&yard_type, &owner_str, rx, ry, 0, z, rules)
         else {
             return false;
         };
+
+        self.uninit_with_rules(stable_id, rules);
 
         // Set selected and building-up state on the new entity.
         if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
@@ -1909,6 +1945,35 @@ impl Simulation {
                 elapsed_ticks: 0,
                 total_ticks: 30,
             });
+        }
+
+        if let Some((country_name, side_index, difficulty, tech_level, _)) = recalc_context {
+            // The new Building's committed north-west anchor is the native
+            // `+0x9C/+0xA0` source. This bounded write order is load-bearing:
+            // primary center, optional Recalc, node zero, BasePlan center.
+            let house = self
+                .houses
+                .get_mut(&owner_id)
+                .expect("qualifying deploy owner remains registered");
+            house.base_center = Some((rx, ry));
+            if house.base_plan.nodes.is_empty() {
+                recalc_base_plan(
+                    &mut house.base_plan,
+                    rules,
+                    country_name
+                        .as_deref()
+                        .expect("empty qualifying plan was preflighted with a country"),
+                    side_index,
+                    difficulty,
+                    tech_level,
+                    self.session.game_options.super_weapons,
+                    &mut self.scenario_rng,
+                );
+            }
+            if let Some(node_zero) = house.base_plan.nodes.first_mut() {
+                node_zero.packed_cell = pack_base_plan_cell(i32::from(rx), i32::from(ry));
+            }
+            house.base_plan_center = (rx, ry);
         }
 
         true

@@ -10,6 +10,7 @@ use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+use crate::sim::base_plan::{BasePlanNode, pack_base_plan_cell};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::Health;
@@ -172,6 +173,38 @@ Foundation=2x2
 ";
     let ini: IniFile = IniFile::from_str(text);
     RuleSet::from_ini(&ini).expect("MCV test ruleset parse")
+}
+
+fn make_recalc_mcv_rules(vector_values: &str) -> RuleSet {
+    let text = format!(
+        "[General]\n\
+         HarvesterUnit=HARV\n\
+         AISlaveMinerNumber={vector_values}\n\
+         AIExtraRefineries={vector_values}\n\
+         AlliedBaseDefenseCounts={vector_values}\n\
+         SovietBaseDefenseCounts={vector_values}\n\
+         ThirdBaseDefenseCounts={vector_values}\n\
+         [AI]\n\
+         BuildConst=GACNST\nBuildPower=GAPOWR\nBuildRefinery=GAREFN\n\
+         BuildBarracks=GAPILE\nBuildWeapons=GAWEAP\nBuildRadar=GAAIRC\nBuildTech=GATECH\n\
+         [Countries]\n0=Americans\n[Sides]\nAllied=Americans\n[Americans]\nSide=Allied\n\
+         [InfantryTypes]\n\
+         [VehicleTypes]\n0=AMCV\n1=HARV\n2=SMIN\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GACNST\n1=GAPOWR\n2=GAREFN\n3=GAPILE\n4=GAWEAP\n5=GAAIRC\n6=GATECH\n7=YAREFN\n\
+         [AMCV]\nStrength=450\nSpeed=5\nDeploysInto=GACNST\n\
+         [HARV]\nOwner=Americans\nStrength=100\nSpeed=5\n\
+         [SMIN]\nOwner=Americans\nStrength=100\nSpeed=5\nDeploysInto=YAREFN\n\
+         [GACNST]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nStrength=1000\nFoundation=4x3\nConstructionYard=yes\n\
+         [GAPOWR]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nStrength=750\nFoundation=1x1\n\
+         [GAREFN]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nStrength=1000\nFoundation=2x2\n\
+         [GAPILE]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nStrength=500\nFoundation=2x2\n\
+         [GAWEAP]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nStrength=1000\nFoundation=3x2\n\
+         [GAAIRC]\nOwner=Americans\nAIBuildThis=no\nStrength=600\nFoundation=2x2\n\
+         [GATECH]\nOwner=Americans\nAIBuildThis=no\nStrength=500\nFoundation=2x2\n\
+         [YAREFN]\nOwner=Americans\nStrength=1000\nFoundation=2x2\n"
+    );
+    RuleSet::from_ini(&IniFile::from_str(&text)).expect("Recalc deploy fixture")
 }
 
 fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
@@ -665,6 +698,291 @@ fn add_house(sim: &mut Simulation, owner: &str, is_human: bool) {
     sim.houses.insert(
         owner_id,
         crate::sim::house_state::HouseState::new(owner_id, 0, Some(owner_id), is_human, 5000, 10),
+    );
+}
+
+fn deployed_type<'a>(sim: &'a Simulation, type_name: &str) -> &'a GameEntity {
+    let type_id = sim.interner.get(type_name).expect("deployed type interned");
+    sim.substrate
+        .entities
+        .values()
+        .find(|entity| entity.type_ref == type_id && !entity.dying)
+        .expect("deployed target exists")
+}
+
+#[test]
+fn base_plan_recalc_deploy_generates_and_anchors_nonhuman_conyard() {
+    let rules = make_recalc_mcv_rules("0,0,0");
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    sim.session.game_mode_nonzero = true;
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x1020_3040);
+    let height_map = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
+        .expect("spawn MCV");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _replacement_constructor_word = expected_rng.next_u32();
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+
+    let yard = deployed_type(&sim, "GACNST");
+    assert_eq!((yard.position.rx, yard.position.ry), (19, 21));
+    assert!(yard.building_up.is_some());
+    let owner = sim.interner.get("Americans").unwrap();
+    let house = &sim.houses[&owner];
+    assert_eq!(house.base_center, Some((19, 21)));
+    assert_eq!(house.base_plan_center, (19, 21));
+    assert!(!house.base_plan.nodes.is_empty());
+    assert_eq!(
+        house.base_plan.nodes[0].packed_cell,
+        pack_base_plan_cell(19, 21)
+    );
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
+    sim.flush_pending_delete();
+    assert!(sim.substrate.entities.get(mcv).is_none());
+}
+
+#[test]
+fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
+    let rules = make_recalc_mcv_rules("0,0,0");
+    let height_map = BTreeMap::new();
+
+    for (is_human, game_mode_nonzero) in [(true, true), (false, false)] {
+        let mut sim = Simulation::new();
+        add_house(&mut sim, "Americans", is_human);
+        sim.session.game_mode_nonzero = game_mode_nonzero;
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0x5566_7788);
+        let mcv = sim
+            .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
+            .expect("spawn MCV");
+        let mut expected_rng = sim.scenario_rng.clone();
+        let _replacement_constructor_word = expected_rng.next_u32();
+
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::DeployMcv { entity_id: mcv },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        assert!(deployed_type(&sim, "GACNST").building_up.is_some());
+        let owner = sim.interner.get("Americans").unwrap();
+        let house = &sim.houses[&owner];
+        assert_eq!(house.base_center, None);
+        assert_eq!(house.base_plan_center, (0, 0));
+        assert!(house.base_plan.nodes.is_empty());
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+        sim.flush_pending_delete();
+        assert!(sim.substrate.entities.get(mcv).is_none());
+    }
+
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    sim.session.game_mode_nonzero = true;
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x99AA_BBCC);
+    let miner = sim
+        .spawn_object("SMIN", "Americans", 20, 22, 128, &rules, &height_map)
+        .expect("spawn deployable miner");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _replacement_constructor_word = expected_rng.next_u32();
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: miner },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+    assert!(deployed_type(&sim, "YAREFN").building_up.is_some());
+    let owner = sim.interner.get("Americans").unwrap();
+    assert_eq!(sim.houses[&owner].base_center, None);
+    assert_eq!(sim.houses[&owner].base_plan_center, (0, 0));
+    assert!(sim.houses[&owner].base_plan.nodes.is_empty());
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
+    sim.flush_pending_delete();
+    assert!(sim.substrate.entities.get(miner).is_none());
+}
+
+#[test]
+fn base_plan_recalc_deploy_countryless_nonempty_plan_only_reanchors_node_zero() {
+    let rules = make_recalc_mcv_rules("");
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    sim.session.game_mode_nonzero = true;
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x1357_2468);
+    let owner = sim.interner.get("Americans").unwrap();
+    let house = sim.houses.get_mut(&owner).unwrap();
+    house.country = None;
+    house.base_plan.nodes = vec![BasePlanNode {
+        type_or_control: 4,
+        packed_cell: 0xAABB_CCDD,
+        filled: true,
+        retry_count: -7,
+    }];
+    let height_map = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
+        .expect("spawn MCV");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _replacement_constructor_word = expected_rng.next_u32();
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+    assert!(deployed_type(&sim, "GACNST").building_up.is_some());
+    let house = &sim.houses[&owner];
+    assert_eq!(house.base_center, Some((19, 21)));
+    assert_eq!(house.base_plan_center, (19, 21));
+    assert_eq!(house.base_plan.nodes.len(), 1);
+    assert_eq!(house.base_plan.nodes[0].type_or_control, 4);
+    assert_eq!(
+        house.base_plan.nodes[0].packed_cell,
+        pack_base_plan_cell(19, 21)
+    );
+    assert!(house.base_plan.nodes[0].filled);
+    assert_eq!(house.base_plan.nodes[0].retry_count, -7);
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
+    sim.flush_pending_delete();
+    assert!(sim.substrate.entities.get(mcv).is_none());
+}
+
+#[test]
+fn base_plan_recalc_deploy_countryless_empty_plan_fails_before_removal() {
+    let rules = make_recalc_mcv_rules("0,0,0");
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    sim.session.game_mode_nonzero = true;
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0x2468_1357);
+    let owner = sim.interner.get("Americans").unwrap();
+    sim.houses.get_mut(&owner).unwrap().country = None;
+    let height_map = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
+        .expect("spawn MCV");
+    let rng_before = sim.scenario_rng.state();
+
+    assert!(!sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+
+    assert!(!sim.substrate.entities.get(mcv).unwrap().dying);
+    let house = &sim.houses[&owner];
+    assert_eq!(house.base_center, None);
+    assert_eq!(house.base_plan_center, (0, 0));
+    assert!(house.base_plan.nodes.is_empty());
+    assert_eq!(sim.scenario_rng.state(), rng_before);
+}
+
+#[test]
+fn base_plan_recalc_deploy_failures_preserve_source_rng_plan_and_centers() {
+    let valid_rules = make_recalc_mcv_rules("0,0,0");
+    let malformed_rules = make_recalc_mcv_rules("");
+    let height_map = BTreeMap::new();
+
+    for (rules, add_blocker) in [(&valid_rules, true), (&malformed_rules, false)] {
+        let mut sim = Simulation::new();
+        add_house(&mut sim, "Americans", false);
+        sim.session.game_mode_nonzero = true;
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0xDEAD_BEEF);
+        let mcv = sim
+            .spawn_object("AMCV", "Americans", 20, 22, 128, rules, &height_map)
+            .expect("spawn MCV");
+        if add_blocker {
+            sim.spawn_object("GAPOWR", "Blocker", 21, 22, 0, rules, &height_map)
+                .expect("spawn footprint blocker");
+        }
+        let rng_before = sim.scenario_rng.state();
+
+        assert!(!sim.apply_command(
+            "Americans",
+            &Command::DeployMcv { entity_id: mcv },
+            Some(rules),
+            None,
+            &height_map,
+        ));
+        assert!(!sim.substrate.entities.get(mcv).unwrap().dying);
+        let owner = sim.interner.get("Americans").unwrap();
+        let house = &sim.houses[&owner];
+        assert_eq!(house.base_center, None);
+        assert_eq!(house.base_plan_center, (0, 0));
+        assert!(house.base_plan.nodes.is_empty());
+        assert_eq!(sim.scenario_rng.state(), rng_before);
+    }
+}
+
+#[test]
+fn base_plan_recalc_deploy_late_yard_unlimbo_failure_preserves_source_and_plan() {
+    let rules = make_recalc_mcv_rules("0,0,0");
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    sim.session.game_mode_nonzero = true;
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0xABCD_5750);
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 10,
+        off_fc: 0,
+        off_100: 0,
+        off_104: 10,
+        off_108: 10,
+    });
+    let height_map = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 5, 6, 128, &rules, &height_map)
+        .expect("MCV anchor is inside the playfield");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _failed_yard_constructor_word = expected_rng.next_u32();
+
+    assert!(!sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+
+    let source = sim.substrate.entities.get(mcv).expect("source MCV remains");
+    assert!(!source.dying);
+    assert!(!source.lifecycle.in_limbo);
+    assert!(
+        sim.substrate.entities.values().all(|entity| {
+            sim.interner.resolve(entity.type_ref) != "GACNST" || entity.dying
+        }),
+        "the rejected yard constructor leaves no live target"
+    );
+    let owner = sim.interner.get("Americans").unwrap();
+    let house = &sim.houses[&owner];
+    assert_eq!(house.base_center, None);
+    assert_eq!(house.base_plan_center, (0, 0));
+    assert!(house.base_plan.nodes.is_empty());
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state(),
+        "the failed target spends only its verified constructor word, not Recalc draws"
     );
 }
 
