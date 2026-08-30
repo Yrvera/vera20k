@@ -47,6 +47,27 @@ ordinary placement selector.
 The primary/launch cell `HouseState::base_center` remains the distinct `House+0x5490` authority.
 The `House+0x5750` base-plan center and all of its writers remain a separately reviewed mechanism.
 
+## Integration commit provenance
+
+The source commits were transplanted without rewriting their history. Their exact evidence binding is:
+
+- `f9970fa5` (`1d8cb7cb` in the source branch): `TActionClass::Read @ 0x006DD5B0`,
+  `FUN_00763690`, `HouseTypeClass__FindIndexOfName @ 0x005117D0`,
+  `HouseClass__Find_By_Country_Index @ 0x00502D30`, `TriggerClass::Spring @ 0x007265C0`,
+  `TriggerAction__Execute @ 0x006DD8B0` cases 137/138, `FUN_006E44E0`, `FUN_006E4540`, and
+  `ScenarioClass__Read_Waypoints @ 0x0068BDC0`.
+- `04f56ab1` (`033920e4` in the source branch): `TActionClass::Read @ 0x006DD5B0` and
+  `FUN_00763690` for the materialized `TActionClass+0x44` waypoint state.
+- `8250ff7e` (`c3189204` in the source branch):
+  `ScenarioClass__Read_Waypoints @ 0x0068BDC0` for signed division/remainder and raw
+  16-bit CellStruct halves.
+- `e081dc21` (`f8391bd0` in the source branch):
+  `ScenarioClass__Read_Waypoints @ 0x0068BDC0` for generated canonical decimal keys and
+  native integer reads.
+- `e1d52329`: `TriggerAction__Execute @ 0x006DD8B0` cases 137/138; this corrective commit
+  makes the complete scenario waypoint table an explicit dependency of the sole authoritative
+  action evaluator.
+
 ## Ownership and data flow
 
 1. Add a single ASCII waypoint-token decoder beside map action parsing. Return `Option<u32>` as
