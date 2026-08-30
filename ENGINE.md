@@ -67,6 +67,10 @@ any conflict: **binary → Ghidra → docs**.
 
 **It is common for research-doc details to be wrong.**
 
+External engines, reimplementations, and earlier-game codebases are navigation aids only. They do
+not establish active YR behavior or exclusions; verify material conclusions against active
+`gamemd.exe` and retail data.
+
 Skill instructions write `<main-checkout>` for the primary repository root. `docs/research/`,
 `docs/plans/`, and the research-index *code* are tracked, so every worktree, clone, and fork
 has them. Gitignored corpora — `ini/`, the rest of `docs/` (`scans/`, `gap-scans/`,
@@ -230,7 +234,16 @@ touches, then run `python -m tools.system_map check --require-sources`.
   GitHub action).
 - When this checkout has a sole owner, create or switch the feature branch here. When another
   task owns the checkout, use a separate worktree and feature branch. Continue an existing
-  task-owned feature branch rather than creating a second branch for the same work.
+  task-owned feature branch rather than creating a second branch for the same work. A checkout
+  with uncommitted or untracked task work remains owned by that task; do not reuse it until the
+  owner commits, transfers, or explicitly classifies the work.
+- When publication is authorized, carry one dependency-coherent transaction per feature branch
+  and PR through review and validation, and merge it before starting dependent work. A transaction
+  may include a small inseparable prerequisite; it is not one branch per function, plan row, or
+  critic iteration. Independent work may proceed in separately owned worktrees.
+- The transaction owner, or its explicitly named continuation owner, resolves PR conflicts on that
+  feature branch, reruns affected validation, and obtains fresh review if the resolution changes
+  behavior or evidence. Other tasks do not resolve its conflicts.
 - Push a feature branch or open/update its PR only when the user or goal authorizes publication.
   Every PR targets `main`. Delete merged feature branches when safe. Do not create a long-lived
   `dev` branch; use a temporary integration branch only when the user explicitly requests one.
@@ -244,6 +257,10 @@ touches, then run `python -m tools.system_map check --require-sources`.
 
 - Package is `vera20k`; a wrong `-p` exits 101 without running anything. Read and report the
   literal `test result:` line rather than inferring success from completion.
+- Before the first validation in a fresh worktree, identify which machine-local configuration,
+  retail archives, and main-checkout INIs it requires and confirm they are readable. On failure,
+  verify the environment and compare the same command on `origin/main` under equivalent conditions
+  before calling it a branch regression.
 - **Run the cheapest test tier that answers the question.** *Working:* `cargo check -p vera20k`
   plus the touched module only, `cargo test -p vera20k --lib <module_path>::` — always `--lib`, or
   you also link 13 unrelated side binaries. *PR integration/merge certification:* one full

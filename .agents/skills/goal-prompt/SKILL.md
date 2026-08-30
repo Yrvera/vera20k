@@ -118,9 +118,15 @@ Carry these controls into a goal when it spans multiple mechanisms or shared
 engine state:
 
 - Use one dependency-coherent transaction per implementation task,
-  `feature/*` branch, and PR. Start from current `origin/main`; never begin
-  new work from a merged feature branch. Keep a small inseparable prerequisite
-  with its consumer, but give a broad shared prerequisite its own transaction.
+  `feature/*` branch, and PR. Start from freshly fetched `origin/main`; never
+  begin new work from a merged feature branch. When publication is authorized,
+  carry each transaction through review and validation, then merge it before
+  starting dependent work; independent transactions may proceed only in
+  separately owned worktrees. The owning task, or its explicit continuation
+  owner, resolves conflicts and reruns affected validation; require fresh critic
+  review when the resolution changes behavior or evidence. Keep a small
+  inseparable prerequisite with its consumer, but give a broad shared
+  prerequisite its own transaction.
 - Before changing shared constructors, lifecycle, placement, production,
   pathing, schemas, snapshots, or deterministic state, define focused
   cross-system canaries. On failure, compare with `origin/main`, reproduce a
