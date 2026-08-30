@@ -349,14 +349,33 @@ fn drive_ship_slope_production_spawn_unlimbo_snaps_without_manual_rocking_state(
     ] {
         let mut sim = Simulation::with_seed(0x51_0f_e);
         sim.session.binary_frame = 37;
+        sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+            base: 0,
+            off_fc: -100,
+            off_100: -100,
+            off_104: 200,
+            off_108: 200,
+        });
         install_common_raw_terrain(&mut sim, 10, 5, 0, None);
-        sim.resolved_terrain
+        let terrain_cell = sim
+            .resolved_terrain
             .as_mut()
             .unwrap()
             .cell_mut(cell.0, cell.1)
-            .unwrap()
-            .slope_type = slope;
-        let rng_before = sim.scenario_rng.logical_state();
+            .unwrap();
+        terrain_cell.slope_type = slope;
+        terrain_cell.speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        terrain_cell.base_speed_costs = terrain_cell.speed_costs;
+        let mut expected_rng = sim.scenario_rng.clone();
+        let _constructor_word = expected_rng.next_u32();
 
         let stable_id = sim
             .spawn_object(type_id, "Americans", cell.0, cell.1, 0, &rules, &BTreeMap::new())
@@ -370,7 +389,11 @@ fn drive_ship_slope_production_spawn_unlimbo_snaps_without_manual_rocking_state(
             (slope, slope, 37, 0),
             "successful Foot unlimbo snaps both slope bytes at the current frame"
         );
-        assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "the Techno constructor consumes its one proven word and slope Unlimbo adds no draw"
+        );
     }
 }
 
@@ -379,14 +402,32 @@ fn zero_speed_foot_drive_ship_payloads_survive_all_world_spawn_paths() {
     let rules = zero_speed_drive_ship_slope_rules();
     let mut sim = Simulation::with_seed(0x51_0f_e);
     sim.session.binary_frame = 71;
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -100,
+        off_100: -100,
+        off_104: 200,
+        off_108: 200,
+    });
     install_common_raw_terrain(&mut sim, 12, 8, 0, None);
     for (cell, slope) in [((2, 2), 5), ((4, 2), 8), ((6, 2), 11), ((8, 2), 14)] {
-        sim.resolved_terrain
+        let terrain_cell = sim
+            .resolved_terrain
             .as_mut()
             .unwrap()
             .cell_mut(cell.0, cell.1)
-            .unwrap()
-            .slope_type = slope;
+            .unwrap();
+        terrain_cell.slope_type = slope;
+        terrain_cell.speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        terrain_cell.base_speed_costs = terrain_cell.speed_costs;
     }
 
     for (type_id, cell, expected_kind, slope) in [
@@ -422,6 +463,7 @@ fn zero_speed_foot_drive_ship_payloads_survive_all_world_spawn_paths() {
         mission: None,
         recruitable_a: true,
         recruitable_b: true,
+        structure_upgrades: [None, None, None],
     };
     assert_eq!(sim.spawn_from_map(&[placement], Some(&rules), &BTreeMap::new()), 1);
     let map_entity = sim
