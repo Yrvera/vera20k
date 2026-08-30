@@ -2411,12 +2411,44 @@ mod tests {
     }
 
     fn prefix_map_with_starts(starts: &[Waypoint]) -> MapFile {
-        let mut map =
-            crate::map::rmg::emit::empty_map_file(&crate::map::rmg::RmgOptions::default(), 40, 40);
-        map.waypoints.clear();
-        map.waypoints
-            .extend(starts.iter().copied().map(|start| (start.index, start)));
-        map
+        MapFile {
+            header: crate::map::map_file::MapHeader {
+                theater: "TEMPERATE".to_string(),
+                fill: "Clear".to_string(),
+                level: 0,
+                width: 44,
+                height: 52,
+                local_left: 2,
+                local_top: 5,
+                local_width: 40,
+                local_height: 40,
+            },
+            basic: Default::default(),
+            briefing: Default::default(),
+            preview: Default::default(),
+            cells: Vec::new(),
+            iso_map_pack_lookups: Vec::new(),
+            entities: Vec::new(),
+            overlays: Vec::new(),
+            overlay_data: Default::default(),
+            smudges: Vec::new(),
+            terrain_objects: Vec::new(),
+            waypoints: starts
+                .iter()
+                .copied()
+                .map(|start| (start.index, start))
+                .collect(),
+            cell_tags: Default::default(),
+            tags: Default::default(),
+            triggers: Default::default(),
+            events: Default::default(),
+            actions: Default::default(),
+            local_variables: Default::default(),
+            trigger_graph: Default::default(),
+            special_flags: Default::default(),
+            explicit_tubes: Vec::new(),
+            ini: IniFile::from_str(""),
+        }
     }
 
     fn one_start_prefix_map(start: Waypoint) -> MapFile {
