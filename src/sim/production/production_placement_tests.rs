@@ -1769,10 +1769,29 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
 
     let mut overlay_sim = Simulation::new();
     spawn_structure(&mut overlay_sim, 1, "Americans", "GACNST", 10, 10);
+    overlay_sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
     let mut overlay_grid = OverlayGrid::new(64, 64);
     overlay_grid.place_overlay(12, 10, 7, 4);
     overlay_sim.overlay_grid = Some(overlay_grid);
     ready_building(&mut overlay_sim, &rules, "Americans", "GAWALL");
+    let placement_credits = 1_337;
+    *super::credits_entry_for_owner(&mut overlay_sim, "Americans") = placement_credits;
+    assert!(overlay_sim.rebuild_dynamic_navigation(&rules));
+    let owner = overlay_sim.interner.get("Americans").expect("owner");
+    let ready_before = overlay_sim
+        .production
+        .ready_by_owner
+        .get(&owner)
+        .cloned()
+        .expect("ready queue");
+    let overlay_before = *overlay_sim
+        .overlay_grid
+        .as_ref()
+        .expect("overlay grid")
+        .cell(12, 10);
+    let navigation_before = overlay_sim
+        .path_grid_snapshot()
+        .expect("published navigation before rejected placement");
     let preview = placement_preview_for_owner_with_overlays(
         &overlay_sim,
         &rules,
@@ -1786,9 +1805,43 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
     )
     .expect("ready wall should have a preview");
     assert!(!preview.valid, "an ordinary wall must not replace ore");
+    assert!(
+        !place_ready_building_with_overlays(
+            &mut overlay_sim,
+            &rules,
+            "Americans",
+            "GAWALL",
+            12,
+            10,
+            Some(&grid),
+            &height_map,
+            Some(&registry),
+        ),
+        "the occupied primary wall commit must be rejected"
+    );
     assert_eq!(
-        ready_buildings_for_owner(&overlay_sim, &rules, "Americans").len(),
-        1
+        overlay_sim.production.ready_by_owner.get(&owner),
+        Some(&ready_before),
+        "rejection must preserve the completed wall product"
+    );
+    assert_eq!(
+        credits_for_owner(&overlay_sim, "Americans"),
+        placement_credits,
+        "rejection must preserve house credits"
+    );
+    assert_eq!(
+        overlay_sim
+            .overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(12, 10),
+        &overlay_before,
+        "rejection must preserve the occupied overlay cell"
+    );
+    assert_eq!(
+        overlay_sim.path_grid_snapshot().as_deref(),
+        Some(navigation_before.as_ref()),
+        "rejection must preserve the complete published navigation grid"
     );
 }
 
@@ -1855,6 +1908,8 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
     ready_building(&mut sim, &rules, "Americans", "GAWALL");
+    let placement_credits = 1_337;
+    *super::credits_entry_for_owner(&mut sim, "Americans") = placement_credits;
     let owner = sim.interner.get("Americans").expect("owner");
     let wall_type = sim.interner.get("GAWALL").expect("wall type");
     sim.production
@@ -1862,6 +1917,8 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
         .get_mut(&owner)
         .expect("ready queue")
         .push_back(wall_type);
+    let ready_count_before = ready_buildings_for_owner(&sim, &rules, "Americans").len();
+    assert_eq!(ready_count_before, 2, "fixture must begin with two walls");
     let overlay_id = registry.id_for_name("GAWALL").expect("wall overlay");
     let origin = (18, 18);
     let endpoints = [(18, 13), (23, 18), (18, 23), (13, 18)];
@@ -1918,8 +1975,13 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
     ));
     assert_eq!(
         ready_buildings_for_owner(&sim, &rules, "Americans").len(),
-        1,
+        ready_count_before - 1,
         "the primary plus all fillers consume exactly one ready product"
+    );
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        placement_credits,
+        "the paid primary plus free fillers must not debit credits at placement time"
     );
     let grid = sim.overlay_grid.as_ref().expect("overlay grid");
     for (rx, ry) in std::iter::once(origin).chain(expected.iter().copied()) {
