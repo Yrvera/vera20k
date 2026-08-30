@@ -621,6 +621,8 @@ pub struct ObjectType {
     /// represented as `None`; a parsed value is a canonical CellClass LandType.
     pub movement_restricted_to: Option<LandType>,
     /// Whether this unit is treated as aircraft for game logic (ConsideredAircraft=).
+    /// Native `AircraftTypeClass` construction defaults this true; other
+    /// categories inherit the false `TechnoTypeClass` default.
     pub considered_aircraft: bool,
     /// Per-type render depth bias used when a unit is near or under a bridge.
     /// Original engine default is 7 when the key is absent.
@@ -1446,7 +1448,12 @@ impl ObjectType {
                     .into_iter()
                     .find(|land| value.eq_ignore_ascii_case(land.section_name()))
             }),
-            considered_aircraft: section.get_bool("ConsideredAircraft").unwrap_or(false),
+            // gamemd-derived: AircraftTypeClass::Constructor @ 0x0041C8B0 sets
+            // TechnoTypeClass+0xD96 true after the parent constructor; the
+            // ReadINI site @ 0x00714FE9 then applies an explicit key override.
+            considered_aircraft: section
+                .get_bool("ConsideredAircraft")
+                .unwrap_or(category == ObjectCategory::Aircraft),
             zfudge_bridge: section.get_i32("ZFudgeBridge").unwrap_or(7),
             too_big_to_fit_under_bridge: section
                 .get_bool("TooBigToFitUnderBridge")
@@ -2146,6 +2153,25 @@ mod tests {
             ObjectType::from_ini_section("BOAT", section, ObjectCategory::Vehicle);
         assert_eq!(obj.zfudge_bridge, 7);
         assert!(!obj.too_big_to_fit_under_bridge);
+    }
+
+    #[test]
+    fn considered_aircraft_uses_native_category_defaults_and_ini_overrides() {
+        let ini = IniFile::from_str(
+            "[VEH_DEFAULT]\nFixtureOnly=1\n\
+             [AIR_DEFAULT]\nFixtureOnly=1\n\
+             [VEH_EXPLICIT]\nConsideredAircraft=yes\n\
+             [AIR_EXPLICIT]\nConsideredAircraft=no\n",
+        );
+
+        let parse = |id, category| {
+            ObjectType::from_ini_section(id, ini.section(id).unwrap(), category)
+        };
+
+        assert!(!parse("VEH_DEFAULT", ObjectCategory::Vehicle).considered_aircraft);
+        assert!(parse("AIR_DEFAULT", ObjectCategory::Aircraft).considered_aircraft);
+        assert!(parse("VEH_EXPLICIT", ObjectCategory::Vehicle).considered_aircraft);
+        assert!(!parse("AIR_EXPLICIT", ObjectCategory::Aircraft).considered_aircraft);
     }
 
     #[test]
