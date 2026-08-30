@@ -1097,7 +1097,8 @@ impl MapLoadInitial {
             &rules,
             &overlay_registry,
         );
-        let house_roster = houses::parse_house_roster(&map_data.ini, &rules.color_schemes);
+        let house_roster =
+            houses::parse_house_roster(&map_data.ini, &rules.color_schemes, Some(&rules));
         let height_map = resolved_terrain.build_height_map();
         let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
         let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
