@@ -2314,6 +2314,28 @@ mod tests {
     }
 
     #[test]
+    fn unit_weeder_is_independent_from_slave_ownership() {
+        let ini: IniFile = IniFile::from_str(
+            "[WEED]\nWeeder=yes\n[SLAVER]\nEnslaves=SLAV\n",
+        );
+        let weeder = ObjectType::from_ini_section(
+            "WEED",
+            ini.section("WEED").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        let slaver = ObjectType::from_ini_section(
+            "SLAVER",
+            ini.section("SLAVER").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+
+        assert!(weeder.weeder);
+        assert!(weeder.enslaves.is_none());
+        assert!(!slaver.weeder);
+        assert_eq!(slaver.enslaves.as_deref(), Some("SLAV"));
+    }
+
+    #[test]
     fn cloning_key_parses_and_participates_in_rally_lines() {
         let ini = IniFile::from_str("[YACLON]\nName=Cloning Vats\nStrength=1000\nCloning=yes\n");
         let section = ini.section("YACLON").unwrap();
