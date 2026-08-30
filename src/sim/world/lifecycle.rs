@@ -250,6 +250,12 @@ pub(crate) enum LifecycleTestEvent {
     BaseReservationMarked,
     RawOccupationMarked,
     CellMarked,
+    BuildConstAppended {
+        stable_id: u64,
+    },
+    BasePlanFilled {
+        stable_id: u64,
+    },
     RevealDisplayBoundary,
     LogicAppended,
     LogicMembershipSet,
@@ -753,7 +759,6 @@ impl Simulation {
                 self.session.binary_frame,
             );
         }
-        self.fill_base_plan_from_successful_building_unlimbo(stable_id);
         if !self
             .substrate
             .entities
@@ -769,6 +774,7 @@ impl Simulation {
             self.refresh_waypoint_edge_from_committed_structure(stable_id);
             self.mark_building_base_reservation(stable_id);
         }
+        self.fill_base_plan_from_successful_building_unlimbo(stable_id);
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
         #[cfg(test)]
@@ -809,9 +815,14 @@ impl Simulation {
         if house.is_controlled_by_human(game_mode_nonzero) {
             return;
         }
-        house
+        let _filled = house
             .base_plan
-            .fill_successful_building(type_index, packed_cell, has_undeploy_target);
+            .fill_successful_building(type_index, packed_cell, has_undeploy_target)
+            .is_some();
+        #[cfg(test)]
+        if _filled {
+            self.trace_lifecycle_for_test(LifecycleTestEvent::BasePlanFilled { stable_id });
+        }
     }
 
     /// `BuildingClass__Limbo @ 0x00445880` calls
@@ -2885,6 +2896,53 @@ mod base_plan_lifecycle_tests {
             .expect("human building");
         assert!(!sim.houses[&human].base_plan.nodes[0].filled);
         assert_eq!(sim.houses[&human].base_plan.nodes[0].retry_count, 7);
+    }
+
+    #[test]
+    fn gsi_04_05_build_const_append_precedes_base_plan_fill() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nMaximumBuildingPlacementFailures=3\n\
+             [AI]\nBuildConst=GACNST\n\
+             [BuildingTypes]\n0=GACNST\n\
+             [GACNST]\nStrength=1000\nUndeploysInto=AMCV\n",
+        ))
+        .expect("combined BuildConst/BasePlan rules");
+        let scenario = IniFile::from_str(
+            "[Houses]\n0=Computer1\n\
+             [Computer1]\nNodeCount=1\n000=GACNST,10,11\n",
+        );
+        let roster =
+            crate::map::houses::parse_house_roster(&scenario, &rules.color_schemes, Some(&rules));
+        let mut sim = Simulation::new();
+        initialize_map_roster_houses(&mut sim, &roster, Some(&rules));
+        let owner = sim.interner.get("Computer1").unwrap();
+
+        let building = sim
+            .spawn_object("GACNST", "Computer1", 10, 11, 0, &rules, &BTreeMap::new())
+            .expect("combined BuildConst/BasePlan Building");
+
+        assert_eq!(sim.houses[&owner].build_const_order, [building]);
+        assert!(sim.houses[&owner].base_plan.nodes[0].filled);
+        let events = sim.lifecycle_test_events_for_test();
+        let build_const = events
+            .iter()
+            .position(|event| {
+                *event
+                    == (super::LifecycleTestEvent::BuildConstAppended {
+                        stable_id: building,
+                    })
+            })
+            .expect("BuildConst append trace");
+        let base_plan = events
+            .iter()
+            .position(|event| {
+                *event
+                    == (super::LifecycleTestEvent::BasePlanFilled {
+                        stable_id: building,
+                    })
+            })
+            .expect("BasePlan fill trace");
+        assert!(build_const < base_plan);
     }
 
     #[test]

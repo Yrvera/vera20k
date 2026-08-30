@@ -4402,10 +4402,17 @@ impl Simulation {
         }) else {
             return;
         };
-        if let Some(house) = self.houses.get_mut(&owner)
+        let _appended = if let Some(house) = self.houses.get_mut(&owner)
             && !house.build_const_order.contains(&stable_id)
         {
             house.build_const_order.push(stable_id);
+            true
+        } else {
+            false
+        };
+        #[cfg(test)]
+        if _appended {
+            self.trace_lifecycle_for_test(LifecycleTestEvent::BuildConstAppended { stable_id });
         }
     }
 
