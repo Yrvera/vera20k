@@ -3068,6 +3068,7 @@ mod tests {
             .build_const_eligible = true;
 
         let ordered_hash = sim.state_hash();
+        let v109_ordered_hash = sim.state_hash_without_base_plan_v110();
         let historical_pre_v109 = sim.state_hash_without_naval_build_const_v109();
         assert_ne!(ordered_hash, historical_pre_v109);
         let historical_pre_v28 = sim.state_hash_before_lifecycle_v28_and_mission_v29();
@@ -3081,6 +3082,11 @@ mod tests {
             sim.state_hash(),
             ordered_hash,
             "stored vector order is hashed"
+        );
+        assert_ne!(
+            sim.state_hash_without_base_plan_v110(),
+            v109_ordered_hash,
+            "the v109 provenance schema retained by the v110 probe hashes BuildConst order"
         );
         assert_eq!(
             sim.state_hash_without_naval_build_const_v109(),
@@ -3113,6 +3119,11 @@ mod tests {
             ordered_hash,
             "entity membership is hashed"
         );
+        assert_ne!(
+            sim.state_hash_without_base_plan_v110(),
+            v109_ordered_hash,
+            "the v109 provenance schema retained by the v110 probe hashes BuildConst membership"
+        );
         assert_eq!(
             sim.state_hash_without_naval_build_const_v109(),
             historical_pre_v109,
@@ -3129,6 +3140,7 @@ mod tests {
             .unwrap()
             .build_const_eligible = true;
         assert_eq!(sim.state_hash(), ordered_hash);
+        assert_eq!(sim.state_hash_without_base_plan_v110(), v109_ordered_hash);
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "naval-build-const", 0);
         assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 110);
