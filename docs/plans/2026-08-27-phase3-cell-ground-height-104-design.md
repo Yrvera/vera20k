@@ -10,6 +10,15 @@ slope evaluator, and the Rust consumers currently routed through the false
 **Evidence:**
 `docs/research/PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`
 
+**Integration rebase (2026-08-30):** This design was authored on the source
+branch, where a separate naval-placement slice existed and the accumulated
+snapshot version was 110. Current `origin/main` has no naval-placement module
+or its two documents, and this integration intentionally does not restore that
+later AI/naval scope. The current slice therefore migrates four active
+production callsites and advances the actual mainline snapshot contract
+`105 -> 106`. Source-branch naval facts below are retained only when explicitly
+labelled as historical/later-owner context.
+
 ## Verdict first
 
 Active retail does not have a 90-lepton Cell ground domain. The executable
@@ -20,11 +29,12 @@ Bullet, Particle, Unit, and VXL level scalars, but every captured value is 104.
 a height.
 
 Rust already has the correct 104 evaluator and most consumers use it. A later
-regression added a second 90 evaluator and routed five production callsites
-through it. This slice removes that false numeric split, routes those callers
-through the one verified evaluator, preserves Spark's already-correct 104/416
-composition, rebaselines exact fixtures, and corrects the load-bearing stale
-documentation that introduced the split.
+regression added a second 90 evaluator. The source branch routed five
+production callsites through it; current main retains four because the
+separate naval-placement slice is absent. This integration removes that false
+numeric split from all four active callers, preserves Spark's already-correct
+104/416 composition, rebaselines exact fixtures, and corrects the load-bearing
+stale documentation that introduced the split.
 
 This slice deliberately does not claim all of GSI-04.03 closed. The shared
 dummy/unavailable-cell behavior of height callers, shipped-map slope 17..20
@@ -106,18 +116,24 @@ tube, and runtime paths already consume this authority.
 - `cellclass_ground_height_leptons` wrapper;
 - tests and prose asserting a separate 90 surface.
 
-Five production consumers use that duplicate:
+Four production consumers present on the current integration base used that
+duplicate before this slice:
 
 1. `src/render/minimap_interaction.rs` radar-click Cell center Z;
-2. `src/sim/naval_base_placement.rs` first-yard 3D candidate Z;
-3. `src/sim/projectile.rs` allocated real Cell target Z;
-4. `src/sim/projectile.rs` retained shared-dummy Cell target Z;
-5. `src/sim/production/production_spawn.rs` produced-unit Cell center
+2. `src/sim/projectile.rs` allocated real Cell target Z;
+3. `src/sim/projectile.rs` retained shared-dummy Cell target Z;
+4. `src/sim/production/production_spawn.rs` produced-unit Cell center
    evaluation. This helper presently discards the computed Z after forming a
    center and returns only X/Y-derived Cell coordinates, so changing 90 to 104
    does not itself move the spawned unit. The call still must migrate because
    it executes the native height/unsupported-slope gate and the duplicate API
    must disappear.
+
+The source branch also had a fifth caller in
+`src/sim/naval_base_placement.rs`. That module and its design/research files
+are absent from current main and are intentionally not restored by this slice.
+Its verified 104 requirement belongs to the later owner if that naval
+mechanism is integrated separately.
 
 The duplicate makes flat Level 2 produce 180 instead of 208. Structural
 Level-2 targets become 596 instead of 624, and Sonic's additional +50 becomes
@@ -132,7 +148,6 @@ dummy targets already use live dummy state. Other consumers still have
 caller-specific absence behavior:
 
 - minimap camera resolution returns `None` for an unavailable clamped Cell;
-- naval placement rejects an unavailable candidate;
 - Spark returns `UnavailableCell`/`OutOfRangeCell` instead of evaluating the
   shared dummy;
 - the stable projectile helper's headless `unwrap_or(0)` is not the same as a
@@ -161,11 +176,11 @@ dependency discovered during implementation makes immediate removal unsafe.
 
 ### Option C — one verified evaluator and explicit provenance at consumers
 
-Remove the false Cell constant, duplicate table, and wrapper. Route all five
-callers through `ground_height_leptons`, while their nearby comments retain the
-specific native Cell method and bridge-selection provenance. Preserve
-independent semantic composition at the caller: ground only for GetCoords,
-ground plus conditional 416 for GetTargetCoords. Selected.
+Remove the false Cell constant, duplicate table, and wrapper. Route all four
+active current-main callers through `ground_height_leptons`, while their nearby
+comments retain the specific native Cell method and bridge-selection
+provenance. Preserve independent semantic composition at the caller: ground
+only for GetCoords, ground plus conditional 416 for GetTargetCoords. Selected.
 
 ## 4. Required implementation
 
@@ -193,9 +208,13 @@ No floating-point approximation, new table, or schema field is introduced.
 
 ### 4.2 Route all false consumers
 
-Replace the removed helper at each of the five production callsites with
+Replace the removed helper at each of the four active production callsites with
 `ground_height_leptons`. Keep existing safe unsupported-slope handling and
 existing caller-specific lookup selection unchanged in this numeric slice.
+
+Do not restore the source branch's deleted naval-placement caller. If a later
+owner integrates that mechanism, it must use the same evaluator under its own
+scope and review.
 
 Update nearby source comments so they say:
 
@@ -212,7 +231,7 @@ uses the common evaluator.
 
 Update assertions whose only difference is the corrected ground result,
 including the known projectile/dummy, bridge, combat, snapshot, lifecycle,
-world/Wave, naval, minimap, and production fixtures found by repository-wide
+world/Wave, minimap, and production fixtures found by repository-wide
 search. Expected compositions include:
 
 ```text
@@ -226,11 +245,11 @@ Spark Level 2 ascending commit       = 604
 This changes deterministic behavior without changing serialized shape. The
 repository's snapshot contract rejects old bytes whenever they would resume
 under different authoritative logic: versions 78 and 79 already establish
-behavior/hash-only precedents. A v110 save can retain a Cell target or pending
+behavior/hash-only precedents. A v105 save can retain a Cell target or pending
 world state that produces different raised-terrain results after this repair.
-Therefore `SNAPSHOT_VERSION` advances 110 -> 111, the version history records
-the behavior-only ground-domain boundary, the exact version test moves to 111,
-and v110 rejection remains covered. Stored expected hashes/coordinates are
+Therefore `SNAPSHOT_VERSION` advances 105 -> 106, the version history records
+the behavior-only ground-domain boundary, the exact version test moves to 106,
+and v105 rejection remains covered. Stored expected hashes/coordinates are
 rebaselined only where the verified 104 result flows into them.
 
 ### 4.4 Correct stale evidence and design prose
@@ -239,10 +258,12 @@ Update the load-bearing wrong claims in:
 
 - `docs/research/PARTICLE_SPARK_LIVE_COLLISION_INPUTS_GHIDRA_REPORT.md`;
 - `docs/research/PARTICLE_SPARK_COLLISION_AND_PIXEL_COMPOSITOR_GHIDRA_REPORT.md`;
-- `docs/research/PHASE3_NAVAL_BASE_PLACEMENT_LIFECYCLE_GHIDRA_REPORT.md`;
 - `docs/plans/2026-07-18-spark-native-float-and-point-compositor-design.md`;
-- `docs/plans/2026-07-18-spark-live-collision-adapter-and-owner-design.md`;
-- `docs/plans/2026-08-26-naval-base-placement-design.md`.
+- `docs/plans/2026-07-18-spark-live-collision-adapter-and-owner-design.md`.
+
+The two naval-placement documents named by the source-branch design are absent
+from current main and remain excluded with their implementation. This
+integration does not recreate them merely to patch historical prose.
 
 Each correction cites the new active-runtime census and changes 90 -> 104,
 `G+360` -> `G+416`, and `G+340` -> `G+396` where applicable. It must not
@@ -279,8 +300,6 @@ outside this Cell/Spark numeric slice until independently verified.
 
 - Radar click on a raised Cell reports the 104-based center Z and still excludes
   bridge height.
-- Naval first-yard distance changes only by the corrected candidate Z and keeps
-  first-yard ordering, foundation center, signed cap, and no-yard bypass.
 - Real and retained-dummy projectile targets use 104 ground; raw structural bit
   adds exactly 416.
 - Production spawn evaluates the selected real-or-dummy Cell through the 104
@@ -297,8 +316,10 @@ outside this Cell/Spark numeric slice until independently verified.
 - Existing correct 104 consumers do not change APIs or add bridge height.
 - Bridge selection changes only the conditional +416 term.
 - No RNG, scheduling, ownership, object identity, or serialized layout changes;
-  snapshot compatibility advances to 111 for the deterministic behavior-only
+  snapshot compatibility advances to 106 for the deterministic behavior-only
   boundary.
+- No deleted naval-placement module or document is restored. Its 104-based
+  candidate requirement remains a later-owner obligation.
 
 ### Documentation and residual honesty
 
@@ -315,7 +336,6 @@ runs only focused library filters, for example:
 ```text
 cargo test -p vera20k --lib ground_height
 cargo test -p vera20k --lib native_click
-cargo test -p vera20k --lib first_yard
 cargo test -p vera20k --lib dummy_target
 cargo test -p vera20k --lib sonic
 cargo test -p vera20k --lib production_spawn
@@ -323,8 +343,8 @@ cargo test -p vera20k --lib spark
 cargo test -p vera20k --lib snapshot
 ```
 
-The phase-wide full `cargo test -p vera20k --lib` remains reserved for final
-Phase 3 certification.
+The integration owner runs the full `cargo test -p vera20k --lib` exactly once
+after the final critic pass and before declaring the small PR ready for main.
 
 After the builder commits, a fresh read-only critic receives this design, the
 native census, the full diff, and literal focused output. PASS requires zero

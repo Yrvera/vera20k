@@ -18,9 +18,19 @@
 
 **Active in YR:** yes. The functions have 185 direct wrapper calls and 32 direct inner-evaluator calls spanning map/cell, movement, placement, targeting, projectile, particle, damage, radar, and draw paths. Spark behavior 3 calls the same wrapper directly.
 
-**Confidence:** HIGH for the scalar values, initializer formula, coordinate and slope domains, bridge offsets, named/global xrefs, the 185/32 direct-call census, and current-Rust consumer inventory. The malformed-slope and unavailable-cell boundaries remain intentionally classified rather than approximated.
+**Confidence:** HIGH for the scalar values, initializer formula, coordinate and slope domains, bridge offsets, named/global xrefs, the 185/32 direct-call census, and the investigation-time source-branch Rust consumer inventory. The malformed-slope and unavailable-cell boundaries remain intentionally classified rather than approximated.
 
 **Implementation scope:** none. This report is a research handoff. It changes no Rust code and makes no Ghidra changes.
+
+**Integration rebase (2026-08-30):** The native evidence is unchanged, but
+the Rust inventory in sections 11 and 14 was captured on the source branch,
+where `src/sim/naval_base_placement.rs` and its two documents existed and the
+accumulated snapshot version was 110. Current `origin/main` has none of that
+separate AI/naval slice. The completed integration therefore corrected the
+four active current-main callsites, did not restore the naval files, and
+advanced the actual mainline snapshot contract `105 -> 106`. Naval entries
+below are historical source-branch evidence and a later-owner obligation, not
+current implementation scope.
 
 ## Verdict
 
@@ -35,7 +45,8 @@ Active runtime capture and static initializer disassembly agree:
 - Spark obtains ground by calling the same `CellClass::GetGroundHeight`, then adds its module-local `DAT_00AC4A0C = 416` bridge plane;
 - independent Foot, Techno/InRange, area-damage, Anim, Bullet, Particle, Unit, and VXL initializer families also resolve to 104, and all examined four-level deck offsets resolve to 416.
 
-Current Rust therefore has one high-impact regression and one important preservation rule:
+At investigation time, the source-branch Rust tree had one high-impact
+regression and one important preservation rule:
 
 1. `src/util/lepton.rs::CELLCLASS_GROUND_LEVEL_HEIGHT_LEPTONS = 90` and `cellclass_ground_height_leptons` are wrong. Their production callers produce incorrect terrain Z, target Z, placement Z, and test fixtures on every nonzero level and many slopes.
 2. Spark's current use of `ground_height_leptons` (104) is correct and must be preserved. Changing Spark to 90 would introduce the exact bug this investigation disproves.
@@ -58,7 +69,7 @@ bridge-aware target = ground-only surface + a caller-owned 416 offset when its b
 5. Spark constructor and behavior-3 height consumers.
 6. Every direct xref to the ground wrapper and inner evaluator.
 7. Direct readers of the named module-local 104/416 scalar pairs plus the Bullet, Particle, Unit, and VXL peers needed to close the domain hypothesis.
-8. Every current Rust use of the 90-specific helper and the current 104 ground evaluator.
+8. Every investigation-time source-branch Rust use of the 90-specific helper and the 104 ground evaluator.
 9. Evidence-backed exclusions: INI authority, nonexistent `MapClass::GetZPos` label, bridge non-inclusion in ground sampling, invalid slopes, and unavailable-cell policy.
 
 ### Not re-investigated here
@@ -554,11 +565,12 @@ Evidence-backed exclusions:
 
 ## 11. Current Rust comparison
 
-### 11.1 Correct common evaluator and correct consumers
+### 11.1 Correct common evaluator and already-correct consumers at investigation time
 
 `src/util/lepton.rs::GROUND_LEVEL_HEIGHT_LEPTONS = 104` and `ground_height_leptons` reproduce the verified base, low-byte local XY, record coefficients, clamp, and signed chop for slopes 0..20. `src/sim/cell_kernel.rs::cell_floor_height` already routes through it.
 
-Production/read-path users currently on the correct 104 evaluator include:
+Production/read-path users already on the correct 104 evaluator when the
+source-branch inventory was captured included:
 
 - `src/sim/particles/spark_world.rs:96,119` — Spark candidate and constructor ground;
 - `src/sim/anim_class.rs:484` — Anim ground;
@@ -578,9 +590,9 @@ Production/read-path users currently on the correct 104 evaluator include:
 
 Direct multiplication users of `GROUND_LEVEL_HEIGHT_LEPTONS`/`LEPTONS_PER_LEVEL` also use 104. Their caller-specific omission status is outside this scalar correction, but their numeric domain must not be changed to 90.
 
-### 11.2 False 90 helper and all production consumers
+### 11.2 False 90 helper and production consumers at investigation time
 
-`src/util/lepton.rs` currently declares:
+At the time of the source-branch investigation, `src/util/lepton.rs` declared:
 
 ```rust
 pub const CELLCLASS_GROUND_LEVEL_HEIGHT_LEPTONS: i32 = 90;
@@ -588,12 +600,16 @@ pub const CELLCLASS_GROUND_LEVEL_HEIGHT_LEPTONS: i32 = 90;
 
 and constructs a second slope table plus `cellclass_ground_height_leptons`. This was introduced by commit `26a4da9e` (`Match gamemd slope-aware radar click target...`). The parent revision correctly stated that the Cell initializer independently resolved to 104. The change hardened the stale Spark report's false premise into code.
 
-Every current production use of the wrong helper is:
+That source branch had five production uses of the wrong helper. Current main
+had only the four non-naval rows when this slice was integrated; all four now
+use `ground_height_leptons`, and the false helper/table are gone. The naval row
+is retained to preserve the source-branch evidence, but its module was
+intentionally not restored.
 
-| Rust consumer | Native role | Current mismatch |
+| Rust consumer | Native role | Investigation-time mismatch / integration status |
 |---|---|---|
 | `src/render/minimap_interaction.rs:130` | `CellClass::Get_Center_Coords` for radar click | level/slope Z uses 90 instead of 104 |
-| `src/sim/naval_base_placement.rs:174` | candidate Cell center distance point | candidate Z uses 90 instead of 104 |
+| `src/sim/naval_base_placement.rs:174` | candidate Cell center distance point | Historical source-branch mismatch; module absent from current main and excluded from this integration |
 | `src/sim/projectile.rs:241` | allocated real `CellClass::GetTargetCoords` | ground uses 90; conditional +416 is correct |
 | `src/sim/projectile.rs:284` | shared dummy `CellClass::GetTargetCoords` | dummy ground uses 90; conditional +416 is correct |
 | `src/sim/production/production_spawn.rs:637` | spawn Cell center evaluation | evaluator uses 90 instead of 104, but the current helper discards center Z and returns only the X/Y-derived Cell; the correction preserves output coordinates while removing the false domain and retaining the unsupported-slope gate |
@@ -614,9 +630,9 @@ For flat level 2, current bad output is `180`; native is `208`. With a structura
 
 ### 11.3 Mechanism matrix
 
-| Mechanism | Native | Current Rust | Verdict |
+| Mechanism | Native | Source-branch Rust at investigation time | Verdict |
 |---|---|---|---|
-| Cell Level scalar | independent global, value 104 | common 104 plus false duplicate 90 | FAIL where duplicate is used |
+| Cell Level scalar | independent global, value 104 | integration has one common 104 authority; source branch formerly had false duplicate 90 | PASS integrated scalar; historical FAIL where duplicate was used |
 | Cell slope records | `G=104`, indices 0..20 | common table with 104 is exact; duplicate table uses 90 | preserve common, remove/fix duplicate |
 | signed negative base | `ftol(level*104+0.5)` | common returns `-103` for -1 | PASS common; FAIL duplicate (`-89`) |
 | local slope XY | unsigned low bytes | common and duplicate both use low bytes | PASS operation shape |
@@ -651,7 +667,7 @@ For flat level 2, current bad output is `180`; native is `208`. With a structura
 | Q16 | **RESOLVED:** executable initializer constants, no INI writer. |
 | Q17 | **RESOLVED:** no verified active `MapClass::GetZPos` symbol; use the proven Cell methods. |
 | Q18 | **RESOLVED:** complete 185 wrapper and 32 inner direct-xref census is in §9. |
-| Q19 | **RESOLVED:** five production callsites use the false helper, plus named test/prose fixtures. |
+| Q19 | **RESOLVED:** the source branch had five production callsites using the false helper; current main had four because naval placement is absent, and all four were migrated by this integration. |
 | Q20 | **RESOLVED:** Spark and the common sim consumers use the correct 104 evaluator; list in §11.1. |
 | Q21 | **RESOLVED:** implementation handoff and acceptance tests are in §14. |
 
@@ -676,13 +692,31 @@ Both reproduced 104 and 416. The current Ghidra plate comments on `CellClass::Ge
 
 ## 14. Implementation handoff
 
+### Current integration disposition (2026-08-30)
+
+- Completed: removed the false 90-lepton helper/table and routed all four
+  active current-main consumers through `ground_height_leptons`.
+- Completed: preserved ground-only versus conditional +416 deck composition,
+  typed unsupported-slope failure, Spark's existing 104/416 numeric path, and
+  the dependent current-main fixtures.
+- Completed: advanced the current mainline snapshot contract `105 -> 106`.
+- Excluded: the source branch's naval-placement module and two documents were
+  already absent on current main and were not restored. Their verified
+  104-lepton candidate requirement belongs to a later owner if that separate
+  mechanism is integrated.
+- Still separate: caller-specific shared-dummy/unavailable-cell closure,
+  including Spark routing, remains outside this numeric slice.
+
 ### Required code delta
 
 1. Remove the false 90-lepton semantic split in `src/util/lepton.rs`.
    - Prefer one 104 ground evaluator/table for all Cell ground users.
    - If ownership-specific aliases remain for documentation, assert they equal 104 and route both APIs through the same records/evaluator.
    - Correct comments that say Cell uses 90.
-2. Correct all five production users in §11.2. A constant-only change may be sufficient numerically, but the builder should avoid retaining duplicate tables that can drift again.
+2. Correct the four active current-main production users in §11.2. The fifth,
+   naval-placement row is source-branch context only and must not be restored
+   by this slice. A constant-only change may be sufficient numerically, but the
+   builder should avoid retaining duplicate tables that can drift again.
 3. Preserve Spark's current 104 `ground_height_leptons` call and 416 structural plane.
 4. Rebaseline all 90-derived tests, snapshot hashes, wave target expectations, and recent design prose.
 5. Route height callers through the shared fixed-stride/dummy-cell substrate where native can observe unavailable cells. If the builder does not close this in the same slice, GSI-04.03 remains open; returning zero/`None` is not exact native behavior.
@@ -700,7 +734,10 @@ At minimum:
 - dummy level `0xFF`, flat returns -103 and retains requested packed coordinate;
 - Spark level-2 flat ground is 208, bridge plane 624, ascending snap 604; level-0 plane remains 416;
 - Particle constructor clamps input `Z <= ground` to the 104-based ground;
-- radar click, naval-base distance, production's intermediate Cell-center evaluation, projectile real target, and projectile dummy target all share the 104 evaluator;
+- radar click, production's intermediate Cell-center evaluation, projectile
+  real target, and projectile dummy target all share the 104 evaluator;
+- if a later owner restores naval-base placement, its candidate distance path
+  must also use the 104 evaluator under that mechanism's own review;
 - production's current X/Y-only returned spawn Cell remains unchanged because its intermediate center Z is discarded;
 - Sonic target composed over level-2 structural cell is `208 + 416 + 50 = 674`;
 - changing structural bridge state changes only the +416 selection, never the ground scalar;
@@ -723,7 +760,8 @@ Severity is high whenever nonzero elevation participates:
 - radar clicks and action targets on raised terrain;
 - projectile/cell target coordinates and Sonic/wave endpoints on raised or bridged cells;
 - production's intermediate Cell-center evaluation on raised cells (the current Rust helper discards that Z before returning its X/Y-only spawn Cell, so this scalar correction alone does not move the unit);
-- naval-base first-yard 3D distance checks near elevation changes;
+- naval-base first-yard 3D distance checks near elevation changes apply only
+  to the excluded source-branch mechanism, not current main;
 - any test/snapshot derived from those values.
 
 Flat level-0 maps hide the scalar regression because both domains return zero there. Slopes can expose it even at level 0.
@@ -745,7 +783,8 @@ Flat level-0 maps hide the scalar regression because both domains return zero th
 - mark its HIGH-confidence 90/360/340 conclusions superseded by this live runtime capture, or correct every affected table, trace, questions-log entry, and Rust handoff to 104/416/396;
 - retain its independently verified float integration, collision inequalities, RNG, and compositor findings.
 
-`docs/research/PHASE3_NAVAL_BASE_PLACEMENT_LIFECYCLE_GHIDRA_REPORT.md`:
+`docs/research/PHASE3_NAVAL_BASE_PLACEMENT_LIFECYCLE_GHIDRA_REPORT.md`
+(historical source-branch file, absent from current main):
 
 - replace the claim that 104-lepton Cell ground is wrong with the verified 104 evaluator;
 - replace its `cellclass_ground_height_leptons` Rust handoff with the common `ground_height_leptons` authority.
@@ -760,7 +799,9 @@ Flat level-0 maps hide the scalar regression because both domains return zero th
 - replace its retained `G+360` / ascending `G+340` adapter contract with the verified `G+416` / `G+396` composition;
 - state explicitly that the existing Spark ground evaluator already uses the correct 104 scalar while shared-dummy routing remains open.
 
-`docs/plans/2026-08-26-naval-base-placement-design.md` and any plans/tests copied from it:
+`docs/plans/2026-08-26-naval-base-placement-design.md` (historical
+source-branch file, absent from current main) and any later plans/tests copied
+from it:
 
 - replace the 90-lepton candidate Cell center with 104.
 
