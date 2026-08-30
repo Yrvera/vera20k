@@ -2508,7 +2508,7 @@ mod tests {
         use crate::map::map_file::MapCell;
 
         let selected = "RandMap.Sed";
-        let staged = [(0, 70, 70), (1, 90, 70)];
+        let staged = [(0, 70, 70)];
         let preview_waypoints = [(0, 110, 110), (1, 130, 110)];
         let regenerated = [(0, 70, 90), (1, 90, 90)];
         let mut launch = test_launch_session(LaunchCountry::America);
@@ -2565,7 +2565,15 @@ mod tests {
             .iter()
             .map(|waypoint| (waypoint.index as u8, waypoint.rx, waypoint.ry))
             .collect::<Vec<_>>();
-        assert_eq!(final_starts, staged);
+        assert_eq!(final_starts.len(), 2);
+        assert_eq!(final_starts[0], staged[0]);
+        let gathered_fallback = final_starts[1];
+        assert!(
+            !staged.contains(&gathered_fallback)
+                && !preview_waypoints.contains(&gathered_fallback)
+                && !regenerated.contains(&gathered_fallback),
+            "deficient Gather must add a distinct temporary start"
+        );
         assert_ne!(final_starts, preview_waypoints);
         assert_ne!(final_starts, regenerated);
         let active_starts = crate::map::waypoints::multiplayer_start_waypoints(
@@ -2622,6 +2630,14 @@ mod tests {
             staged
         );
         assert_ne!(staged_session, regenerated_session);
+        let gathered_session = final_starts
+            .iter()
+            .map(|&(index, rx, ry)| (u32::from(index), (rx, ry)))
+            .collect();
+        assert_ne!(
+            staged_session, gathered_session,
+            "the active Scenario table excludes Gather-only fallback starts"
+        );
         let staged_sim = crate::sim::world::Simulation::from_descriptor(
             &crate::sim::scenario_session::ScenarioDescriptor {
                 seed: 0x1212,
@@ -2640,6 +2656,15 @@ mod tests {
                 ..Default::default()
             },
         );
+        let gathered_sim = crate::sim::world::Simulation::from_descriptor(
+            &crate::sim::scenario_session::ScenarioDescriptor {
+                seed: 0x1212,
+                map_width: 256,
+                map_height: 256,
+                mp_start_waypoints: gathered_session,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             staged_sim
                 .session
@@ -2649,6 +2674,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             staged
         );
+        assert_ne!(staged_sim.state_hash(), gathered_sim.state_hash());
         assert_ne!(staged_sim.state_hash(), regenerated_sim.state_hash());
         assert!(
             request.accepted_rmg_start_staging.is_none(),
