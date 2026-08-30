@@ -103,7 +103,9 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// The ordered path, all 12 visited cells, bridge height/occupation tripwires,
 /// all three RNG streams, and tick-for-tick replay remain exact; only the
 /// hash composition moved from retired body-rocking bytes to the locomotor.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x584D_9C4F_23BD_388F;
+/// Re-baselined 2026-08-30 for v107's Spark shared-dummy tag plus level/slope
+/// folds. The path, bridge tripwires, and RNG streams remain byte-identical.
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x5B44_6C68_9BC2_F0AF;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
