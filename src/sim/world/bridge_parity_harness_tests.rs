@@ -99,7 +99,11 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// Technos now consume and persist the raw Scenario words written at
 /// 0x006F3254. Path nodes, visited cells, bridge tripwires, and record/replay
 /// equality remain exact; this is a Rust regression ratchet, not parity evidence.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x49EF_3591_2127_4502;
+/// Re-baselined 2026-08-30 for GSI-04.03 Drive/Ship slope payload ownership.
+/// The ordered path, all 12 visited cells, bridge height/occupation tripwires,
+/// all three RNG streams, and tick-for-tick replay remain exact; only the
+/// hash composition moved from retired body-rocking bytes to the locomotor.
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x584D_9C4F_23BD_388F;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
