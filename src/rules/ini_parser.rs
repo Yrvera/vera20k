@@ -804,10 +804,7 @@ impl RulesPassProcessor {
         let identity = trim_ascii_controls(identity);
         // UnitTypeClass::FindOrAllocate @ 0x007480D0 rejects both native
         // no-type sentinels before the per-family case-insensitive lookup.
-        if identity.is_empty()
-            || identity.eq_ignore_ascii_case("none")
-            || identity.eq_ignore_ascii_case("<none>")
-        {
+        if is_native_none_type_name(identity) {
             return;
         }
         let members = self.family_mut(family);
@@ -1215,6 +1212,16 @@ impl RulesPassProcessor {
 
 fn trim_ascii_controls(value: &str) -> &str {
     value.trim_matches(|character| u32::from(character) <= 0x20)
+}
+
+/// Whether a type-name reader resolves the input to native null.
+///
+/// `UnitTypeClass__FindOrAllocate @ 0x007480D0`, reached for
+/// `UndeploysInto=` by `TechnoTypeClass__ReadINI @ 0x00712170` at
+/// `0x0071329D..0x007132E4`, rejects these names before lookup/allocation.
+pub(crate) fn is_native_none_type_name(value: &str) -> bool {
+    let value = trim_ascii_controls(value);
+    value.is_empty() || value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("<none>")
 }
 
 fn parse_bool_value(value: &str) -> Option<bool> {

@@ -303,6 +303,10 @@ pub struct HouseState {
     /// append at the tail; Limbo and old-owner transfer stable-remove in place.
     #[serde(default)]
     pub build_const_order: Vec<u64>,
+    /// Ordered native `BaseClass` plan authority. Scenario nodes are installed
+    /// before map-object Unlimbo; later ordinary planning remains disconnected.
+    #[serde(default)]
+    pub base_plan: crate::sim::base_plan::BasePlanState,
     /// Native `HouseClass+0x5700` BaseClass reservation writer outputs.
     #[serde(default)]
     pub base_reservation: BaseReservationState,
@@ -359,6 +363,12 @@ impl HouseState {
     /// Active offline EventClass house-scan eligibility.
     pub const fn event_dispatch_eligible(&self) -> bool {
         self.is_human || self.player_control
+    }
+
+    /// Native `HouseClass::IsControlledByHuman @ 0x0050B730` result consumed
+    /// by successful Building Unlimbo BasePlan satisfaction.
+    pub(crate) const fn is_controlled_by_human(&self, game_mode_nonzero: bool) -> bool {
+        self.is_human || (!game_mode_nonzero && self.player_control)
     }
 
     /// Accept a victory and arm its deterministic grace interval.
@@ -441,6 +451,7 @@ impl HouseState {
             base_center: None,
             alternate_base_center: (0, 0),
             build_const_order: Vec::new(),
+            base_plan: crate::sim::base_plan::BasePlanState::default(),
             base_reservation: BaseReservationState::default(),
             tech_level,
             current_iq: 0,

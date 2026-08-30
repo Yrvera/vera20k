@@ -1097,7 +1097,8 @@ impl MapLoadInitial {
             &rules,
             &overlay_registry,
         );
-        let house_roster = houses::parse_house_roster(&map_data.ini, &rules.color_schemes);
+        let house_roster =
+            houses::parse_house_roster(&map_data.ini, &rules.color_schemes, Some(&rules));
         let height_map = resolved_terrain.build_height_map();
         let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
         let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
@@ -1970,7 +1971,8 @@ pub(crate) fn load_map_from_initial(
         .as_ref()
         .map(|r| r.color_schemes.as_slice())
         .unwrap_or(&[]);
-    let house_roster: HouseRoster = houses::parse_house_roster(&map_data.ini, color_schemes);
+    let house_roster: HouseRoster =
+        houses::parse_house_roster(&map_data.ini, color_schemes, rules.as_ref());
     let house_color_map: HouseColorMap = skirmish_launch_session.map_or_else(
         || house_roster.color_map(),
         |session| house_color_map_for_launch_session(session, &house_roster),

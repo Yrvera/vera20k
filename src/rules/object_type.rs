@@ -651,8 +651,11 @@ pub struct ObjectType {
     /// What this unit deploys into (e.g., AMCV DeploysInto=GACNST).
     /// Parsed from rules.ini `DeploysInto=`. Used for MCV→ConYard and similar transforms.
     pub deploys_into: Option<String>,
-    /// What this building undeploys into (e.g., GACNST UndeploysInto=AMCV).
-    /// Parsed from rules.ini `UndeploysInto=`. Used for ConYard→MCV sell-back.
+    /// Resolved non-null `UndeploysInto=` UnitType identity (e.g. GACNST→AMCV).
+    /// `TechnoTypeClass__ReadINI @ 0x00712170`, block
+    /// `0x0071329D..0x007132E4`, calls
+    /// `UnitTypeClass__FindOrAllocate @ 0x007480D0` and stores its pointer at
+    /// `BuildingType+0x408`; native `none`/`<none>` therefore remain `None`.
     pub undeploys_into: Option<String>,
     /// Raw 8-bit facing required before a unit can deploy into this building type.
     /// Parsed from building-side `DeployFacing=` as INI value << 5; default is 0x80.
@@ -664,6 +667,14 @@ pub struct ObjectType {
     /// `0x00672B14..0x00672C01`). `RuleSet` stamps this after all type
     /// registries exist.
     pub build_const_eligible: bool,
+    /// Native BuildingType registry index used by ordered House BasePlan nodes.
+    /// Non-building types retain `-1`.
+    pub base_plan_type_index: i32,
+    /// BuildingType `IsBaseDefense=` immutable lifecycle input at
+    /// `BuildingType+0x1706`. The BuildingType constructor store at
+    /// `0x0045E225` defaults it false; reader block
+    /// `0x00460FFC..0x00461010` binds it.
+    pub is_base_defense: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.
     /// Default: false for all types. Parsed from `Crushable=` in rules.ini.
@@ -1477,13 +1488,20 @@ impl ObjectType {
             immune_to_poison: section.get_bool("ImmuneToPoison").unwrap_or(false),
 
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
-            undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),
+            undeploys_into: section
+                .get("UndeploysInto")
+                .filter(|target| !crate::rules::ini_parser::is_native_none_type_name(target))
+                .map(str::to_string),
             deploy_facing: section
                 .get_i32("DeployFacing")
                 .map(|v| (v.clamp(0, 7) as u8) << 5)
                 .unwrap_or(0x80),
             construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
             build_const_eligible: false,
+            base_plan_type_index: -1,
+            // BuildingTypeClass__ReadINI 0x00460FFC..0x00461010 writes
+            // `IsBaseDefense=` to BuildingType+0x1706; constructor default false.
+            is_base_defense: section.get_bool("IsBaseDefense").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
             weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),

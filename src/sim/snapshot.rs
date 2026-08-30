@@ -320,7 +320,9 @@ use crate::sim::world::Simulation;
 // HouseState layout positionally, so an older record cannot supply this field.
 // Bumped 108 -> 109: persist the lifecycle-maintained per-House BuildConst
 // acquisition order and each entity's immutable resolved membership bit.
-const SNAPSHOT_VERSION: u32 = 109;
+// Bumped 109 -> 110: persist ordered House BasePlan authority and the immutable
+// BuildingType facts consumed by its Unlimbo/Limbo lifecycle writers.
+const SNAPSHOT_VERSION: u32 = 110;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2730,10 +2732,11 @@ mod tests {
     /// despite unchanged wire shape; 106 -> 107 adds unconditional shared-
     /// dummy level/slope hash authority for active Spark queries; 107 -> 108
     /// adds the packed House alternate base cell; 108 -> 109 adds the ordered
-    /// House BuildConst vector and immutable entity membership.
+    /// House BuildConst vector and immutable entity membership; 109 -> 110
+    /// adds ordered BasePlan state and immutable BuildingType facts.
     #[test]
-    fn phase3_naval_build_const_snapshot_version_is_109() {
-        assert_eq!(super::SNAPSHOT_VERSION, 109);
+    fn phase3_base_plan_snapshot_version_is_110() {
+        assert_eq!(super::SNAPSHOT_VERSION, 110);
     }
 
     #[test]
@@ -3007,7 +3010,7 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "alternate-base-center", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 109);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 110);
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.houses[&owner].base_center, Some((40, 50)));
@@ -3046,10 +3049,15 @@ mod tests {
         sim.substrate.entities.insert(entity);
 
         let v108_default_hash = sim.state_hash_without_naval_build_const_v109();
+        let v109_default_hash = sim.state_hash_without_base_plan_v110();
         assert_eq!(
+            v109_default_hash, v108_default_hash,
+            "empty BuildConst vectors and false membership preserve the v108 hash stream through v109"
+        );
+        assert_ne!(
             sim.state_hash(),
-            v108_default_hash,
-            "empty BuildConst vectors and false membership preserve the v108 hash stream"
+            v109_default_hash,
+            "the v110 schema adds BasePlan authority even when BuildConst state is empty"
         );
 
         sim.houses.get_mut(&owner).unwrap().build_const_order = vec![9, 3];
@@ -3060,6 +3068,7 @@ mod tests {
             .build_const_eligible = true;
 
         let ordered_hash = sim.state_hash();
+        let v109_ordered_hash = sim.state_hash_without_base_plan_v110();
         let historical_pre_v109 = sim.state_hash_without_naval_build_const_v109();
         assert_ne!(ordered_hash, historical_pre_v109);
         let historical_pre_v28 = sim.state_hash_before_lifecycle_v28_and_mission_v29();
@@ -3074,6 +3083,11 @@ mod tests {
             ordered_hash,
             "stored vector order is hashed"
         );
+        assert_ne!(
+            sim.state_hash_without_base_plan_v110(),
+            v109_ordered_hash,
+            "the v109 provenance schema retained by the v110 probe hashes BuildConst order"
+        );
         assert_eq!(
             sim.state_hash_without_naval_build_const_v109(),
             historical_pre_v109,
@@ -3082,12 +3096,12 @@ mod tests {
         assert_eq!(
             sim.state_hash_before_lifecycle_v28_and_mission_v29(),
             historical_pre_v28,
-            "the historical pre-v28 probe excludes v109 state"
+            "the historical pre-v28 probe excludes current-schema state"
         );
         assert_eq!(
             sim.state_hash_without_mission_v29(),
             historical_pre_v29,
-            "the historical pre-v29 probe excludes v109 state"
+            "the historical pre-v29 probe excludes current-schema state"
         );
         sim.houses
             .get_mut(&owner)
@@ -3105,6 +3119,11 @@ mod tests {
             ordered_hash,
             "entity membership is hashed"
         );
+        assert_ne!(
+            sim.state_hash_without_base_plan_v110(),
+            v109_ordered_hash,
+            "the v109 provenance schema retained by the v110 probe hashes BuildConst membership"
+        );
         assert_eq!(
             sim.state_hash_without_naval_build_const_v109(),
             historical_pre_v109,
@@ -3121,9 +3140,10 @@ mod tests {
             .unwrap()
             .build_const_eligible = true;
         assert_eq!(sim.state_hash(), ordered_hash);
+        assert_eq!(sim.state_hash_without_base_plan_v110(), v109_ordered_hash);
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "naval-build-const", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 109);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 110);
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.houses[&owner].build_const_order, vec![9, 3]);
@@ -3136,6 +3156,66 @@ mod tests {
                 .build_const_eligible
         );
         assert_eq!(restored.state_hash(), ordered_hash);
+    }
+
+    #[test]
+    fn gsi_04_05_base_plan_and_building_facts_roundtrip_current_snapshot() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let type_ref = sim.interner.intern("GAPOWR");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 10);
+        house.base_plan.percent_built = -17;
+        house.base_plan.nodes = vec![
+            crate::sim::base_plan::BasePlanNode {
+                type_or_control: 2,
+                packed_cell: crate::sim::base_plan::pack_base_plan_cell(-4, 9),
+                filled: true,
+                retry_count: -8,
+            },
+            crate::sim::base_plan::BasePlanNode {
+                type_or_control: -3,
+                packed_cell: 0,
+                filled: false,
+                retry_count: 6,
+            },
+        ];
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        let mut entity = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+            1,
+            12,
+            14,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 750,
+                max: 750,
+            },
+            type_ref,
+            crate::map::entities::EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.base_plan_type_index = 2;
+        entity.base_plan_is_defense = true;
+        entity.base_plan_has_undeploy_target = true;
+        sim.substrate.entities.insert(entity);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "base-plan", 0);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 110);
+        let restored = GameSnapshot::load(&bytes).expect("v110 snapshot").sim;
+        assert_eq!(restored.houses[&owner].base_plan.percent_built, -17);
+        assert_eq!(restored.houses[&owner].base_plan.nodes.len(), 2);
+        assert_eq!(restored.houses[&owner].base_plan.nodes[0].retry_count, -8);
+        let restored_entity = restored.substrate.entities.get(1).unwrap();
+        assert_eq!(restored_entity.base_plan_type_index, 2);
+        assert!(restored_entity.base_plan_is_defense);
+        assert!(restored_entity.base_plan_has_undeploy_target);
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]
