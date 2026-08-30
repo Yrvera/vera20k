@@ -7,6 +7,14 @@
 **Confidence:** HIGH for the static movement, collision, draw-gate, A-buffer, Z-buffer, color, and surface-write mechanisms; PARTIAL for a retail-mode final packed pixel because no running `gamemd.exe` process was available to capture the active DirectDraw masks or a native pixel  
 **Implementation scope:** none; this document contains research and a handoff only
 
+**2026-08-27 numeric correction:** active runtime capture in
+`PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`
+supersedes the original HIGH-confidence 90/360/340 conclusions in this static
+report. Cell ground is 104, Particle's independently owned structural offset is
+416, and Spark's ascending commit is ground +396. The collision inequalities,
+float integration, RNG, and compositor findings remain independently verified;
+the affected numeric text below has been corrected.
+
 ## Verdict
 
 The two load-bearing roots are live, Ghidra-backed active-YR mechanisms, and both are now sufficiently recovered for a separate implementation-contract step.
@@ -58,10 +66,10 @@ Merged YR authority is base `ini/rules.ini` patched by `ini/rulesmd.ini`.
 | `WeldingSpark` start colors | `(80,255,255)` and `(255,255,100)` |
 | `WeldingSpark` ColorList | `(0,128,255)`, `(255,255,255)`, `(200,200,150)`, `(80,80,80)`, `(0,0,0)` |
 | Spark-family ground fixture height | `0` leptons on a flat level-zero cell |
-| Terrain level step | `90` leptons |
-| Structural bridge plane offset | `360` leptons (`4 * 90`) |
+| Terrain level step | `104` leptons |
+| Structural bridge plane offset | `416` leptons (`4 * 104`) |
 
-Evidence: direct reads of the stock INIs; Ghidra initializers `0x0047B220`, `0x0062B4A0`, and `0x0062B540` derive the 90-lepton level and 360-lepton bridge offset.
+Evidence: direct reads of the stock INIs plus the active-runtime capture and initializer correction in `PHASE3_CELL_GROUND_HEIGHT_104_DOMAIN_CONSUMER_CENSUS_GHIDRA_REPORT.md`; Ghidra initializers `0x0047B220`, `0x0062B4A0`, and `0x0062B540` resolve the 104-lepton level and independently owned 416-lepton bridge offset.
 
 ## Field ledger
 
@@ -117,7 +125,7 @@ Evidence: root disassembly/decompilation, `ParticleClass` constructor `0x0062B5E
 | Candidate coordinate | old world coordinate plus probe, `f32` | `0x0043A100` adds the vector; `Math__ftol` truncates to signed integer components | candidate `CoordStruct`, signed `i32` world leptons |
 | Cell selection | candidate X/Y, signed world leptons | `(v + ((v >> 31) & 255)) >> 8` | signed cell coordinate, truncation toward zero by 256 |
 | Terrain query | candidate cell | cell terrain level/slope lookup | ground height, signed world-Z leptons; slope byte |
-| Bridge query | old and candidate cells plus Z | cell flag `0x100`, compare with `ground + 360` | collision kind and snapped world-Z |
+| Bridge query | old and candidate cells plus Z | cell flag `0x100`, compare with `ground + 416` | collision kind and snapped world-Z |
 | Slope-local impact probe | `(vx, -vy, old_vz - 2g)`, `f32` | inverse slope matrix, negate local Z, forward slope matrix, negate final Y | stack-local reflected vector, `f32`; not persistent |
 | Commit | selected candidate/snap/clamp coordinate | three signed dword stores to particle coordinate | `ParticleClass+0x9C..+0xA4` |
 | Draw projection | signed world leptons | isometric integer projection plus Z adjustment and tactical offsets | signed client/surface pixel coordinate |
@@ -222,11 +230,11 @@ The original and inverse transforms are `f32`. The operation defines the axis-si
 
 Both `0x00578080` and `0x00565730` reduce signed world X/Y to cell axes by truncation toward zero at 256 leptons per cell. Negative coordinates therefore do not arithmetic-floor. Invalid coordinates return the dummy cell at `0x00ABDC50` and record the packed requested cell.
 
-Ground height is based on signed cell terrain level (`CellClass+0x11B`) times the 90-lepton level height plus slope-table contribution from `CellClass+0x11C`. The candidate coordinate, not the old coordinate, supplies the primary cell and ground query. Old and new cells are both consulted for the structural-bridge crossing test.
+Ground height is based on signed cell terrain level (`CellClass+0x11B`) times the 104-lepton level height plus slope-table contribution from `CellClass+0x11C`. The candidate coordinate, not the old coordinate, supplies the primary cell and ground query. Old and new cells are both consulted for the structural-bridge crossing test.
 
 ### Collision decision table
 
-Let `G` be candidate-cell ground height and `P = G + 360` be the structural bridge plane.
+Let `G` be candidate-cell ground height and `P = G + 416` be the structural bridge plane.
 
 | Condition | Exact predicate | Resulting Z | Delete byte |
 |---|---|---:|---|
@@ -283,13 +291,13 @@ Inputs: flat cell, `G=0`, slope index `0`, no bridge/building/wall; world coordi
 
 ### Trace 2 — structural bridge crossings
 
-Inputs: flat ground `G=0`, old or new cell has structural bit `0x100`, so `P=360`.
+Inputs: flat ground `G=0`, old or new cell has structural bit `0x100`, so `P=416`.
 
 | Variant | Old state and velocity | Stored/probe Z | Candidate | Predicate/result |
 |---|---|---|---:|---|
-| Descending | `oldZ=370`, `old_vz=0` | stored `-6`, probe `-12` | `358` | `358 < 360` and `370 >= 360`; snap to `360`, delete |
-| Ascending | `oldZ=350`, `old_vz=30` | stored `24`, probe `18` | `368` | `368 >= 360` and `350 < 360`; force to `340`, delete |
-| Equality boundary | choose probe yielding `newZ=360` from above | data-dependent | `360` | descending predicate false because it requires `newZ < 360` |
+| Descending | `oldZ=426`, `old_vz=0` | stored `-6`, probe `-12` | `414` | `414 < 416` and `426 >= 416`; snap to `416`, delete |
+| Ascending | `oldZ=406`, `old_vz=30` | stored `24`, probe `18` | `424` | `424 >= 416` and `406 < 416`; force to `396`, delete |
+| Equality boundary | choose probe yielding `newZ=416` from above | data-dependent | `416` | descending predicate false because it requires `newZ < 416` |
 
 Both collision variants then commit, consume the color RNG step, decrement lifetime, and enter same-tick cleanup eligibility.
 
@@ -546,7 +554,7 @@ There are no `OPEN` items. Deferred items require runtime evidence unavailable i
 | F04 | Which coordinate selects cell/ground? | RESOLVED | candidate coordinate; old cell additionally participates in bridge-flag test |
 | F05 | How do signed world coordinates become cells? | RESOLVED | truncation toward zero by 256 |
 | F06 | What does cell bit `0x100` mean here? | RESOLVED | active structural/high-bridge body/deck flag |
-| F07 | What is bridge plane? | RESOLVED | candidate ground plus 360 leptons |
+| F07 | What is bridge plane? | RESOLVED | candidate ground plus 416 leptons |
 | F08 | What are crossing inequalities? | RESOLVED | descending `< / >=`; ascending `>= / <` as tabulated |
 | F09 | What is ground clamp boundary? | RESOLVED | clamp only when `G-100 < newZ` |
 | F10 | What is building/wall band? | RESOLVED | `[G,G+150)` |
@@ -562,8 +570,8 @@ There are no `OPEN` items. Deferred items require runtime evidence unavailable i
 | F20 | Does collision consume color RNG? | RESOLVED | yes, after coordinate/delete work |
 | F21 | When is deletion observed? | RESOLVED | reverse cleanup in same owning Spark-system tick |
 | F22 | What if lifetime starts at zero? | RESOLVED | decrements to `-1`; no lifetime equality deletion |
-| M01 | What is terrain level height? | RESOLVED | 90 leptons from active initializer |
-| M02 | What is structural bridge offset? | RESOLVED | 360 leptons from active initializer |
+| M01 | What is terrain level height? | RESOLVED | 104 leptons from active runtime and initializer |
+| M02 | What is structural bridge offset? | RESOLVED | 416 leptons from the Particle-owned initializer |
 | M03 | Is this subterranean/Tube logic? | RESOLVED | no |
 | P01 | What is exact point caller chain? | RESOLVED | tactical `+0x104` → `ObjectClass::DrawIt` → Particle `+0x114` |
 | P02 | Is Particle `+0x110` the draw call? | RESOLVED | no; it targets a `RET 8` stub |
@@ -602,8 +610,8 @@ This is not an implementation contract and authorizes no code change. It states 
 | Spawn/state | Spark particles must carry signed world-lepton coordinates, three `f32` velocity components, per-particle RGB, signed index, `f64` accumulator, signed `i16` lifetime, and delete byte semantics | `spawn.rs` rejects Spark/Railgun; Rust uses `IVec3`, fixed-point direction/scalar velocity, drift fields, RGB/index/accumulator abstractions | MISSING/DRIFT; prove a Rust-native state mapping that preserves every native conversion and byte-visible result |
 | AI dispatch/order | forward particle AI, collision commit, color RNG, signed lifetime decrement, reverse cleanup | system AI currently no-ops Spark/Railgun | MISSING; preserve exact owner iteration and RNG consumption |
 | Gravity/motion | persistent `old_vz-g`, candidate probe `old_vz-2g`, `f32` addition, `Math__ftol` component conversion | simulation math uses fixed point by architecture rule | DRIFT until exact equivalence is positively proved; a contract must reconcile the project fixed-point rule with native `f32`/x87-visible outputs |
-| Terrain/cell | truncation-toward-zero `/256`, candidate-ground query, 90-lepton levels, slope byte | resolved terrain/map surfaces exist | UNCHECKED; add the smallest read-only sim query with exact frames and signed conversion |
-| Bridges | old/new structural bit, plane `ground+360`, asymmetric crossing snaps | bridge state/topology surfaces exist | UNCHECKED; query active structural/deck state without render dependency or Tube/subterranean conflation |
+| Terrain/cell | truncation-toward-zero `/256`, candidate-ground query, 104-lepton levels, slope byte | resolved terrain/map surfaces exist | UNCHECKED; add the smallest read-only sim query with exact frames and signed conversion |
+| Bridges | old/new structural bit, plane `ground+416`, asymmetric crossing snaps | bridge state/topology surfaces exist | UNCHECKED; query active structural/deck state without render dependency or Tube/subterranean conflation |
 | Occupancy | first linked building order, laser-fence and 1x1 exceptions, sentinel wall overlays | occupancy/entity store exist but ordering equivalence is unproved | DRIFT/UNCHECKED; do not replace first-match semantics with unordered presence |
 | Collision result | coordinate commit plus delete byte; no bounce/impact velocity write | no Spark implementation | MISSING; avoid inventing persistent reflected velocity |
 | Point projection | exact native integer isometric conversion, data-driven Z multiplier, offsets, clip | app particle builder uses sprite presentation | MISSING/DRIFT; a distinct point compositor is required |

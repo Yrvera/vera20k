@@ -649,26 +649,23 @@ fn update_ramp_perpendicular_recursive(
     let (dx, dy) = dir.offset();
     let target_x = anchor_pos.0 as i32 + dx;
     let target_y = anchor_pos.1 as i32 + dy;
-    let target_pos = match crate::sim::cell_rect::get_cellclass_fallback(
-        Some(terrain),
-        target_x,
-        target_y,
-    ) {
-        // MapClass applies signed packed/fixed-stride indexing before this
-        // helper reads CellClass state. Retain the resolved cell's canonical
-        // coordinate rather than re-casting the requested components.
-        crate::sim::cell_rect::CellRef::Real(cell) => (cell.rx, cell.ry),
-        // Native GetCell has already stamped the one shared dummy identity at
-        // this exact call point. Its +0x11E/tile selectors remain unmodeled,
-        // so no represented transition or setter follows from this frame.
-        crate::sim::cell_rect::CellRef::Dummy { .. } => {
-            return RampOutcome {
-                state_changed: false,
-                damaged_variant_cells: Vec::new(),
-                setter_transcript: Vec::new(),
-            };
-        }
-    };
+    let target_pos =
+        match crate::sim::cell_rect::get_cellclass_fallback(Some(terrain), target_x, target_y) {
+            // MapClass applies signed packed/fixed-stride indexing before this
+            // helper reads CellClass state. Retain the resolved cell's canonical
+            // coordinate rather than re-casting the requested components.
+            crate::sim::cell_rect::CellRef::Real(cell) => (cell.rx, cell.ry),
+            // Native GetCell has already stamped the one shared dummy identity at
+            // this exact call point. Its +0x11E/tile selectors remain unmodeled,
+            // so no represented transition or setter follows from this frame.
+            crate::sim::cell_rect::CellRef::Dummy { .. } => {
+                return RampOutcome {
+                    state_changed: false,
+                    damaged_variant_cells: Vec::new(),
+                    setter_transcript: Vec::new(),
+                };
+            }
+        };
 
     // Snapshot target read (avoids borrow conflict with subsequent mut access).
     let Some(target_cell) = state.cell(target_pos.0, target_pos.1).copied() else {
@@ -1691,14 +1688,8 @@ mod tests {
     fn update_ramp_perpendicular_ns_damage_a_anchor_target_transitions_to_4() {
         let mut state = make_perpendicular_test_state();
         let terrain = ramp_test_terrain_with_anchor_bits(&[(6, 5)]);
-        let outcome = update_ramp_perpendicular(
-            &mut state,
-            (5, 5),
-            Axis::NS,
-            Phase::DamageA,
-            true,
-            &terrain,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true, &terrain);
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 4 });
@@ -1708,14 +1699,8 @@ mod tests {
     fn update_ramp_perpendicular_ns_damage_b_anchor_target_walks_west() {
         let mut state = make_perpendicular_test_state();
         let terrain = ramp_test_terrain_with_anchor_bits(&[(4, 5)]);
-        let outcome = update_ramp_perpendicular(
-            &mut state,
-            (5, 5),
-            Axis::NS,
-            Phase::DamageB,
-            true,
-            &terrain,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageB, true, &terrain);
         assert!(outcome.state_changed);
         let target = state.cell(4, 5).expect("W target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 5 });
@@ -1751,14 +1736,8 @@ mod tests {
         let dummy = terrain.shared_cell_dummy();
         dummy.apply_bridge_flag_slot(BridgeStampSlot::Anchor, true);
         // Anchor at (0, 0) calling NS DamageB → walks W → target x = -1 → out of bounds.
-        let outcome = update_ramp_perpendicular(
-            &mut state,
-            (0, 0),
-            Axis::NS,
-            Phase::DamageB,
-            true,
-            &terrain,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (0, 0), Axis::NS, Phase::DamageB, true, &terrain);
         assert!(!outcome.state_changed);
         assert!(outcome.setter_transcript.is_empty());
         assert_eq!(dummy.snapshot().coord, (-1, 0));
@@ -1776,7 +1755,7 @@ mod tests {
         };
         assert_eq!(
             observed_target,
-            crate::sim::projectile::ProjectileCoord::new(-128, 128, 2 * 90 + 416),
+            crate::sim::projectile::ProjectileCoord::new(-128, 128, 2 * 104 + 416),
             "a retained DummyCell target observes the ramp helper's live restamp and structural height"
         );
     }
@@ -1795,14 +1774,8 @@ mod tests {
         let dummy = terrain.shared_cell_dummy();
         dummy.stamp_coord(8, 9);
 
-        let outcome = update_ramp_perpendicular(
-            &mut state,
-            (2, 2),
-            Axis::NS,
-            Phase::DamageA,
-            true,
-            &terrain,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (2, 2), Axis::NS, Phase::DamageA, true, &terrain);
 
         assert!(!outcome.state_changed);
         assert!(outcome.setter_transcript.is_empty());
@@ -1833,11 +1806,7 @@ mod tests {
             .collect();
         let mut terrain = ResolvedTerrainGrid::from_cells(512, 1, cells);
         terrain.test_set_native_allocated_cells(&[(511, 0)]);
-        terrain
-            .cell_mut(511, 0)
-            .unwrap()
-            .bridge_facts
-            .raw_flags |= BRIDGE_FLAG_ANCHOR_SELF;
+        terrain.cell_mut(511, 0).unwrap().bridge_facts.raw_flags |= BRIDGE_FLAG_ANCHOR_SELF;
         let dummy = terrain.shared_cell_dummy();
         dummy.stamp_coord(7, 8);
         terrain.test_set_dummy_cell_level_slope(2, 0);
@@ -1851,14 +1820,8 @@ mod tests {
         // Requested (-1,1) aliases fixed slot 511, whose canonical coordinate
         // is (511,0). Native returns that real CellClass without stamping the
         // shared dummy.
-        let outcome = update_ramp_perpendicular(
-            &mut state,
-            (0, 1),
-            Axis::NS,
-            Phase::DamageB,
-            true,
-            &terrain,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (0, 1), Axis::NS, Phase::DamageB, true, &terrain);
 
         assert!(outcome.state_changed);
         assert!(outcome.setter_transcript.is_empty());
@@ -2328,14 +2291,8 @@ mod tests {
             BridgeheadAnchorClass::Variant0,
         );
         let terrain = ramp_test_terrain_with_anchor_bits(&[(3, 2)]);
-        let outcome = update_ramp_perpendicular(
-            &mut state,
-            (2, 2),
-            Axis::NS,
-            Phase::DamageA,
-            true,
-            &terrain,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (2, 2), Axis::NS, Phase::DamageA, true, &terrain);
         assert!(outcome.state_changed);
         // State byte advanced.
         assert_eq!(

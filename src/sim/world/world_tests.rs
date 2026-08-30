@@ -2822,8 +2822,8 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     let wave = sim.waves.get(wave_id).expect("registered Wave");
     assert_eq!(
         wave.target,
-        crate::sim::projectile::ProjectileCoord::new(-128, 1_920, 646),
-        "CellClass ground 2*90 plus structural +416 and Sonic +50",
+        crate::sim::projectile::ProjectileCoord::new(-128, 1_920, 674),
+        "CellClass ground 2*104 plus structural +416 and Sonic +50",
     );
     assert_eq!(process_dummy.snapshot().coord, (-1, 7));
 
@@ -2833,7 +2833,7 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     assert_eq!(
         context.target_position,
         Some(crate::sim::projectile::ProjectileCoord::new(
-            -128, 1_920, 596,
+            -128, 1_920, 624,
         )),
         "every live refresh re-enters GetCellClass then GetTargetCoords",
     );
@@ -2847,7 +2847,7 @@ fn sonic_cell_target_uses_persistent_dummy_gettargetcoords_on_create_and_refresh
     sim.visit_combat_appended_wave_tail(&BTreeSet::new(), &rules, None);
     let wave = sim.waves.get(wave_id).expect("Wave survives first live AI");
     assert_eq!(wave.lifetime, 99);
-    assert_eq!(wave.target.z, 646);
+    assert_eq!(wave.target.z, 674);
     assert_eq!(
         process_dummy.snapshot().coord,
         (0, 6),
@@ -3048,8 +3048,8 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
         "the appended tail ran in the firing pass"
     );
     assert_eq!(
-        wave.target.z, 646,
-        "level 2 CellClass target is 2*90 + structural 416 + Sonic 50",
+        wave.target.z, 674,
+        "level 2 CellClass target is 2*104 + structural 416 + Sonic 50",
     );
     assert_eq!(
         sim.substrate
@@ -3059,7 +3059,7 @@ fn sonic_cell_fire_same_frame_wave_damage_selects_level_two_bridge_plane() {
             .health
             .current,
         90,
-        "Wave Z 646 meets the level-2 equality threshold 624 and walks AltObject",
+        "Wave Z 674 meets the level-2 equality threshold 624 and walks AltObject",
     );
 }
 

@@ -634,8 +634,7 @@ fn resolve_produced_unit_cell_coords(
         .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
         .wrapping_add(crate::sim::cell_kernel::CELL_CENTER_LEPTONS);
     let ground_z =
-        crate::util::lepton::cellclass_ground_height_leptons(level, slope, center_x, center_y)
-            .ok()?;
+        crate::util::lepton::ground_height_leptons(level, slope, center_x, center_y).ok()?;
     let coords = crate::sim::cell_kernel::cell_center(
         crate::sim::cell_kernel::CellCoordinate {
             x: coord.0,
@@ -1968,6 +1967,71 @@ mod tests {
             )
             .exact_zero(),
             "an otherwise-identical in-diamond control remains admissible"
+        );
+    }
+
+    #[test]
+    fn production_cell_center_uses_104_for_real_and_dummy_without_changing_xy() {
+        let mut sim = production_admission_sim();
+        let requested = (8, 8);
+        let flat = resolve_produced_unit_cell_coords(&sim, requested);
+        assert_eq!(flat, Some(requested));
+
+        let cell = sim
+            .resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(requested.0, requested.1)
+            .unwrap();
+        cell.level = 2;
+        cell.slope_type = 0;
+        assert_eq!(
+            crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                i32::from(requested.0) * 256 + 128,
+                i32::from(requested.1) * 256 + 128,
+            ),
+            Ok(208),
+        );
+        assert_eq!(
+            resolve_produced_unit_cell_coords(&sim, requested),
+            flat,
+            "GetCoords evaluates raised Z but the current production helper returns only X/Y",
+        );
+
+        sim.resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(requested.0, requested.1)
+            .unwrap()
+            .slope_type = 21;
+        assert_eq!(resolve_produced_unit_cell_coords(&sim, requested), None);
+
+        let dummy_grid = ResolvedTerrainGrid::from_cells(0, 0, Vec::new());
+        let mut dummy_sim = Simulation::default();
+        dummy_sim.resolved_terrain = Some(dummy_grid);
+        let dummy_request = (u16::MAX, 7);
+        let flat_dummy = resolve_produced_unit_cell_coords(&dummy_sim, dummy_request);
+        dummy_sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .test_set_dummy_cell_level_slope(2, 0);
+        assert_eq!(
+            resolve_produced_unit_cell_coords(&dummy_sim, dummy_request),
+            flat_dummy,
+            "shared-dummy GetCoords evaluates Level 2 as 208 but retains the same signed-center X/Y output",
+        );
+        dummy_sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .test_set_dummy_cell_level_slope(2, 21);
+        assert_eq!(
+            resolve_produced_unit_cell_coords(&dummy_sim, dummy_request),
+            None,
+            "the native-unsafe slope remains a Rust admission failure on the retained dummy too",
         );
     }
 

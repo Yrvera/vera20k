@@ -298,7 +298,7 @@ pub fn slope_matrix(slope: u8) -> Result<[NativeF32Bits; 12], SparkWorldError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use glam::IVec3;
 
@@ -315,7 +315,7 @@ mod tests {
     use crate::sim::occupancy::CellListInsertion;
     use crate::sim::overlay_grid::OverlayGrid;
 
-    fn terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+    pub(in crate::sim::particles) fn terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {
             rx,
             ry,
@@ -383,7 +383,7 @@ mod tests {
         }
     }
 
-    fn one_cell_sim(cell: ResolvedTerrainCell) -> Simulation {
+    pub(in crate::sim::particles) fn one_cell_sim(cell: ResolvedTerrainCell) -> Simulation {
         let mut sim = Simulation::new();
         sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(1, 1, vec![cell]));
         sim.overlay_grid = Some(OverlayGrid::new(1, 1));
