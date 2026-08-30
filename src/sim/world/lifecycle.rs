@@ -773,8 +773,8 @@ impl Simulation {
             self.append_live_build_const(stable_id);
             self.refresh_waypoint_edge_from_committed_structure(stable_id);
             self.mark_building_base_reservation(stable_id);
+            self.fill_base_plan_from_successful_building_unlimbo(stable_id);
         }
-        self.fill_base_plan_from_successful_building_unlimbo(stable_id);
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
         #[cfg(test)]
@@ -2842,9 +2842,11 @@ mod base_plan_lifecycle_tests {
     use crate::rules::object_type::ObjectCategory as RulesObjectCategory;
     use crate::rules::ruleset::RuleSet;
     use crate::sim::base_plan::{BasePlanNode, pack_base_plan_cell};
+    use crate::sim::game_entity::{GameEntity, StructureUpgradeLink};
     use crate::sim::house_state::HouseState;
     use crate::sim::scenario_bootstrap::initialize_map_roster_houses;
-    use crate::sim::world::Simulation;
+    use crate::sim::world::{PlacementEvidence, RevealPosition, RevealRequest, Simulation};
+    use crate::util::fixed_math::SimFixed;
 
     fn rules() -> RuleSet {
         RuleSet::from_ini(&IniFile::from_str(
@@ -2943,6 +2945,69 @@ mod base_plan_lifecycle_tests {
             })
             .expect("BasePlan fill trace");
         assert!(build_const < base_plan);
+    }
+
+    #[test]
+    fn gsi_04_05_attached_upgrade_early_return_does_not_fill_base_plan() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let type_ref = sim.interner.intern("GAPOWR");
+        let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+        house.base_plan.nodes.push(BasePlanNode {
+            type_or_control: 0,
+            packed_cell: pack_base_plan_cell(10, 11),
+            filled: false,
+            retry_count: 7,
+        });
+        sim.houses.insert(owner, house);
+
+        let mut upgrade = GameEntity::new_at_frame_zero_for_test(
+            1,
+            10,
+            11,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        upgrade.base_plan_type_index = 0;
+        upgrade.structure_upgrade_link = Some(StructureUpgradeLink {
+            parent_stable_id: 99,
+            slot: 0,
+        });
+        sim.substrate.entities.insert(upgrade);
+
+        let outcome = sim.try_reveal_entity(
+            1,
+            RevealRequest {
+                position: RevealPosition {
+                    rx: 10,
+                    ry: 11,
+                    z: 0,
+                    sub_x: SimFixed::from_num(0),
+                    sub_y: SimFixed::from_num(0),
+                },
+                placement: PlacementEvidence::AttachedUpgrade,
+                logic_eligible: true,
+            },
+        );
+
+        assert!(matches!(outcome, super::RevealOutcome::Revealed { .. }));
+        assert!(!sim.houses[&owner].base_plan.nodes[0].filled);
+        assert_eq!(sim.houses[&owner].base_plan.nodes[0].retry_count, 7);
+        assert!(
+            !sim.lifecycle_test_events_for_test().iter().any(|event| {
+                *event == super::LifecycleTestEvent::BasePlanFilled { stable_id: 1 }
+            })
+        );
     }
 
     #[test]
