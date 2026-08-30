@@ -115,19 +115,22 @@ impl<'a> CurrentRadarCellAuthority<'a> {
         // high-bridge overlay authority.
         let structural_high_present =
             resolved_cell.is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
-        let immutable_high_family = resolved_cell.is_some_and(|cell| {
-            cell.bridge_facts.family != crate::map::bridge_facts::BridgeStampFamily::None
-        });
         let runtime_bridge_cell = self.bridge_state.and_then(|state| state.cell(rx, ry));
+        let immutable_high_runtime_owner = runtime_bridge_cell.is_some()
+            && resolved_cell.is_some_and(|cell| {
+                cell.bridge_facts.family != crate::map::bridge_facts::BridgeStampFamily::None
+            });
         let structural_bridge_present = structural_high_present
             && runtime_bridge_cell.is_some_and(|cell| {
                 cell.deck_present && BridgeRuntimeState::effective_render_state(cell).is_some()
             });
-        let overlay = if immutable_high_family {
+        let overlay = if immutable_high_runtime_owner {
             // High walkers keep their current Cell+0x44 identity only in
             // BridgeRuntimeState. OverlayGrid intentionally mirrors low
             // surfaces, so consulting it after the live structural bit clears
-            // can revive stale 0xCD after a restored 0xE7/0xE8 collapse.
+            // can revive stale 0xCD after a restored 0xE7/0xE8 collapse. A
+            // family-only auxiliary stamp such as ExtraDir6 owns no runtime
+            // cell and therefore continues through the live OverlayGrid path.
             // Native -1 is Rust 0xFF.
             runtime_bridge_cell.and_then(|cell| {
                 (cell.overlay_byte != u8::MAX).then(|| {

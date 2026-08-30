@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::map::bridge_facts::{
-    Axis, BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts, BridgeStampFamily,
-    BridgeheadAnchorClass,
+    Axis, BRIDGE_FLAG_EXTRA_SIDE, BRIDGE_FLAG_STRUCTURAL, BridgeAnchorRelation,
+    BridgeCellFacts, BridgeStampFamily, BridgeStampSlot, BridgeheadAnchorClass,
 };
 use crate::map::playfield::PlayfieldBounds;
 use crate::map::resolved_terrain::{
@@ -78,6 +78,18 @@ fn mark_high_bridge_source(cell: &mut ResolvedTerrainCell) {
     cell.has_bridge_deck = true;
     cell.bridge_walkable = true;
     cell.bridge_deck_level = cell.level.saturating_add(4);
+}
+
+fn mark_extra_dir6_family_only(cell: &mut ResolvedTerrainCell) {
+    cell.bridge_facts.raw_flags = BRIDGE_FLAG_EXTRA_SIDE;
+    cell.bridge_facts.family = BridgeStampFamily::Nesw;
+    cell.bridge_facts.direction = Some(6);
+    cell.bridge_facts.anchor = Some(BridgeAnchorRelation {
+        anchor: (cell.rx, cell.ry),
+        slot: BridgeStampSlot::ExtraDir6,
+        family: BridgeStampFamily::Nesw,
+        direction: 6,
+    });
 }
 
 fn central_cell(grid: &TerrainGrid, bounds: PlayfieldBounds) -> (u16, u16) {
@@ -374,6 +386,39 @@ fn gsi_04_01_intact_low_overlay_stays_overlay_in_full_and_incremental_paths() {
         apply_incremental(&mut incremental, &intact_low, cell, &colors);
         assert_eq!(raw_pair(&incremental, cell), [expected; 2]);
     }
+}
+
+#[test]
+fn gsi_04_01_extra_dir6_family_without_runtime_cell_keeps_live_overlay() {
+    let (grid, mut resolved) = fixture(None);
+    let cell = central_cell(&grid, expanded_bounds());
+    let auxiliary = resolved
+        .cell_mut(cell.0, cell.1)
+        .expect("ExtraDir6 auxiliary cell");
+    mark_extra_dir6_family_only(auxiliary);
+    assert!(!auxiliary.bridge_facts.has_structural_bridge());
+    assert!(!auxiliary.has_bridge_deck);
+
+    let colors = colors();
+    let absent = runtime_with_overlay(resolved.clone(), cell, None, None);
+    let live_overlay = runtime_with_overlay(resolved, cell, None, Some((10, 4)));
+    assert!(
+        live_overlay
+            .simulation
+            .bridge_state
+            .as_ref()
+            .and_then(|state| state.cell(cell.0, cell.1))
+            .is_none(),
+        "ExtraDir6 family provenance must not synthesize a runtime bridge cell",
+    );
+
+    let full = projection(&grid, &live_overlay, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&full, cell), [OVERLAY_COLOR; 2]);
+
+    let mut incremental = projection(&grid, &absent, &[], expanded_bounds(), &colors);
+    assert_eq!(raw_pair(&incremental, cell), [BASE_COLOR; 2]);
+    apply_incremental(&mut incremental, &live_overlay, cell, &colors);
+    assert_eq!(raw_pair(&incremental, cell), [OVERLAY_COLOR; 2]);
 }
 
 #[test]
