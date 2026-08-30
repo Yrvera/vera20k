@@ -57,7 +57,8 @@ Native can allocate unknown custom tokens. Exact registry-tail order then depend
    - Record `RulesClass__ReadAI @ 0x00672AE0` and the exact BuildConst block near the parser.
    - Do not rewrite unrelated historical research in this repair; the stale parent-report claims are superseded by this design's verified correction bundle and must be fixed before the phase-wide reverse audit.
 
-No state schema changes are required. Parsed Rules data is immutable; existing snapshots already persist the stamped entity bit and House BuildConst order in schema v106.
+The parser repair requires no additional state-schema change. Parsed Rules data is immutable; the
+integrated naval slice persists the stamped entity bit and House BuildConst order in schema v109.
 
 ## Acceptance tests
 
