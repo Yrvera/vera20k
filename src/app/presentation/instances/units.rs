@@ -44,6 +44,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static WARNED_SLOPE_GE_17: AtomicBool = AtomicBool::new(false);
 
 const NO_SPAWN_ALT_SUFFIX: &str = "WO";
+const NATIVE_TURRET_FIRST_START: u8 = 32;
+const NATIVE_TURRET_FIRST_END_EXCLUSIVE: u8 = 160;
 
 fn vxl_body_tint(
     grid: &lighting::CellLightGrid,
@@ -555,6 +557,20 @@ fn turret_screen_offset(
     )
 }
 
+/// Return the native local draw order for a Unit's independently rendered
+/// turret and barrel pieces.
+///
+/// gamemd-derived: active YR `UnitClass__DrawVoxelBody @ 0x0073B470`, selector
+/// instructions `0x0073BC5B..0x0073BDAB`.
+fn native_turret_barrel_order<T: Copy>(turret_facing: u16, turret: T, barrel: T) -> [T; 2] {
+    let facing_high = (turret_facing >> 8) as u8;
+    if (NATIVE_TURRET_FIRST_START..NATIVE_TURRET_FIRST_END_EXCLUSIVE).contains(&facing_high) {
+        [turret, barrel]
+    } else {
+        [barrel, turret]
+    }
+}
+
 /// Look up a unit sprite from the atlas with cascading fallbacks:
 /// 1. Try the exact key (slope + frame).
 /// 2. Fall back to frame 0 if the requested frame doesn't exist (mismatched HVA counts).
@@ -825,19 +841,7 @@ fn emit_turret_unit_sprites(
         );
     }
 
-    // Draw order for turret+barrel depends on facing direction.
-    // South-facing (facing 32-160): barrel first (behind turret).
-    // North-facing: turret first (behind barrel).
-    // Convert to u8 for draw-order check (32..160 in u8 = 8192..40960 in u16).
-    let turret_u8: u8 = (turret_facing >> 8) as u8;
-    let is_south_facing: bool = turret_u8 >= 32 && turret_u8 <= 160;
-    let (first_key, second_key) = if is_south_facing {
-        (&barrel_key, &turret_key)
-    } else {
-        (&turret_key, &barrel_key)
-    };
-
-    for key in [first_key, second_key] {
+    for key in native_turret_barrel_order(turret_facing, &turret_key, &barrel_key) {
         if let Some((entry, texture_source)) =
             unit_entry_for_slope_state(state, atlas, key, slope_state)
         {
@@ -979,6 +983,41 @@ mod tests {
         SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
     };
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn unit_vxl_piece_order_keeps_native_boundary_values() {
+        for (high, expected) in [
+            (0u8, ["barrel", "turret"]),
+            (31, ["barrel", "turret"]),
+            (32, ["turret", "barrel"]),
+            (159, ["turret", "barrel"]),
+            (160, ["barrel", "turret"]),
+            (255, ["barrel", "turret"]),
+        ] {
+            assert_eq!(
+                native_turret_barrel_order(u16::from(high) << 8, "turret", "barrel"),
+                expected,
+                "facing high byte {high}"
+            );
+        }
+    }
+
+    #[test]
+    fn unit_vxl_piece_order_matches_native_selector_for_every_facing() {
+        for facing in 0..=u16::MAX {
+            let native_quadrant = ((((u32::from(facing) >> 13) + 1) >> 1) & 3) as u8;
+            let expected = if matches!(native_quadrant, 1 | 2) {
+                ["turret", "barrel"]
+            } else {
+                ["barrel", "turret"]
+            };
+            assert_eq!(
+                native_turret_barrel_order(facing, "turret", "barrel"),
+                expected,
+                "facing {facing:#06x}, native quadrant {native_quadrant}"
+            );
+        }
+    }
 
     #[test]
     fn drive_ship_slope_unit_extraction_uses_last_processed_frame_without_mutation() {
