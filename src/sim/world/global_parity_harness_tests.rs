@@ -345,8 +345,12 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // Technos consume the raw Scenario words stored at 0x006F3254. That
 // behavior-bearing Scenario shift reaches both historical schema probes;
 // record/replay remains exact and Main plus MapGen remain unchanged.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x4185_6CCF_FF66_1666;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6E21_7425_AAC6_F794;
+// Re-baselined 2026-08-30 for GSI-04.03 Drive/Ship slope payload ownership.
+// The payload is part of the common locomotor fold, so both historical probes
+// move. All three RNG fingerprints and tick-for-tick record/replay remain exact,
+// isolating this to the intentional hash-owner composition change.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x0F6E_2B0B_5FF4_B23D;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE2B3_9FAA_432F_4A75;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -505,7 +509,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6E21_7425_AAC6_F794;
 // this measured shift is composition-only.
 // The current schema additionally folds the persistent Techno constructor
 // fields; the historical probes above isolate the shared RNG-behavior shift.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x848C_B752_96E9_9804;
+// Re-baselined 2026-08-30 for the same GSI-04.03 slope payload ownership.
+// The historical probes move consistently, the absolute RNG tuple is unchanged,
+// and record/replay equality remains exact: this is hash composition, not route drift.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xDA92_C04D_B53F_B58D;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

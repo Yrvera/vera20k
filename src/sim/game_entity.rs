@@ -499,7 +499,8 @@ pub struct GameEntity {
     pub air_spatial_enter_order: u64,
 
     // --- Optional subsystem components ---
-    /// Locomotor state — present on movable entities (speed > 0 in rules.ini).
+    /// Locomotor state — present on moving types and on zero-speed Foot
+    /// Drive/Ship types whose native class-local payload still exists.
     pub locomotor: Option<LocomotorState>,
     /// Active movement path — present when unit is moving along an A* path.
     pub movement_target: Option<MovementTarget>,
@@ -808,9 +809,9 @@ pub struct GameEntity {
     /// Infantry fear/prone runtime. `None` for non-infantry entities.
     #[serde(default)]
     pub infantry: Option<InfantryRuntime>,
-    /// Body rocking + slope-transition state. `None` for entities that don't
-    /// rock (infantry, aircraft, SHP-bodied buildings). `Some(default)` for
-    /// vehicles and voxel-bodied buildings.
+    /// Optional body-rocking state only. Drive/Ship slope transitions belong
+    /// to their typed locomotor payloads. This defaults to `None` and becomes
+    /// present only when an explicit body-rocking producer activates it.
     #[serde(default)]
     pub rocking: Option<RockingState>,
     /// Exact native-width Mission state. All writes pass through a named legacy

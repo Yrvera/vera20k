@@ -191,8 +191,11 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // Technos now consume the raw Scenario word stored at 0x006F3254. That
 // behavior-bearing Scenario shift reaches every schema probe, and record/replay
 // equality remains exact.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xEC57_2CB0_656C_A6DF;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x667E_E413_E196_0D48;
+// Re-baselined 2026-08-30 for GSI-04.03 Drive slope payload ownership. The
+// common locomotor fold reaches both historical probes; the scripted retasks
+// and record/replay equality remain exact, so this is composition-only.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x368E_E20F_77C7_0725;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -312,7 +315,9 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x667E_E413_E196_0D48;
 // current-schema composition only.
 // Techno constructor RNG also persists in the current-schema Techno fields;
 // the two legacy probes above isolate the shared behavior-bearing portion.
-const SLICE6_BASELINE_HASH: u64 = 0xD919_789E_36B6_D056;
+// Re-baselined 2026-08-30 for the same slope payload move; both historical
+// probes shift consistently and the replay remains deterministic.
+const SLICE6_BASELINE_HASH: u64 = 0x9F9B_BB9B_3B35_0410;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

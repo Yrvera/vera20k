@@ -1,8 +1,8 @@
-//! Body rocking and slope-transition simulation.
+//! Body-rocking simulation.
 //!
 //! Implements the spring-damper that drives `RockingState::angle_*` toward zero
-//! each tick, plus the 3-tick slope-transition tracker. The renderer reads the
-//! resulting angles + slope-blend matrix to compose the body matrix per frame.
+//! each tick. Drive/Ship slope interpolation is owned separately by locomotor
+//! runtime payload state.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends only on sim/components, sim/entity_store, map,

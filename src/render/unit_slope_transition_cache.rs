@@ -27,7 +27,8 @@ pub struct TransitionUnitSpriteKey {
     pub frame: u32,
     pub from_slope: u8,
     pub to_slope: u8,
-    pub phase_num: u8,
+    pub phase_num: i32,
+    pub phase_den: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,7 +142,7 @@ impl VxlSlopeTransitionCache {
             from_slope: key.from_slope,
             to_slope: key.to_slope,
             phase_num: key.phase_num,
-            phase_den: 3,
+            phase_den: key.phase_den,
         };
         let (sprite, _) = render_unit_sprite_with_slope_blend(
             asset_manager,
@@ -207,7 +208,7 @@ impl VxlSlopeTransitionCache {
 mod tests {
     use super::*;
 
-    fn key(from_slope: u8, to_slope: u8, phase_num: u8) -> TransitionUnitSpriteKey {
+    fn key(from_slope: u8, to_slope: u8, phase_num: i32) -> TransitionUnitSpriteKey {
         TransitionUnitSpriteKey {
             type_id: "CMIN".to_string(),
             facing: 64,
@@ -216,6 +217,7 @@ mod tests {
             from_slope,
             to_slope,
             phase_num,
+            phase_den: crate::sim::movement::slope_transition::SLOPE_TRANSITION_FRAMES,
         }
     }
 

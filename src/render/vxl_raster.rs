@@ -105,13 +105,36 @@ pub fn turret_pivot_screen_offset(
     slope_type: u8,
     scale: f32,
 ) -> (f32, f32) {
+    turret_pivot_screen_offset_for_slope_state(
+        turret_offset_leptons,
+        body_facing,
+        slope_type,
+        None,
+        scale,
+    )
+}
+
+/// Blend-aware form of [`turret_pivot_screen_offset`]. The optional blend is
+/// consumed by the same quaternion-SLERP matrix helper as VXL limb rastering,
+/// so a separated turret/barrel pivot cannot lead the hull to its destination
+/// slope during an in-progress transition.
+pub fn turret_pivot_screen_offset_for_slope_state(
+    turret_offset_leptons: i32,
+    body_facing: u8,
+    slope_type: u8,
+    slope_blend: Option<VxlSlopeBlend>,
+    scale: f32,
+) -> (f32, f32) {
     if turret_offset_leptons == 0 {
         return (0.0, 0.0);
     }
     let offset_units: f32 = (turret_offset_leptons / TURRET_OFFSET_DIVISOR) as f32;
     let body_facing_mat: Mat4 =
         Mat4::from_rotation_z(voxel_facing_angle(voxel_facing_step(body_facing)));
-    let chain: Mat4 = voxel_camera_view() * compute_slope_rotation(slope_type) * body_facing_mat;
+    let slope_mat = slope_blend
+        .map(compute_slope_blend_rotation)
+        .unwrap_or_else(|| compute_slope_rotation(slope_type));
+    let chain: Mat4 = voxel_camera_view() * slope_mat * body_facing_mat;
     let disp: Vec3 = chain.transform_vector3(Vec3::new(offset_units, 0.0, 0.0));
     (disp.x * scale, -disp.y * scale)
 }
@@ -151,7 +174,7 @@ const CORNER_TILT_RAD: f32 = 0.385_882_7;
 pub struct VxlSlopeBlend {
     pub from_slope: u8,
     pub to_slope: u8,
-    pub phase_num: u8,
+    pub phase_num: i32,
     pub phase_den: u8,
 }
 
@@ -406,8 +429,8 @@ fn compute_slope_rotation(slope_type: u8) -> Mat4 {
 
 fn compute_slope_blend_rotation(blend: VxlSlopeBlend) -> Mat4 {
     let den = blend.phase_den.max(1) as f32;
-    let t = (blend.phase_num as f32 / den).clamp(0.0, 1.0);
-    if t <= 0.0 || blend.from_slope == blend.to_slope {
+    let t = blend.phase_num as f32 / den;
+    if blend.from_slope == blend.to_slope {
         return compute_slope_rotation(blend.from_slope);
     }
     if t >= 1.0 {
@@ -776,6 +799,7 @@ pub fn hva_to_mat4(raw: &[f32; 12], limb_scale: f32) -> Mat4 {
 mod tests {
     use super::*;
     use crate::assets::vxl_file::{VxlLimb, VxlVoxel};
+    use crate::sim::movement::slope_transition::SLOPE_TRANSITION_FRAMES;
 
     fn make_test_vxl() -> VxlFile {
         let identity: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -1288,7 +1312,7 @@ mod tests {
             from_slope: 4,
             to_slope: 8,
             phase_num: 0,
-            phase_den: 3,
+            phase_den: SLOPE_TRANSITION_FRAMES,
         };
         assert_mat4_close(
             compute_slope_blend_rotation(blend),
@@ -1302,8 +1326,8 @@ mod tests {
         let blend = VxlSlopeBlend {
             from_slope: 4,
             to_slope: 8,
-            phase_num: 3,
-            phase_den: 3,
+            phase_num: i32::from(SLOPE_TRANSITION_FRAMES),
+            phase_den: SLOPE_TRANSITION_FRAMES,
         };
         assert_mat4_close(
             compute_slope_blend_rotation(blend),
@@ -1318,7 +1342,7 @@ mod tests {
             from_slope: 4,
             to_slope: 8,
             phase_num: 1,
-            phase_den: 3,
+            phase_den: SLOPE_TRANSITION_FRAMES,
         };
         let mid = compute_slope_blend_rotation(blend);
         let from = compute_slope_rotation(4);
@@ -1326,6 +1350,22 @@ mod tests {
         let sample = Vec3::new(0.25, 0.75, 1.0);
         assert!((mid.transform_point3(sample) - from.transform_point3(sample)).length() > 0.001);
         assert!((mid.transform_point3(sample) - to.transform_point3(sample)).length() > 0.001);
+    }
+
+    #[test]
+    fn drive_ship_slope_negative_one_third_extrapolates_without_lower_clamp() {
+        let negative = compute_slope_blend_rotation(VxlSlopeBlend {
+            from_slope: 4,
+            to_slope: 8,
+            phase_num: -1,
+            phase_den: SLOPE_TRANSITION_FRAMES,
+        });
+        let from = compute_slope_rotation(4);
+        let sample = Vec3::new(0.25, 0.75, 1.0);
+        assert!(
+            (negative.transform_point3(sample) - from.transform_point3(sample)).length() > 0.001,
+            "native signed -1/3 phase must reach SLERP instead of clamping to the source"
+        );
     }
 
     #[test]
@@ -1338,7 +1378,7 @@ mod tests {
                 from_slope: 4,
                 to_slope: 8,
                 phase_num: 1,
-                phase_den: 3,
+                phase_den: SLOPE_TRANSITION_FRAMES,
             }),
             ..Default::default()
         };

@@ -709,6 +709,7 @@ mod tests {
             piggyback: None,
             runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
                 LocomotorKind::Fly,
+                0,
             ),
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
@@ -747,6 +748,7 @@ mod tests {
             piggyback: None,
             runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
                 LocomotorKind::Jumpjet,
+                0,
             ),
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
