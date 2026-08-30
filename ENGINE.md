@@ -224,9 +224,10 @@ touches, then run `python -m tools.system_map check --require-sources`.
 
 ## Git
 
-- Start development from an up-to-date `main` and commit every change on a short-lived
-  `feature/<topic>` branch. Never commit or push directly to `main`; `main` moves only through a
-  reviewed PR (or an explicit user-owned GitHub action).
+- Start each new feature branch from the latest `origin/main`: fetch first, and fast-forward local
+  `main` if you use it. Commit every change on a short-lived `feature/<topic>` branch. Never commit
+  or push directly to `main`; `main` moves only through a reviewed PR (or an explicit user-owned
+  GitHub action).
 - When this checkout has a sole owner, create or switch the feature branch here. When another
   task owns the checkout, use a separate worktree and feature branch. Continue an existing
   task-owned feature branch rather than creating a second branch for the same work.
