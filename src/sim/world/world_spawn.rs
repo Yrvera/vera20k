@@ -1926,16 +1926,17 @@ impl Simulation {
             }
         }
 
-        // Despawn the MCV.
-        self.uninit_with_rules(stable_id, rules);
-
-        // Spawn the construction yard.
+        // Native reaches the bounded post-deploy transaction only after the
+        // target Building was created successfully. Keep the source MCV live
+        // until target Unlimbo commits so a late placement rejection is atomic.
         let owner_str = self.interner.resolve(owner_id).to_string();
         let Some(new_sid) =
             self.spawn_object_at_height(&yard_type, &owner_str, rx, ry, 0, z, rules)
         else {
             return false;
         };
+
+        self.uninit_with_rules(stable_id, rules);
 
         // Set selected and building-up state on the new entity.
         if let Some(ge) = self.substrate.entities.get_mut(new_sid) {

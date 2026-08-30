@@ -937,6 +937,56 @@ fn base_plan_recalc_deploy_failures_preserve_source_rng_plan_and_centers() {
 }
 
 #[test]
+fn base_plan_recalc_deploy_late_yard_unlimbo_failure_preserves_source_and_plan() {
+    let rules = make_recalc_mcv_rules("0,0,0");
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    sim.session.game_mode_nonzero = true;
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0xABCD_5750);
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 10,
+        off_fc: 0,
+        off_100: 0,
+        off_104: 10,
+        off_108: 10,
+    });
+    let height_map = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 5, 6, 128, &rules, &height_map)
+        .expect("MCV anchor is inside the playfield");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _failed_yard_constructor_word = expected_rng.next_u32();
+
+    assert!(!sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+
+    let source = sim.substrate.entities.get(mcv).expect("source MCV remains");
+    assert!(!source.dying);
+    assert!(!source.lifecycle.in_limbo);
+    assert!(
+        sim.substrate.entities.values().all(|entity| {
+            sim.interner.resolve(entity.type_ref) != "GACNST" || entity.dying
+        }),
+        "the rejected yard constructor leaves no live target"
+    );
+    let owner = sim.interner.get("Americans").unwrap();
+    let house = &sim.houses[&owner];
+    assert_eq!(house.base_center, None);
+    assert_eq!(house.base_plan_center, (0, 0));
+    assert!(house.base_plan.nodes.is_empty());
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state(),
+        "the failed target spends only its verified constructor word, not Recalc draws"
+    );
+}
+
+#[test]
 fn conyard_redeploy_runtime_rejects_when_mcv_redeploy_disabled() {
     let rules = make_mcv_rules();
     let mut sim = Simulation::new();
