@@ -68,22 +68,22 @@ An empty-plan countryless qualifying deploy still fails before source removal an
 
 ## 6. Snapshot and hash schema
 
-Append the latch group to `HouseState` and bump `SNAPSHOT_VERSION` from 107 to 108 because bincode encodes the struct positionally. Update every current-version assertion/label that hard-codes 107; current-version tests should prefer `SNAPSHOT_VERSION` except the dedicated version-contract test.
+Append the latch group to `HouseState` and bump the current-main `SNAPSHOT_VERSION` from 111 to 112 because bincode encodes the struct positionally. Update every current-version assertion/label that hard-codes 111; current-version tests should prefer `SNAPSHOT_VERSION` except the dedicated version-contract test.
 
-Extend `Simulation::state_hash_with_schema` with `include_house_deploy_latches_v108`. The current hash enables it; historical probes disable it. When enabled, `hash_houses` directly folds only:
+Extend `Simulation::state_hash_with_schema` with `include_house_deploy_latches_v112`. The current hash enables it; historical probes disable it. When enabled, `hash_houses` directly folds only:
 
 1. `house.ai_activation.production`;
 2. `house.ai_activation.ai_triggers_active`.
 
-It must not directly fold `auto_base_building`. This is an intentional native CRC asymmetry, not an omission. Add `state_hash_without_house_deploy_latches_v108` as a test-only provenance probe.
+It must not directly fold `auto_base_building`. This is an intentional native CRC asymmetry, not an omission. Add `state_hash_without_house_deploy_latches_v112` as a test-only provenance probe.
 
 ## 7. Validation
 
 Focused tests must cover:
 
 1. fresh `HouseState` defaults all three false;
-2. all eight independent boolean combinations serialize and load exactly under snapshot v108;
-3. Production-only and AITriggersActive-only changes alter the current hash but not the v107 historical probe;
+2. all eight independent boolean combinations serialize and load exactly under snapshot v112;
+3. Production-only and AITriggersActive-only changes alter the current hash but not the v111 historical probe;
 4. AutoBaseBuilding-only changes do not directly alter either current or historical House hash;
 5. successful nonhuman, nonzero-mode ConYard deploy sets all three and retains existing center/BasePlan/RNG assertions;
 6. human, mode-zero, non-ConYard, placement failure, malformed-vector preflight failure, and facing-only cases retain prior latch combinations;
@@ -91,7 +91,7 @@ Focused tests must cover:
 8. the latch-enabling method starts from a split independent combination, writes all three true in native order, and a second invocation leaves the same all-true state;
 9. `git diff --check` is clean.
 
-Run only scoped `cargo test -p vera20k --lib <filter>` commands after checking that no other process owns Cargo. The Phase-wide full `--lib` suite remains deferred until every Phase 3 row is closed.
+Run scoped `cargo test -p vera20k --lib <filter>` commands while working after checking that no other process owns Cargo. This integration PR still requires the repository's one final full `cargo test -p vera20k --lib` certification after the slice and critic review are stable.
 
 ## 8. Files expected to change
 
