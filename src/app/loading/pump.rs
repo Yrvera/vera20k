@@ -330,7 +330,8 @@ impl LoadingRequest {
 
     /// Transfer one accepted setup transaction into loading. Preview terrain,
     /// MapGen continuation, and construction trace remain presentation-only;
-    /// the separately extracted staging is the sole generated start authority.
+    /// the separately extracted staging becomes the active Scenario waypoint
+    /// authority for Gather, loading markers, and the live session snapshot.
     pub(crate) fn with_accepted_random_map(
         mut self,
         accepted: Option<crate::app::shell_random_map::AcceptedRandomMapLaunch>,
@@ -343,6 +344,7 @@ impl LoadingRequest {
         self
     }
 
+    #[cfg(test)]
     fn random_map_preview(&self) -> Option<&crate::map::rmg::GeneratedMap> {
         self.random_map_preview.as_ref()
     }
@@ -1169,6 +1171,9 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                 )
             }
             NativeLoadingProgressCadence::RandomMapHalved => {
+                let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
+                    return;
+                };
                 let preview = session
                     .job
                     .ra2_dir
@@ -1180,10 +1185,8 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                     state.process_assets.csf.as_ref(),
                     render_size,
                     preview,
-                    session
-                        .request
-                        .random_map_preview()
-                        .map(|generated| &generated.map_file),
+                    initial.map_data(),
+                    plan.active_scenario_waypoints(),
                     &assignments,
                 )
             }
@@ -2502,31 +2505,62 @@ mod tests {
 
     #[test]
     fn gsi_04_12_generated_prefix_uses_accepted_staging_once() {
+        use crate::map::map_file::MapCell;
+
         let selected = "RandMap.Sed";
-        let staged = [(0, 20, 24), (1, 42, 46)];
-        let preview_waypoints = [(0, 8, 12), (1, 14, 18)];
-        let regenerated = [(0, 60, 64), (1, 72, 76)];
+        let staged = [(0, 70, 70), (1, 90, 70)];
+        let preview_waypoints = [(0, 110, 110), (1, 130, 110)];
+        let regenerated = [(0, 70, 90), (1, 90, 90)];
         let mut launch = test_launch_session(LaunchCountry::America);
         launch.selected_map_file = Some(selected.to_string());
         let accepted =
             accepted_random_map_with_starts(selected, 0x1212, &preview_waypoints, &staged);
+        let mut regenerated_map = crate::map::rmg::emit::empty_map_file(
+            &crate::map::rmg::RmgOptions::default(),
+            100,
+            100,
+        );
+        regenerated_map
+            .waypoints
+            .extend(regenerated.iter().map(|&(slot, rx, ry)| {
+                (
+                    u32::from(slot),
+                    crate::map::waypoints::Waypoint {
+                        index: u32::from(slot),
+                        rx,
+                        ry,
+                    },
+                )
+            }));
+        regenerated_map.cells = [(60, 60), (60, 140), (140, 60), (140, 140)]
+            .into_iter()
+            .map(|(rx, ry)| MapCell {
+                rx,
+                ry,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            })
+            .collect();
         let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
-            prefix_test_map(&regenerated),
+            regenerated_map,
             crate::app::frontend::list_maps::LoadedMapSource::Generated {
                 seed_name: selected.to_ascii_lowercase(),
             },
         );
         let mut request = LoadingRequest::unverified_legacy_skirmish(
-            launch,
+            launch.clone(),
             unverified_seed(0x1212),
             SkirmishSettings::default(),
         )
         .with_accepted_random_map(Some(accepted));
 
         request.prepare_scenario_prefix_plan(&initial).unwrap();
-        let final_starts = request
+        let plan = request
             .scenario_prefix_plan()
             .expect("generated launch prepares a required prefix")
+            .clone();
+        let final_starts = plan
             .final_gathered_starts()
             .iter()
             .map(|waypoint| (waypoint.index as u8, waypoint.rx, waypoint.ry))
@@ -2534,6 +2568,88 @@ mod tests {
         assert_eq!(final_starts, staged);
         assert_ne!(final_starts, preview_waypoints);
         assert_ne!(final_starts, regenerated);
+        let active_starts = crate::map::waypoints::multiplayer_start_waypoints(
+            plan.active_scenario_waypoints(),
+        )
+        .into_iter()
+        .map(|waypoint| (waypoint.index as u8, waypoint.rx, waypoint.ry))
+        .collect::<Vec<_>>();
+        assert_eq!(active_starts, staged);
+
+        let assignments = selected_map_start_assignments(&launch, Some(&plan));
+        let composition = build_random_map_loading_composition(
+            &launch,
+            None,
+            [800, 600],
+            Some(DecodedPreview {
+                width: 300,
+                height: 100,
+                rgba: vec![255; 300 * 100 * 4],
+            }),
+            initial.map_data(),
+            plan.active_scenario_waypoints(),
+            &assignments,
+        );
+        assert_eq!(
+            composition
+                .markers
+                .iter()
+                .map(|marker| {
+                    (
+                        marker.waypoint.index as u8,
+                        marker.waypoint.rx,
+                        marker.waypoint.ry,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            staged,
+            "random loading markers read the active Scenario staging copy"
+        );
+
+        let staged_session = crate::app::loading::init::scenario_start_waypoints_for_load(
+            initial.map_data(),
+            Some(&plan),
+        );
+        let regenerated_session = crate::app::loading::init::scenario_start_waypoints_for_load(
+            initial.map_data(),
+            None,
+        );
+        assert_eq!(
+            staged_session
+                .iter()
+                .map(|(&index, &(rx, ry))| (index as u8, rx, ry))
+                .collect::<Vec<_>>(),
+            staged
+        );
+        assert_ne!(staged_session, regenerated_session);
+        let staged_sim = crate::sim::world::Simulation::from_descriptor(
+            &crate::sim::scenario_session::ScenarioDescriptor {
+                seed: 0x1212,
+                map_width: 256,
+                map_height: 256,
+                mp_start_waypoints: staged_session,
+                ..Default::default()
+            },
+        );
+        let regenerated_sim = crate::sim::world::Simulation::from_descriptor(
+            &crate::sim::scenario_session::ScenarioDescriptor {
+                seed: 0x1212,
+                map_width: 256,
+                map_height: 256,
+                mp_start_waypoints: regenerated_session,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            staged_sim
+                .session
+                .mp_start_waypoints
+                .iter()
+                .map(|(&index, &(rx, ry))| (index as u8, rx, ry))
+                .collect::<Vec<_>>(),
+            staged
+        );
+        assert_ne!(staged_sim.state_hash(), regenerated_sim.state_hash());
         assert!(
             request.accepted_rmg_start_staging.is_none(),
             "accepted setup staging transfers exactly once"
@@ -2880,6 +2996,13 @@ mod tests {
                 ry: 90,
             },
         );
+        let mut launch_map = crate::map::rmg::emit::empty_map_file(
+            &crate::map::rmg::RmgOptions::default(),
+            100,
+            100,
+        );
+        launch_map.cells = map.cells.clone();
+        let active_scenario_waypoints = map.waypoints.clone();
         let generated = crate::map::rmg::GeneratedMap {
             map_file: map,
             mapgen_continuation:
@@ -2911,9 +3034,8 @@ mod tests {
             None,
             [800, 600],
             Some(preview),
-            request
-                .random_map_preview()
-                .map(|retained| &retained.map_file),
+            &launch_map,
+            &active_scenario_waypoints,
             &assignments,
         );
         let prepared = composition.preview.expect("FFA retained preview");

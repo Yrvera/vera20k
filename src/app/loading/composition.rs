@@ -390,15 +390,19 @@ pub(crate) fn build_loading_composition(
 ///
 /// gamemd provenance: DrawLoadingScreen 0x00552D60 loads `RandMap.img` at
 /// 0x00553592/0x00553599, then unconditionally calls compositor 0x00640A40 at
-/// 0x00553687 with launch-scenario waypoints and resolved assignments. Rust's
-/// optional setup preview below is presentation fallback only; it never enters
-/// map loading or start assignment.
+/// 0x00553687 with the active Scenario waypoint array and resolved assignments.
+/// For an accepted RMG launch, Full Init copied setup staging into that array
+/// before `.SED` regeneration; the regenerated map supplies current playfield
+/// bounds, but its waypoint table does not replace that earlier active copy.
+/// Rust's optional setup preview below is presentation fallback only; it never
+/// enters map loading or start assignment.
 pub(crate) fn build_random_map_loading_composition(
     session: &SkirmishLaunchSession,
     csf: Option<&CsfFile>,
     render_size: [u32; 2],
     preview_image: Option<DecodedPreview>,
-    preview_map: Option<&MapFile>,
+    launch_map: &MapFile,
+    active_scenario_waypoints: &HashMap<u32, Waypoint>,
     assignments: &[LoadingStartAssignment],
 ) -> LoadingCompositionSnapshot {
     let region = mmpb_region_rect(render_size[0]);
@@ -407,12 +411,10 @@ pub(crate) fn build_random_map_loading_composition(
         .filter(valid_preview_buffer)
         .and_then(|mut image| {
             let fit = aspect_fit_preview(region, image.width, image.height)?;
-            if let Some(map) = preview_map {
-                let prefix = native_loading_waypoint_prefix(&map.waypoints);
-                if let Some(bounds) = projected_playfield_bounds(map) {
-                    burn_black_start_indicators(&mut image, &prefix, bounds);
-                    markers = build_mmpb_marker_records(&prefix, assignments, bounds, region, fit);
-                }
+            let prefix = native_loading_waypoint_prefix(active_scenario_waypoints);
+            if let Some(bounds) = projected_playfield_bounds(launch_map) {
+                burn_black_start_indicators(&mut image, &prefix, bounds);
+                markers = build_mmpb_marker_records(&prefix, assignments, bounds, region, fit);
             }
             Some(PreparedLoadingPreview { image, region, fit })
         });
@@ -981,12 +983,18 @@ mod tests {
             ("LoadBrief:USA", "A briefing."),
             ("GUI:LoadingEx", "Loading..."),
         ]);
+        let map = crate::map::rmg::emit::empty_map_file(
+            &crate::map::rmg::RmgOptions::default(),
+            32,
+            32,
+        );
         let composition = build_random_map_loading_composition(
             &test_launch_session(),
             Some(&csf),
             [800, 600],
             None,
-            None,
+            &map,
+            &map.waypoints,
             &[],
         );
 
@@ -1009,12 +1017,18 @@ mod tests {
             height: 80,
             rgba: vec![255; 200 * 80 * 4],
         };
+        let map = crate::map::rmg::emit::empty_map_file(
+            &crate::map::rmg::RmgOptions::default(),
+            32,
+            32,
+        );
         let composition = build_random_map_loading_composition(
             &test_launch_session(),
             None,
             [800, 600],
             Some(image),
-            None,
+            &map,
+            &map.waypoints,
             &[],
         );
 
@@ -1145,7 +1159,8 @@ mod tests {
             Some(&csf),
             [800, 600],
             Some(image),
-            Some(&map),
+            &map,
+            &map.waypoints,
             &assignments,
         );
 

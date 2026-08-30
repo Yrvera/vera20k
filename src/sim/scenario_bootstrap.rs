@@ -329,6 +329,11 @@ pub(crate) enum StockOfflineStartCallbackFamily {
 /// assignment are projected later; projection is deliberately draw-free.
 #[derive(Debug, Clone)]
 pub(crate) struct PreFillScenarioPrefixPlan {
+    /// Raw active Scenario waypoint table after the authored read or accepted
+    /// RMG staging copy. Gather may derive fallback cells from this table, but
+    /// loading markers and the live Scenario/session owner retain these exact
+    /// entries rather than the Gather result or regenerated `.SED` table.
+    active_scenario_waypoints: HashMap<u32, Waypoint>,
     first_gathered_starts: Vec<Waypoint>,
     final_gathered_starts: Vec<Waypoint>,
     assignment: NativeStartAssignment,
@@ -372,6 +377,10 @@ pub(crate) enum PreFillScenarioPrefixPlanError {
 }
 
 impl PreFillScenarioPrefixPlan {
+    pub(crate) fn active_scenario_waypoints(&self) -> &HashMap<u32, Waypoint> {
+        &self.active_scenario_waypoints
+    }
+
     #[cfg(test)]
     pub(crate) fn first_gathered_starts(&self) -> &[Waypoint] {
         &self.first_gathered_starts
@@ -512,6 +521,7 @@ pub(crate) fn prepare_stock_offline_scenario_prefix_plan(
     let after_second_house_pass = scenario_rng_after.clone();
 
     Ok(PreFillScenarioPrefixPlan {
+        active_scenario_waypoints: start_waypoints.clone(),
         first_gathered_starts,
         final_gathered_starts,
         assignment,

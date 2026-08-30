@@ -36,7 +36,7 @@ closure gates. A transaction may supply part of more than one mechanism, and a m
 more than one transaction; neither fact permits a mechanism to inherit another row's pass.
 
 Current implementation baseline is freshly fetched `origin/main` commit
-`5062bceaf15fe5139218d7f3375d34cc8e1d6139` (2026-08-30), with PR #170 merge
+`33a91dae6108868ed8dd52640ca9ec0f387a8e7b` (2026-08-30), with PR #170 merge
 `f4baff6e` confirmed as an ancestor. PR #170 merged P0, transaction 1 (load inputs/raw facts), and
 transaction 2 (RMG low-bridge launch construction), including their focused validation and critic
 corrections. Later merged work also changed ground-height ownership, Drive/Ship slope handling,
@@ -50,10 +50,14 @@ transaction is contracted, its builder runs a fresh direct disparity scan agains
 Living status at this baseline is explicit. P0 and transactions 1 and 2 are merged. BR-M02 and
 BR-M03 passed their bounded PR #170 gates but remain subject to the final reverse audit. BR-M01,
 BR-M06, and BR-M24 have landed contributions but remain open at their routed later consumer or
-reverse-audit gates. P0-R1 is reopened as the next prerequisite. Every other required contribution
-remains open, and GSI-04.12, GSI-04.13, GSI-04.14, and GSI-04.15 remain aggregate-open until all of
-their mechanisms and cross-system consumers pass. This ledger is replaced with current evidence
-after each merged transaction rather than appended as historical prose.
+reverse-audit gates. P0-R1 is the active transaction: its first fresh implementation critic reopened
+accepted-RMG active-waypoint ownership because the builder retained staging for Gather but let the
+regenerated table own loading markers and session/hash. The correction now routes the consumed-once
+active Scenario copy through both consumers; P0-R1 remains open until a subsequent fresh critic
+passes and its PR merges. Every other required contribution remains open, and GSI-04.12, GSI-04.13,
+GSI-04.14, and GSI-04.15 remain aggregate-open until all of their mechanisms and cross-system
+consumers pass. This ledger is replaced with current evidence after each merged transaction rather
+than appended as historical prose.
 
 The completed P0-R1 reinvestigation disproves Revision 9's eligible/ineligible split. Current `main`
 does not reproduce the active stock-offline prefix even when a `PreloadedBattleStartPlan` exists:
@@ -318,14 +322,18 @@ Setup acceptance extracts only those staged start entries plus explicit
 `AcceptedRmgStartStaging` provenance into a consumed-once loading value. Preview terrain, MapGen
 continuation, constructor bindings, and display entities remain presentation/file artifacts and are
 not carried as gameplay authority. Loading consumes the staged-start value exactly once when making
-the prefix plan. A cancelled/replaced preview, authored map, fresh external `.SED`, regenerated
-waypoint inference, construction-trace presence, or unsupported generated/mode combination cannot
-manufacture or borrow this provenance. This gate is independent of the later generated-vs-authored
-overlay load-source discriminator.
+the prefix plan, which retains a raw active-Scenario waypoint table independently of both Gather
+vectors. Random-map loading markers and the live `ScenarioDescriptor` start table read this retained
+copy; `.SED` regeneration may supply the launch map and playfield bounds but cannot retroactively
+replace the active starts already copied by Full Init. A cancelled/replaced preview, authored map,
+fresh external `.SED`, regenerated waypoint inference, construction-trace presence, or unsupported
+generated/mode combination cannot manufacture or borrow this provenance. This gate is independent
+of the later generated-vs-authored overlay load-source discriminator.
 
-The plan contains the complete logical pre-state/fingerprint `S0`, pass-1 House outcomes for
-equivalence checking only, both Gather outcomes, final assignments, pass-2 House outcomes as the
-sole live-House projection source, and complete post-state/cursor `S1`.
+The plan contains the complete logical pre-state/fingerprint `S0`, the retained raw active-Scenario
+waypoint table, pass-1 House outcomes for equivalence checking only, both Gather outcomes, final
+assignments, pass-2 House outcomes as the sole live-House projection source, and complete
+post-state/cursor `S1`.
 `MapLoadInitial` creates one `ScenarioBootstrapRng` from the same match seed, requires exact full-state
 equality with `S0`, installs `S1` once, and rejects a second installation because the pre-state no
 longer matches. The plan exposes no RNG interface and is consumed from `LoadingRequest`; later House
@@ -860,8 +868,9 @@ Required fixture families:
 - source mapping fixtures: Loose and Mix map to authored Mark; Generated maps to materialized/no-Mark
   even with missing or empty construction trace; LegacyFallback and untyped Generic reject rather
   than guessing; accepted generated start staging is distinct from both map source and trace,
-  consumed once, and cannot be inferred from a cancelled/replaced preview, authored map, external
-  `.SED`, regenerated waypoints, or generated construction events;
+  consumed once, retained as the active Scenario start table for loading markers and session/hash,
+  and cannot be inferred from a cancelled/replaced preview, authored map, external `.SED`,
+  regenerated waypoints, or generated construction events;
 - one interleaved authored OverlayPack fixture where an earlier low trigger writes cells and a later
   packed coordinate observes/overwrites them, including a high anchor in the same y/x traversal;
   then a conflicting OverlayData byte must win before the final global Recalc produces the exact Road,

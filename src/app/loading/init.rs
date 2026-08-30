@@ -836,6 +836,25 @@ impl MapLoadInitial {
     }
 }
 
+/// Snapshot the active Scenario multiplayer-start table into the live session.
+///
+/// Authored loads retain their parsed waypoint table. Accepted RMG loads have
+/// already copied setup staging into the active Scenario array before `.SED`
+/// regeneration, so the prefix plan—not regenerated map content—owns these
+/// eight entries for loading markers, save/restore, and deterministic hashing.
+pub(crate) fn scenario_start_waypoints_for_load(
+    map_data: &MapFile,
+    scenario_prefix_plan: Option<&PreFillScenarioPrefixPlan>,
+) -> BTreeMap<u32, (u16, u16)> {
+    let active_waypoints = scenario_prefix_plan
+        .map(PreFillScenarioPrefixPlan::active_scenario_waypoints)
+        .unwrap_or(&map_data.waypoints);
+    waypoints::multiplayer_start_waypoints(active_waypoints)
+        .into_iter()
+        .map(|waypoint| (waypoint.index, (waypoint.rx, waypoint.ry)))
+        .collect()
+}
+
 fn replay_launch_generated_construction(
     bootstrap_rng: &mut ScenarioBootstrapRng,
     trace: Option<&crate::map::rmg::RmgConstructionTrace>,
@@ -1131,10 +1150,10 @@ impl MapLoadInitial {
             local_top: map_data.header.local_top as u16,
             local_width: map_data.header.local_width as u16,
             local_height: map_data.header.local_height as u16,
-            mp_start_waypoints: waypoints::multiplayer_start_waypoints(&map_data.waypoints)
-                .into_iter()
-                .map(|waypoint| (waypoint.index, (waypoint.rx, waypoint.ry)))
-                .collect(),
+            mp_start_waypoints: scenario_start_waypoints_for_load(
+                &map_data,
+                Some(scenario_prefix_plan),
+            ),
             lighting: crate::sim::scenario_session::ScenarioLightingState::new(
                 crate::sim::scenario_session::ScenarioLightProfileUnits {
                     ambient_percent: lighting_profiles.normal.ambient_percent,
@@ -2068,10 +2087,10 @@ pub(crate) fn load_map_from_initial(
         local_top: map_data.header.local_top as u16,
         local_width: map_data.header.local_width as u16,
         local_height: map_data.header.local_height as u16,
-        mp_start_waypoints: waypoints::multiplayer_start_waypoints(&map_data.waypoints)
-            .into_iter()
-            .map(|wp| (wp.index, (wp.rx, wp.ry)))
-            .collect(),
+        mp_start_waypoints: scenario_start_waypoints_for_load(
+            &map_data,
+            scenario_prefix_plan.as_ref(),
+        ),
         lighting: crate::sim::scenario_session::ScenarioLightingState::new(
             crate::sim::scenario_session::ScenarioLightProfileUnits {
                 ambient_percent: lighting_profiles.normal.ambient_percent,
