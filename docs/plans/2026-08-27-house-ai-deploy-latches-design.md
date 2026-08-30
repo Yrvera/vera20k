@@ -1,8 +1,8 @@
 # Phase 3 successful AI ConstructionYard deploy latches
 
-**Status:** proposed bounded design  
-**Phase/GSI:** Phase 3 / GSI-04.05  
-**Native owner:** `UnitClass__Deploy @ 0x007393C0`, straight-line stores `0x007398FF..0x00739919`  
+**Status:** proposed bounded design
+**Phase/GSI:** Phase 3 / GSI-04.05
+**Native owner:** `UnitClass__Deploy @ 0x007393C0`, straight-line stores `0x007398FF..0x00739919`
 **Research authority:** `docs/research/PHASE3_UNIT_DEPLOY_HOUSE_FLAGS_GHIDRA_REPORT.md`
 
 ## 1. Bounded requirement
