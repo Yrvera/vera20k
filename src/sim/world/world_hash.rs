@@ -432,6 +432,17 @@ impl Simulation {
         )
     }
 
+    /// Test-only provenance probe for the v109 naval BuildConst folds. It
+    /// reconstructs the committed v108 hash layout while retaining every
+    /// earlier schema addition.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            false,
+        )
+    }
+
     fn state_hash_with_schema(
         &self,
         include_lifecycle_v28: bool,
@@ -769,7 +780,7 @@ impl Simulation {
             if include_alternate_base_center_v108 {
                 house.alternate_base_center.hash(hasher);
             }
-            if include_naval_build_const_v109 {
+            if include_naval_build_const_v109 && !house.build_const_order.is_empty() {
                 house.build_const_order.len().hash(hasher);
                 for stable_id in &house.build_const_order {
                     stable_id.hash(hasher);
@@ -1223,7 +1234,7 @@ impl Simulation {
             entity.building_hidden_occupancy.hash(hasher);
             entity.base_reservation_spacing.hash(hasher);
             entity.determines_waypoint_edge.hash(hasher);
-            if include_naval_build_const_v109 {
+            if include_naval_build_const_v109 && entity.build_const_eligible {
                 entity.build_const_eligible.hash(hasher);
             }
             entity.veterancy.hash(hasher);

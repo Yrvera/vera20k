@@ -3021,13 +3021,12 @@ mod tests {
         let owner = sim.interner.intern("AMERICANS");
         let country = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("GACNST");
-        let mut house =
+        let house =
             crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
-        house.build_const_order = vec![9, 3];
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
-        let mut entity = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
+        let entity = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
             9,
             4,
             5,
@@ -3044,10 +3043,25 @@ mod tests {
             5,
             false,
         );
-        entity.build_const_eligible = true;
         sim.substrate.entities.insert(entity);
 
+        let v108_default_hash = sim.state_hash_without_naval_build_const_v109();
+        assert_eq!(
+            sim.state_hash(),
+            v108_default_hash,
+            "empty BuildConst vectors and false membership preserve the v108 hash stream"
+        );
+
+        sim.houses.get_mut(&owner).unwrap().build_const_order = vec![9, 3];
+        sim.substrate
+            .entities
+            .get_mut(9)
+            .unwrap()
+            .build_const_eligible = true;
+
         let ordered_hash = sim.state_hash();
+        let historical_pre_v109 = sim.state_hash_without_naval_build_const_v109();
+        assert_ne!(ordered_hash, historical_pre_v109);
         let historical_pre_v28 = sim.state_hash_before_lifecycle_v28_and_mission_v29();
         let historical_pre_v29 = sim.state_hash_without_mission_v29();
         sim.houses
@@ -3059,6 +3073,11 @@ mod tests {
             sim.state_hash(),
             ordered_hash,
             "stored vector order is hashed"
+        );
+        assert_eq!(
+            sim.state_hash_without_naval_build_const_v109(),
+            historical_pre_v109,
+            "the v108 provenance schema excludes BuildConst acquisition order"
         );
         assert_eq!(
             sim.state_hash_before_lifecycle_v28_and_mission_v29(),
@@ -3085,6 +3104,11 @@ mod tests {
             sim.state_hash(),
             ordered_hash,
             "entity membership is hashed"
+        );
+        assert_eq!(
+            sim.state_hash_without_naval_build_const_v109(),
+            historical_pre_v109,
+            "the v108 provenance schema excludes immutable BuildConst membership"
         );
         assert_eq!(
             sim.state_hash_before_lifecycle_v28_and_mission_v29(),
