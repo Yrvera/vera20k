@@ -27,6 +27,8 @@ mod world_spawn;
 #[cfg(test)]
 mod gsi_04_18_tests;
 #[cfg(test)]
+mod house_ai_activation_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod team_script_vm_tests;
@@ -336,6 +338,15 @@ pub(crate) enum MasterFrameTestRung {
     TeamScript,
     FrameCommit,
     PendingDelete,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HouseAiActivationOrderTestEvent {
+    ProductionCompleted,
+    HouseActivation,
+    DefeatProcessed,
+    AiGenerated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -716,6 +727,10 @@ pub struct Simulation {
     #[cfg(test)]
     #[serde(skip)]
     master_frame_test_trace: Vec<MasterFrameTestRung>,
+    /// Focused ordering observer for the bounded House-update activation seam.
+    #[cfg(test)]
+    #[serde(skip)]
+    house_ai_activation_order_test_trace: Vec<HouseAiActivationOrderTestEvent>,
     /// Sound events produced during the current tick and moved into the owned
     /// app-frame output batch.
     #[serde(skip)]
@@ -2965,6 +2980,8 @@ impl Simulation {
             trigger_effects: Vec::new(),
             #[cfg(test)]
             master_frame_test_trace: Vec::new(),
+            #[cfg(test)]
+            house_ai_activation_order_test_trace: Vec::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
             invulnerability_impact_effects: Vec::new(),
@@ -3906,6 +3923,18 @@ impl Simulation {
     #[cfg(test)]
     fn trace_master_frame_rung(&mut self, rung: MasterFrameTestRung) {
         self.master_frame_test_trace.push(rung);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_house_ai_activation_order_test_trace(
+        &mut self,
+    ) -> Vec<HouseAiActivationOrderTestEvent> {
+        std::mem::take(&mut self.house_ai_activation_order_test_trace)
+    }
+
+    #[cfg(test)]
+    fn trace_house_ai_activation_order(&mut self, event: HouseAiActivationOrderTestEvent) {
+        self.house_ai_activation_order_test_trace.push(event);
     }
 
     /// Returns true if the given house name is human-controlled.
@@ -5306,6 +5335,30 @@ impl Simulation {
         self.apply_active_vision_structures(&effects);
     }
 
+    /// Visit the live House registry for the early AI-activation transition.
+    ///
+    /// gamemd-derived: `LogicClass__PerTickUpdate @ 0x0055AFB0`, House loop
+    /// `0x0055B68D..0x0055B6B1`, walks the House array forward, skips nulls,
+    /// and reloads the live count after every `HouseClass__Update @ 0x004F8440`
+    /// call. The bounded Rust transition is the verified update block
+    /// `0x004F8564..0x004F85B7`.
+    fn update_house_ai_activation_latches(&mut self, rules: &RuleSet) {
+        let game_mode_nonzero = self.session.game_mode_nonzero;
+        let iq_production = rules.general.iq_production;
+        let mut index = 0;
+        while index < self.session.house_order.len() {
+            let owner = self.session.house_order[index];
+            if let Some(house) = self.houses.get_mut(&owner) {
+                house.update_ai_activation(game_mode_nonzero, iq_production);
+            }
+            index += 1;
+        }
+        #[cfg(test)]
+        self.trace_house_ai_activation_order(
+            HouseAiActivationOrderTestEvent::HouseActivation,
+        );
+    }
+
     fn refresh_fog(
         &mut self,
         path_grid: Option<&PathGrid>,
@@ -6015,6 +6068,10 @@ impl Simulation {
         self.trace_master_frame_rung(MasterFrameTestRung::Houses);
         if let Some(rules) = rules {
             self.reconcile_active_vision_structures(rules);
+            // Factory/production work has already completed in Phase 7. This
+            // early House update follows vision reconciliation and precedes
+            // both defeat processing and strategic AI command generation.
+            self.update_house_ai_activation_latches(rules);
         }
         // --- Phase 8: Defeat detection (runs BEFORE AI) ---
         // gamemd evaluates each house's defeat before its AI manage/produce step,
@@ -6024,6 +6081,10 @@ impl Simulation {
         // flagged defeated via its is_defeated gate.
         if self.session.tick > 0 {
             self.check_defeat(rules);
+            #[cfg(test)]
+            self.trace_house_ai_activation_order(
+                HouseAiActivationOrderTestEvent::DefeatProcessed,
+            );
         }
 
         // --- Phase 8 (cont.): AI ---
@@ -6041,6 +6102,8 @@ impl Simulation {
                 height_map,
                 overlay_registry,
             );
+            #[cfg(test)]
+            self.trace_house_ai_activation_order(HouseAiActivationOrderTestEvent::AiGenerated);
             self.ai_players = ai_state;
             let mut ai_tail_path_grid = path_grid
                 .cloned()
@@ -7246,6 +7309,10 @@ impl Simulation {
                 height_map,
                 phase_six_path_grid,
                 overlay_registry,
+            );
+            #[cfg(test)]
+            self.trace_house_ai_activation_order(
+                HouseAiActivationOrderTestEvent::ProductionCompleted,
             );
             production::tick_repairs(self, rules);
             building_dock::tick_building_docks(self, rules);
