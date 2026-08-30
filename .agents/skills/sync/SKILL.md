@@ -18,7 +18,8 @@ There is no long-lived `dev` branch.
 
 - Require a clean working tree before switching branches or updating refs.
 - Fetch with pruning before drawing conclusions.
-- Use fast-forward-only pulls and merges. Never rebase, reset, amend, or force-push.
+- Use fast-forward-only pulls. Never rebase, reset, amend, or force-push. The only
+  non-fast-forward merge allowed is the owned PR-conflict flow below.
 - Never commit or push directly to `main`; it moves through reviewed PRs or an
   explicit user-owned GitHub action.
 - Never push an unpublished/local-ahead feature branch without user authorization.
@@ -102,7 +103,8 @@ feature/merged-task     [origin/...]  0 unique commits — delete candidate
 - **DELETE CANDIDATE** — branch has zero unique commits versus `main`, or the user
   explicitly wants a remote-only deletion while retaining a proven local copy.
 - **ANOMALY** — divergence, missing commits, unclear ownership, dirty state, or a
-  protected-branch mismatch. Stop and request direction.
+  protected-branch mismatch. Stop and request direction unless an owned PR conflict
+  meets every gate in the conflict flow below.
 
 ## 4. Execute safe catch-up
 
@@ -120,9 +122,25 @@ git switch feature/<topic>
 git pull --ff-only
 ```
 
-If `--ff-only` refuses, stop. Do not substitute a merge commit or rebase.
+If `--ff-only` refuses, stop. Do not substitute a merge commit or rebase except through
+the owned PR-conflict flow below.
 
-## 5. Clean up confirmed branches
+## 5. Resolve an owned PR conflict
+
+Use this only when an open, publication-authorized PR reports an actual conflict with
+`main`. The current task must own the clean feature worktree and branch, or be its
+explicit continuation owner. Fetch first and verify the PR base, head, and current
+`origin/main`; otherwise stop.
+
+Merge current `origin/main` into the feature branch without rebasing or force-pushing.
+Resolve each conflict from both sides' intended behavior; do not accept `ours` or `theirs`
+wholesale without inspecting and justifying that conflicted file. If ownership is unclear
+or the conflict expands beyond the transaction, abort the merge and report the boundary.
+Otherwise rerun affected validation, obtain fresh critic review when behavior or evidence
+changed, ensure final PR certification covers the resolved tree, commit the merge, and
+push normally. Never leave a merge in progress.
+
+## 6. Clean up confirmed branches
 
 After rechecking unique commits and worktree ownership:
 
@@ -147,7 +165,7 @@ For worktree removal, first run the local-only backup preflight and the bundled
 cleanup check. `git worktree remove --force` is forbidden while the check reports
 external reparse points, dirty files, or unclassified ignored content.
 
-## 6. Verify and report
+## 7. Verify and report
 
 Verify exact local/remote tips, absence of deleted refs, a clean working tree, and no
 unexpected branch switch. Report kept, updated, deleted, skipped, and unpublished
