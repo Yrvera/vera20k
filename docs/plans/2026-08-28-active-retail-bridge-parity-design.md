@@ -8,7 +8,7 @@ The result must preserve behavior that already matches, replace behavior that co
 
 ## Status and Scope Decision
 
-**Revision 13 after the fourth 2026-08-30 REVISE design-review verdict; pending a new fresh re-review. No further Rust implementation is authorized by this document until that review passes.**
+**Revision 14 after the fifth 2026-08-30 REVISE design-review verdict; pending a new fresh re-review. No further Rust implementation is authorized by this document until that review passes.**
 
 Discovery is frozen by `docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a`. Ten successive read-only omission audits expanded the boundary to 27 mechanism rows and 31 explicit open questions; the tenth pass added nothing.
 
@@ -331,7 +331,8 @@ exclusion rather than widening the trace for dormant RMG-shaped code.
 3. On the authored Full_Init arm, parse explicit `[Tubes]` after Fill and before overlays. Keep them
    independent of low Road behavior; classify automatic same-cell shells from final theater land data
    without synthesizing traversal.
-4. When native `NewINIFormat > 1` permits the pack reader, execute one decoded OverlayPack traversal,
+4. When native `NewINIFormat > 1` permits the pack reader, create one map-native
+   `FinalizedOverlayPayload` and execute one decoded OverlayPack traversal,
    `y=0..511` outer then `x=0..511` inner. Each coordinate completes synchronously before the next:
    ordinary overlays run ordinary Mark, the four high anchors run their high structural stamp, and
    the eight low procedural triggers run the exact low Mark transaction on the same Scenario cursor
@@ -341,22 +342,33 @@ exclusion rather than widening the trace for dormant RMG-shaped code.
    overwrite each allocated/in-bounds cell's state byte. Then run the whole-map `RecalcAttributes`
    pass before Terrain and authored Unit/Aircraft/Infantry/Structure construction. Every procedural
    write still recalculates immediately in step 4; the final Recalc projects the later data overwrite.
-6. On generated `.SED`, the early synthetic Full_Init defaults `NewINIFormat` to `0`, so steps 4/5
-   are inert. Later preserve the generator's complete direct three-wide overlay/data rectangle and
-   skip authored high/low Mark entirely. The explicit successful `.SED`/generated provenance, not
-   overlay ids or construction-trace presence, selects this arm.
-7. Rebuild records, zones and hierarchy only at the verified load boundary established by units 1,
+6. The completed map pass retains the exact final identity/state vector inside
+   `ResolvedTerrainGrid` as its consumed-once `FinalizedOverlayPayload`; its Recalc-derived Land,
+   zone, cache and bridge facts are already the projection of those bytes. App orchestration moves
+   that payload into `sim::overlay_grid::OverlayGrid::from_finalized_map_payload` one-for-one. That
+   constructor accepts no OverlayPack, OverlayDataPack, registry or Scenario interface and performs
+   no Mark, filtering, Recalc or second decode. Thus runtime overlay authority begins from the same
+   procedural fixed/body identities and post-OverlayData state bytes that produced resolved terrain.
+   The existing production `OverlayGrid::from_native_overlay_packs` rebuild is removed from this
+   handoff; later native Terrain-object clearing and gameplay mutations continue through the ordinary
+   synchronized OverlayGrid/ResolvedTerrain mutation owners.
+7. On generated `.SED`, the early synthetic Full_Init defaults `NewINIFormat` to `0`, so steps 4/5
+   are inert. Later preserve the generator's complete direct three-wide overlay/data rectangle in the
+   same finalized-payload shape and skip authored high/low Mark entirely. The explicit successful
+   `.SED`/generated provenance, not overlay ids or construction-trace presence, selects this arm.
+8. Rebuild records, zones and hierarchy only at the verified load boundary established by units 1,
    3, 4 and 5.
 
-The app layer owns one explicit `ScenarioLoadContextDescriptor`, orthogonal to physical map source.
-`LoadingRequest` creates it from proven startup/session/replay/stream provenance and
-`MapLoadInitial` carries it through the load. Its normalized prefix kind is one of stock offline,
-campaign, LAN, WOL-state-2, replay-with-recorded-family, or stream restore; it contains only the
-roster/mode/House/start inputs the simulation prefix needs. Network transport, replay I/O and UI
-session types remain in `app`; `sim::scenario_bootstrap` receives the normalized kind and inputs,
-not app or networking dependencies. A seedless/generic current Rust entry may not guess stock
-offline: a surface without proved context provenance returns an explicit unsupported-load-context
-result and cannot enter authored Mark. Tests and headless callers must supply a typed context.
+The app layer owns one explicit `FreshScenarioLoadContextDescriptor`, orthogonal to physical map
+source. `LoadingRequest` creates it only for a fresh scenario from proven startup/session/replay
+provenance, and `MapLoadInitial` carries it through that fresh-map load. Its normalized prefix kind
+is one of stock offline, campaign, LAN, WOL-state-2, or replay-with-recorded-family; it contains only
+the roster/mode/House/start inputs the simulation prefix needs. Stream restore is deliberately not a
+variant. Network transport, replay I/O and UI session types remain in `app`;
+`sim::scenario_bootstrap` receives the normalized fresh kind and inputs, not app or networking
+dependencies. A seedless/generic current Rust entry may not guess stock offline: a fresh-load surface
+without proved context provenance returns an explicit unsupported-load-context result and cannot
+enter authored Mark. Tests and headless callers must supply a typed fresh context.
 
 The actual app source enum is `LoadedMapSource::{Loose, Mix, Generated, LegacyFallback}`. App loading
 derives the map-layer `OverlayLoadSource` exactly once and carries it explicitly:
@@ -374,6 +386,13 @@ Battle id `1` or FFA id `2`, with explicit accepted-preview start staging; arbit
 combinations and fresh external `.SED` injection are rejected. An authored campaign/LAN/WOL/replay
 source can run Mark when `NewINIFormat > 1`; stream restore never runs Full_Init or Mark.
 
+Persistence owns a separate `ScenarioRestoreContext`/equivalent no-Mark guard. It is created only by
+the snapshot reader, never enters `LoadingRequest`, `MapLoadInitial`, the fresh prefix dispatcher or
+the map pack routine, and applies the proved seed-zero Scenario poststate while transaction 21
+reinstalls serialized authoritative overlay/runtime state and rebuilds only verified derived state.
+There is no conversion from restore context to fresh-load descriptor. A regression fixture must fail
+if restore invokes any Full_Init, Fill, OverlayPack Mark or fresh constructor-prefix entry.
+
 `ScenarioBootstrapRng` remains the sole cursor owner. After Fill returns, app orchestration retains a
 non-clonable borrowed raw-only adapter from `sim::scenario_bootstrap`, but **no sim type crosses into
 `map`**. The app invokes the map-owned inline OverlayPack routine with a map-native
@@ -382,7 +401,9 @@ clone, reseed or import `sim`; it can only request the next raw word at the exac
 Inline processing applies `raw & 3` exactly `3*L` times on successful procedural body writes and
 zero on every fixed/search/no-op/failure arm, then app releases the same borrow before authored
 Techno construction. `src/map/overlay.rs` or the narrow low-Mark owner owns the recovered tables and
-loop; `src/map/resolved_terrain.rs` owns overlay/state mutation and Recalc projection, not Scenario.
+loop; `src/map/resolved_terrain.rs` owns the map-native finalized payload, overlay/state mutation and
+Recalc projection, not Scenario. `sim::overlay_grid` may depend on and consume the map payload;
+`map` never depends on `sim`.
 
 Every invalid coordinate returned by the native lookup aliases one persistent shared dummy across
 the whole pass. Transaction 3 therefore extends the existing `SharedCellDummy` owner with the
@@ -539,7 +560,7 @@ architecture layers and not mechanism pass gates.
 |---|---|---|---|
 | 1 | Theater/rules/assets, raw flags, automatic-shell theater classification, TIBTRE mask preservation | BR-M01, BR-M06, BR-M24 | exact ten piece keys; raw-mask fixtures; automatic-shell corpus verdict; TIBTRE rejects `0x500`; retain raw SpecialFlags/session inputs for unit 10 |
 | 2 | Active RMG preview/accept/`.SED` launch lifecycle, low deck/end/CABHUT production, and waterfall-topology exclusion | BR-M02, BR-M03 | P0 and unit 1; `7fee6929`, `4a63fa15`, `f1e6054b`, `a776f270`; fresh MapGen per run; first-entry/re-entry and no-preview gates; location-free discarded trace events; one launch `ScenarioBootstrapRng`; validated `GeneratedTechnoInitTable`; active-phase-only trace; complete stamped output; no generated Mark replay; `BuildRiverBridge` negative characterization |
-| 3 | Fixed-map low overlay procedural load and Road mutation | BR-M05, BR-M11 | P0/P0-R1 and unit 1; complete active load-context cursor audit; Lost Lake/Killer plus destroyed low fixture; exact `NewINIFormat` activation; generated-source bypass preserving its full direct deck payload and zero Mark draws |
+| 3 | Shared authored OverlayPack/OverlayData/global-Recalc pass, fixed-map low procedural load and Road mutation | BR-M04 (shared high-load contribution only), BR-M05, BR-M11 | P0/P0-R1 and unit 1; complete active load-context cursor audit; exact y/x high/low interleaving and finalized-payload handoff; Lost Lake/Killer plus destroyed low fixture; exact `NewINIFormat` activation; generated-source bypass preserving its full direct deck payload and zero Mark draws |
 | 4 | High topology, records, zones, hierarchy and edge restamp | BR-M04, BR-M10, BR-M17 | unit 1; Bay of Pigs/Hills and Deadman's Ridge |
 | 5 | Explicit TubeClass load/hierarchy/direction-8/persistence and automatic-shell non-traversal | BR-M12, part of BR-M22 | units 1/4; sealed valid custom tube fixture; zero-length shell negative case |
 | 6 | Dual occupancy, entry, A*, peer markers and locomotor transitions | BR-M07, BR-M09, BR-M13 | units 4/5; deck, under-span, ramp, gap |
@@ -572,7 +593,7 @@ recriticized from its full requirement rather than only the replacement's last d
 | BR-M01 | 1 and 10 |
 | BR-M02 | 2 |
 | BR-M03 | 2 (negative characterization) |
-| BR-M04 | 4 |
+| BR-M04 | 3 (shared high OverlayPack/OverlayData/global-Recalc contribution) and 4 |
 | BR-M05 | 3 |
 | BR-M06 | 1 |
 | BR-M07 | 6 |
@@ -602,6 +623,15 @@ questions, and negative facts are exact and a critic who did not build it return
 finding. Split rows therefore remain open after an early transaction. Bundled transactions must be
 decomposed into reviewable mechanism-scoped deltas or a separately named prerequisite commit; a
 shared commit never grants a shared pass.
+
+BR-M04's persistent builder begins its shared high-load contribution in transaction 3 and continues
+the same mechanism through transaction 4. Transaction 3 cannot close BR-M04. Its evidence/output
+bundle must nevertheless include the native interleaving, OverlayData/global-Recalc order,
+finalized-payload handoff and high-anchor retail preservation fixtures; BR-M05's fresh critic checks
+that contribution for escaped high-load regressions. After transaction 4, a different fresh critic
+receives BR-M04's complete transactions-3-and-4 requirement, native evidence, cumulative diff and
+validation output. Neither the BR-M05 pass nor the earlier preservation check substitutes for that
+full BR-M04 critic gate.
 
 ### Open-question routing
 
@@ -764,12 +794,13 @@ Required fixture families:
   deficient default-cell inputs, zero-draw reset, accepted-RMG staging provenance permitted only for
   Battle id `1`/FFA id `2`, rejection for other generated/mode combinations, exact full-state single
   installation, duplicate/tampered rejection, and draw-free later assignment projection;
-- typed non-offline load-context fixtures: campaign single House pass and no Gather; LAN full
+- typed non-offline fresh-load-context fixtures: campaign single House pass and no Gather; LAN full
   House1/`+0x80`/selected-`+0x84`/reset/House2 sequence; WOL full House1/`+0x80`/common-assignment/
   reset/House2 sequence with both gated chooser arms; replay adds zero before its recorded family;
-  stream restore performs no Mark and ends Scenario at seed zero; a generic unsupported context
-  cannot guess stock offline; and generated `.SED` retains the stock-offline prefix while its source
-  provenance suppresses Mark;
+  a generic unsupported fresh context cannot guess stock offline; and generated `.SED` retains the
+  stock-offline prefix while its source provenance suppresses Mark; a separate persistence fixture
+  proves restore has no fresh descriptor, Full_Init, Fill, prefix or Mark call and ends Scenario at
+  seed zero;
 - authored low-Mark raw-seam fixtures bracketing full cursor states after prefix, after Fill, after
   exact `3*L` `raw & 3` writes, and before the first authored Techno; fixed/search/no-op/failure arms
   draw zero, and no ranged helper or cloned cursor is accepted;
@@ -779,7 +810,10 @@ Required fixture families:
 - one interleaved authored OverlayPack fixture where an earlier low trigger writes cells and a later
   packed coordinate observes/overwrites them, including a high anchor in the same y/x traversal;
   then a conflicting OverlayData byte must win before the final global Recalc produces the exact Road,
-  LAT/CliffBack, zone and compact-cache result with no per-cell radar dirty or Tube creation;
+  LAT/CliffBack, zone and compact-cache result with no per-cell radar dirty or Tube creation; assert
+  exact identity/data through `ResolvedTerrainGrid`'s finalized payload before transfer and through
+  runtime `OverlayGrid` after consumed-once direct installation, while an instrumented production
+  handoff proves zero second pack decode, Mark or Recalc;
 - low-Mark adversarial geometry fixtures for adjacent endpoints, first of two exact opposites, wrong
   ID/state pass-through, occupied fixed-row successful no-op, missing opposite partial fixed end,
   occupied/missing body overwrite, and edge lookups aliasing one persistent extended dummy in exact
@@ -868,11 +902,14 @@ The preferred approach is distributed exact-delta closure in current owners. It 
   Gather calls, exact default-cell deficient retries, zero-draw reset and explicit generated-staging
   provenance limited to accepted Battle/FFA on one native Scenario stream, and cannot install stale
   state, install twice, or leave a parallel downstream owner;
-- the app-owned load-context descriptor is orthogonal to physical `LoadedMapSource`; Loose/Mix map
+- the app-owned fresh-load-context descriptor is orthogonal to physical `LoadedMapSource` and has no
+  restore variant; persistence owns a separate no-Mark restore context with no conversion into the
+  fresh pipeline; Loose/Mix map
   to authored, Generated maps to materialized even without a trace, LegacyFallback/Generic reject,
   and normalized prefix inputs enter `sim` without app/network dependencies;
 - one y/x OverlayPack traversal interleaves high/low Mark, followed by the complete OverlayData pass
-  and global Recalc before Terrain/Technos;
+  and global Recalc before Terrain/Technos; its map-native finalized identity/data payload transfers
+  consumed-once into runtime `OverlayGrid` without a second pack decode, Mark, filter or Recalc;
 - app retains the one Scenario borrow after Fill and backs a map-native raw-call interface, so `map`
   imports no `sim` type; the same cursor returns before authored Technos with no ranged substitute,
   clone or reseed, and edge writes alias one extended persistent shared dummy;
@@ -883,7 +920,9 @@ The preferred approach is distributed exact-delta closure in current owners. It 
 - P0 has a bounded all-ingress constructor requirement and its merged builder/fresh-critic evidence;
   P0-R1's universal stock-offline prefix correction and fresh critic pass before transaction 3 uses
   that shared Scenario cursor; and transaction 3 preserves the completed campaign/LAN/WOL/replay/
-  save/generated/editor context matrix without an untyped offline fallback.
+  save/generated/editor context matrix without an untyped offline fallback; BR-M04's persistent
+  builder and eventual full critic bundle cover both its transaction-3 shared high-load contribution
+  and transaction 4 rather than inheriting BR-M05's pass.
 
 Until that review passes, implementation remains blocked by design rather than by user authority.
 
