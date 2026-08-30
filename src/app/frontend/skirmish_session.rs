@@ -255,6 +255,7 @@ impl OfflineSkirmishRuntime {
             player_name: session.player_name.clone(),
             local: session.local.clone(),
             opponents: Vec::new(),
+            pre_fill_house_roster: session.pre_fill_house_roster.clone(),
             options: session.options.clone(),
         };
         let cooperative = is_cooperative_mode(session);
@@ -946,6 +947,8 @@ mod tests {
                 team: LaunchTeam::None,
                 difficulty: AiDifficulty::Easy,
             }],
+            pre_fill_house_roster:
+                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
             options: SkirmishLaunchOptions::default(),
         }
     }

@@ -52,6 +52,7 @@ fn launch_session(seed_name: &str) -> SkirmishLaunchSession {
             team: LaunchTeam::None,
             difficulty: AiDifficulty::Easy,
         }],
+        pre_fill_house_roster: crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
         options: SkirmishLaunchOptions::default(),
     }
 }
@@ -368,6 +369,22 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     // through the same retention/request boundary used by Start. The request's
     // production initial-map entry must regenerate from .SED and converge with
     // a direct .SED launch in every generated gameplay fact.
+    let direct_initial = super::loading::init::load_map_initial_with_assets(
+        seed_dir.clone(),
+        &mut assets,
+        Some(seed_name),
+        &mut SilentProgress,
+    )
+    .expect("direct .SED launch regeneration");
+    let accepted_start_waypoints: Vec<_> = (0..crate::skirmish_launch::SKIRMISH_PLAYER_SLOT_COUNT)
+        .filter_map(|slot| {
+            direct_initial
+                .map_data()
+                .waypoints
+                .get(&(slot as u32))
+                .map(|waypoint| (slot as u8, waypoint.rx, waypoint.ry))
+        })
+        .collect();
     let mut poison_options = options.clone();
     poison_options.seed = 0x7BAD;
     let mut poison_map = crate::map::rmg::emit::empty_map_file(&poison_options, 32, 32);
@@ -383,7 +400,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         map_file: poison_map,
         mapgen_continuation: RmgRng::new(poison_options.seed_u16()).into_continuation(),
         construction_trace: poison_trace,
-        start_waypoints: vec![(0, 1, 1)],
+        start_waypoints: accepted_start_waypoints,
         stages_run: Vec::new(),
         unfilled_start_slots: 0,
     };
@@ -392,10 +409,10 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     retention.accept_setup(seed_name);
     retention.destroy_map_storage();
     let accepted_poison = retention
-        .take_preview_for_loading(Some(seed_name))
-        .expect("accepted setup transfers presentation preview once");
+        .take_acceptance_for_loading(Some(seed_name))
+        .expect("accepted setup transfers preview and staged starts once");
     let launch = launch_session(seed_name);
-    let ui_request = LoadingRequest::unverified_legacy_skirmish(
+    let mut ui_request = LoadingRequest::unverified_legacy_skirmish(
         launch.clone(),
         crate::match_bootstrap::MatchSeed {
             value: MATCH_SEED,
@@ -404,34 +421,29 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         },
         crate::ui::main_menu::SkirmishSettings::default(),
     )
-    .with_random_map_preview(Some(accepted_poison));
+    .with_accepted_random_map(Some(accepted_poison));
     let ui_initial = ui_request
         .load_initial_with_assets(seed_dir.clone(), &mut assets, &mut SilentProgress)
         .expect("accepted UI .SED launch regeneration");
     let descriptor =
         crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(launch.clone())
             .expect("resolved random-map launch descriptor");
-    let ui_plan = crate::sim::scenario_bootstrap::preload_standard_battle_start_plan(
-        &descriptor,
-        ui_initial.map_data(),
-        MATCH_SEED,
-    )
-    .expect("generated map supplies complete Battle starts");
+    ui_request
+        .prepare_scenario_prefix_plan(&ui_initial)
+        .expect("accepted generated source prepares its mandatory prefix");
+    let ui_plan = ui_request
+        .scenario_prefix_plan()
+        .expect("accepted generated prefix")
+        .clone();
     let ui_launch =
         ui_initial.into_random_map_launch_snapshot(&mut assets, MATCH_SEED, &descriptor, &ui_plan);
-    let direct_initial = super::loading::init::load_map_initial_with_assets(
-        seed_dir.clone(),
-        &mut assets,
-        Some(seed_name),
-        &mut SilentProgress,
-    )
-    .expect("direct .SED launch regeneration");
-    let direct_plan = crate::sim::scenario_bootstrap::preload_standard_battle_start_plan(
+    let direct_plan = crate::sim::scenario_bootstrap::prepare_stock_offline_scenario_prefix_plan(
         &descriptor,
         direct_initial.map_data(),
+        &direct_initial.map_data().waypoints,
         MATCH_SEED,
     )
-    .expect("direct generated map supplies complete Battle starts");
+    .expect("direct generated fixture supplies the same staged start table");
     let direct_launch = direct_initial.into_random_map_launch_snapshot(
         &mut assets,
         MATCH_SEED,

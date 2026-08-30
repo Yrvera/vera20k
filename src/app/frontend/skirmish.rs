@@ -194,6 +194,8 @@ mod tests {
                 team: LaunchTeam::None,
                 difficulty: Default::default(),
             }],
+            pre_fill_house_roster:
+                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
             options: SkirmishLaunchOptions::default(),
         }
     }
@@ -948,51 +950,36 @@ mod tests {
         };
         let map = test_map_with_starts(&[authored]);
         let terrain = test_terrain(64, 64);
-        let mut sim = Simulation::new();
-        sim.scenario_rng = SimRng::new(9);
         let mut session = test_session();
         session.local.start_position = LaunchStartPosition::Position(0);
         session.opponents[0].start_position = LaunchStartPosition::Position(1);
         session.options.bases = false;
         session.options.unit_count = 0;
-        assert!(
-            preload_standard_battle_start_plan(&launch_descriptor(&session), &map, 9).is_none(),
-            "terrain-dependent deficient starts must not guess a loading plan"
+        let plan = prepare_stock_offline_scenario_prefix_plan(
+            &launch_descriptor(&session),
+            &map,
+            &map.waypoints,
+            9,
+        )
+        .expect("deficient starts are resolved before Fill");
+        assert_ne!(
+            plan.first_gathered_starts()[1],
+            plan.final_gathered_starts()[1]
         );
-        assert!(
-            crate::app::loading::pump::selected_map_start_assignments(&session, None).is_empty(),
-            "no exact plan means no colored loading assignment markers"
-        );
-        let bounds = NativeStartBounds::from_session(&sim, &terrain);
-        let playfield_bounds = Some(PlayfieldBounds::from_map_header(&map.header));
-        let empty_occupancy = crate::sim::occupancy::OccupancyGrid::new();
+
+        let mut bootstrap_rng = ScenarioBootstrapRng::new(9);
+        bootstrap_rng
+            .install_pre_fill_scenario_prefix_plan(&plan)
+            .expect("matching pre-Fill prefix");
+        let mut sim =
+            bootstrap_rng.into_simulation(&crate::sim::scenario_session::ScenarioDescriptor {
+                seed: 9,
+                ..Default::default()
+            });
         let mut expected_rng = sim.scenario_rng.clone();
-        let provisional = native_gather_start_positions(
-            &map.waypoints,
-            2,
-            &terrain,
-            &empty_occupancy,
-            bounds,
-            playfield_bounds,
-            Some(map.header.height as i32),
-            sim.session.binary_frame,
-            &mut expected_rng,
-        );
-        let final_starts = native_gather_start_positions(
-            &map.waypoints,
-            2,
-            &terrain,
-            &empty_occupancy,
-            bounds,
-            playfield_bounds,
-            Some(map.header.height as i32),
-            sim.session.binary_frame,
-            &mut expected_rng,
-        );
-        assert_ne!(provisional[1], final_starts[1]);
         let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
 
-        apply_explicit_skirmish_launch_session(
+        apply_pre_fill_scenario_prefix_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1000,6 +987,7 @@ mod tests {
             &test_height_map(),
             &terrain,
             &launch_descriptor(&session),
+            &plan,
         );
 
         assert_eq!(
@@ -1014,7 +1002,10 @@ mod tests {
                 &sim.interner,
             )
             .and_then(|house| house.base_center),
-            Some((final_starts[1].rx, final_starts[1].ry))
+            Some((
+                plan.final_gathered_starts()[1].rx,
+                plan.final_gathered_starts()[1].ry,
+            ))
         );
         assert_eq!(
             sim.scenario_rng.logical_state(),
@@ -1425,9 +1416,13 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let terrain = test_terrain(64, 64);
         let rules = test_standard_launch_rules();
-        let plan =
-            preload_standard_battle_start_plan(&launch_descriptor(&session), &map, launch_seed)
-                .expect("complete standard Battle starts preload");
+        let plan = prepare_stock_offline_scenario_prefix_plan(
+            &launch_descriptor(&session),
+            &map,
+            &map.waypoints,
+            launch_seed,
+        )
+        .expect("complete stock-offline Scenario prefix");
 
         let loading_assignments =
             crate::app::loading::pump::selected_map_start_assignments(&session, Some(&plan));
@@ -1449,7 +1444,7 @@ mod tests {
 
         let mut bootstrap_rng = ScenarioBootstrapRng::new(launch_seed);
         bootstrap_rng
-            .install_preloaded_battle_plan(&plan)
+            .install_pre_fill_scenario_prefix_plan(&plan)
             .expect("fresh launch cursor matches plan prestate");
         let descriptor = crate::sim::scenario_session::ScenarioDescriptor {
             seed: launch_seed,
@@ -1457,17 +1452,17 @@ mod tests {
         };
         let mut sim = bootstrap_rng.into_simulation(&descriptor);
         let mut expected_rng = SimRng::new(u64::from(launch_seed));
-        for _ in 0..4 {
+        for _ in 0..8 {
             let _ = expected_rng
                 .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
         }
         assert_eq!(
             sim.scenario_rng.logical_state(),
             expected_rng.logical_state(),
-            "one human, one AI, Neutral, and Special burn once before loading"
+            "one human, one AI, Neutral, and Special burn twice before loading"
         );
 
-        let result = apply_preloaded_battle_launch_session(
+        let result = apply_pre_fill_scenario_prefix_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),

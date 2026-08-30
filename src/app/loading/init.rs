@@ -25,10 +25,9 @@ use crate::app::loading::init_helpers::{
 };
 use crate::match_bootstrap::LoadingStartup;
 use crate::sim::scenario_bootstrap::{
-    PreloadedBattleStartPlan, ScenarioBootstrapRng,
-    apply_explicit_skirmish_launch_session_with_overlay_registry,
-    apply_preloaded_battle_launch_session_with_overlay_registry, initialize_map_roster_houses,
-    initialize_skirmish_launch_houses,
+    PreFillScenarioPrefixPlan, ScenarioBootstrapRng,
+    apply_pre_fill_scenario_prefix_launch_session_with_overlay_registry,
+    initialize_map_roster_houses, initialize_skirmish_launch_houses,
 };
 
 use crate::assets::asset_manager::AssetManager;
@@ -821,6 +820,39 @@ impl MapLoadInitial {
     pub(crate) fn map_data(&self) -> &MapFile {
         &self.map_data
     }
+
+    pub(crate) fn map_source(&self) -> &LoadedMapSource {
+        &self.map_source
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_map_source(map_data: MapFile, map_source: LoadedMapSource) -> Self {
+        Self {
+            map_data,
+            map_source,
+            mapgen_rng_continuation: None,
+            generated_construction_trace: None,
+        }
+    }
+}
+
+/// Snapshot the active Scenario multiplayer-start table into the live session.
+///
+/// Authored loads retain their parsed waypoint table. Accepted RMG loads have
+/// already copied setup staging into the active Scenario array before `.SED`
+/// regeneration, so the prefix plan—not regenerated map content—owns these
+/// eight entries for loading markers, save/restore, and deterministic hashing.
+pub(crate) fn scenario_start_waypoints_for_load(
+    map_data: &MapFile,
+    scenario_prefix_plan: Option<&PreFillScenarioPrefixPlan>,
+) -> BTreeMap<u32, (u16, u16)> {
+    let active_waypoints = scenario_prefix_plan
+        .map(PreFillScenarioPrefixPlan::active_scenario_waypoints)
+        .unwrap_or(&map_data.waypoints);
+    waypoints::multiplayer_start_waypoints(active_waypoints)
+        .into_iter()
+        .map(|waypoint| (waypoint.index, (waypoint.rx, waypoint.ry)))
+        .collect()
 }
 
 fn replay_launch_generated_construction(
@@ -891,7 +923,7 @@ impl MapLoadInitial {
         asset_manager: &mut AssetManager,
         match_seed: u32,
         match_launch_descriptor: &crate::sim::scenario_bootstrap::MatchLaunchDescriptor,
-        preloaded_battle_start_plan: &PreloadedBattleStartPlan,
+        scenario_prefix_plan: &PreFillScenarioPrefixPlan,
     ) -> RandomMapLaunchSnapshot {
         let MapLoadInitial {
             map_data,
@@ -979,8 +1011,8 @@ impl MapLoadInitial {
             mapgen_rng_continuation.expect("random-map initial receipt carries MapGen"),
         );
         bootstrap_rng
-            .install_preloaded_battle_plan(preloaded_battle_start_plan)
-            .expect("matching preloaded Battle prefix");
+            .install_pre_fill_scenario_prefix_plan(scenario_prefix_plan)
+            .expect("matching stock-offline Scenario prefix");
         let mapgen_continuation = bootstrap_rng
             .logical_states_for_test()
             .2
@@ -1118,10 +1150,10 @@ impl MapLoadInitial {
             local_top: map_data.header.local_top as u16,
             local_width: map_data.header.local_width as u16,
             local_height: map_data.header.local_height as u16,
-            mp_start_waypoints: waypoints::multiplayer_start_waypoints(&map_data.waypoints)
-                .into_iter()
-                .map(|waypoint| (waypoint.index, (waypoint.rx, waypoint.ry)))
-                .collect(),
+            mp_start_waypoints: scenario_start_waypoints_for_load(
+                &map_data,
+                Some(scenario_prefix_plan),
+            ),
             lighting: crate::sim::scenario_session::ScenarioLightingState::new(
                 crate::sim::scenario_session::ScenarioLightProfileUnits {
                     ambient_percent: lighting_profiles.normal.ambient_percent,
@@ -1199,7 +1231,7 @@ impl MapLoadInitial {
             .collect();
         simulation.intern_rule_type_ids(&rules);
         simulation.resolve_type_handles(&rules);
-        let _ = apply_preloaded_battle_launch_session_with_overlay_registry(
+        let _ = apply_pre_fill_scenario_prefix_launch_session_with_overlay_registry(
             &mut simulation,
             &map_data,
             &house_roster,
@@ -1208,7 +1240,7 @@ impl MapLoadInitial {
             &resolved_terrain,
             match_launch_descriptor,
             &overlay_registry,
-            preloaded_battle_start_plan,
+            scenario_prefix_plan,
         );
         let post_map_output = crate::sim::runtime::finalize_constructed_scenario(
             &mut simulation,
@@ -1634,7 +1666,7 @@ pub(crate) fn load_map_from_initial(
     asset_manager: &mut AssetManager,
     initial: MapLoadInitial,
     startup: LoadingStartup,
-    preloaded_battle_start_plan: Option<PreloadedBattleStartPlan>,
+    scenario_prefix_plan: Option<PreFillScenarioPrefixPlan>,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
     theater_cache_mismatch: bool,
     runtime_color_scheme_count: usize,
@@ -1804,12 +1836,23 @@ pub(crate) fn load_map_from_initial(
     if let Some(continuation) = mapgen_rng_continuation {
         bootstrap_rng.install_generated_mapgen_continuation(continuation);
     }
-    if let Some(plan) = preloaded_battle_start_plan.as_ref() {
-        // Native constructs houses and resolves Battle starts before the first
-        // loading composition; terrain Fill continues that same Scenario
-        // stream afterwards. Validate the launch cursor before installing the
-        // immutable pre-render prefix so it can never be consumed twice.
-        bootstrap_rng.install_preloaded_battle_plan(plan)?;
+    match (
+        match_launch_descriptor.as_ref(),
+        scenario_prefix_plan.as_ref(),
+    ) {
+        (Some(_), Some(plan)) => {
+            // Native resolves both House passes and both selected-mode start
+            // callbacks before Fill. Validate and transfer that complete
+            // cursor exactly once before any terrain draw.
+            bootstrap_rng.install_pre_fill_scenario_prefix_plan(plan)?;
+        }
+        (Some(_), None) => {
+            anyhow::bail!("stock offline launch reached Fill without a Scenario prefix plan")
+        }
+        (None, Some(_)) => {
+            anyhow::bail!("generic map load cannot carry a stock offline Scenario prefix plan")
+        }
+        (None, None) => {}
     }
     let (mut scenario_fill_rng, mut variant_main_rng) = bootstrap_rng.terrain_draws();
     let mut scenario_fill_ranged =
@@ -1869,8 +1912,8 @@ pub(crate) fn load_map_from_initial(
     drop(variant_main_rng);
     drop(scenario_fill_rng);
     // Launch-time `.SED` generation already chose all geometry. Replay only
-    // its Techno constructor effects now, after the Full-Init/Battle prefix and
-    // terrain Fill, on the one Scenario owner later moved into Simulation.
+    // its Techno constructor effects now, after the Full-Init stock-offline
+    // prefix and terrain Fill, on the one Scenario owner later moved into Simulation.
     let generated_techno_inits = replay_launch_generated_construction(
         &mut bootstrap_rng,
         generated_construction_trace.as_ref(),
@@ -2044,10 +2087,10 @@ pub(crate) fn load_map_from_initial(
         local_top: map_data.header.local_top as u16,
         local_width: map_data.header.local_width as u16,
         local_height: map_data.header.local_height as u16,
-        mp_start_waypoints: waypoints::multiplayer_start_waypoints(&map_data.waypoints)
-            .into_iter()
-            .map(|wp| (wp.index, (wp.rx, wp.ry)))
-            .collect(),
+        mp_start_waypoints: scenario_start_waypoints_for_load(
+            &map_data,
+            scenario_prefix_plan.as_ref(),
+        ),
         lighting: crate::sim::scenario_session::ScenarioLightingState::new(
             crate::sim::scenario_session::ScenarioLightProfileUnits {
                 ambient_percent: lighting_profiles.normal.ambient_percent,
@@ -2154,54 +2197,41 @@ pub(crate) fn load_map_from_initial(
     let mut initial_local_owner: Option<String> = None;
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
-            let should_rebuild_entity_atlases =
-                if let Some(descriptor) = match_launch_descriptor.as_ref() {
-                    // Complete standard-Battle vectors were resolved before the
-                    // first loading frame and terrain continued their post-plan
-                    // Scenario cursor. Other modes/deficient maps retain the
-                    // terrain-dependent runtime resolver below.
-                    let result = if let Some(plan) = preloaded_battle_start_plan.as_ref() {
-                        apply_preloaded_battle_launch_session_with_overlay_registry(
-                            sim,
-                            &map_data,
-                            &house_roster,
-                            ruleset,
-                            &height_map,
-                            &resolved_terrain,
-                            descriptor,
-                            &overlay_registry,
-                            plan,
-                        )
-                    } else {
-                        apply_explicit_skirmish_launch_session_with_overlay_registry(
-                            sim,
-                            &map_data,
-                            &house_roster,
-                            ruleset,
-                            &height_map,
-                            &resolved_terrain,
-                            descriptor,
-                            &overlay_registry,
-                        )
-                    };
-                    initial_local_owner = result.local_owner;
-                    result.spawned_mcvs > 0
-                } else {
-                    initial_local_owner = seed_skirmish_opening_if_needed(
-                        sim,
-                        &map_data,
-                        &house_roster,
-                        ruleset,
-                        &height_map,
-                        &overlay_registry,
-                        skirmish_settings,
-                    );
-                    // Set up AI players: all playable houses except the local (first) player.
-                    if let Some(ref local_owner) = initial_local_owner {
-                        sim.register_ai_players_from_roster(&house_roster, local_owner);
-                    }
-                    initial_local_owner.is_some()
-                };
+            let should_rebuild_entity_atlases = if let Some(descriptor) =
+                match_launch_descriptor.as_ref()
+            {
+                let plan = scenario_prefix_plan
+                    .as_ref()
+                    .expect("stock offline prefix was required and installed before Fill");
+                let result = apply_pre_fill_scenario_prefix_launch_session_with_overlay_registry(
+                    sim,
+                    &map_data,
+                    &house_roster,
+                    ruleset,
+                    &height_map,
+                    &resolved_terrain,
+                    descriptor,
+                    &overlay_registry,
+                    plan,
+                );
+                initial_local_owner = result.local_owner;
+                result.spawned_mcvs > 0
+            } else {
+                initial_local_owner = seed_skirmish_opening_if_needed(
+                    sim,
+                    &map_data,
+                    &house_roster,
+                    ruleset,
+                    &height_map,
+                    &overlay_registry,
+                    skirmish_settings,
+                );
+                // Set up AI players: all playable houses except the local (first) player.
+                if let Some(ref local_owner) = initial_local_owner {
+                    sim.register_ai_players_from_roster(&house_roster, local_owner);
+                }
+                initial_local_owner.is_some()
+            };
 
             if should_rebuild_entity_atlases {
                 let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(

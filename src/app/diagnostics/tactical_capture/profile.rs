@@ -596,6 +596,10 @@ impl TacticalCaptureProfile {
                     difficulty: AiDifficulty::Easy,
                 })
                 .collect(),
+            pre_fill_house_roster:
+                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(
+                    self.launch.opponents.len(),
+                ),
             options: self.launch.options.to_launch_options(),
         }
     }

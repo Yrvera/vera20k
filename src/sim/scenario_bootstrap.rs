@@ -1,16 +1,15 @@
 //! Simulation-owned offline-skirmish world bootstrap.
 //!
-//! Active Battle startup resolves participant starts before terrain loading when
-//! every authored start exists, then carries the same Scenario RNG cursor into
-//! terrain Fill and the live world. House construction, runtime/deficient-map
-//! start assignment, opening forces, shroud, AI credits, and alliances remain
-//! behind the same simulation authority boundary.
+//! Active-stock offline startup resolves both House passes and both selected-mode
+//! start callbacks before terrain Fill, then carries the same Scenario RNG cursor
+//! into the live world. Final House projection, opening forces, shroud, AI
+//! credits, and alliances remain behind the same simulation authority boundary.
 
 use std::collections::{BTreeMap, HashMap};
 
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseRoster;
-use crate::map::map_file::MapFile;
+use crate::map::map_file::{MapFile, MapHeader};
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::waypoints::Waypoint;
@@ -29,7 +28,7 @@ use crate::sim::rng::{SimRng, SimRngLogicalState};
 use crate::sim::scenario_session::ScenarioDescriptor;
 use crate::sim::world::{PlacementEvidence, Simulation};
 use crate::skirmish_launch::{
-    LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
+    LaunchCountry, LaunchStartPosition, LaunchTeam, PreFillHouseRoster, SkirmishLaunchSession,
 };
 use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
@@ -42,6 +41,25 @@ pub(crate) struct NativeStartBounds {
 }
 
 impl NativeStartBounds {
+    /// Construct the post-Resize cell-array rectangle directly from parsed
+    /// `[Map] Size`, before Fill has produced a resolved terrain grid.
+    pub(crate) fn from_map_header(header: &MapHeader) -> Option<Self> {
+        if header.width == 0 || header.height == 0 {
+            return None;
+        }
+        let extent = header.width.checked_add(header.height)?;
+        if extent > 512 {
+            return None;
+        }
+        let extent = u16::try_from(extent).ok()?;
+        (extent > 1).then_some(Self {
+            min_rx: 1,
+            min_ry: 1,
+            width: extent - 1,
+            height: extent - 1,
+        })
+    }
+
     /// gamemd-derived: active YR start placement is bounded by the MapClass
     /// CELL-ARRAY rect, never by `LocalSize=`. `MapClass::Resize @ 0x00565C10` writes
     /// `MapClass+0x124..0x130` as `(1, 1, SizeW+SizeH-1, SizeW+SizeH-1)`, and
@@ -94,6 +112,7 @@ impl NativeStartBounds {
 /// authored starts are deficient, each retry consumes the two asymmetric
 /// ranged draws and runs the 8x8 nearby-passable search; invalid searches do
 /// not advance the vector and have no artificial retry cap.
+#[cfg(test)]
 pub(crate) fn native_gather_start_positions(
     waypoints: &HashMap<u32, Waypoint>,
     participant_count: usize,
@@ -104,6 +123,51 @@ pub(crate) fn native_gather_start_positions(
     map_size_height: Option<i32>,
     binary_frame: u32,
     rng: &mut SimRng,
+) -> Vec<Waypoint> {
+    gather_start_positions_with_search(
+        waypoints,
+        participant_count,
+        bounds,
+        rng,
+        |seed_rx, seed_ry| {
+            find_nearby_start_rect(
+                terrain,
+                occupancy,
+                playfield_bounds,
+                map_size_height,
+                binary_frame,
+                seed_rx,
+                seed_ry,
+            )
+        },
+    )
+}
+
+/// Run Gather in the exact pre-Fill cell lifetime: MapClass has resized and
+/// normalized Size/LocalSize, but every CellClass still has constructor
+/// defaults and no Iso/overlay/Terrain/Techno/occupation authority exists.
+pub(crate) fn native_gather_pre_fill_start_positions(
+    waypoints: &HashMap<u32, Waypoint>,
+    required_start_count: usize,
+    header: &MapHeader,
+    rng: &mut SimRng,
+) -> Option<Vec<Waypoint>> {
+    let bounds = NativeStartBounds::from_map_header(header)?;
+    Some(gather_start_positions_with_search(
+        waypoints,
+        required_start_count,
+        bounds,
+        rng,
+        |seed_rx, seed_ry| find_nearby_pre_fill_start_rect(header, seed_rx, seed_ry),
+    ))
+}
+
+fn gather_start_positions_with_search(
+    waypoints: &HashMap<u32, Waypoint>,
+    participant_count: usize,
+    bounds: NativeStartBounds,
+    rng: &mut SimRng,
+    mut find_nearby: impl FnMut(u16, u16) -> Option<(u16, u16)>,
 ) -> Vec<Waypoint> {
     let authored_prefix = (0..8u32)
         .take_while(|index| waypoints.contains_key(index))
@@ -136,15 +200,7 @@ pub(crate) fn native_gather_start_positions(
             .next_range_u32_inclusive(10, x_high)
             .wrapping_add(u32::from(bounds.min_rx)) as u16;
 
-        let Some((rx, ry)) = find_nearby_start_rect(
-            terrain,
-            occupancy,
-            playfield_bounds,
-            map_size_height,
-            binary_frame,
-            seed_rx,
-            seed_ry,
-        ) else {
+        let Some((rx, ry)) = find_nearby(seed_rx, seed_ry) else {
             continue;
         };
         starts.push(Waypoint {
@@ -157,6 +213,40 @@ pub(crate) fn native_gather_start_positions(
     starts
 }
 
+fn find_nearby_pre_fill_start_rect(
+    header: &MapHeader,
+    seed_rx: u16,
+    seed_ry: u16,
+) -> Option<(u16, u16)> {
+    let playfield_bounds = crate::map::playfield::PlayfieldBounds::from_map_header(header);
+    let query = NearbyQuery {
+        passability: PassabilityArgs {
+            speed_type: SpeedType::Track,
+            required_zone_id: None,
+            movement_zone: MovementZone::Normal,
+            bridge_aware_zone: false,
+        },
+        footprint: NearbyFootprint::new(
+            i32::from(DEFICIENT_START_RECT_W),
+            i32::from(DEFICIENT_START_RECT_H),
+        ),
+        anchor_gate: NearbyAnchorGate::NativeHeightAware,
+        allow_bridge_cells: true,
+        check_height: false,
+        check_occupancy: false,
+        radius_cap: map_owned_radius_cap(playfield_bounds.base, header.height as i32),
+        target_cell: None,
+        path_grid: None,
+        resolved_terrain: None,
+        overlay_grid: None,
+        occupancy: None,
+        entities: None,
+        zone_grid: None,
+        playfield_bounds: Some(playfield_bounds),
+    };
+    find_nearby_passable_cell((i32::from(seed_rx), i32::from(seed_ry)), &query, 0)
+}
+
 /// Exact deficient-start adapter over the shared MapClass FNPC mechanism.
 ///
 /// The caller's `8,8` are top-left CellRect dimensions, not a search radius.
@@ -167,6 +257,7 @@ pub(crate) fn native_gather_start_positions(
 // reject-overlay=0, height=0, obstacle=0, allow-bridge=1, null-reference,
 // param15=0, final-occupancy=0)` to
 // `MapClass::Find_Nearby_Passable_Cell @ 0x0056DC20`.
+#[cfg(test)]
 pub(crate) fn find_nearby_start_rect(
     terrain: &ResolvedTerrainGrid,
     occupancy: &crate::sim::occupancy::OccupancyGrid,
@@ -212,47 +303,91 @@ pub(crate) fn find_nearby_start_rect(
     )
 }
 
-/// Assign the gathered vector through standard Battle mode's `+0x84` callback.
-/// Explicit starts populate a last-writer-wins table before the HouseClass
-/// pass; every non-special House then honors its table entry or uses the
-/// Battle selector's first-random/then-farthest rule.
+/// Retain the native start-table ownership and resolved placement for one
+/// stock-offline assignment callback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeStartAssignment {
     pub(crate) placements: Vec<(usize, Waypoint)>,
     pub(crate) start_table: Vec<Option<usize>>,
 }
 
-const NATIVE_MULTIPLAYER_START_LIMIT: usize = 8;
 pub(crate) const HOUSE_CONSTRUCTOR_TIMER_MIN: u32 = 450;
 pub(crate) const HOUSE_CONSTRUCTOR_TIMER_MAX: u32 = 1800;
 
-/// Immutable standard-Battle state prepared before the first loading frame.
+/// The selected active-retail start callback used by offline noncampaign Full Init.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StockOfflineStartCallbackFamily {
+    Battle,
+    Cooperative,
+}
+
+/// Immutable stock-offline Scenario prefix prepared before terrain Fill.
 ///
-/// Complete authored start vectors need no terrain-dependent fallback, so the
-/// frontend can reproduce the native pre-render constructor and assignment RNG
-/// prefix once. The resulting table is then shared by loading composition and
-/// gameplay initialization.
+/// This plan is the sole owner of the disposable first House pass, both
+/// selected-mode Gather callbacks, the final chooser, the zero-draw reset, and
+/// the second House pass. Only the second Gather vector and its retained
+/// assignment are projected later; projection is deliberately draw-free.
 #[derive(Debug, Clone)]
-pub(crate) struct PreloadedBattleStartPlan {
-    gathered_starts: Vec<Waypoint>,
+pub(crate) struct PreFillScenarioPrefixPlan {
+    /// Raw active Scenario waypoint table after the authored read or accepted
+    /// RMG staging copy. Gather may derive fallback cells from this table, but
+    /// loading markers and the live Scenario/session owner retain these exact
+    /// entries rather than the Gather result or regenerated `.SED` table.
+    active_scenario_waypoints: HashMap<u32, Waypoint>,
+    first_gathered_starts: Vec<Waypoint>,
+    final_gathered_starts: Vec<Waypoint>,
     assignment: NativeStartAssignment,
+    first_house_timers: Vec<u32>,
+    second_house_timers: Vec<u32>,
     scenario_rng_before: SimRngLogicalState,
     scenario_rng_before_fingerprint: u64,
     scenario_rng_after: SimRngLogicalState,
     scenario_rng_after_cursor: SimRng,
+    #[cfg(test)]
+    rng_checkpoints: ScenarioPrefixRngCheckpoints,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScenarioPrefixRngCheckpoints {
+    pub(crate) after_first_house_pass: SimRngLogicalState,
+    pub(crate) after_first_gather: SimRngLogicalState,
+    pub(crate) after_second_gather_and_chooser: SimRngLogicalState,
+    pub(crate) after_zero_draw_reset: SimRngLogicalState,
+    pub(crate) after_second_house_pass: SimRngLogicalState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum PreloadedBattleStartPlanError {
+pub(crate) enum PreFillScenarioPrefixPlanError {
     #[error(
-        "preloaded Battle plan expected Scenario RNG fingerprint {expected:#018x}, got {actual:#018x}"
+        "pre-Fill Scenario prefix expected RNG fingerprint {expected:#018x}, got {actual:#018x}"
     )]
     ScenarioRngPrestateMismatch { expected: u64, actual: u64 },
+    #[error("launch mode id {id} is not the validated active-retail stock row")]
+    UnsupportedStockMode { id: i32 },
+    #[error(
+        "pre-Fill roster requires {roster_start_count} starts but the compact launch session has {launch_participant_count} participants"
+    )]
+    RosterParticipantMismatch {
+        roster_start_count: usize,
+        launch_participant_count: usize,
+    },
+    #[error("map Size does not produce a valid resized pre-Fill cell rectangle")]
+    InvalidMapCellExtent,
 }
 
-impl PreloadedBattleStartPlan {
-    pub(crate) fn gathered_starts(&self) -> &[Waypoint] {
-        &self.gathered_starts
+impl PreFillScenarioPrefixPlan {
+    pub(crate) fn active_scenario_waypoints(&self) -> &HashMap<u32, Waypoint> {
+        &self.active_scenario_waypoints
+    }
+
+    #[cfg(test)]
+    pub(crate) fn first_gathered_starts(&self) -> &[Waypoint] {
+        &self.first_gathered_starts
+    }
+
+    pub(crate) fn final_gathered_starts(&self) -> &[Waypoint] {
+        &self.final_gathered_starts
     }
 
     pub(crate) fn start_table(&self) -> &[Option<usize>] {
@@ -263,17 +398,34 @@ impl PreloadedBattleStartPlan {
         &self.assignment
     }
 
+    #[cfg(test)]
+    pub(crate) fn first_house_timers(&self) -> &[u32] {
+        &self.first_house_timers
+    }
+
+    #[cfg(test)]
+    pub(crate) fn second_house_timers(&self) -> &[u32] {
+        &self.second_house_timers
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rng_checkpoints(&self) -> &ScenarioPrefixRngCheckpoints {
+        &self.rng_checkpoints
+    }
+
     /// Validate and transfer the one pre-loading RNG prefix to the stream that
     /// later terrain Fill and Simulation construction will continue.
     fn install_before_terrain(
         &self,
         scenario_rng: &mut SimRng,
-    ) -> Result<(), PreloadedBattleStartPlanError> {
+    ) -> Result<(), PreFillScenarioPrefixPlanError> {
         if scenario_rng.logical_state() != self.scenario_rng_before {
-            return Err(PreloadedBattleStartPlanError::ScenarioRngPrestateMismatch {
-                expected: self.scenario_rng_before_fingerprint,
-                actual: scenario_rng.state(),
-            });
+            return Err(
+                PreFillScenarioPrefixPlanError::ScenarioRngPrestateMismatch {
+                    expected: self.scenario_rng_before_fingerprint,
+                    actual: scenario_rng.state(),
+                },
+            );
         }
         *scenario_rng = self.scenario_rng_after_cursor.clone();
         debug_assert_eq!(scenario_rng.logical_state(), self.scenario_rng_after);
@@ -281,106 +433,295 @@ impl PreloadedBattleStartPlan {
     }
 }
 
-/// Prepare the terrain-independent stock Battle/FFA prefix exactly once.
+/// Prepare the complete active-stock offline prefix exactly once.
 ///
-/// Sparse or deficient authored starts deliberately return `None`: their two
-/// Gather passes depend on resolved terrain and must stay runtime-owned.
-/// Random maps are eligible after the launch-time `.SED` reader regenerates
-/// their MapFile: gamemd Full_Init 0x00686B20 assigns those fresh RmgRegion
-/// start waypoints before DrawLoadingScreen 0x00552D60 consumes the table.
-/// FFA provenance: constructor 0x005C5CE0 installs vtable 0x007EE424, whose
-/// +0x80 (0x005D6BE0), +0x84 (0x005D6C70), and +0xC4 (0x005D6890) callbacks
-/// are byte-identical to Battle's active start-assignment callbacks. Full_Init
-/// 0x00686B20 calls +0x80 and ordinarily +0x84 for offline g_GameMode 5 before
-/// DrawLoadingScreen.
-pub(crate) fn preload_standard_battle_start_plan(
+/// `start_waypoints` is an explicit source selected by the app boundary:
+/// authored maps pass the parsed map table, while accepted Battle/FFA `.SED`
+/// launches pass the provenance-bearing setup staging. Both Gather callbacks
+/// operate only on the resized default-cell view derived from `[Map]`.
+pub(crate) fn prepare_stock_offline_scenario_prefix_plan(
     descriptor: &MatchLaunchDescriptor,
     map_data: &MapFile,
+    start_waypoints: &HashMap<u32, Waypoint>,
     launch_seed: u32,
-) -> Option<PreloadedBattleStartPlan> {
+) -> Result<PreFillScenarioPrefixPlan, PreFillScenarioPrefixPlanError> {
     let session = descriptor.session();
-    if !has_verified_preload_start_callbacks(session) {
-        return None;
-    }
-    let selected_map = session.selected_map_file.as_deref()?;
-    if selected_map.trim() != selected_map
-        || selected_map.is_empty()
-        || selected_map.eq_ignore_ascii_case("auto")
-    {
-        return None;
-    }
-
-    let participant_count = 1usize.checked_add(session.opponents.len())?;
-    let authored_prefix = (0..NATIVE_MULTIPLAYER_START_LIMIT)
-        .take_while(|index| map_data.waypoints.contains_key(&(*index as u32)))
-        .count();
-    let authored_count = (0..NATIVE_MULTIPLAYER_START_LIMIT)
-        .filter(|index| map_data.waypoints.contains_key(&(*index as u32)))
-        .count();
-    if authored_prefix != authored_count || authored_prefix < participant_count {
-        return None;
+    let family = stock_offline_start_callback_family(session)?;
+    let launch_participant_count = 1usize + session.opponents.len();
+    let roster_start_count = session.pre_fill_house_roster.required_start_count();
+    if roster_start_count != launch_participant_count {
+        return Err(PreFillScenarioPrefixPlanError::RosterParticipantMismatch {
+            roster_start_count,
+            launch_participant_count,
+        });
     }
 
-    let gathered_starts: Vec<Waypoint> = (0..authored_prefix)
-        .filter_map(|index| map_data.waypoints.get(&(index as u32)).copied())
-        .collect();
     let mut scenario_rng = SimRng::new(u64::from(launch_seed));
     let scenario_rng_before = scenario_rng.logical_state();
     let scenario_rng_before_fingerprint = scenario_rng.state();
 
-    // HouseClass construction precedes both Battle/FFA callbacks. Every generated
-    // participant plus Neutral and Special consumes one rejection-capable
-    // RandomRanged(450,1800), in HouseClass order.
-    for _ in 0..participant_count + 2 {
-        let _ = scenario_rng
-            .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
-    }
+    let first_house_timers =
+        advance_pre_fill_house_constructor_pass(&session.pre_fill_house_roster, &mut scenario_rng);
+    #[cfg(test)]
+    let after_first_house_pass = scenario_rng.logical_state();
+    let first_gathered_starts = native_gather_pre_fill_start_positions(
+        start_waypoints,
+        roster_start_count,
+        &map_data.header,
+        &mut scenario_rng,
+    )
+    .ok_or(PreFillScenarioPrefixPlanError::InvalidMapCellExtent)?;
+    #[cfg(test)]
+    let after_first_gather = scenario_rng.logical_state();
+    let preassignment = native_preassign_launch_start_table(session, first_gathered_starts.len());
 
-    // Battle and FFA +0x80/+0x84 each Gather. With a complete contiguous
-    // authored vector both calls return this same data and consume no RNG.
-    let assignment = native_assign_launch_starts(session, &gathered_starts, &mut scenario_rng);
+    let final_gathered_starts = native_gather_pre_fill_start_positions(
+        start_waypoints,
+        roster_start_count,
+        &map_data.header,
+        &mut scenario_rng,
+    )
+    .ok_or(PreFillScenarioPrefixPlanError::InvalidMapCellExtent)?;
+    let assignment = match family {
+        StockOfflineStartCallbackFamily::Battle => native_assign_launch_starts_from_preassignment(
+            session,
+            &final_gathered_starts,
+            &preassignment,
+            &mut scenario_rng,
+        ),
+        StockOfflineStartCallbackFamily::Cooperative => {
+            let human_start_spots = map_data
+                .ini
+                .section("Header")
+                .and_then(|header| header.get_i32("NumCoopHumanStartSpots"))
+                .unwrap_or(0)
+                .max(0) as usize;
+            native_assign_cooperative_starts_from_preassignment(
+                session,
+                &final_gathered_starts,
+                &preassignment,
+                human_start_spots,
+                session.pre_fill_house_roster.nonobserver_human_count(),
+                &mut scenario_rng,
+            )
+        }
+    };
+    #[cfg(test)]
+    let after_second_gather_and_chooser = scenario_rng.logical_state();
+
+    // Native deletes every disposable first-pass House here. Destruction and
+    // the following rules/basic reset consume no Scenario draw, so the second
+    // pass begins at the chooser's exact cursor.
+    #[cfg(test)]
+    let after_zero_draw_reset = scenario_rng.logical_state();
+    let second_house_timers =
+        advance_pre_fill_house_constructor_pass(&session.pre_fill_house_roster, &mut scenario_rng);
     let scenario_rng_after = scenario_rng.logical_state();
+    #[cfg(test)]
+    let after_second_house_pass = scenario_rng_after.clone();
 
-    Some(PreloadedBattleStartPlan {
-        gathered_starts,
+    Ok(PreFillScenarioPrefixPlan {
+        active_scenario_waypoints: start_waypoints.clone(),
+        first_gathered_starts,
+        final_gathered_starts,
         assignment,
+        first_house_timers,
+        second_house_timers,
         scenario_rng_before,
         scenario_rng_before_fingerprint,
         scenario_rng_after,
         scenario_rng_after_cursor: scenario_rng,
+        #[cfg(test)]
+        rng_checkpoints: ScenarioPrefixRngCheckpoints {
+            after_first_house_pass,
+            after_first_gather,
+            after_second_gather_and_chooser,
+            after_zero_draw_reset,
+            after_second_house_pass,
+        },
     })
 }
 
-fn has_verified_preload_start_callbacks(session: &SkirmishLaunchSession) -> bool {
-    let mode = &session.mode;
-    if !mode.map_filter.eq_ignore_ascii_case("standard")
-        || !mode.random_maps_allowed
-        || mode.must_ally
-    {
-        return false;
+fn advance_pre_fill_house_constructor_pass(
+    roster: &PreFillHouseRoster,
+    rng: &mut SimRng,
+) -> Vec<u32> {
+    let mut timers = Vec::with_capacity(roster.created_house_count());
+    for _human in roster.human_nodes() {
+        timers.push(
+            rng.next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX),
+        );
     }
-    match mode.id {
-        1 => {
-            mode.ui_name_key.eq_ignore_ascii_case("GUI:Battle")
-                && mode.tooltip_key.eq_ignore_ascii_case("STT:ModeBattle")
-                && mode.override_file.eq_ignore_ascii_case("MPBattleMD.ini")
-                && mode.allies_allowed
+    for _slot in roster.ai_slots().iter().filter(|slot| slot.valid) {
+        timers.push(
+            rng.next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX),
+        );
+    }
+    for _fixed in roster.fixed_tail() {
+        timers.push(
+            rng.next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX),
+        );
+    }
+    timers
+}
+
+pub(crate) fn stock_offline_start_callback_family(
+    session: &SkirmishLaunchSession,
+) -> Result<StockOfflineStartCallbackFamily, PreFillScenarioPrefixPlanError> {
+    let mode = &session.mode;
+    let expected = match mode.id {
+        1 => (
+            "GUI:Battle",
+            "STT:ModeBattle",
+            "MPBattleMD.ini",
+            "standard",
+            true,
+            true,
+            false,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        2 => (
+            "GUI:FreeForAll",
+            "STT:ModeFreeForAll",
+            "MPFreeForAllMD.ini",
+            "standard",
+            true,
+            false,
+            false,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        3 => (
+            "GUI:Cooperative",
+            "STT:ModeCooperative",
+            "MPCoopMD.ini",
+            "cooperative",
+            false,
+            false,
+            false,
+            StockOfflineStartCallbackFamily::Cooperative,
+        ),
+        4 => (
+            "GUI:UnholyAlliance",
+            "STT:ModeUnholyAlliance",
+            "MPUnholyMD.ini",
+            "standard",
+            false,
+            true,
+            false,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        5 => (
+            "GUI:Megawealth",
+            "STT:ModeMegawealth",
+            "MPMWMD.ini",
+            "megawealth",
+            false,
+            true,
+            false,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        6 => (
+            "GUI:Duel",
+            "STT:ModeDuel",
+            "MPDuelMD.ini",
+            "duel",
+            false,
+            true,
+            false,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        7 => (
+            "GUI:MeatGrind",
+            "STT:ModeMeatGrind",
+            "MPMeatMD.ini",
+            "meatgrind",
+            false,
+            true,
+            false,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        8 => (
+            "GUI:NavalWar",
+            "STT:ModeNavalWar",
+            "MPNavalMD.ini",
+            "navalwar",
+            false,
+            true,
+            false,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        9 => (
+            "GUI:TeamGame",
+            "STT:ModeTeamGame",
+            "MPTeamMD.ini",
+            "teamgame",
+            false,
+            true,
+            true,
+            StockOfflineStartCallbackFamily::Battle,
+        ),
+        _ => {
+            return Err(PreFillScenarioPrefixPlanError::UnsupportedStockMode { id: mode.id });
         }
-        2 => {
-            mode.ui_name_key.eq_ignore_ascii_case("GUI:FreeForAll")
-                && mode.tooltip_key.eq_ignore_ascii_case("STT:ModeFreeForAll")
-                && mode
-                    .override_file
-                    .eq_ignore_ascii_case("MPFreeForAllMD.ini")
-                && !mode.allies_allowed
-        }
-        _ => false,
+    };
+    let (ui_name, tooltip, override_file, map_filter, random_maps, allies, must_ally, family) =
+        expected;
+    if mode.ui_name_key.eq_ignore_ascii_case(ui_name)
+        && mode.tooltip_key.eq_ignore_ascii_case(tooltip)
+        && mode.override_file.eq_ignore_ascii_case(override_file)
+        && mode.map_filter.eq_ignore_ascii_case(map_filter)
+        && mode.random_maps_allowed == random_maps
+        && mode.allies_allowed == allies
+        && mode.must_ally == must_ally
+    {
+        Ok(family)
+    } else {
+        Err(PreFillScenarioPrefixPlanError::UnsupportedStockMode { id: mode.id })
     }
 }
 
+#[cfg(test)]
 pub(crate) fn native_assign_launch_starts(
     session: &SkirmishLaunchSession,
     starts: &[Waypoint],
+    rng: &mut SimRng,
+) -> NativeStartAssignment {
+    let preassignment = native_preassign_launch_start_table(session, starts.len());
+    native_assign_launch_starts_from_preassignment(session, starts, &preassignment, rng)
+}
+
+fn launch_start_requests(session: &SkirmishLaunchSession) -> Vec<LaunchStartPosition> {
+    std::iter::once(session.local.start_position)
+        .chain(
+            session
+                .opponents
+                .iter()
+                .map(|opponent| opponent.start_position),
+        )
+        .collect()
+}
+
+pub(crate) fn native_preassign_launch_start_table(
+    session: &SkirmishLaunchSession,
+    start_count: usize,
+) -> Vec<Option<usize>> {
+    let requested = launch_start_requests(session);
+    let mut explicit_owner = vec![None; start_count];
+    for (slot, request) in requested.iter().enumerate() {
+        let LaunchStartPosition::Position(index) = request else {
+            continue;
+        };
+        if let Some(owner) = explicit_owner.get_mut(usize::from(*index)) {
+            *owner = Some(slot);
+        }
+    }
+    explicit_owner
+}
+
+fn native_assign_launch_starts_from_preassignment(
+    session: &SkirmishLaunchSession,
+    starts: &[Waypoint],
+    preassignment: &[Option<usize>],
     rng: &mut SimRng,
 ) -> NativeStartAssignment {
     if starts.is_empty() {
@@ -390,23 +731,9 @@ pub(crate) fn native_assign_launch_starts(
         };
     }
 
-    let requested: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
-        .chain(
-            session
-                .opponents
-                .iter()
-                .map(|opponent| opponent.start_position),
-        )
-        .collect();
-    let mut explicit_owner = vec![None; starts.len()];
-    for (slot, request) in requested.iter().enumerate() {
-        let LaunchStartPosition::Position(index) = request else {
-            continue;
-        };
-        if let Some(owner) = explicit_owner.get_mut(usize::from(*index)) {
-            *owner = Some(slot);
-        }
-    }
+    assert_eq!(starts.len(), preassignment.len());
+    let requested = launch_start_requests(session);
+    let mut explicit_owner = preassignment.to_vec();
 
     // Battle +0x84 builds its occupied-byte array from the complete
     // Scenario+0x1180 table before its HouseClass pass begins. The selected
@@ -443,10 +770,30 @@ pub(crate) fn native_assign_launch_starts(
 /// all of its entries before HouseClass iteration; automatic human placement
 /// draws within the prefix and probes forward, while the remaining houses
 /// take the first free suffix entry without a draw.
+#[cfg(test)]
 pub(crate) fn native_assign_cooperative_launch_starts(
     session: &SkirmishLaunchSession,
     starts: &[Waypoint],
     human_start_spots: usize,
+    rng: &mut SimRng,
+) -> NativeStartAssignment {
+    let preassignment = native_preassign_launch_start_table(session, starts.len());
+    native_assign_cooperative_starts_from_preassignment(
+        session,
+        starts,
+        &preassignment,
+        human_start_spots,
+        1,
+        rng,
+    )
+}
+
+fn native_assign_cooperative_starts_from_preassignment(
+    session: &SkirmishLaunchSession,
+    starts: &[Waypoint],
+    preassignment: &[Option<usize>],
+    human_start_spots: usize,
+    human_house_count: usize,
     rng: &mut SimRng,
 ) -> NativeStartAssignment {
     if starts.is_empty() {
@@ -456,26 +803,11 @@ pub(crate) fn native_assign_cooperative_launch_starts(
         };
     }
 
-    let requested: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
-        .chain(
-            session
-                .opponents
-                .iter()
-                .map(|opponent| opponent.start_position),
-        )
-        .collect();
-    let mut explicit_owner = vec![None; starts.len()];
-    for (slot, request) in requested.iter().enumerate() {
-        let LaunchStartPosition::Position(index) = request else {
-            continue;
-        };
-        if let Some(owner) = explicit_owner.get_mut(usize::from(*index)) {
-            *owner = Some(slot);
-        }
-    }
+    assert_eq!(starts.len(), preassignment.len());
+    let requested = launch_start_requests(session);
+    let mut explicit_owner = preassignment.to_vec();
 
     let mut occupied: Vec<bool> = explicit_owner.iter().map(Option::is_some).collect();
-    let human_house_count = 1usize;
     let human_start_spots = human_start_spots.min(starts.len());
     let mut assigned = vec![None; requested.len()];
 
@@ -590,8 +922,8 @@ pub(crate) struct NormalizedSkirmishSlot {
 /// receive an unresolved frontend session and silently launch with the
 /// placeholder country/color a random slot still carries. Start positions
 /// remain potentially random by design: gamemd assigns them at scenario load
-/// with the gameplay Scenario RNG (see `assign_native_battle_starts`), not in
-/// the shell.
+/// with the gameplay Scenario RNG (see
+/// `prepare_stock_offline_scenario_prefix_plan`), not in the shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchLaunchDescriptor {
     session: SkirmishLaunchSession,
@@ -694,7 +1026,8 @@ pub(crate) fn apply_skirmish_launch_alliances(
     sim.house_alliances = launch_alliance_map(house_roster, &slots, &session.mode);
 }
 
-/// Apply an already validated explicit session without placeholder RNG draws.
+/// Test-only compatibility path for direct post-Fill launch fixtures.
+#[cfg(test)]
 pub(crate) fn apply_explicit_skirmish_launch_session(
     sim: &mut Simulation,
     map_data: &MapFile,
@@ -713,10 +1046,11 @@ pub(crate) fn apply_explicit_skirmish_launch_session(
         resolved_terrain,
         descriptor,
         None,
-        None,
+        LaunchStartResolution::PostFillTestCompatibility,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn apply_explicit_skirmish_launch_session_with_overlay_registry(
     sim: &mut Simulation,
     map_data: &MapFile,
@@ -736,12 +1070,15 @@ pub(crate) fn apply_explicit_skirmish_launch_session_with_overlay_registry(
         resolved_terrain,
         descriptor,
         Some(overlay_registry),
-        None,
+        LaunchStartResolution::PostFillTestCompatibility,
     )
 }
 
-/// Apply the exact Battle assignment prepared before the first loading frame.
-pub(crate) fn apply_preloaded_battle_launch_session(
+/// Apply the retained stock-offline House/start projection without repeating
+/// any prefix draw. Existing starting-force and later initialization draws
+/// remain after this projection.
+#[cfg(test)]
+pub(crate) fn apply_pre_fill_scenario_prefix_launch_session(
     sim: &mut Simulation,
     map_data: &MapFile,
     house_roster: &HouseRoster,
@@ -749,7 +1086,7 @@ pub(crate) fn apply_preloaded_battle_launch_session(
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
     descriptor: &MatchLaunchDescriptor,
-    plan: &PreloadedBattleStartPlan,
+    plan: &PreFillScenarioPrefixPlan,
 ) -> SkirmishLaunchApplyResult {
     apply_resolved_skirmish_launch_session(
         sim,
@@ -760,12 +1097,12 @@ pub(crate) fn apply_preloaded_battle_launch_session(
         resolved_terrain,
         descriptor,
         None,
-        Some(plan),
+        LaunchStartResolution::Prefix(plan),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_preloaded_battle_launch_session_with_overlay_registry(
+pub(crate) fn apply_pre_fill_scenario_prefix_launch_session_with_overlay_registry(
     sim: &mut Simulation,
     map_data: &MapFile,
     house_roster: &HouseRoster,
@@ -774,7 +1111,7 @@ pub(crate) fn apply_preloaded_battle_launch_session_with_overlay_registry(
     resolved_terrain: &ResolvedTerrainGrid,
     descriptor: &MatchLaunchDescriptor,
     overlay_registry: &OverlayTypeRegistry,
-    plan: &PreloadedBattleStartPlan,
+    plan: &PreFillScenarioPrefixPlan,
 ) -> SkirmishLaunchApplyResult {
     apply_resolved_skirmish_launch_session(
         sim,
@@ -785,8 +1122,14 @@ pub(crate) fn apply_preloaded_battle_launch_session_with_overlay_registry(
         resolved_terrain,
         descriptor,
         Some(overlay_registry),
-        Some(plan),
+        LaunchStartResolution::Prefix(plan),
     )
+}
+
+enum LaunchStartResolution<'a> {
+    Prefix(&'a PreFillScenarioPrefixPlan),
+    #[cfg(test)]
+    PostFillTestCompatibility,
 }
 
 fn apply_resolved_skirmish_launch_session(
@@ -798,7 +1141,7 @@ fn apply_resolved_skirmish_launch_session(
     resolved_terrain: &ResolvedTerrainGrid,
     descriptor: &MatchLaunchDescriptor,
     overlay_registry: Option<&OverlayTypeRegistry>,
-    preloaded_battle_plan: Option<&PreloadedBattleStartPlan>,
+    start_resolution: LaunchStartResolution<'_>,
 ) -> SkirmishLaunchApplyResult {
     // Direct frontend/unit-test launch paths can enter before the shared
     // scenario construction funnel. Retail has already completed
@@ -839,69 +1182,55 @@ fn apply_resolved_skirmish_launch_session(
     }
 
     let bounds = NativeStartBounds::from_session(sim, resolved_terrain);
-    let cooperative = session
-        .mode
-        .override_file
-        .eq_ignore_ascii_case("MPCoopMD.ini");
-    let (_starts, start_assignment) = if let Some(plan) = preloaded_battle_plan {
-        debug_assert!(!cooperative, "Cooperative never owns a Battle preload plan");
-        // The same immutable table already drove the first loading markers.
-        // Its constructor/assignment RNG prefix was installed before terrain
-        // Fill, so consuming it here must not draw or replace the live cursor.
-        (plan.gathered_starts().to_vec(), plan.assignment().clone())
-    } else {
-        let preassignment_starts = sim.gather_native_start_positions(
-            &map_data.waypoints,
-            slots.len(),
-            resolved_terrain,
-            bounds,
-        );
-        // Standard Battle +0x80 gathers once before explicit preassignment,
-        // then +0x84 gathers again before final assignment. The first vector's
-        // cells are only provisional; deficient-map draws remain runtime-owned.
-        let starts = if cooperative {
-            preassignment_starts
-        } else {
-            sim.gather_native_start_positions(
+    let (_starts, start_assignment) = match start_resolution {
+        LaunchStartResolution::Prefix(plan) => {
+            // The same immutable table already drove the first loading markers.
+            // Its complete House/Gather/assignment prefix was installed before
+            // Fill, so projecting it here cannot draw or replace the live cursor.
+            (
+                plan.final_gathered_starts().to_vec(),
+                plan.assignment().clone(),
+            )
+        }
+        #[cfg(test)]
+        LaunchStartResolution::PostFillTestCompatibility => {
+            let cooperative = session
+                .mode
+                .override_file
+                .eq_ignore_ascii_case("MPCoopMD.ini");
+            // Direct unit fixtures historically enter with a constructed map.
+            // Keep their compatibility resolver outside production compilation,
+            // while still modeling two independent Gather callbacks.
+            let _first_gather = sim.gather_native_start_positions(
                 &map_data.waypoints,
                 slots.len(),
                 resolved_terrain,
                 bounds,
-            )
-        };
-        let assignment = if cooperative {
-            let human_start_spots = map_data
-                .ini
-                .section("Header")
-                .and_then(|header| header.get_i32("NumCoopHumanStartSpots"))
-                .unwrap_or(0)
-                .max(0) as usize;
-            sim.assign_native_cooperative_starts(session, &starts, human_start_spots)
-        } else {
-            sim.assign_native_battle_starts(session, &starts)
-        };
-        (starts, assignment)
+            );
+            let starts = sim.gather_native_start_positions(
+                &map_data.waypoints,
+                slots.len(),
+                resolved_terrain,
+                bounds,
+            );
+            let assignment = if cooperative {
+                let human_start_spots = map_data
+                    .ini
+                    .section("Header")
+                    .and_then(|header| header.get_i32("NumCoopHumanStartSpots"))
+                    .unwrap_or(0)
+                    .max(0) as usize;
+                sim.assign_native_cooperative_starts(session, &starts, human_start_spots)
+            } else {
+                sim.assign_native_battle_starts(session, &starts)
+            };
+            (starts, assignment)
+        }
     };
-    // Session start-slot -> house table: filled after the random-assignment
-    // draws, before tick 0 — lockstep state (hashed + serialized).
-    sim.session.start_slot_houses.clear();
-    for (start_idx, slot_idx) in start_assignment.start_table.iter().enumerate() {
-        let Some(slot_idx) = *slot_idx else {
-            continue;
-        };
-        let Some(slot) = slots.get(slot_idx) else {
-            continue;
-        };
-        let owner = sim.interner.intern(&slot.owner_name);
-        sim.session
-            .start_slot_houses
-            .insert(start_idx as u32, owner);
-    }
+    project_pre_fill_start_assignment(sim, &slots, &start_assignment);
     let assignments = &start_assignment.placements;
     let mut spawned_mcvs = 0;
     let mut local_owner = slots.first().map(|slot| slot.owner_name.clone());
-
-    assign_launch_base_centers(sim, &slots, assignments);
 
     if session.options.bases {
         for (slot_idx, waypoint) in assignments {
@@ -978,6 +1307,32 @@ fn apply_resolved_skirmish_launch_session(
         spawned_mcvs,
         active_slots: slots.len(),
     }
+}
+
+/// Project the already-resolved start table and base centers. This boundary is
+/// intentionally incapable of drawing: the selected-mode chooser completed in
+/// the pre-Fill plan, while starting Technos and the force tail remain later.
+fn project_pre_fill_start_assignment(
+    sim: &mut Simulation,
+    slots: &[NormalizedSkirmishSlot],
+    start_assignment: &NativeStartAssignment,
+) {
+    // Session start-slot -> house table: filled after the random-assignment
+    // draws, before tick 0 — lockstep state (hashed + serialized).
+    sim.session.start_slot_houses.clear();
+    for (start_idx, slot_idx) in start_assignment.start_table.iter().enumerate() {
+        let Some(slot_idx) = *slot_idx else {
+            continue;
+        };
+        let Some(slot) = slots.get(slot_idx) else {
+            continue;
+        };
+        let owner = sim.interner.intern(&slot.owner_name);
+        sim.session
+            .start_slot_houses
+            .insert(start_idx as u32, owner);
+    }
+    assign_launch_base_centers(sim, slots, &start_assignment.placements);
 }
 
 /// Apply the lobby's one-shot unexplored-shroud choice to the local human
@@ -1762,11 +2117,11 @@ impl ScenarioBootstrapRng {
         self.mapgen = Some(SimRng::from_mapgen_continuation(continuation));
     }
 
-    /// Install the already-resolved pre-render Battle prefix exactly once.
-    pub(crate) fn install_preloaded_battle_plan(
+    /// Install the already-resolved stock-offline pre-Fill prefix exactly once.
+    pub(crate) fn install_pre_fill_scenario_prefix_plan(
         &mut self,
-        plan: &PreloadedBattleStartPlan,
-    ) -> Result<(), PreloadedBattleStartPlanError> {
+        plan: &PreFillScenarioPrefixPlan,
+    ) -> Result<(), PreFillScenarioPrefixPlanError> {
         plan.install_before_terrain(&mut self.scenario)
     }
 
@@ -1784,8 +2139,8 @@ impl ScenarioBootstrapRng {
     }
 
     /// Consume the launch generation's ordered Building constructor trace on
-    /// the same Scenario owner that already passed through Battle/FFA preload
-    /// and terrain Fill. Successful rows retain their low word for later
+    /// the same Scenario owner that already passed through the stock-offline
+    /// prefix and terrain Fill. Successful rows retain their low word for later
     /// projection; discarded rows spend the word and deliberately bind none.
     ///
     /// gamemd provenance: TechnoClass constructor 0x006F3254 consumes one raw
@@ -1853,6 +2208,7 @@ impl ScenarioBootstrapRng {
 }
 
 impl Simulation {
+    #[cfg(test)]
     pub(crate) fn gather_native_start_positions(
         &mut self,
         waypoints: &HashMap<u32, Waypoint>,
@@ -1875,6 +2231,7 @@ impl Simulation {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn assign_native_battle_starts(
         &mut self,
         session: &SkirmishLaunchSession,
@@ -1883,6 +2240,7 @@ impl Simulation {
         native_assign_launch_starts(session, starts, &mut self.scenario_rng)
     }
 
+    #[cfg(test)]
     pub(crate) fn assign_native_cooperative_starts(
         &mut self,
         session: &SkirmishLaunchSession,
@@ -2017,6 +2375,84 @@ mod tests {
             seed,
             ..ScenarioDescriptor::default()
         }
+    }
+
+    fn one_player_battle_launch(selected_map_file: &str) -> MatchLaunchDescriptor {
+        use crate::skirmish_launch::{
+            PreFillHouseRoster, SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLocalSlot,
+        };
+
+        MatchLaunchDescriptor::from_resolved(SkirmishLaunchSession {
+            mode: SkirmishLaunchMode {
+                id: 1,
+                ui_name_key: "GUI:Battle".to_string(),
+                tooltip_key: "STT:ModeBattle".to_string(),
+                override_file: "MPBattleMD.ini".to_string(),
+                map_filter: "standard".to_string(),
+                random_maps_allowed: true,
+                allies_allowed: true,
+                must_ally: false,
+            },
+            selected_map_file: Some(selected_map_file.to_string()),
+            player_name: "Player".to_string(),
+            local: SkirmishLocalSlot {
+                country: LaunchCountry::America,
+                country_random: false,
+                color_index: 0,
+                color_random: false,
+                start_position: LaunchStartPosition::Auto,
+                team: LaunchTeam::None,
+            },
+            opponents: Vec::new(),
+            pre_fill_house_roster: PreFillHouseRoster::from_compact_skirmish(0),
+            options: SkirmishLaunchOptions::default(),
+        })
+        .expect("one-player Battle fixture is fully resolved")
+    }
+
+    fn prefix_map_with_starts(starts: &[Waypoint]) -> MapFile {
+        MapFile {
+            header: crate::map::map_file::MapHeader {
+                theater: "TEMPERATE".to_string(),
+                fill: "Clear".to_string(),
+                level: 0,
+                width: 44,
+                height: 52,
+                local_left: 2,
+                local_top: 5,
+                local_width: 40,
+                local_height: 40,
+            },
+            basic: Default::default(),
+            briefing: Default::default(),
+            preview: Default::default(),
+            cells: Vec::new(),
+            iso_map_pack_lookups: Vec::new(),
+            entities: Vec::new(),
+            overlays: Vec::new(),
+            overlay_data: Default::default(),
+            smudges: Vec::new(),
+            terrain_objects: Vec::new(),
+            waypoints: starts
+                .iter()
+                .copied()
+                .map(|start| (start.index, start))
+                .collect(),
+            cell_tags: Default::default(),
+            tags: Default::default(),
+            triggers: Default::default(),
+            events: Default::default(),
+            actions: Default::default(),
+            local_variables: Default::default(),
+            trigger_graph: Default::default(),
+            special_flags: Default::default(),
+            explicit_tubes: Vec::new(),
+            ini: IniFile::from_str(""),
+        }
+    }
+
+    fn one_start_prefix_map(start: Waypoint) -> MapFile {
+        prefix_map_with_starts(&[start])
     }
 
     fn techno_constructor_start_rules() -> RuleSet {
@@ -2470,31 +2906,481 @@ mod tests {
     }
 
     #[test]
-    fn preloaded_battle_prefix_transfers_once_before_terrain() {
+    fn scenario_prefix_runs_two_identical_house_passes_before_fill() {
+        use crate::skirmish_launch::{
+            AiDifficulty, PreFillAiHouseSlot, PreFillHouseRoster, PreFillHumanHouse, SkirmishAiSlot,
+        };
+
+        let seed = (0..100_000u32)
+            .find(|seed| {
+                let mut rng = SimRng::new(u64::from(*seed));
+                let before = rng.logical_state().index_a;
+                let _ = rng.next_range_u32_inclusive(
+                    HOUSE_CONSTRUCTOR_TIMER_MIN,
+                    HOUSE_CONSTRUCTOR_TIMER_MAX,
+                );
+                (rng.logical_state().index_a - before).rem_euclid(250) > 1
+            })
+            .expect("the native ranged domain has a rejection seed");
+        let roster = PreFillHouseRoster::new(
+            vec![
+                PreFillHumanHouse {
+                    priority: 4,
+                    source_order: 1,
+                    observer: false,
+                },
+                PreFillHumanHouse {
+                    priority: -7,
+                    source_order: 0,
+                    observer: true,
+                },
+            ],
+            vec![
+                PreFillAiHouseSlot {
+                    slot_index: 3,
+                    valid: true,
+                },
+                PreFillAiHouseSlot {
+                    slot_index: 1,
+                    valid: false,
+                },
+                PreFillAiHouseSlot {
+                    slot_index: 0,
+                    valid: true,
+                },
+            ],
+        );
+        assert_eq!(roster.human_nodes()[0].priority, -7);
+        assert_eq!(
+            roster
+                .ai_slots()
+                .iter()
+                .map(|slot| slot.slot_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 3]
+        );
+        assert_eq!(roster.required_start_count(), 3);
+        assert_eq!(roster.created_house_count(), 6);
+
+        let mut session = one_player_battle_launch("prefix-roster.mmx")
+            .session()
+            .clone();
+        session.local.start_position = LaunchStartPosition::Position(0);
+        session.opponents = (0..2)
+            .map(|index| SkirmishAiSlot {
+                country: LaunchCountry::Russia,
+                country_random: false,
+                color_index: index + 1,
+                color_random: false,
+                start_position: LaunchStartPosition::Position(index + 1),
+                team: LaunchTeam::None,
+                difficulty: AiDifficulty::Easy,
+            })
+            .collect();
+        session.pre_fill_house_roster = roster;
+        let launch = MatchLaunchDescriptor::from_resolved(session).unwrap();
+        let starts = [
+            Waypoint {
+                index: 0,
+                rx: 30,
+                ry: 30,
+            },
+            Waypoint {
+                index: 1,
+                rx: 40,
+                ry: 40,
+            },
+            Waypoint {
+                index: 2,
+                rx: 50,
+                ry: 50,
+            },
+        ];
+        let map = prefix_map_with_starts(&starts);
+        let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
+            .unwrap();
+
+        let mut reference = SimRng::new(u64::from(seed));
+        let first_timers: Vec<_> = (0..6)
+            .map(|_| {
+                reference.next_range_u32_inclusive(
+                    HOUSE_CONSTRUCTOR_TIMER_MIN,
+                    HOUSE_CONSTRUCTOR_TIMER_MAX,
+                )
+            })
+            .collect();
+        let after_first = reference.logical_state();
+        let second_timers: Vec<_> = (0..6)
+            .map(|_| {
+                reference.next_range_u32_inclusive(
+                    HOUSE_CONSTRUCTOR_TIMER_MIN,
+                    HOUSE_CONSTRUCTOR_TIMER_MAX,
+                )
+            })
+            .collect();
+        let checkpoints = plan.rng_checkpoints();
+        assert_eq!(plan.first_house_timers(), first_timers);
+        assert_eq!(plan.second_house_timers(), second_timers);
+        assert_eq!(checkpoints.after_first_house_pass, after_first);
+        assert_eq!(checkpoints.after_first_gather, after_first);
+        assert_eq!(
+            checkpoints.after_second_gather_and_chooser, after_first,
+            "complete explicit starts make both callbacks draw-free"
+        );
+        assert_eq!(
+            checkpoints.after_zero_draw_reset,
+            checkpoints.after_second_gather_and_chooser
+        );
+        assert_eq!(
+            checkpoints.after_second_house_pass,
+            reference.logical_state()
+        );
+
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        owner.install_pre_fill_scenario_prefix_plan(&plan).unwrap();
+        let sim = owner.into_simulation(&descriptor(seed));
+        assert!(
+            sim.houses.is_empty(),
+            "prefix emulation retains no disposable first-pass House state"
+        );
+    }
+
+    #[test]
+    fn scenario_prefix_sparse_waypoints_preserve_only_entries_below_target() {
+        let map = prefix_map_with_starts(&[]);
+        let starts = HashMap::from([
+            (
+                0,
+                Waypoint {
+                    index: 0,
+                    rx: 30,
+                    ry: 30,
+                },
+            ),
+            (
+                2,
+                Waypoint {
+                    index: 2,
+                    rx: 50,
+                    ry: 50,
+                },
+            ),
+        ]);
+        let mut target_two_rng = SimRng::new(0x5200);
+        let target_two =
+            native_gather_pre_fill_start_positions(&starts, 2, &map.header, &mut target_two_rng)
+                .unwrap();
+        assert_eq!(target_two.len(), 2);
+        assert_eq!((target_two[0].rx, target_two[0].ry), (30, 30));
+        assert!(
+            !target_two
+                .iter()
+                .any(|start| (start.rx, start.ry) == (50, 50))
+        );
+
+        let mut target_three_rng = SimRng::new(0x5200);
+        let target_three =
+            native_gather_pre_fill_start_positions(&starts, 3, &map.header, &mut target_three_rng)
+                .unwrap();
+        assert_eq!(target_three.len(), 3);
+        assert_eq!((target_three[0].rx, target_three[0].ry), (30, 30));
+        assert_eq!((target_three[1].rx, target_three[1].ry), (50, 50));
+    }
+
+    #[test]
+    fn scenario_prefix_all_stock_mode_families_gather_twice() {
+        let map = prefix_map_with_starts(&[]);
+        let modes = crate::skirmish_modes::stock_skirmish_modes();
+        assert_eq!(modes.len(), 9);
+        for mode in modes {
+            let mut session = one_player_battle_launch("stock-mode.mmx").session().clone();
+            session.mode = crate::skirmish_launch::SkirmishLaunchMode::from_game_mode(&mode);
+            let launch = MatchLaunchDescriptor::from_resolved(session).unwrap();
+            let expected_family = if mode.id == 3 {
+                StockOfflineStartCallbackFamily::Cooperative
+            } else {
+                StockOfflineStartCallbackFamily::Battle
+            };
+            assert_eq!(
+                stock_offline_start_callback_family(launch.session()).unwrap(),
+                expected_family
+            );
+            let plan = prepare_stock_offline_scenario_prefix_plan(
+                &launch,
+                &map,
+                &map.waypoints,
+                0x5300 + mode.id as u32,
+            )
+            .unwrap_or_else(|err| panic!("stock mode {} prefix failed: {err}", mode.id));
+            assert_eq!(plan.first_gathered_starts().len(), 1);
+            assert_eq!(plan.final_gathered_starts().len(), 1);
+            assert_ne!(
+                plan.rng_checkpoints().after_first_gather,
+                plan.rng_checkpoints().after_second_gather_and_chooser,
+                "stock mode {} must execute its second deficient Gather",
+                mode.id
+            );
+        }
+    }
+
+    #[test]
+    fn scenario_prefix_rejects_mutated_stock_mode_metadata() {
+        let session = one_player_battle_launch("mutated-mode.mmx")
+            .session()
+            .clone();
+        let mutations: [fn(&mut crate::skirmish_launch::SkirmishLaunchMode); 7] = [
+            |mode| mode.ui_name_key = "GUI:Cooperative".to_string(),
+            |mode| mode.tooltip_key = "STT:ModeCooperative".to_string(),
+            |mode| mode.override_file = "MPCoopMD.ini".to_string(),
+            |mode| mode.map_filter = "cooperative".to_string(),
+            |mode| mode.random_maps_allowed = false,
+            |mode| mode.allies_allowed = false,
+            |mode| mode.must_ally = true,
+        ];
+        let mut cases = Vec::new();
+        for mutate in mutations {
+            let mut mutated = session.clone();
+            mutate(&mut mutated.mode);
+            cases.push(mutated);
+        }
+        let mut unknown_id = session;
+        unknown_id.mode.id = 10;
+        cases.push(unknown_id);
+
+        for mutated in cases {
+            let id = mutated.mode.id;
+            assert_eq!(
+                stock_offline_start_callback_family(&mutated).unwrap_err(),
+                PreFillScenarioPrefixPlanError::UnsupportedStockMode { id }
+            );
+        }
+    }
+
+    #[test]
+    fn scenario_prefix_rejects_invalid_map_cell_extents() {
+        let launch = one_player_battle_launch("invalid-size.mmx");
+        for (width, height) in [(0, 64), (64, 0), (400, 200), (u32::MAX, 1)] {
+            let mut map = one_start_prefix_map(Waypoint {
+                index: 0,
+                rx: 30,
+                ry: 30,
+            });
+            map.header.width = width;
+            map.header.height = height;
+            assert_eq!(
+                prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, 0x5320,)
+                    .unwrap_err(),
+                PreFillScenarioPrefixPlanError::InvalidMapCellExtent,
+                "Size={width},{height}"
+            );
+        }
+
+        let mut boundary = one_start_prefix_map(Waypoint {
+            index: 0,
+            rx: 30,
+            ry: 30,
+        });
+        boundary.header.width = 256;
+        boundary.header.height = 256;
+        prepare_stock_offline_scenario_prefix_plan(&launch, &boundary, &boundary.waypoints, 0x5320)
+            .expect("Size sum 512 is the inclusive native cell-array boundary");
+    }
+
+    #[test]
+    fn scenario_prefix_ignores_later_map_payload() {
+        use crate::map::entities::{EntityCategory, MapEntity};
+        use crate::map::map_file::MapCell;
+        use crate::map::overlay::{OverlayEntry, TerrainObject};
+
+        let start = Waypoint {
+            index: 0,
+            rx: 35,
+            ry: 35,
+        };
+        let map_a = one_start_prefix_map(start);
+        let mut map_b = one_start_prefix_map(start);
+        map_b.header.fill = "Water".to_string();
+        map_b.header.level = 9;
+        map_b.cells.push(MapCell {
+            rx: 36,
+            ry: 36,
+            tile_index: 777,
+            sub_tile: 3,
+            z: 9,
+        });
+        map_b.overlays.push(OverlayEntry {
+            rx: 36,
+            ry: 36,
+            overlay_id: 24,
+            frame: 7,
+        });
+        map_b.terrain_objects.push(TerrainObject {
+            rx: 37,
+            ry: 37,
+            name: "TREE01".to_string(),
+        });
+        map_b.entities.push(MapEntity {
+            owner: "Neutral".to_string(),
+            type_id: "CAOILD".to_string(),
+            health: 256,
+            cell_x: 38,
+            cell_y: 38,
+            facing: 0,
+            category: EntityCategory::Structure,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+            mission: None,
+            recruitable_a: true,
+            recruitable_b: true,
+            structure_upgrades: [None, None, None],
+        });
+        let launch = one_player_battle_launch("payload.mmx");
+        let plan_a =
+            prepare_stock_offline_scenario_prefix_plan(&launch, &map_a, &map_a.waypoints, 0x5400)
+                .unwrap();
+        let plan_b =
+            prepare_stock_offline_scenario_prefix_plan(&launch, &map_b, &map_b.waypoints, 0x5400)
+                .unwrap();
+        assert_eq!(plan_a.first_gathered_starts, plan_b.first_gathered_starts);
+        assert_eq!(plan_a.final_gathered_starts, plan_b.final_gathered_starts);
+        assert_eq!(plan_a.assignment, plan_b.assignment);
+        assert_eq!(plan_a.scenario_rng_after, plan_b.scenario_rng_after);
+    }
+
+    #[test]
+    fn scenario_prefix_projection_is_draw_free() {
+        let seed = 0x5500;
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
+        };
+        let map = one_start_prefix_map(start);
+        let mut session = one_player_battle_launch("projection.mmx").session().clone();
+        session.local.start_position = LaunchStartPosition::Position(0);
+        let launch = MatchLaunchDescriptor::from_resolved(session).unwrap();
+        let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
+            .unwrap();
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        owner.install_pre_fill_scenario_prefix_plan(&plan).unwrap();
+        let mut sim = owner.into_simulation(&descriptor(seed));
+        let rules = techno_constructor_start_rules();
+        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch);
+        let before = sim.scenario_rng.logical_state();
+        let slots = normalized_launch_slots(launch.session());
+        project_pre_fill_start_assignment(&mut sim, &slots, plan.assignment());
+        assert_eq!(sim.scenario_rng.logical_state(), before);
+        assert_eq!(
+            sim.houses
+                .get(&sim.session.house_order[0])
+                .and_then(|house| house.base_center),
+            Some((40, 40))
+        );
+    }
+
+    #[test]
+    fn scenario_prefix_cursor_reaches_base_plan_consumer() {
+        use crate::sim::base_plan::BasePlanState;
+        use crate::sim::base_plan_generation::recalc_base_plan;
+
+        let seed = 0x5600;
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
+        };
+        let map = one_start_prefix_map(start);
+        let mut session = one_player_battle_launch("base-plan.mmx").session().clone();
+        session.local.start_position = LaunchStartPosition::Position(0);
+        let launch = MatchLaunchDescriptor::from_resolved(session).unwrap();
+        let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
+            .unwrap();
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\
+             HarvesterUnit=HARV\n\
+             AIExtraRefineries=1,1,1\n\
+             AISlaveMinerNumber=1,1,1\n\
+             AlliedBaseDefenseCounts=1,1,1\n\
+             SovietBaseDefenseCounts=0,0,0\n\
+             ThirdBaseDefenseCounts=0,0,0\n\
+             [AI]\n\
+             BuildConst=CON\nBuildPower=POW\nBuildRefinery=REF\n\
+             BuildBarracks=BAR\nBuildWeapons=WEAP\nBuildRadar=RAD\nBuildTech=TECH\n\
+             [Countries]\n0=Americans\n[Sides]\nAllied=Americans\n\
+             [Americans]\nSide=Allied\n\
+             [VehicleTypes]\n0=HARV\n[HARV]\nOwner=Americans\nStrength=1\n\
+             [BuildingTypes]\n0=CON\n1=POW\n2=REF\n3=BAR\n4=WEAP\n5=RAD\n6=TECH\n\
+             [CON]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nFoundation=1x1\n\
+             [POW]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nFoundation=1x1\n\
+             [REF]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nFoundation=1x1\n\
+             [BAR]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nFoundation=1x1\n\
+             [WEAP]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nFoundation=1x1\n\
+             [RAD]\nOwner=Americans\nAIBuildThis=no\nFoundation=1x1\n\
+             [TECH]\nOwner=Americans\nAIBuildThis=no\nFoundation=1x1\n",
+        ))
+        .unwrap();
+
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        owner.install_pre_fill_scenario_prefix_plan(&plan).unwrap();
+        let mut sim = owner.into_simulation(&descriptor(seed));
+        let mut expected_rng = SimRng::new(u64::from(seed));
+        for _ in 0..6 {
+            let _ = expected_rng
+                .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
+        }
+        let mut actual_plan = BasePlanState::default();
+        let mut expected_plan = BasePlanState::default();
+        recalc_base_plan(
+            &mut actual_plan,
+            &rules,
+            "Americans",
+            0,
+            HouseDifficulty::Normal,
+            10,
+            true,
+            &mut sim.scenario_rng,
+        );
+        recalc_base_plan(
+            &mut expected_plan,
+            &rules,
+            "Americans",
+            0,
+            HouseDifficulty::Normal,
+            10,
+            true,
+            &mut expected_rng,
+        );
+        assert_eq!(actual_plan.nodes, expected_plan.nodes);
+        assert_eq!(actual_plan.percent_built, expected_plan.percent_built);
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+    }
+
+    #[test]
+    fn scenario_prefix_transfers_once_before_terrain() {
         let seed = 0x51C0_1004;
         let before = SimRng::new(u64::from(seed));
-        let mut after = before.clone();
-        let _ = after
-            .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
-        let plan = PreloadedBattleStartPlan {
-            gathered_starts: Vec::new(),
-            assignment: NativeStartAssignment {
-                placements: Vec::new(),
-                start_table: Vec::new(),
-            },
-            scenario_rng_before: before.logical_state(),
-            scenario_rng_before_fingerprint: before.state(),
-            scenario_rng_after: after.logical_state(),
-            scenario_rng_after_cursor: after.clone(),
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
         };
+        let map = one_start_prefix_map(start);
+        let launch = one_player_battle_launch("mp01t4.map");
+        let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
+            .expect("stock Battle prefix");
+        let after = plan.scenario_rng_after_cursor.clone();
         let mut owner = ScenarioBootstrapRng::new(seed);
 
         owner
-            .install_preloaded_battle_plan(&plan)
+            .install_pre_fill_scenario_prefix_plan(&plan)
             .expect("fresh bootstrap owner accepts the plan prefix");
         assert!(
-            owner.install_preloaded_battle_plan(&plan).is_err(),
-            "the same constructor/assignment prefix cannot be installed twice"
+            owner.install_pre_fill_scenario_prefix_plan(&plan).is_err(),
+            "the same stock-offline prefix cannot be installed twice"
         );
         let actual = owner.into_simulation(&descriptor(seed)).rng_state();
 
@@ -2503,28 +3389,24 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_12_preload_fill_and_generated_trace_share_one_scenario_owner() {
+    fn gsi_04_12_prefix_fill_and_generated_trace_share_one_scenario_owner() {
         use crate::map::construction_trace::{RmgConstructionPhase, RmgConstructionTrace};
 
         let seed = 0x51C0_1006;
         let before = SimRng::new(u64::from(seed));
-        let mut reference = before.clone();
-        let _ = reference
-            .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
-        let plan = PreloadedBattleStartPlan {
-            gathered_starts: Vec::new(),
-            assignment: NativeStartAssignment {
-                placements: Vec::new(),
-                start_table: Vec::new(),
-            },
-            scenario_rng_before: before.logical_state(),
-            scenario_rng_before_fingerprint: before.state(),
-            scenario_rng_after: reference.logical_state(),
-            scenario_rng_after_cursor: reference.clone(),
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
         };
+        let map = one_start_prefix_map(start);
+        let launch = one_player_battle_launch("RandMap.SED");
+        let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
+            .expect("generated stock prefix");
+        let mut reference = plan.scenario_rng_after_cursor.clone();
         let mut owner = ScenarioBootstrapRng::new(seed);
         owner
-            .install_preloaded_battle_plan(&plan)
+            .install_pre_fill_scenario_prefix_plan(&plan)
             .expect("fresh launch owner accepts the Full-Init prefix");
         {
             let (mut scenario_fill, main) = owner.terrain_draws();
@@ -2657,6 +3539,8 @@ mod tests {
                 team: LaunchTeam::None,
             },
             opponents: Vec::new(),
+            pre_fill_house_roster:
+                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(0),
             options: SkirmishLaunchOptions {
                 unit_count: 0,
                 bases: true,
@@ -2667,32 +3551,19 @@ mod tests {
         let launch = MatchLaunchDescriptor::from_resolved(session)
             .expect("fixture contains no unresolved shell choices");
 
-        let before = SimRng::new(u64::from(seed));
-        let mut reference = before.clone();
-        // One participant, then Neutral and Special, in native House order.
-        for _ in 0..3 {
-            let _ = reference
-                .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
-        }
         let start = Waypoint {
             index: 0,
             rx: 40,
             ry: 40,
         };
-        let plan = PreloadedBattleStartPlan {
-            gathered_starts: vec![start],
-            assignment: NativeStartAssignment {
-                placements: vec![(0, start)],
-                start_table: vec![Some(0)],
-            },
-            scenario_rng_before: before.logical_state(),
-            scenario_rng_before_fingerprint: before.state(),
-            scenario_rng_after: reference.logical_state(),
-            scenario_rng_after_cursor: reference.clone(),
-        };
+        let before = SimRng::new(u64::from(seed));
+        let staged_starts = HashMap::from([(0, start)]);
+        let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &staged_starts, seed)
+            .expect("accepted generated prefix");
+        let mut reference = plan.scenario_rng_after_cursor.clone();
         let mut owner = ScenarioBootstrapRng::new(seed);
         owner
-            .install_preloaded_battle_plan(&plan)
+            .install_pre_fill_scenario_prefix_plan(&plan)
             .expect("one authoritative Full-Init prefix");
         {
             let (mut scenario_fill, main) = owner.terrain_draws();
@@ -2784,7 +3655,7 @@ mod tests {
 
         let starting_techno_word = (reference.next_u32() & 0xFFFF) as u16;
         let _starting_force_tail = reference.next_range_u32_inclusive(0, 0xFFFF);
-        let launch_result = apply_preloaded_battle_launch_session_with_overlay_registry(
+        let launch_result = apply_pre_fill_scenario_prefix_launch_session_with_overlay_registry(
             &mut sim,
             &map,
             &house_roster,
