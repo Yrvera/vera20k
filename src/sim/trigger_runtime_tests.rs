@@ -208,6 +208,7 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
                     .into_iter()
                     .map(str::to_string)
                     .collect(),
+                waypoint_index: Some(0),
             }],
         },
     )]
@@ -270,6 +271,7 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
             triggers: &triggers,
             events: &events,
             actions: &actions,
+            waypoints: &HashMap::new(),
             rules: None,
         }),
     );
@@ -492,10 +494,12 @@ fn time_trigger_can_center_camera_at_waypoint() {
                 "0".to_string(),
                 "0".to_string(),
                 "0".to_string(),
-                "9".to_string(),
+                "J".to_string(),
             ],
             entries: vec![ActionEntry {
                 kind: 112,
+                // Runtime owns the reader-materialized +0x44 value below;
+                // changing retained source text must not trigger re-decoding.
                 params: vec![
                     "0".to_string(),
                     "0".to_string(),
@@ -503,8 +507,9 @@ fn time_trigger_can_center_camera_at_waypoint() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "9".to_string(),
+                    "ZZ".to_string(),
                 ],
+                waypoint_index: Some(9),
             }],
         },
     )]
@@ -521,11 +526,29 @@ fn time_trigger_can_center_camera_at_waypoint() {
 
     assert!(
         runtime
-            .advance_at_frame(44, &graph, &triggers, &events, &actions, None, None)
+            .advance_at_frame(
+                44,
+                &graph,
+                &triggers,
+                &events,
+                &actions,
+                None,
+                None,
+                &HashMap::new(),
+            )
             .is_empty()
     );
     assert_eq!(
-        runtime.advance_at_frame(45, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            45,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 9,
             immediate: true,
@@ -533,7 +556,16 @@ fn time_trigger_can_center_camera_at_waypoint() {
     );
     assert!(
         runtime
-            .advance_at_frame(46, &graph, &triggers, &events, &actions, None, None)
+            .advance_at_frame(
+                46,
+                &graph,
+                &triggers,
+                &events,
+                &actions,
+                None,
+                None,
+                &HashMap::new(),
+            )
             .is_empty()
     );
 }
@@ -573,8 +605,9 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "9".to_string(),
+                    "J".to_string(),
                 ],
+                waypoint_index: Some(9),
             }],
         },
     )]
@@ -603,6 +636,7 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
             triggers: &triggers,
             events: &events,
             actions: &actions,
+            waypoints: &HashMap::new(),
             rules: None,
         }),
     );
@@ -658,6 +692,7 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
             entries: vec![ActionEntry {
                 kind: 28,
                 params: vec!["13".to_string()],
+                waypoint_index: Some(0),
             }],
         },
     )]
@@ -671,11 +706,13 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         &actions,
     );
     let height_map = BTreeMap::new();
+    let waypoints = HashMap::new();
     let trigger_inputs = TriggerInputs {
         graph: &graph,
         triggers: &triggers,
         events: &events,
         actions: &actions,
+        waypoints: &waypoints,
         rules: None,
     };
 
@@ -880,7 +917,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
             MapAction {
                 id: "TRIG_A".to_string(),
                 fields: vec![
-                    "3".to_string(),
+                    "D".to_string(),
                     "28".to_string(),
                     "7".to_string(),
                     "0".to_string(),
@@ -918,6 +955,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                     ActionEntry {
                         kind: 53,
@@ -930,6 +968,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                     ActionEntry {
                         kind: 22,
@@ -942,6 +981,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                             "0".to_string(),
                             "0".to_string(),
                         ],
+                        waypoint_index: None,
                     },
                 ],
             },
@@ -959,7 +999,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "3".to_string(),
+                    "D".to_string(),
                 ],
                 entries: vec![ActionEntry {
                     kind: 112,
@@ -970,8 +1010,9 @@ fn global_actions_can_enable_and_force_followup_trigger() {
                         "0".to_string(),
                         "0".to_string(),
                         "0".to_string(),
-                        "3".to_string(),
+                        "D".to_string(),
                     ],
+                    waypoint_index: Some(3),
                 }],
             },
         ),
@@ -988,7 +1029,16 @@ fn global_actions_can_enable_and_force_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 3,
             immediate: true,
@@ -1073,6 +1123,7 @@ fn linked_trigger_field_queues_followup_trigger() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: Some(0),
                 }],
             },
         ),
@@ -1089,7 +1140,7 @@ fn linked_trigger_field_queues_followup_trigger() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "4".to_string(),
+                    "E".to_string(),
                 ],
                 entries: vec![ActionEntry {
                     kind: 112,
@@ -1100,8 +1151,9 @@ fn linked_trigger_field_queues_followup_trigger() {
                         "0".to_string(),
                         "0".to_string(),
                         "0".to_string(),
-                        "4".to_string(),
+                        "E".to_string(),
                     ],
+                    waypoint_index: Some(4),
                 }],
             },
         ),
@@ -1118,7 +1170,16 @@ fn linked_trigger_field_queues_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 4,
             immediate: true,
@@ -1203,6 +1264,7 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: None,
                 }],
             },
         ),
@@ -1219,7 +1281,7 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "8".to_string(),
+                    "I".to_string(),
                 ],
                 entries: vec![ActionEntry {
                     kind: 112,
@@ -1230,8 +1292,9 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
                         "0".to_string(),
                         "0".to_string(),
                         "0".to_string(),
-                        "8".to_string(),
+                        "I".to_string(),
                     ],
+                    waypoint_index: Some(8),
                 }],
             },
         ),
@@ -1248,7 +1311,16 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         Vec::<TriggerEffect>::new()
     );
 }
@@ -1314,6 +1386,7 @@ fn mission_announce_then_force_end_emits_result_effects() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: None,
                 },
                 ActionEntry {
                     kind: 69,
@@ -1326,6 +1399,7 @@ fn mission_announce_then_force_end_emits_result_effects() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: None,
                 },
             ],
         },
@@ -1342,7 +1416,16 @@ fn mission_announce_then_force_end_emits_result_effects() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![
             TriggerEffect::MissionAnnouncement {
                 text: "Mission Accomplished".to_string(),
@@ -1432,6 +1515,7 @@ fn local_variables_seed_and_gate_followup_triggers() {
                         "0".to_string(),
                         "0".to_string(),
                     ],
+                    waypoint_index: Some(0),
                 }],
             },
         ),
@@ -1448,7 +1532,7 @@ fn local_variables_seed_and_gate_followup_triggers() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "6".to_string(),
+                    "G".to_string(),
                 ],
                 entries: vec![ActionEntry {
                     kind: 112,
@@ -1459,8 +1543,9 @@ fn local_variables_seed_and_gate_followup_triggers() {
                         "0".to_string(),
                         "0".to_string(),
                         "0".to_string(),
-                        "6".to_string(),
+                        "G".to_string(),
                     ],
+                    waypoint_index: Some(6),
                 }],
             },
         ),
@@ -1487,12 +1572,30 @@ fn local_variables_seed_and_gate_followup_triggers() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &local_variables);
 
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            0,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         Vec::<TriggerEffect>::new()
     );
     assert!(runtime.locals_set.contains(&2));
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            0,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 6,
             immediate: true,
@@ -1564,7 +1667,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "11".to_string(),
+                    "L".to_string(),
                 ],
                 entries: vec![ActionEntry {
                     kind: 112,
@@ -1575,8 +1678,9 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
                         "0".to_string(),
                         "0".to_string(),
                         "0".to_string(),
-                        "11".to_string(),
+                        "L".to_string(),
                     ],
+                    waypoint_index: Some(11),
                 }],
             },
         ),
@@ -1593,7 +1697,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
                     "0".to_string(),
                     "0".to_string(),
                     "0".to_string(),
-                    "12".to_string(),
+                    "M".to_string(),
                 ],
                 entries: vec![ActionEntry {
                     kind: 112,
@@ -1604,8 +1708,9 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
                         "0".to_string(),
                         "0".to_string(),
                         "0".to_string(),
-                        "12".to_string(),
+                        "M".to_string(),
                     ],
+                    waypoint_index: Some(12),
                 }],
             },
         ),
@@ -1633,6 +1738,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
             &actions,
             Some(&mut sim),
             None,
+            &HashMap::new(),
         ),
         vec![
             TriggerEffect::CenterCameraAtWaypoint {
@@ -1645,4 +1751,436 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
             },
         ]
     );
+}
+
+fn run_waypoint_action(
+    kind: i32,
+    token: Option<&str>,
+    trigger_country: Option<&str>,
+    sim: &mut Simulation,
+    waypoints: &HashMap<u32, crate::map::waypoints::Waypoint>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> Vec<TriggerEffect> {
+    let mut trigger = make_trigger("WAYPOINT_ACTION", None, "Waypoint action", true, false);
+    trigger.owner = trigger_country.map(str::to_string);
+    trigger.fields[0] = trigger_country.unwrap_or("").to_string();
+    let triggers: TriggerMap = [(trigger.id.clone(), trigger)].into_iter().collect();
+    let events: EventMap = [(
+        "WAYPOINT_ACTION".to_string(),
+        MapEvent {
+            id: "WAYPOINT_ACTION".to_string(),
+            fields: Vec::new(),
+            conditions: vec![EventCondition {
+                kind: 47,
+                params: vec!["0".to_string()],
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let mut params = vec!["0".to_string(); 6];
+    if let Some(token) = token {
+        params.push(token.to_string());
+    }
+    let actions: ActionMap = [(
+        "WAYPOINT_ACTION".to_string(),
+        MapAction {
+            id: "WAYPOINT_ACTION".to_string(),
+            fields: Vec::new(),
+            entries: vec![ActionEntry {
+                kind,
+                params,
+                waypoint_index: crate::map::actions::read_waypoint_token(token),
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let graph = build_trigger_graph(
+        &HashMap::new(),
+        &HashMap::new(),
+        &triggers,
+        &events,
+        &actions,
+    );
+    let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+    runtime.advance_at_frame(
+        0,
+        &graph,
+        &triggers,
+        &events,
+        &actions,
+        Some(sim),
+        rules,
+        waypoints,
+    )
+}
+
+fn waypoint_action_rules() -> crate::rules::ruleset::RuleSet {
+    crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[Countries]\n0=Americans\n1=Russians\n\
+         [Americans]\nName=United States\n\
+         [Russians]\nName=Russian Federation\n",
+    ))
+    .expect("waypoint-action country registry parses")
+}
+
+fn register_waypoint_action_house(
+    sim: &mut Simulation,
+    name: &str,
+    country: Option<&str>,
+    alternate_base_center: (u16, u16),
+) -> crate::sim::intern::InternedId {
+    let owner = sim.interner.intern(name);
+    let country = country.map(|country| sim.interner.intern(country));
+    let mut house = crate::sim::house_state::HouseState::new(owner, 0, country, false, 0, 10);
+    house.base_center = Some((40, 50));
+    house.alternate_base_center = alternate_base_center;
+    sim.houses.insert(owner, house);
+    sim.session.house_order.push(owner);
+    owner
+}
+
+#[test]
+fn camera_actions_use_alpha_tokens_and_ctor_zero_not_decimal_indices() {
+    for (kind, token, waypoint, immediate) in [(48, "NZ", 389, false), (112, "AA", 26, true)] {
+        let mut sim = Simulation::new();
+        assert_eq!(
+            run_waypoint_action(kind, Some(token), None, &mut sim, &HashMap::new(), None),
+            vec![TriggerEffect::CenterCameraAtWaypoint {
+                waypoint,
+                immediate,
+            }]
+        );
+    }
+
+    for token in [None, Some("")] {
+        let mut sim = Simulation::new();
+        assert_eq!(
+            run_waypoint_action(112, token, None, &mut sim, &HashMap::new(), None),
+            vec![TriggerEffect::CenterCameraAtWaypoint {
+                waypoint: 0,
+                immediate: true,
+            }]
+        );
+    }
+    for token in [Some("15"), Some("   ")] {
+        let mut sim = Simulation::new();
+        assert!(run_waypoint_action(112, token, None, &mut sim, &HashMap::new(), None).is_empty());
+    }
+}
+
+#[test]
+fn action_137_replays_all_three_retail_waypoint_fixtures() {
+    for (token, index, cell) in [
+        ("P", 15, (93, 106)),
+        ("NZ", 389, (122, 135)),
+        ("AA", 26, (105, 194)),
+    ] {
+        let mut sim = Simulation::new();
+        let rules = waypoint_action_rules();
+        let house = register_waypoint_action_house(&mut sim, "HouseA", Some("Americans"), (0, 0));
+        let waypoints = [(
+            index,
+            crate::map::waypoints::Waypoint {
+                index,
+                rx: cell.0,
+                ry: cell.1,
+            },
+        )]
+        .into_iter()
+        .collect();
+
+        assert!(
+            run_waypoint_action(
+                137,
+                Some(token),
+                Some("americans"),
+                &mut sim,
+                &waypoints,
+                Some(&rules),
+            )
+            .is_empty()
+        );
+        assert_eq!(sim.houses[&house].alternate_base_center, cell);
+        assert_eq!(sim.houses[&house].base_center, Some((40, 50)));
+    }
+}
+
+#[test]
+fn action_137_uses_first_registration_order_country_match_only() {
+    let mut sim = Simulation::new();
+    let rules = waypoint_action_rules();
+    let first = register_waypoint_action_house(&mut sim, "First", Some("Americans"), (1, 2));
+    let second = register_waypoint_action_house(&mut sim, "Second", Some("AMERICANS"), (3, 4));
+    let waypoints = [(
+        15,
+        crate::map::waypoints::Waypoint {
+            index: 15,
+            rx: 93,
+            ry: 106,
+        },
+    )]
+    .into_iter()
+    .collect();
+
+    run_waypoint_action(
+        137,
+        Some("P"),
+        Some("americans"),
+        &mut sim,
+        &waypoints,
+        Some(&rules),
+    );
+
+    assert_eq!(sim.houses[&first].alternate_base_center, (93, 106));
+    assert_eq!(sim.houses[&second].alternate_base_center, (3, 4));
+    assert_eq!(sim.houses[&first].base_center, Some((40, 50)));
+    assert_eq!(sim.houses[&second].base_center, Some((40, 50)));
+}
+
+#[test]
+fn action_137_canonicalizes_house_type_alias_and_none_owner() {
+    let rules = waypoint_action_rules();
+    let waypoints = [(
+        15,
+        crate::map::waypoints::Waypoint {
+            index: 15,
+            rx: 93,
+            ry: 106,
+        },
+    )]
+    .into_iter()
+    .collect();
+
+    let mut alias_sim = Simulation::new();
+    let alias_house =
+        register_waypoint_action_house(&mut alias_sim, "AliasHouse", Some("Americans"), (0, 0));
+    run_waypoint_action(
+        137,
+        Some("P"),
+        Some("united states"),
+        &mut alias_sim,
+        &waypoints,
+        Some(&rules),
+    );
+    assert_eq!(
+        alias_sim.houses[&alias_house].alternate_base_center,
+        (93, 106)
+    );
+
+    let mut none_sim = Simulation::new();
+    let russian =
+        register_waypoint_action_house(&mut none_sim, "RussianHouse", Some("Russians"), (7, 8));
+    let first_type =
+        register_waypoint_action_house(&mut none_sim, "AmericanHouse", Some("Americans"), (0, 0));
+    run_waypoint_action(
+        137,
+        Some("P"),
+        Some("<none>"),
+        &mut none_sim,
+        &waypoints,
+        Some(&rules),
+    );
+    assert_eq!(none_sim.houses[&russian].alternate_base_center, (7, 8));
+    assert_eq!(
+        none_sim.houses[&first_type].alternate_base_center,
+        (93, 106)
+    );
+}
+
+#[test]
+fn action_137_rejects_only_exact_packed_zero_cell() {
+    let rules = waypoint_action_rules();
+    for cell in [(0, 17), (23, 0)] {
+        let mut sim = Simulation::new();
+        let house =
+            register_waypoint_action_house(&mut sim, "AxisHouse", Some("Americans"), (9, 9));
+        let waypoints = [(
+            15,
+            crate::map::waypoints::Waypoint {
+                index: 15,
+                rx: cell.0,
+                ry: cell.1,
+            },
+        )]
+        .into_iter()
+        .collect();
+        run_waypoint_action(
+            137,
+            Some("P"),
+            Some("Americans"),
+            &mut sim,
+            &waypoints,
+            Some(&rules),
+        );
+        assert_eq!(sim.houses[&house].alternate_base_center, cell);
+    }
+}
+
+#[test]
+fn action_137_writes_signed_waypoint_halves_as_raw_nonzero_cell() {
+    let rules = waypoint_action_rules();
+    let mut sim = Simulation::new();
+    let house =
+        register_waypoint_action_house(&mut sim, "SignedWaypointHouse", Some("Americans"), (9, 9));
+    let waypoints = crate::map::waypoints::parse_waypoints(
+        &crate::rules::ini_parser::IniFile::from_str("[Waypoints]\n15=-1001\n"),
+    );
+
+    run_waypoint_action(
+        137,
+        Some("P"),
+        Some("Americans"),
+        &mut sim,
+        &waypoints,
+        Some(&rules),
+    );
+
+    assert_eq!(
+        sim.houses[&house].alternate_base_center,
+        (u16::MAX, u16::MAX),
+        "signed -1 quotient/remainder halves are nonzero and must be written"
+    );
+    assert_eq!(sim.houses[&house].base_center, Some((40, 50)));
+}
+
+#[test]
+fn action_137_invalid_resolution_and_waypoints_do_not_mutate_either_base_cell() {
+    fn assert_no_write(
+        trigger_country: Option<&str>,
+        house_country: Option<&str>,
+        token: Option<&str>,
+        waypoints: HashMap<u32, crate::map::waypoints::Waypoint>,
+        register: bool,
+        with_rules: bool,
+    ) {
+        let mut sim = Simulation::new();
+        let rules = waypoint_action_rules();
+        let house = register
+            .then(|| register_waypoint_action_house(&mut sim, "Americans", house_country, (7, 8)));
+        run_waypoint_action(
+            137,
+            token,
+            trigger_country,
+            &mut sim,
+            &waypoints,
+            with_rules.then_some(&rules),
+        );
+        if let Some(house) = house {
+            assert_eq!(sim.houses[&house].alternate_base_center, (7, 8));
+            assert_eq!(sim.houses[&house].base_center, Some((40, 50)));
+        }
+    }
+
+    let valid = || {
+        [(
+            15,
+            crate::map::waypoints::Waypoint {
+                index: 15,
+                rx: 93,
+                ry: 106,
+            },
+        )]
+        .into_iter()
+        .collect()
+    };
+    assert_no_write(None, Some("Americans"), Some("P"), valid(), true, true);
+    assert_no_write(
+        Some("Americans"),
+        Some("Americans"),
+        Some("P"),
+        valid(),
+        true,
+        false,
+    );
+    assert_no_write(Some("Americans"), None, Some("P"), valid(), true, true);
+    assert_no_write(
+        Some("Americans"),
+        Some("Americans"),
+        Some("P"),
+        valid(),
+        false,
+        true,
+    );
+    assert_no_write(
+        Some("Americans"),
+        Some("Americans"),
+        Some("15"),
+        valid(),
+        true,
+        true,
+    );
+    assert_no_write(
+        Some("Americans"),
+        Some("Americans"),
+        Some("P"),
+        HashMap::new(),
+        true,
+        true,
+    );
+    assert_no_write(
+        Some("Americans"),
+        Some("Americans"),
+        Some("P"),
+        [(
+            15,
+            crate::map::waypoints::Waypoint {
+                index: 15,
+                rx: 0,
+                ry: 0,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        true,
+        true,
+    );
+    // Matching the House name is insufficient: only HouseState.country owns
+    // the native Spring/Find_By_Country_Index resolution.
+    assert_no_write(
+        Some("Americans"),
+        Some("Russians"),
+        Some("P"),
+        valid(),
+        true,
+        true,
+    );
+}
+
+#[test]
+fn action_138_clears_only_first_country_match_without_token_or_rng_use() {
+    let mut sim = Simulation::new();
+    let rules = waypoint_action_rules();
+    let first = register_waypoint_action_house(&mut sim, "First", Some("Americans"), (93, 106));
+    let second = register_waypoint_action_house(&mut sim, "Second", Some("Americans"), (122, 135));
+    let rng_before = sim.scenario_rng.state();
+
+    run_waypoint_action(
+        138,
+        Some("present but ignored"),
+        Some("AMERICANS"),
+        &mut sim,
+        &HashMap::new(),
+        Some(&rules),
+    );
+
+    assert_eq!(sim.houses[&first].alternate_base_center, (0, 0));
+    assert_eq!(sim.houses[&second].alternate_base_center, (122, 135));
+    assert_eq!(sim.houses[&first].base_center, Some((40, 50)));
+    assert_eq!(sim.houses[&second].base_center, Some((40, 50)));
+    assert_eq!(sim.scenario_rng.state(), rng_before);
+
+    let mut no_match = Simulation::new();
+    let house =
+        register_waypoint_action_house(&mut no_match, "OnlyHouse", Some("Russians"), (105, 194));
+    run_waypoint_action(
+        138,
+        None,
+        Some("Americans"),
+        &mut no_match,
+        &HashMap::new(),
+        Some(&rules),
+    );
+    assert_eq!(no_match.houses[&house].alternate_base_center, (105, 194));
 }

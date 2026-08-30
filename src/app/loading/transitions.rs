@@ -138,6 +138,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             triggers: result.scenario.triggers,
             events: result.scenario.events,
             actions: result.scenario.actions,
+            waypoints: result.scenario.waypoints.clone(),
         },
     });
     state.match_state.match_presentation.combat_lights.clear();

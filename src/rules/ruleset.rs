@@ -3102,6 +3102,28 @@ impl RuleSet {
         self.country_indices.get(&id.to_ascii_uppercase()).copied()
     }
 
+    /// Resolve a trigger owner token to the canonical HouseType registration.
+    ///
+    /// gamemd-derived: `TriggerTypeClass::Read` resolves token 1 through
+    /// `HouseTypeClass__FindIndexOfName @ 0x005117D0`. The source-order scan
+    /// checks each HouseType's `Name=` alias (`+0x64`) before its registry ID
+    /// (`+0x24`). Native `<none>` selects the first registered HouseType.
+    pub fn trigger_house_type_index(&self, owner: &str) -> Option<CountryIdx> {
+        if owner.eq_ignore_ascii_case("<none>") {
+            return (!self.country_ids.is_empty()).then_some(CountryIdx(0));
+        }
+        self.country_ids.iter().enumerate().find_map(|(index, id)| {
+            let alias_matches = self
+                .countries
+                .get(id)
+                .and_then(|country| country.name.as_deref())
+                .is_some_and(|name| name.eq_ignore_ascii_case(owner));
+            (alias_matches || id.eq_ignore_ascii_case(owner)).then(|| {
+                CountryIdx(u16::try_from(index).expect("[Countries] exceeds u16 identity space"))
+            })
+        })
+    }
+
     /// Resolve a country index back to its source spelling.
     pub fn country_name(&self, index: CountryIdx) -> Option<&str> {
         self.country_ids.get(index.0 as usize).map(String::as_str)
@@ -4114,6 +4136,36 @@ CellSpread=0
         assert_eq!(rules.side_index("north"), Some(SideIdx(0)));
         assert_eq!(rules.side_index("SOUTH"), Some(SideIdx(1)));
         assert_eq!(rules.side_name(SideIdx(0)), Some("North"));
+    }
+
+    #[test]
+    fn trigger_house_type_owner_uses_alias_then_id_source_order_and_none_default() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=First\n1=Second\n2=Third\n\
+             [First]\nName=Shared Alias\n\
+             [Second]\nName=Shared Alias\n\
+             [Third]\nName=Third Alias\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("country aliases parse");
+
+        assert_eq!(
+            rules.trigger_house_type_index("shared alias"),
+            Some(CountryIdx(0)),
+            "duplicate aliases keep first registration order"
+        );
+        assert_eq!(
+            rules.trigger_house_type_index("second"),
+            Some(CountryIdx(1))
+        );
+        assert_eq!(
+            rules.trigger_house_type_index("THIRD ALIAS"),
+            Some(CountryIdx(2))
+        );
+        assert_eq!(
+            rules.trigger_house_type_index("<none>"),
+            Some(CountryIdx(0))
+        );
+        assert_eq!(rules.trigger_house_type_index("missing"), None);
     }
 
     #[test]

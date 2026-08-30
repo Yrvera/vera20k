@@ -315,7 +315,10 @@ use crate::sim::world::Simulation;
 // persistent Level and Slope without requiring a retained dummy projectile.
 // The wire shape remains unchanged, but older saves do not certify the same
 // future-affecting lockstep hash authority for those live process-global bytes.
-const SNAPSHOT_VERSION: u32 = 107;
+// Bumped 107 -> 108: HouseState gains the serialized/hash-authoritative packed
+// alternate base cell written by trigger actions 137/138. Bincode encodes the
+// HouseState layout positionally, so an older record cannot supply this field.
+const SNAPSHOT_VERSION: u32 = 108;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2721,10 +2724,11 @@ mod tests {
     /// Drive/Ship slope-transition state; 105 -> 106 rejects saves that would
     /// resume under the corrected one-authority 104-lepton Cell ground formula
     /// despite unchanged wire shape; 106 -> 107 adds unconditional shared-
-    /// dummy level/slope hash authority for active Spark queries.
+    /// dummy level/slope hash authority for active Spark queries; 107 -> 108
+    /// adds the packed House alternate base cell.
     #[test]
-    fn phase3_spark_dummy_snapshot_version_is_107() {
-        assert_eq!(super::SNAPSHOT_VERSION, 107);
+    fn phase3_alternate_base_snapshot_version_is_108() {
+        assert_eq!(super::SNAPSHOT_VERSION, 108);
     }
 
     #[test]
@@ -2981,6 +2985,29 @@ mod tests {
             .unwrap()
             .master_id = 3;
         assert_ne!(changed_master.state_hash(), source_hash);
+    }
+
+    #[test]
+    fn alternate_base_center_roundtrips_with_primary_center_and_hash() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let country = sim.interner.intern("Americans");
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
+        house.base_center = Some((40, 50));
+        house.alternate_base_center = (93, 106);
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "alternate-base-center", 0);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 108);
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+
+        assert_eq!(restored.houses[&owner].base_center, Some((40, 50)));
+        assert_eq!(restored.houses[&owner].alternate_base_center, (93, 106));
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]
