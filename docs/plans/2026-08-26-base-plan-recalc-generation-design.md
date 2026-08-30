@@ -1,8 +1,8 @@
 # AI_RecalcBuildOptions BasePlan Generation Design
 
-**Date:** 2026-08-26  
-**Phase:** 3 — GSI-04.05  
-**Status:** Approved bounded mechanism  
+**Date:** 2026-08-26
+**Phase:** 3 — GSI-04.05
+**Status:** Approved bounded mechanism
 **Native authority:** `HouseClass__AI_RecalcBuildOptions @ 0x005054B0`, `FUN_00505180 @ 0x00505180`, successful `UnitClass__Deploy @ 0x007393C0` block `0x00739855..0x00739926`, active-retail rules data
 
 ## Verdict
