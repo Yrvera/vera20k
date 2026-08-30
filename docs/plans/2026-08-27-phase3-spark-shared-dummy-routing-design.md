@@ -10,7 +10,13 @@ recorded the lower-priority stale status prose; critic 6 rechecked the prior
 fixes and found only that remaining ledger issue. Fresh critic 7 rechecked all
 prior findings and independently audited the complete mechanism, returning PASS
 with zero findings. Current-HEAD focused validation: `gsi_04_03` 69/0,
-`sim::particles::spark` 45/0, exact v111 rejection 1/0.
+`sim::particles::spark` 45/0, exact v106 rejection 1/0.
+
+**Integration rebase (2026-08-30):** The source branch accumulated unrelated
+snapshot changes before this mechanism and therefore used `111 -> 112`.
+Current main enters this slice at version 106, so the identical Spark hash and
+resume boundary is integrated as `106 -> 107`; no excluded source-branch
+schema fields are imported.
 
 **Phase/GSI ownership hypothesis:** Phase 3 / GSI-04.03, behavior-3 Spark
 height/collision lookup routing. The general overlay writer lifecycle remains
@@ -276,10 +282,10 @@ null canonical slots and stock Spark motion can reach them.
 - stale Spark report/comment wording only where the implementation makes it
   factually wrong
 
-Advance `SNAPSHOT_VERSION` from 111 to 112 and reject v111 at the preamble.
+Advance `SNAPSHOT_VERSION` from 106 to 107 and reject v106 at the preamble.
 Although the wire shape is unchanged, a serialized active Spark resumes with
 different coordinate, deletion, color-RNG, and lifetime behavior after this
-fix. That is the same behavior-boundary rationale used for v110 to v111.
+fix. That is the same behavior-boundary rationale used for v105 to v106.
 
 Hash dummy level and slope unconditionally beside its already-unconditional
 bridge subset. Spark now consumes those persistent fields and can alter future
@@ -323,7 +329,7 @@ coordinate itself a future Spark input after the current query completes.
 12. Null allocated-mask slots plus negative and high linear indices continue
     through the normal Spark path without `OutOfRangeCell` or `UnavailableCell`.
 13. Dummy level/slope changes alter the world hash even with no retained dummy
-    projectile; snapshot schema is 112 and v111 is rejected before body decode.
+    projectile; snapshot schema is 107 and v106 is rejected before body decode.
 14. Existing real-cell bridge collapse, building ordering, LaserFence exclusion,
     wall, below-ground, slope-matrix, coordinate, deletion, RNG, and lifetime
     tests continue to pass.

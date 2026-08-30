@@ -17,7 +17,11 @@ status prose. After the provenance repair, critic 6 found only that remaining
 status-ledger issue. Fresh critic 7 then independently rechecked every prior
 finding and the complete bounded mechanism and returned **PASS with zero
 findings**. Current-HEAD focused validation was `gsi_04_03` 69/0,
-`sim::particles::spark` 45/0, and the exact v111 rejection gate 1/0.
+`sim::particles::spark` 45/0, and the exact v106 rejection gate 1/0.
+
+For the 2026-08-30 current-main integration, the source branch's accumulated
+snapshot `111 -> 112` numbering is rebased to `106 -> 107`. The behavior/hash
+boundary is unchanged; no unrelated source-branch schema fields are imported.
 
 The pre-fix Rust summary in the verdict, the disparity inventory in section 9,
 and the prescriptive handoff in section 10 are retained as historical
