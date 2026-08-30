@@ -92,7 +92,7 @@ ai_triggers_active
 auto_base_building
 ```
 
-All default false. Snapshot schema 109 rejects prior positional records, so reordering the three
+All default false. Snapshot schema 113 rejects prior positional records, so reordering the three
 existing fields into native order does not create an accepted mixed layout. Update every explicit
 fixture literal so the compiler proves the fourth state was considered.
 
@@ -133,18 +133,18 @@ unchanged and continues to call neither lane.
 
 ### Snapshot
 
-Bump `SNAPSHOT_VERSION` from 108 to 109 and document the addition of
+Bump `SNAPSHOT_VERSION` from the current-main 112 to 113 and document the addition of
 `AutocreateAllowed`. Replace the eight-combination latch test with all 16 combinations. Current
-snapshot assertions must refer to the current constant except for the explicit 109 contract test.
+snapshot assertions must refer to the current constant except for the explicit 113 contract test.
 
 ### Hash
 
-Add a v109 schema switch after the v108 deploy-latch switch. Native places CurrentIQ after the
-three direct activation booleans, while committed Rust v108 placed CurrentIQ before Production and
-AITriggersActive. Correct the native-relative position only for current v109; preserve the exact
-historical v108 and pre-v108 streams.
+Add a v113 schema switch after the v112 deploy-latch switch. Native places CurrentIQ after the
+three direct activation booleans, while committed Rust v112 placed CurrentIQ before Production and
+AITriggersActive. Correct the native-relative position only for current v113; preserve the exact
+historical v112 and pre-v112 streams.
 
-After the existing `tech_level` fold, the current v109 direct House fold must be:
+After the existing `tech_level` fold, the current v113 direct House fold must be:
 
 ```text
 Production
@@ -153,18 +153,18 @@ AITriggersActive
 CurrentIQ
 ```
 
-AutoBaseBuilding remains directly excluded. Implement this by separating the existing v108
+AutoBaseBuilding remains directly excluded. Implement this by separating the existing v112
 Production and AITriggers folds around the new conditional Autocreate fold and conditionally
 placing CurrentIQ:
 
-- when v109 is disabled, fold CurrentIQ at the old position before any v108 latch fields;
-- when v108 is enabled, fold Production;
-- when v109 is enabled, fold AutocreateAllowed;
-- when v108 is enabled, fold AITriggersActive;
-- when v109 is enabled, fold CurrentIQ at the corrected native position.
+- when v113 is disabled, fold CurrentIQ at the old position before any v112 latch fields;
+- when v112 is enabled, fold Production;
+- when v113 is enabled, fold AutocreateAllowed;
+- when v112 is enabled, fold AITriggersActive;
+- when v113 is enabled, fold CurrentIQ at the corrected native position.
 
-Thus the v108 historical probe remains `CurrentIQ -> Production -> AITriggersActive`; pre-v108
-remains `CurrentIQ` only; current v109 becomes
+Thus the v112 historical probe remains `CurrentIQ -> Production -> AITriggersActive`; pre-v112
+remains `CurrentIQ` only; current v113 becomes
 `Production -> AutocreateAllowed -> AITriggersActive -> CurrentIQ`.
 
 Extract the four-field fold into a small private helper if needed so an ordering-sensitive unit
@@ -175,10 +175,10 @@ Differential tests must show:
 
 - current hash changes for Production, AutocreateAllowed, or AITriggersActive;
 - current hash does not change for AutoBaseBuilding alone;
-- the pre-v109 probe ignores AutocreateAllowed;
-- the v109 helper/current fold equals the manual native sequence above;
-- the v108 historical helper/probe equals the manual committed sequence above;
-- the existing pre-v108 probe remains stable and omits all latch additions.
+- the pre-v113 probe ignores AutocreateAllowed;
+- the v113 helper/current fold equals the manual native sequence above;
+- the v112 historical helper/probe equals the manual committed sequence above;
+- the existing pre-v112 probe remains stable and omits all latch additions.
 
 ## Expected files
 
@@ -232,7 +232,7 @@ Cargo filter exercises the mechanism.
 
 ### Persistence/hash and regressions
 
-- all 16 latch combinations round-trip schema 109;
+- all 16 latch combinations round-trip schema 113;
 - current/direct, manual-order, and historical hash tests above;
 - existing qualifying deploy, facing-only deploy, controlled deploy, malformed/blocked deploy,
   and BasePlan tests remain green and prove deploy never writes AutocreateAllowed;
