@@ -781,6 +781,7 @@ impl Simulation {
                 house.alternate_base_center.hash(hasher);
             }
             if include_naval_build_const_v109 && !house.build_const_order.is_empty() {
+                b"naval-build-const-house-v1".hash(hasher);
                 house.build_const_order.len().hash(hasher);
                 for stable_id in &house.build_const_order {
                     stable_id.hash(hasher);
@@ -1235,6 +1236,7 @@ impl Simulation {
             entity.base_reservation_spacing.hash(hasher);
             entity.determines_waypoint_edge.hash(hasher);
             if include_naval_build_const_v109 && entity.build_const_eligible {
+                b"naval-build-const-entity-v1".hash(hasher);
                 entity.build_const_eligible.hash(hasher);
             }
             entity.veterancy.hash(hasher);
