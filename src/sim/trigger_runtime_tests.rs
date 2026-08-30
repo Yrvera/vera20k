@@ -526,11 +526,29 @@ fn time_trigger_can_center_camera_at_waypoint() {
 
     assert!(
         runtime
-            .advance_at_frame(44, &graph, &triggers, &events, &actions, None, None)
+            .advance_at_frame(
+                44,
+                &graph,
+                &triggers,
+                &events,
+                &actions,
+                None,
+                None,
+                &HashMap::new(),
+            )
             .is_empty()
     );
     assert_eq!(
-        runtime.advance_at_frame(45, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            45,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 9,
             immediate: true,
@@ -538,7 +556,16 @@ fn time_trigger_can_center_camera_at_waypoint() {
     );
     assert!(
         runtime
-            .advance_at_frame(46, &graph, &triggers, &events, &actions, None, None)
+            .advance_at_frame(
+                46,
+                &graph,
+                &triggers,
+                &events,
+                &actions,
+                None,
+                None,
+                &HashMap::new(),
+            )
             .is_empty()
     );
 }
@@ -1002,7 +1029,16 @@ fn global_actions_can_enable_and_force_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 3,
             immediate: true,
@@ -1134,7 +1170,16 @@ fn linked_trigger_field_queues_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 4,
             immediate: true,
@@ -1266,7 +1311,16 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         Vec::<TriggerEffect>::new()
     );
 }
@@ -1362,7 +1416,16 @@ fn mission_announce_then_force_end_emits_result_effects() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            15,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![
             TriggerEffect::MissionAnnouncement {
                 text: "Mission Accomplished".to_string(),
@@ -1509,12 +1572,30 @@ fn local_variables_seed_and_gate_followup_triggers() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &local_variables);
 
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            0,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         Vec::<TriggerEffect>::new()
     );
     assert!(runtime.locals_set.contains(&2));
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
+        runtime.advance_at_frame(
+            0,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            None,
+            None,
+            &HashMap::new(),
+        ),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 6,
             immediate: true,
@@ -1657,6 +1738,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
             &actions,
             Some(&mut sim),
             None,
+            &HashMap::new(),
         ),
         vec![
             TriggerEffect::CenterCameraAtWaypoint {
@@ -1722,7 +1804,7 @@ fn run_waypoint_action(
         &actions,
     );
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
-    runtime.advance_at_frame_with_waypoints(
+    runtime.advance_at_frame(
         0,
         &graph,
         &triggers,

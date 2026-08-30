@@ -3597,7 +3597,7 @@ impl Simulation {
         rules: Option<&RuleSet>,
     ) -> Vec<TriggerEffect> {
         let mut rt = std::mem::take(&mut self.trigger_runtime);
-        let effects = rt.advance_at_frame_with_waypoints(
+        let effects = rt.advance_at_frame(
             self.session.binary_frame,
             graph,
             triggers,

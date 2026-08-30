@@ -123,30 +123,10 @@ impl TriggerRuntime {
     }
 
     /// Evaluate and apply trigger actions against one authoritative gameplay frame.
+    ///
+    /// `waypoints` is the complete immutable scenario table; action 137 cannot
+    /// resolve its native destination without that bound map input.
     pub fn advance_at_frame(
-        &mut self,
-        current_frame: u32,
-        graph: &TriggerGraph,
-        triggers: &TriggerMap,
-        events: &EventMap,
-        actions: &ActionMap,
-        simulation: Option<&mut Simulation>,
-        rules: Option<&crate::rules::ruleset::RuleSet>,
-    ) -> Vec<TriggerEffect> {
-        self.advance_at_frame_with_waypoints(
-            current_frame,
-            graph,
-            triggers,
-            events,
-            actions,
-            simulation,
-            rules,
-            &HashMap::new(),
-        )
-    }
-
-    /// Evaluate with the complete immutable scenario waypoint table.
-    pub(crate) fn advance_at_frame_with_waypoints(
         &mut self,
         current_frame: u32,
         graph: &TriggerGraph,
