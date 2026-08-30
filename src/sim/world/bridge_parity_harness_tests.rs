@@ -105,7 +105,11 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// hash composition moved from retired body-rocking bytes to the locomotor.
 /// Re-baselined 2026-08-30 for v107's Spark shared-dummy tag plus level/slope
 /// folds. The path, bridge tripwires, and RNG streams remain byte-identical.
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x5B44_6C68_9BC2_F0AF;
+/// Re-baselined 2026-08-30 for v110's unconditional ordered BasePlan authority.
+/// The dedicated pre-v110 probe below reproduces the prior baseline exactly;
+/// path, bridge tripwires, RNG streams, and tick-for-tick replay remain exact.
+const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x5B44_6C68_9BC2_F0AF;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x6AFB_F54C_7397_0202;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -498,11 +502,16 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     }
 
     let final_hash = *replayed.last().expect("at least one tick replayed");
+    let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
     println!(
-        "[bridge parity] final_hash={final_hash:016X} streams={:016X},{:016X},{:016X}",
+        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} streams={:016X},{:016X},{:016X}",
         rep.scenario_rng.state(),
         rep.main_rng.state(),
         rep.mapgen_rng.state(),
+    );
+    assert_eq!(
+        pre_base_plan_hash, BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH,
+        "the dedicated pre-v110 probe must reproduce the prior bridge baseline"
     );
     assert_eq!(
         final_hash, BRIDGE_HARNESS_FINAL_HASH,

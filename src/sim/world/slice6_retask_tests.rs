@@ -320,7 +320,11 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
 // Re-baselined 2026-08-30 for v107's Spark shared-dummy tag plus level/slope
 // folds. Both historical probes remain byte-identical, so only current-schema
 // composition moved.
-const SLICE6_BASELINE_HASH: u64 = 0x214E_DE3E_7939_F143;
+// Re-baselined 2026-08-30 for v110's unconditional ordered BasePlan authority.
+// The dedicated pre-v110 probe reproduces the prior baseline exactly, isolating
+// the measured shift to current-schema composition.
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x214E_DE3E_7939_F143;
+const SLICE6_BASELINE_HASH: u64 = 0x4397_FA88_D95E_5208;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -397,9 +401,10 @@ fn replay_hash_stable_through_slice6() {
 
     let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();
     let pre_mission_hash = sim.state_hash_without_mission_v29();
+    let pre_base_plan_hash = sim.state_hash_without_base_plan_v110();
     let hash = sim.state_hash();
     println!(
-        "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},current:{hash:016X}"
+        "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},current:{hash:016X}"
     );
     assert_eq!(
         pre_lifecycle_hash, SLICE6_PRE_LIFECYCLE_V28_HASH,
@@ -408,6 +413,10 @@ fn replay_hash_stable_through_slice6() {
     assert_eq!(
         pre_mission_hash, SLICE6_PRE_MISSION_V29_HASH,
         "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
+    );
+    assert_eq!(
+        pre_base_plan_hash, SLICE6_PRE_BASE_PLAN_V110_HASH,
+        "the dedicated pre-v110 probe must reproduce the prior Slice 6 baseline"
     );
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,

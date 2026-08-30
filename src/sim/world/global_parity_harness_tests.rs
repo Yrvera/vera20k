@@ -515,7 +515,11 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE2B3_9FAA_432F_4A75;
 // Re-baselined 2026-08-30 for v107's Spark shared-dummy tag plus level/slope
 // folds. Both historical probes and all three RNG streams remain byte-identical,
 // isolating the shift to current-schema composition.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x254E_775C_65A2_B50A;
+// Re-baselined 2026-08-30 for v110's unconditional ordered BasePlan authority.
+// The dedicated pre-v110 probe reproduces the prior baseline exactly; the RNG
+// tuple and tick-for-tick replay remain exact, proving composition-only drift.
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x254E_775C_65A2_B50A;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x0E44_D6C4_D418_D99A;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -809,8 +813,9 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
 
     let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();
     let pre_mission_hash = rep.state_hash_without_mission_v29();
+    let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
     println!(
-        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X}"
+        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X}"
     );
     assert_eq!(
         pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
@@ -819,6 +824,10 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_mission_hash, GLOBAL_HARNESS_PRE_MISSION_V29_HASH,
         "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
+    );
+    assert_eq!(
+        pre_base_plan_hash, GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH,
+        "the dedicated pre-v110 probe must reproduce the prior global-harness baseline"
     );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,
