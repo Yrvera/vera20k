@@ -443,6 +443,17 @@ impl Simulation {
         )
     }
 
+    /// Test-only provenance probe for the v110 BasePlan folds. It reconstructs
+    /// the committed v109 hash layout while retaining every earlier schema
+    /// addition, including naval BuildConst order and membership.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, false,
+        )
+    }
+
     fn state_hash_with_schema(
         &self,
         include_lifecycle_v28: bool,
@@ -2626,10 +2637,20 @@ mod rally_hash_tests {
         let baseline = house_sim(vec![first, second], 50);
         let reversed = house_sim(vec![second, first], 50);
         assert_ne!(baseline.state_hash(), reversed.state_hash());
+        assert_ne!(
+            baseline.state_hash(),
+            baseline.state_hash_without_base_plan_v110(),
+            "the v110 schema folds BasePlan state even when earlier schema state is unchanged"
+        );
+        assert_eq!(
+            baseline.state_hash_without_base_plan_v110(),
+            reversed.state_hash_without_base_plan_v110(),
+            "the v109 provenance schema excludes BasePlan node order"
+        );
         assert_eq!(
             baseline.state_hash_before_lifecycle_v28_and_mission_v29(),
             reversed.state_hash_before_lifecycle_v28_and_mission_v29(),
-            "historical schemas exclude the complete v107 authority"
+            "historical schemas exclude the complete v110 authority"
         );
 
         for changed in [

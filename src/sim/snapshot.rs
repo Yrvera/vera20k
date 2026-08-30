@@ -3049,10 +3049,15 @@ mod tests {
         sim.substrate.entities.insert(entity);
 
         let v108_default_hash = sim.state_hash_without_naval_build_const_v109();
+        let v109_default_hash = sim.state_hash_without_base_plan_v110();
         assert_eq!(
+            v109_default_hash, v108_default_hash,
+            "empty BuildConst vectors and false membership preserve the v108 hash stream through v109"
+        );
+        assert_ne!(
             sim.state_hash(),
-            v108_default_hash,
-            "empty BuildConst vectors and false membership preserve the v108 hash stream"
+            v109_default_hash,
+            "the v110 schema adds BasePlan authority even when BuildConst state is empty"
         );
 
         sim.houses.get_mut(&owner).unwrap().build_const_order = vec![9, 3];
