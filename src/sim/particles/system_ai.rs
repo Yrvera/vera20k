@@ -4,7 +4,7 @@
 //! takes it from storage, runs per-`BehavesLike` AI, decrements lifetime, then
 //! reinserts it. Completed systems enter the common deferred-delete path.
 //! Smoke (C2), Gas (C3), and Fire (C4) have
-//! full bodies; the Tier-3 variants (Spark, Railgun) are still no-ops.
+//! full bodies; Spark dispatch is active while Railgun remains a no-op.
 //!
 //! Pulling each system out before ticking lets the inner AI take `&mut Simulation`
 //! freely — needed for spawning child systems and applying damage to entities —
@@ -24,8 +24,8 @@ use super::spark::{
 };
 use super::spark_world::{SparkCollisionWorld, SparkWorldError};
 
-// Retained with the verified Spark activation seam while live dispatch keeps
-// Spark and Railgun systems dormant.
+// Errors retained at the production Spark begin/query/finish boundary. Railgun
+// alone remains dormant in the behavior dispatch below.
 #[allow(dead_code)]
 #[derive(Debug, Error)]
 pub(crate) enum SparkSystemTickError {
@@ -337,7 +337,7 @@ mod tests {
     fn flat_facts() -> SparkCollisionFacts {
         SparkCollisionFacts {
             ground_z: 0,
-            slope_matrix: super::super::spark_world::slope_matrix(0).unwrap(),
+            slope_matrix: Some(super::super::spark_world::slope_matrix(0).unwrap()),
             old_has_structural_bridge: false,
             candidate_has_structural_bridge: false,
             accepted_building: false,
@@ -545,6 +545,114 @@ SpawnSparkPercentage=1
             0xc0c0_0000
         );
         assert_eq!(sim.rng_state().scenario, rng_before);
+    }
+
+    #[test]
+    fn gsi_04_03_spark_shared_dummy_query_order_and_miss_continuation() {
+        use super::super::spark_world::{SparkCellSelectionRole, SparkCollisionWorld};
+        use crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        use crate::map::resolved_terrain::ResolvedTerrainGrid;
+
+        let rules = spark_rules(0);
+        let mut sim = Simulation::with_seed(789);
+        sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(
+            1,
+            1,
+            vec![super::super::spark_world::tests::terrain_cell(0, 0)],
+        ));
+        sim.overlay_grid = None;
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .shared_cell_dummy()
+            .set_bridge_flags_0x1180(BRIDGE_FLAG_STRUCTURAL);
+        let mut sys = fake_system(ParticleSystemTypeId(0), 100);
+        let mut particle = spark_particle(256, 2);
+        particle.coords.z = 100;
+        sys.particles.push(particle);
+
+        let motion = SparkMotionStep {
+            old_coords: IVec3::new(256, 0, 100),
+            candidate_coords: IVec3::new(256, 0, 100),
+            candidate_f32: [
+                NativeF32Bits::from_bits(256.0f32.to_bits()),
+                NativeF32Bits::POSITIVE_ZERO,
+                NativeF32Bits::from_bits(100.0f32.to_bits()),
+            ],
+            persistent_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
+            probe_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
+        };
+        let (facts, transcript) = SparkCollisionWorld::new(&sim, &rules)
+            .unwrap()
+            .query_with_transcript(motion)
+            .unwrap();
+        assert_eq!(
+            transcript,
+            vec![
+                (SparkCellSelectionRole::Ground, 256, 0),
+                (SparkCellSelectionRole::Cell, 256, 0),
+            ]
+        );
+        assert!(facts.candidate_has_structural_bridge);
+        assert!(!facts.old_has_structural_bridge);
+        assert!(!facts.accepted_building);
+        assert_eq!(facts.wall_overlay_id, None);
+        assert!(facts.slope_matrix.is_none());
+
+        tick_spark_system_compat(&mut sys, &mut sim, &rules).unwrap();
+
+        assert_eq!(sys.particles.len(), 1);
+        assert_eq!(sys.particles[0].coords, IVec3::new(256, 0, 100));
+        assert_eq!(sys.particles[0].lifetime_remaining, 1);
+        assert!(!sys.particles[0].marked_for_deletion);
+        let mut expected_rng = SimRng::new(789);
+        expected_rng.next_range_u32_inclusive(0, 0x7fff_fffe);
+        assert_eq!(sim.rng_views().scenario, expected_rng.logical_view());
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .shared_cell_dummy()
+                .snapshot()
+                .coord,
+            (1, 0)
+        );
+
+        let mut collision_sim = Simulation::with_seed(790);
+        collision_sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(
+            1,
+            1,
+            vec![super::super::spark_world::tests::terrain_cell(0, 0)],
+        ));
+        collision_sim.overlay_grid = None;
+        let mut collision_particle = spark_particle(256, 2);
+        collision_particle.coords.z = -1;
+        let motion = begin_particle_tick(
+            &mut collision_particle,
+            gravity_as_stored_f32(rules.general.gravity).unwrap(),
+        )
+        .unwrap();
+        let facts = SparkCollisionWorld::new(&collision_sim, &rules)
+            .unwrap()
+            .query(motion)
+            .unwrap();
+        assert!(facts.slope_matrix.is_some(), "a selected collision performs the final slope lookup");
+        let particle_type = rules.particle_type(collision_particle.type_id);
+        finish_particle_tick(
+            &mut collision_particle,
+            motion,
+            facts,
+            particle_type.color_speed,
+            particle_type.color_list.len(),
+            collision_sim.particle_rng(),
+        )
+        .unwrap();
+        assert!(collision_particle.marked_for_deletion);
+        assert_eq!(collision_particle.coords, IVec3::new(256, 0, 0));
+        assert_eq!(collision_particle.lifetime_remaining, 1);
+        let mut expected_rng = SimRng::new(790);
+        expected_rng.next_range_u32_inclusive(0, 0x7fff_fffe);
+        assert_eq!(collision_sim.rng_views().scenario, expected_rng.logical_view());
     }
 
     mod advance_state_tests {

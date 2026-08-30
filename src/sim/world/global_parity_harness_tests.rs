@@ -512,7 +512,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE2B3_9FAA_432F_4A75;
 // Re-baselined 2026-08-30 for the same GSI-04.03 slope payload ownership.
 // The historical probes move consistently, the absolute RNG tuple is unchanged,
 // and record/replay equality remains exact: this is hash composition, not route drift.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xDA92_C04D_B53F_B58D;
+// Re-baselined 2026-08-30 for v107's Spark shared-dummy tag plus level/slope
+// folds. Both historical probes and all three RNG streams remain byte-identical,
+// isolating the shift to current-schema composition.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x254E_775C_65A2_B50A;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

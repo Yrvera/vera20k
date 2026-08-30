@@ -317,7 +317,10 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
 // the two legacy probes above isolate the shared behavior-bearing portion.
 // Re-baselined 2026-08-30 for the same slope payload move; both historical
 // probes shift consistently and the replay remains deterministic.
-const SLICE6_BASELINE_HASH: u64 = 0x9F9B_BB9B_3B35_0410;
+// Re-baselined 2026-08-30 for v107's Spark shared-dummy tag plus level/slope
+// folds. Both historical probes remain byte-identical, so only current-schema
+// composition moved.
+const SLICE6_BASELINE_HASH: u64 = 0x214E_DE3E_7939_F143;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

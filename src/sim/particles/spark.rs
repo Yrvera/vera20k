@@ -1,7 +1,7 @@
 //! Behavior-3 Spark arithmetic, collision, and native-ordered tick kernel.
 //!
-//! Production dispatch remains disabled. Callers must supply already-resolved
-//! native-frame collision facts and the authoritative particle RNG.
+//! Production callers gather native-ordered live-world collision facts before
+//! advancing the authoritative particle RNG.
 
 use glam::IVec3;
 use thiserror::Error;
@@ -26,7 +26,7 @@ const COLOR_JITTER_SCALE: NativeF64Bits = NativeF64Bits::from_bits(0x3fa9_9999_9
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SparkCollisionFacts {
     pub ground_z: i32,
-    pub slope_matrix: [NativeF32Bits; 12],
+    pub slope_matrix: Option<[NativeF32Bits; 12]>,
     pub old_has_structural_bridge: bool,
     pub candidate_has_structural_bridge: bool,
     pub accepted_building: bool,
@@ -89,6 +89,8 @@ pub enum SparkKernelError {
     InvalidColorCount(usize),
     #[error("Spark color RNG sample {0:#x} is outside 0..=0x7ffffffe")]
     InvalidColorRngSample(u32),
+    #[error("Spark {0:?} collision requires a slope matrix")]
+    MissingSlopeMatrixForCollision(SparkCollisionKind),
     #[error(transparent)]
     NativeX87(#[from] NativeX87Error),
 }
@@ -182,81 +184,30 @@ fn resolve_collision_decision(
     motion: SparkMotionStep,
     facts: SparkCollisionFacts,
 ) -> Result<SparkCollisionDecision, SparkKernelError> {
-    let old_z = motion.old_coords.z;
-    let candidate_z_integer = motion.candidate_coords.z;
-    let candidate_z = X87Chop53::load_f32(motion.candidate_f32[2])?;
+    // gamemd-derived: behavior-3 ParticleClass AI @ 0x0062C6E0 owns these
+    // bridge, ground, building, wall, commit-Z, and slope-reflection decisions.
     let ground_z = facts.ground_z;
     let ground_exact = X87Chop53::load_i32(ground_z);
     let bridge_plane = ground_z.wrapping_add(STRUCTURAL_BRIDGE_HEIGHT);
-    let structural = facts.old_has_structural_bridge || facts.candidate_has_structural_bridge;
-
-    let bridge_kind = if structural && candidate_z_integer < bridge_plane && old_z >= bridge_plane {
-        Some(SparkCollisionKind::DescendingBridge)
-    } else if structural && candidate_z_integer >= bridge_plane && old_z < bridge_plane {
-        Some(SparkCollisionKind::AscendingBridge)
-    } else {
-        None
-    };
-
-    // Native performs the contact-band gate against the retained raw candidate
-    // and an exact FILD ground value before its final collision-selection block.
-    let contact_kind = if bridge_kind.is_none()
-        && X87Chop53::compare(candidate_z, ground_exact) != X87Ordering::Less
-    {
-        let contact_floor = X87Chop53::sub(
-            candidate_z,
-            X87Chop53::load_f32(BUILDING_CONTACT_HEIGHT_F32)?,
-        );
-        if X87Chop53::compare(contact_floor, ground_exact) == X87Ordering::Less {
-            if facts.accepted_building {
-                Some(SparkCollisionKind::Building)
-            } else if matches!(facts.wall_overlay_id, Some(0x02) | Some(0x1a) | Some(0xf3)) {
-                Some(SparkCollisionKind::Wall)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
+    let kind = classify_collision_kind(motion, facts)?;
     let ground_stored_bits = X87Chop53::store_f32(ground_exact)?;
-    let ground_stored = X87Chop53::load_f32(ground_stored_bits)?;
 
-    let (committed_z_bits, kind) = match bridge_kind {
-        Some(SparkCollisionKind::DescendingBridge) => (
-            integer_as_stored_f32(bridge_plane)?,
-            Some(SparkCollisionKind::DescendingBridge),
-        ),
-        Some(SparkCollisionKind::AscendingBridge) => (
-            integer_as_stored_f32(bridge_plane.wrapping_sub(ASCENDING_BRIDGE_DELETE_OFFSET))?,
-            Some(SparkCollisionKind::AscendingBridge),
-        ),
-        _ if X87Chop53::compare(candidate_z, ground_stored) == X87Ordering::Less => {
-            let clamp_boundary = X87Chop53::load_i32(ground_z.wrapping_sub(GROUND_CLAMP_DEPTH));
-            if X87Chop53::compare(clamp_boundary, candidate_z) == X87Ordering::Less {
-                (
-                    ground_stored_bits,
-                    Some(SparkCollisionKind::BelowGroundNear),
-                )
-            } else {
-                (
-                    motion.candidate_f32[2],
-                    Some(SparkCollisionKind::BelowGroundDeep),
-                )
-            }
+    let committed_z_bits = match kind {
+        Some(SparkCollisionKind::DescendingBridge) => integer_as_stored_f32(bridge_plane)?,
+        Some(SparkCollisionKind::AscendingBridge) => {
+            integer_as_stored_f32(bridge_plane.wrapping_sub(ASCENDING_BRIDGE_DELETE_OFFSET))?
         }
-        _ if contact_kind.is_some() => (ground_stored_bits, contact_kind),
-        _ => (motion.candidate_f32[2], None),
+        Some(SparkCollisionKind::BelowGroundNear)
+        | Some(SparkCollisionKind::Building)
+        | Some(SparkCollisionKind::Wall) => ground_stored_bits,
+        Some(SparkCollisionKind::BelowGroundDeep) | None => motion.candidate_f32[2],
     };
 
-    let transient_reflection = if kind.is_some() {
-        Some(reflect_slope_vector(
-            motion.probe_velocity,
-            facts.slope_matrix,
-        )?)
+    let transient_reflection = if let Some(kind) = kind {
+        let slope_matrix = facts
+            .slope_matrix
+            .ok_or(SparkKernelError::MissingSlopeMatrixForCollision(kind))?;
+        Some(reflect_slope_vector(motion.probe_velocity, slope_matrix)?)
     } else {
         None
     };
@@ -270,6 +221,87 @@ fn resolve_collision_decision(
         kind,
         transient_reflection,
     })
+}
+
+pub(super) fn bridge_collision_kind(
+    motion: SparkMotionStep,
+    ground_z: i32,
+    old_has_structural_bridge: bool,
+    candidate_has_structural_bridge: bool,
+) -> Option<SparkCollisionKind> {
+    let bridge_plane = ground_z.wrapping_add(STRUCTURAL_BRIDGE_HEIGHT);
+    let structural = old_has_structural_bridge || candidate_has_structural_bridge;
+    if structural && motion.candidate_coords.z < bridge_plane && motion.old_coords.z >= bridge_plane
+    {
+        Some(SparkCollisionKind::DescendingBridge)
+    } else if structural
+        && motion.candidate_coords.z >= bridge_plane
+        && motion.old_coords.z < bridge_plane
+    {
+        Some(SparkCollisionKind::AscendingBridge)
+    } else {
+        None
+    }
+}
+
+/// Native's raw-candidate contact-band gate, shared with the live-world query
+/// owner so building and overlay state stay lazy without duplicating thresholds.
+pub(super) fn in_contact_band(
+    motion: SparkMotionStep,
+    ground_z: i32,
+) -> Result<bool, SparkKernelError> {
+    let candidate_z = X87Chop53::load_f32(motion.candidate_f32[2])?;
+    let ground_exact = X87Chop53::load_i32(ground_z);
+    if X87Chop53::compare(candidate_z, ground_exact) == X87Ordering::Less {
+        return Ok(false);
+    }
+    let contact_floor = X87Chop53::sub(
+        candidate_z,
+        X87Chop53::load_f32(BUILDING_CONTACT_HEIGHT_F32)?,
+    );
+    Ok(X87Chop53::compare(contact_floor, ground_exact) == X87Ordering::Less)
+}
+
+/// Collision selection without the slope transform. This is the single owner
+/// used both to decide whether the world must select a slope cell and to commit
+/// the final collision.
+pub(super) fn classify_collision_kind(
+    motion: SparkMotionStep,
+    facts: SparkCollisionFacts,
+) -> Result<Option<SparkCollisionKind>, SparkKernelError> {
+    if let Some(kind) = bridge_collision_kind(
+        motion,
+        facts.ground_z,
+        facts.old_has_structural_bridge,
+        facts.candidate_has_structural_bridge,
+    ) {
+        return Ok(Some(kind));
+    }
+
+    let candidate_z = X87Chop53::load_f32(motion.candidate_f32[2])?;
+    let ground_exact = X87Chop53::load_i32(facts.ground_z);
+    let ground_stored = X87Chop53::load_f32(X87Chop53::store_f32(ground_exact)?)?;
+    if X87Chop53::compare(candidate_z, ground_stored) == X87Ordering::Less {
+        let clamp_boundary = X87Chop53::load_i32(facts.ground_z.wrapping_sub(GROUND_CLAMP_DEPTH));
+        return Ok(Some(
+            if X87Chop53::compare(clamp_boundary, candidate_z) == X87Ordering::Less {
+                SparkCollisionKind::BelowGroundNear
+            } else {
+                SparkCollisionKind::BelowGroundDeep
+            },
+        ));
+    }
+
+    if !in_contact_band(motion, facts.ground_z)? {
+        return Ok(None);
+    }
+    if facts.accepted_building {
+        Ok(Some(SparkCollisionKind::Building))
+    } else if matches!(facts.wall_overlay_id, Some(0x02) | Some(0x1a) | Some(0xf3)) {
+        Ok(Some(SparkCollisionKind::Wall))
+    } else {
+        Ok(None)
+    }
 }
 
 fn finalize_collision(
@@ -484,8 +516,11 @@ pub fn tick_particle_with_facts(
 /// Apply the native persistent-Z write and compute the candidate probe.
 ///
 /// The persistent velocity write intentionally happens before any live-world
-/// query. A caller that cannot resolve collision facts must retain that write
-/// while consuming no RNG and leaving coordinates/lifetime untouched.
+/// query. A genuinely corrupt or unsupported world dependency must retain that
+/// write while consuming no RNG and leaving coordinates/lifetime untouched.
+///
+/// gamemd-derived: behavior-3 ParticleClass AI @ 0x0062C6E0 stores persistent
+/// Z velocity and computes the candidate before querying live CellClass facts.
 pub fn begin_particle_tick(
     particle: &mut Particle,
     gravity: NativeF32Bits,
@@ -505,6 +540,9 @@ pub fn begin_particle_tick(
 
 /// Resolve and commit owned collision facts, then consume color RNG and lifetime
 /// in the verified order.
+///
+/// gamemd-derived: behavior-3 ParticleClass AI @ 0x0062C6E0 commits collision
+/// state before the color draw and final lifetime decrement.
 pub fn finish_particle_tick(
     particle: &mut Particle,
     motion: SparkMotionStep,
@@ -564,7 +602,7 @@ mod tests {
     fn facts(ground_z: i32) -> SparkCollisionFacts {
         SparkCollisionFacts {
             ground_z,
-            slope_matrix: identity_matrix(),
+            slope_matrix: Some(identity_matrix()),
             old_has_structural_bridge: false,
             candidate_has_structural_bridge: false,
             accepted_building: false,
@@ -832,6 +870,25 @@ mod tests {
         assert_eq!(
             resolve_collision(motion(0, 150), building).unwrap().kind,
             None
+        );
+    }
+
+    #[test]
+    fn gsi_04_03_slope_matrix_is_required_only_after_collision_selection() {
+        let mut clear = facts(0);
+        clear.slope_matrix = None;
+        assert_eq!(
+            resolve_collision(motion(200, 200), clear).unwrap().kind,
+            None
+        );
+
+        let mut collision = facts(0);
+        collision.slope_matrix = None;
+        assert_eq!(
+            resolve_collision(motion(0, -1), collision),
+            Err(SparkKernelError::MissingSlopeMatrixForCollision(
+                SparkCollisionKind::BelowGroundNear
+            ))
         );
     }
 

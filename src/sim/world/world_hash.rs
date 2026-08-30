@@ -135,7 +135,29 @@ mod playfield_authority_hash_tests {
 #[cfg(test)]
 mod shared_dummy_bridge_hash_tests {
     use super::Simulation;
+    use glam::IVec3;
+
     use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::particles::spark::SparkMotionStep;
+    use crate::sim::particles::spark_world::{SparkCollisionWorld, slope_matrix};
+    use crate::util::native_x87::NativeF32Bits;
+
+    fn spark_motion_at(x: i32, y: i32, z: i32) -> SparkMotionStep {
+        SparkMotionStep {
+            old_coords: IVec3::new(x, y, z),
+            candidate_coords: IVec3::new(x, y, z),
+            candidate_f32: [
+                NativeF32Bits::from_bits((x as f32).to_bits()),
+                NativeF32Bits::from_bits((y as f32).to_bits()),
+                NativeF32Bits::from_bits((z as f32).to_bits()),
+            ],
+            persistent_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
+            probe_velocity: [NativeF32Bits::POSITIVE_ZERO; 3],
+        }
+    }
 
     #[test]
     fn gsi_04_01_hashes_dummy_bridge_bits_without_retained_projectile() {
@@ -154,7 +176,69 @@ mod shared_dummy_bridge_hash_tests {
         assert_eq!(
             bridge_hash,
             sim.state_hash(),
-            "without a retained Bullet only persistent 0x1180 joins the hash"
+            "without a retained Bullet the requested coordinate stays excluded; 0x1180, level, and slope are unconditional"
+        );
+    }
+
+    #[test]
+    fn gsi_04_03_hashes_dummy_level_slope_without_retained_projectile() {
+        let mut sim = Simulation::new();
+        sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(
+            0,
+            0,
+            Vec::new(),
+        ));
+        let dummy = sim.effective_shared_cell_dummy();
+        let terrain_dummy = sim
+            .resolved_terrain
+            .as_ref()
+            .unwrap()
+            .shared_cell_dummy();
+        assert!(
+            dummy.same_identity(&terrain_dummy),
+            "the hash authority must be the dummy bound into production terrain"
+        );
+        let rules = RuleSet::from_ini(&IniFile::from_str("")).unwrap();
+        let clear_hash = sim.state_hash();
+        let v106_clear_hash = sim.state_hash_without_spark_dummy_level_slope_v107();
+
+        dummy.set_level_slope(-3, 0);
+        let level_facts = SparkCollisionWorld::new(&sim, &rules)
+            .unwrap()
+            .query(spark_motion_at(320, 192, 300))
+            .unwrap();
+        assert_eq!(level_facts.ground_z, -311);
+        assert!(level_facts.slope_matrix.is_none());
+        let level_only_hash = sim.state_hash();
+        assert_ne!(
+            clear_hash, level_only_hash,
+            "dummy level alone is unconditional v107 hash authority"
+        );
+        assert_eq!(
+            v106_clear_hash,
+            sim.state_hash_without_spark_dummy_level_slope_v107(),
+            "the v106 provenance schema excludes an unretained dummy level change"
+        );
+
+        dummy.set_level_slope(0, 0);
+        assert_eq!(clear_hash, sim.state_hash());
+
+        dummy.set_level_slope(0, 9);
+        let slope_facts = SparkCollisionWorld::new(&sim, &rules)
+            .unwrap()
+            .query(spark_motion_at(320, 192, -100))
+            .unwrap();
+        assert_eq!(slope_facts.ground_z, 104);
+        assert_eq!(slope_facts.slope_matrix, Some(slope_matrix(9).unwrap()));
+        let slope_only_hash = sim.state_hash();
+        assert_ne!(
+            clear_hash, slope_only_hash,
+            "dummy slope alone is unconditional v107 hash authority"
+        );
+        assert_eq!(
+            v106_clear_hash,
+            sim.state_hash_without_spark_dummy_level_slope_v107(),
+            "the v106 provenance schema excludes an unretained dummy slope change"
         );
     }
 }
@@ -307,7 +391,7 @@ impl Simulation {
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
-            true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -319,6 +403,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
+            false,
         )
     }
 
@@ -330,6 +415,16 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
+            false,
+        )
+    }
+
+    /// Test-only provenance probe for the v107 unconditional Spark dummy
+    /// level/slope fold. It reconstructs the committed v106 hash layout.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, false,
         )
     }
 
@@ -347,6 +442,7 @@ impl Simulation {
         include_real_cell_bridge_flags_v90: bool,
         include_base_defense_response_v97: bool,
         include_techno_constructor_v104: bool,
+        include_spark_dummy_level_slope_v107: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -417,18 +513,30 @@ impl Simulation {
             // Unlike the requested coordinate, native `+0x140 & 0x1180`
             // survives ordinary lookups and changes later bridge/FNPC/target
             // behavior even when no Bullet currently retains the dummy.
-            b"shared-cell-dummy-bridge-v3".hash(&mut hasher);
-            shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+            if include_spark_dummy_level_slope_v107 {
+                b"shared-cell-dummy-spark-v4".hash(&mut hasher);
+                shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+                shared_dummy.level.hash(&mut hasher);
+                shared_dummy.slope_type.hash(&mut hasher);
+            } else {
+                b"shared-cell-dummy-bridge-v3".hash(&mut hasher);
+                shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+            }
             if self.projectiles.iter().any(|(_, projectile)| {
                 projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
             }) {
-                // A retained Bullet pointer additionally makes coordinate,
-                // level, and slope deterministic future behavior. The bridge
-                // subset was folded unconditionally above.
-                b"shared-cell-dummy-target-v2".hash(&mut hasher);
-                shared_dummy.coord.hash(&mut hasher);
-                shared_dummy.level.hash(&mut hasher);
-                shared_dummy.slope_type.hash(&mut hasher);
+                // A retained Bullet pointer additionally makes coordinate
+                // deterministic future behavior. Preserve the complete v106
+                // field/tag order for historical provenance probes.
+                if include_spark_dummy_level_slope_v107 {
+                    b"shared-cell-dummy-target-v3".hash(&mut hasher);
+                    shared_dummy.coord.hash(&mut hasher);
+                } else {
+                    b"shared-cell-dummy-target-v2".hash(&mut hasher);
+                    shared_dummy.coord.hash(&mut hasher);
+                    shared_dummy.level.hash(&mut hasher);
+                    shared_dummy.slope_type.hash(&mut hasher);
+                }
             }
             self.hash_waves(&mut hasher);
         }
