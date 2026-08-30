@@ -599,10 +599,11 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
             set_name
         );
 
-        // Animation keys live in the section named by SetName, so a tileset
-        // with no SetName (or one naming an absent section) can never carry
-        // them. The loader resolves that section once per tileset, before the
-        // per-tile walk.
+        // Animation keys live in the section named by the effective SetName.
+        // A missing key uses the native "No Name" default and can therefore
+        // resolve a `[No Name]` section; only an empty name or an absent named
+        // section has no animation block. Resolve it once before the per-tile
+        // walk.
         let anim_section: Option<&IniSection> = if set_name.is_empty() {
             None
         } else {

@@ -485,29 +485,29 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<ParsedIsoMapPack, MapError> {
 
     // Diagnostic: tile_index distribution. Lets a reader of the load logs see
     // how high a map's IsoMapPack5 reaches vs. what the theater INI defines.
-    let mut min_pos: i32 = i32::MAX;
-    let mut max_idx: i32 = -1;
-    let mut no_tile: usize = 0;
+    let mut min_idx: i32 = i32::MAX;
+    let mut max_idx: i32 = i32::MIN;
+    let mut raw_negative: usize = 0;
+    let mut no_tile_sentinel: usize = 0;
     let mut distinct: std::collections::HashSet<i32> = std::collections::HashSet::new();
     for c in &parsed.cells {
         if c.tile_index < 0 {
-            no_tile += 1;
-        } else {
-            if c.tile_index < min_pos {
-                min_pos = c.tile_index;
-            }
-            if c.tile_index > max_idx {
-                max_idx = c.tile_index;
-            }
+            raw_negative += 1;
         }
+        if c.tile_index == i32::from(u16::MAX) {
+            no_tile_sentinel += 1;
+        }
+        min_idx = min_idx.min(c.tile_index);
+        max_idx = max_idx.max(c.tile_index);
         distinct.insert(c.tile_index);
     }
     log::info!(
-        "IsoMapPack5: {} cells, {} no-tile, tile_index min={}, max={}, distinct={}",
+        "IsoMapPack5: {} cells, {} raw-negative, {} positive-0xFFFF no-tile, tile_index min={}, max={}, distinct={}",
         parsed.cells.len(),
-        no_tile,
-        if min_pos == i32::MAX { -1 } else { min_pos },
-        max_idx,
+        raw_negative,
+        no_tile_sentinel,
+        if min_idx == i32::MAX { -1 } else { min_idx },
+        if max_idx == i32::MIN { -1 } else { max_idx },
         distinct.len()
     );
 
