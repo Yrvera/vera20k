@@ -1,8 +1,8 @@
 # BuildConst RulesClass::ReadAI Binding Repair Design
 
-**Date:** 2026-08-26  
-**Phase:** 3 — GSI-04.05 ownership prerequisite  
-**Status:** Approved bounded repair before BasePlan generation  
+**Date:** 2026-08-26
+**Phase:** 3 — GSI-04.05 ownership prerequisite
+**Status:** Approved bounded repair before BasePlan generation
 **Native authority:** active-retail `gamemd.exe`, `RulesClass__ReadAI @ 0x00672AE0`; retail `rules.ini` and standalone YR `rulesmd.ini`
 
 ## Verdict
