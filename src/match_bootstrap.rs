@@ -1,6 +1,6 @@
 //! App-owned match startup authority and pre-first-tick evidence.
 //!
-//! This module sits above `sim/`: it classifies explicit fixed-map Battle
+//! This module sits above `sim/`: it classifies explicit-start Battle
 //! sessions, reads the ordinary Windows seed once, and observes an already
 //! initialized `Simulation` without mutating it.
 
@@ -45,7 +45,7 @@ impl AcceptedBattleSession {
         self.launch
             .selected_map_file
             .as_deref()
-            .expect("accepted sessions always own a selected fixed map")
+            .expect("accepted sessions always own a selected map record")
     }
 }
 
@@ -436,6 +436,8 @@ mod tests {
                 team: LaunchTeam::None,
                 difficulty: AiDifficulty::Easy,
             }],
+            pre_fill_house_roster:
+                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
             options: SkirmishLaunchOptions::default(),
         }
     }

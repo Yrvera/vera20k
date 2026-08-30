@@ -1262,6 +1262,44 @@ fn raw_pack_skips_start_only_validation_for_back_transaction() {
 }
 
 #[test]
+fn raw_pack_retains_sparse_ai_house_slots_before_compaction() {
+    let mut shell = SkirmishShellState::default();
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::None;
+    }
+    shell.opponents[1].row_type = SkirmishAiRowType::Normal;
+    shell.opponents[4].row_type = SkirmishAiRowType::Hard;
+    let maps = [test_map_entry("map.mmx")];
+    let packed = pack_launch_session_without_start_validation(
+        &shell,
+        &maps,
+        &stock_skirmish_modes(),
+    )
+    .expect("sparse raw AI slots pack before gameplay compaction");
+
+    assert_eq!(packed.opponents.len(), 2);
+    assert_eq!(
+        packed
+            .pre_fill_house_roster
+            .ai_slots()
+            .iter()
+            .map(|slot| (slot.slot_index, slot.valid))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, false),
+            (1, true),
+            (2, false),
+            (3, false),
+            (4, true),
+            (5, false),
+            (6, false),
+        ]
+    );
+    assert_eq!(packed.pre_fill_house_roster.required_start_count(), 3);
+    assert_eq!(packed.pre_fill_house_roster.created_house_count(), 5);
+}
+
+#[test]
 fn launch_session_rejects_no_active_opponents() {
     let mut shell = SkirmishShellState::default();
     for opponent in &mut shell.opponents {

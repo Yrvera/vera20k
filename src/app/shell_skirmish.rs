@@ -226,9 +226,9 @@ impl App {
         state: &mut AppState,
         session: crate::skirmish_launch::SkirmishLaunchSession,
     ) {
-        let random_map_preview = state
+        let accepted_random_map = state
             .frontend.random_map_retention
-            .take_preview_for_loading(session.selected_map_file.as_deref());
+            .take_acceptance_for_loading(session.selected_map_file.as_deref());
         let request = match crate::match_bootstrap::classify_startup_session(&session) {
             crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
                 accepted,
@@ -264,7 +264,7 @@ impl App {
                 )
             }
         }
-        .with_random_map_preview(random_map_preview);
+        .with_accepted_random_map(accepted_random_map);
         state.frontend.skirmish_shell_state.pressed_owner_draw_button = None;
         state.frontend.skirmish_shell_last_painted_pressed_button = None;
         state.frontend.shell_route = crate::app::shell_route::ShellRoute::MainMenu;

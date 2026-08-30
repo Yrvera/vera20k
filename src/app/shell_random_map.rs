@@ -115,17 +115,68 @@ pub(crate) struct RandomMapGenerationJob {
     accept_on_finish: bool,
 }
 
-/// Preview ownership across the setup dialog and loading composition.
+/// Provenance-bearing copy of the eight Scenario start-staging cells written
+/// by the accepted random-map setup run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AcceptedRmgStartStaging {
+    starts: Vec<crate::map::waypoints::Waypoint>,
+}
+
+impl AcceptedRmgStartStaging {
+    fn from_generated(generated: &crate::map::rmg::GeneratedMap) -> Self {
+        let mut slots = [None; crate::skirmish_launch::SKIRMISH_PLAYER_SLOT_COUNT];
+        for &(slot, rx, ry) in &generated.start_waypoints {
+            if let Some(entry) = slots.get_mut(usize::from(slot)) {
+                *entry = Some(crate::map::waypoints::Waypoint {
+                    index: u32::from(slot),
+                    rx,
+                    ry,
+                });
+            }
+        }
+        Self {
+            starts: slots.into_iter().flatten().collect(),
+        }
+    }
+
+    pub(crate) fn to_waypoint_table(
+        &self,
+    ) -> std::collections::HashMap<u32, crate::map::waypoints::Waypoint> {
+        self.starts
+            .iter()
+            .copied()
+            .map(|waypoint| (waypoint.index, waypoint))
+            .collect()
+    }
+}
+
+/// Accepted random-map artifacts split at the app/loading boundary. The large
+/// generated map remains presentation-only; only `start_staging` may supply
+/// gameplay start cells.
+#[derive(Debug)]
+pub(crate) struct AcceptedRandomMapLaunch {
+    presentation_preview: crate::map::rmg::GeneratedMap,
+    start_staging: AcceptedRmgStartStaging,
+}
+
+impl AcceptedRandomMapLaunch {
+    pub(crate) fn into_parts(self) -> (crate::map::rmg::GeneratedMap, AcceptedRmgStartStaging) {
+        (self.presentation_preview, self.start_staging)
+    }
+}
+
+/// Accepted launch-artifact ownership across setup and loading composition.
 ///
-/// The candidate belongs only to the open setup dialog. An accepted preview may
-/// accompany the matching `.SED` only as a presentation fallback; gameplay
-/// always regenerates through the seed-file reader after the match reseed.
+/// The candidate belongs only to the open setup dialog. The accepted bundle
+/// carries both presentation fallback and exact start staging for the matching
+/// `.SED`; gameplay map data still regenerates through the seed-file reader
+/// after the match reseed.
 /// gamemd provenance: accepted caller 0x005E8590 persists `RandMap.Sed`, while
 /// Scenario read 0x00684620 unconditionally reaches the generator again.
 #[derive(Default)]
 pub(crate) struct RandomMapGenerationRetention {
     candidate: Option<crate::map::rmg::GeneratedMap>,
-    accepted_preview: Option<(String, crate::map::rmg::GeneratedMap)>,
+    accepted_launch: Option<(String, AcceptedRandomMapLaunch)>,
     /// The native MapSeed+0x178 clone survives repeated Generate/OK work while
     /// the dialog is open. A four-field mismatch replaces its backing storage,
     /// and common dialog teardown destroys it before a later reopen.
@@ -156,7 +207,7 @@ impl RandomMapGenerationRetention {
 
     pub(super) fn begin_generation(&mut self) {
         self.candidate = None;
-        self.accepted_preview = None;
+        self.accepted_launch = None;
     }
 
     pub(super) fn finish_generation(&mut self, generated: crate::map::rmg::GeneratedMap) {
@@ -165,36 +216,54 @@ impl RandomMapGenerationRetention {
 
     fn cancel_setup(&mut self) {
         self.candidate = None;
-        self.accepted_preview = None;
+        self.accepted_launch = None;
     }
 
     pub(super) fn accept_setup(&mut self, selected_map_file: &str) {
-        self.accepted_preview = self
-            .candidate
-            .take()
-            .map(|generated| (selected_map_file.to_owned(), generated));
+        self.accepted_launch = self.candidate.take().map(|generated| {
+            let start_staging = AcceptedRmgStartStaging::from_generated(&generated);
+            (
+                selected_map_file.to_owned(),
+                AcceptedRandomMapLaunch {
+                    presentation_preview: generated,
+                    start_staging,
+                },
+            )
+        });
     }
 
     pub(super) fn select_map(&mut self, selected_map_file: &str) {
         if self
-            .accepted_preview
+            .accepted_launch
             .as_ref()
             .is_some_and(|(accepted_file, _)| {
                 !accepted_file.eq_ignore_ascii_case(selected_map_file)
             })
         {
-            self.accepted_preview = None;
+            self.accepted_launch = None;
         }
     }
 
+    pub(super) fn take_acceptance_for_loading(
+        &mut self,
+        selected_map_file: Option<&str>,
+    ) -> Option<AcceptedRandomMapLaunch> {
+        let (accepted_file, accepted) = self.accepted_launch.take()?;
+        selected_map_file
+            .is_some_and(|selected| accepted_file.eq_ignore_ascii_case(selected))
+            .then_some(accepted)
+    }
+
+    /// Presentation-only compatibility accessor used by lifecycle tests.
+    /// Production transfers the complete accepted value so staging cannot be
+    /// dropped or reconstructed from the preview.
+    #[cfg(test)]
     pub(super) fn take_preview_for_loading(
         &mut self,
         selected_map_file: Option<&str>,
     ) -> Option<crate::map::rmg::GeneratedMap> {
-        let (accepted_file, generated) = self.accepted_preview.take()?;
-        selected_map_file
-            .is_some_and(|selected| accepted_file.eq_ignore_ascii_case(selected))
-            .then_some(generated)
+        self.take_acceptance_for_loading(selected_map_file)
+            .map(|accepted| accepted.presentation_preview)
     }
 }
 
@@ -325,7 +394,7 @@ pub(super) fn finish_random_map_generation_owners(
 
 /// The non-presentation state transition at each Generate/implicit-OK entry.
 /// It is shared by the live App entry and the retail lifecycle harness so a
-/// repeated run always invalidates the same candidate and accepted preview.
+/// repeated run always invalidates the same candidate and accepted launch.
 pub(super) fn begin_random_map_generation_owners(
     runtime: &mut crate::app::frontend::skirmish_session::OfflineSkirmishRuntime,
     retention: &mut RandomMapGenerationRetention,
@@ -699,12 +768,13 @@ impl App {
         state.frontend.random_map_generation = None;
         match Self::commit_random_map_setup(state, &options) {
             Ok(()) => {
-                // Teardown retained only the accepted presentation preview;
-                // launch remains owned by the `.SED` reader.
+                // Teardown retained both accepted start staging and its
+                // presentation preview; map construction remains owned by the
+                // `.SED` reader.
             }
             Err(err) => {
                 // The native dialog has already torn down at this point. Do
-                // not leave an accepted preview attached when the seed/options
+                // not leave an accepted launch attached when the seed/options
                 // commit failed and no random-map selection was installed.
                 state.frontend.random_map_retention.cancel_setup();
                 log::error!("random map: could not write {RANDMAP_SED_FILE}: {err}");
@@ -1692,7 +1762,7 @@ mod tests {
         accepted_after_successful_close.finish_generation(generated_preview(44, 40));
         accepted_after_successful_close.accept_setup("RandMap.Sed");
         // Common dialog teardown destroys only the cached RMG map storage; it
-        // must not discard the accepted presentation preview awaiting loading.
+        // must not discard the accepted launch bundle awaiting loading.
         accepted_after_successful_close.destroy_map_storage();
         accepted_after_successful_close.select_map("RANDMAP.SED");
         let transferred = accepted_after_successful_close

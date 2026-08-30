@@ -1,7 +1,7 @@
 //! App-level skirmish launch contract.
 //!
 //! This module is intentionally data-only: it packages the lobby state the app
-//! needs to create Battle-mode houses and initial spawns without making `sim/`
+//! needs to create stock-offline houses and initial spawns without making `sim/`
 //! depend on UI, rendering, audio, or networking modules.
 
 use crate::sim::game_options::GameOptions;
@@ -11,6 +11,107 @@ use crate::skirmish_modes::SkirmishGameMode;
 pub const SKIRMISH_PLAYER_SLOT_COUNT: usize = 8;
 pub const SKIRMISH_AI_SLOT_COUNT: usize = SKIRMISH_PLAYER_SLOT_COUNT - 1;
 pub const HOUSE_COLOR_COUNT: usize = 8;
+
+/// One human node in the native pre-Fill House-construction roster.
+///
+/// Nodes are stably sorted by the signed priority byte. Observers still
+/// construct a House (and therefore consume the constructor timer draw), but
+/// do not increase Gather's required-start count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreFillHumanHouse {
+    pub priority: i8,
+    pub source_order: u8,
+    pub observer: bool,
+}
+
+/// One native AI session slot before active opponents are compacted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreFillAiHouseSlot {
+    pub slot_index: u8,
+    pub valid: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreFillFixedHouse {
+    Neutral,
+    Special,
+}
+
+/// Immutable House roster consumed identically by both noncampaign pre-Fill
+/// construction passes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreFillHouseRoster {
+    human_nodes: Vec<PreFillHumanHouse>,
+    ai_slots: Vec<PreFillAiHouseSlot>,
+    fixed_tail: [PreFillFixedHouse; 2],
+}
+
+impl PreFillHouseRoster {
+    pub fn new(
+        mut human_nodes: Vec<PreFillHumanHouse>,
+        mut ai_slots: Vec<PreFillAiHouseSlot>,
+    ) -> Self {
+        // Native sorts by the signed priority byte and preserves source-list
+        // order for ties. `source_order` makes that ordering independent of
+        // whichever app adapter assembled this normalized value.
+        human_nodes.sort_by_key(|node| (node.priority, node.source_order));
+        ai_slots.sort_by_key(|slot| slot.slot_index);
+        Self {
+            human_nodes,
+            ai_slots,
+            fixed_tail: [PreFillFixedHouse::Neutral, PreFillFixedHouse::Special],
+        }
+    }
+
+    /// Compatibility constructor for callers that already hold the compact
+    /// ordinary-skirmish session. Production shell packing retains all seven
+    /// raw AI slots and does not use this shortcut.
+    pub fn from_compact_skirmish(active_ai_count: usize) -> Self {
+        let ai_slots = (0..SKIRMISH_AI_SLOT_COUNT)
+            .map(|slot_index| PreFillAiHouseSlot {
+                slot_index: slot_index as u8,
+                valid: slot_index < active_ai_count,
+            })
+            .collect();
+        Self::new(
+            vec![PreFillHumanHouse {
+                priority: 0,
+                source_order: 0,
+                observer: false,
+            }],
+            ai_slots,
+        )
+    }
+
+    pub fn human_nodes(&self) -> &[PreFillHumanHouse] {
+        &self.human_nodes
+    }
+
+    pub fn ai_slots(&self) -> &[PreFillAiHouseSlot] {
+        &self.ai_slots
+    }
+
+    pub fn fixed_tail(&self) -> &[PreFillFixedHouse; 2] {
+        &self.fixed_tail
+    }
+
+    pub fn created_house_count(&self) -> usize {
+        self.human_nodes.len()
+            + self.ai_slots.iter().filter(|slot| slot.valid).count()
+            + self.fixed_tail.len()
+    }
+
+    pub fn required_start_count(&self) -> usize {
+        self.nonobserver_human_count() + self.ai_slots.iter().filter(|slot| slot.valid).count()
+    }
+
+    pub fn nonobserver_human_count(&self) -> usize {
+        self.human_nodes
+            .iter()
+            .filter(|node| !node.observer)
+            .count()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkirmishLaunchMode {
@@ -284,6 +385,9 @@ pub struct SkirmishLaunchSession {
     pub player_name: String,
     pub local: SkirmishLocalSlot,
     pub opponents: Vec<SkirmishAiSlot>,
+    /// Native pre-compaction House constructor roster used by both pre-Fill
+    /// passes. It deliberately retains inactive AI slots and observer state.
+    pub pre_fill_house_roster: PreFillHouseRoster,
     pub options: SkirmishLaunchOptions,
 }
 
@@ -558,6 +662,63 @@ mod tests {
         assert_eq!(LaunchTeam::from_shell_value(3), LaunchTeam::Team(3));
     }
 
+    #[test]
+    fn pre_fill_roster_orders_signed_humans_and_raw_ai_slots() {
+        let roster = PreFillHouseRoster::new(
+            vec![
+                PreFillHumanHouse {
+                    priority: 4,
+                    source_order: 2,
+                    observer: false,
+                },
+                PreFillHumanHouse {
+                    priority: -1,
+                    source_order: 1,
+                    observer: true,
+                },
+                PreFillHumanHouse {
+                    priority: -1,
+                    source_order: 0,
+                    observer: false,
+                },
+            ],
+            vec![
+                PreFillAiHouseSlot {
+                    slot_index: 6,
+                    valid: true,
+                },
+                PreFillAiHouseSlot {
+                    slot_index: 1,
+                    valid: false,
+                },
+                PreFillAiHouseSlot {
+                    slot_index: 3,
+                    valid: true,
+                },
+            ],
+        );
+
+        assert_eq!(
+            roster
+                .human_nodes()
+                .iter()
+                .map(|node| (node.priority, node.source_order))
+                .collect::<Vec<_>>(),
+            vec![(-1, 0), (-1, 1), (4, 2)]
+        );
+        assert_eq!(
+            roster
+                .ai_slots()
+                .iter()
+                .map(|slot| (slot.slot_index, slot.valid))
+                .collect::<Vec<_>>(),
+            vec![(1, false), (3, true), (6, true)]
+        );
+        assert_eq!(roster.nonobserver_human_count(), 2);
+        assert_eq!(roster.required_start_count(), 4);
+        assert_eq!(roster.created_house_count(), 7);
+    }
+
     fn random_test_session() -> SkirmishLaunchSession {
         SkirmishLaunchSession {
             mode: SkirmishLaunchMode {
@@ -600,6 +761,7 @@ mod tests {
                     difficulty: AiDifficulty::Easy,
                 },
             ],
+            pre_fill_house_roster: PreFillHouseRoster::from_compact_skirmish(2),
             options: SkirmishLaunchOptions::default(),
         }
     }

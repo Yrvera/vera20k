@@ -934,6 +934,8 @@ mod tests {
                 team: LaunchTeam::None,
             },
             opponents: Vec::new(),
+            pre_fill_house_roster:
+                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(0),
             options: SkirmishLaunchOptions::default(),
         }
     }

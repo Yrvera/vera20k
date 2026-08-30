@@ -287,6 +287,8 @@ mod tests {
                 team: LaunchTeam::Team(0),
                 difficulty: AiDifficulty::Easy,
             }],
+            pre_fill_house_roster:
+                crate::skirmish_launch::PreFillHouseRoster::from_compact_skirmish(1),
             options: SkirmishLaunchOptions::default(),
         }
     }

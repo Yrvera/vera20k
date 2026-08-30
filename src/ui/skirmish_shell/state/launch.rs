@@ -3,8 +3,8 @@
 use crate::map::scenario_menu::MapMenuEntry;
 use crate::skirmish_launch::{
     HOUSE_COLOR_COUNT, LaunchCountry, LaunchStartPosition, LaunchTeam, LaunchValidationError,
-    SKIRMISH_PLAYER_SLOT_COUNT, SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchSession,
-    SkirmishLocalSlot,
+    PreFillAiHouseSlot, PreFillHouseRoster, PreFillHumanHouse, SKIRMISH_PLAYER_SLOT_COUNT,
+    SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchSession, SkirmishLocalSlot,
 };
 use crate::skirmish_modes::{SkirmishGameMode, mode_by_id};
 use crate::ui::main_menu::{SkirmishCountry, SkirmishSettings, StartPosition};
@@ -143,6 +143,25 @@ pub fn pack_launch_session_without_start_validation(
         team: LaunchTeam::from_shell_value(state.player_team),
     };
 
+    // Retain the native pre-compaction slot roster before closed AI rows are
+    // omitted from the gameplay-facing opponent vector.
+    let pre_fill_house_roster = PreFillHouseRoster::new(
+        vec![PreFillHumanHouse {
+            priority: 0,
+            source_order: 0,
+            observer: false,
+        }],
+        state
+            .opponents
+            .iter()
+            .enumerate()
+            .map(|(slot_index, opponent)| PreFillAiHouseSlot {
+                slot_index: slot_index as u8,
+                valid: opponent.is_active(),
+            })
+            .collect(),
+    );
+
     let mut opponents = Vec::new();
     for (idx, opponent) in state.opponents.iter().enumerate() {
         let Some(difficulty) = opponent.row_type.difficulty() else {
@@ -180,6 +199,7 @@ pub fn pack_launch_session_without_start_validation(
         player_name: state.player_name_edit.text.clone(),
         local,
         opponents,
+        pre_fill_house_roster,
         options,
     })
 }
