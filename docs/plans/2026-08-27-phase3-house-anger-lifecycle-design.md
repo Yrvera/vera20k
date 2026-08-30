@@ -1,6 +1,6 @@
 # Phase 3 House anger-node lifecycle design
 
-**Status: proposed for fresh read-only design review.**
+**Status:** Implemented and approved after independent read-only review on 2026-08-30.
 
 ## Goal
 
