@@ -163,14 +163,14 @@ The coordinate is the Building render origin `(LocationX-128, LocationY-128, Loc
 
 ## 8. Active-retail data census
 
-The authoritative extracted retail corpus used here is the merged `rules.ini` + `rulesmd.ini`, `art.ini` + `artmd.ini`, and 184 extracted `.map`/`.mpr` files under `target/phase3-retail-census/extract`.
+The authoritative active-YR INI corpus used here is standalone `rulesmd.ini` and `artmd.ini`; Yuri's Revenge does not merge the RA2 base `rules.ini` or `art.ini` into those files. The census also checks 184 extracted `.map`/`.mpr` files under `target/phase3-retail-census/extract` for scenario overrides. A corrected standalone-MD rescan preserves the headline reach and art results below. Its parser follows native INI section syntax through the first `]`, so section headers with trailing comments remain active.
 
 ### 8.1 Building type reach
 
-- 403 retail `BuildingTypes` entries.
-- 397 author `Explosion=`.
-- 13 author `DestroyAnim=`.
-- 398 author at least one of the two.
+- 403 retail `BuildingTypes` registry rows representing 402 unique names; `NAPSYA` occurs twice.
+- 397 registry rows (396 unique BuildingTypes) author `Explosion=`.
+- 13 registry rows/types author `DestroyAnim=`.
+- 398 registry rows (397 unique BuildingTypes) author at least one of the two.
 - Five author neither.
 - No extracted retail map overrides `Explosion=`, `DestroyAnim=`, `RandomRate=`, `Scorch=`, `Crater=`, `ForceBigCraters=`, `Foundation=`, or `Palette=` in a way that changes the Action119 target mechanism; the four Action119 maps were checked directly as well.
 
@@ -180,7 +180,7 @@ There are ten distinct referenced animation names across retail building `Explos
 
 `TWLT070`, `S_BANG48`, `S_BRNL58`, `S_CLSN58`, `S_TUMU60`, `BRRLEXP1`, `BRRLEXP2`, `MININUKE`, `gtpowexp`, and `tstlexp`.
 
-Stock distribution is dominated by the common five-entry list: 389 BuildingTypes use `TWLT070,S_BANG48,S_BRNL58,S_CLSN58,S_TUMU60`; three add `gtpowexp`; one uses each barrel list; one uses `MININUKE`; one combines `MININUKE` with the common list; one adds `tstlexp`.
+Stock distribution is dominated by the common five-entry list: 389 registry rows (388 unique BuildingTypes) use `TWLT070,S_BANG48,S_BRNL58,S_CLSN58,S_TUMU60`; three add `gtpowexp`; one uses each barrel list; one uses `MININUKE`; one combines `MININUKE` with the common list; one adds `tstlexp`.
 
 Active art facts:
 
@@ -293,9 +293,9 @@ At minimum:
 11. `house_destroy_action_runs_building_explosion_before_survivor_smudges`
     - Drive the Action119 House sweep through concrete damage and assert center smudge -> per-cell constructor/start interleave -> survivor sequence.
 12. `building_destroy_anim_palette_branch_active_retail_exclusion`
-    - Retail corpus assertion: all 13 DestroyAnim owners have empty `Palette=` after rules/map merge, while their AnimTypes retain `AltPalette=yes`.
+    - Retail corpus assertion: all 13 DestroyAnim owners have empty `Palette=` after standalone RULESMD plus map overrides, while their AnimTypes retain `AltPalette=yes`.
 
-Focused validation must follow `ENGINE.md`: every Cargo test command carries `--lib`; do not run the full `cargo test -p vera20k --lib` until the final Phase 3 close.
+Focused validation must follow `ENGINE.md`: every Cargo test command carries `--lib`; run the full `cargo test -p vera20k --lib` exactly once after the slice is stable and before its PR is declared ready for `main`.
 
 ## 11. Visual composition ledger
 
@@ -375,7 +375,7 @@ The final zero-add scan of the complete `0x004415F0` decompile found no addition
 |---|---|---|
 | Native identity and entry | Building RTTI/vtable, `ReceiveDamage`, complete `DestructionEffects` decompile | Covered; callback identity, caller, captured foundation pointer, and entry order established |
 | Native control/data flow | Both animation arms, allocation branches, constructor calls, Scenario RNG, `Middle/Start` | Covered; every scoped branch, draw, coordinate, argument, and synchronous/deferred side effect established |
-| Active retail rules/maps/assets | Merged rules/art, 184 maps, Action119 owners, MIX/SHP lookup | Covered; positive reach and zero-occurrence exclusions enumerated |
+| Active retail rules/maps/assets | Standalone RULESMD/ARTMD, 184 maps, Action119 owners, MIX/SHP lookup | Covered; positive reach and zero-occurrence exclusions enumerated |
 | Current Rust producer/consumer paths | Combat receiver, world effects, AnimStore/scheduler, smudge dispatch, loading roots | Covered; preserved seams, wrong behavior, and missing behavior listed |
 | Ordering, persistence, and determinism | Foundation order, inline delay-zero work, delayed AI, stable Anim ownership, snapshot/hash needs | Covered; implementation invariants and acceptance tests specified |
 | Visual/audio composition | Layer, Shadow, NewTheater, AltPalette, report timing, smudge/ore, exact Z | Covered in the visual composition ledger |
@@ -398,7 +398,7 @@ The final zero-add scan of the complete `0x004415F0` decompile found no addition
 - `docs/research/SMUDGE_RNG_CLASSIFICATION_GHIDRA_REPORT.md`.
 - `docs/research/SMUDGE_SPAWN_TRIGGERS_GHIDRA_REPORT.md`.
 - `docs/research/BUILDINGCLASS_ON_DESTROYED_GHIDRA_REPORT.md`, corrected where noted.
-- Active retail `ini/rules.ini`, `ini/rulesmd.ini`, `ini/art.ini`, `ini/artmd.ini`.
+- Authoritative active-YR `ini/rulesmd.ini` and `ini/artmd.ini`; base RA2 `ini/rules.ini` and `ini/art.ini` were used only for non-authoritative comparison.
 - 184 extracted retail `.map`/`.mpr` files in `target/phase3-retail-census/extract`.
 - Read-only retail asset queries through the existing `target/release/asset.exe` tool.
 - Current Rust inspection in `src/rules/object_type.rs`, `src/rules/foundation.rs`, `src/rules/art_data.rs`, `src/app/loading/init_helpers.rs`, `src/sim/combat/mod.rs`, `src/sim/combat/inviso_scatter.rs`, `src/sim/combat/smudge_dispatch.rs`, `src/sim/anim_class.rs`, `src/sim/components.rs`, and `src/sim/world/mod.rs`.
