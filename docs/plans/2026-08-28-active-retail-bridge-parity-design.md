@@ -8,7 +8,7 @@ The result must preserve behavior that already matches, replace behavior that co
 
 ## Status and Scope Decision
 
-**Revision 15 after the sixth 2026-08-30 REVISE design-review verdict; pending a new fresh re-review. No further Rust implementation is authorized by this document until that review passes.**
+**Revision 15 is APPROVED by a fresh read-only design review on 2026-08-30 with no material findings. P0-R1 implementation is authorized; transaction 3 and every later transaction remain gated by P0-R1 merge and their own current evidence contracts.**
 
 `docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows and 31 explicit open questions; the tenth pass added nothing. The working inventory is nevertheless living: before every transaction it is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
 
@@ -983,7 +983,9 @@ The preferred approach is distributed exact-delta closure in current owners. It 
   builder and eventual full critic bundle cover both its transaction-3 shared high-load contribution
   and transaction 4 rather than inheriting BR-M05's pass.
 
-Until that review passes, implementation remains blocked by design rather than by user authority.
+The fresh Revision-15 review passed. P0-R1 may proceed on its transaction branch; this approval does
+not close any bridge mechanism or waive a later transaction's evidence, critic, validation, PR, or
+merge gate.
 
 ## Sources
 
