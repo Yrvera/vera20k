@@ -57,6 +57,8 @@ pub enum MapError {
     Lzo(LzoError),
     Asset(AssetError),
     CellDataTruncated { expected: usize, actual: usize },
+    TilesetRegistryTooLarge { attempted: usize, maximum: usize },
+    TilesetOrdinalOverflow { ordinal: u32, maximum: u32 },
     Io(std::io::Error),
 }
 
@@ -79,6 +81,14 @@ impl std::fmt::Display for MapError {
                     expected, actual
                 )
             }
+            MapError::TilesetRegistryTooLarge { attempted, maximum } => write!(
+                f,
+                "Theater tileset registry requires {attempted} slots, but Rust can represent at most {maximum} usable tile IDs"
+            ),
+            MapError::TilesetOrdinalOverflow { ordinal, maximum } => write!(
+                f,
+                "Theater tileset ordinal {ordinal} exceeds the supported maximum {maximum}"
+            ),
             MapError::Io(e) => write!(f, "IO error: {}", e),
         }
     }
@@ -147,16 +157,19 @@ pub struct MapSmudgeEntry {
 /// A single isometric terrain cell from IsoMapPack5.
 ///
 /// Layout per ModEnc + FinalAlert2 source: 11 bytes total.
-/// tile_index is a flat cumulative index into the theater's tileset list.
-/// -1 (0xFFFFFFFF) means "no tile" (clear ground at level 0).
+/// `tile_index` is the signed raw value from the pack. Map materialization
+/// translates it through the active theater's `LastTilesInSet` table before
+/// treating it as an actual cumulative tileset index. Consequently, raw `-1`
+/// is not intrinsically the runtime no-tile sentinel on a legacy/custom
+/// theater with a reached compatibility record.
 #[derive(Debug, Clone)]
 pub struct MapCell {
     /// Canonical isometric X coordinate after the 512-wide native lookup.
     pub rx: u16,
     /// Canonical isometric Y coordinate after the 512-wide native lookup.
     pub ry: u16,
-    /// Flat index into the theater's tile list (i32, NOT u16).
-    /// -1 = no tile / clear ground. Cumulative across all TileSet sections.
+    /// Signed raw Pack5 tile value (i32, NOT u16). After the map-load
+    /// compatibility seam, this field holds the translated actual tile index.
     pub tile_index: i32,
     /// Sub-tile index within a multi-cell TMP template (0 for single-cell tiles).
     pub sub_tile: u8,
@@ -472,29 +485,29 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<ParsedIsoMapPack, MapError> {
 
     // Diagnostic: tile_index distribution. Lets a reader of the load logs see
     // how high a map's IsoMapPack5 reaches vs. what the theater INI defines.
-    let mut min_pos: i32 = i32::MAX;
-    let mut max_idx: i32 = -1;
-    let mut no_tile: usize = 0;
+    let mut min_idx: i32 = i32::MAX;
+    let mut max_idx: i32 = i32::MIN;
+    let mut raw_negative: usize = 0;
+    let mut no_tile_sentinel: usize = 0;
     let mut distinct: std::collections::HashSet<i32> = std::collections::HashSet::new();
     for c in &parsed.cells {
         if c.tile_index < 0 {
-            no_tile += 1;
-        } else {
-            if c.tile_index < min_pos {
-                min_pos = c.tile_index;
-            }
-            if c.tile_index > max_idx {
-                max_idx = c.tile_index;
-            }
+            raw_negative += 1;
         }
+        if c.tile_index == i32::from(u16::MAX) {
+            no_tile_sentinel += 1;
+        }
+        min_idx = min_idx.min(c.tile_index);
+        max_idx = max_idx.max(c.tile_index);
         distinct.insert(c.tile_index);
     }
     log::info!(
-        "IsoMapPack5: {} cells, {} no-tile, tile_index min={}, max={}, distinct={}",
+        "IsoMapPack5: {} cells, {} raw-negative, {} positive-0xFFFF no-tile, tile_index min={}, max={}, distinct={}",
         parsed.cells.len(),
-        no_tile,
-        if min_pos == i32::MAX { -1 } else { min_pos },
-        max_idx,
+        raw_negative,
+        no_tile_sentinel,
+        if min_idx == i32::MAX { -1 } else { min_idx },
+        if max_idx == i32::MIN { -1 } else { max_idx },
         distinct.len()
     );
 
