@@ -717,11 +717,12 @@ fn base_plan_recalc_deploy_generates_and_anchors_nonhuman_conyard() {
     add_house(&mut sim, "Americans", false);
     sim.session.game_mode_nonzero = true;
     sim.scenario_rng = crate::sim::rng::SimRng::new(0x1020_3040);
-    let rng_before = sim.scenario_rng.state();
     let height_map = BTreeMap::new();
     let mcv = sim
         .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _replacement_constructor_word = expected_rng.next_u32();
 
     assert!(sim.apply_command(
         "Americans",
@@ -743,7 +744,10 @@ fn base_plan_recalc_deploy_generates_and_anchors_nonhuman_conyard() {
         house.base_plan.nodes[0].packed_cell,
         pack_base_plan_cell(19, 21)
     );
-    assert_eq!(sim.scenario_rng.state(), rng_before);
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
     sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(mcv).is_none());
 }
@@ -758,10 +762,11 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
         add_house(&mut sim, "Americans", is_human);
         sim.session.game_mode_nonzero = game_mode_nonzero;
         sim.scenario_rng = crate::sim::rng::SimRng::new(0x5566_7788);
-        let rng_before = sim.scenario_rng.state();
         let mcv = sim
             .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
             .expect("spawn MCV");
+        let mut expected_rng = sim.scenario_rng.clone();
+        let _replacement_constructor_word = expected_rng.next_u32();
 
         assert!(sim.apply_command(
             "Americans",
@@ -776,7 +781,10 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
         assert_eq!(house.base_center, None);
         assert_eq!(house.base_plan_center, (0, 0));
         assert!(house.base_plan.nodes.is_empty());
-        assert_eq!(sim.scenario_rng.state(), rng_before);
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
         sim.flush_pending_delete();
         assert!(sim.substrate.entities.get(mcv).is_none());
     }
@@ -785,10 +793,11 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
     add_house(&mut sim, "Americans", false);
     sim.session.game_mode_nonzero = true;
     sim.scenario_rng = crate::sim::rng::SimRng::new(0x99AA_BBCC);
-    let rng_before = sim.scenario_rng.state();
     let miner = sim
         .spawn_object("SMIN", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn deployable miner");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _replacement_constructor_word = expected_rng.next_u32();
     assert!(sim.apply_command(
         "Americans",
         &Command::DeployMcv { entity_id: miner },
@@ -801,7 +810,10 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
     assert_eq!(sim.houses[&owner].base_center, None);
     assert_eq!(sim.houses[&owner].base_plan_center, (0, 0));
     assert!(sim.houses[&owner].base_plan.nodes.is_empty());
-    assert_eq!(sim.scenario_rng.state(), rng_before);
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
     sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(miner).is_none());
 }
@@ -813,7 +825,6 @@ fn base_plan_recalc_deploy_countryless_nonempty_plan_only_reanchors_node_zero() 
     add_house(&mut sim, "Americans", false);
     sim.session.game_mode_nonzero = true;
     sim.scenario_rng = crate::sim::rng::SimRng::new(0x1357_2468);
-    let rng_before = sim.scenario_rng.state();
     let owner = sim.interner.get("Americans").unwrap();
     let house = sim.houses.get_mut(&owner).unwrap();
     house.country = None;
@@ -827,6 +838,8 @@ fn base_plan_recalc_deploy_countryless_nonempty_plan_only_reanchors_node_zero() 
     let mcv = sim
         .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
+    let mut expected_rng = sim.scenario_rng.clone();
+    let _replacement_constructor_word = expected_rng.next_u32();
 
     assert!(sim.apply_command(
         "Americans",
@@ -847,7 +860,10 @@ fn base_plan_recalc_deploy_countryless_nonempty_plan_only_reanchors_node_zero() 
     );
     assert!(house.base_plan.nodes[0].filled);
     assert_eq!(house.base_plan.nodes[0].retry_count, -7);
-    assert_eq!(sim.scenario_rng.state(), rng_before);
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
     sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(mcv).is_none());
 }
@@ -859,13 +875,13 @@ fn base_plan_recalc_deploy_countryless_empty_plan_fails_before_removal() {
     add_house(&mut sim, "Americans", false);
     sim.session.game_mode_nonzero = true;
     sim.scenario_rng = crate::sim::rng::SimRng::new(0x2468_1357);
-    let rng_before = sim.scenario_rng.state();
     let owner = sim.interner.get("Americans").unwrap();
     sim.houses.get_mut(&owner).unwrap().country = None;
     let height_map = BTreeMap::new();
     let mcv = sim
         .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
+    let rng_before = sim.scenario_rng.state();
 
     assert!(!sim.apply_command(
         "Americans",
@@ -894,7 +910,6 @@ fn base_plan_recalc_deploy_failures_preserve_source_rng_plan_and_centers() {
         add_house(&mut sim, "Americans", false);
         sim.session.game_mode_nonzero = true;
         sim.scenario_rng = crate::sim::rng::SimRng::new(0xDEAD_BEEF);
-        let rng_before = sim.scenario_rng.state();
         let mcv = sim
             .spawn_object("AMCV", "Americans", 20, 22, 128, rules, &height_map)
             .expect("spawn MCV");
@@ -902,6 +917,7 @@ fn base_plan_recalc_deploy_failures_preserve_source_rng_plan_and_centers() {
             sim.spawn_object("GAPOWR", "Blocker", 21, 22, 0, rules, &height_map)
                 .expect("spawn footprint blocker");
         }
+        let rng_before = sim.scenario_rng.state();
 
         assert!(!sim.apply_command(
             "Americans",
