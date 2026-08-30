@@ -1,9 +1,10 @@
 //! Resolved terrain/topology stage built from raw map cells plus theater/TMP metadata.
 //!
 //! This module sits between `MapFile` parsing and downstream consumers such as
-//! rendering, pathfinding, and building placement. It preserves raw IsoMapPack5
-//! data while attaching resolved per-cell metadata such as final LAT-adjusted
-//! tile choice, land/slope bytes from TMP, and coarse blocking/buildability flags.
+//! rendering, pathfinding, and building placement. It materializes raw
+//! IsoMapPack5 tile values into theater-compatible actual IDs, then attaches
+//! resolved per-cell metadata such as final LAT-adjusted tile choice,
+//! land/slope bytes from TMP, and coarse blocking/buildability flags.
 
 /// Zone classification constants matching gamemd.exe RecalcZoneType output.
 /// These index columns of `MOVEMENT_ZONE_PASSABILITY` in pathfinding/passability.rs.

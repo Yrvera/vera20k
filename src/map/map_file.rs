@@ -157,16 +157,19 @@ pub struct MapSmudgeEntry {
 /// A single isometric terrain cell from IsoMapPack5.
 ///
 /// Layout per ModEnc + FinalAlert2 source: 11 bytes total.
-/// tile_index is a flat cumulative index into the theater's tileset list.
-/// -1 (0xFFFFFFFF) means "no tile" (clear ground at level 0).
+/// `tile_index` is the signed raw value from the pack. Map materialization
+/// translates it through the active theater's `LastTilesInSet` table before
+/// treating it as an actual cumulative tileset index. Consequently, raw `-1`
+/// is not intrinsically the runtime no-tile sentinel on a legacy/custom
+/// theater with a reached compatibility record.
 #[derive(Debug, Clone)]
 pub struct MapCell {
     /// Canonical isometric X coordinate after the 512-wide native lookup.
     pub rx: u16,
     /// Canonical isometric Y coordinate after the 512-wide native lookup.
     pub ry: u16,
-    /// Flat index into the theater's tile list (i32, NOT u16).
-    /// -1 = no tile / clear ground. Cumulative across all TileSet sections.
+    /// Signed raw Pack5 tile value (i32, NOT u16). After the map-load
+    /// compatibility seam, this field holds the translated actual tile index.
     pub tile_index: i32,
     /// Sub-tile index within a multi-cell TMP template (0 for single-cell tiles).
     pub sub_tile: u8,

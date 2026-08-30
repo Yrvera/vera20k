@@ -19,9 +19,11 @@ use crate::map::map_file::MapError;
 use crate::rules::ini_parser::{IniFile, IniSection};
 use crate::map::bridge_facts::{Axis, BridgeheadAnchorClass};
 
-/// Marker for "no tile" in IsoMapPack5 data.
-/// The raw field is i32; -1 (0xFFFFFFFF) means clear ground.
-/// We also treat the legacy u16 0xFFFF as no-tile for compatibility.
+/// Marker for "no tile" after raw Pack5 compatibility translation.
+///
+/// A raw signed `-1` can be shifted by a reached `LastTilesInSet` record, so
+/// callers must not classify it before the map-load translation seam. Positive
+/// legacy u16 `0xFFFF` is translation-exempt and is also treated as no-tile.
 pub const NO_TILE: i32 = -1;
 
 /// Identifies a specific sub-tile within a TMP template, including variant.
