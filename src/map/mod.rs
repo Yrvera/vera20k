@@ -15,6 +15,7 @@
 //! - trigger_runtime (runtime evaluation) lives in sim/ — map/ only holds static definitions
 
 pub mod actions;
+pub(crate) mod authored_overlay;
 pub mod basic;
 pub mod bridge_facts;
 pub mod cell_index;

@@ -776,14 +776,23 @@ pub(crate) struct DestroyableCliffMutation {
 /// Active YR owns one object at `0x00ABDC50`. `MapClass::Get_CellClass` at
 /// `0x005657A0` and `0x00565730` overwrite only its packed coordinate words at
 /// `+0x24`; the independently writable level/slope bytes at `+0x11B/+0x11C`
-/// survive those misses. Packing the modeled bytes into one atomic word keeps
-/// a live identity view safe to carry through app loading workers and sim
-/// snapshots without copying native's global mutable object architecture. The
-/// remaining high 16 bits carry the exact `+0x140 & 0x1180` bridge subset.
+/// survive those misses. The coordinate/level/slope/bridge subset and the
+/// overlay identity/state pair each occupy one coherent atomic word. Their
+/// shared allocation keeps one live identity safe to carry through app loading
+/// workers without copying native's global mutable object architecture.
 #[derive(Debug, Clone)]
 pub struct SharedCellDummy {
-    state: Arc<AtomicU64>,
+    state: Arc<SharedCellDummyState>,
 }
+
+#[derive(Debug)]
+struct SharedCellDummyState {
+    cell: AtomicU64,
+    /// Low dword is signed Cell+0x44 identity; bits 32..39 are Cell+0x11E.
+    overlay: AtomicU64,
+}
+
+const SHARED_DUMMY_DEFAULT_OVERLAY: u64 = u32::MAX as u64;
 
 impl Default for SharedCellDummy {
     fn default() -> Self {
@@ -794,7 +803,10 @@ impl Default for SharedCellDummy {
 impl SharedCellDummy {
     pub fn fresh() -> Self {
         Self {
-            state: Arc::new(AtomicU64::new(0)),
+            state: Arc::new(SharedCellDummyState {
+                cell: AtomicU64::new(0),
+                overlay: AtomicU64::new(SHARED_DUMMY_DEFAULT_OVERLAY),
+            }),
         }
     }
 
@@ -804,14 +816,18 @@ impl SharedCellDummy {
     /// `CellClass::Constructor @ 0x0047BBF0` on the fixed dummy object at
     /// `0x00ABDC50` (`0x005670E7..0x005670F2`). The address survives, while
     /// coordinate `+0x24`, level `+0x11B`, slope `+0x11C`, and modeled
-    /// `+0x140 & 0x1180` bridge bits return to zero. Other constructor-owned
+    /// `+0x140 & 0x1180` bridge bits return to zero, while overlay identity
+    /// returns to signed `-1` and OverlayData to zero. Other constructor-owned
     /// fields are not represented by this handle yet.
     pub(crate) fn reconstruct_for_map_resize(&self) {
-        self.state.store(0, Ordering::Relaxed);
+        self.state.cell.store(0, Ordering::Relaxed);
+        self.state
+            .overlay
+            .store(SHARED_DUMMY_DEFAULT_OVERLAY, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> SharedCellDummySnapshot {
-        let packed = self.state.load(Ordering::Relaxed);
+        let packed = self.state.cell.load(Ordering::Relaxed);
         SharedCellDummySnapshot {
             coord: (
                 i32::from((packed as u16) as i16),
@@ -826,7 +842,7 @@ impl SharedCellDummy {
     /// Stamp only CellClass+0x24, preserving the live level and slope bytes.
     pub fn stamp_coord(&self, x: i32, y: i32) {
         let coord = u64::from(x as i16 as u16) | (u64::from(y as i16 as u16) << 16);
-        let _ = self.state.fetch_update(
+        let _ = self.state.cell.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some((current & !0xffff_ffff) | coord),
@@ -837,12 +853,45 @@ impl SharedCellDummy {
         Arc::ptr_eq(&self.state, &other.state)
     }
 
+    /// Read the native signed overlay identity dword and independent state byte.
+    pub(crate) fn overlay_identity_state(&self) -> (i32, u8) {
+        let packed = self.state.overlay.load(Ordering::Relaxed);
+        (packed as u32 as i32, (packed >> 32) as u8)
+    }
+
+    pub(crate) fn write_overlay_identity(&self, identity: i32) {
+        let identity = u64::from(identity as u32);
+        let _ = self.state.overlay.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some((current & !u64::from(u32::MAX)) | identity),
+        );
+    }
+
+    pub(crate) fn write_overlay_state(&self, state: u8) {
+        const STATE_MASK: u64 = 0xff << 32;
+        let state = u64::from(state) << 32;
+        let _ = self.state.overlay.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some((current & !STATE_MASK) | state),
+        );
+    }
+
+    pub(crate) fn write_overlay_identity_state(&self, identity: i32, state: u8) {
+        self.state.overlay.store(
+            u64::from(identity as u32) | (u64::from(state) << 32),
+            Ordering::Relaxed,
+        );
+    }
+
     /// Apply one exact `SetBridgeDirection_*` slot to the modeled flag subset
     /// without disturbing coordinate, level, or slope writers.
     pub(crate) fn apply_bridge_flag_slot(&self, slot: BridgeStampSlot, set: bool) {
         const FLAGS_MASK: u64 = 0xffff << 48;
         let _ = self
             .state
+            .cell
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 let mut flags = ((current >> 48) as u32) & MODELED_CELLCLASS_BRIDGE_FLAG_MASK;
                 crate::map::bridge_facts::apply_modeled_cellclass_bridge_slot(
@@ -862,6 +911,7 @@ impl SharedCellDummy {
         let flags = u64::from((flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK) as u16) << 48;
         let _ = self
             .state
+            .cell
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some((current & !FLAGS_MASK) | flags)
             });
@@ -871,7 +921,7 @@ impl SharedCellDummy {
     pub(crate) fn set_level_slope(&self, level: i8, slope_type: u8) {
         const LEVEL_SLOPE_MASK: u64 = 0xffff << 32;
         let value = (u64::from(level as u8) << 32) | (u64::from(slope_type) << 40);
-        let _ = self.state.fetch_update(
+        let _ = self.state.cell.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some((current & !LEVEL_SLOPE_MASK) | value),
@@ -1127,6 +1177,20 @@ impl ResolvedTerrainGrid {
 
     pub(crate) fn shared_cell_dummy(&self) -> SharedCellDummy {
         self.shared_cell_dummy.clone()
+    }
+
+    /// Resolve one already-narrowed native fixed-grid coordinate to an
+    /// allocated real CellClass slot. The caller owns dummy coordinate stamping
+    /// on `None`, because some native probes test admission without GetCell.
+    pub(crate) fn native_fixed_cell_index(&self, x: i16, y: i16) -> Option<usize> {
+        native_resolved_cell_index(
+            self.width,
+            self.height,
+            self.native_allocated.as_deref(),
+            self.cells.len(),
+            i32::from(x),
+            i32::from(y),
+        )
     }
 
     pub(crate) fn bridge_flag_execution_state(&self) -> CellClassBridgeFlagState {

@@ -8,6 +8,7 @@
 //! Never depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::overlay::{OverlayDataPack, OverlayEntry};
+use crate::map::authored_overlay::FinalizedOverlayPayload;
 use crate::map::overlay_types::{
     OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index, retained_overlay_land,
 };
@@ -143,6 +144,28 @@ impl OverlayGrid {
             width,
             height,
             cells: vec![OverlayCell::default(); count],
+            dirty_cells: Vec::new(),
+            synchronous_passability_changed: false,
+            synchronous_navigation_cells: Vec::new(),
+        }
+    }
+
+    /// Consume the one finalized map payload. This boundary has no raw-pack,
+    /// rules, source-filter, RNG, Mark, or Recalc capability.
+    pub(crate) fn from_finalized_map_payload(payload: FinalizedOverlayPayload) -> Self {
+        let (width, height, finalized) = payload.into_parts();
+        let cells = finalized
+            .into_iter()
+            .map(|cell| OverlayCell {
+                overlay_id: cell.overlay_id(),
+                overlay_data: cell.state(),
+                wall_owner: None,
+            })
+            .collect();
+        Self {
+            width,
+            height,
+            cells,
             dirty_cells: Vec::new(),
             synchronous_passability_changed: false,
             synchronous_navigation_cells: Vec::new(),
@@ -1074,6 +1097,26 @@ fn index_of(width: u16, height: u16, rx: u16, ry: u16) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finalized_payload_is_the_only_input_and_preserves_data_only_cells() {
+        let payload = FinalizedOverlayPayload::from_cells_for_test(
+            2,
+            1,
+            vec![(-1, 37), (0x18, 9)],
+        );
+        let grid = OverlayGrid::from_finalized_map_payload(payload);
+
+        assert_eq!(
+            (grid.cell(0, 0).overlay_id, grid.cell(0, 0).overlay_data),
+            (None, 37)
+        );
+        assert_eq!(
+            (grid.cell(1, 0).overlay_id, grid.cell(1, 0).overlay_data),
+            (Some(0x18), 9)
+        );
+        assert!(grid.dirty_cells.is_empty());
+    }
 
     #[test]
     fn new_grid_is_empty() {
