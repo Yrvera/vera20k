@@ -255,11 +255,13 @@ pub fn usage_text() -> String {
         "  -CD             Use the wildcard media-archive branch.",
         "  -WIN            Run in a window (this engine is always windowed).",
         "  -NOAUDIO        Disable music and sound output.",
+        "  -<W>X<H>        Seed startup width and height; Video settings may override.",
+        "  -480 -16        Seed startup width; a missing paired height uses fallback.",
         "  -? -h /? /h     Show this message.",
         "",
         "Other retail switches are accepted so a launch never fails on them,",
-        "but are not applied yet: -<W>X<H>, -480, -16, -RECORD,",
-        "-PLAY, -SOCKET, -DESTNET and the remaining net/debug flags.",
+        "but are not applied yet: -RECORD, -PLAY, -SOCKET, -DESTNET",
+        "and the remaining net/debug flags.",
     ]
     .join("\n")
 }
@@ -294,6 +296,22 @@ mod tests {
             let (options, rest) = consume(&[form]);
             assert!(options.usage_requested, "{form} must request usage");
             assert!(rest.is_empty(), "{form} must be consumed");
+        }
+    }
+
+    #[test]
+    fn usage_advertises_numeric_screen_seeds_as_applied() {
+        let text = usage_text();
+        let (applied, unapplied) = text
+            .split_once("Other retail switches")
+            .expect("usage must separate applied and unapplied switches");
+
+        for form in ["-<W>X<H>", "-480", "-16"] {
+            assert!(applied.contains(form), "{form} must be advertised as applied");
+            assert!(
+                !unapplied.contains(form),
+                "{form} must not remain in the unapplied group"
+            );
         }
     }
 

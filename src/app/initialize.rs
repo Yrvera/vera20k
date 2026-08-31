@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::app::frontend::startup_options::{RetailStartupOptions, ScreenSize};
-use crate::app::persistence::options_profile::RetailOptionsLoad;
+use crate::app::persistence::options_profile::{RetailOptionsLoad, RetailOptionsProfile};
 
 use super::presentation::render;
 use super::frontend::list_maps;
@@ -45,6 +45,43 @@ where
     } else {
         RetailOptionsLoad::without_ra2md(startup_options)
     }
+}
+
+trait StartupAudioProfileOperations {
+    fn set_sound_volume(&mut self, volume: f64);
+    fn set_voice_volume(&mut self, volume: f64);
+    fn set_score_volume(&mut self, volume: f64);
+}
+
+impl StartupAudioProfileOperations for crate::app::audio_runtime::AppAudioRuntime {
+    fn set_sound_volume(&mut self, volume: f64) {
+        if let Some(player) = self.sfx_player.as_mut() {
+            player.set_sound_volume(volume);
+        }
+    }
+
+    fn set_voice_volume(&mut self, volume: f64) {
+        if let Some(player) = self.sfx_player.as_mut() {
+            player.set_voice_volume(volume);
+        }
+    }
+
+    fn set_score_volume(&mut self, volume: f64) {
+        if let Some(player) = self.music_player.as_mut() {
+            player.set_volume(volume);
+        }
+    }
+}
+
+fn apply_startup_audio_profile(
+    profile: &RetailOptionsProfile,
+    operations: &mut impl StartupAudioProfileOperations,
+) {
+    // gamemd-derived: the Audio tail of `OptionsClass__ReadFromINI @ 0x005FA620`
+    // applies SoundVolume, VoiceVolume, then ScoreVolume through distinct owners.
+    operations.set_sound_volume(f64::from(profile.sound_volume));
+    operations.set_voice_volume(f64::from(profile.voice_volume));
+    operations.set_score_volume(f64::from(profile.score_volume));
 }
 
 impl App {
@@ -644,16 +681,7 @@ impl App {
         // Project all three retained profile gains before any player can start
         // an audible source. The profile keeps native negative values for
         // round-trip; the output owners provide the documented safe clamp.
-        let score_volume = f64::from(state.persistence.options_profile.score_volume);
-        let sound_volume = f64::from(state.persistence.options_profile.sound_volume);
-        let voice_volume = f64::from(state.persistence.options_profile.voice_volume);
-        if let Some(player) = state.audio.music_player.as_mut() {
-            player.set_volume(score_volume);
-        }
-        if let Some(player) = state.audio.sfx_player.as_mut() {
-            player.set_sound_volume(sound_volume);
-            player.set_voice_volume(voice_volume);
-        }
+        apply_startup_audio_profile(&state.persistence.options_profile, &mut state.audio);
 
         if state.frontend.dev_skirmish_shell_enabled {
             Self::ensure_active_cooperative_shell_selection(&mut state);
@@ -673,6 +701,54 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, PartialEq)]
+    enum StartupAudioCall {
+        Sound(f64),
+        Voice(f64),
+        Score(f64),
+    }
+
+    #[derive(Default)]
+    struct RecordingStartupAudioOperations {
+        calls: Vec<StartupAudioCall>,
+    }
+
+    impl StartupAudioProfileOperations for RecordingStartupAudioOperations {
+        fn set_sound_volume(&mut self, volume: f64) {
+            self.calls.push(StartupAudioCall::Sound(volume));
+        }
+
+        fn set_voice_volume(&mut self, volume: f64) {
+            self.calls.push(StartupAudioCall::Voice(volume));
+        }
+
+        fn set_score_volume(&mut self, volume: f64) {
+            self.calls.push(StartupAudioCall::Score(volume));
+        }
+    }
+
+    #[test]
+    fn startup_audio_profile_applies_exact_values_in_native_order() {
+        let profile = RetailOptionsProfile {
+            sound_volume: 0.125,
+            voice_volume: 0.5,
+            score_volume: 0.875,
+            ..Default::default()
+        };
+        let mut operations = RecordingStartupAudioOperations::default();
+
+        apply_startup_audio_profile(&profile, &mut operations);
+
+        assert_eq!(
+            operations.calls,
+            vec![
+                StartupAudioCall::Sound(0.125),
+                StartupAudioCall::Voice(0.5),
+                StartupAudioCall::Score(0.875),
+            ]
+        );
+    }
 
     #[test]
     fn capture_dimensions_override_profile_and_remain_hidden() {

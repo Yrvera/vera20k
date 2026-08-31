@@ -210,7 +210,7 @@ Focused `--lib` suites will cover:
 7. Golden profile formatting (`yes/no`, six decimals, key order, no Allow keys).
 8. CRLF/high-byte/comment/Network/Skirmish preservation with an instrumented one-read/one-write seam.
 9. Accepted result ordering and result-2 pump-termination no-op through the same operations dispatcher used by `AppState` production close.
-10. Both confirmed main-menu quit owners through their production-used persist -> dismiss -> cascade wrappers, with one full-profile persist per owner and no Score-only writer.
+10. Both confirmed main-menu quit owners through their production-used dismiss -> persist -> cascade wrappers, with one full-profile persist per owner and no Score-only writer.
 11. Capture isolation through the production pre-window selection seam: with explicit capture dimensions and a conflicting full user-profile loader, the loader is never invoked; Options/Audio and their UI/audio projections remain exact defaults, the retained screen is the post-fallback `800x600` pair, and only the explicit hidden capture size becomes the shell target.
 12. Existing startup, in-game-options, tooltip, target-line, SFX queue, music, capture, and INI-writer focused regressions.
 

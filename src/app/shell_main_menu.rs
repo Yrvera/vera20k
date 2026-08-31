@@ -44,8 +44,8 @@ fn dispatch_confirmed_quit(
     operations: &mut impl ConfirmedQuitOperations,
     owner: ConfirmedQuitOwner,
 ) {
-    operations.persist_settings();
     operations.dismiss_confirmation(owner);
+    operations.persist_settings();
     operations.start_cascade();
 }
 
@@ -836,8 +836,8 @@ mod confirmed_quit_transaction_tests {
         assert_eq!(
             operations.events,
             [
-                QuitEvent::Persist,
                 QuitEvent::Dismiss(owner),
+                QuitEvent::Persist,
                 QuitEvent::Cascade,
             ]
         );

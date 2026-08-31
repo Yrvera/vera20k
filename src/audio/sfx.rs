@@ -187,7 +187,7 @@ impl QueuedVoice {
 /// User-controlled master channel for one secondary output.
 ///
 /// gamemd-derived: `OptionsClass::SetDefaults @ 0x005FA350` and
-/// `OptionsClass::Read @ 0x005FA620` retain independent SoundVolume and
+/// `OptionsClass__ReadFromINI @ 0x005FA620` retain independent SoundVolume and
 /// VoiceVolume settings; ordinary/animation effects use Sound while unit and
 /// EVA speech use Voice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
