@@ -412,7 +412,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true,
+            true, true, true, true, true, true, true,
         )
     }
 
@@ -424,7 +424,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -436,7 +436,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -446,7 +446,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
         )
     }
 
@@ -457,7 +457,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
         )
     }
 
@@ -468,7 +468,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false, false, false,
+            true, false, false, false, false, false, false,
         )
     }
 
@@ -477,7 +477,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false, false, false,
+            true, true, false, false, false, false, false,
         )
     }
 
@@ -486,7 +486,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false, false, false,
+            true, true, true, false, false, false, false,
         )
     }
 
@@ -496,7 +496,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false, false,
+            true, true, true, true, false, false, false,
         )
     }
 
@@ -505,7 +505,16 @@ impl Simulation {
     pub(crate) fn state_hash_without_building_repair_v114(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, false,
+            true, true, true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v115 BuildingDown fold.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_building_down_v115(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, false,
         )
     }
 
@@ -531,6 +540,7 @@ impl Simulation {
         include_house_deploy_latches_v112: bool,
         include_house_update_activation_v113: bool,
         include_building_repair_v114: bool,
+        include_building_down_v115: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -652,6 +662,7 @@ impl Simulation {
             include_naval_build_const_v109,
             include_base_plan_v110,
             include_building_repair_v114,
+            include_building_down_v115,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -1243,6 +1254,7 @@ impl Simulation {
         include_naval_build_const_v109: bool,
         include_base_plan_v110: bool,
         include_building_repair_v114: bool,
+        include_building_down_v115: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -1391,6 +1403,25 @@ impl Simulation {
                     entity.building_anim_reset_revision.hash(hasher);
                     entity.building_ai_sell_enabled.hash(hasher);
                     entity.building_make_shape_initialized.hash(hasher);
+                }
+            }
+            if include_building_down_v115 {
+                // VERA lockstep authority: this serialized component controls
+                // deferred replacement spawn and selection transfer.
+                b"building-down-v1".hash(hasher);
+                match entity.building_down.as_ref() {
+                    None => 0u8.hash(hasher),
+                    Some(building_down) => {
+                        1u8.hash(hasher);
+                        building_down.elapsed_ticks.hash(hasher);
+                        building_down.total_ticks.hash(hasher);
+                        building_down.spawn_type.hash(hasher);
+                        building_down.spawn_owner.hash(hasher);
+                        building_down.spawn_rx.hash(hasher);
+                        building_down.spawn_ry.hash(hasher);
+                        building_down.spawn_z.hash(hasher);
+                        building_down.was_selected.hash(hasher);
+                    }
                 }
             }
             entity.damage_fire_state_active.hash(hasher);
@@ -2584,7 +2615,7 @@ mod mission_authority_hash_tests {
 #[cfg(test)]
 mod rally_hash_tests {
     use super::{Simulation, hash_house_ai_activation_fields};
-    use crate::sim::components::{DriveCoord, DriveLocomotionRuntime};
+    use crate::sim::components::{BuildingDown, DriveCoord, DriveLocomotionRuntime};
     use crate::sim::game_entity::GameEntity;
 
     #[test]
@@ -2666,6 +2697,69 @@ mod rally_hash_tests {
         let legacy = fixtures[0].state_hash_without_building_repair_v114();
         for fixture in &fixtures[1..] {
             assert_eq!(legacy, fixture.state_hash_without_building_repair_v114());
+        }
+    }
+
+    #[test]
+    fn building_down_discriminant_and_every_field_are_v115_hash_authority() {
+        fn fixture(variant: Option<u8>) -> Simulation {
+            let mut sim = Simulation::new();
+            let spawn_type = sim.intern("AMCV");
+            let alternate_spawn_type = sim.intern("SMCV");
+            let spawn_owner = sim.intern("Americans");
+            let alternate_spawn_owner = sim.intern("Russians");
+            let mut entity = GameEntity::test_default(1, "GACNST", "Americans", 10, 10);
+            entity.category = crate::map::entities::EntityCategory::Structure;
+            entity.building_down = variant.map(|variant| {
+                let mut building_down = BuildingDown {
+                    elapsed_ticks: 3,
+                    total_ticks: 12,
+                    spawn_type,
+                    spawn_owner,
+                    spawn_rx: 10,
+                    spawn_ry: 11,
+                    spawn_z: 2,
+                    was_selected: false,
+                };
+                match variant {
+                    0 => {}
+                    1 => building_down.elapsed_ticks = 4,
+                    2 => building_down.total_ticks = 13,
+                    3 => building_down.spawn_type = alternate_spawn_type,
+                    4 => building_down.spawn_owner = alternate_spawn_owner,
+                    5 => building_down.spawn_rx = 12,
+                    6 => building_down.spawn_ry = 13,
+                    7 => building_down.spawn_z = 3,
+                    8 => building_down.was_selected = true,
+                    _ => unreachable!(),
+                }
+                building_down
+            });
+            sim.substrate.entities.insert(entity);
+            sim
+        }
+
+        let baseline = fixture(Some(0));
+        let baseline_hash = baseline.state_hash();
+        let legacy_hash = baseline.state_hash_without_building_down_v115();
+        for variant in [
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+            Some(8),
+        ] {
+            let changed = fixture(variant);
+            assert_ne!(baseline_hash, changed.state_hash(), "variant={variant:?}");
+            assert_eq!(
+                legacy_hash,
+                changed.state_hash_without_building_down_v115(),
+                "v114 must exclude BuildingDown variant={variant:?}"
+            );
         }
     }
 

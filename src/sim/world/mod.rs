@@ -5571,12 +5571,13 @@ impl Simulation {
 
     /// Advance building-down (undeploy) animations. When done, despawn the
     /// building and spawn the mobile unit (e.g., ConYard → MCV).
-    /// Returns true if any entities were spawned (triggers atlas refresh).
+    /// Returns `(spawned_entity, destroyed_structure)` for completion-frame
+    /// atlas and navigation refresh.
     fn tick_building_down(
         &mut self,
         rules: Option<&RuleSet>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> bool {
+    ) -> (bool, bool) {
         let keys = self.substrate.entities.keys_sorted();
         let mut finished: Vec<u64> = Vec::new();
         for &sid in &keys {
@@ -5593,38 +5594,22 @@ impl Simulation {
             }
         }
         let mut spawned_any = false;
+        let mut destroyed_any = false;
         for sid in finished {
             // Consume the completed state before beginning the conversion.
             // The source remains resolvable until deferred finalization, so a
             // retained BuildingDown component would otherwise permit a direct
             // second helper call to construct/refund twice.
-            let spawn_data = self.substrate.entities.get_mut(sid).and_then(|e| {
+            let completion_data = self.substrate.entities.get_mut(sid).and_then(|e| {
                 if !e.lifecycle.object_alive || e.lifecycle.in_limbo {
                     return None;
                 }
-                e.building_down.take().map(|bd| {
-                    (
-                        bd.spawn_type,
-                        bd.spawn_owner,
-                        bd.spawn_rx,
-                        bd.spawn_ry,
-                        bd.spawn_z,
-                        bd.was_selected,
-                        e.attached_trigger_tag,
-                        e.type_ref,
-                    )
-                })
+                e.building_down
+                    .take()
+                    .map(|bd| (bd, e.attached_trigger_tag, e.type_ref, e.health))
             });
-            let Some((
-                unit_type_id,
-                owner_id,
-                rx,
-                ry,
-                z,
-                was_selected,
-                attached_trigger_tag,
-                source_type_id,
-            )) = spawn_data
+            let Some((building_down, attached_trigger_tag, source_type_id, source_health)) =
+                completion_data
             else {
                 continue;
             };
@@ -5632,18 +5617,40 @@ impl Simulation {
                 Some(rules) => rules,
                 None => {
                     self.uninit(sid);
+                    destroyed_any = true;
                     continue;
                 }
             };
+            let source_has_slave_manager = rules
+                .object_case_insensitive(self.interner.resolve(source_type_id))
+                .is_some_and(|object| object.enslaves.is_some());
+            if source_has_slave_manager {
+                let result =
+                    crate::sim::slave_miner::complete_slave_miner_undeploy_with_overlay_context(
+                        self,
+                        sid,
+                        building_down,
+                        attached_trigger_tag,
+                        source_type_id,
+                        source_health,
+                        rules,
+                        overlay_registry,
+                    );
+                spawned_any |= result.is_some();
+                destroyed_any = true;
+                continue;
+            }
+            let unit_type_id = building_down.spawn_type;
+            let owner_id = building_down.spawn_owner;
+            let rx = building_down.spawn_rx;
+            let ry = building_down.spawn_ry;
+            let z = building_down.spawn_z;
+            let was_selected = building_down.was_selected;
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
             let deploy_facing = rules
                 .object_case_insensitive(self.interner.resolve(source_type_id))
                 .map_or(0x80, |object| object.deploy_facing);
-            let refund = crate::sim::production::active_retail_reverse_refund_for_building(
-                self, rules, sid,
-            )
-            .unwrap_or(0);
 
             // gamemd-derived: BuildingClass::Sell @ 0x00449C30 constructs the
             // reverse target while the source remains active. Allocation or
@@ -5657,13 +5664,22 @@ impl Simulation {
                 z,
                 rules,
             ) else {
+                let refund = crate::sim::production::active_retail_reverse_refund_for_building(
+                    self, rules, sid,
+                )
+                .unwrap_or(0);
                 crate::sim::production::credit_reverse_failure_refund(
                     self, &owner_str, refund,
                 );
                 self.uninit_with_rules(sid, rules);
+                destroyed_any = true;
                 continue;
             };
 
+            let refund = crate::sim::production::active_retail_reverse_refund_for_building(
+                self, rules, sid,
+            )
+            .unwrap_or(0);
             // BuildingClass::Sell @ 0x00449C30 only then Limbos the source and
             // attempts UnitClass::Unlimbo once. Rejection retains the constructed
             // target alive in Limbo, transfers nothing, and never restores source.
@@ -5683,13 +5699,19 @@ impl Simulation {
                 .is_some()
             {
                 if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
+                    ge.health.current = Self::active_retail_conversion_health_current(
+                        source_health,
+                        ge.health.max,
+                    );
                     ge.attached_trigger_tag = attached_trigger_tag;
-                    ge.selected = was_selected;
                 }
                 if attached_trigger_tag.is_some()
                     && let Some(source) = self.substrate.entities.get_mut(sid)
                 {
                     source.attached_trigger_tag = None;
+                }
+                if let Some(target) = self.substrate.entities.get_mut(new_sid) {
+                    target.selected = was_selected;
                 }
                 self.uninit_with_rules(sid, rules);
                 spawned_any = true;
@@ -5699,8 +5721,9 @@ impl Simulation {
                 );
                 self.uninit_with_rules(sid, rules);
             }
+            destroyed_any = true;
         }
-        spawned_any
+        (spawned_any, destroyed_any)
     }
 
     fn apply_one_due_command(
@@ -5727,14 +5750,10 @@ impl Simulation {
                 && matches!(
                     cmd.payload,
                     Command::DeployMcv { .. }
-                        | Command::UndeployBuilding { .. }
                         | Command::LaunchSuperWeapon { .. }
                 );
         let destroyed_structure = applied
-            && matches!(
-                cmd.payload,
-                Command::SellBuilding { .. } | Command::UndeployBuilding { .. }
-            );
+            && matches!(cmd.payload, Command::SellBuilding { .. });
         (
             applied,
             spawned_entity,
@@ -6302,7 +6321,6 @@ impl Simulation {
                         && matches!(
                             cmd.payload,
                             Command::DeployMcv { .. }
-                                | Command::UndeployBuilding { .. }
                                 | Command::LaunchSuperWeapon { .. }
                         )
                 {
@@ -6338,7 +6356,10 @@ impl Simulation {
         // their armed latch before that visit evaluates low-credit sell admission.
         self.queue_completed_building_guard(&construction_missions);
         // Advance building-down (undeploy) animations; spawn units when done.
-        *spawned_entities |= self.tick_building_down(rules, overlay_registry);
+        let (building_down_spawned, building_down_destroyed) =
+            self.tick_building_down(rules, overlay_registry);
+        *spawned_entities |= building_down_spawned;
+        *destroyed_structure |= building_down_destroyed;
 
         // Tick radar event aging (remove expired pings).
         self.radar_events.tick();

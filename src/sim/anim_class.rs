@@ -1189,7 +1189,7 @@ impl Simulation {
     }
 
     pub(crate) fn update_building_damage_fire(&mut self, building_id: u64, rules: &RuleSet) {
-        let Some((current, maximum, type_ref, position, prior_state, category)) =
+        let Some((current, maximum, type_ref, position, prior_state, category, packing)) =
             self.substrate.entities.get(building_id).map(|entity| {
                 (
                     entity.health.current,
@@ -1198,12 +1198,19 @@ impl Simulation {
                     entity.position.clone(),
                     entity.damage_fire_state_active,
                     entity.category,
+                    entity.building_down.is_some(),
                 )
             })
         else {
             return;
         };
         if category != crate::map::entities::EntityCategory::Structure {
+            return;
+        }
+        // BuildingClass::Sell state 0 destroys/nulls all eight slots at
+        // 0x0044AB87..0x0044ABAC. A later threshold crossing during the
+        // reverse-MAKE window must not reconstruct them before source UnInit.
+        if packing {
             return;
         }
         let Some(object_type) = self.object_type(type_ref, rules) else {
@@ -1584,8 +1591,10 @@ mod tests {
 
     fn damage_fire_fixture(can_be_occupied: bool) -> (Simulation, RuleSet, u64) {
         let rules_ini = IniFile::from_str(&format!(
-            "[BuildingTypes]\n0=TESTBLD\n\n\
-             [TESTBLD]\nStrength=100\nImage=TESTART\nCanBeOccupied={}\n\n\
+            "[VehicleTypes]\n0=TESTUNIT\n\n\
+             [BuildingTypes]\n0=TESTBLD\n\n\
+             [TESTUNIT]\nStrength=100\nSpeed=4\n\n\
+             [TESTBLD]\nStrength=100\nImage=TESTART\nCanBeOccupied={}\nUndeploysInto=TESTUNIT\n\n\
              [General]\nDamageFireTypes=FIRE01,FIRE02,FIRE03\n\n\
              [AudioVisual]\nConditionYellow=50%\nConditionRed=25%\n",
             if can_be_occupied { "yes" } else { "no" },
@@ -2453,6 +2462,62 @@ mod tests {
         let anim = sim.anim(anim_id).unwrap();
         assert_eq!(anim.runtime.current_frame, frame);
         assert!(!anim.runtime.first_ai_guard);
+    }
+
+    #[test]
+    fn undeploy_start_clears_damage_fire_slots_and_blocks_mid_pack_recreation() {
+        let (mut sim, rules, building_id) = damage_fire_fixture(false);
+        sim.substrate
+            .entities
+            .get_mut(building_id)
+            .unwrap()
+            .health
+            .current = 50;
+        sim.update_building_damage_fire(building_id, &rules);
+        let anim_ids: Vec<_> = sim
+            .substrate
+            .entities
+            .get(building_id)
+            .unwrap()
+            .damage_fire_anim_ids
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(anim_ids.len(), 2);
+
+        assert!(sim.undeploy_building(building_id, &rules));
+        let packing = sim.substrate.entities.get(building_id).unwrap();
+        assert!(packing.building_down.is_some());
+        assert!(packing.damage_fire_state_active);
+        assert!(packing.damage_fire_anim_ids.iter().all(Option::is_none));
+        for anim_id in anim_ids {
+            let anim = sim.anim(anim_id).expect("destroyed Anim remains deferred");
+            assert!(anim.runtime.inactive);
+            assert!(sim.substrate.pending_delete.contains(&anim_id));
+        }
+
+        let rng_after_clear = sim.scenario_rng.logical_state();
+        sim.update_building_damage_fire(building_id, &rules);
+        let packing = sim.substrate.entities.get(building_id).unwrap();
+        assert!(packing.damage_fire_anim_ids.iter().all(Option::is_none));
+        assert_eq!(sim.scenario_rng.logical_state(), rng_after_clear);
+
+        let (mut crossing, rules, crossing_id) = damage_fire_fixture(false);
+        assert!(crossing.undeploy_building(crossing_id, &rules));
+        crossing
+            .substrate
+            .entities
+            .get_mut(crossing_id)
+            .unwrap()
+            .health
+            .current = 50;
+        let rng_before_crossing = crossing.scenario_rng.logical_state();
+        crossing.update_building_damage_fire(crossing_id, &rules);
+        let packing = crossing.substrate.entities.get(crossing_id).unwrap();
+        assert!(!packing.damage_fire_state_active);
+        assert!(packing.damage_fire_anim_ids.iter().all(Option::is_none));
+        assert_eq!(crossing.scenario_rng.logical_state(), rng_before_crossing);
     }
 
     #[test]

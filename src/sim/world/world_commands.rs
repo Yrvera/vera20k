@@ -1142,24 +1142,6 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                if self
-                    .substrate
-                    .entities
-                    .get(*entity_id)
-                    .is_some_and(|entity| {
-                        self.object_type(entity.type_ref, rules).is_some_and(|obj| {
-                            obj.enslaves.is_some() && obj.undeploys_into.is_some()
-                        })
-                    })
-                {
-                    return crate::sim::slave_miner::undeploy_slave_miner_with_overlay_context(
-                        self,
-                        *entity_id,
-                        rules,
-                        overlay_registry,
-                    )
-                    .is_some();
-                }
                 self.undeploy_building(*entity_id, rules)
             }
             Command::ToggleInfantryDeploy { entity_id } => {

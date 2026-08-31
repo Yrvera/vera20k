@@ -115,12 +115,9 @@ for each live slave in manager array:
 
 ## 6. Current Rust Implementation Status
 
-Current Rust has two relevant reverse paths:
+Current Rust routes every building reverse conversion through the serialized, lockstep-hashed `BuildingDown` component. `Simulation::undeploy_building` records the target, owner, stock YAREFN `2x2` origin, height, and selection at pack start; `Simulation::tick_building_down` consumes that payload once after 30 ticks and samples the source health and attached tag at completion.
 
-- Generic building undeploy starts `BuildingDown` and computes a center cell from the foundation: `src/sim/world/world_spawn.rs:590..632`, `src/sim/world/world_spawn.rs:687..` and completion in `src/sim/world/mod.rs:955..1004`.
-- A separate `undeploy_slave_miner` helper despawns bound slaves, despawns YAREFN, and spawns SMIN at the same cell: `src/sim/slave_miner.rs:513..551`.
-
-Compared to gamemd for stock YAREFN, the separate same-cell helper matches the `2x2` origin outcome, but its slave handling differs: gamemd transfers the existing manager and rewrites live slaves' master pointer; the Rust helper removes bound slaves instead of carrying a manager/slave set across the conversion. This report makes no code changes.
+For a source type with `Enslaves=`, completion delegates to `complete_slave_miner_undeploy_with_overlay_context`. That path constructs the full SMIN and its fresh manager before limboing YAREFN, retains the fresh limbo pool on failed Unlimbo, and on success discards that fresh pool before transferring the old YAREFN manager and rewriting every surviving slave master reference. Focused coverage lives in `sim::slave_miner::tests` and `sim::world::tests::slave_miner_building_down_defers_and_samples_completion_health`.
 
 ## 7. Coverage Ledger
 

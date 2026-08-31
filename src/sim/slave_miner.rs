@@ -18,6 +18,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;
+use crate::sim::components::{BuildingDown, Health};
 use crate::sim::economy::apply_income_mult;
 use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::intern::InternedId;
@@ -498,6 +499,7 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
             entity.facing,
             entity.selected,
             entity.attached_trigger_tag,
+            entity.health,
             target_type.to_string(),
             enslaves,
             slaves_number,
@@ -512,6 +514,7 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
         _facing,
         was_selected,
         attached_trigger_tag,
+        source_health,
         target_type,
         slave_type,
         slaves_number,
@@ -529,6 +532,12 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
         rules,
         overlay_registry,
     )?;
+
+    if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
+        target.health.current =
+            Simulation::active_retail_conversion_health_current(source_health, target.health.max);
+        target.initialize_building_damage_state_gate(rules.general.condition_yellow_x1000);
+    }
 
     // Preserve any existing manager/bindings when this is a redeploy after a
     // retail-style YAREFN -> SMIN reverse conversion.
@@ -598,8 +607,12 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
     }
 
     // `PowerUp_Cleanup @ 0x006AF580` has now installed the donated manager.
-    // UnitClass::Deploy next moves the AttachedTag reference and only then
-    // destroys the old Unit, so pointer-expiry observers see the new masters.
+    // UnitClass::Deploy selects the target, moves the AttachedTag reference,
+    // and only then destroys the old Unit, so pointer-expiry observers see the
+    // new masters and the complete player-visible handoff.
+    if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
+        target.selected = was_selected;
+    }
     sim.substrate
         .entities
         .get_mut(new_sid)
@@ -612,56 +625,43 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
     }
     sim.uninit_with_rules(stable_id, rules);
 
-    if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
-        target.selected = was_selected;
-    }
-
     Some(new_sid)
 }
 
-/// Undeploy a Slave Miner refinery (YAREFN) back into vehicle form (SMIN).
+/// Complete a deferred Slave Miner refinery (YAREFN) reverse conversion.
+///
+/// The caller owns `BuildingDown` scheduling and consumes that component before
+/// entering this transaction. The owned payload supplies every serialized and
+/// v115-hashed spawn input; `source_health` is sampled at completion, matching
+/// `BuildingClass::Sell @ 0x00449E66..0x00449E70` rather than command start.
 ///
 /// 1. Construct a complete SMIN plus its fresh manager while YAREFN is active
 /// 2. Limbo the YAREFN footprint and attempt SMIN Unlimbo exactly once
 /// 3. On failure, refund/destroy YAREFN and retain the fresh SMIN pool in limbo
 /// 4. On success only, replace that pool with the YAREFN manager and transfer tags
-///
-/// Returns the new SMIN stable_id, or None if undeploy failed.
-pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
-    undeploy_slave_miner_with_overlay_context(sim, stable_id, rules, None)
-}
-
-pub(crate) fn undeploy_slave_miner_with_overlay_context(
+pub(crate) fn complete_slave_miner_undeploy_with_overlay_context(
     sim: &mut Simulation,
     stable_id: u64,
+    building_down: BuildingDown,
+    attached_trigger_tag: Option<InternedId>,
+    source_type_id: InternedId,
+    source_health: Health,
     rules: &RuleSet,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> Option<u64> {
-    // Read undeploy data.
-    let undeploy_data = {
-        let entity = sim.substrate.entities.get(stable_id)?;
-        if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
-            return None;
-        }
-        let type_str = sim.interner.resolve(entity.type_ref);
-        let obj = rules.object_case_insensitive(type_str)?;
-        let target_type: &str = obj.undeploys_into.as_deref()?;
-        rules.object(target_type)?;
-        let owner_str = sim.interner.resolve(entity.owner).to_string();
-        Some((
-            owner_str,
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.z,
-            entity.selected,
-            entity.attached_trigger_tag,
-            target_type.to_string(),
-            obj.deploy_facing,
-        ))
-    }?;
-
-    let (owner, rx, ry, z, was_selected, attached_trigger_tag, target_type, deploy_facing) =
-        undeploy_data;
+    let source = sim.substrate.entities.get(stable_id)?;
+    if !source.lifecycle.object_alive || source.lifecycle.in_limbo {
+        return None;
+    }
+    let target_type = sim.interner.resolve(building_down.spawn_type).to_string();
+    let owner = sim.interner.resolve(building_down.spawn_owner).to_string();
+    let rx = building_down.spawn_rx;
+    let ry = building_down.spawn_ry;
+    let z = building_down.spawn_z;
+    let was_selected = building_down.was_selected;
+    let deploy_facing = rules
+        .object_case_insensitive(sim.interner.resolve(source_type_id))
+        .map_or(0x80, |object| object.deploy_facing);
 
     // BuildingClass::Sell @ 0x00449C30 constructs the target Unit and all of
     // its constructor-owned children while the source Building is still live.
@@ -713,6 +713,11 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
         return None;
     }
 
+    if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
+        target.health.current =
+            Simulation::active_retail_conversion_health_current(source_health, target.health.max);
+    }
+
     let slave_ids = sim.production.slave_bindings.remove(&stable_id);
 
     if let Some(slave_ids) = slave_ids {
@@ -743,10 +748,10 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
     {
         source.attached_trigger_tag = None;
     }
-    sim.uninit_with_rules(stable_id, rules);
     if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
         target.selected = was_selected;
     }
+    sim.uninit_with_rules(stable_id, rules);
 
     Some(new_sid)
 }
@@ -1088,6 +1093,35 @@ mod tests {
     use crate::sim::mission::{MissionId, MissionType};
     use crate::sim::rng::SimRng;
 
+    fn complete_undeploy_for_test(
+        sim: &mut Simulation,
+        stable_id: u64,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        if !sim.undeploy_building(stable_id, rules) {
+            return None;
+        }
+        let (building_down, attached_trigger_tag, source_type_id, source_health) = {
+            let source = sim.substrate.entities.get_mut(stable_id)?;
+            (
+                source.building_down.take()?,
+                source.attached_trigger_tag,
+                source.type_ref,
+                source.health,
+            )
+        };
+        complete_slave_miner_undeploy_with_overlay_context(
+            sim,
+            stable_id,
+            building_down,
+            attached_trigger_tag,
+            source_type_id,
+            source_health,
+            rules,
+            None,
+        )
+    }
+
     #[test]
     fn slave_harvester_capacity_and_value() {
         let mut sh = SlaveHarvester::new(100, 4);
@@ -1140,17 +1174,26 @@ mod tests {
             .get_mut(yarefn)
             .unwrap()
             .attached_trigger_tag = Some(tag);
+        {
+            let source = sim.substrate.entities.get_mut(yarefn).unwrap();
+            source.health.current = 777;
+            source.building_up = None;
+        }
         assert_eq!(slave_ids, vec![2, 3, 4, 5, 6]);
         for discarded_id in 8..=12 {
             assert!(sim.substrate.entities.get(discarded_id).is_none());
         }
 
-        let smin = undeploy_slave_miner(&mut sim, yarefn, &rules).expect("undeploy to SMIN");
+        let smin = complete_undeploy_for_test(&mut sim, yarefn, &rules).expect("undeploy to SMIN");
         for _ in 0..6 {
             let _ = expected.next_u32();
         }
         assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
         assert_eq!(smin, 13);
+        assert_eq!(
+            sim.substrate.entities.get(smin).unwrap().health.current,
+            776
+        );
         for discarded_id in 14..=18 {
             assert!(sim.substrate.entities.get(discarded_id).is_none());
         }
@@ -1195,10 +1238,19 @@ mod tests {
             .get_mut(smin)
             .expect("live SMIN")
             .attached_trigger_tag = Some(tag);
+        sim.substrate
+            .entities
+            .get_mut(smin)
+            .expect("live SMIN")
+            .health
+            .current = 777;
 
         let yarefn = deploy_slave_miner(&mut sim, smin, &rules).expect("deploy tagged SMIN");
 
         let target = sim.substrate.entities.get(yarefn).expect("new YAREFN");
+        assert_eq!(target.health.current, 776);
+        assert!(target.building_damage_state_active);
+        assert_eq!(target.building_anim_reset_revision, 0);
         assert_eq!(target.attached_trigger_tag, Some(tag));
         assert_eq!(target.mission.current(), MissionId::NONE);
         assert_eq!(
@@ -1289,7 +1341,7 @@ mod tests {
             off_108: 0,
         });
 
-        assert_eq!(undeploy_slave_miner(&mut sim, yarefn, &rules), None);
+        assert_eq!(complete_undeploy_for_test(&mut sim, yarefn, &rules), None);
         let source = sim
             .substrate
             .entities
@@ -1349,7 +1401,7 @@ mod tests {
         );
 
         let rng_after_failure = sim.scenario_rng.logical_state();
-        assert_eq!(undeploy_slave_miner(&mut sim, yarefn, &rules), None);
+        assert_eq!(complete_undeploy_for_test(&mut sim, yarefn, &rules), None);
         assert_eq!(sim.scenario_rng.logical_state(), rng_after_failure);
         assert_eq!(sim.houses[&yuri].credits, 1750);
         assert_eq!(

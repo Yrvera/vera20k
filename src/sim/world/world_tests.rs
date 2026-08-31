@@ -5548,6 +5548,7 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
         .expect("spawn MCV");
     if let Some(e) = sim.substrate.entities.get_mut(mcv) {
         e.selected = true;
+        e.health.current = 149;
     }
 
     let cmd = cmd_envelope(&sim, "Americans", 1, Command::DeployMcv { entity_id: mcv });
@@ -5561,13 +5562,16 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
         .interner
         .get("GACNST")
         .expect("GACNST should be interned");
-    assert!(
-        sim.substrate
-            .entities
-            .values()
-            .any(|e| e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21),
-        "Construction yard should spawn at gamemd's deploy foundation origin"
-    );
+    let yard = sim
+        .substrate
+        .entities
+        .values()
+        .find(|e| e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21)
+        .expect("Construction yard should spawn at gamemd's deploy foundation origin");
+    assert_eq!(yard.health.max, 1000);
+    assert_eq!(yard.health.current, 331);
+    assert!(yard.building_damage_state_active);
+    assert_eq!(yard.building_anim_reset_revision, 0);
 }
 
 #[test]
@@ -6716,7 +6720,9 @@ fn test_undeploy_conyard_spawns_mcv() {
         2,
         Command::UndeployBuilding { entity_id: yard_id },
     );
-    let _ = sim.advance_tick(&[undeploy_cmd], Some(&rules), &heights, None, None, 33);
+    let start_tick = sim.advance_tick(&[undeploy_cmd], Some(&rules), &heights, None, None, 33);
+    assert!(!start_tick.spawned_entities);
+    assert!(!start_tick.destroyed_structure);
 
     // ConYard should still exist but have building_down set.
     assert!(
@@ -6734,9 +6740,16 @@ fn test_undeploy_conyard_spawns_mcv() {
     );
 
     // Advance through the 30-tick undeploy animation.
+    let mut completion_signal_count = 0;
     for _tick in 3..33 {
-        let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 33);
+        let tick = sim.advance_tick(&[], Some(&rules), &heights, None, None, 33);
+        if tick.spawned_entities || tick.destroyed_structure {
+            assert!(tick.spawned_entities);
+            assert!(tick.destroyed_structure);
+            completion_signal_count += 1;
+        }
     }
+    assert_eq!(completion_signal_count, 1);
 
     // ConYard should be gone after animation completes.
     assert!(
@@ -7345,6 +7358,7 @@ fn building_down_transfers_attached_tag_before_deferred_source_cleanup() {
     {
         let source = sim.substrate.entities.get_mut(yard).unwrap();
         source.attached_trigger_tag = Some(tag);
+        source.health.current = 333;
         source.building_up = None;
     }
     assert!(sim.undeploy_building(yard, &rules));
@@ -7357,7 +7371,7 @@ fn building_down_transfers_attached_tag_before_deferred_source_cleanup() {
         .unwrap()
         .elapsed_ticks = 29;
 
-    assert!(sim.tick_building_down(Some(&rules), None));
+    assert_eq!(sim.tick_building_down(Some(&rules), None), (true, true));
 
     let mcv = sim
         .substrate
@@ -7366,6 +7380,8 @@ fn building_down_transfers_attached_tag_before_deferred_source_cleanup() {
         .find(|entity| sim.interner.resolve(entity.type_ref) == "AMCV")
         .expect("replacement MCV");
     assert_eq!(mcv.facing, 0x80);
+    assert_eq!(mcv.health.max, 450);
+    assert_eq!(mcv.health.current, 149);
     assert_eq!(mcv.attached_trigger_tag, Some(tag));
     let source = sim
         .substrate
@@ -7374,6 +7390,113 @@ fn building_down_transfers_attached_tag_before_deferred_source_cleanup() {
         .expect("deferred source remains resolvable");
     assert!(source.dying);
     assert_eq!(source.attached_trigger_tag, None);
+}
+
+fn slave_miner_building_down_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=SLAV\n\n\
+         [VehicleTypes]\n0=SMIN\n\n\
+         [BuildingTypes]\n0=YAREFN\n\n\
+         [SLAV]\nStrength=125\nSpeed=3\nSlaved=yes\nStorage=4\nHarvestRate=150\n\n\
+         [SMIN]\nStrength=2000\nSpeed=3\nEnslaves=SLAV\nSlavesNumber=5\nDeploysInto=YAREFN\nResourceGatherer=yes\nResourceDestination=yes\n\n\
+         [YAREFN]\nStrength=1000\nCost=1750\nSoylent=1750\nDeployFacing=0\nEnslaves=SLAV\nSlavesNumber=5\nUndeploysInto=SMIN\nFoundation=2x2\n\n\
+         [General]\nRefundPercent=50%\n",
+    ))
+    .expect("slave-miner BuildingDown rules")
+}
+
+#[test]
+fn slave_miner_building_down_defers_and_samples_completion_health() {
+    let rules = slave_miner_building_down_rules();
+
+    for (start_health, completion_health, expected_target_health) in
+        [(900, 333, 665), (100, 500, 1000)]
+    {
+        let mut sim = Simulation::with_seed(0x51A7_D0A0 + start_health as u64);
+        insert_house_with_counts(&mut sim, "YuriCountry", 0, 0);
+        let yarefn = sim
+            .spawn_object_at_height("YAREFN", "YuriCountry", 19, 21, 0, 0, &rules)
+            .expect("YAREFN");
+        let old_slave_ids = sim
+            .production
+            .slave_bindings
+            .get(&yarefn)
+            .cloned()
+            .expect("YAREFN constructor manager");
+        let start_tag = sim.interner.intern("TAG_YAREFN_PACK_START");
+        let completion_tag = sim.interner.intern("TAG_YAREFN_PACK_COMPLETION");
+        {
+            let source = sim.substrate.entities.get_mut(yarefn).unwrap();
+            source.building_up = None;
+            source.health.current = start_health;
+            source.attached_trigger_tag = Some(start_tag);
+            source.selected = true;
+        }
+
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::UndeployBuilding { entity_id: yarefn },
+            Some(&rules),
+            None,
+            &empty_heights(),
+        ));
+        let building_down = sim
+            .substrate
+            .entities
+            .get(yarefn)
+            .unwrap()
+            .building_down
+            .as_ref()
+            .expect("the command starts the shared BuildingDown path");
+        assert_eq!(building_down.elapsed_ticks, 0);
+        assert_eq!(building_down.total_ticks, 30);
+        assert!(
+            sim.substrate
+                .entities
+                .values()
+                .all(|entity| sim.interner.resolve(entity.type_ref) != "SMIN"),
+            "YAREFN reverse conversion must not construct SMIN at command time"
+        );
+
+        {
+            let source = sim.substrate.entities.get_mut(yarefn).unwrap();
+            source.health.current = completion_health;
+            source.attached_trigger_tag = Some(completion_tag);
+            source.building_down.as_mut().unwrap().elapsed_ticks = 29;
+        }
+        assert_eq!(sim.tick_building_down(Some(&rules), None), (true, true));
+
+        let smin = sim
+            .substrate
+            .entities
+            .values()
+            .find(|entity| sim.interner.resolve(entity.type_ref) == "SMIN")
+            .expect("completion constructs SMIN");
+        assert_eq!(smin.health.current, expected_target_health);
+        assert_eq!(smin.attached_trigger_tag, Some(completion_tag));
+        assert!(smin.selected);
+        assert_eq!(
+            sim.production.slave_bindings.get(&smin.stable_id),
+            Some(&old_slave_ids)
+        );
+        for slave_id in old_slave_ids {
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(slave_id)
+                    .and_then(|slave| slave.slave_harvester.as_ref())
+                    .map(|slave| slave.master_id),
+                Some(smin.stable_id)
+            );
+        }
+        let source = sim
+            .substrate
+            .entities
+            .get(yarefn)
+            .expect("deferred YAREFN source");
+        assert!(source.dying);
+        assert_eq!(source.attached_trigger_tag, None);
+    }
 }
 
 #[test]
@@ -7408,7 +7531,11 @@ fn failed_building_down_refunds_source_and_retains_registered_limbo_unit() {
         off_108: 0,
     });
 
-    assert!(!sim.tick_building_down(Some(&rules), None));
+    assert_eq!(
+        sim.tick_building_down(Some(&rules), None),
+        (false, true),
+        "failed completion still destroys the source footprint"
+    );
     let source = sim
         .substrate
         .entities
@@ -7444,7 +7571,7 @@ fn failed_building_down_refunds_source_and_retains_registered_limbo_unit() {
     assert_eq!(house.owned_unit_count, 1);
 
     let rng_after_failure = sim.scenario_rng.logical_state();
-    assert!(!sim.tick_building_down(Some(&rules), None));
+    assert_eq!(sim.tick_building_down(Some(&rules), None), (false, false));
     assert_eq!(sim.scenario_rng.logical_state(), rng_after_failure);
     assert_eq!(sim.houses[&owner].credits, 1500);
     assert_eq!(

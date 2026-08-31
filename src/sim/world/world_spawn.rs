@@ -1864,6 +1864,34 @@ impl Simulation {
         }
     }
 
+    /// `UnitClass::Deploy @ 0x0073992B..0x00739953` and the successful
+    /// `BuildingClass::Sell @ 0x0044A010..0x0044A039` reverse branch both
+    /// carry the source health ratio through x87, multiply it by the target
+    /// Strength, chop through `Math__ftol @ 0x007C5F00`, and clamp to one.
+    /// Keeping the arithmetic here gives every Unit/Building conversion path
+    /// one representation-safe authority.
+    pub(crate) fn active_retail_conversion_health_current(source: Health, target_max: u16) -> u16 {
+        if source.max == 0 {
+            // A live Techno with zero Strength is outside the verified native
+            // transaction. Keep the malformed Rust state deterministic while
+            // preserving the native success-path minimum.
+            return 1;
+        }
+        let ratio = crate::util::native_x87::X87Chop53::div(
+            crate::util::native_x87::X87Chop53::load_i32(i32::from(source.current)),
+            crate::util::native_x87::X87Chop53::load_i32(i32::from(source.max)),
+        )
+        .expect("live conversion source has nonzero finite Strength");
+        let scaled = crate::util::native_x87::X87Chop53::mul(
+            ratio,
+            crate::util::native_x87::X87Chop53::load_i32(i32::from(target_max)),
+        );
+        let chopped = crate::util::native_x87::X87Chop53::ftol_i64(scaled)
+            .expect("u16 conversion health remains inside the signed native domain");
+        u16::try_from(chopped.max(1))
+            .expect("valid conversion ratio cannot exceed the target u16 Strength")
+    }
+
     /// Deploy an MCV entity: despawn it and spawn a construction yard in its place.
     /// Checks that the footprint area is free of other structures and passable terrain
     /// before deploying. Returns false if deployment is blocked.
@@ -1890,6 +1918,7 @@ impl Simulation {
                 entity.position.z,
                 yard_type.clone(),
                 yard_obj.deploy_facing,
+                entity.health,
                 entity.selected,
                 entity.attached_trigger_tag,
                 yard_obj.foundation.clone(),
@@ -1904,6 +1933,7 @@ impl Simulation {
             z,
             yard_type,
             deploy_facing,
+            source_health,
             was_selected,
             attached_trigger_tag,
             foundation,
@@ -2012,6 +2042,18 @@ impl Simulation {
             return false;
         };
 
+        if let Some(target) = self.substrate.entities.get_mut(new_sid) {
+            target.health.current =
+                Self::active_retail_conversion_health_current(source_health, target.health.max);
+            // The constructor seeded the full-health body state. Native applies
+            // transferred HP as part of the same deploy transaction, so seed
+            // the resulting gate without publishing a runtime reset edge.
+            target.initialize_building_damage_state_gate(rules.general.condition_yellow_x1000);
+            // UnitClass::Deploy selects the committed target before moving the
+            // AttachedTag reference and before source UnInit.
+            target.selected = was_selected;
+        }
+
         // UnitClass::Deploy transfers the AttachedTag pointer (including its
         // native refcount ownership) only after the target Building placement
         // succeeds. Keeping this write after the atomic spawn preserves the
@@ -2028,11 +2070,6 @@ impl Simulation {
         }
 
         self.uninit_with_rules(stable_id, rules);
-
-        // Restore selection only after the complete deploy handoff commits.
-        if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
-            ge.selected = was_selected;
-        }
 
         if let Some((country_name, side_index, difficulty, tech_level, _)) = recalc_context {
             // The new Building's committed north-west anchor is the native
@@ -2110,6 +2147,11 @@ impl Simulation {
                 was_selected,
             });
         }
+        // BuildingClass::Sell state 0 @ 0x0044AB87..0x0044ABAC destroys and
+        // nulls all eight damage-fire AnimClass slots when packing starts, not
+        // when the source reaches its later UnInit. The retained active cache
+        // intentionally prevents Techno AI from recreating them mid-pack.
+        self.clear_building_damage_fire_slots(stable_id);
         true
     }
 
@@ -2366,6 +2408,43 @@ mod techno_constructor_tests {
         let mut rules = constructor_rules();
         rules.set_building_make_shapes_for_test(if present { &["BASE"] } else { &[] });
         rules
+    }
+
+    #[test]
+    fn conversion_health_uses_native_chop53_and_minimum_one() {
+        assert_eq!(
+            Simulation::active_retail_conversion_health_current(
+                Health {
+                    current: 501,
+                    max: 1000,
+                },
+                1000,
+            ),
+            500,
+            "forward ST0 and reverse stored-f64 ratios share active PC53 arithmetic"
+        );
+        assert_eq!(
+            Simulation::active_retail_conversion_health_current(
+                Health {
+                    current: 333,
+                    max: 1000,
+                },
+                2000,
+            ),
+            665,
+            "unequal Strength uses the shared forward/reverse chop53 path"
+        );
+        assert_eq!(
+            Simulation::active_retail_conversion_health_current(
+                Health {
+                    current: 1,
+                    max: 1000,
+                },
+                450,
+            ),
+            1,
+            "a positive source whose scaled health chops to zero is clamped to one"
+        );
     }
 
     #[test]

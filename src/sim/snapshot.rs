@@ -337,7 +337,10 @@ use crate::sim::world::Simulation;
 // simulation input above joins the deterministic hash; the reset generation
 // also joins it because native damage-state reconstruction is now a sim-authored
 // edge consumed by presentation after combat/noncombat commits.
-const SNAPSHOT_VERSION: u32 = 114;
+// Bumped 114 -> 115: BuildingDown was already serialized, but its Option
+// discriminant and complete deferred-spawn payload now join the lockstep hash.
+// Older saves do not certify the same future-affecting hash authority.
+const SNAPSHOT_VERSION: u32 = 115;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2772,10 +2775,11 @@ mod tests {
     /// AI activation latches; 112 -> 113 adds House AutocreateAllowed; 113 ->
     /// 114 adds Building click-repair state, its presentation generation, the
     /// manager/tag AI-sale inputs, the distinct per-house scenario IQ, and the
-    /// narrow deferred reverse-failure SlaveManager finalizer reason.
+    /// narrow deferred reverse-failure SlaveManager finalizer reason; 114 ->
+    /// 115 makes the already-serialized BuildingDown state hash-authoritative.
     #[test]
-    fn phase8_building_repair_snapshot_version_is_114() {
-        assert_eq!(super::SNAPSHOT_VERSION, 114);
+    fn phase8_building_down_hash_snapshot_version_is_115() {
+        assert_eq!(super::SNAPSHOT_VERSION, 115);
     }
 
     #[test]
@@ -3091,7 +3095,7 @@ mod tests {
                 super::SNAPSHOT_VERSION
             );
             let restored = GameSnapshot::load(&bytes)
-                .expect("current v114 snapshot")
+                .expect("current v115 snapshot")
                 .sim;
             assert_eq!(restored.houses[&owner].ai_activation, latches);
         }
@@ -3771,6 +3775,81 @@ mod tests {
         assert_eq!(overlay.rate_logic_frames, 6);
         assert_eq!(overlay.elapsed_logic_frames, 2);
         assert!(!overlay.finished);
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn building_down_roundtrips_with_complete_payload_and_matching_hash() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::components::{BuildingDown, Health};
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let owner = sim.intern("Allies");
+        let type_ref = sim.intern("GACNST");
+        let spawn_type = sim.intern("AMCV");
+        let spawn_owner = sim.intern("Americans");
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            entity_id,
+            5,
+            6,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.building_down = Some(BuildingDown {
+            elapsed_ticks: 3,
+            total_ticks: 12,
+            spawn_type,
+            spawn_owner,
+            spawn_rx: 7,
+            spawn_ry: 8,
+            spawn_z: 2,
+            was_selected: true,
+        });
+        sim.substrate.entities.insert(entity);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "building-down.map", 0);
+        let header = GameSnapshot::read_header(&bytes).expect("current BuildingDown header");
+        assert_eq!(header.version, SNAPSHOT_VERSION);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("current BuildingDown snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("current BuildingDown snapshot restores structurally");
+        let building_down = restored
+            .substrate
+            .entities
+            .get(entity_id)
+            .expect("restored Construction Yard")
+            .building_down
+            .as_ref()
+            .expect("restored BuildingDown state");
+
+        assert_eq!(building_down.elapsed_ticks, 3);
+        assert_eq!(building_down.total_ticks, 12);
+        assert_eq!(restored.interner.resolve(building_down.spawn_type), "AMCV");
+        assert_eq!(
+            restored.interner.resolve(building_down.spawn_owner),
+            "Americans"
+        );
+        assert_eq!(building_down.spawn_rx, 7);
+        assert_eq!(building_down.spawn_ry, 8);
+        assert_eq!(building_down.spawn_z, 2);
+        assert!(building_down.was_selected);
         assert_eq!(restored.state_hash(), expected_hash);
     }
 
