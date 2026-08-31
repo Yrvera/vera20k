@@ -12,6 +12,7 @@ mod production_economy;
 mod production_placement;
 mod production_queue;
 mod production_refinery;
+mod production_refund;
 mod production_repair;
 mod production_sell;
 mod production_spawn;
@@ -43,6 +44,9 @@ pub use self::production_queue::{
     tick_production, tick_production_with_overlay_registry,
 };
 pub(crate) use self::production_refinery::spawn_completed_refinery_free_units;
+pub(in crate::sim) use self::production_refund::{
+    active_retail_reverse_refund_for_building, credit_reverse_failure_refund,
+};
 pub(crate) use self::production_repair::{
     tick_ai_low_credit_sell_start, tick_building_repair_tail,
 };

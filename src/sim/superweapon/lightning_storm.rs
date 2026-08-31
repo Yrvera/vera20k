@@ -629,7 +629,7 @@ mod tests {
     fn registry_only_warhead_lightning_test_setup() -> (Simulation, RuleSet) {
         // LWH is declared only by [Warheads]; no object or ordinary weapon
         // points to it. This mirrors stock IonWH's Lightning Storm route.
-        let rules = RuleSet::from_ini(&IniFile::from_str(
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
             "[InfantryTypes]\n0=DUMMY\n\n\
              [VehicleTypes]\n\n\
              [AircraftTypes]\n\n\
@@ -642,6 +642,11 @@ mod tests {
              Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
         ))
         .expect("lightning test rules should parse");
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[GAPOWR]\nActiveAnim=GAPOWR_A\nActiveAnimDamaged=GAPOWR_AD\n\
+             [GAPOWR_A]\nStart=2\nLoopStart=2\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [GAPOWR_AD]\nStart=12\nLoopStart=12\nLoopEnd=18\nLoopCount=-1\nRate=150\n",
+        )));
         let sim = Simulation::with_seed(1);
         (sim, rules)
     }
@@ -768,6 +773,17 @@ mod tests {
             current: 150,
             max: 200,
         };
+        building.building_anim_overlays = Some(crate::sim::components::BuildingAnimOverlays {
+            anims: vec![crate::sim::components::AnimOverlayState {
+                anim_type: sim.interner.intern("GAPOWR_A"),
+                frame: 5,
+                loop_start: 2,
+                loop_end: 8,
+                rate_logic_frames: 3,
+                elapsed_logic_frames: 2,
+                finished: false,
+            }],
+        });
         sim.substrate.entities.insert(building);
 
         spawn_bolt(&mut sim, &rules, 5, 5, owner, None);
@@ -779,6 +795,18 @@ mod tests {
             .expect("building remains in sim");
         assert_eq!(building.health.current, 50);
         assert!(building.building_damage_state_active);
+        assert_eq!(building.building_anim_reset_revision, 1);
+        let overlay = &building
+            .building_anim_overlays
+            .as_ref()
+            .expect("occupied BuildingAnim slot survives")
+            .anims[0];
+        assert_eq!(sim.interner.resolve(overlay.anim_type), "GAPOWR_AD");
+        assert_eq!(overlay.frame, 15, "relative CurrentFrame=3 survives");
+        assert_eq!(overlay.loop_start, 12);
+        assert_eq!(overlay.loop_end, 18);
+        assert_eq!(overlay.rate_logic_frames, 6);
+        assert_eq!(overlay.elapsed_logic_frames, 0);
     }
 
     #[test]

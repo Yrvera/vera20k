@@ -1317,6 +1317,10 @@ pub struct CombatTickResult {
     /// `despawned_ids` also includes SHP deaths that remain in-store for their
     /// death animation; this list is the immediate structure/voxel handoff only.
     pub immediate_uninit_ids: Vec<u64>,
+    /// Buildings whose ConditionYellow body gate changed during this combat
+    /// transaction. World reconstructs every still-occupied animation slot
+    /// after restoring the Simulation-owned stores.
+    pub building_anim_reset_ids: Vec<u64>,
     /// A structure was destroyed — PathGrid needs footprint unblock.
     pub structure_destroyed: bool,
     /// Bridge impact cells that should apply terrain damage after combat resolution.
@@ -1660,6 +1664,7 @@ fn death_weapon_aoe(
 pub(crate) struct DeathEffects {
     pub(crate) despawned_ids: Vec<u64>,
     pub(crate) immediate_uninit_ids: Vec<u64>,
+    pub(crate) building_anim_reset_ids: Vec<u64>,
     pub(crate) structure_destroyed: bool,
     pub(crate) destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
     pub(crate) destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
@@ -1967,6 +1972,9 @@ impl DeathEffects {
         self.despawned_ids.append(&mut other.despawned_ids);
         self.immediate_uninit_ids
             .append(&mut other.immediate_uninit_ids);
+        for stable_id in other.building_anim_reset_ids.drain(..) {
+            push_unique_stable_id(&mut self.building_anim_reset_ids, stable_id);
+        }
         self.structure_destroyed |= other.structure_destroyed;
         self.destroyed_crewed_buildings
             .append(&mut other.destroyed_crewed_buildings);
@@ -1991,6 +1999,12 @@ impl DeathEffects {
         #[cfg(test)]
         self.receiver_stage_trace
             .append(&mut other.receiver_stage_trace);
+    }
+}
+
+fn push_unique_stable_id(ids: &mut Vec<u64>, stable_id: u64) {
+    if !ids.contains(&stable_id) {
+        ids.push(stable_id);
     }
 }
 
@@ -2093,6 +2107,7 @@ fn handle_entity_deaths(
     )> = Vec::new();
     let mut despawned_ids: Vec<u64> = Vec::new();
     let mut immediate_uninit_ids: Vec<u64> = Vec::new();
+    let mut building_anim_reset_ids: Vec<u64> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
     let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
@@ -2488,6 +2503,9 @@ fn handle_entity_deaths(
             );
             despawned_ids.append(&mut nested.despawned_ids);
             immediate_uninit_ids.append(&mut nested.immediate_uninit_ids);
+            for stable_id in nested.building_anim_reset_ids.drain(..) {
+                push_unique_stable_id(&mut building_anim_reset_ids, stable_id);
+            }
             structure_destroyed |= nested.structure_destroyed;
             destroyed_crewed_buildings.append(&mut nested.destroyed_crewed_buildings);
             destroyed_garrison_buildings.append(&mut nested.destroyed_garrison_buildings);
@@ -2588,6 +2606,7 @@ fn handle_entity_deaths(
     DeathEffects {
         despawned_ids,
         immediate_uninit_ids,
+        building_anim_reset_ids,
         structure_destroyed,
         destroyed_crewed_buildings,
         destroyed_garrison_buildings,
@@ -3507,7 +3526,12 @@ fn commit_damage_events_with_isolation(
                 if reached_survivor_postlude && target.health.current > 0 && hostile_source {
                     latch_hostile_hit = true;
                 }
-                target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
+                if target.health.current > 0
+                    && target
+                        .refresh_building_damage_state_gate(rules.general.condition_yellow_x1000)
+                {
+                    push_unique_stable_id(&mut death.building_anim_reset_ids, target_id);
+                }
                 if reached_survivor_postlude && target.health.current > 0 {
                     smoke_maintenance = receive_state.map(|state| (target.category, state));
                 }
@@ -3516,7 +3540,12 @@ fn commit_damage_events_with_isolation(
                 let damage = resolved_damage.min(i32::from(u16::MAX)) as u16;
                 let was_alive = target.health.current > 0;
                 target.health.current = target.health.current.saturating_sub(damage);
-                target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
+                if target.health.current > 0
+                    && target
+                        .refresh_building_damage_state_gate(rules.general.condition_yellow_x1000)
+                {
+                    push_unique_stable_id(&mut death.building_anim_reset_ids, target_id);
+                }
                 became_fatal = was_alive && target.health.current == 0;
                 reached_exact_zero = became_fatal;
                 if became_fatal {
@@ -3659,7 +3688,9 @@ fn commit_damage_events_with_isolation(
             target.lifecycle.object_alive = true;
             target.health.current = 1;
             target.dying = false;
-            target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
+            if target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000) {
+                push_unique_stable_id(&mut death.building_anim_reset_ids, target_id);
+            }
             #[cfg(test)]
             death
                 .receiver_stage_trace
@@ -5027,6 +5058,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             reveal_events: Vec::new(),
             despawned_ids: Vec::new(),
             immediate_uninit_ids: Vec::new(),
+            building_anim_reset_ids: Vec::new(),
             structure_destroyed: false,
             bridge_damage_events: Vec::new(),
             wall_mutations: Vec::new(),
@@ -6002,6 +6034,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         reveal_events,
         despawned_ids: death.despawned_ids,
         immediate_uninit_ids: death.immediate_uninit_ids,
+        building_anim_reset_ids: death.building_anim_reset_ids,
         structure_destroyed: death.structure_destroyed,
         bridge_damage_events,
         wall_mutations,

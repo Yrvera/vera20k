@@ -226,6 +226,13 @@ pub struct ProductionState {
     /// Slave Miner bindings: master entity stable_id → vec of slave entity stable_ids.
     /// Used to track which SLAV infantry belong to which deployed SMIN/YAREFN.
     pub slave_bindings: BTreeMap<u64, Vec<u64>>,
+    /// Dead reverse-conversion sources whose deferred Techno destructor must
+    /// run `SlaveManagerClass::MasterDestroyed(manager, null, null)`.
+    ///
+    /// This reason marker is intentionally narrower than `pending_delete`:
+    /// combat-killed masters require attacker-aware manager teardown, which is
+    /// not yet represented by the shared combat-death context.
+    pub reverse_failure_slave_manager_finalizers: BTreeSet<u64>,
     /// TIBTRE-style ore-spawning terrain objects, keyed by map cell.
     /// Derived from live `terrain_objects`; removal/limbo must remove this index.
     pub terrain_spawners: BTreeMap<(u16, u16), crate::sim::terrain_spawn::TerrainSpawnerState>,
@@ -268,6 +275,7 @@ impl Default for ProductionState {
             ore_growth_config: OreGrowthConfig::disabled(),
             ore_growth_state: OreGrowthState::new(0, 0),
             slave_bindings: BTreeMap::new(),
+            reverse_failure_slave_manager_finalizers: BTreeSet::new(),
             terrain_spawners: BTreeMap::new(),
             terrain_objects: BTreeMap::new(),
             terrain_object_cells: BTreeMap::new(),

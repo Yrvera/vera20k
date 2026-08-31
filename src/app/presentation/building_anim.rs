@@ -120,7 +120,7 @@ fn replace_occupied_slot_for_damage_state(
     true
 }
 
-fn app_owns_looping_building_slot(
+pub(crate) fn app_owns_looping_building_slot(
     anim: &crate::rules::art_data::BuildingAnimConfig,
     damaged: bool,
     is_garrisoned: bool,
@@ -132,6 +132,59 @@ fn app_owns_looping_building_slot(
             crate::rules::art_data::BuildingAnimKind::Active
                 | crate::rules::art_data::BuildingAnimKind::Production
         ) && selected.loop_count < 0
+}
+
+/// Whether an `InfantryAbsorb` building's ActiveAnim slot is absent for the
+/// current occupancy. The native branch owns only its first two Active slots.
+pub(crate) fn infantry_absorb_active_slot_is_absent(
+    active_slot_ordinal: usize,
+    is_garrisoned: bool,
+) -> bool {
+    match active_slot_ordinal {
+        0 => is_garrisoned,
+        1 => !is_garrisoned,
+        _ => false,
+    }
+}
+
+/// Reconcile which app-owned looping native slots currently exist.
+///
+/// In particular, YAPOWR does not keep both mutually exclusive ActiveAnim
+/// instances alive and merely hide one. It deletes the old slot and constructs
+/// the newly selected slot from fresh AnimClass state whenever occupancy flips.
+fn reconcile_looping_building_slot_occupancy(
+    slots: &mut Vec<Option<AnimRuntime>>,
+    anims: &[crate::rules::art_data::BuildingAnimConfig],
+    infantry_absorb_dynamic: bool,
+    damaged: bool,
+    is_garrisoned: bool,
+    art: &crate::rules::art_data::ArtRegistry,
+    options: &crate::sim::game_options::GameOptions,
+    frame_counts: &HashMap<String, u16>,
+) {
+    slots.resize_with(anims.len(), || None);
+    slots.truncate(anims.len());
+
+    let mut active_slot_ordinal = 0usize;
+    for (anim, slot) in anims.iter().zip(slots) {
+        let this_active_ordinal = active_slot_ordinal;
+        if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Active) {
+            active_slot_ordinal += 1;
+        }
+
+        let occupancy_makes_absent = infantry_absorb_dynamic
+            && matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Active)
+            && infantry_absorb_active_slot_is_absent(this_active_ordinal, is_garrisoned);
+        let should_exist =
+            app_owns_looping_building_slot(anim, damaged, is_garrisoned) && !occupancy_makes_absent;
+
+        if !should_exist {
+            *slot = None;
+        } else if slot.is_none() {
+            let selected = selected_building_anim_view(anim, damaged, is_garrisoned);
+            *slot = fresh_building_slot_runtime(selected.anim_type, art, options, frame_counts);
+        }
+    }
 }
 
 /// Tick each represented looping Building animation once per committed logic
@@ -178,6 +231,9 @@ pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState, frame_comm
             .object(building_type)
             .map(|object| object.image.as_str())
             .unwrap_or(building_type);
+        let infantry_absorb_dynamic = rules
+            .object(building_type)
+            .is_some_and(|object| object.infantry_absorb && object.extra_power > 0);
         let Some(entry) = art.resolve_metadata_entry(building_type, rules_image) else {
             phase_bases.remove(&stable_id);
             continue;
@@ -194,24 +250,7 @@ pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState, frame_comm
             Entry::Vacant(vacant) => {
                 vacant.insert(crate::app::presentation::state::BuildingAnimPhaseBase {
                     observed_reset_revision: reset_revision,
-                    slots: entry
-                        .building_anims
-                        .iter()
-                        .map(|anim| {
-                            app_owns_looping_building_slot(anim, damaged, is_garrisoned)
-                                .then(|| {
-                                    let selected =
-                                        selected_building_anim_view(anim, damaged, is_garrisoned);
-                                    fresh_building_slot_runtime(
-                                        selected.anim_type,
-                                        art,
-                                        options,
-                                        frame_counts,
-                                    )
-                                })
-                                .flatten()
-                        })
-                        .collect(),
+                    slots: vec![None; entry.building_anims.len()],
                 })
             }
             Entry::Occupied(occupied) => occupied.into_mut(),
@@ -230,6 +269,17 @@ pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState, frame_comm
             }
             phase.observed_reset_revision = reset_revision;
         }
+
+        reconcile_looping_building_slot_occupancy(
+            &mut phase.slots,
+            &entry.building_anims,
+            infantry_absorb_dynamic,
+            damaged,
+            is_garrisoned,
+            art,
+            options,
+            frame_counts,
+        );
 
         for slot in &mut phase.slots {
             if let Some(runtime) = slot.as_mut() {
@@ -992,6 +1042,38 @@ mod tests {
         ))
     }
 
+    fn infantry_absorb_slot_art() -> ArtRegistry {
+        ArtRegistry::from_ini(&IniFile::from_str(
+            "[YAPOWR]\n\
+             ActiveAnim=YAPOWR_A\n\
+             ActiveAnimDamaged=YAPOWR_AD\n\
+             ActiveAnimTwo=YAPOWR_B\n\
+             ActiveAnimTwoDamaged=YAPOWR_BD\n\
+             ActiveAnimThree=YAPOWR_C\n\
+             IdleAnim=YAPOWR_IDLE\n\
+             [YAPOWR_A]\nStart=0\nLoopStart=0\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [YAPOWR_AD]\nStart=10\nLoopStart=10\nLoopEnd=18\nLoopCount=-1\nRate=150\n\
+             [YAPOWR_B]\nStart=0\nLoopStart=0\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [YAPOWR_BD]\nStart=10\nLoopStart=10\nLoopEnd=18\nLoopCount=-1\nRate=150\n\
+             [YAPOWR_C]\nStart=0\nLoopStart=0\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [YAPOWR_IDLE]\nStart=0\nLoopStart=0\nLoopEnd=8\nLoopCount=-1\nRate=300\n",
+        ))
+    }
+
+    fn infantry_absorb_slot_frame_counts() -> HashMap<String, u16> {
+        [
+            "YAPOWR_A",
+            "YAPOWR_AD",
+            "YAPOWR_B",
+            "YAPOWR_BD",
+            "YAPOWR_C",
+            "YAPOWR_IDLE",
+        ]
+        .into_iter()
+        .map(|name| (name.to_string(), 20))
+        .collect()
+    }
+
     #[test]
     fn building_slot_damage_replacement_carries_only_relative_current_frame() {
         let art = building_slot_replacement_art();
@@ -1058,6 +1140,149 @@ mod tests {
             &frame_counts,
         ));
         assert_eq!(absent, None);
+    }
+
+    #[test]
+    fn infantry_absorb_slots_swap_fresh_empty_occupied_empty() {
+        let art = infantry_absorb_slot_art();
+        let options = crate::sim::game_options::GameOptions::default();
+        let frame_counts = infantry_absorb_slot_frame_counts();
+        let anims = &art.get("YAPOWR").expect("building art").building_anims;
+        let mut slots = vec![None; anims.len()];
+
+        reconcile_looping_building_slot_occupancy(
+            &mut slots,
+            anims,
+            true,
+            false,
+            false,
+            &art,
+            &options,
+            &frame_counts,
+        );
+        assert_eq!(slots.len(), 4);
+        assert_eq!(
+            slots[0].as_ref().map(|slot| slot.type_name.as_str()),
+            Some("YAPOWR_A")
+        );
+        assert!(slots[1].is_none());
+        assert_eq!(
+            slots[2].as_ref().map(|slot| slot.type_name.as_str()),
+            Some("YAPOWR_C")
+        );
+        assert_eq!(
+            slots[3].as_ref().map(|slot| slot.type_name.as_str()),
+            Some("YAPOWR_IDLE")
+        );
+
+        let old_a = slots[0].as_ref().expect("empty runtime").clone();
+        slots[0].as_mut().expect("empty runtime").current_frame = 6;
+        slots[0].as_mut().expect("empty runtime").first_ai_guard = false;
+        let later_active = slots[2].as_ref().expect("later active").clone();
+        let idle = slots[3].as_ref().expect("idle").clone();
+
+        reconcile_looping_building_slot_occupancy(
+            &mut slots,
+            anims,
+            true,
+            false,
+            true,
+            &art,
+            &options,
+            &frame_counts,
+        );
+        assert!(slots[0].is_none());
+        let b = slots[1].as_ref().expect("occupied runtime");
+        assert_eq!(b.type_name, "YAPOWR_B");
+        assert_eq!(b.current_frame, 0);
+        assert_eq!(b.delay_logic_frames, 0);
+        assert_eq!(b.rate_elapsed_logic_frames, 0);
+        assert!(b.first_ai_guard);
+        assert_eq!(slots[2], Some(later_active.clone()));
+        assert_eq!(slots[3], Some(idle.clone()));
+
+        slots[1].as_mut().expect("occupied runtime").current_frame = 5;
+        slots[1]
+            .as_mut()
+            .expect("occupied runtime")
+            .rate_elapsed_logic_frames = 2;
+        reconcile_looping_building_slot_occupancy(
+            &mut slots,
+            anims,
+            true,
+            false,
+            false,
+            &art,
+            &options,
+            &frame_counts,
+        );
+        assert_eq!(slots[0], Some(old_a));
+        assert!(slots[1].is_none());
+        assert_eq!(slots[2], Some(later_active));
+        assert_eq!(slots[3], Some(idle));
+    }
+
+    #[test]
+    fn infantry_absorb_repair_recreates_only_present_slot() {
+        let art = infantry_absorb_slot_art();
+        let options = crate::sim::game_options::GameOptions::default();
+        let frame_counts = infantry_absorb_slot_frame_counts();
+        let anims = &art.get("YAPOWR").expect("building art").building_anims;
+        let mut slots = vec![None; anims.len()];
+
+        reconcile_looping_building_slot_occupancy(
+            &mut slots,
+            anims,
+            true,
+            true,
+            true,
+            &art,
+            &options,
+            &frame_counts,
+        );
+        assert!(slots[0].is_none());
+        let damaged = slots[1].as_mut().expect("occupied damaged runtime");
+        assert_eq!(damaged.type_name, "YAPOWR_BD");
+        damaged.current_frame = 3;
+        damaged.frame_step = -1;
+        damaged.delay_logic_frames = 7;
+        damaged.rate_elapsed_logic_frames = 2;
+        damaged.loop_remaining = 3;
+        damaged.first_ai_guard = false;
+
+        for (anim, slot) in anims.iter().zip(&mut slots) {
+            let _ = replace_occupied_slot_for_damage_state(
+                slot,
+                anim,
+                false,
+                &art,
+                &options,
+                &frame_counts,
+            );
+        }
+        assert!(slots[0].is_none());
+        let healthy = slots[1].as_ref().expect("occupied healthy runtime");
+        assert_eq!(healthy.type_name, "YAPOWR_B");
+        assert_eq!(healthy.current_frame, 3);
+        assert_eq!(healthy.frame_step, 1);
+        assert_eq!(healthy.delay_logic_frames, 0);
+        assert_eq!(healthy.rate_elapsed_logic_frames, 0);
+        assert_eq!(healthy.loop_remaining, u8::MAX);
+        assert!(healthy.first_ai_guard);
+        let after_repair = healthy.clone();
+
+        reconcile_looping_building_slot_occupancy(
+            &mut slots,
+            anims,
+            true,
+            false,
+            true,
+            &art,
+            &options,
+            &frame_counts,
+        );
+        assert!(slots[0].is_none());
+        assert_eq!(slots[1], Some(after_repair));
     }
 
     #[test]

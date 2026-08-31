@@ -495,6 +495,10 @@ pub enum SimSoundEvent {
     /// A paratrooper was dropped from a carrier aircraft.
     /// Played at the drop position; app layer resolves to [AudioVisual] ChuteSound.
     ChuteSound { rx: u16, ry: u16 },
+    /// At least one visible slave survived its master's null-attacker
+    /// `MasterDestroyed` teardown. App resolves `[AudioVisual]
+    /// SlavesFreeSound` and plays it once at the former master's cell.
+    SlaveWorkerLiberated { rx: u16, ry: u16 },
     /// A C4-capable infantry claimed a plant on a CanC4 building.
     /// Played at the attacker's position. App resolves to
     /// `[SealPlaceBomb]` in soundmd.ini.
@@ -1724,6 +1728,11 @@ impl Simulation {
         self.sound_events = sound_events;
         self.merge_receiver_house_state(&houses);
         let mut combat_result = combat_result;
+        for &stable_id in &combat_result.building_anim_reset_ids {
+            crate::sim::world::building_anim::recreate_existing_slots_for_damage_state(
+                self, rules, stable_id,
+            );
+        }
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
         self.mark_wall_mutations_radar_dirty(&combat_result.wall_mutations);
         combat_result
@@ -2555,6 +2564,11 @@ impl Simulation {
         under_attack_events: Vec<crate::sim::combat::UnderAttackEvent>,
         terrain_navigation_changed_cells: Vec<(u16, u16)>,
     ) {
+        for &stable_id in &effects.building_anim_reset_ids {
+            crate::sim::world::building_anim::recreate_existing_slots_for_damage_state(
+                self, rules, stable_id,
+            );
+        }
         // gamemd-derived: `BulletClass::AI @ 0x004666E0` reaches
         // `CellClass::DestroyOverlay @ 0x00480CB0` inside the Bullet's Logic
         // slot, where terminal removal calls `MarkTerrainDirty @ 0x004807C2`
@@ -5567,6 +5581,9 @@ impl Simulation {
         let mut finished: Vec<u64> = Vec::new();
         for &sid in &keys {
             if let Some(entity) = self.substrate.entities.get_mut(sid) {
+                if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
+                    continue;
+                }
                 if let Some(ref mut bd) = entity.building_down {
                     bd.elapsed_ticks = bd.elapsed_ticks.saturating_add(1);
                     if bd.elapsed_ticks >= bd.total_ticks {
@@ -5577,9 +5594,15 @@ impl Simulation {
         }
         let mut spawned_any = false;
         for sid in finished {
-            // Extract spawn data before beginning the conversion transaction.
-            let spawn_data = self.substrate.entities.get(sid).and_then(|e| {
-                e.building_down.as_ref().map(|bd| {
+            // Consume the completed state before beginning the conversion.
+            // The source remains resolvable until deferred finalization, so a
+            // retained BuildingDown component would otherwise permit a direct
+            // second helper call to construct/refund twice.
+            let spawn_data = self.substrate.entities.get_mut(sid).and_then(|e| {
+                if !e.lifecycle.object_alive || e.lifecycle.in_limbo {
+                    return None;
+                }
+                e.building_down.take().map(|bd| {
                     (
                         bd.spawn_type,
                         bd.spawn_owner,
@@ -5588,11 +5611,20 @@ impl Simulation {
                         bd.spawn_z,
                         bd.was_selected,
                         e.attached_trigger_tag,
+                        e.type_ref,
                     )
                 })
             });
-            let Some((unit_type_id, owner_id, rx, ry, z, was_selected, attached_trigger_tag)) =
-                spawn_data
+            let Some((
+                unit_type_id,
+                owner_id,
+                rx,
+                ry,
+                z,
+                was_selected,
+                attached_trigger_tag,
+                source_type_id,
+            )) = spawn_data
             else {
                 continue;
             };
@@ -5603,24 +5635,52 @@ impl Simulation {
                     continue;
                 }
             };
-            // BuildingDown has finished, so remove the source footprint before
-            // the Unit's concrete Unlimbo. Keep the source object alive until
-            // that result commits; a rejected target restores this exact source
-            // instead of publishing a half-conversion.
-            let _ = self.techno_limbo_with_rules(sid, rules);
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
-            if let Some(new_sid) =
-                self.spawn_object_at_height_with_overlay_context(
-                    &unit_type_str,
-                    &owner_str,
+            let deploy_facing = rules
+                .object_case_insensitive(self.interner.resolve(source_type_id))
+                .map_or(0x80, |object| object.deploy_facing);
+            let refund = crate::sim::production::active_retail_reverse_refund_for_building(
+                self, rules, sid,
+            )
+            .unwrap_or(0);
+
+            // gamemd-derived: BuildingClass::Sell @ 0x00449C30 constructs the
+            // reverse target while the source remains active. Allocation or
+            // constructor failure destroys and refunds the source without one.
+            let Some(new_sid) = self.construct_object_limbo_at_height(
+                &unit_type_str,
+                &owner_str,
+                rx,
+                ry,
+                deploy_facing,
+                z,
+                rules,
+            ) else {
+                crate::sim::production::credit_reverse_failure_refund(
+                    self, &owner_str, refund,
+                );
+                self.uninit_with_rules(sid, rules);
+                continue;
+            };
+
+            // BuildingClass::Sell @ 0x00449C30 only then Limbos the source and
+            // attempts UnitClass::Unlimbo once. Rejection retains the constructed
+            // target alive in Limbo, transfers nothing, and never restores source.
+            let _ = self.techno_limbo_with_rules(sid, rules);
+            if self
+                .reveal_constructed_object_at_height_with_unit_context(
+                    new_sid,
                     rx,
                     ry,
-                    0,
+                    deploy_facing,
                     z,
+                    PlacementEvidence::EvaluateMark,
                     rules,
                     overlay_registry,
+                    new_sid,
                 )
+                .is_some()
             {
                 if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
                     ge.attached_trigger_tag = attached_trigger_tag;
@@ -5634,7 +5694,10 @@ impl Simulation {
                 self.uninit_with_rules(sid, rules);
                 spawned_any = true;
             } else {
-                let _ = self.reveal(sid);
+                crate::sim::production::credit_reverse_failure_refund(
+                    self, &owner_str, refund,
+                );
+                self.uninit_with_rules(sid, rules);
             }
         }
         spawned_any
@@ -6337,7 +6400,7 @@ impl Simulation {
         // collapse and physically finalize exactly once.
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::PendingDelete);
-        self.process_pending_delete();
+        self.process_pending_delete_with_rules(rules);
 
         // Debug-mode safety net: rebuild occupancy after the drain so dead
         // structures are not reconstructed into the comparison.

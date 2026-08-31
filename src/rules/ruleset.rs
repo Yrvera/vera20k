@@ -515,6 +515,10 @@ pub struct GeneralRules {
     /// Parsed from [AudioVisual] ChuteSound (stock "ParachuteDrop").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
     pub chute_sound: Option<String>,
+    /// One-shot positional cue when `SlaveManagerClass::MasterDestroyed`
+    /// liberates at least one visible slave. Parsed from `[AudioVisual]
+    /// SlavesFreeSound` (stock `SlaveWorkerLiberated`).
+    pub slaves_free_sound: Option<String>,
     /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
     pub gui_main_button_sound: Option<String>,
     /// Shell first-paint controls-reveal slide-in cue from [AudioVisual]
@@ -716,6 +720,10 @@ pub struct GeneralRules {
     /// Raw click-repair full-step percentage (`RepairPercent=`), represented as
     /// a fraction (`15% == 0.15`).
     pub building_repair_percent: NativeF64Bits,
+    /// `[General] RefundPercent=` widened-double bits. TechnoTypeClass applies
+    /// this only after its first integer refund truncation for controlled-human
+    /// owners whose Type has zero `Soylent=`.
+    pub refund_percent: NativeF64Bits,
 
     // -- Aircraft ammo reload --
     /// Ticks to reload one ammo point at an airfield (from ReloadRate= minutes in [General]).
@@ -1046,6 +1054,7 @@ impl Default for GeneralRules {
             building_garrisoned_sound: None,
             sell_sound: None,
             chute_sound: None,
+            slaves_free_sound: None,
             gui_main_button_sound: None,
             gui_move_in_sound: None,
             generic_click_sound: None,
@@ -1105,6 +1114,7 @@ impl Default for GeneralRules {
             building_repair_rate: NativeF64Bits::from_bits(0.016_f64.to_bits()),
             building_repair_step: 5,
             building_repair_percent: NativeF64Bits::from_bits(0.25_f64.to_bits()),
+            refund_percent: NativeF64Bits::from_bits(0.5_f64.to_bits()),
             // ReloadRate=.3 min = 18 sec = 270 ticks at 15 Hz.
             reload_rate_ticks: 270,
             // PathDelay=.01 min = 0.6 sec = 9 ticks at 15 Hz.
@@ -1784,6 +1794,11 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            slaves_free_sound: audio_visual
+                .and_then(|s| s.get("SlavesFreeSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             bunker_walls_down_sound: audio_visual
                 .and_then(|s| s.get("BunkerWallsDownSound"))
                 .map(str::trim)
@@ -2032,6 +2047,12 @@ impl GeneralRules {
                 general
                     .get_f64("RepairPercent")
                     .unwrap_or_else(|| f64::from_bits(defaults.building_repair_percent.bits()))
+                    .to_bits(),
+            ),
+            refund_percent: NativeF64Bits::from_bits(
+                general
+                    .get_f64("RefundPercent")
+                    .unwrap_or_else(|| f64::from_bits(defaults.refund_percent.bits()))
                     .to_bits(),
             ),
             reload_rate_ticks: general
@@ -5346,6 +5367,22 @@ ChuteSound=ParachuteDrop
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.chute_sound.as_deref(), Some("ParachuteDrop"));
+    }
+
+    #[test]
+    fn test_stock_slaves_free_sound_parsed() {
+        let ini_str = "\
+[General]
+FlightLevel=500
+[AudioVisual]
+SlavesFreeSound=SlaveWorkerLiberated
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(
+            general.slaves_free_sound.as_deref(),
+            Some("SlaveWorkerLiberated")
+        );
     }
 
     #[test]

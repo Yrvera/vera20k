@@ -15,6 +15,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         name: None,
         ui_name: None,
         cost: 0,
+        soylent: 0,
         trainable: true,
         explosion_anims: Vec::new(),
         destroy_anims: Vec::new(),

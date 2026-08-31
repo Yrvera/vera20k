@@ -621,10 +621,10 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
 
 /// Undeploy a Slave Miner refinery (YAREFN) back into vehicle form (SMIN).
 ///
-/// 1. Preserve the live slave manager bindings
-/// 2. Limbo the YAREFN footprint while retaining the source object
-/// 3. Construct and reveal the SMIN vehicle at the same cell
-/// 4. Transfer slave bindings and tags before destroying the old YAREFN
+/// 1. Construct a complete SMIN plus its fresh manager while YAREFN is active
+/// 2. Limbo the YAREFN footprint and attempt SMIN Unlimbo exactly once
+/// 3. On failure, refund/destroy YAREFN and retain the fresh SMIN pool in limbo
+/// 4. On success only, replace that pool with the YAREFN manager and transfer tags
 ///
 /// Returns the new SMIN stable_id, or None if undeploy failed.
 pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
@@ -640,6 +640,9 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
     // Read undeploy data.
     let undeploy_data = {
         let entity = sim.substrate.entities.get(stable_id)?;
+        if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
+            return None;
+        }
         let type_str = sim.interner.resolve(entity.type_ref);
         let obj = rules.object_case_insensitive(type_str)?;
         let target_type: &str = obj.undeploys_into.as_deref()?;
@@ -653,29 +656,62 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
             entity.selected,
             entity.attached_trigger_tag,
             target_type.to_string(),
+            obj.deploy_facing,
         ))
     }?;
 
-    let (owner, rx, ry, z, was_selected, attached_trigger_tag, target_type) = undeploy_data;
+    let (owner, rx, ry, z, was_selected, attached_trigger_tag, target_type, deploy_facing) =
+        undeploy_data;
 
-    // Remove the refinery footprint but retain the source object and manager
-    // until the replacement Unit's Unlimbo succeeds.
-    let _ = sim.techno_limbo_with_rules(stable_id, rules);
-
-    // Spawn the SMIN vehicle. Restore the exact source on any late rejection.
-    let Some(new_sid) = sim.spawn_object_at_height_with_overlay_context(
-        &target_type,
-        &owner,
-        rx,
-        ry,
-        0,
-        z,
-        rules,
-        overlay_registry,
-    ) else {
-        let _ = sim.reveal(stable_id);
+    // BuildingClass::Sell @ 0x00449C30 constructs the target Unit and all of
+    // its constructor-owned children while the source Building is still live.
+    let Some(new_sid) =
+        sim.construct_object_limbo_at_height(&target_type, &owner, rx, ry, deploy_facing, z, rules)
+    else {
+        let refund = crate::sim::production::active_retail_reverse_refund_for_building(
+            sim, rules, stable_id,
+        )
+        .unwrap_or(0);
+        crate::sim::production::credit_reverse_failure_refund(sim, &owner, refund);
+        if sim.production.slave_bindings.contains_key(&stable_id) {
+            sim.production
+                .reverse_failure_slave_manager_finalizers
+                .insert(stable_id);
+        }
+        sim.uninit_with_rules(stable_id, rules);
         return None;
     };
+
+    // Save the source-derived refund before detaching its footprint. A rejected
+    // Unit Unlimbo is destructive: no source restoration, no transfer, and no
+    // cleanup of the constructed target or its fresh SlaveManager pool.
+    let refund =
+        crate::sim::production::active_retail_reverse_refund_for_building(sim, rules, stable_id)
+            .unwrap_or(0);
+    let _ = sim.techno_limbo_with_rules(stable_id, rules);
+    if sim
+        .reveal_constructed_object_at_height_with_unit_context(
+            new_sid,
+            rx,
+            ry,
+            deploy_facing,
+            z,
+            PlacementEvidence::EvaluateMark,
+            rules,
+            overlay_registry,
+            new_sid,
+        )
+        .is_none()
+    {
+        crate::sim::production::credit_reverse_failure_refund(sim, &owner, refund);
+        if sim.production.slave_bindings.contains_key(&stable_id) {
+            sim.production
+                .reverse_failure_slave_manager_finalizers
+                .insert(stable_id);
+        }
+        sim.uninit_with_rules(stable_id, rules);
+        return None;
+    }
 
     let slave_ids = sim.production.slave_bindings.remove(&stable_id);
 
@@ -715,6 +751,140 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
     Some(new_sid)
 }
 
+/// Physical-destructor fallback for a represented SlaveManager whose master
+/// reached TechnoClass destruction without an earlier attacker/new-house
+/// `MasterDestroyed` call.
+///
+/// Active-retail evidence:
+/// - `TechnoClass__Destructor @ 0x006F4500` calls
+///   `SlaveManagerClass__MasterDestroyed(manager, null, null) @ 0x006B0AE0`
+///   before deleting the manager;
+/// - MasterDestroyed walks controls in reverse, clears each SlaveOwner
+///   back-reference first, UnInits limbo slaves, and liberates visible slaves
+///   to the stock Civilian/Neutral house;
+/// - the failed reverse target owns a different freshly constructed manager,
+///   so finalizing the source must never touch that target-keyed pool.
+///
+/// The no-Civilian mod branch applies Rules.C4Warhead, and attacker-caused
+/// master death supplies the attacker before this destructor fallback. Those
+/// broader contexts remain outside this active-retail null/null boundary.
+pub(crate) fn finalize_active_retail_slave_manager_null_attacker(
+    sim: &mut Simulation,
+    master_id: u64,
+    rules: Option<&RuleSet>,
+) {
+    let Some(slave_ids) = sim.production.slave_bindings.get(&master_id).cloned() else {
+        return;
+    };
+    let master_cell = sim
+        .substrate
+        .entities
+        .get(master_id)
+        .map(|master| (master.position.rx, master.position.ry));
+    let mut any_slave_survived = false;
+
+    // The native fallback resolves the Civilian country, then scans the live
+    // House array in order. Stock skirmish's matching house is Neutral. Preserve
+    // session House order where available; test/diagnostic worlds fall back to
+    // the deterministic house map without inventing a missing house.
+    let neutral_owner = {
+        let is_neutral_house = |owner: InternedId| {
+            sim.interner.resolve(owner).eq_ignore_ascii_case("Neutral")
+                || sim
+                    .houses
+                    .get(&owner)
+                    .and_then(|house| house.country)
+                    .is_some_and(|country| {
+                        sim.interner
+                            .resolve(country)
+                            .eq_ignore_ascii_case("Neutral")
+                    })
+        };
+        sim.session
+            .house_order
+            .iter()
+            .copied()
+            .find(|&owner| sim.houses.contains_key(&owner) && is_neutral_house(owner))
+            .or_else(|| {
+                sim.houses
+                    .keys()
+                    .copied()
+                    .find(|&owner| is_neutral_house(owner))
+            })
+    };
+
+    for slave_id in slave_ids.iter().rev().copied() {
+        let Some((object_alive, in_limbo)) = sim
+            .substrate
+            .entities
+            .get(slave_id)
+            .map(|slave| (slave.lifecycle.object_alive, slave.lifecycle.in_limbo))
+        else {
+            continue;
+        };
+        if !object_alive {
+            continue;
+        }
+
+        // Native clears Techno+0x2DC before either the limbo-UnInit arm or the
+        // visible-liberation arm. `SlaveHarvester` is the represented owner
+        // back-reference as well as the slave AI admission gate.
+        if let Some(slave) = sim.substrate.entities.get_mut(slave_id) {
+            slave.slave_harvester = None;
+        }
+
+        if in_limbo {
+            if let Some(rules) = rules {
+                sim.uninit_with_rules(slave_id, rules);
+            } else {
+                sim.uninit(slave_id);
+            }
+            continue;
+        }
+
+        let Some(neutral_owner) = neutral_owner else {
+            // Active stock always has Neutral. Until the C4Warhead branch is a
+            // represented shared SlaveManager death context, remove this
+            // otherwise-orphaned mod-world slave through ordinary UnInit.
+            if let Some(rules) = rules {
+                sim.uninit_with_rules(slave_id, rules);
+            } else {
+                sim.uninit(slave_id);
+            }
+            continue;
+        };
+
+        if let Some(rules) = rules {
+            sim.change_owner_with_rules(slave_id, neutral_owner, rules);
+        } else {
+            sim.change_owner(slave_id, neutral_owner);
+        }
+        if let Some(slave) = sim.substrate.entities.get_mut(slave_id) {
+            crate::sim::movement::clear_navigation_for_entity(slave);
+            slave.attack_target = None;
+            slave.passively_acquired_target = false;
+            slave.order_intent = None;
+        }
+        let now = sim.session.binary_frame;
+        let _ = sim.mission_assign_exact(
+            slave_id,
+            crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Guard),
+            now,
+        );
+        any_slave_survived = true;
+    }
+
+    if any_slave_survived && let Some((rx, ry)) = master_cell {
+        sim.sound_events
+            .push(crate::sim::world::SimSoundEvent::SlaveWorkerLiberated { rx, ry });
+    }
+
+    // Equivalent to manager.owner=null followed by the manager's scalar
+    // destructor. Children that were UnInit above remain queued and are
+    // eligible later in this same live pending-delete drain.
+    sim.production.slave_bindings.remove(&master_id);
+}
+
 // ---------------------------------------------------------------------------
 // Slave regeneration
 // ---------------------------------------------------------------------------
@@ -729,18 +899,26 @@ pub(super) fn tick_slave_regen(
     rules: &RuleSet,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
-    // Missing/dead masters are lifecycle cleanup, not AI visitation. Remove
-    // those bindings even though the master is no longer in LogicVector.
+    // Preserve a dead-but-stored master only when reverse failure armed the
+    // proved null/null destructor context. Every other dead/absent binding
+    // retains the pre-M39 cleanup behavior until attacker-aware combat
+    // MasterDestroyed is represented.
     let stale_master_ids = sim
         .production
         .slave_bindings
         .keys()
         .copied()
         .filter(|&master_id| {
-            !sim.substrate
+            let master_is_alive = sim
+                .substrate
                 .entities
                 .get(master_id)
-                .is_some_and(|master| master.lifecycle.object_alive)
+                .is_some_and(|master| master.lifecycle.object_alive);
+            !master_is_alive
+                && !sim
+                    .production
+                    .reverse_failure_slave_manager_finalizers
+                    .contains(&master_id)
         })
         .collect::<Vec<_>>();
     for master_id in stale_master_ids {
@@ -905,6 +1083,7 @@ fn manhattan_distance(ax: u16, ay: u16, bx: u16, by: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::house_state::HouseState;
     use crate::sim::miner::ResourceType;
     use crate::sim::mission::{MissionId, MissionType};
     use crate::sim::rng::SimRng;
@@ -1052,9 +1231,20 @@ mod tests {
     }
 
     #[test]
-    fn failed_undeploy_restores_yarefn_tag_and_slave_manager() {
+    fn failed_undeploy_refunds_source_and_retains_fresh_smin_manager_pool() {
         let rules = make_test_rules();
-        let mut sim = Simulation::with_seed(0x51A7_E004);
+        let seed = 0x51A7_E004;
+        let mut sim = Simulation::with_seed(seed);
+        sim.session.game_mode_nonzero = true;
+        let yuri = sim.interner.intern("YuriCountry");
+        let neutral = sim.interner.intern("Neutral");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            neutral,
+            HouseState::new(neutral, 3, Some(neutral), false, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, neutral]);
         let yarefn = sim
             .spawn_object_at_height("YAREFN", "YuriCountry", 10, 10, 0, 0, &rules)
             .expect("spawn tagged YAREFN before restricting the playfield");
@@ -1064,12 +1254,33 @@ mod tests {
             .get_mut(yarefn)
             .expect("live YAREFN")
             .attached_trigger_tag = Some(tag);
+        sim.substrate
+            .entities
+            .get_mut(yarefn)
+            .expect("live YAREFN")
+            .health
+            .current = 1;
         let slave_ids = sim
             .production
             .slave_bindings
             .get(&yarefn)
             .cloned()
             .expect("YAREFN constructor owns its slave manager");
+        assert_eq!(slave_ids, vec![2, 3, 4, 5, 6]);
+        assert!(
+            sim.unlimbo_held_production_object(
+                slave_ids[0],
+                14,
+                10,
+                0,
+                0,
+                PlacementEvidence::EvaluateMark,
+                &rules,
+            )
+            .is_some(),
+            "one visible old slave exercises native liberation at source destruction"
+        );
+        sim.substrate.entities.get_mut(yarefn).unwrap().selected = true;
         sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
             base: 0,
             off_fc: 0,
@@ -1083,14 +1294,127 @@ mod tests {
             .substrate
             .entities
             .get(yarefn)
-            .expect("failed undeploy restores the exact YAREFN source");
-        assert!(source.is_active());
+            .expect("failed undeploy source remains until the physical drain");
+        assert!(!source.lifecycle.object_alive);
+        assert!(source.lifecycle.in_limbo);
+        assert!(source.dying);
         assert_eq!(source.attached_trigger_tag, Some(tag));
+        assert!(sim.substrate.pending_delete.contains(&yarefn));
+
+        let smin = sim
+            .substrate
+            .entities
+            .values()
+            .find(|entity| sim.interner.resolve(entity.type_ref) == "SMIN")
+            .map(|entity| entity.stable_id)
+            .expect("failed Unit Unlimbo retains the constructed SMIN");
+        assert_eq!(smin, 7);
+        let target = sim.substrate.entities.get(smin).unwrap();
+        assert!(target.lifecycle.object_alive);
+        assert!(target.lifecycle.in_limbo);
+        assert!(!target.lifecycle.cell_marked);
+        assert!(!target.dying);
+        assert_eq!(target.health.current, target.health.max);
+        assert_eq!(target.attached_trigger_tag, None);
+        assert!(!target.selected);
+        let fresh_slave_ids = sim
+            .production
+            .slave_bindings
+            .get(&smin)
+            .cloned()
+            .expect("failed target retains its constructor-owned manager pool");
+        assert_eq!(fresh_slave_ids, vec![8, 9, 10, 11, 12]);
         assert_eq!(
             sim.production.slave_bindings.get(&yarefn),
             Some(&slave_ids),
-            "late Unit rejection must not consume the source manager"
+            "ObjectClass::UnInit does not run the source manager destructor"
         );
+        assert!(
+            sim.production
+                .reverse_failure_slave_manager_finalizers
+                .contains(&yarefn),
+            "only reverse failure arms the deferred null-attacker destructor"
+        );
+        assert_eq!(sim.houses[&yuri].credits, 1750);
+        assert_eq!(sim.houses[&yuri].owned_building_count, 0);
+        assert_eq!(sim.houses[&yuri].owned_unit_count, 11);
+        let mut expected_rng = SimRng::new(seed);
+        for _ in 0..12 {
+            let _ = expected_rng.next_u32();
+        }
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "source and failed target constructors each consume parent plus five child draws"
+        );
+
+        let rng_after_failure = sim.scenario_rng.logical_state();
+        assert_eq!(undeploy_slave_miner(&mut sim, yarefn, &rules), None);
+        assert_eq!(sim.scenario_rng.logical_state(), rng_after_failure);
+        assert_eq!(sim.houses[&yuri].credits, 1750);
+        assert_eq!(
+            sim.substrate
+                .entities
+                .values()
+                .filter(|entity| sim.interner.resolve(entity.type_ref) == "SMIN")
+                .count(),
+            1,
+            "dead-but-stored source cannot repeat construction or refund"
+        );
+
+        sim.process_pending_delete_with_rules(Some(&rules));
+        assert!(sim.substrate.entities.get(yarefn).is_none());
+        assert!(!sim.production.slave_bindings.contains_key(&yarefn));
+        assert!(
+            !sim.production
+                .reverse_failure_slave_manager_finalizers
+                .contains(&yarefn)
+        );
+        let liberated = sim
+            .substrate
+            .entities
+            .get(slave_ids[0])
+            .expect("visible old slave survives as a liberated Civilian");
+        assert_eq!(liberated.owner, neutral);
+        assert!(liberated.slave_harvester.is_none());
+        assert!(liberated.is_active());
+        assert_eq!(
+            liberated.mission.current().known(),
+            Some(MissionType::Guard)
+        );
+        for &old_limbo_slave in &slave_ids[1..] {
+            assert!(
+                sim.substrate.entities.get(old_limbo_slave).is_none(),
+                "old limbo slaves UnInit during source manager destruction"
+            );
+        }
+
+        let ghost = sim
+            .substrate
+            .entities
+            .get(smin)
+            .expect("source finalization must not delete the failed target ghost");
+        assert!(ghost.lifecycle.object_alive && ghost.lifecycle.in_limbo);
+        assert_eq!(
+            sim.production.slave_bindings.get(&smin),
+            Some(&fresh_slave_ids)
+        );
+        for fresh_slave_id in fresh_slave_ids {
+            let fresh = sim
+                .substrate
+                .entities
+                .get(fresh_slave_id)
+                .expect("target constructor-owned slave persists");
+            assert!(fresh.lifecycle.object_alive && fresh.lifecycle.in_limbo);
+            assert_eq!(fresh.slave_harvester.as_ref().unwrap().master_id, smin);
+        }
+        assert_eq!(sim.houses[&yuri].owned_unit_count, 6);
+        assert_eq!(sim.houses[&neutral].owned_unit_count, 1);
+        assert!(sim.sound_events.iter().any(|event| matches!(
+            event,
+            crate::sim::world::SimSoundEvent::SlaveWorkerLiberated { rx: 10, ry: 10 }
+        )));
+        assert!(sim.substrate.pending_delete.is_empty());
     }
 
     #[test]
@@ -1152,8 +1476,9 @@ mod tests {
 [BuildingTypes]\n1=YAREFN\n\
 [SLAV]\nStrength=125\nSpeed=3\nSlaved=yes\nStorage=4\nHarvestRate=150\n\
 [SMIN]\nStrength=2000\nSpeed=3\nEnslaves=SLAV\nSlavesNumber=5\nDeploysInto=YAREFN\nResourceGatherer=yes\nResourceDestination=yes\n\
-[YAREFN]\nStrength=2000\nEnslaves=SLAV\nSlavesNumber=5\nUndeploysInto=SMIN\nFoundation=3x3\n\
-[General]\nSlaveMinerShortScan=8\nSlaveMinerSlaveScan=14\nSlaveMinerLongScan=48\nSlaveMinerScanCorrection=3\nSlaveMinerKickFrameDelay=150\n\
+[YAREFN]\nStrength=2000\nCost=1750\nSoylent=1750\nDeployFacing=0\nEnslaves=SLAV\nSlavesNumber=5\nUndeploysInto=SMIN\nFoundation=2x2\n\
+[General]\nRefundPercent=50%\nSlaveMinerShortScan=8\nSlaveMinerSlaveScan=14\nSlaveMinerLongScan=48\nSlaveMinerScanCorrection=3\nSlaveMinerKickFrameDelay=150\n\
+[AudioVisual]\nSlavesFreeSound=SlaveWorkerLiberated\n\
 ";
         let ini: IniFile = IniFile::from_str(ini_str);
         RuleSet::from_ini(&ini).expect("test rules should parse")

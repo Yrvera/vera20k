@@ -13,7 +13,10 @@ use super::helpers::{
     is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
-use crate::app::presentation::building_anim::selected_building_anim_view;
+use crate::app::presentation::building_anim::{
+    app_owns_looping_building_slot, infantry_absorb_active_slot_is_absent,
+    selected_building_anim_view,
+};
 use crate::app::presentation::render::draw_plan_lowering::{
     GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedBuildingPieceInstance,
     PlannedGroundObjectInstance,
@@ -739,21 +742,6 @@ fn ping_pong_frame_value(loop_end: u16, start_frame: u16, tick: u32) -> u16 {
     start_frame + counter as u16
 }
 
-/// Whether an `InfantryAbsorb` building's ActiveAnim slot is the one gamemd
-/// clears for the current occupancy.
-///
-/// The native branch only ever touches the first two ActiveAnim slots: with no
-/// occupants it clears the second and creates the first, and with one or more it
-/// clears the first and creates the second. Any further ActiveAnim slot is
-/// outside the branch and keeps rendering.
-fn infantry_absorb_slot_is_hidden(active_slot_ordinal: usize, is_garrisoned: bool) -> bool {
-    match active_slot_ordinal {
-        0 => is_garrisoned,
-        1 => !is_garrisoned,
-        _ => false,
-    }
-}
-
 /// Emit SpriteInstances for a building's animation overlays.
 ///
 /// Each anim overlay (e.g., CAOILD_A for Oil Derrick's tower) is looked up
@@ -808,6 +796,15 @@ fn emit_building_anims(
         let slot_runtime = slot_runtimes
             .and_then(|slots| slots.get(slot_index))
             .and_then(Option::as_ref);
+        // Once a phase-base vector exists, `None` is an authoritative absent
+        // native looping slot. Do not fall back to drawing the ART descriptor:
+        // YAPOWR destroys one ActiveAnim instance when occupancy changes.
+        if slot_runtimes.is_some()
+            && app_owns_looping_building_slot(anim, building_damage_state_active, is_garrisoned)
+            && slot_runtime.is_none()
+        {
+            continue;
+        }
         let rendered_anim_type = slot_runtime
             .map(|runtime| runtime.type_name.as_str())
             .unwrap_or(selected.anim_type);
@@ -842,7 +839,7 @@ fn emit_building_anims(
                 // the two layers are never on screen together.
                 if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Active)
                     && obj.is_some_and(|o| o.infantry_absorb && o.extra_power > 0)
-                    && infantry_absorb_slot_is_hidden(this_active_ordinal, is_garrisoned)
+                    && infantry_absorb_active_slot_is_absent(this_active_ordinal, is_garrisoned)
                 {
                     continue;
                 }
@@ -1099,7 +1096,7 @@ fn building_frame_index(
 mod tests {
     use super::building_frame_index;
     use super::building_slot_runtime_draw_frame;
-    use super::infantry_absorb_slot_is_hidden;
+    use super::infantry_absorb_active_slot_is_absent;
     use super::looping_frame_values;
     use super::rendered_garrison_body_frame_index;
     use super::resting_building_anim_frame;
@@ -1299,18 +1296,18 @@ mod tests {
     fn infantry_absorb_building_shows_exactly_one_active_slot() {
         // Yuri's Bio Reactor: ActiveAnim=YAPOWR_A while empty, ActiveAnimTwo=
         // YAPOWR_B once anything is inside — never both, and never neither.
-        assert!(!infantry_absorb_slot_is_hidden(0, false));
-        assert!(infantry_absorb_slot_is_hidden(1, false));
+        assert!(!infantry_absorb_active_slot_is_absent(0, false));
+        assert!(infantry_absorb_active_slot_is_absent(1, false));
 
-        assert!(infantry_absorb_slot_is_hidden(0, true));
-        assert!(!infantry_absorb_slot_is_hidden(1, true));
+        assert!(infantry_absorb_active_slot_is_absent(0, true));
+        assert!(!infantry_absorb_active_slot_is_absent(1, true));
     }
 
     #[test]
     fn infantry_absorb_swap_leaves_later_active_slots_alone() {
         // The native branch only reaches the first two ActiveAnim slots.
-        assert!(!infantry_absorb_slot_is_hidden(2, false));
-        assert!(!infantry_absorb_slot_is_hidden(3, true));
+        assert!(!infantry_absorb_active_slot_is_absent(2, false));
+        assert!(!infantry_absorb_active_slot_is_absent(3, true));
     }
 
     #[test]

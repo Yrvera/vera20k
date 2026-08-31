@@ -253,16 +253,6 @@ pub(crate) fn tick_building_repair_tail(sim: &mut Simulation, rules: &RuleSet, s
         }
         let changed =
             entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
-        if changed {
-            // Native recreates the occupied Building animation slots when a
-            // funded repair crosses from the damaged body to the healthy body.
-            // Presentation observes this persisted revision and re-bases its
-            // represented looping slots once. A positive stock step only
-            // crosses damaged -> healthy; retaining the generic transition
-            // rule also matches malformed signed RepairStep data.
-            entity.building_anim_reset_revision =
-                entity.building_anim_reset_revision.wrapping_add(1);
-        }
         changed
     };
 

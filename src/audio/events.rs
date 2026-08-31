@@ -194,6 +194,13 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// One-shot positional `[AudioVisual] SlavesFreeSound` cue emitted when at
+    /// least one visible slave survives its master's destruction.
+    SlaveWorkerLiberated {
+        sound_id: String,
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Positional SFX + EVA cue from a bridge repair triggered by an engineer
     /// entering a `BridgeRepairHut`. Plays the spatial `[BridgeRepaired]`
     /// sound (resolved from `rules.bridge_rules.repair_sound`) at the hut's
@@ -252,6 +259,7 @@ impl GameSoundEvent {
             | Self::RefineryExitSfx { sound_id, .. }
             | Self::BunkerWalls { sound_id, .. }
             | Self::ChuteSound { sound_id, .. }
+            | Self::SlaveWorkerLiberated { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
@@ -278,6 +286,7 @@ impl GameSoundEvent {
             Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,
             Self::BunkerWalls { screen_pos, .. } => *screen_pos,
             Self::ChuteSound { screen_pos, .. } => *screen_pos,
+            Self::SlaveWorkerLiberated { screen_pos, .. } => *screen_pos,
             Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
             Self::WorldEffectStarted { screen_pos, .. } => *screen_pos,
             _ => None,

@@ -486,9 +486,9 @@ pub struct GameEntity {
     /// persisted/hashed but does not gate the visible repair wrench.
     #[serde(default)]
     pub repair_pulse_latch: bool,
-    /// Repair-only revision for native recreation of occupied Building
-    /// animation slots when a funded pulse crosses from damaged to healthy.
-    /// Presentation re-bases represented looping slots once per revision.
+    /// Revision for native reconstruction of occupied Building animation
+    /// slots whenever current HP crosses the ConditionYellow body gate.
+    /// Presentation reconstructs represented looping slots once per revision.
     #[serde(default)]
     pub building_anim_reset_revision: u32,
     /// LogicClass active-vector membership — mirrors gamemd ObjectClass+0x98.
@@ -1364,16 +1364,29 @@ impl GameEntity {
     /// Returns true when the stored gate changed. Non-structures cannot carry
     /// this building visual state and are forced inactive.
     pub fn refresh_building_damage_state_gate(&mut self, condition_yellow_x1000: i64) -> bool {
+        // gamemd-derived: BuildingClass::SetDamagedState @ 0x00451EE0,
+        // reached from BuildingClass::ReceiveDamage @ 0x00442230, reconstructs
+        // every occupied BuildingAnim slot when this body-state edge changes.
         let previous = self.building_damage_state_active;
-        let active = if self.category == EntityCategory::Structure && self.health.max > 0 {
-            let current = self.health.current as i64;
-            let max = self.health.max as i64;
-            current * 1000 <= max * condition_yellow_x1000
-        } else {
-            false
-        };
-        self.building_damage_state_active = active;
-        previous != active
+        self.initialize_building_damage_state_gate(condition_yellow_x1000);
+        let changed = previous != self.building_damage_state_active;
+        if changed {
+            self.building_anim_reset_revision = self.building_anim_reset_revision.wrapping_add(1);
+        }
+        changed
+    }
+
+    /// Seed the Building body-state gate before any animation slot exists.
+    /// Construction does not count as a runtime reconstruction edge.
+    pub(crate) fn initialize_building_damage_state_gate(&mut self, condition_yellow_x1000: i64) {
+        self.building_damage_state_active =
+            if self.category == EntityCategory::Structure && self.health.max > 0 {
+                let current = self.health.current as i64;
+                let max = self.health.max as i64;
+                current * 1000 <= max * condition_yellow_x1000
+            } else {
+                false
+            };
     }
 
     /// Runtime movement/path layer with Ground as the fallback.
@@ -1569,6 +1582,7 @@ mod tests {
 
         assert!(!entity.refresh_building_damage_state_gate(500));
         assert!(!entity.building_damage_state_active);
+        assert_eq!(entity.building_anim_reset_revision, 0);
     }
 
     #[test]
@@ -1577,6 +1591,9 @@ mod tests {
 
         assert!(entity.refresh_building_damage_state_gate(500));
         assert!(entity.building_damage_state_active);
+        assert_eq!(entity.building_anim_reset_revision, 1);
+        assert!(!entity.refresh_building_damage_state_gate(500));
+        assert_eq!(entity.building_anim_reset_revision, 1);
     }
 
     #[test]
@@ -1595,6 +1612,7 @@ mod tests {
 
         assert!(entity.refresh_building_damage_state_gate(500));
         assert!(!entity.building_damage_state_active);
+        assert_eq!(entity.building_anim_reset_revision, 1);
     }
 
     #[test]

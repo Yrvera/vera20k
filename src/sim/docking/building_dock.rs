@@ -343,6 +343,7 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
     }
 
     // Phase 4: Apply mutations.
+    let mut building_anim_reset_ids = Vec::new();
     for m in &mutations {
         let Some(entity) = sim.substrate.entities.get_mut(m.id) else {
             continue;
@@ -373,7 +374,9 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
             entity.health.current = (entity.health.current + m.heal_amount).min(entity.health.max);
             // Service depots normally repair units/aircraft; this remains a no-op
             // for them and protects the gate if a structure ever reaches this path.
-            entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
+            if entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000) {
+                building_anim_reset_ids.push(m.id);
+            }
         }
 
         if m.deduct_credits > 0 {
@@ -385,6 +388,12 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
                 house.credits = (house.credits - m.deduct_credits).max(0);
             }
         }
+    }
+
+    for stable_id in building_anim_reset_ids {
+        crate::sim::world::building_anim::recreate_existing_slots_for_damage_state(
+            sim, rules, stable_id,
+        );
     }
 
     // Issue exit moves (after mutations so dock_state is already cleared).

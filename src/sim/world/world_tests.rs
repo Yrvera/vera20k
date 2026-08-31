@@ -2648,7 +2648,7 @@ fn combat_test_rules() -> RuleSet {
          [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
          [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
          [AMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nPrimary=none\nDeploysInto=GACNST\n\n\
-         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nConstructionYard=yes\nUndeploysInto=AMCV\n\n\
+         [GACNST]\nStrength=1000\nCost=3000\nArmor=wood\nFoundation=4x3\nConstructionYard=yes\nUndeploysInto=AMCV\n\n\
          [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
          [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\n\
          [SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\n\n\
@@ -7365,6 +7365,7 @@ fn building_down_transfers_attached_tag_before_deferred_source_cleanup() {
         .values()
         .find(|entity| sim.interner.resolve(entity.type_ref) == "AMCV")
         .expect("replacement MCV");
+    assert_eq!(mcv.facing, 0x80);
     assert_eq!(mcv.attached_trigger_tag, Some(tag));
     let source = sim
         .substrate
@@ -7376,10 +7377,10 @@ fn building_down_transfers_attached_tag_before_deferred_source_cleanup() {
 }
 
 #[test]
-fn failed_building_down_restores_the_tagged_source() {
+fn failed_building_down_refunds_source_and_retains_registered_limbo_unit() {
     let mut sim = Simulation::new();
     let rules = combat_test_rules();
-    insert_house_with_counts(&mut sim, "Americans", 0, 0);
+    let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
     let yard = sim
         .spawn_object_at_height("GACNST", "Americans", 19, 21, 0, 0, &rules)
         .expect("ConYard before restricting the playfield");
@@ -7387,6 +7388,7 @@ fn failed_building_down_restores_the_tagged_source() {
     {
         let source = sim.substrate.entities.get_mut(yard).unwrap();
         source.attached_trigger_tag = Some(tag);
+        source.health.current = 1;
         source.building_up = None;
     }
     assert!(sim.undeploy_building(yard, &rules));
@@ -7411,15 +7413,59 @@ fn failed_building_down_restores_the_tagged_source() {
         .substrate
         .entities
         .get(yard)
-        .expect("late Unit rejection restores the exact ConYard");
-    assert!(source.is_active());
+        .expect("source remains resolvable until deferred deletion");
+    assert!(!source.lifecycle.object_alive);
+    assert!(source.dying);
     assert_eq!(source.attached_trigger_tag, Some(tag));
-    assert!(
+    assert!(sim.substrate.pending_delete.contains(&yard));
+
+    let mcv_id = sim
+        .substrate
+        .entities
+        .values()
+        .find(|entity| sim.interner.resolve(entity.type_ref) == "AMCV")
+        .map(|entity| entity.stable_id)
+        .expect("failed Unit Unlimbo retains the constructed target");
+    {
+        let mcv = sim.substrate.entities.get(mcv_id).unwrap();
+        assert!(mcv.lifecycle.object_alive);
+        assert!(mcv.lifecycle.in_limbo);
+        assert!(!mcv.lifecycle.cell_marked);
+        assert!(!mcv.dying);
+        assert_eq!(mcv.health.current, mcv.health.max);
+        assert_eq!(mcv.facing, 0x80);
+        assert_eq!(mcv.attached_trigger_tag, None);
+        assert!(!mcv.selected);
+    }
+
+    let house = &sim.houses[&owner];
+    assert_eq!(house.credits, 1500);
+    assert_eq!(house.owned_building_count, 0);
+    assert_eq!(house.owned_unit_count, 1);
+
+    let rng_after_failure = sim.scenario_rng.logical_state();
+    assert!(!sim.tick_building_down(Some(&rules), None));
+    assert_eq!(sim.scenario_rng.logical_state(), rng_after_failure);
+    assert_eq!(sim.houses[&owner].credits, 1500);
+    assert_eq!(
         sim.substrate
             .entities
             .values()
-            .all(|entity| sim.interner.resolve(entity.type_ref) != "AMCV")
+            .filter(|entity| sim.interner.resolve(entity.type_ref) == "AMCV")
+            .count(),
+        1,
+        "completed BuildingDown is consumed before the destructive transaction"
     );
+
+    sim.flush_pending_delete();
+    assert!(sim.substrate.entities.get(yard).is_none());
+    let mcv = sim
+        .substrate
+        .entities
+        .get(mcv_id)
+        .expect("failed target is alive and not pending-delete swept");
+    assert!(mcv.lifecycle.object_alive && mcv.lifecycle.in_limbo);
+    assert!(sim.substrate.pending_delete.is_empty());
 }
 
 // ===========================================================================

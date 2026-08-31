@@ -588,7 +588,7 @@ impl Simulation {
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
         }
-        self.hash_production(&mut hasher);
+        self.hash_production(&mut hasher, include_building_repair_v114);
         self.hash_power_states(&mut hasher);
         self.hash_fog_and_alliances(&mut hasher);
         self.hash_bridge_state(&mut hasher);
@@ -898,7 +898,7 @@ impl Simulation {
     }
 
     /// Hash all production-related state: queues, ready items, resources.
-    fn hash_production(&self, hasher: &mut impl Hasher) {
+    fn hash_production(&self, hasher: &mut impl Hasher, include_building_repair_v114: bool) {
         // P5d: the per-`BuildQueueItem` `queues_by_owner` fold is RETIRED — the
         // queue-of-record now lives in the factory registry (active build = `Factory`
         // head fields; tail = `Factory.queue` of `QueueEntry`) and folds in
@@ -921,6 +921,21 @@ impl Simulation {
         }
         self.production.next_enqueue_order.hash(hasher);
         self.hash_factory_registry(hasher); // P5b: the authoritative factory registry
+        if include_building_repair_v114
+            && !self
+                .production
+                .reverse_failure_slave_manager_finalizers
+                .is_empty()
+        {
+            b"reverse-failure-slave-manager-v1".hash(hasher);
+            self.production
+                .reverse_failure_slave_manager_finalizers
+                .len()
+                .hash(hasher);
+            for &stable_id in &self.production.reverse_failure_slave_manager_finalizers {
+                stable_id.hash(hasher);
+            }
+        }
 
         // Live ore/gem identity and quantity are already folded by
         // `hash_overlay_grid`. The compatibility map remains serialized and
@@ -1373,6 +1388,7 @@ impl Simulation {
                     b"building-click-repair-v2".hash(hasher);
                     entity.repairing.hash(hasher);
                     entity.repair_pulse_latch.hash(hasher);
+                    entity.building_anim_reset_revision.hash(hasher);
                     entity.building_ai_sell_enabled.hash(hasher);
                     entity.building_make_shape_initialized.hash(hasher);
                 }
@@ -2609,6 +2625,7 @@ mod rally_hash_tests {
         fn fixture(
             repairing: bool,
             latch: bool,
+            anim_reset_revision: u32,
             ai_sell_enabled: bool,
             make_initialized: bool,
             tagged: bool,
@@ -2618,6 +2635,7 @@ mod rally_hash_tests {
             entity.category = crate::map::entities::EntityCategory::Structure;
             entity.repairing = repairing;
             entity.repair_pulse_latch = latch;
+            entity.building_anim_reset_revision = anim_reset_revision;
             entity.building_ai_sell_enabled = ai_sell_enabled;
             entity.building_make_shape_initialized = make_initialized;
             if tagged {
@@ -2628,12 +2646,13 @@ mod rally_hash_tests {
         }
 
         let fixtures = [
-            fixture(false, false, false, false, false),
-            fixture(true, false, false, false, false),
-            fixture(false, true, false, false, false),
-            fixture(false, false, true, false, false),
-            fixture(false, false, false, true, false),
-            fixture(false, false, false, false, true),
+            fixture(false, false, 0, false, false, false),
+            fixture(true, false, 0, false, false, false),
+            fixture(false, true, 0, false, false, false),
+            fixture(false, false, 1, false, false, false),
+            fixture(false, false, 0, true, false, false),
+            fixture(false, false, 0, false, true, false),
+            fixture(false, false, 0, false, false, true),
         ];
         let current = fixtures
             .iter()
@@ -2662,6 +2681,22 @@ mod rally_hash_tests {
         }
         let baseline = fixture(0);
         let changed = fixture(1);
+
+        assert_ne!(baseline.state_hash(), changed.state_hash());
+        assert_eq!(
+            baseline.state_hash_without_building_repair_v114(),
+            changed.state_hash_without_building_repair_v114()
+        );
+    }
+
+    #[test]
+    fn reverse_failure_slave_manager_finalizer_is_v114_hash_authority() {
+        let baseline = Simulation::new();
+        let mut changed = Simulation::new();
+        changed
+            .production
+            .reverse_failure_slave_manager_finalizers
+            .insert(7);
 
         assert_ne!(baseline.state_hash(), changed.state_hash());
         assert_eq!(

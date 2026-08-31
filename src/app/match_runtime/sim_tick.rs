@@ -1288,6 +1288,19 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::SlaveWorkerLiberated { rx, ry } => {
+                        let sound_id = match Some(&resources.rules)
+                            .and_then(|r| r.general.slaves_free_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::SlaveWorkerLiberated {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                     SimSoundEvent::C4Planted { rx, ry } => {
                         let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::C4Planted {

@@ -1364,7 +1364,7 @@ fn combat_damage_crossing_condition_yellow_sets_building_damage_state() {
     issue_attack_command(&mut store, 1, 2, None, &interner);
     let mut main_rng = SimRng::new(1);
 
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -1382,6 +1382,14 @@ fn combat_damage_crossing_condition_yellow_sets_building_damage_state() {
             .expect("building survives")
             .building_damage_state_active
     );
+    assert_eq!(
+        store
+            .get(2)
+            .expect("building survives")
+            .building_anim_reset_revision,
+        1
+    );
+    assert_eq!(result.building_anim_reset_ids, vec![2]);
 }
 
 #[test]
@@ -1394,7 +1402,7 @@ fn combat_damage_above_condition_yellow_leaves_building_damage_state_false() {
     issue_attack_command(&mut store, 1, 2, None, &interner);
     let mut main_rng = SimRng::new(1);
 
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -1412,6 +1420,47 @@ fn combat_damage_above_condition_yellow_leaves_building_damage_state_false() {
             .expect("building survives")
             .building_damage_state_active
     );
+    assert_eq!(
+        store
+            .get(2)
+            .expect("building survives")
+            .building_anim_reset_revision,
+        0
+    );
+    assert!(result.building_anim_reset_ids.is_empty());
+}
+
+#[test]
+fn fatal_building_damage_does_not_publish_a_body_state_reset() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    // AP is 60% versus wood, so the stock-shaped 65-damage shell resolves to
+    // exactly 39 HP here. Keep the fixture lethal rather than leaving 1 HP.
+    store.insert(make_structure_entity(2, "GAPOWR", 8, 5, 39, 100));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut main_rng,
+    );
+
+    let target = store
+        .get(2)
+        .expect("low-level combat retains death effects");
+    assert_eq!(target.health.current, 0);
+    assert!(!target.building_damage_state_active);
+    assert_eq!(target.building_anim_reset_revision, 0);
+    assert!(result.building_anim_reset_ids.is_empty());
 }
 
 #[test]
@@ -1424,7 +1473,7 @@ fn aoe_damage_crossing_condition_yellow_sets_building_damage_state() {
     issue_attack_command(&mut store, 1, 2, None, &interner);
     let mut main_rng = SimRng::new(1);
 
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -1442,6 +1491,7 @@ fn aoe_damage_crossing_condition_yellow_sets_building_damage_state() {
             .expect("building survives")
             .building_damage_state_active
     );
+    assert_eq!(result.building_anim_reset_ids, vec![2]);
 }
 
 #[test]

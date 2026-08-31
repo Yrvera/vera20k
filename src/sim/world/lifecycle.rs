@@ -2736,10 +2736,29 @@ impl Simulation {
         true
     }
 
-    fn finalize_and_remove_common(&mut self, stable_id: u64) {
+    fn finalize_and_remove_common(&mut self, stable_id: u64, rules: Option<&RuleSet>) {
         if self.substrate.anims.contains_key(stable_id) {
             self.conceal_anim(stable_id);
             self.detach_anim_from_owner(stable_id);
+        }
+        // TechnoClass::~TechnoClass @ 0x006F4500 destroys an attached
+        // SlaveManager before the source Techno leaves object storage. Keep
+        // this at physical finalization rather than ObjectClass::UnInit: a
+        // failed Building -> Unit reverse still exposes the old manager until
+        // the post-frame pending-delete drain, while the failed target's own
+        // freshly constructed manager remains a separate live identity.
+        //
+        // Only the reverse-failure path has proved null/null context here.
+        // Combat deaths require the attacker-aware MasterDestroyed arm and
+        // must not be silently approximated as neutral liberation.
+        if self
+            .production
+            .reverse_failure_slave_manager_finalizers
+            .remove(&stable_id)
+        {
+            crate::sim::slave_miner::finalize_active_retail_slave_manager_null_attacker(
+                self, stable_id, rules,
+            );
         }
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);
@@ -2802,7 +2821,7 @@ impl Simulation {
     /// is reached from `Main_Tick` at `0x0055DE9F` after the frame commit; it
     /// preserves non-ready entries, collapses selected duplicates, and finalizes
     /// each selected ready object once.
-    pub(crate) fn process_pending_delete(&mut self) {
+    pub(crate) fn process_pending_delete_with_rules(&mut self, rules: Option<&RuleSet>) {
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::PendingDeleteDrainStarted);
         let mut index = 0;
@@ -2815,7 +2834,7 @@ impl Simulation {
             self.substrate
                 .pending_delete
                 .retain(|&queued| queued != stable_id);
-            self.finalize_and_remove_common(stable_id);
+            self.finalize_and_remove_common(stable_id, rules);
         }
 
         while let Some(&stable_id) = self.substrate.multiplayer_feedback_pending_delete.first() {
@@ -2824,6 +2843,14 @@ impl Simulation {
                 .retain(|&queued| queued != stable_id);
             self.finalize_multiplayer_feedback_anim(stable_id);
         }
+    }
+
+    /// Compatibility entry point for tests and rule-less diagnostic worlds.
+    /// Production passes its live RuleSet through
+    /// `process_pending_delete_with_rules` so destructor-owned child UnInit and
+    /// ownership transfer use the same lifecycle authority as the frame.
+    pub(crate) fn process_pending_delete(&mut self) {
+        self.process_pending_delete_with_rules(None);
     }
 
     /// Test compatibility only.  Production has one ordinary tail drain.

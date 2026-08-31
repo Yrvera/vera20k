@@ -332,8 +332,11 @@ use crate::sim::world::Simulation;
 // pulse latch, and the presentation reset generation. The same parity slice
 // adds the two manager-init sale bytes, attached TriggerType identity, and
 // per-house scenario IQ. Older bincode records cannot supply these positional
-// fields; every simulation input above joins the deterministic hash, while the
-// presentation-only reset generation remains snapshot-only.
+// fields. The same unpublished v114 transaction persists the narrow deferred
+// null-attacker SlaveManager-finalizer reason used by reverse failure. Every
+// simulation input above joins the deterministic hash; the reset generation
+// also joins it because native damage-state reconstruction is now a sim-authored
+// edge consumed by presentation after combat/noncombat commits.
 const SNAPSHOT_VERSION: u32 = 114;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
@@ -1345,6 +1348,25 @@ fn restore_object_references(
             "entry",
             "object namespace",
             object_id,
+        )?;
+    }
+
+    for &master_id in &sim.production.reverse_failure_slave_manager_finalizers {
+        require_resolved_reference(
+            entity_ids.contains(&master_id),
+            "ReverseFailureSlaveManagerFinalizers",
+            master_id,
+            "master",
+            "EntityStore",
+            master_id,
+        )?;
+        require_resolved_reference(
+            sim.substrate.pending_delete.contains(&master_id),
+            "ReverseFailureSlaveManagerFinalizers",
+            master_id,
+            "pending_delete",
+            "PendingDeleteList",
+            master_id,
         )?;
     }
 
@@ -2749,7 +2771,8 @@ mod tests {
     /// adds the distinct BaseClass plan center; 111 -> 112 adds the three House
     /// AI activation latches; 112 -> 113 adds House AutocreateAllowed; 113 ->
     /// 114 adds Building click-repair state, its presentation generation, the
-    /// manager/tag AI-sale inputs, and the distinct per-house scenario IQ.
+    /// manager/tag AI-sale inputs, the distinct per-house scenario IQ, and the
+    /// narrow deferred reverse-failure SlaveManager finalizer reason.
     #[test]
     fn phase8_building_repair_snapshot_version_is_114() {
         assert_eq!(super::SNAPSHOT_VERSION, 114);
@@ -3002,6 +3025,45 @@ mod tests {
             .unwrap()
             .master_id = 3;
         assert_ne!(changed_master.state_hash(), source_hash);
+    }
+
+    #[test]
+    fn reverse_failure_slave_manager_finalizer_roundtrips_and_hashes() {
+        let mut sim = Simulation::new();
+        let mut master =
+            crate::sim::game_entity::GameEntity::test_default(1, "YAREFN", "YuriCountry", 4, 5);
+        master.lifecycle.object_alive = false;
+        master.lifecycle.in_limbo = true;
+        master.lifecycle.cell_marked = false;
+        master.dying = true;
+        sim.substrate.entities.insert(master);
+        sim.substrate.pending_delete.push(1);
+        sim.production.slave_bindings.insert(1, Vec::new());
+        sim.production
+            .reverse_failure_slave_manager_finalizers
+            .insert(1);
+        // Full snapshot load restarts Scenario RNG from Seed0. Compare the
+        // new marker on that canonical cursor, as the constructor-pool test
+        // above does for the same production-state boundary.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let source_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "reverse-failure-manager-finalizer", 0);
+        let restored = GameSnapshot::load(&bytes).unwrap().sim;
+        assert!(
+            restored
+                .production
+                .reverse_failure_slave_manager_finalizers
+                .contains(&1)
+        );
+        assert_eq!(restored.state_hash(), source_hash);
+
+        let mut changed = restored;
+        changed
+            .production
+            .reverse_failure_slave_manager_finalizers
+            .clear();
+        assert_ne!(changed.state_hash(), source_hash);
     }
 
     #[test]

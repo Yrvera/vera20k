@@ -187,6 +187,9 @@ pub struct ObjectType {
     pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
+    /// `Soylent=` override consumed by TechnoTypeClass's exact refund virtual.
+    /// Zero selects the raw-cost/RefundPercent branch.
+    pub soylent: i32,
     /// `Explosion=` — the type's OWN death animations, one chosen at random.
     ///
     /// gamemd-derived: `UnitClass::Death_Explosion @ 0x00738680` picks
@@ -1201,6 +1204,7 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
+            soylent: section.get_i32("Soylent").unwrap_or(0),
             explosion_anims: section
                 .get_list("Explosion")
                 .unwrap_or_default()
@@ -1792,6 +1796,7 @@ mod tests {
         assert_eq!(obj.category, ObjectCategory::Vehicle);
         assert_eq!(obj.name, Some("Grizzly Battle Tank".to_string()));
         assert_eq!(obj.cost, 700);
+        assert_eq!(obj.soylent, 0);
         assert_eq!(obj.strength, 300);
         assert_eq!(obj.armor, "heavy");
         assert_eq!(obj.speed, 6);
@@ -1809,6 +1814,24 @@ mod tests {
         assert!(obj.base_normal);
         assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
+    }
+
+    #[test]
+    fn test_parse_soylent_and_zero_default() {
+        let ini = IniFile::from_str("[YAREFN]\nCost=1750\nSoylent=1750\n[GACNST]\nCost=3000\n");
+        let yarefn = ObjectType::from_ini_section(
+            "YAREFN",
+            ini.section("YAREFN").unwrap(),
+            ObjectCategory::Building,
+        );
+        let conyard = ObjectType::from_ini_section(
+            "GACNST",
+            ini.section("GACNST").unwrap(),
+            ObjectCategory::Building,
+        );
+
+        assert_eq!(yarefn.soylent, 1750);
+        assert_eq!(conyard.soylent, 0);
     }
 
     #[test]
@@ -2164,9 +2187,8 @@ mod tests {
              [AIR_EXPLICIT]\nConsideredAircraft=no\n",
         );
 
-        let parse = |id, category| {
-            ObjectType::from_ini_section(id, ini.section(id).unwrap(), category)
-        };
+        let parse =
+            |id, category| ObjectType::from_ini_section(id, ini.section(id).unwrap(), category);
 
         assert!(!parse("VEH_DEFAULT", ObjectCategory::Vehicle).considered_aircraft);
         assert!(parse("AIR_DEFAULT", ObjectCategory::Aircraft).considered_aircraft);
@@ -2315,9 +2337,7 @@ mod tests {
 
     #[test]
     fn unit_weeder_is_independent_from_slave_ownership() {
-        let ini: IniFile = IniFile::from_str(
-            "[WEED]\nWeeder=yes\n[SLAVER]\nEnslaves=SLAV\n",
-        );
+        let ini: IniFile = IniFile::from_str("[WEED]\nWeeder=yes\n[SLAVER]\nEnslaves=SLAV\n");
         let weeder = ObjectType::from_ini_section(
             "WEED",
             ini.section("WEED").unwrap(),

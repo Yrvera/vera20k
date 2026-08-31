@@ -92,6 +92,13 @@ pub(crate) fn recreate_existing_slots_for_damage_state(
 
     let Some((type_name, rules_image, damaged, garrisoned, occupied)) =
         sim.substrate.entities.get(stable_id).and_then(|entity| {
+            // BuildingClass::ReceiveDamage @ 0x00442230 returns before
+            // SetDamagedState @ 0x00451EE0 once ObjectClass is no longer alive.
+            // Fatal lifecycle may leave the represented entity resolvable until
+            // the deferred-delete drain, so do not reconstruct stale slots.
+            if !entity.lifecycle.object_alive || entity.health.current == 0 {
+                return None;
+            }
             let overlays = entity.building_anim_overlays.as_ref()?;
             let type_name = sim.interner.resolve(entity.type_ref).to_string();
             let rules_image = rules
@@ -612,6 +619,8 @@ fn consume_bunker_wall_events(sim: &mut Simulation, rules: &RuleSet, art: &ArtRe
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
@@ -831,6 +840,291 @@ mod tests {
             occupied.len(),
             "absent YAGNTC_E stays absent"
         );
+    }
+
+    #[test]
+    fn fatal_building_does_not_recreate_resolvable_slots_before_delete_drain() {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=GAPOWR\n[GAPOWR]\nStrength=100\nArmor=wood\n",
+        ))
+        .expect("GAPOWR rules");
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[GAPOWR]\nActiveAnim=GAPOWR_A\nActiveAnimDamaged=GAPOWR_AD\n\
+             [GAPOWR_A]\nStart=2\nLoopStart=2\nLoopEnd=8\nRate=300\n\
+             [GAPOWR_AD]\nStart=12\nLoopStart=12\nLoopEnd=18\nRate=150\n",
+        )));
+        let mut sim = Simulation::new();
+        insert_building(&mut sim, 19, "GAPOWR", 4, 5);
+        let damaged_anim = sim.interner.intern("GAPOWR_AD");
+        let building = sim.entities_mut().get_mut(19).unwrap();
+        building.health.current = 0;
+        building.building_damage_state_active = false;
+        building.building_anim_overlays = Some(BuildingAnimOverlays {
+            anims: vec![AnimOverlayState {
+                anim_type: damaged_anim,
+                frame: 15,
+                loop_start: 12,
+                loop_end: 18,
+                rate_logic_frames: 6,
+                elapsed_logic_frames: 2,
+                finished: false,
+            }],
+        });
+        assert_eq!(sim.interner.get("GAPOWR_A"), None);
+
+        recreate_existing_slots_for_damage_state(&mut sim, &rules, 19);
+
+        let overlay = &sim
+            .entities()
+            .get(19)
+            .expect("deferred-deletion object remains resolvable")
+            .building_anim_overlays
+            .as_ref()
+            .unwrap()
+            .anims[0];
+        assert_eq!(sim.interner.resolve(overlay.anim_type), "GAPOWR_AD");
+        assert_eq!(overlay.frame, 15);
+        assert_eq!(sim.interner.get("GAPOWR_A"), None);
+    }
+
+    #[test]
+    fn hostile_hit_crossing_yellow_recreates_occupied_slot_after_combat_restore() {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=MTNK\n\
+             [BuildingTypes]\n0=GAPOWR\n\
+             [Warheads]\n0=TESTWH\n\
+             [MTNK]\nStrength=300\nArmor=heavy\n\
+             [GAPOWR]\nStrength=100\nArmor=wood\n\
+             [TESTWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n\
+             [AudioVisual]\nConditionYellow=50%\n",
+        ))
+        .expect("combat animation rules");
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[GAPOWR]\nActiveAnim=GAPOWR_A\nActiveAnimDamaged=GAPOWR_AD\n\
+             [GAPOWR_A]\nStart=2\nLoopStart=2\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [GAPOWR_AD]\nStart=12\nLoopStart=12\nLoopEnd=18\nLoopCount=-1\nRate=150\n",
+        ));
+        rules.merge_art_data(&art);
+
+        let mut sim = Simulation::new();
+        let attacker_owner = sim.interner.intern("Americans");
+        let target_owner = sim.interner.intern("Russians");
+        let attacker_type = sim.interner.intern("MTNK");
+        let target_type = sim.interner.intern("GAPOWR");
+        let healthy_anim = sim.interner.intern("GAPOWR_A");
+        let warhead = sim.interner.intern("TESTWH");
+        let mut attacker = GameEntity::new_at_frame_zero_for_test(
+            1,
+            4,
+            5,
+            0,
+            0,
+            attacker_owner,
+            Health {
+                current: 300,
+                max: 300,
+            },
+            attacker_type,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        attacker.lifecycle.in_limbo = false;
+        let mut target = GameEntity::new_at_frame_zero_for_test(
+            2,
+            6,
+            5,
+            0,
+            0,
+            target_owner,
+            Health {
+                current: 60,
+                max: 100,
+            },
+            target_type,
+            EntityCategory::Structure,
+            0,
+            5,
+            true,
+        );
+        target.lifecycle.in_limbo = false;
+        target.building_anim_overlays = Some(BuildingAnimOverlays {
+            anims: vec![AnimOverlayState {
+                anim_type: healthy_anim,
+                frame: 5,
+                loop_start: 2,
+                loop_end: 8,
+                rate_logic_frames: 3,
+                elapsed_logic_frames: 2,
+                finished: false,
+            }],
+        });
+        sim.entities_mut().insert(attacker);
+        sim.entities_mut().insert(target);
+
+        let result = sim.tick_combat_with_fatal_lifecycle(
+            &rules,
+            None,
+            100,
+            &[],
+            &BTreeSet::new(),
+            &[],
+            &[crate::sim::wave::WaveDamageEvent {
+                wave_id: 77,
+                target_id: 2,
+                payload: crate::sim::wave::WaveDamagePayload {
+                    firer_id: 1,
+                    base_damage: 20,
+                    warhead,
+                },
+            }],
+        );
+
+        assert_eq!(result.building_anim_reset_ids, vec![2]);
+        let target = sim.entities().get(2).expect("surviving GAPOWR");
+        assert_eq!(target.health.current, 40);
+        assert!(target.building_damage_state_active);
+        assert!(target.was_attacked_by_enemy);
+        assert_eq!(target.building_anim_reset_revision, 1);
+        let overlay = &target
+            .building_anim_overlays
+            .as_ref()
+            .expect("occupied animation slot")
+            .anims[0];
+        assert_eq!(sim.interner.resolve(overlay.anim_type), "GAPOWR_AD");
+        assert_eq!(overlay.frame, 15, "relative CurrentFrame=3 survives");
+        assert_eq!(overlay.loop_start, 12);
+        assert_eq!(overlay.loop_end, 18);
+        assert_eq!(overlay.rate_logic_frames, 6);
+        assert_eq!(overlay.elapsed_logic_frames, 0);
+    }
+
+    #[test]
+    fn yellow_edge_then_fatal_hit_does_not_recreate_slots_before_lifecycle_uninit() {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=MTNK\n\
+             [BuildingTypes]\n0=GAPOWR\n\
+             [Warheads]\n0=TESTWH\n\
+             [MTNK]\nStrength=300\nArmor=heavy\n\
+             [GAPOWR]\nStrength=100\nArmor=wood\n\
+             [TESTWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n\
+             [AudioVisual]\nConditionYellow=50%\n",
+        ))
+        .expect("fatal combat animation rules");
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[GAPOWR]\nActiveAnim=GAPOWR_A\nActiveAnimDamaged=GAPOWR_AD\n\
+             [GAPOWR_A]\nStart=2\nLoopStart=2\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [GAPOWR_AD]\nStart=12\nLoopStart=12\nLoopEnd=18\nLoopCount=-1\nRate=150\n",
+        )));
+
+        let mut sim = Simulation::new();
+        let attacker_owner = sim.interner.intern("Americans");
+        let target_owner = sim.interner.intern("Russians");
+        let attacker_type = sim.interner.intern("MTNK");
+        let target_type = sim.interner.intern("GAPOWR");
+        let healthy_anim = sim.interner.intern("GAPOWR_A");
+        let warhead = sim.interner.intern("TESTWH");
+        let mut attacker = GameEntity::new_at_frame_zero_for_test(
+            1,
+            4,
+            5,
+            0,
+            0,
+            attacker_owner,
+            Health {
+                current: 300,
+                max: 300,
+            },
+            attacker_type,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        attacker.lifecycle.in_limbo = false;
+        let mut target = GameEntity::new_at_frame_zero_for_test(
+            2,
+            6,
+            5,
+            0,
+            0,
+            target_owner,
+            Health {
+                current: 60,
+                max: 100,
+            },
+            target_type,
+            EntityCategory::Structure,
+            0,
+            5,
+            true,
+        );
+        target.lifecycle.in_limbo = false;
+        target.building_anim_overlays = Some(BuildingAnimOverlays {
+            anims: vec![AnimOverlayState {
+                anim_type: healthy_anim,
+                frame: 5,
+                loop_start: 2,
+                loop_end: 8,
+                rate_logic_frames: 3,
+                elapsed_logic_frames: 2,
+                finished: false,
+            }],
+        });
+        sim.entities_mut().insert(attacker);
+        sim.entities_mut().insert(target);
+
+        let result = sim.tick_combat_with_fatal_lifecycle(
+            &rules,
+            None,
+            100,
+            &[],
+            &BTreeSet::new(),
+            &[],
+            &[
+                crate::sim::wave::WaveDamageEvent {
+                    wave_id: 77,
+                    target_id: 2,
+                    payload: crate::sim::wave::WaveDamagePayload {
+                        firer_id: 1,
+                        base_damage: 20,
+                        warhead,
+                    },
+                },
+                crate::sim::wave::WaveDamageEvent {
+                    wave_id: 78,
+                    target_id: 2,
+                    payload: crate::sim::wave::WaveDamagePayload {
+                        firer_id: 1,
+                        base_damage: 40,
+                        warhead,
+                    },
+                },
+            ],
+        );
+
+        assert_eq!(result.building_anim_reset_ids, vec![2]);
+        assert!(
+            !result.immediate_uninit_ids.contains(&2),
+            "the world inline hook already consumed the fatal handoff"
+        );
+        let target = sim
+            .entities()
+            .get(2)
+            .expect("physical deletion is deferred");
+        assert_eq!(target.health.current, 0);
+        assert!(!target.lifecycle.object_alive);
+        assert!(target.lifecycle.in_limbo);
+        assert!(sim.substrate.pending_delete.contains(&2));
+        let overlay = &target
+            .building_anim_overlays
+            .as_ref()
+            .expect("doomed occupied slot is not reconstructed")
+            .anims[0];
+        assert_eq!(sim.interner.resolve(overlay.anim_type), "GAPOWR_A");
+        assert_eq!(overlay.frame, 5);
+        assert_eq!(sim.interner.get("GAPOWR_AD"), None);
     }
 
     #[test]

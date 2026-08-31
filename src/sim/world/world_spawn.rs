@@ -479,6 +479,9 @@ impl Simulation {
                 self.session.binary_frame,
                 techno_ctor_random_word,
             );
+            if let Some(ruleset) = rules {
+                ge.initialize_building_damage_state_gate(ruleset.general.condition_yellow_x1000);
+            }
             ge.base_defense_response.recruitable_a = map_ent.recruitable_a;
             ge.base_defense_response.recruitable_b = map_ent.recruitable_b;
             ge.attached_trigger_tag = map_ent
@@ -2391,6 +2394,24 @@ mod techno_constructor_tests {
             assert_eq!(entity.building_ai_sell_enabled, expected_6dc);
             assert_eq!(entity.building_make_shape_initialized, expected_6e9);
         }
+    }
+
+    #[test]
+    fn damaged_map_structure_seeds_body_gate_without_a_runtime_reset() {
+        let rules = constructor_rules();
+        let mut placement = map_entity("BASE", EntityCategory::Structure, (4, 5));
+        placement.health = 128;
+        let mut sim = Simulation::new();
+
+        assert_eq!(
+            sim.spawn_from_map(&[placement], Some(&rules), &BTreeMap::new()),
+            1
+        );
+
+        let entity = sim.substrate.entities.values().next().unwrap();
+        assert_eq!(entity.health.current, 250);
+        assert!(entity.building_damage_state_active);
+        assert_eq!(entity.building_anim_reset_revision, 0);
     }
 
     #[test]
