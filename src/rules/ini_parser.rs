@@ -602,9 +602,33 @@ impl RulesLayerStack {
         fixed_art: &IniFile,
         registry_state: NativeRulesRegistryState,
     ) -> Result<ProcessedRulesLayers, RulesError> {
+        self.process_with_fixed_art_and_registry_state_recovering(fixed_art, registry_state)
+            .map_err(NativeRulesProcessingFailure::into_error)
+    }
+
+    /// Continue Process calls while retaining the sole native registry owner
+    /// when a later pass fails.
+    ///
+    /// Native `RulesClass::Process @ 0x00668BF0` is not transactional. A
+    /// Tiberium failure can occur after earlier constructors in the same pass
+    /// have already mutated the live registries. Process-lifetime callers must
+    /// therefore recover that partial state instead of rolling back to the
+    /// pre-call owner or synthesizing a fresh registry from the compatibility
+    /// projection.
+    pub(crate) fn process_with_fixed_art_and_registry_state_recovering(
+        &self,
+        fixed_art: &IniFile,
+        registry_state: NativeRulesRegistryState,
+    ) -> Result<ProcessedRulesLayers, NativeRulesProcessingFailure> {
         let mut processor = RulesPassProcessor::with_registry_state(registry_state);
         for (_, ini) in self.iter_passes() {
-            processor.apply_pass(ini, fixed_art)?;
+            if let Err(error) = processor.apply_pass(ini, fixed_art) {
+                let (_, partial_trace) = processor.finish();
+                return Err(NativeRulesProcessingFailure {
+                    error,
+                    partial_trace,
+                });
+            }
         }
         let (ini, native_type_construction_trace) = processor.finish();
         Ok(ProcessedRulesLayers {
@@ -612,6 +636,23 @@ impl RulesLayerStack {
             content_hash: self.content_hash(),
             native_type_construction_trace,
         })
+    }
+}
+
+/// A failed native Process call plus the state already mutated before failure.
+#[derive(Debug)]
+pub(crate) struct NativeRulesProcessingFailure {
+    error: RulesError,
+    partial_trace: NativeTypeConstructionTrace,
+}
+
+impl NativeRulesProcessingFailure {
+    pub(crate) fn into_parts(self) -> (RulesError, NativeTypeConstructionTrace) {
+        (self.error, self.partial_trace)
+    }
+
+    fn into_error(self) -> RulesError {
+        self.error
     }
 }
 
