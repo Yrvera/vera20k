@@ -66,6 +66,18 @@ pub(crate) struct RetailOptionsProfile {
     pub(crate) in_game_music: bool,
 }
 
+/// The two process-start products obtained from one physical `RA2MD.INI`
+/// snapshot.
+///
+/// Native selects the startup window after an early Video-only read, then
+/// rereads the complete profile later. Keeping both products explicit avoids
+/// making the retained profile double as a historical window decision.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RetailOptionsLoad {
+    pub(crate) retained_profile: RetailOptionsProfile,
+    pub(crate) startup_screen: ScreenSize,
+}
+
 impl Default for RetailOptionsProfile {
     fn default() -> Self {
         // Retail provenance: Options profile defaults —
@@ -113,6 +125,85 @@ pub(crate) struct FormattedProfileSections {
     pub(crate) audio: [(&'static str, String); 7],
 }
 
+impl RetailOptionsLoad {
+    /// Replay startup with no profile snapshot.
+    ///
+    /// This is used when configuration is unavailable and by sealed capture
+    /// after passing exact constructor defaults instead of operator argv.
+    pub(crate) fn without_ra2md(startup: &RetailStartupOptions) -> Self {
+        Self::from_ini_snapshot(startup, None)
+    }
+
+    /// Read and parse one physical `RA2MD.INI` snapshot, then replay native's
+    /// early Video-only read and later complete profile read over it.
+    ///
+    /// Missing/unreadable/malformed input is non-fatal and follows the same
+    /// no-snapshot path. Capture callers intentionally use
+    /// [`Self::without_ra2md`] so user profile state cannot contaminate sealed
+    /// capture output.
+    pub(crate) fn from_ra2md(ra2_dir: &Path, startup: &RetailStartupOptions) -> Self {
+        Self::from_ra2md_with(ra2_dir, startup, |path| std::fs::read(path))
+    }
+
+    /// Injectable form of [`Self::from_ra2md`] used to prove that both
+    /// semantic reads share one physical filesystem read.
+    fn from_ra2md_with<Read>(ra2_dir: &Path, startup: &RetailStartupOptions, read: Read) -> Self
+    where
+        Read: FnOnce(&Path) -> io::Result<Vec<u8>>,
+    {
+        let path = ra2_dir.join(RA2MD_INI_FILENAME);
+        let bytes = match read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Self::without_ra2md(startup);
+            }
+            Err(error) => {
+                log::warn!(
+                    "Could not read {} for retail options: {error}",
+                    path.display()
+                );
+                return Self::without_ra2md(startup);
+            }
+        };
+        let ini = match IniFile::from_bytes(&bytes) {
+            Ok(ini) => ini,
+            Err(error) => {
+                log::warn!(
+                    "Could not parse {} for retail options: {error}",
+                    path.display()
+                );
+                return Self::without_ra2md(startup);
+            }
+        };
+        Self::from_ini_snapshot(startup, Some(&ini))
+    }
+
+    fn from_ini_snapshot(startup: &RetailStartupOptions, ini: Option<&IniFile>) -> Self {
+        let mut retained_profile = RetailOptionsProfile::from_startup(startup);
+
+        // Retail provenance: WinMain's pre-window Video-only read and paired
+        // fallback — `WinMain` @ `0x006BB9A0`, branch
+        // `0x006BD94A..0x006BD9B5`.
+        if let Some(ini) = ini {
+            retained_profile.apply_startup_video_ini(ini);
+        }
+        let startup_screen = retained_profile.resolve_screen_size();
+
+        // Retail provenance: the complete `OptionsClass__ReadFromINI` @
+        // `0x005FA620`, called by `Init_Game` at `0x0052C630`. Reusing the
+        // parsed immutable snapshot preserves the ordering without introducing
+        // a second filesystem authority.
+        if let Some(ini) = ini {
+            retained_profile.apply_ini(ini);
+        }
+
+        Self {
+            retained_profile,
+            startup_screen,
+        }
+    }
+}
+
 impl RetailOptionsProfile {
     /// Seed native constructor defaults with the screen fields already chosen
     /// by the command-line switch pass.
@@ -126,37 +217,12 @@ impl RetailOptionsProfile {
         profile
     }
 
-    /// Prepare one interactive profile from exactly one `RA2MD.INI` snapshot.
-    ///
-    /// Missing/unreadable/malformed input is non-fatal and leaves the seeded
-    /// defaults in place. Capture callers intentionally construct `Default`
-    /// instead so user profile state cannot contaminate sealed capture output.
-    pub(crate) fn load_from_ra2md(ra2_dir: &Path, startup: &RetailStartupOptions) -> Self {
-        let mut profile = Self::from_startup(startup);
-        let path = ra2_dir.join(RA2MD_INI_FILENAME);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return profile,
-            Err(error) => {
-                log::warn!(
-                    "Could not read {} for retail options: {error}",
-                    path.display()
-                );
-                return profile;
-            }
-        };
-        let ini = match IniFile::from_bytes(&bytes) {
-            Ok(ini) => ini,
-            Err(error) => {
-                log::warn!(
-                    "Could not parse {} for retail options: {error}",
-                    path.display()
-                );
-                return profile;
-            }
-        };
-        profile.apply_ini(&ini);
-        profile
+    /// Apply only the two Video fields read before window creation.
+    fn apply_startup_video_ini(&mut self, ini: &IniFile) {
+        if let Some(video) = ini.section(VIDEO_SECTION) {
+            self.screen_width = video.read_int("ScreenWidth", self.screen_width);
+            self.screen_height = video.read_int("ScreenHeight", self.screen_height);
+        }
     }
 
     /// Apply all modeled fields through the shared native typed-reader service.
@@ -213,12 +279,15 @@ impl RetailOptionsProfile {
         }
     }
 
-    /// Resolve the startup pair and return a window-safe pixel projection.
+    /// Mutate the early-read live pair through startup fallback and return its
+    /// window-safe pixel projection.
     ///
     /// If either field is still the exact `-1` sentinel, retail replaces both
-    /// as one pair. Explicit non-sentinel zero/negative values are retained for
-    /// round-trip, while their platform projection is bounded to one pixel.
-    pub(crate) fn resolve_screen_size(&mut self) -> ScreenSize {
+    /// as one pair. The later full read may then reapply a present single key
+    /// over this fallback for retained profile state. Explicit non-sentinel
+    /// zero/negative values are retained, while their platform projection is
+    /// bounded to one pixel.
+    fn resolve_screen_size(&mut self) -> ScreenSize {
         // Retail provenance: pre-window screen-pair fallback — `WinMain` @
         // `0x006BB9A0`, branch `0x006BD94A..0x006BD9B5`.
         if self.screen_width == SCREEN_SIZE_UNSET || self.screen_height == SCREEN_SIZE_UNSET {
@@ -354,6 +423,10 @@ mod tests {
 
     use super::*;
 
+    fn load_snapshot(startup: &RetailStartupOptions, bytes: &[u8]) -> RetailOptionsLoad {
+        RetailOptionsLoad::from_ra2md_with(Path::new("C:/retail"), startup, |_| Ok(bytes.to_vec()))
+    }
+
     #[test]
     fn profile_defaults_match_optionsclass() {
         let profile = RetailOptionsProfile::default();
@@ -466,21 +539,149 @@ mod tests {
     }
 
     #[test]
-    fn startup_seed_precedes_ini_and_sentinel_resolution_replaces_the_pair() {
+    fn width_only_snapshot_uses_fallback_window_then_rereads_retained_width() {
+        let reads = Cell::new(0);
+        let load = RetailOptionsLoad::from_ra2md_with(
+            Path::new("C:/retail"),
+            &RetailStartupOptions::default(),
+            |path| {
+                reads.set(reads.get() + 1);
+                assert_eq!(path, Path::new("C:/retail").join(RA2MD_INI_FILENAME));
+                Ok(b"[Options]\nGameSpeed=5\n[Video]\nScreenWidth=640\n".to_vec())
+            },
+        );
+
+        assert_eq!(reads.get(), 1, "both semantic reads share one snapshot");
+        assert_eq!(
+            load.startup_screen,
+            ScreenSize {
+                width: 800,
+                height: 600,
+            }
+        );
+        assert_eq!(
+            (
+                load.retained_profile.screen_width,
+                load.retained_profile.screen_height,
+            ),
+            (640, 600)
+        );
+        assert_eq!(
+            load.retained_profile.game_speed, 5,
+            "the later pass still loads non-Video profile fields"
+        );
+    }
+
+    #[test]
+    fn height_only_snapshot_uses_fallback_window_then_rereads_retained_height() {
+        let load = load_snapshot(
+            &RetailStartupOptions::default(),
+            b"[Video]\nScreenHeight=480\n",
+        );
+
+        assert_eq!(
+            load.startup_screen,
+            ScreenSize {
+                width: 800,
+                height: 600,
+            }
+        );
+        assert_eq!(
+            (
+                load.retained_profile.screen_width,
+                load.retained_profile.screen_height,
+            ),
+            (800, 480)
+        );
+    }
+
+    #[test]
+    fn full_screen_pair_selects_and_retains_the_same_size() {
+        let load = load_snapshot(
+            &RetailStartupOptions::default(),
+            b"[Video]\nScreenWidth=640\nScreenHeight=480\n",
+        );
+
+        assert_eq!(
+            load.startup_screen,
+            ScreenSize {
+                width: 640,
+                height: 480,
+            }
+        );
+        assert_eq!(
+            (
+                load.retained_profile.screen_width,
+                load.retained_profile.screen_height,
+            ),
+            (640, 480)
+        );
+    }
+
+    #[test]
+    fn present_ini_key_overrides_argv_while_missing_key_keeps_argv_default() {
         let startup = RetailStartupOptions {
             screen_width: 1024,
             screen_height: 768,
             ..RetailStartupOptions::default()
         };
-        let mut profile = RetailOptionsProfile::from_startup(&startup);
-        profile.apply_ini(&IniFile::from_str("[Video]\nScreenWidth=640\n"));
-        assert_eq!((profile.screen_width, profile.screen_height), (640, 768));
+        let load = load_snapshot(&startup, b"[Video]\nScreenWidth=640\n");
+
         assert_eq!(
-            profile.resolve_screen_size(),
+            load.startup_screen,
             ScreenSize {
                 width: 640,
                 height: 768,
             }
+        );
+        assert_eq!(
+            (
+                load.retained_profile.screen_width,
+                load.retained_profile.screen_height,
+            ),
+            (640, 768)
+        );
+
+        let missing_both = load_snapshot(&startup, b"[Options]\nGameSpeed=4\n");
+        assert_eq!(
+            missing_both.startup_screen,
+            ScreenSize {
+                width: 1024,
+                height: 768,
+            }
+        );
+        assert_eq!(
+            (
+                missing_both.retained_profile.screen_width,
+                missing_both.retained_profile.screen_height,
+            ),
+            (1024, 768)
+        );
+    }
+
+    #[test]
+    fn no_snapshot_paths_preserve_complete_argv_and_fallback_partial_argv() {
+        let complete = RetailStartupOptions {
+            screen_width: 1024,
+            screen_height: 768,
+            ..RetailStartupOptions::default()
+        };
+        let missing = RetailOptionsLoad::from_ra2md_with(Path::new("C:/retail"), &complete, |_| {
+            Err(io::Error::new(io::ErrorKind::NotFound, "missing"))
+        });
+        assert_eq!(
+            missing.startup_screen,
+            ScreenSize {
+                width: 1024,
+                height: 768,
+            }
+        );
+        assert_eq!(
+            (
+                missing.retained_profile.screen_width,
+                missing.retained_profile.screen_height,
+            ),
+            (1024, 768)
         );
 
         let partial = RetailStartupOptions {
@@ -488,15 +689,44 @@ mod tests {
             screen_height: SCREEN_SIZE_UNSET,
             ..RetailStartupOptions::default()
         };
-        let mut partial = RetailOptionsProfile::from_startup(&partial);
+        let partial = RetailOptionsLoad::without_ra2md(&partial);
         assert_eq!(
-            partial.resolve_screen_size(),
+            partial.startup_screen,
             ScreenSize {
                 width: 800,
                 height: 600,
             }
         );
-        assert_eq!((partial.screen_width, partial.screen_height), (800, 600));
+        assert_eq!(
+            (
+                partial.retained_profile.screen_width,
+                partial.retained_profile.screen_height,
+            ),
+            (800, 600)
+        );
+    }
+
+    #[test]
+    fn malformed_screen_integer_keeps_native_typed_reader_behavior() {
+        let load = load_snapshot(
+            &RetailStartupOptions::default(),
+            b"[Video]\nScreenWidth=not-a-number\nScreenHeight=480\n",
+        );
+
+        assert_eq!(
+            load.startup_screen,
+            ScreenSize {
+                width: 1,
+                height: 480,
+            }
+        );
+        assert_eq!(
+            (
+                load.retained_profile.screen_width,
+                load.retained_profile.screen_height,
+            ),
+            (0, 480)
+        );
     }
 
     #[test]

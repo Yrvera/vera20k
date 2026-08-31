@@ -4,7 +4,7 @@ Date: 2026-08-31
 
 Phase: 14, rows 299-300 (`GSI-03.02`, `GSI-17.06`)
 
-Status: APPROVED by `/design-review`; implementation-ready
+Status: APPROVED by final corrective `/design-review`; implementation-ready
 
 ## Goal
 
@@ -53,7 +53,7 @@ No `sim/`, snapshot, replay, hash, save-game, rules, or network representation c
 | Player-visible detail | Evidence-backed target | Design response |
 |---|---|---|
 | Saved resolution is used on launch and after returning from a match | binary WinMain early screen-pair path | prepare profile before window creation; retain effective shell target in `PlatformState` |
-| A partial screen pair falls back as a pair | either native sentinel replaces both | replace both sentinel-bearing fields with 800x600 before retaining/writing the ordinary profile |
+| A partial screen pair falls back for the startup window, then is reread into retained state | WinMain replaces both live fields when either sentinel remains; later `Init_Game` full-read reapplies any present Video key | carry the early effective window pair separately from the later retained profile (for example width-only `640` uses 800x600 but retains/writes 640x600) |
 | Capture output stays deterministic | VERA capture is an authorized sealed override | capture dimensions become the effective shell target and capture does not ingest the user's RA2MD profile |
 | Scroll speed/detail work before Options is opened | full native read precedes gameplay consumers | initialize the UI projection from the loaded profile |
 | Low DetailLevel suppresses ore/gem PixelFX | active `DAT_00A8EB78 != 0` gate is the Options DetailLevel field | replace the parallel config gate with `in_game_options.detail_level != 0` |
@@ -61,7 +61,7 @@ No `sim/`, snapshot, replay, hash, save-game, rules, or network representation c
 | Sound and Voice sliders do not mute each other | native owns distinct Sound and Voice gains | tag all live outputs as Sound or Voice and recompute through the corresponding master |
 | Queued EVA honors the current Voice master when it starts | Voice is a mixer-level owner, not a captured per-item setting | queue base entry gain, apply Voice master at playback/live recomposition |
 | Existing playing output reacts to later volume changes | later launcher controls must reuse the same owners | setters recompose live outputs from retained base gain; no multiplying an already-mastered gain |
-| Accepted Back applies then saves; cancel does neither | `0x004E1D00` result gate | central result gate updates profile, applies consumers, then commits; result 2 skips all three |
+| Accepted Back applies then saves; pump/game termination does neither | `0x004E1D00` result gate | central result gate updates profile, applies consumers, then commits; termination result 2 skips all three |
 | Quit saves all modeled settings together | confirmed exit calls full native writer | replace Score-only quit persistence with one full-profile commit |
 | Comments, CRLF, high bytes, Network, Skirmish, and unknown keys survive | native profile is shared with unrelated state | one raw read, three in-memory section transforms, one filesystem write |
 | Booleans/floats retain retail lexical shape | writer uses lowercase `yes/no` and `%f` | common formatter emits `yes/no` and six fractional digits |
@@ -81,21 +81,23 @@ Integer fields remain signed where the native profile is signed. SoundLatency is
 
 `Default` encodes the verified `OptionsClass__SetDefaults` values. A constructor seeds the two screen fields from `RetailStartupOptions` before the INI load so command-line values survive missing keys while present RA2MD keys override them, matching native current-as-default reads.
 
-### 2. One typed load before the interactive window
+### 2. One parsed snapshot, two native read phases
 
 `App` retains the full `RetailStartupOptions` until `resumed`. `App::initialize` changes order:
 
 1. Load `GameConfig` to resolve the RA2 directory.
 2. Construct exact profile defaults and seed startup screen fields.
-3. For an interactive launch, read RA2MD.INI once, parse one `IniFile`, and apply all fields through `IniSection::read_int`, `read_bool`, and `read_double`.
-4. Apply only verified field transforms: Difficulty `0..4`, CampDifficulty/DetailLevel `0..2`, Sound/Voice/Score upper-bound `1.0`, SoundLatency low-16 narrowing.
-5. If either screen field is `-1`, replace both profile fields with 800x600. For explicit non-sentinel invalid dimensions, retain the raw profile value but clamp the window projection to at least one pixel; this remains the contract's display-failure exactification residual.
-6. Select the effective shell client size. Capture dimensions win over the profile and remain the target on every capture shell transition.
-7. Create the window, then move the profile into `PersistenceState` and the effective client size into `PlatformState`.
+3. For an interactive launch, read RA2MD.INI once and parse one immutable `IniFile`.
+4. Apply only ScreenWidth/ScreenHeight from that snapshot to the argv-seeded profile, matching the WinMain-stage read.
+5. If either early screen field is `-1`, replace both live profile fields with 800x600 and capture that result as the effective startup/shell window pair. For explicit non-sentinel invalid dimensions, retain the raw value but clamp only the window projection to at least one pixel; this remains the contract's display-failure exactification residual.
+6. Apply the complete Options/Video/Audio typed read from the same parsed snapshot to the post-fallback profile. This intentionally rereads ScreenWidth/ScreenHeight: a present key overrides the fallback while a missing key keeps its post-fallback current value.
+7. Apply only verified full-read transforms: Difficulty `0..4`, CampDifficulty/DetailLevel `0..2`, Sound/Voice/Score upper-bound `1.0`, SoundLatency low-16 narrowing.
+8. Select the effective shell client size from the early pair. Capture dimensions win over the profile and remain the target on every capture shell transition.
+9. Create the window, then move the later full-read profile into `PersistenceState` and the early effective client size into `PlatformState`.
 
-Capture initialization uses exact defaults rather than the user's RA2MD values. This preserves the sealed capture oracle beyond dimensions: user ToolTips, DetailLevel, or action-line settings cannot contaminate a capture. Interactive startup is the only profile-load owner.
+Capture initialization uses exact Options/Audio defaults plus the standard post-fallback `800x600` retained screen rather than the user's RA2MD values. This preserves the sealed capture oracle beyond dimensions: user ToolTips, DetailLevel, or action-line settings cannot contaminate a capture. Interactive startup is the only profile-load owner.
 
-Missing GameConfig/RA2 path leaves defaults and prevents later file commits. Missing RA2MD leaves defaults. A read or parse error logs once and leaves defaults; it does not abort launch.
+Missing GameConfig/RA2 path prevents later file commits and resolves the argv-seeded pair directly. Missing RA2MD or a read/parse error runs the fallback over defaults/current argv values but has no later values to reapply; an error logs once and does not abort launch.
 
 ### 3. Profile projections, not parallel authorities
 
@@ -135,7 +137,7 @@ This preserves the existing 16-player sound pool, animation ownership, dedicated
 4. Commit the full profile.
 5. Perform the existing unpause, pacer reset, and cursor cleanup.
 
-The result parameter becomes explicit at the transaction boundary even though current production Back callers pass result 1. A pure result-gate helper makes result 2 testable without a GPU-backed `AppState`.
+The result parameter becomes explicit at the transaction boundary even though current production Back callers pass result 1. A private production-used operations seam makes exact profile -> consumers -> write ordering and the result-2 no-op testable without constructing a GPU-backed `AppState`.
 
 ### 6. One preservation-safe commit
 
@@ -159,11 +161,13 @@ The exact names may adjust during implementation, but the dependency direction i
 RetailStartupOptions (argv only)
         |
         v
-RetailOptionsProfile::from_startup + load_ini
+RetailOptionsProfile::from_startup + load_startup_snapshot
         |
-        +--> safe_screen_pair --> PlatformState.shell_client_size
-        +--> UI/live projections --> MatchPresentationState + AppAudioRuntime
-        +--> PersistenceState.options_profile
+        +--> early Video pass + fallback --> PlatformState.shell_client_size
+        |
+        +--> later full typed pass --------> UI/live projections
+        |                                   +--> MatchPresentationState + AppAudioRuntime
+        +----------------------------------> PersistenceState.options_profile
                                   |
               accepted/quit -----+--> commit_ra2md(one read, one write)
 ```
@@ -171,21 +175,22 @@ RetailOptionsProfile::from_startup + load_ini
 Required pure seams:
 
 - exact default construction;
-- apply one parsed `IniFile` to the current profile;
-- sentinel-pair resolution and safe window projection;
+- apply the early screen-only pass from one parsed `IniFile`;
+- sentinel-pair resolution and safe early window projection;
+- apply the later complete typed pass from the same `IniFile` to the post-fallback profile;
 - profile-to-in-game-UI projection;
-- accepted-UI-to-profile mutation gated by modal result;
+- production-used accepted transaction operations gated by modal result;
 - ordered owned-key formatting;
 - raw-byte transformation independent of filesystem I/O;
-- SFX channel/master gain composition independent of an audio device.
+- production-used normal/direct-voice/queued-voice output preparation independent of an audio device.
 
 All filesystem failure handling stays at app/persistence boundaries. No profile method may reach into simulation or render state.
 
 ## Error Handling
 
-- Config/root discovery failure: log existing error, use default profile and 800x600; commit is unavailable.
-- RA2MD missing: load defaults; a later accepted/quit commit may create the file.
-- RA2MD unreadable or unparsable: warn and retain defaults. Commit refuses an unreadable existing file rather than replacing it with a partial new file.
+- Config/root discovery failure: preserve the argv-seeded screen pair, applying the standard pair fallback only when it is incomplete; use exact Options/Audio defaults and leave commit unavailable.
+- RA2MD missing: preserve the argv-seeded screen pair with the same incomplete-pair fallback and use exact Options/Audio defaults; a later accepted/quit commit may create the file.
+- RA2MD unreadable or unparsable: warn, preserve the argv-seeded screen/fallback result, and retain exact Options/Audio defaults. Commit refuses an unreadable existing file rather than replacing it with a partial new file.
 - Present malformed scalar: use existing native typed-reader behavior; do not fall back through ad hoc Rust parsing.
 - Negative audio: retain and serialize; player setter clamps to the safe audible range.
 - Invalid explicit dimensions: retain for serialization, clamp only the window projection to at least one pixel.
@@ -197,16 +202,17 @@ All filesystem failure handling stays at app/persistence boundaries. No profile 
 Focused `--lib` suites will cover:
 
 1. Exact defaults for every modeled field.
-2. One-shot typed load with missing keys, malformed decimal, first-character bool, percent float, clamps, narrowing, and unsupported-field retention.
-3. Startup precedence: switches seed, RA2MD present keys override, sentinel replaces the pair, explicit invalid values are safe, and capture dimensions remain isolated.
+2. One physical snapshot with an early screen-only pass and later full typed pass, including missing keys, malformed decimal, first-character bool, percent float, clamps, narrowing, and unsupported-field retention.
+3. Startup precedence and shell reuse through production-used seams: complete 640x480 selects/retains/re-enters 640x480; width-only `640` selects/re-enters 800x600 while retaining 640x600; height-only `480` selects/re-enters 800x600 while retaining 800x480; argv seeds missing keys; explicit invalid values remain safe.
 4. Boot projection of all six UI fields plus target-line/tooltip gates.
 5. DetailLevel `0` suppresses PixelFX and `1/2` enable it through the production render input; config.toml no longer acts as the interactive toggle.
-6. Pure Sound/Voice gain matrix `(0,1)` and `(1,0)`, queued Voice recomposition, live-output master changes, and preservation of lifecycle/focus scaling.
+6. Production-used normal-SFX, direct unit/EVA voice, and queued-EVA output preparation under Sound/Voice `(0,1)` and `(1,0)`, including a Voice master change before dequeue, live-output recomposition, and lifecycle/focus scaling.
 7. Golden profile formatting (`yes/no`, six decimals, key order, no Allow keys).
 8. CRLF/high-byte/comment/Network/Skirmish preservation with an instrumented one-read/one-write seam.
-9. Accepted result ordering and canceled-result no-op at the pure transaction seam.
-10. Full-profile quit dispatch without a Score-only writer.
-11. Existing startup, in-game-options, tooltip, target-line, SFX queue, music, capture, and INI-writer focused regressions.
+9. Accepted result ordering and result-2 pump-termination no-op through the same operations dispatcher used by `AppState` production close.
+10. Both confirmed main-menu quit owners through their production-used persist -> dismiss -> cascade wrappers, with one full-profile persist per owner and no Score-only writer.
+11. Capture isolation through the production pre-window selection seam: with explicit capture dimensions and a conflicting full user-profile loader, the loader is never invoked; Options/Audio and their UI/audio projections remain exact defaults, the retained screen is the post-fallback `800x600` pair, and only the explicit hidden capture size becomes the shell target.
+12. Existing startup, in-game-options, tooltip, target-line, SFX queue, music, capture, and INI-writer focused regressions.
 
 Every Cargo invocation uses `cargo test -p vera20k --lib <focused-filter>` after checking that no other session owns Cargo. The repository-wide `cargo test -p vera20k --lib` remains reserved for the single final Phase 14 certification run.
 
@@ -215,7 +221,7 @@ Every Cargo invocation uses `cargo test -p vera20k --lib <focused-filter>` after
 1. `PersistenceState`, not UI or audio, owns the process profile.
 2. The window stores only an effective shell-size projection.
 3. Interactive profile preparation happens inside `initialize`, after root discovery and before window creation; `App::new` remains filesystem-free.
-4. Capture uses defaults plus its explicit size, preventing user-profile contamination.
+4. Capture uses exact Options/Audio defaults, the standard post-fallback screen state, and its explicit hidden size, preventing user-profile contamination.
 5. Unsupported fields are retained without speculative consumers.
 6. Sound/Voice independence is implemented at gain composition, not by stacking a new master over already-mastered values.
 7. One complete profile write replaces every partial settings writer.

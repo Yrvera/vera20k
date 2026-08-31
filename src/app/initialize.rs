@@ -1,5 +1,10 @@
 //! Process, window, GPU, frontend, and initial app-state construction.
 
+use std::path::Path;
+
+use crate::app::frontend::startup_options::{RetailStartupOptions, ScreenSize};
+use crate::app::persistence::options_profile::RetailOptionsLoad;
+
 use super::presentation::render;
 use super::frontend::list_maps;
 use super::{
@@ -15,13 +20,31 @@ use super::{
 };
 
 fn startup_window_projection(
-    profile_screen: crate::app::frontend::startup_options::ScreenSize,
+    profile_screen: ScreenSize,
     capture_dimensions: Option<(u32, u32)>,
 ) -> (u32, u32, bool) {
     capture_dimensions.map_or(
         (profile_screen.width, profile_screen.height, true),
         |(width, height)| (width, height, false),
     )
+}
+
+fn select_startup_options_load<LoadProfile>(
+    capture_dimensions: Option<(u32, u32)>,
+    startup_options: &RetailStartupOptions,
+    ra2_dir: Option<&Path>,
+    load_profile: LoadProfile,
+) -> RetailOptionsLoad
+where
+    LoadProfile: FnOnce(&Path, &RetailStartupOptions) -> RetailOptionsLoad,
+{
+    if capture_dimensions.is_some() {
+        RetailOptionsLoad::without_ra2md(&RetailStartupOptions::default())
+    } else if let Some(ra2_dir) = ra2_dir {
+        load_profile(ra2_dir, startup_options)
+    } else {
+        RetailOptionsLoad::without_ra2md(startup_options)
+    }
 }
 
 impl App {
@@ -45,26 +68,24 @@ impl App {
     pub(super) fn initialize(
         event_loop: &ActiveEventLoop,
         capture_dimensions: Option<(u32, u32)>,
-        startup_options: crate::app::frontend::startup_options::RetailStartupOptions,
+        startup_options: RetailStartupOptions,
     ) -> Result<AppState> {
-        // The retail profile's Video pair is process startup state: resolve it
-        // before the first window exists. Capture is a sealed automation lane,
-        // so it uses exact defaults and its explicit dimensions instead of
-        // ingesting the operator's mutable RA2MD.INI.
+        // One parsed retail profile snapshot yields two ordered products: the
+        // early Video/fallback pair that selects the window, and the later
+        // full-read profile retained by persistence. Capture is a sealed
+        // automation lane, so it uses exact defaults and its explicit
+        // dimensions instead of ingesting operator argv/profile screen state.
         let game_config = GameConfig::load().ok();
-        let mut options_profile = if capture_dimensions.is_some() {
-            crate::app::persistence::options_profile::RetailOptionsProfile::default()
-        } else if let Some(config) = game_config.as_ref() {
-            crate::app::persistence::options_profile::RetailOptionsProfile::load_from_ra2md(
-                &config.paths.ra2_dir,
-                &startup_options,
-            )
-        } else {
-            crate::app::persistence::options_profile::RetailOptionsProfile::from_startup(
-                &startup_options,
-            )
-        };
-        let profile_screen = options_profile.resolve_screen_size();
+        let options_load = select_startup_options_load(
+            capture_dimensions,
+            &startup_options,
+            game_config
+                .as_ref()
+                .map(|config| config.paths.ra2_dir.as_path()),
+            RetailOptionsLoad::from_ra2md,
+        );
+        let profile_screen = options_load.startup_screen;
+        let options_profile = options_load.retained_profile;
         let (window_width, window_height, window_visible) =
             startup_window_projection(profile_screen, capture_dimensions);
         let shell_client_size = PhysicalSize::new(window_width, window_height);
@@ -655,17 +676,76 @@ mod tests {
 
     #[test]
     fn capture_dimensions_override_profile_and_remain_hidden() {
-        let profile = crate::app::frontend::startup_options::ScreenSize {
-            width: 640,
-            height: 480,
+        let capture_dimensions = Some((1024, 768));
+        let startup_options = RetailStartupOptions {
+            audio_enabled: false,
+            screen_width: 320,
+            screen_height: 200,
+            ..RetailStartupOptions::default()
         };
+        let conflicting_ra2md_load = RetailOptionsLoad {
+            retained_profile: crate::app::persistence::options_profile::RetailOptionsProfile {
+                detail_level: 0,
+                unit_action_lines: false,
+                tooltips: false,
+                screen_width: 640,
+                screen_height: 480,
+                sound_volume: 0.1,
+                voice_volume: 0.2,
+                score_volume: 0.3,
+                ..Default::default()
+            },
+            startup_screen: ScreenSize {
+                width: 640,
+                height: 480,
+            },
+        };
+        let profile_loader_called = std::cell::Cell::new(false);
+        let options_load = select_startup_options_load(
+            capture_dimensions,
+            &startup_options,
+            Some(Path::new("C:/operator-profile")),
+            |_, _| {
+                profile_loader_called.set(true);
+                conflicting_ra2md_load
+            },
+        );
+
+        assert!(!profile_loader_called.get());
         assert_eq!(
-            startup_window_projection(profile, Some((1024, 768))),
+            options_load,
+            RetailOptionsLoad::without_ra2md(&RetailStartupOptions::default())
+        );
+        assert_eq!(
+            startup_window_projection(options_load.startup_screen, capture_dimensions),
             (1024, 768, false)
         );
         assert_eq!(
-            startup_window_projection(profile, None),
-            (640, 480, true)
+            options_load.startup_screen,
+            ScreenSize {
+                width: 800,
+                height: 600,
+            }
         );
+
+        let profile = &options_load.retained_profile;
+        assert_eq!((profile.screen_width, profile.screen_height), (800, 600));
+        assert_eq!(profile.detail_level, 2);
+        assert!(profile.unit_action_lines);
+        assert!(profile.tooltips);
+        assert_eq!(
+            (
+                profile.sound_volume,
+                profile.voice_volume,
+                profile.score_volume,
+            ),
+            (0.7, 0.7, 0.4)
+        );
+
+        let options_projection =
+            crate::app::persistence::options::in_game_options_from_profile(profile);
+        assert_eq!(options_projection.detail_level, 2);
+        assert!(options_projection.unit_action_lines);
+        assert!(options_projection.tooltips);
     }
 }

@@ -35,28 +35,21 @@ pub(crate) fn in_game_options_from_profile(profile: &RetailOptionsProfile) -> In
     }
 }
 
-/// Copy an accepted dialog snapshot into the single process profile. Returns
-/// false for native result 2 without touching any field.
+/// Copy an admitted dialog snapshot into the single process profile.
 ///
 /// Retail provenance: `OptionsClass__ShowInGameDialog @ 0x004E1D00` admits
 /// result 1 only, then calls `OptionsClass__ApplyFromInGameDialog @ 0x004E1DE0`
 /// before `OptionsClass__WriteToINI @ 0x005FAD10`.
-fn accept_in_game_options(
+fn update_profile_from_in_game_options(
     profile: &mut RetailOptionsProfile,
     options: &InGameOptionsState,
-    result: i32,
-) -> bool {
-    if !ModalResult::InGameOptions(result).options_persists() {
-        return false;
-    }
-
+) {
     profile.game_speed = options.game_speed as i32;
     profile.scroll_rate = options.scroll_rate as i32;
     profile.detail_level = options.detail_level as i32;
     profile.unit_action_lines = options.unit_action_lines;
     profile.show_hidden = options.show_hidden;
     profile.tooltips = options.tooltips;
-    true
 }
 
 fn apply_target_lines(target_lines: &mut TargetLineState, options: &InGameOptionsState) {
@@ -147,6 +140,53 @@ pub(crate) fn persist_options_profile(state: &AppState) {
     }
 }
 
+/// Narrow operation boundary for the native accepted-dialog transaction.
+/// Production and tests both enter through `dispatch_in_game_options_transaction`;
+/// the adapter keeps GPU-backed `AppState` construction out of unit tests.
+trait InGameOptionsTransactionOperations {
+    fn update_profile(&mut self);
+    fn apply_consumers(&mut self);
+    fn persist_profile(&mut self);
+}
+
+struct AppStateOptionsTransaction<'a> {
+    state: &'a mut AppState,
+}
+
+impl InGameOptionsTransactionOperations for AppStateOptionsTransaction<'_> {
+    fn update_profile(&mut self) {
+        let options = self
+            .state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .clone();
+        update_profile_from_in_game_options(&mut self.state.persistence.options_profile, &options);
+    }
+
+    fn apply_consumers(&mut self) {
+        apply_in_game_options(self.state);
+    }
+
+    fn persist_profile(&mut self) {
+        persist_options_profile(self.state);
+    }
+}
+
+fn dispatch_in_game_options_transaction(
+    operations: &mut impl InGameOptionsTransactionOperations,
+    result: i32,
+) -> bool {
+    if !ModalResult::InGameOptions(result).options_persists() {
+        return false;
+    }
+
+    operations.update_profile();
+    operations.apply_consumers();
+    operations.persist_profile();
+    true
+}
+
 fn finish_in_game_options_close(state: &mut AppState) {
     state.match_state.paused = false;
     state.platform.frame_pacer.reset_for_immediate_frame();
@@ -171,10 +211,9 @@ fn finish_in_game_options_close(state: &mut AppState) {
 /// Retail provenance: `OptionsClass__ShowInGameDialog @ 0x004E1D00` and
 /// `OptionsClass__ApplyFromInGameDialog @ 0x004E1DE0`.
 fn in_game_options_close_with_result(state: &mut AppState, result: i32) {
-    let options = state.match_state.match_presentation.in_game_options.clone();
-    if accept_in_game_options(&mut state.persistence.options_profile, &options, result) {
-        apply_in_game_options(state);
-        persist_options_profile(state);
+    {
+        let mut operations = AppStateOptionsTransaction { state };
+        dispatch_in_game_options_transaction(&mut operations, result);
     }
     finish_in_game_options_close(state);
 }
@@ -186,6 +225,58 @@ pub(crate) fn in_game_options_close(state: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TransactionEvent {
+        Profile,
+        Consumers,
+        Write,
+    }
+
+    struct RecordingOptionsTransaction {
+        profile: RetailOptionsProfile,
+        options: InGameOptionsState,
+        events: Vec<TransactionEvent>,
+        consumer_effects: usize,
+        writes: usize,
+    }
+
+    impl InGameOptionsTransactionOperations for RecordingOptionsTransaction {
+        fn update_profile(&mut self) {
+            assert!(self.events.is_empty(), "profile mutation must be first");
+            update_profile_from_in_game_options(&mut self.profile, &self.options);
+            self.events.push(TransactionEvent::Profile);
+        }
+
+        fn apply_consumers(&mut self) {
+            assert_eq!(self.events, [TransactionEvent::Profile]);
+            assert_eq!(self.profile.game_speed, self.options.game_speed as i32);
+            self.consumer_effects += 1;
+            self.events.push(TransactionEvent::Consumers);
+        }
+
+        fn persist_profile(&mut self) {
+            assert_eq!(
+                self.events,
+                [TransactionEvent::Profile, TransactionEvent::Consumers]
+            );
+            self.writes += 1;
+            self.events.push(TransactionEvent::Write);
+        }
+    }
+
+    fn recording_transaction(
+        profile: RetailOptionsProfile,
+        options: InGameOptionsState,
+    ) -> RecordingOptionsTransaction {
+        RecordingOptionsTransaction {
+            profile,
+            options,
+            events: Vec::new(),
+            consumer_effects: 0,
+            writes: 0,
+        }
+    }
 
     #[test]
     fn profile_projection_is_bounded_without_mutating_profile_authority() {
@@ -211,8 +302,8 @@ mod tests {
     }
 
     #[test]
-    fn accepted_dialog_updates_only_its_six_owned_profile_fields() {
-        let mut profile = RetailOptionsProfile {
+    fn accepted_dialog_runs_profile_consumers_then_exactly_one_write() {
+        let profile = RetailOptionsProfile {
             difficulty: 4,
             sound_volume: 0.25,
             ..Default::default()
@@ -226,35 +317,53 @@ mod tests {
             tooltips: false,
             ..Default::default()
         };
+        let mut transaction = recording_transaction(profile, options);
 
-        assert!(accept_in_game_options(
-            &mut profile,
-            &options,
+        assert!(dispatch_in_game_options_transaction(
+            &mut transaction,
             IN_GAME_OPTIONS_RESULT_BACK
         ));
-        assert_eq!((profile.game_speed, profile.scroll_rate), (5, 2));
-        assert_eq!(profile.detail_level, 0);
-        assert!(!profile.unit_action_lines);
-        assert!(profile.show_hidden);
-        assert!(!profile.tooltips);
-        assert_eq!(profile.difficulty, 4);
-        assert_eq!(profile.sound_volume, 0.25);
+        assert_eq!(
+            (
+                transaction.profile.game_speed,
+                transaction.profile.scroll_rate
+            ),
+            (5, 2)
+        );
+        assert_eq!(transaction.profile.detail_level, 0);
+        assert!(!transaction.profile.unit_action_lines);
+        assert!(transaction.profile.show_hidden);
+        assert!(!transaction.profile.tooltips);
+        assert_eq!(transaction.profile.difficulty, 4);
+        assert_eq!(transaction.profile.sound_volume, 0.25);
+        assert_eq!(transaction.consumer_effects, 1);
+        assert_eq!(transaction.writes, 1);
+        assert_eq!(
+            transaction.events,
+            [
+                TransactionEvent::Profile,
+                TransactionEvent::Consumers,
+                TransactionEvent::Write,
+            ]
+        );
     }
 
     #[test]
-    fn canceled_dialog_changes_no_profile_field() {
-        let mut profile = RetailOptionsProfile::default();
-        let original_game_speed = profile.game_speed;
-        let original_tooltips = profile.tooltips;
+    fn result_two_runs_no_profile_consumer_or_write_operation() {
+        let profile = RetailOptionsProfile::default();
+        let original = profile.clone();
         let options = InGameOptionsState {
             game_speed: 6,
             tooltips: false,
             ..Default::default()
         };
+        let mut transaction = recording_transaction(profile, options);
 
-        assert!(!accept_in_game_options(&mut profile, &options, 2));
-        assert_eq!(profile.game_speed, original_game_speed);
-        assert_eq!(profile.tooltips, original_tooltips);
+        assert!(!dispatch_in_game_options_transaction(&mut transaction, 2));
+        assert_eq!(transaction.profile, original);
+        assert_eq!(transaction.consumer_effects, 0);
+        assert_eq!(transaction.writes, 0);
+        assert!(transaction.events.is_empty());
     }
 
     #[test]

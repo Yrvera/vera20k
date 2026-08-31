@@ -1,5 +1,62 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmedQuitOwner {
+    ShellController,
+    EguiFallback,
+}
+
+/// Private operation seam shared by both confirmed main-menu quit owners.
+/// Keeping the ordering here lets unit tests observe persistence dispatch
+/// without constructing the window, renderer, or audio-backed `AppState`.
+trait ConfirmedQuitOperations {
+    fn persist_settings(&mut self);
+    fn dismiss_confirmation(&mut self, owner: ConfirmedQuitOwner);
+    fn start_cascade(&mut self);
+}
+
+struct AppStateConfirmedQuitOperations<'a> {
+    state: &'a mut AppState,
+}
+
+impl ConfirmedQuitOperations for AppStateConfirmedQuitOperations<'_> {
+    fn persist_settings(&mut self) {
+        App::persist_settings_on_quit(self.state);
+    }
+
+    fn dismiss_confirmation(&mut self, owner: ConfirmedQuitOwner) {
+        match owner {
+            ConfirmedQuitOwner::ShellController => {
+                App::close_exit_confirm_modal_from_controller(self.state);
+            }
+            ConfirmedQuitOwner::EguiFallback => {
+                self.state.frontend.exit_confirm_modal = None;
+            }
+        }
+    }
+
+    fn start_cascade(&mut self) {
+        App::start_quit_cascade(self.state);
+    }
+}
+
+fn dispatch_confirmed_quit(
+    operations: &mut impl ConfirmedQuitOperations,
+    owner: ConfirmedQuitOwner,
+) {
+    operations.persist_settings();
+    operations.dismiss_confirmation(owner);
+    operations.start_cascade();
+}
+
+fn dispatch_shell_controller_confirmed_quit(operations: &mut impl ConfirmedQuitOperations) {
+    dispatch_confirmed_quit(operations, ConfirmedQuitOwner::ShellController);
+}
+
+fn dispatch_egui_fallback_confirmed_quit(operations: &mut impl ConfirmedQuitOperations) {
+    dispatch_confirmed_quit(operations, ConfirmedQuitOwner::EguiFallback);
+}
+
 impl App {
     pub(super) fn single_player_shell_active(state: &AppState) -> bool {
         state.frontend.screen == GameScreen::MainMenu && state.frontend.shell_route.single_player()
@@ -400,9 +457,8 @@ impl App {
             // wait → hard stop → exit) via render_frame instead of exiting
             // immediately. The screen fade-to-black is sub-step 4b-ii-b.
             Some(id) if id == crate::ui::shell::modal::control::OK => {
-                Self::persist_settings_on_quit(state);
-                Self::close_exit_confirm_modal_from_controller(state);
-                Self::start_quit_cascade(state);
+                let mut operations = AppStateConfirmedQuitOperations { state };
+                dispatch_shell_controller_confirmed_quit(&mut operations);
             }
             // Cancel (control 2) -> stay; close the modal via the controller
             // pop (D-B3) so mouse and Esc converge on the same teardown.
@@ -669,9 +725,8 @@ impl App {
                         // cascade. Return false (not true) so exit is owned by the
                         // cascade; this degraded egui-fallback path runs the audio
                         // phases (the SHP fade overlay is unavailable here).
-                        Self::persist_settings_on_quit(state);
-                        state.frontend.exit_confirm_modal = None;
-                        Self::start_quit_cascade(state);
+                        let mut operations = AppStateConfirmedQuitOperations { state };
+                        dispatch_egui_fallback_confirmed_quit(&mut operations);
                         return false;
                     }
                     dialogs::ExitConfirmAction::Cancel => {
@@ -735,5 +790,74 @@ impl App {
         {
             crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
         }
+    }
+}
+
+#[cfg(test)]
+mod confirmed_quit_transaction_tests {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum QuitEvent {
+        Persist,
+        Dismiss(ConfirmedQuitOwner),
+        Cascade,
+    }
+
+    #[derive(Default)]
+    struct RecordingQuitOperations {
+        events: Vec<QuitEvent>,
+        persists: usize,
+        dismissals: usize,
+        cascades: usize,
+    }
+
+    impl ConfirmedQuitOperations for RecordingQuitOperations {
+        fn persist_settings(&mut self) {
+            self.persists += 1;
+            self.events.push(QuitEvent::Persist);
+        }
+
+        fn dismiss_confirmation(&mut self, owner: ConfirmedQuitOwner) {
+            self.dismissals += 1;
+            self.events.push(QuitEvent::Dismiss(owner));
+        }
+
+        fn start_cascade(&mut self) {
+            self.cascades += 1;
+            self.events.push(QuitEvent::Cascade);
+        }
+    }
+
+    fn assert_single_dispatch(operations: &RecordingQuitOperations, owner: ConfirmedQuitOwner) {
+        assert_eq!(operations.persists, 1);
+        assert_eq!(operations.dismissals, 1);
+        assert_eq!(operations.cascades, 1);
+        assert_eq!(
+            operations.events,
+            [
+                QuitEvent::Persist,
+                QuitEvent::Dismiss(owner),
+                QuitEvent::Cascade,
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_controller_confirmed_quit_dispatches_one_profile_write() {
+        let mut operations = RecordingQuitOperations::default();
+
+        dispatch_shell_controller_confirmed_quit(&mut operations);
+
+        assert_single_dispatch(&operations, ConfirmedQuitOwner::ShellController);
+    }
+
+    #[test]
+    fn egui_fallback_confirmed_quit_dispatches_one_profile_write() {
+        let mut operations = RecordingQuitOperations::default();
+
+        dispatch_egui_fallback_confirmed_quit(&mut operations);
+
+        assert_single_dispatch(&operations, ConfirmedQuitOwner::EguiFallback);
     }
 }

@@ -548,16 +548,12 @@ impl App {
 }
 
 impl App {
-    fn settings_persistence_operation() -> fn(&AppState) {
-        crate::app::persistence::options::persist_options_profile
-    }
-
     /// Commit the complete retained Options/Video/Audio profile on the already
     /// verified quit-confirm boundaries, strictly before teardown. A write
     /// failure is logged by the persistence owner and never blocks quitting.
     /// Retail provenance: `OptionsClass__WriteToINI @ 0x005FAD10`.
     pub(super) fn persist_settings_on_quit(state: &AppState) {
-        Self::settings_persistence_operation()(state);
+        crate::app::persistence::options::persist_options_profile(state);
     }
 
     /// Begin the graceful quit cascade from the main-menu Exit-confirm OK. The
@@ -677,18 +673,5 @@ impl App {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod options_profile_quit_tests {
-    use super::*;
-
-    #[test]
-    fn confirmed_quit_dispatches_the_complete_profile_writer() {
-        let selected = App::settings_persistence_operation() as usize;
-        let complete_profile_writer =
-            crate::app::persistence::options::persist_options_profile as fn(&AppState) as usize;
-        assert_eq!(selected, complete_profile_writer);
     }
 }
