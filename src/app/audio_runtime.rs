@@ -91,6 +91,11 @@ pub(crate) struct AppAudioRuntime {
     pub(crate) eva_registry: EvaRegistry,
 }
 
+/// gamemd-derived: Theme admission and logical/physical command ordering come
+/// from `ThemeClass` AI `0x007209D0`, Next `0x00720A80`, Queue `0x00720B20`,
+/// Play `0x00720BB0`, and Stop `0x00720EA0`. Their shared device gate calls
+/// `FUN_00407000` (`DAT_0087E728 != 0`) alongside Theme initialization
+/// `DAT_00A8EC74 != 0` and startup suppression `DAT_00A8ED64 == 0`.
 impl AppAudioRuntime {
     fn theme_gates(&self) -> ThemeGates {
         ThemeGates {

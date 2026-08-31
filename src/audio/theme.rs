@@ -158,6 +158,11 @@ impl Default for ThemeRuntime {
     }
 }
 
+/// gamemd-derived: the device-independent Theme lifecycle is owned by
+/// `ThemeClass` constructor `0x00720960`, AI `0x007209D0`, Next
+/// `0x00720A80`, Queue `0x00720B20`, Play `0x00720BB0`, and Stop
+/// `0x00720EA0`. These bodies operate on logical `[active, retained, pending]`
+/// identities independently of the optional physical StreamPlayer.
 impl ThemeRuntime {
     /// Load Theme configuration once, independently of physical output.
     pub(crate) fn initialize_catalog(&mut self, assets: &AssetManager) {
