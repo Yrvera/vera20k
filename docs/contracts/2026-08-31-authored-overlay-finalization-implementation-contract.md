@@ -2,7 +2,7 @@
 
 Date: 2026-08-31
 Scope: Bridge transaction 3: fresh-load OverlayPack/OverlayData finalization, fixed-map low Mark, both load-time Recalc boundaries, generated phase preservation, and the native-identity/lifecycle prerequisites they share
-Status: READY_FOR_PLAN
+Status: READY_FOR_IMPLEMENTATION — amended 2026-09-01 for verified authored-wall ScenarioInit success and retained blocker-neighbor counts
 
 ## Gap Being Closed
 
@@ -24,10 +24,10 @@ Included:
   constructor stream, Fill/Resize, the map-read set-from-snapshot `+10,000` transform, and raw
   `[Tubes]` constructor attempts;
 - one y-outer/x-inner authored OverlayPack transaction, native admission, ephemeral Overlay lifecycle,
-  ordinary/high/low Mark, synchronous child animations, OverlayData, and the unconditional reader
-  drain;
+  ordinary/high/low Mark, successful authored-wall stamp/connectivity/count effects, synchronous child
+  animations, OverlayData, and the unconditional reader drain;
 - the persistent shared-dummy identity/state seam, the first pre-Terrain anti-diagonal Recalc, and a
-  non-Clone consumed-once finalized identity/state payload;
+  non-Clone consumed-once finalized identity/state/authored-blocker-count payload;
 - Terrain construction, growth-then-spread queue initialization before object sections, and the
   post-object argument-0 InitCellAttributes animation/value/Recalc/wall-owner boundary;
 - generated `.SED` direct materialization without authored Mark, actual synthetic-Full_Init state,
@@ -59,7 +59,7 @@ Excluded:
 - a literal C++ inheritance/vtable/global-vector port where a narrow Rust owner preserves the proved
   order, identity, failure, and result semantics.
 
-This contract distills the approved Revision-18 architecture design and the transaction-3 disparity
+This contract distills the approved architecture design through Revision 19 and the transaction-3 disparity
 scan. Those documents are synthesis/navigation only; the native reports, retail data, and current
 Rust reads below decide each row.
 
@@ -113,11 +113,12 @@ For authored fresh loads, the required live order is:
    already-spent prefix IDs and Fill RNG but before the first OverlayPack/Recalc Anim effect;
 4. apply the map-read native-ID transform from saved cursor, consume raw `[Tubes]` source rows once,
    and retain successful parsed fact/native-ID bindings;
-5. execute one inline OverlayPack row transaction, then independent OverlayData, then the
-   unconditional shared dead-object drain;
-6. execute the first real-cell anti-diagonal Recalc, move the finalized identity/state payload into
-   the live OverlayGrid, construct Terrain, initialize growth then spread queues, and construct later
-   object sections;
+5. execute one inline OverlayPack row transaction, including authored-wall stamp/cleanup/connectivity/
+   real-cell blocker-count effects and its common queued-object tail, then independent OverlayData,
+   then the unconditional shared dead-object drain;
+6. execute the first real-cell anti-diagonal Recalc, move the finalized identity/state/authored-
+   blocker-count payload into the live OverlayGrid and global count owner, construct Terrain,
+   initialize growth then spread queues, and construct later object sections;
 7. immediately scalar-delete terrain-marked Anims, cross the ancillary slots, perform the authored
    value-only operation and final Recalc for each cell, then reconstruct current-wall ownership;
 8. publish terrain/overlay/presentation authority from the final live simulation state.
@@ -230,6 +231,8 @@ or slope admission.
 | `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_MARK_LOAD_CONTEXT_SOURCE_PROVENANCE_REINVESTIGATION_GHIDRA_REPORT.md` | PRIMARY | Physical source, fresh-family, replay/generated admission, separate restore exclusion, and Scenario ownership |
 | `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md` | PRIMARY | Reader gate, y/x order, filters, ordinary/high/low dispatch, tactical dirty, OverlayData, and both Full_Init sweeps |
 | `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAY_EPHEMERAL_OBJECT_FINALIZATION_REINVESTIGATION_GHIDRA_REPORT.md` | PRIMARY | Overlay allocation/registry/ID/Mark/UnInit order, wall and slope paths, shared drain, survivor lifetime |
+| `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAY_WALL_SCENARIOINIT_ACCEPTANCE_REINVESTIGATION_GHIDRA_REPORT.md` | PRIMARY | ScenarioInit wall-predicate bypass, stamp/cleanup/connectivity/common-tail order, compact active retail IDs/census, signed aliases, and retained wrapping count plane |
+| `docs/research/CELL_0X122_DYNAMIC_BLOCKER_LIFECYCLE_RUST_MAPPING_GHIDRA_REPORT.md` | PRIMARY | Global count reader/writer shapes and authored-baseline/runtime-lifecycle composition rule |
 | `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_FIXED_MAP_STAMP_RNG_TRANSACTION_GHIDRA_REPORT.md` | PRIMARY | Eight low trigger ids, fixed/search/body tables, exact raw `3*L` Scenario transaction |
 | `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_SCENARIO_LOAD_ACTIVATION_BOUNDARY_GHIDRA_REPORT.md` | PRIMARY | Fixed-map low activation and zero-draw non-body arms |
 | `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_ALL_LOAD_CONTEXT_SCENARIO_RNG_LIFECYCLE_GHIDRA_REPORT.md` | PRIMARY | Low Mark cursor continuation across active fresh-load families |
@@ -242,8 +245,8 @@ or slope admission.
 | `gamemd.exe` `0x00598E48`, `0x00598FE7`, `0x00599153`, `0x005A4259`, `0x0059937D`, `0x0059944C` | PRIMARY | Generated Recalc/constructor/resource/final-Init phase order |
 | active retail `rulesmd.ini`, `artmd.ini`, `all01umd.map`, and 385-payload map census | PRIMARY | Four high ids, active TileAnim/RandomRate/sound variants, event-`0x1A` reachability, format-4 and zero shipped low-trigger facts |
 | Current Rust owner set at `origin/main@50e4b7ba4732fd3fb48e5b819e1abc55327ec557` | PRIMARY | Directly read implementation baseline; PR #197 is test-only and does not touch this scope |
-| `docs/gap-scans/2026-08-31-disparity-scan-authored-overlay-finalization.md` | DERIVATIVE | Bounded 24-mechanism inventory and G1-G12 reconciliation |
-| `docs/plans/2026-08-28-active-retail-bridge-parity-design.md` Revision 18 | SYNTHESIS | Approved transaction ownership, exclusions, ordering, and critic protocol |
+| `docs/gap-scans/2026-08-31-disparity-scan-authored-overlay-finalization.md` | DERIVATIVE | Bounded 25-mechanism inventory and G1-G13 reconciliation |
+| `docs/plans/2026-08-28-active-retail-bridge-parity-design.md` Revision 19 | SYNTHESIS | Approved transaction ownership, exclusions, ordering, and critic protocol |
 | Research-index brief/handoff results | NAVIGATION_ONLY | Index health and older bridge-document discovery; no exact new worktree report was indexed |
 | `C:\Users\enok\Documents\OpenTS` | NAVIGATION_ONLY | Inherited naming and function-location leads only; no parity conclusion or algorithm is taken from it |
 
@@ -257,22 +260,46 @@ or slope admission.
 | REQUIRED_FIX | MILESTONE-BLOCKING | G4: ordinary/high writes, germination, and tactical dirty | Every allocated object dirties tactical once before derived dispatch; ordinary writes identity/state 0, Land-5 state 1 then exact N..NW same-class density `[0,1,3,4,6,7,8,10,11]`, crates write `0xFF` last; high owners preserve only anchor state around temporary `0/9` and Recalc | Current projections approximate ordinary state, separate high stamping, omit exact germination and object-level dirty timing | Put all writes and one dirty intent in G2's transaction; preserve high anchor restore, receiver-only zero-argument germination, class/range fallback, persistent-dummy aliases, and zero RNG/queue/Recalc from germination itself | Inline report §§6-9; germination report §§4-8; `src/map/resolved_terrain.rs:2438-2481`; `src/sim/overlay_grid.rs:219-258` | Four-high fixtures plus Land-5 early-zero/class/range/dummy/density/no-data/data-override/crate/slope cases pin exact bytes and negative effects |
 | REQUIRED_FIX | MILESTONE-BLOCKING | G5: OverlayData then first live Recalc | Positive OverlayData independently overwrites admitted real-cell state after all identity rows; the ungated first sweep then visits `H*(2W-1)` real cells in anti-diagonal order before Terrain, validates identity and refreshes LAT/slope/Land/zone/cache/Anim without reading state | Two nominal sweeps run before overlay admission in linear/precomputed terrain construction; data is copied later into separate projections | Split Fill from finalization, apply data once, drain, then run one exact live anti-diagonal sweep and capture its validated identity/state | Inline report §§8-11; dummy report §§4-7; `src/map/resolved_terrain.rs:2033-2039`; `src/map/lat.rs:331-375`; `src/sim/overlay_grid.rs:246-257` | Format-inactive, absent, empty, identity-empty, rejected-identity/data-only, exact coordinate/count, live-neighbor, identity-clear, and data-not-read-by-Recalc fixtures |
 | REQUIRED_FIX | MILESTONE-BLOCKING | G6: authored Terrain/queue/post-object Init boundary | First-generation terrain Anims arise at their first per-Mark or first-sweep Recalc; after Terrain, native builds all growth then all spread queues before later objects; after objects/Smudge it scalar-deletes marked Anims, clears/routes ancillary slots, value-accounts, unlatches, Recalcs/recreates, and only then reconstructs current-wall owner without rebuilding queues | Terrain/objects and both sweeps are folded into a monolithic resolved grid; descriptors are precomputed/sorted and spawned last; post-map rebuilds queues after all objects and interleaves growth/spread; `finalize_constructed_scenario` currently invokes the reusable wall-owner helper before the absent post-object/final-Recalc owner | Stage the real Simulation before Fill; use pure root discovery then synchronous Anim sink; clear Terrain-source ore during live Terrain construction; seed whole growth then whole spread immediately after Terrain; add immediate marked-Anim scalar deletion and exact final live cell pass; retain queue snapshot and authored local total/state until teardown reset; relocate the existing wall-owner helper invocation after every final-current Recalc without changing its algorithm | Anim report §§3-10; germination report §§5-9; ancillary report §§3-8; `src/sim/runtime.rs:505-663,732-825`; `src/sim/scenario_post_map.rs:41-86`; `src/sim/ore_growth.rs:896-960`; `src/sim/terrain_spawn.rs:731-776` | First-generation order/latch, custom RandomRate, stock-zero Main-RNG negative, sound/Middle, post-Terrain queue snapshot against later occupier, immediate delete/no StopSound/Expire/pending, value formula/wrap, final recreation, no queue rebuild, and production trace proving wall ownership reads only post-final-Recalc current identities |
-| REQUIRED_FIX | MILESTONE-BLOCKING | G7: consumed-once finalized overlay payload | Later owners receive validated real identity plus final state byte; derived terrain fields remain in MapClass and no pack is decoded again | `OverlayGrid::from_native_overlay_packs` takes raw packs/rules/filters/mutable terrain; `ResolvedTerrainGrid` is Clone and carries no move-only receipt | Return `FinalizedOverlayPayload` separately from terrain, make it non-Clone and consumable exactly once by `OverlayGrid::from_finalized_map_payload`, with no raw-pack/rules/RNG/filter/Recalc interface | Dummy report §§6-8; `src/map/resolved_terrain.rs:1009-1048`; `src/sim/overlay_grid.rs:198-258`; `src/app/loading/init.rs:1987-1994` | Compile/API tests make duplicate consumption and second decode impossible; cell-for-cell fixtures match terrain, OverlayGrid, later mutation, and deterministic digest |
+| REQUIRED_FIX | MILESTONE-BLOCKING | G7: consumed-once finalized overlay payload | Later owners receive validated real identity, final state byte, and the authored real-cell blocker-neighbor plane; derived terrain fields remain in MapClass and no pack is decoded or authored walls reconstructed again | The transaction branch now has a non-Clone identity/state payload, but no authored count plane; the later count builder scans final wall identities | Extend `FinalizedOverlayPayload` with the wrapping-`u8` real-cell authored count plane and consume it exactly once by OverlayGrid/global pathfinding state, with no raw-pack/rules/RNG/filter/Recalc/final-wall-scan interface | Dummy report §§6-8; authored-wall report §§3-8; `src/map/authored_overlay.rs`; `src/sim/overlay_grid.rs`; `src/sim/movement/bump_crush.rs` | Compile/API tests make duplicate consumption and second decode impossible; cell-for-cell identity/state/count fixtures match live state, later mutation, and deterministic digest |
 | REQUIRED_FIX | COMPOUNDING | G8: final-state presentation authority | Procedural identities and surviving post-Recalc state are render/minimap/bridge authority; rejected or cleared identities are absent | Atlas/name and render rows originate from raw `map_data.overlays`, then merely filter against a later grid | Build occupied render/name/minimap/bridge entries from the final sim-owned OverlayGrid/terrain; registry-wide low-variant preload may remain broad but raw pack membership is never occupancy | Inline report final consumers; `src/app/frontend/skirmish.rs:2638-2659,2684-2688,2713-2726,2800-2860`; `src/app/loading/init.rs:2335-2382` | A trigger-created body absent from raw rows renders and appears in atlas/minimap/bridge inputs; rejected/Recalc-cleared rows appear nowhere |
 | REQUIRED_FIX | MILESTONE-BLOCKING | G9: production/headless/auxiliary boundary equivalence | Every gameplay-equivalent builder observes the same typed family, source, format, prefix, IDs, RNG, effects, and failure point | Headless always chooses authored and uses weaker `from_overlay_entries`; auxiliary builders can silently take untyped pure-map behavior | Thread the same descriptor/receipt and staged orchestrator through production, headless, and parity builders; retain only a named zero-live-effect diagnostic that cannot certify gameplay parity | Context report; `src/headless_scenario.rs:75-116,202-241`; `src/map/resolved_terrain.rs:1818-1925`; `src/app/loading/init.rs:805-813` | Typed production/headless parity fixtures for authored format 4, authored absent/1, and generated; untyped Generic rejects before native ID or Scenario draw |
 | REQUIRED_FIX | MILESTONE-BLOCKING | G10: generated synthetic/generator phase lifecycle | Format-zero synthetic Full_Init still runs ungated boundaries on actual staged state; generator order is CABHUT, Recalc `0x00598E48`, Neutral-Tech constructors, later Recalcs `0x00598FE7/0x00599153/0x005A4259/0x0059937D`, queue init, then `InitCellAttributes(1)` germination/value/Recalc with no rebuild | `RmgConstructionTrace` is flat Building-only data applied before one final Anim descriptor set; final emitted cells cannot encode intermediate Anim IDs/RNG/sound/queue state | Replace/widen it with a consumed-once phase journal emitted inside the generator pipeline and applied by the staged Simulation; carry Building word then native ID then outcome, preserve discarded/failed distinctions and PR #170 word, capture actual synthetic state, interleave live Anim effects, seed queues pre-final-Init, and run exact arg-1 helper/value/Recalc without a persistent total | Preview report §§5-9; anim report generated sections; germination report §§4-9; `src/map/construction_trace.rs:6-36`; `src/map/rmg/pipeline.rs`; `src/sim/scenario_bootstrap.rs:2141-2180`; `src/sim/runtime.rs:620-663` | A poisoned staged synthetic control and phase-interleaving fixture prove each boundary, failed CABHUT zero effects, discarded Neutral-Tech consume/no-bind, emitted binding reuse without second draw/ID, custom RandomRate, pre-final queues, arg-1 density/value/wrap, no persistent total, and missing-asset hard failure |
 | REQUIRED_FIX | MILESTONE-BLOCKING | G11: preview lifetime plus independent fresh-load native IDs and raw Tubes | Every preview Generate frees spread then growth and resets ID to `1,000,000`; matching key spends zero setup IDs and gives the first new object `1,000,001`; missing/changed key advances through `R+|P_preview|+HB+K_preview` and gives the first object `C_preview+1`, with retail `K_preview=0`; Cancel/re-entry retains live queues; accepted `.SED` runs two distinct spread-then-growth free pairs followed by exactly one growth-then-spread rebuild; preview permits duplicate numeric IDs and never takes Full_Init/map-read `+0x2710`; gameplay fresh load separately uses exact `C_saved`, set-from-snapshot `+10,000`, then spend-before-parse Tube construction | Offline runtime has no preview-native owner/cursor; shell retains UI payload only; Anim RandomRate precedes stable-ID allocation and aliases stable ID as native ID; filtered `explicit_tubes` drops malformed rows | Add `PreviewNativeLifecycle` to the process shell, independent wrapping native-ID cursors and bindings, distinct stable handles, branch/token/latch/live-order retention, exact cleanup/queue order, and accepted-launch separation; preserve both accepted-launch cleanup pairs without deduplication and the single rebuild; encode explicit preview formulas with no map-read reservation; gameplay consumes raw ordered Tube values once, assigning before parse, hard-errors at proved allocation/parse points, and emits `TubeFact + TubeNativeInit` without topology | Preview report §§2-10; prefix report §§4-12; `src/app/frontend/skirmish_session.rs:86-92`; `src/app/shell_random_map.rs:157-217,377-398`; `src/sim/anim_class.rs:526-595`; `src/map/map_file.rs:242-245`; `src/map/tubes.rs:17-85`; `src/rules/ini_parser.rs:19-25,156-162` | Same/changed/missing key, terminal churn, Cancel/no-Generate/re-entry, accept-versus-launch; matching `1,000,000 -> 1,000,001`; rebuild `R=10,P=5,HB=3,K=0` gives `1,000,018 -> 1,000,019`; no preview `+0x2710`; accepted launch exact `FreeSpread,FreeGrowth,FreeSpread,FreeGrowth,BuildGrowth,BuildSpread`; legal duplicate numeric IDs; gameplay `1,000,018 -> 1,010,018`, `1,000,037,T=0 -> O1=1,010,038`, `0xFFFFFFF0 -> 0x00002700`, `T=0/2`; Tube fault/binding tests |
-| REQUIRED_FIX | MILESTONE-BLOCKING | G12: real load-object registries, drain, and slope survivor | Each allocated Overlay joins base registries, receives native ID, joins Overlay registry, direct-base Unlimbos/Marks, then common success, wall rejection, or steep-slope survivor lifecycle; dead objects remain registered through data and drain once outside the format gate; slope survivors remain registered until scene teardown but never render/save/checksum | Map finalizes before Simulation exists; OverlayGrid has no load object; generic pending-delete runs at frame tail and cannot own Overlay records or native destructor order | Attach a dedicated serde-skipped/defaulted `LoadObjectLifecycle` to the staged Simulation, keyed by stable handles with exact registry/order/state/broadcast/queue events; reuse only the duplicate-aware traversal algorithm; hard-fail capacity injection, drain in reader epilogue, retain slope survivors through load and release them at scene teardown | Ephemeral report §§4-12; `src/sim/world/lifecycle.rs:2798-2827`; `src/map/resolved_terrain.rs`; `src/app/loading/init.rs:1857-2127` | Common two-broadcast, wall three-broadcast/full-Limbo, slope state, data-before-drain visibility, mixed duplicate queue, body-absent/format-1/generated seeded drain, growth failures, exact destructor removal order, no ID refund, and slope no-grid/entity/render/save/hash plus teardown release |
+| REQUIRED_FIX | MILESTONE-BLOCKING | G12: real load-object registries, drain, and slope survivor | Each allocated Overlay joins base registries, receives native ID, joins Overlay registry, direct-base Unlimbos/Marks, then common success (including every slope-admitted authored wall) or steep-slope survivor lifecycle; dead objects remain registered through data and drain once outside the format gate; slope survivors remain registered until scene teardown but never render/save/checksum. Generic counter-zero wall rejection exists outside authored Full_Init. | The transaction branch has a dedicated load-object lifecycle, but its generic `finish_wall_reject` must not be selected by authored finalization | Retain the dedicated lifecycle and exact registry/order/state/broadcast/queue events; route slope-admitted authored walls through common two-broadcast finalization after G13 effects; preserve generic counter-zero rejection as a separate non-authored method; drain in reader epilogue and retain slope survivors through scene teardown | Ephemeral report §§4-12 plus 2026-09-01 correction; authored-wall report §§2-4; `src/sim/world/load_object_lifecycle.rs` | Common/authored-wall two-broadcast, separate generic counter-zero three-broadcast/full-Limbo, slope state, data-before-drain visibility, mixed duplicate queue, body-absent/format-1/generated seeded drain, growth failures, exact destructor removal order, no ID refund, and slope no-grid/entity/render/save/hash plus teardown release |
+| REQUIRED_FIX | MILESTONE-BLOCKING | G13: authored wall success and retained blocker-neighbor plane | Nonzero ScenarioInit forces the post-slope wall predicate true; Mark stamps identity/state, performs N/E/S/W/self cleanup and same-ID connectivity, keeps owner `-1`, increments eight signed-fixed-map neighbor counters with wrapping `u8`, then uses the common Recalc/UnInit tail. OverlayData and later low identity overwrites do not rebuild or reverse those counts. | `LiveOverlayCells` has no count plane; `FinalizedOverlayPayload` carries identity/state only; `build_blocker_neighbor_counts_with_overlays` scans final `Wall=yes` identities and rectangular-clips neighbors | Execute exact wall effects inside the ordered row transaction; retain only real-cell counter output (including signed aliases, excluding dummy output); transfer it once through the final payload; seed the global count owner and compose later lifecycle writers without scanning final authored walls | Authored-wall report; Cell+0x122 lifecycle report; `src/map/authored_overlay.rs`; `src/sim/movement/bump_crush.rs`; `src/sim/pathfinding/core.rs` | ScenarioInit bypass, cleanup/connectivity/owner, overlap wrapping, low overwrite retention, fixed-stride alias, dummy negative, OverlayData no-count-write, common lifecycle, and consumed-once no-final-scan fixtures |
 | TEST_ONLY | MILESTONE-BLOCKING | P1: merged Scenario prefix and PR #170 generated constructor binding | One post-Fill Scenario cursor continues into Mark/generator events; emitted/discarded constructors preserve the already-consumed word contract | P0/P0-R1 and PR #170 already implement the cursor/bound-word portions | Reuse their owner and fixtures; do not reopen formulas or draw again when widening the phase transport | `src/sim/scenario_bootstrap.rs`; merged PR #170 and PR #196 tests | Existing prefix and construction-trace families remain green beside new end-to-end cursor fixtures |
 | TEST_ONLY | MILESTONE-BLOCKING | P2: stable handles and one shared dummy identity | Native numeric IDs may duplicate; failed map-coordinate admission shares one persistent dummy whose Recalc is a total no-op | Rust already has a collision-free stable-ID allocator and one `Arc` shared dummy identity | Preserve both existing identity shapes while G3/G4's required fixes add only proved signed-dword overlay identity and byte state to the dummy; keep real-cell animation latch and foreign ancillary storage out of this preservation row | Dummy report; Anim report dummy early return; `src/sim/world/substrate.rs:148-168`; `src/sim/world/mod.rs:3968-3977`; `src/map/resolved_terrain.rs:774-886` | Duplicate-native-ID objects keep distinct handles; repeated true misses observe the last dummy overlay identity/state, dummy Recalc changes nothing, and no dummy latch/tag/opaque field is added |
 | TEST_ONLY | COMPOUNDING | P3: current-wall owner reconstruction algorithm only | Given the post-final-Recalc current wall identity, native selects the nearest eligible Building with the already-verified GSI-04.07 semantics | The existing helper's selection algorithm is semantically reusable; its production call-order mismatch is classified and fixed by G6, not by this preservation row | Preserve the helper algorithm and its focused unit tests unchanged while G6 relocates the sole production invocation; do not introduce a second owner or algorithm | Ancillary report wall tail; `src/sim/runtime.rs:732-825`; `src/sim/overlay_grid.rs:368-419` | Existing focused helper fixtures remain green; G6's separate production trace proves the relocated post-final-current call order |
 
-All twelve required gaps are current transaction work. `COMPOUNDING` describes trigger frequency,
+All thirteen required gaps are current transaction work. `COMPOUNDING` describes trigger frequency,
 not permission to defer: shipped-map low-trigger frequency is zero in the bounded census, but the
 active custom/editor-compatible mechanism shares the deterministic cursor and must close before this
 transaction can pass.
 
 ## Required Rust Changes
+
+### G13 authored-wall effect ledger
+
+For every reader-admitted, allocated `Wall=yes` row that passes the universal slope gate, preserve this
+order exactly:
+
+1. use successful Full_Init's nonzero ScenarioInit context to guarantee the wall predicate result;
+   do not execute or approximate the counter-zero predicate body;
+2. stamp anchor state `0` and the compact overlay identity;
+3. call the cleanup cross in `N,E,S,W,self` order. At each visited wall, probe `N,E,S,W` and connect
+   only the same compact identity, preserve the upper state/damage nibble while replacing the lower
+   connectivity nibble, run its `RecalcAttributes(-1)` and zone-change work, and issue that visit's
+   tactical/radar dirty effects;
+4. admit no Building/gate/tower connection before Buildings exist and no damaged-wall auto-destruction
+   during this authored identity pass;
+5. let ScenarioInit skip only Mark's later explicit `MergeAdjacentCellZone`/incremental-zone pair;
+   it does not suppress the cleanup Recalc/zone work;
+6. leave wall owner `-1` because the authored constructor's pending owner is `-1`;
+7. increment `N,NE,E,SE,S,SW,W,NW` neighbor counters through the signed fixed-map seam with raw
+   wrapping `u8`, retaining real and aliased-real output but exporting no true-dummy count;
+8. run the common second anchor Recalc, then common OnMap/Limbo/UnInit/death/queue finalization;
+9. let later OverlayData replace only the final state byte. It neither reruns cleanup nor changes the
+   count plane; if OverlayData is absent, Mark-derived connectivity remains.
 
 ### Typed launch and staged owner
 
@@ -319,8 +346,13 @@ transaction can pass.
     `sign_extend(y)*512+sign_extend(x)` in signed i32 before range/null-slot admission; never truncate
     the linear result to `i16`; preserve dummy no-op Recalc and add no animation-latch, tag-bit,
     opaque-slot, or light field to the dummy;
-  - return derived terrain plus a separate non-Clone `FinalizedOverlayPayload`; do not store that
-    payload in a Clone terrain grid.
+  - dispatch each slope-admitted authored `Wall=yes` row through ScenarioInit-forced success: stamp,
+    N/E/S/W/self cleanup, same-ID cardinal connectivity, owner `-1`, eight signed-fixed-map wrapping
+    count writes, anchor Recalc, and the common load-object tail; do not call the generic wall-reject
+    path from this transaction;
+  - return derived terrain plus a separate non-Clone `FinalizedOverlayPayload` containing final real
+    identity/state and the authored real-cell blocker-neighbor plane; do not store that payload in a
+    Clone terrain grid, reconstruct it from final wall identities, or export dummy count state.
 - `src/map/map_file.rs`, `src/map/tubes.rs`, and `src/map/tube_facts.rs`
   - enumerate raw `[Tubes]` values in source order exactly once, not `explicit_tubes`;
   - allocate/assign the numeric ID before token parsing, hard-error malformed allocated rows and
@@ -333,11 +365,18 @@ transaction can pass.
   - replace the production raw-pack constructor with `from_finalized_map_payload` and no rules,
     source filter, Mark, RNG, or Recalc capability;
   - keep subsequent mutations synchronized with resolved terrain through the current live authority.
+- `src/sim/movement/bump_crush.rs` and `src/sim/pathfinding/core.rs`
+  - consume the authored count plane as the baseline of the sole global `BlockerNeighborCounts`
+    authority, then compose terrain-object, building, foot, and later runtime-wall lifecycle deltas;
+  - remove the final-OverlayGrid `Wall=yes` scan as authored authority. A final identity may have been
+    overwritten after its wall increment, and rectangular clipping loses signed 512-stride aliases.
 - `src/sim/world/`, with a dedicated load-lifecycle module
   - add `LoadObjectLifecycle` on Simulation for ephemeral Overlay registry memberships, broadcasts,
     queue, destruction ordering, and slope survivors;
   - reuse only the proven duplicate-aware selection/traversal shape from ordinary pending deletion;
     never drain unrelated runtime objects at the reader boundary;
+  - route authored walls through ordinary common completion after their wall effects; retain the
+    generic counter-zero three-broadcast wall-reject method only for non-authored callers;
   - keep the owner load/transient (`serde(skip, default)` and outside current-object hash/save) and
     release surviving slope records at scene teardown without projecting them into gameplay owners.
 - `src/sim/anim_class.rs`, `src/sim/terrain_object.rs`, and `src/sim/terrain_spawn.rs`
@@ -442,7 +481,7 @@ transaction can pass.
    - expected: success binds fact/native ID, allocated-malformed spends one then hard-errors,
      allocation-null spends zero then hard-errors, nothing continues past either error, and a
      transaction-5 consumer allocates zero additional IDs.
-5. `authored_overlay_rows_are_one_synchronous_yx_transaction` (G2-G4, G12)
+5. `authored_overlay_rows_are_one_synchronous_yx_transaction` (G2-G4, G12, G13)
    - setup: format/body length signed gates; byte-read failure and `0xFF`; malformed registry ID;
      image-null with/without CellAnim; crate under zero/nonzero game mode; all four radar boundaries
      including rejected `x+y==W` and admitted `x+y==W+2H` when both diagonals are strict; allocation
@@ -453,8 +492,10 @@ transaction can pass.
      constructor/handle/ID/registry/dirty/queue effect; malformed type and Rust registry growth hard-
      error at their documented points; successful construction orders Object -> pointer-expiration ->
      all-Abstract -> Tag joins -> native ID -> Overlay join -> base dirty -> derived slope/Mark;
-     allocation-null's high restore is a no-op; slope survivors dirty once before zero cell/Recalc/
-     queue effects; every admitted coordinate completes before the next; no generated-cell dirty;
+      allocation-null's high restore is a no-op; slope survivors dirty once before zero cell/Recalc/
+      queue effects; a slope-admitted authored wall bypasses the build predicate under ScenarioInit,
+      performs wall effects, and takes common completion; every admitted coordinate completes before
+      the next; no generated-cell dirty;
      and positive OverlayData independently applies only its radar gate.
 6. `low_mark_tables_consume_exact_raw_scenario_words` (G3)
    - setup: every trigger/table arm including fixed, exact-opposite search, successful bodies of
@@ -478,11 +519,13 @@ transaction can pass.
    - expected: data writes admitted real cells, drain runs once outside gate while keeping live entries,
      sweep visits exactly `H*(2W-1)` anti-diagonal cells, identity validation may clear identity/state,
      state otherwise survives, and Recalc never reads state.
-9. `finalized_overlay_payload_is_linear_and_consumed_once` (G7, G9)
-   - setup: procedural, rejected, data-only, identity-cleared, and ordinary cells;
-   - action: move payload into OverlayGrid in production and headless builders;
-   - expected: one-for-one identity/state equality with terrain and later mutation; API rejects clone,
-     duplicate consume, raw pack, rule, RNG, filter, and second-Recalc authority.
+9. `finalized_overlay_payload_is_linear_and_consumed_once` (G7, G9, G13)
+   - setup: procedural, rejected, data-only, identity-cleared, ordinary, and authored-wall cells with
+     a later low-body identity overwrite;
+   - action: move payload into OverlayGrid/global count state in production and headless builders;
+   - expected: one-for-one identity/state/authored-count equality with live state and later mutation;
+     the overwritten wall's count survives without a final-wall scan; API rejects clone, duplicate
+     consume, raw pack, rule, RNG, filter, and second-Recalc authority.
 10. `authored_first_generation_anim_order_and_failures` (G6, G12)
    - setup: source-order per-Mark candidate, sweep-only candidate, already latched peer, custom
      RandomRate, stock zero-RandomRate, WA01X/non-01 waterfall, missing AnimType, and injected allocation/
@@ -547,21 +590,35 @@ transaction can pass.
       `FreeSpread, FreeGrowth, FreeSpread, FreeGrowth, BuildGrowth, BuildSpread` with no collapse,
       inversion, intermediate rebuild, or extra final rebuild, then uses the fresh unrelated gameplay
       native-ID cursor.
-18. `overlay_load_lifecycle_drain_and_scene_teardown` (G12)
-    - setup: common successes, wall reject, slope survivor, mixed queue
+18. `overlay_load_lifecycle_drain_and_scene_teardown` (G12, G13)
+    - setup: ordinary and authored-wall common successes, slope survivor, a separate generic counter-
+      zero wall-reject method control, mixed queue
       `[alive A, dead B, B, alive C, dead D]`, format/body-absent/generated seeded drain, and capacity
       fault injection;
     - action: finish reader then teardown scene;
-    - expected: common two-broadcast, wall three-broadcast/full-Limbo, stable duplicate erase/recheck,
-      exact Overlay/Limbo/type/queue/Object/listener/free order, no ID refund, hard failure on growth,
-      slope remains registered but absent from grid/entity/render/save/hash until teardown release.
-19. `final_live_overlay_drives_all_presentation_surfaces` (G8)
+    - expected: ordinary and authored-wall common two-broadcast completion; no authored wall-reject
+      selection; separate generic control retains three-broadcast/full-Limbo; stable duplicate erase/
+      recheck, exact Overlay/Limbo/type/queue/Object/listener/free order, no ID refund, hard failure on
+      growth, and slope remains registered but absent from grid/entity/render/save/hash until release.
+19. `authored_wall_finalization_retains_native_count_plane` (G13)
+    - setup: reachable state-zero same/different-ID authored cardinal walls, overlap at `u8` wrap, a
+      low body overwriting an earlier wall, `(-510,2)`-style signed fixed-stride real alias, a true
+      dummy miss, absent then present OverlayData, and poison Building/gate candidates;
+    - action: run the authored row transaction through payload consumption and build global counts;
+    - expected: exact `N,E,S,W,self` visit and per-visit tactical/radar dirty order; each visit probes
+      `N,E,S,W`, connects only the same compact ID, retains the reachable zero upper nibble, runs
+      Recalc/zone work, and performs no Building/gate connection; the authored chronology never feeds
+      a damaged state into cleanup, so no runtime damaged-wall branch is invented. ScenarioInit
+      skips only Mark's later explicit zone pair; owner remains `-1`; eight count writes precede common
+      finalization and wrap; overwritten-wall and real-alias contributions survive with no dummy output;
+      absent data retains connectivity, present data replaces state only; no final-wall reconstruction.
+20. `final_live_overlay_drives_all_presentation_surfaces` (G8)
     - setup: low-created identity absent from raw pack, data override, rejected raw row, and Recalc-cleared
       row;
     - action: build atlas/name/render/minimap/radar/bridge inputs after final Init;
     - expected: the procedural survivor appears with final state and dependencies; rejected/cleared rows
       do not; asset registry preload may remain a harmless superset.
-20. Existing PR #170, PR #196, raw bridge-fact/TIBTRE, high-anchor, wall-owner, generated no-Mark,
+21. Existing PR #170, PR #196, raw bridge-fact/TIBTRE, high-anchor, wall-owner, generated no-Mark,
     snapshot/hash, and bridge parity-harness families remain green. The full suite is run once only at
     the final PR gate as `cargo test -p vera20k --lib`; focused work also uses `--lib` exclusively.
 
@@ -598,6 +655,11 @@ transaction can pass.
   the queue owner or persist the generated local aggregate.
 - Do not promote steep-slope Overlay survivors into OverlayGrid, `GameEntity`, occupancy, Logic,
   Display, presentation, native save, or current-object checksum.
+- Do not treat generic counter-zero wall rejection as authored Full_Init behavior. Preserve the method
+  separately, but ScenarioInit makes it unreachable for a slope-admitted authored wall.
+- Do not reconstruct authored blocker-neighbor counts from final `Wall=yes` identities or store a
+  shared-dummy counter in fresh output. Ordered wall increments can survive later identity overwrite;
+  only real fixed-map slots, including signed aliases, cross the finalized payload.
 - Do not implement generic trigger-line semantics, semantic light output, or `Cell+0x30` storage in
   this transaction. Their ordering routes and negative no-bridge ownership are required.
 - Do not replace the existing wall-owner reconstruction algorithm or run it before final current
@@ -608,7 +670,7 @@ transaction can pass.
 ## Blockers And Follow-Ups
 
 - No `BLOCKED` or `UNKNOWN` row remains inside the selected transaction. All material active-retail
-  behavior needed to implement G1-G12 is proven.
+  behavior needed to implement G1-G13 is proven.
 - Synthetic-Full_Init tile eligibility is content-dependent, not an evidence blocker: implementation
   must transport the actual staged state and acceptance must not assume an empty generation.
 - After a fresh read-only contract critic passes, the authorized next action is implementation on the
@@ -626,6 +688,8 @@ transaction can pass.
 - `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_MARK_LOAD_CONTEXT_SOURCE_PROVENANCE_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAY_EPHEMERAL_OBJECT_FINALIZATION_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAY_WALL_SCENARIOINIT_ACCEPTANCE_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/CELL_0X122_DYNAMIC_BLOCKER_LIFECYCLE_RUST_MAPPING_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_TIBERIUM_GERMINATE_SIDE_EFFECT_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/OVERLAYPACK_SHARED_DUMMY_FINAL_RECALC_FIELDS_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/TERRAIN_ATTACHED_ANIM_LOAD_LIFECYCLE_SIDE_EFFECTS_REINVESTIGATION_GHIDRA_REPORT.md`
@@ -642,7 +706,7 @@ transaction can pass.
 - `docs/research/skirmish-ui/RMG_TERRAIN_SHAPING_CORE_GHIDRA_REPORT.md`
 - `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
 - `docs/gap-scans/2026-08-31-disparity-scan-authored-overlay-finalization.md`
-- `docs/plans/2026-08-28-active-retail-bridge-parity-design.md` Revision 18, approved
+- `docs/plans/2026-08-28-active-retail-bridge-parity-design.md` Revision 19, approved
 - current Rust baseline `origin/main@50e4b7ba4732fd3fb48e5b819e1abc55327ec557`
 
 ## Ghidra Annotation Candidates

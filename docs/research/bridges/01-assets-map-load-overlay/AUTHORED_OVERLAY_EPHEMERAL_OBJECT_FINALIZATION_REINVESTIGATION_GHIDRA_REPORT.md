@@ -2,6 +2,11 @@
 
 **Date:** 2026-08-31
 
+**Corrected:** 2026-09-01. The later authored-wall reinvestigation proves that successful
+`Full_Init` keeps `ScenarioInit @ 0x00A8E7AC` nonzero through `ReadMapOverlayPacks`.
+Consequently the wall predicate call returns true immediately; the generic counter-zero wall-
+rejection lifecycle below is active outside authored loading but is not an authored row outcome.
+
 **Binary authority:** active retail Yuri's Revenge `gamemd.exe`
 
 **Method:** fresh Ghidra decompile/disassembly, vtable/COL checks, active retail data and current Rust inspection
@@ -39,6 +44,10 @@ while every earlier successful Overlay object is dead, queued, and still present
 all successfully joined Object/Overlay/listener registries. All optional CellAnim
 and first-eligible terrain-tile `AnimClass` constructions caused by that row occur
 between the Overlay's ID and the next row's Overlay ID.
+
+`[ACTIVE-YR: YES]` Authored `Wall=yes` rows that pass the universal slope gate take this common
+success lifecycle after their wall stamp, cardinal cleanup, and eight-neighbor count increments.
+They do not take the generic wall-predicate-false UnInit branch during successful `Full_Init`.
 
 `[ACTIVE-YR: CONDITIONAL]` The steep-slope rejection is materially different. Base
 `ObjectClass::Mark(1)` has already set `IsOnMap=1`, set `NeedsRedraw=1`, and dirtied
@@ -93,7 +102,8 @@ This report owns only:
 - base/derived Mark, synchronous child-Anim interleaving, UnInit, deferred queue,
   common reader drain, scalar destruction, and next-row visibility;
 - the exact distinction among reader rejection, allocation failure, successful
-  Mark cleanup, wall failure cleanup, and steep-slope survival;
+  Mark cleanup (including authored walls), generic counter-zero wall failure cleanup, and steep-
+  slope survival;
 - the reader drain's position relative to identity, OverlayData, and the first
   Full_Init whole-map Recalc;
 - generated-reader no-Mark plus unconditional shared-drain behavior;
@@ -132,7 +142,7 @@ or class behavior is used as parity authority.
 | Ordinary `CellAnim` child Anim | Conditional | `0x005FD112..0x005FD1FA` |
 | Recalc terrain-attached Anim | Conditional, first eligible Recalc per unlatch cell | `0x0047D2B0` integration evidence |
 | Steep-slope early rejection | Conditional and active | `0x005FC5CD..0x005FC5E3`, false return `0x005FC784` |
-| Wall placement rejection with UnInit | Conditional and active | `0x005FC6F4..0x005FC705`, UnInit `0x005FC77C` |
+| Wall placement rejection with UnInit | Active only for counter-zero callers; authored-unreachable in successful Full_Init | `0x005FC6F4..0x005FC705`, UnInit `0x005FC77C`; wall ScenarioInit report |
 | Deferred queue | Active on UnInit success; best-effort growth | `0x005F65F0` |
 | Per-row immediate scalar destruction | Excluded | no such call in reader/Mark/UnInit |
 | Common reader drain | Unconditional | reader call `0x005FD692` |
@@ -387,7 +397,7 @@ three Object pointer fields, all initialized null on this path. This is real
 registry iteration but has no proved player-visible output. `FUN_00534450` /
 `Clear_Scene` later scalar-deletes the object during scene teardown.
 
-### 3.6 UnInit, wall rejection, and queue-append failure
+### 3.6 UnInit, generic counter-zero wall rejection, and queue-append failure
 
 `ObjectClass::UnInit @ 0x005F65F0` performs, in order:
 
@@ -402,12 +412,14 @@ On the normal Overlay success tail, Mark pre-set `InLimbo=1`, so Limbo returns
 without Destroy/Mark-remove work. The object receives one pointer-expiration
 broadcast at UnInit and another from its later Overlay destructor.
 
-The Wall branch has a distinct post-construction rejection. If its placement
-predicate at `0x0047C620` fails, derived Mark calls virtual UnInit at
+The Wall branch has a distinct post-construction rejection for callers with
+`ScenarioInit==0`. If its placement predicate at `0x0047C620` fails, derived Mark calls virtual UnInit at
 `0x005FC77C` while `InLimbo=0` and `IsOnMap=1`, then returns false. Limbo therefore
 runs its full Destroy/Mark-remove corridor, including an additional pointer-expired
 cleanup. The object becomes dead and queued, so the reader drain finalizes it. It
-is not the steep-slope survivor arm.
+is not the steep-slope survivor arm. Successful authored `Full_Init` keeps the counter nonzero,
+so `Is_Clear_To_Build` returns true before its ordinary body and this rejection cannot be selected
+by an authored OverlayPack wall.
 
 If queue growth fails, UnInit has already broadcast expiration and cleared alive
 state, but the pointer is not present in the queue. The reader drain cannot discover
@@ -507,7 +519,7 @@ dead object already in the shared queue. It is incorrect to implement it as
 | Overlay allocation null | none | none; high restore still checked | no object | none for this row |
 | constructor Terrain blocker | ID + registries | no Unlimbo/Mark | alive, limbo, unqueued | not selected |
 | common successful Mark | ID + registries; optional child IDs | cell writes + Recalc | dead, limbo, queued | finalized |
-| wall placement false | ID + registries | base Mark then full UnInit/Limbo; no wall stamp | dead, queued | finalized |
+| generic wall placement false (`ScenarioInit==0`) | ID + registries | base Mark then full UnInit/Limbo; no wall stamp | dead, queued | finalized; not an authored Full_Init row |
 | slope `>4`, non-`0xB2` | ID + registries | base Mark/dirty only; no cell/Recalc | alive, limbo/on-map contradiction, unqueued | survives |
 | queue-growth failure | ID + registries | path-specific | dead, unqueued | cannot discover |
 | generated default-format reader | no authored Overlay ID | no authored Mark | no Overlay object | still drains shared queue |
@@ -669,8 +681,9 @@ between Resize and Building placement); it is not safe to infer it from
     Display, Logic, or current-object list and writes no Overlay cell.**
 13. `[RESOLVED]` Is the slope survivor saved by the active class-array stream?
     **No OverlayClass instance pass exists.**
-14. `[RESOLVED]` Is wall placement failure the same as slope failure? **No; wall
-    failure UnInits, fully Limbos, dies, queues, and drains.**
+14. `[RESOLVED]` Is generic counter-zero wall placement failure the same as slope failure? **No;
+    it UnInits, fully Limbos, dies, queues, and drains. Successful authored Full_Init cannot select
+    it because ScenarioInit short-circuits the predicate true.**
 15. `[RESOLVED]` What happens if queue append growth fails? **Death/cleanup remains
     committed but the object is unqueued and undiscoverable by the drain.**
 16. `[RESOLVED]` When does the reader drain run? **After identity, data, and temp
@@ -738,8 +751,9 @@ The deferred share is 3/34 and only item 1 blocks the absolute GSI closure.
 8. On slope rejection, retain an alive, limbo/on-map, unqueued lightweight survivor
    with consumed ID and registry membership. Do not place it in OverlayGrid,
    GameEntity, occupancy, Display, Logic, rendering, or the native save projection.
-9. On wall-placement failure, take UnInit/full-Limbo/dead/queue cleanup, not slope
-   survival.
+9. On an authored wall that passes the slope gate, execute wall success and then the common
+   UnInit/dead/queue lifecycle. Do not route authored loading through generic counter-zero wall
+   rejection; preserve that generic rejection lifecycle for its ordinary runtime callers.
 10. Invoke the shared deferred drain once after OverlayData even when the format gate
     or bodies are absent. It must run before the first whole-map Recalc.
 11. Drain all shared queued-dead objects in stable live order, preserve alive entries,
@@ -766,9 +780,10 @@ The deferred share is 3/34 and only item 1 blocks the absolute GSI closure.
 3. **Data-before-drain fixture.** Observe dead successful Overlay pointers still in
    all registries during every later identity row and the entire data pass; assert
    their destructor/removal happens only in the common epilogue.
-4. **Wall-versus-slope cleanup fixture.** Force wall placement failure and slope
-   failure. Assert wall UnInit/full Limbo/death/queue/finalize versus slope
-   alive/unqueued survival, including pointer-expiration event counts.
+4. **Authored-wall-versus-slope fixture.** Keep ScenarioInit nonzero, admit one slope-accepted wall,
+   then a slope failure. Assert wall success effects followed by the common two-broadcast
+   UnInit/death/queue/finalize lifecycle versus slope alive/unqueued survival. Keep a separate
+   counter-zero unit fixture for the generic wall three-broadcast/full-Limbo rejection path.
 5. **Mixed shared queue fixture.** Seed `[alive A, dead B, B, alive C, dead D]`.
    Assert A/C remain in place, B duplicates collapse before one destructor, D also
    finalizes, and shifted successors are processed without skipping.
@@ -863,6 +878,7 @@ The deferred share is 3/34 and only item 1 blocks the absolute GSI closure.
 - active retail `rulesmd.ini`, `artmd.ini`, theater data, and authored format-4 map
   corpus inspected by the sibling focused reports below
 - `AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md`
+- `AUTHORED_OVERLAY_WALL_SCENARIOINIT_ACCEPTANCE_REINVESTIGATION_GHIDRA_REPORT.md`
 - `TERRAIN_ATTACHED_ANIM_LOAD_LIFECYCLE_SIDE_EFFECTS_REINVESTIGATION_GHIDRA_REPORT.md`
 - `AUTHORED_MARK_LOAD_CONTEXT_SOURCE_PROVENANCE_REINVESTIGATION_GHIDRA_REPORT.md`
 - `LOW_OVERLAY_MARK_FIXED_MAP_STAMP_RNG_TRANSACTION_GHIDRA_REPORT.md`
@@ -893,8 +909,8 @@ The deferred share is 3/34 and only item 1 blocks the absolute GSI closure.
    wrong. Successes remain queued/registered through OverlayData; slope rejects
    survive much longer.
 4. “A rejected Mark has no lifecycle side effects” is wrong for post-construction
-   rejection. Slope consumes ID/registries and leaves OnMap/redraw state; wall
-   failure queues and destructs.
+   rejection. Slope consumes ID/registries and leaves OnMap/redraw state; generic counter-zero wall
+   failure queues and destructs. That generic wall rejection is not authored-Full_Init behavior.
 5. “The reader drains only the Overlay objects it just created” is wrong. It invokes
    the shared global drain even when no Overlay body runs.
 6. “Generated no-Mark means no reader finalization boundary” is wrong. The common
@@ -919,3 +935,7 @@ Full_Init ordering, map-read reservation, Tubes, preview storage branches,
 Map Resize/Cell construction, save enumeration, and pointer-expiration dispatch.
 The pass added the variable-`C_saved` blocking prerequisite and its preview branch
 matrix, then produced no further material lifecycle questions.
+
+The later authored-wall report reopened only the reachability classification: it proves the generic
+counter-zero wall-rejection mechanics remain active but cannot occur during successful authored
+Full_Init. The lifecycle facts above are retained under that corrected caller boundary.

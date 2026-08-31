@@ -13,7 +13,7 @@ This scan is deliberately bounded to bridge transaction 3. It covers the physica
 fresh-context, and signed `NewINIFormat > 1` activation boundary; the single synchronous
 `OverlayPack` y-outer/x-inner transaction; ordinary, high, and low Mark dispatch; the persistent
 fallback cell; `OverlayDataPack`; the pre-Terrain and post-object whole-map Recalc boundaries; the
-minimum finalized identity/state payload; generated `.SED` no-authored-Mark arm plus its staged
+minimum finalized identity/state/count payload; generated `.SED` no-authored-Mark arm plus its staged
 generator Recalc/animation lifecycle; and the runtime/presentation handoff. It is the primary
 implementation scan for GSI-04.13 / BR-M05, a shared high-load
 contribution to GSI-04.12 / BR-M04, and the initial load-time Road contribution to GSI-04.15 /
@@ -29,6 +29,10 @@ The decisive active-binary sources are:
   real Overlay allocation/base-registry/ID/Overlay-registry order, direct base Unlimbo, child-Anim
   interleaving, common-success versus wall/slope lifetimes, the unconditional shared live drain,
   non-presentation survivors, and prefix-relative Tube/Overlay identity;
+- `AUTHORED_OVERLAY_WALL_SCENARIOINIT_ACCEPTANCE_REINVESTIGATION_GHIDRA_REPORT.md`, which proves
+  authored ScenarioInit reachability, successful wall stamp/cleanup/connectivity/common-tail order,
+  compact active-retail wall IDs and census, and the retained real-cell wrapping blocker-neighbor
+  count plane that final identities cannot reconstruct;
 - `AUTHORED_MARK_LOAD_CONTEXT_SOURCE_PROVENANCE_REINVESTIGATION_GHIDRA_REPORT.md`, which proves
   physical source, fresh-load family, Scenario-cursor, generated, replay, and restore boundaries;
 - `OVERLAYPACK_SHARED_DUMMY_FINAL_RECALC_FIELDS_REINVESTIGATION_GHIDRA_REPORT.md`, which proves the
@@ -86,12 +90,13 @@ Intervening PR #197 added only Team-AI INI tests and did not touch a transaction
 | One 512x512 y/x decoded-row transaction and native filters | Verified | Implement as one map-owned transaction |
 | Ordinary/high identity-state writes and high anchor restore | Verified | Replace split late high-only projection |
 | Base-object tactical dirty before derived dispatch | Verified | Implement one intent per accepted object; no generated-body repeats |
-| Authored OverlayClass allocation/registries/Mark/UnInit/shared-drain and slope-survivor lifecycle | Verified, including direct base Unlimbo, child Anim interleaving, wall distinction, unconditional generated/body-absent drain, non-presentation slope survival, and absolute prefix-relative IDs | Implement one lightweight load-object registry/queue owner from the closed OQ-33/OQ-34 evidence |
+| Authored OverlayClass allocation/registries/Mark/UnInit/shared-drain and slope-survivor lifecycle | Verified, including direct base Unlimbo, child Anim interleaving, authored-wall common-success reachability, generic counter-zero rejection exclusion, unconditional generated/body-absent drain, non-presentation slope survival, and absolute prefix-relative IDs | Implement one lightweight load-object registry/queue owner from the closed OQ-33/OQ-34 evidence; authored walls use the common queued tail |
+| Authored `Wall=yes` ScenarioInit success, cardinal connectivity, owner `-1`, and blocker-neighbor count plane | Verified, including native order, signed fixed-map real aliases, wrapping `u8`, later low-body overwrite retention, and active retail census | Implement inside the ordered row transaction; retain the real-cell count plane in the consumed-once payload and forbid final-wall reconstruction |
 | Low fixed/search/body algorithm and exact `3*L` raw RNG | Verified by settled reports and cold checks | Implement without reordering or ranged substitution |
 | Persistent dummy, signed `i16 y*512+x` lookup, overlay/state fields | Verified | Extend existing shared identity; do not add derived fields |
 | Independent OverlayData traversal | Verified | Execute after the one Mark transaction; real cells only |
 | First anti-diagonal Recalc sweep | Verified | Implement after data and before Terrain/Technos |
-| Finalized real identity/state handoff | Verified | Add one consumed-once payload; keep derived fields in terrain |
+| Finalized real identity/state/authored-blocker-count handoff | Verified | Add one consumed-once payload; keep derived terrain fields in terrain and never reconstruct authored walls from final identities |
 | Authored per-Mark/first-sweep animations, post-Terrain growth/spread queue boundary, and post-object second sweep | Verified | Initialize queues from post-Terrain/pre-object live state, retain them through later occupancy, then implement exact scalar-delete, value-only accumulation, unlatch, and recreation side effects without a rebuild |
 | Generated `.SED` direct materialization and no authored Mark | Verified | Preserve direct identity/state output; do not replay authored pack Mark |
 | Generated synthetic-Full_Init and generator-native staged Recalc/animation/resource lifecycle | Verified, with staged synthetic eligible set content-dependent | Preserve/capture actual phase history, pre-final queue init, and final arg-1 germination/local-value pass without rebuilding queues; final cells and a flat constructor trace are insufficient |
@@ -115,10 +120,10 @@ positive GSI-04.15 Tube mechanism for transaction 5.
 
 ## Summary
 
-- 24 candidate mechanisms inventoried: 17 positive transaction-3 candidates, 3 verified
+- 25 candidate mechanisms inventoried: 18 positive transaction-3 candidates, 3 verified
   exclusions, and 4 later-owner/unknown facts
-- all 17 positive active-YR mechanisms are materially verified for this transaction
-- 12 verified Rust gaps
+- all 18 positive active-YR mechanisms are materially verified for this transaction
+- 13 verified Rust gaps
 - zero transaction-3 candidates await native verification; OQ-34's complete preview/fresh-load
   native-ID prefix is closed
 - 10 verified matches or reusable partial matches, including the existing wall-owner reconstruction
@@ -382,18 +387,19 @@ later owning transactions/reverse audit are complete.
 **G7. Runtime overlay state has no consumed-once finalized payload**
 
 - **Active-YR evidence:** after OverlayData and the first sweep, the minimum real payload is the
-  validated overlay identity plus final state byte. Land/zone/LAT/cache remain live derived cell
-  state. Later consumers do not decode the packs again.
-- **Rust state:** `OverlayGrid::from_native_overlay_packs` takes raw entries, data, registry, art
-  availability, game mode, and mutable terrain (`src/sim/overlay_grid.rs:206-258`) and both
-  production paths call it after resolved terrain construction (`src/app/loading/init.rs:1117,
-  1987`). This can restore raw trigger identity over a procedural result and creates a second
-  filtering/Recalc authority.
-- **Required delta:** produce `FinalizedOverlayPayload` once in the map finalizer and consume it
-  once through a narrow `OverlayGrid` constructor with no raw pack, rules, RNG, filter, or Recalc
-  capability.
-- **Acceptance:** procedural/rejected/identity-empty/data-only cells match one-for-one in terrain,
-  runtime grid, hashes, and later mutation; duplicate consumption and second decode are impossible.
+  validated overlay identity, final state byte, and the authored real-cell blocker-neighbor plane
+  produced by ordered wall Mark writes. Land/zone/LAT/cache remain live derived cell state. Later
+  consumers do not decode the packs or reconstruct authored wall counts again.
+- **Rust state:** the transaction branch now has `FinalizedOverlayPayload` and a narrow final-payload
+  OverlayGrid constructor, but the payload carries identity/state only. The production count builder
+  separately scans final `Wall=yes` identities, losing later-overwritten contributions and signed
+  fixed-stride real aliases.
+- **Required delta:** extend the one map-produced `FinalizedOverlayPayload` with the real-cell wrapping
+  authored count plane and consume identity/state/count exactly once through narrow OverlayGrid/global-
+  count installation with no raw pack, rules, RNG, filter, Recalc, final-wall scan, or dummy export.
+- **Acceptance:** procedural/rejected/identity-empty/data-only/wall-overwritten cells match one-for-one
+  in terrain, runtime grid, global counts, hashes, and later mutation; real fixed-stride aliases survive,
+  true dummy misses add no output, and duplicate consumption/second decode/final-wall rebuild are impossible.
 - **Verdict:** MISSING.
 - **Priority rationale:** every production load currently uses the duplicate constructor; it is
   harmless only when both projections happen to agree and becomes immediately player-visible on
@@ -616,16 +622,20 @@ later owning transactions/reverse audit are complete.
   ordinary CellAnim and a first-eligible terrain Anim between that Overlay ID and the next row. It
   then sets OnMap false/Limbo true; UnInit broadcasts pointer expiration #1 while memberships remain,
   virtual Limbo no-ops, clears alive, and appends to the duplicate-permitting shared queue. The dead
-  object remains in every joined registry through all later identity rows and OverlayData. Wall
-  placement predicate failure occurs before any wall stamp/Recalc and orders UnInit broadcast #1 ->
-  full Limbo/Destroy/Mark-remove broadcast #2 -> death/queue. Steep slope `>4` except
+  object remains in every joined registry through all later identity rows and OverlayData. During a
+  successful authored Full_Init, `ScenarioInit` is nonzero and short-circuits the wall build predicate
+  to true, so a slope-admitted wall completes its wall effects and then follows the same common queued
+  tail. The separate counter-zero generic wall-rejection path still orders UnInit broadcast #1 -> full
+  Limbo/Destroy/Mark-remove broadcast #2 -> death/queue, but it is unreachable from authored Full_Init
+  and is not an authored acceptance branch. Steep slope `>4` except
   `0xB2` returns after base Mark/dirty but before cell/Recalc/UnInit, leaving an alive, InLimbo/on-map/
   redraw, registered, ID-bearing, unqueued survivor until scene teardown. It never joins cell,
   Display, Logic, current-object checksum, native save, or render surfaces. After temp pixel cleanup,
   the reader invokes the shared live drain exactly once outside format/body gates, including generated
   format 0. The drain preserves alive entries, removes all duplicates of each selected dead pointer,
   processes shifted and live-appended successors, invokes Release, then scalar-finalizes once. The
-  scalar destructor broadcasts while memberships still exist (#2 common, #3 wall), removes Overlay
+  scalar destructor broadcasts while memberships still exist (#2 common/authored wall; #3 only for
+  the generic counter-zero wall-rejection path), removes Overlay
   registry, game-active Limbos (no-op), clears type, then base destruction removes queue, Object,
   pointer-expiration, all-Abstract, and Tag memberships in that order before free; IDs are not refunded.
 - **Rust state:** resolved terrain applies raw/high projections before Simulation exists and has no
@@ -641,15 +651,17 @@ later owning transactions/reverse audit are complete.
   alive/limbo/on-map/redraw state, and the shared queue. Drive every allocated authored row through a
   synchronous map-defined sink, allocate native IDs from the closed OQ-34 cursor contract, construct ordinary
   CellAnim and terrain Anim effects before the next row, preserve dead registry visibility through
-  data, represent the exact common/wall broadcasts and destructor order, then run the shared drain in
+  data, represent the exact common/authored-wall broadcasts and destructor order while retaining the
+  separate generic counter-zero rejection method, then run the shared drain in
   the unconditional reader epilogue. Keep the same lifecycle registry attached to the process-
   scenario/Simulation owner after load and retain slope survivors there until scene teardown; do not
   transfer/reconstruct it from final cells or promote survivors to GameEntity/OverlayGrid/
   presentation/save/checksum. Match native allocation-null as no construction; hard-error injected
   base/Overlay-registry or queue growth failure rather than silently preserving partial degradation.
 - **Acceptance:** explicit-`C_saved`/two-Tube constructor order; success+CellAnim+terrain-Anim/slope/
-  next-row ID chain; data-before-drain visibility; common success's exact two-broadcast event order;
-  wall rejection before stamp/Recalc with exact three-broadcast/full-Limbo event order; slope state;
+  next-row ID chain; data-before-drain visibility; common and authored-wall success's exact two-
+  broadcast event order; authored wall success versus slope rejection while the generic counter-zero
+  three-broadcast/full-Limbo method remains separately tested; slope state;
   mixed `[alive A, dead B, B, alive C, dead D]` shared queue; format-1 and absent/empty-body
   unconditional drain; reader-reject/allocation-null zero effects; registry/queue-growth hard errors;
   fresh reader queue `[]` becoming exact drain input `[overlay0, overlay1]` for two common successes,
@@ -665,6 +677,48 @@ later owning transactions/reverse audit are complete.
   configured and all IDs affect later object identity. Slope survival is content/terrain-conditional,
   but the shared reader drain runs on every fresh reader call even when the pack body is absent.
 
+**G13. Authored walls lack their ScenarioInit success transaction and retained blocker-neighbor count plane**
+
+- **Active-YR evidence:** `ScenarioClass::Full_Init` increments `ScenarioInit @ 0x00A8E7AC` before the
+  authored Overlay reader and keeps it nonzero while `OverlayClass::Mark @ 0x005FC570` runs. After the
+  universal slope gate (`slope > 4`, except `0xB2`), the wall build predicate is therefore forced true.
+  The wall path stamps identity/data, calls `PostDestructionWallCleanup(cell,1)` in fixed
+  N/E/S/W/self order, recomputes same-compact-ID cardinal connectivity with no Building owner yet,
+  leaves owner `-1`, increments each of the eight N/NE/E/SE/S/SW/W/NW neighbor `CellClass+0x122`
+  bytes with wrapping `u8`, and then reaches the common anchor Recalc/UnInit/death/queue tail.
+  OverlayData later overwrites only state. A later low procedural body can overwrite the wall identity
+  without decrementing the earlier count writes, so final identities are not a reconstruction source.
+  Signed fixed-map neighbor arithmetic may alias another real 512-stride slot; only a true miss reaches
+  the shared dummy, whose count write has no fresh-game output. Active retail contains 13,064 such wall
+  cells across 71 winning MIX entries / 187 logical maps, so the success path is routine rather than
+  dormant.
+- **Rust state:** the transaction branch's `LiveOverlayCells` / `FinalizedOverlayPayload` retains only
+  final identity/state. `build_blocker_neighbor_counts_with_overlays` subsequently scans the final
+  `OverlayGrid` for `Wall=yes` identities and clips neighbor writes to the rectangular runtime grid.
+  It therefore loses both overwritten authored-wall contributions and signed fixed-stride real-slot
+  aliases. The current lifecycle surface also exposes a generic `finish_wall_reject`; that method is a
+  valid counter-zero primitive but must not be selected by the authored row transaction.
+- **Required delta:** extend the map-native live surface with a real-cell wrapping-`u8` authored
+  blocker-neighbor plane and transfer it exactly once in `FinalizedOverlayPayload`. Dispatch an admitted
+  wall through the proved stamp, cleanup/connectivity, count-write, second-anchor-Recalc, and common
+  lifecycle sequence. Preserve real fixed-stride aliases and suppress dummy output. OverlayData and
+  later low writes must not rebuild or undo the plane. Seed the simulation's authoritative global
+  blocker count state from that payload, then compose terrain/building/foot and runtime wall lifecycle
+  deltas; remove the final-wall scan as authored authority while preserving generic counter-zero wall
+  rejection for non-authored callers.
+- **Acceptance:** fixtures pin ScenarioInit predicate bypass on a slope-accepted wall; exact
+  N/E/S/W/self cleanup and N/E/S/W connectivity; owner `-1`; eight-neighbor wrapping increments;
+  overlap wrapping; later low-body identity overwrite with retained counts; fixed-stride real alias
+  update; true-dummy output absence; OverlayData state-only behavior; common two-broadcast authored-
+  wall finalization; separate generic counter-zero rejection; and a finalized-payload consumer that
+  receives the count plane without scanning final walls.
+- **Verdict:** MISSING / ORDERED STATE LOSS.
+- **Priority rationale:** the active-winner census contains 13,064 encoded authored-wall occurrences
+  across 71 retail entries, and at least one shipped flat-wall witness proves the successful path is
+  reachable. Every reader-admitted, allocated, slope-accepted authored wall executes it. The ordinary
+  visual identity often masks the mismatch, but hierarchy path expansion diverges whenever overwritten
+  or aliased contributions differ, and final-snapshot reconstruction cannot repair that history.
+
 ## Doc-derived candidates needing verification
 
 OQ-32, OQ-33, and OQ-34 are fully resolved by their focused reports and are now verified gaps G11
@@ -674,7 +728,7 @@ snapshot map-read transform, Tube allocation/fault semantics, empty reader-queue
 Overlay formula. No material transaction-3 native behavior remains in this section awaiting focused
 verification.
 
-Every other material source/context, row, write, RNG, dummy, data, Recalc, payload,
+Every other material source/context, row, write, RNG, dummy, data, Recalc, payload/count plane,
 animation-lifecycle, and generated launch phase-order rule has active-YR evidence. The exact set of
 eligible animations in the synthetic pre-materialization launch Full_Init remains content/state
 dependent, not an inferred rule: implementation acceptance must capture the actual staged boundary
@@ -710,7 +764,8 @@ or prove it empty for the exact staged state and may not derive zero from `NewIN
 
 ## Doc errors discovered
 
-The nine completed 2026-08-31 reports are mutually consistent after the explicit scope corrections.
+The nine original 2026-08-31 reports plus the 2026-09-01 authored-wall report are mutually consistent
+after the explicit scope corrections.
 The preview-native report corrects the terrain-animation report's unqualified synthetic-Full_Init
 wording: setup preview takes Set_Defaults/manual setup and no Full_Init, while fresh authored or
 accepted `.SED` gameplay launch takes Full_Init. The Overlay-object report corrects the preview
@@ -735,6 +790,12 @@ their narrow evidence but have stale wording that must not drive implementation:
   native overwrites them through `FUN_00484180`, leaving only `(0,0)`/`(-1,-1)` neutral;
 - any simple “both mover-cell bits mean row then column” description is wrong after a horizontal
   scan: the vertical gate reads the final row lookup/shared dummy and then scans mover-original X.
+- any authored-wall predicate-failure fixture is wrong: successful Full_Init keeps ScenarioInit
+  nonzero, so a slope-admitted authored wall takes wall effects plus the common queued tail. The
+  three-broadcast wall rejection remains a separate generic counter-zero path.
+- any reconstruction of authored blocker-neighbor counts from final `Wall=yes` identities is wrong:
+  later low-body overwrites do not reverse earlier wall increments, and signed 512-stride lookups can
+  alias another real cell.
 
 ## Verified matches and reusable partial matches
 
@@ -759,7 +820,7 @@ guards. No extra candidate was discovered by this Rust-only scan.
 
 ## Recommendation
 
-Implement G1-G12 as one transaction with internally coherent commits, because splitting at the
+Implement G1-G13 as one transaction with internally coherent commits, because splitting at the
 current `ResolvedTerrainGrid`/`OverlayGrid` duplication would leave two authorities and an
 unreviewable intermediate state. The smallest exact architecture is:
 
@@ -767,11 +828,12 @@ unreviewable intermediate state. The smallest exact architecture is:
    equivalent Full_Init, then enforce the signed format gate only on the two pack bodies;
 2. materialize Fill, apply the closed OQ-34 native-ID prefix through bound Tube constructors, then run one
    map-owned inline OverlayPack transaction with the sole borrowed raw Scenario adapter, extended
-   shared dummy, and load-object lifecycle sink;
+   shared dummy, load-object lifecycle sink, and authored-wall success/count-plane effects;
 3. apply OverlayData while successful dead Overlay objects remain registered, then execute the
    unconditional shared live drain while preserving slope survivors;
-4. execute the exact first live anti-diagonal Recalc, then emit and consume one identity/state payload
-   into runtime OverlayGrid and presentation;
+4. execute the exact first live anti-diagonal Recalc, then emit and consume one identity/state/authored-
+   blocker-count payload into runtime OverlayGrid, pathfinding state, and presentation without a final-
+   wall reconstruction pass;
 5. construct Terrain, initialize growth then spread queues from that live pre-object state, construct
    Technos/Smudge in native order while retaining the queue snapshot, then execute the second exact
    delete/unlatch/value-only-aggregate/Recalc animation boundary without rebuilding queues, storing
