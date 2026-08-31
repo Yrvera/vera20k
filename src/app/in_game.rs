@@ -548,25 +548,16 @@ impl App {
 }
 
 impl App {
-    /// Persist the user-tunable settings the engine currently tracks to
-    /// `RA2MD.INI`, preserving the file's other keys and sections. Invoked on
-    /// quit-confirm OK strictly BEFORE the app tears down, matching the
-    /// original writing options before exit. Today only `[Audio] ScoreVolume`
-    /// (the live music volume, already read at boot) round-trips; further
-    /// sections are added as the engine grows to model them. A write failure is
-    /// logged, never fatal — a quit must not be blocked by a settings error.
+    fn settings_persistence_operation() -> fn(&AppState) {
+        crate::app::persistence::options::persist_options_profile
+    }
+
+    /// Commit the complete retained Options/Video/Audio profile on the already
+    /// verified quit-confirm boundaries, strictly before teardown. A write
+    /// failure is logged by the persistence owner and never blocks quitting.
+    /// Retail provenance: `OptionsClass__WriteToINI @ 0x005FAD10`.
     pub(super) fn persist_settings_on_quit(state: &AppState) {
-        let Some(config) = state.platform.game_config.as_ref() else {
-            return;
-        };
-        let Some(player) = state.audio.music_player.as_ref() else {
-            return;
-        };
-        if let Err(err) =
-            crate::audio::music::write_score_volume_to_ra2md(&config.paths.ra2_dir, player.volume())
-        {
-            log::warn!("Failed to persist settings to RA2MD.INI on quit: {err}");
-        }
+        Self::settings_persistence_operation()(state);
     }
 
     /// Begin the graceful quit cascade from the main-menu Exit-confirm OK. The
@@ -686,5 +677,18 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod options_profile_quit_tests {
+    use super::*;
+
+    #[test]
+    fn confirmed_quit_dispatches_the_complete_profile_writer() {
+        let selected = App::settings_persistence_operation() as usize;
+        let complete_profile_writer =
+            crate::app::persistence::options::persist_options_profile as fn(&AppState) as usize;
+        assert_eq!(selected, complete_profile_writer);
     }
 }

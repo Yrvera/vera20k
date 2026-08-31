@@ -223,7 +223,8 @@ pub struct SparkleInput<'a> {
     /// `Simulation.session.total_sim_ms` (pre-computed each tick by the sim).
     /// Deterministic across clients on the same tick — replays look identical.
     pub clock_ms: u64,
-    /// From GraphicsConfig.extra_animations. If false, build returns empty Vec. (L22)
+    /// From the live `[Options] DetailLevel != 0` projection. If false, build
+    /// returns an empty Vec. (L22)
     pub enable_extra_animations: bool,
     /// Local player's interned house ID for the sight check (L19). None when
     /// no map is loaded or no owner can be resolved — gate then fails.

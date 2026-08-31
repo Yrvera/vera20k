@@ -277,7 +277,7 @@ fn upload_to_gpu(
     // (No `building_turret` buffer: a building's voxel turret rides the `unit`
     // stream and is drawn inside the sorted ground pass, as gamemd draws it.)
     // PixelFX water/ore sparkles — drawn after the ground object pass.
-    // Empty when graphics.extra_animations is off.
+    // Empty when the live `[Options] DetailLevel` projection is zero.
     pool.upload(&state.renderer.gpu, "cell_sparkles", &world.cell_sparkles);
     pool.upload(&state.renderer.gpu, "weapon_waves", &world.weapon_waves);
     pool.upload(&state.renderer.gpu, "spotlight_type16", &world.spotlight_type16);

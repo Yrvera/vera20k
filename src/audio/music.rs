@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 use std::num::NonZero;
-use std::path::Path;
 
 use rodio::buffer::SamplesBuffer;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
@@ -44,11 +43,6 @@ fn effective_music_volume(
     (user_volume * lifecycle_scale * theme_scale * focus_output_scale) as f32
 }
 
-/// User settings filename in the RA2 install dir holding `[Audio] ScoreVolume`.
-const RA2MD_INI_FILENAME: &str = "RA2MD.INI";
-/// Section and key for the saved music volume in RA2MD.INI.
-const AUDIO_SECTION: &str = "Audio";
-const SCORE_VOLUME_KEY: &str = "ScoreVolume";
 const SCENARIO_THEME_FADE_MS: u64 = 1_000;
 
 const FALLBACK_TRACKS: &[&str] = &[
@@ -566,49 +560,6 @@ fn load_track(track_name: &str, assets: &AssetManager) -> Option<(Vec<f32>, u32)
     None
 }
 
-/// Read `[Audio] ScoreVolume` from `{ra2_dir}/RA2MD.INI`, clamped to [0,1].
-///
-/// Returns None when the file, section, or key is absent or unparsable so the
-/// caller can fall back to the engine default ([`DEFAULT_SCORE_VOLUME`]). This
-/// is a loose user-settings INI in the install dir, not a MIX payload.
-pub fn read_score_volume_from_ra2md(ra2_dir: &Path) -> Option<f64> {
-    let bytes = std::fs::read(ra2_dir.join(RA2MD_INI_FILENAME)).ok()?;
-    let ini = IniFile::from_bytes(&bytes).ok()?;
-    score_volume_from_ini(&ini)
-}
-
-/// Extract `[Audio] ScoreVolume` from a parsed INI, clamped to [0,1].
-fn score_volume_from_ini(ini: &IniFile) -> Option<f64> {
-    let value = ini.section(AUDIO_SECTION)?.get_f32(SCORE_VOLUME_KEY)?;
-    Some((value as f64).clamp(0.0, 1.0))
-}
-
-/// Format a score volume for `RA2MD.INI` exactly as the original does: six
-/// decimal places (e.g. `0.600000`), clamped to [0,1].
-fn format_score_volume(volume: f64) -> String {
-    format!("{:.6}", volume.clamp(0.0, 1.0))
-}
-
-/// Persist `[Audio] ScoreVolume` into `{ra2_dir}/RA2MD.INI`, updating the key
-/// in place and preserving every other key and section already in the file.
-///
-/// The original writes the user's settings on quit before tearing down; this
-/// closes the read/write loop for the live music volume — the one setting the
-/// engine currently both reads at boot ([`read_score_volume_from_ra2md`]) and
-/// lets the player change at runtime. The `[Audio]` section (and the file
-/// itself) is created when absent.
-pub fn write_score_volume_to_ra2md(ra2_dir: &Path, volume: f64) -> std::io::Result<()> {
-    let path = ra2_dir.join(RA2MD_INI_FILENAME);
-    let existing = std::fs::read(&path).unwrap_or_default();
-    let updated = crate::util::ini_writer::set_ini_value(
-        &existing,
-        AUDIO_SECTION,
-        SCORE_VOLUME_KEY,
-        &format_score_volume(volume),
-    );
-    std::fs::write(&path, updated)
-}
-
 fn load_theme_ini(assets: &AssetManager, name: &str) -> Option<IniFile> {
     let bytes = assets.get_ref(name)?;
     IniFile::from_bytes(bytes).ok()
@@ -870,40 +821,4 @@ mod tests {
         assert!(menu_theme_from_ini(&ini, &aliases).is_none());
     }
 
-    /// [Audio] ScoreVolume parses to its float value in range.
-    #[test]
-    fn score_volume_reads_audio_section() {
-        let ini = IniFile::from_str("[Audio]\nScoreVolume=0.25\n");
-        assert_eq!(score_volume_from_ini(&ini), Some(0.25));
-    }
-
-    /// A ScoreVolume above 1.0 clamps to 1.0 (matching the engine clamp).
-    #[test]
-    fn score_volume_clamps_above_one() {
-        let ini = IniFile::from_str("[Audio]\nScoreVolume=1.5\n");
-        assert_eq!(score_volume_from_ini(&ini), Some(1.0));
-    }
-
-    /// The persisted value matches the original's six-decimal format.
-    #[test]
-    fn score_volume_formats_six_decimals() {
-        assert_eq!(format_score_volume(0.6), "0.600000");
-        assert_eq!(format_score_volume(0.4), "0.400000");
-    }
-
-    /// Out-of-range volumes clamp to [0,1] before formatting.
-    #[test]
-    fn score_volume_format_clamps() {
-        assert_eq!(format_score_volume(1.5), "1.000000");
-        assert_eq!(format_score_volume(-0.2), "0.000000");
-    }
-
-    /// Missing section or key yields None so the caller uses the default.
-    #[test]
-    fn score_volume_missing_returns_none() {
-        let ini = IniFile::from_str("[Options]\nFoo=bar\n");
-        assert!(score_volume_from_ini(&ini).is_none());
-        let empty = IniFile::from_str("[Audio]\nSoundVolume=0.7\n");
-        assert!(score_volume_from_ini(&empty).is_none());
-    }
 }

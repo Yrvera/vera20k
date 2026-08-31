@@ -70,15 +70,15 @@ pub(crate) use shell_random_map::{
 pub(crate) use state::{AppState, PlatformState, reset_scenario_exit_runtime};
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
-const SHELL_WINDOW_WIDTH: u32 = 800;
-const SHELL_WINDOW_HEIGHT: u32 = 600;
 
 /// Top-level application. Implements winit's ApplicationHandler.
 pub struct App {
     state: Option<AppState>,
     shell_capture: Option<crate::app::diagnostics::shell_capture::ShellCaptureSession>,
     tactical_capture: Option<crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession>,
-    startup_audio: StartupAudioDisposition,
+    /// Retained until `resumed()` so the profile's pre-window Video read can
+    /// use the command-line screen fields as its current-value defaults.
+    startup_options: crate::app::frontend::startup_options::RetailStartupOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,9 +127,7 @@ impl App {
             state: None,
             shell_capture: None,
             tactical_capture: None,
-            startup_audio: StartupAudioDisposition::for_audio_enabled(
-                startup_options.audio_enabled,
-            ),
+            startup_options,
         }
     }
 
@@ -138,7 +136,7 @@ impl App {
             state: None,
             shell_capture: Some(crate::app::diagnostics::shell_capture::ShellCaptureSession::new(request)),
             tactical_capture: None,
-            startup_audio: StartupAudioDisposition::default(),
+            startup_options: crate::app::frontend::startup_options::RetailStartupOptions::default(),
         }
     }
 
@@ -149,7 +147,7 @@ impl App {
             tactical_capture: Some(
                 crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession::new(request),
             ),
-            startup_audio: StartupAudioDisposition::default(),
+            startup_options: crate::app::frontend::startup_options::RetailStartupOptions::default(),
         }
     }
 
@@ -213,5 +211,18 @@ mod tests {
             );
             assert_eq!(should_load_audio_indices(persisted_in_state), audio_enabled);
         }
+    }
+
+    #[test]
+    fn options_profile_startup_fields_survive_until_resumed() {
+        let startup = crate::app::frontend::startup_options::RetailStartupOptions {
+            screen_width: 640,
+            screen_height: 480,
+            audio_enabled: false,
+            ..Default::default()
+        };
+        let app = App::new(startup);
+
+        assert_eq!(app.startup_options, startup);
     }
 }

@@ -4,9 +4,9 @@
 //! name is already taken it raises and restores the window the first copy owns,
 //! closes its own handle, logs, and returns without ever creating a second
 //! window. Two live copies would otherwise both write `RA2MD.INI` on quit —
-//! `[Options]`, `[Audio] ScoreVolume` and the `[Skirmish]` snapshot are all
-//! whole-key overwrites, so the copy that quits second silently discards
-//! everything the first one saved.
+//! the coherent `[Options]`/`[Video]`/`[Audio]` profile and the `[Skirmish]`
+//! snapshot are whole-key overwrites, so the copy that quits second silently
+//! discards everything the first one saved.
 //!
 //! ## Dependency rules
 //! - Part of util/ — no dependencies on game modules.

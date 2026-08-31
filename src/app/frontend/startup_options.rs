@@ -1,16 +1,8 @@
-//! Retail process-start options: the `WinMain` command-line switch table and
-//! the `RA2MD.INI [Video]` screen size that is read immediately after it.
+//! Retail process-start command-line switch parsing.
 //!
-//! The three stages run in a fixed native order and each one can overwrite the
-//! previous, so they are modelled as one pipeline rather than three lookups:
-//!
-//! 1. `OptionsClass::SetDefaults` seeds the screen-size fields with `-1`, the
-//!    "nobody has chosen a size yet" sentinel.
-//! 2. The command-line switch table may write a size over that sentinel.
-//! 3. `[Video] ScreenWidth` / `ScreenHeight` are then read **using the current
-//!    values as their defaults** — so a key present in `RA2MD.INI` overrides the
-//!    command line, and an absent key leaves the command line's value standing.
-//! 4. If either field is still the sentinel, a built-in default pair is chosen.
+//! The returned screen fields seed the process-owned Options profile. That
+//! profile alone performs the later RA2MD.INI Video read and paired fallback,
+//! keeping argv parsing free of a second settings/filesystem authority.
 //!
 //! Native uppercases every argument after `argv[0]` in place before matching,
 //! so every comparison here is effectively case-insensitive. Matching is a mix
@@ -22,35 +14,13 @@
 //! the cap is deliberately not reproduced.
 //!
 //! ## Dependency rules
-//! - Reads `RA2MD.INI` through `rules::ini_parser`; no render/sim/ui/audio
-//!   dependencies.
+//! - Pure argv parsing; no filesystem/render/sim/ui/audio dependencies.
 
 use std::ffi::OsString;
-use std::path::Path;
-
-use crate::rules::ini_parser::IniFile;
-
-const RA2MD_INI_FILENAME: &str = "RA2MD.INI";
-const VIDEO_SECTION: &str = "Video";
-const SCREEN_WIDTH_KEY: &str = "ScreenWidth";
-const SCREEN_HEIGHT_KEY: &str = "ScreenHeight";
 
 /// The value `OptionsClass::SetDefaults` writes into both screen-size fields
 /// before anything reads them. The built-in default rule tests for exactly this.
 const SCREEN_SIZE_UNSET: i32 = -1;
-
-/// The pair native picks when no size has been chosen.
-///
-/// Native takes this branch when its platform-version term is true, and also
-/// when that term is false but the display-memory query reports **more than**
-/// 2 MiB. The 640x480 branch therefore needs the platform term false *and* the
-/// query reporting 2 MiB or less — both conditions, not either. (The two fields
-/// behind the platform term have no decompilable initializer, so what they hold
-/// is UNCHECKED; only the branch structure is verified.)
-const BUILT_IN_DEFAULT_SCREEN: ScreenSize = ScreenSize {
-    width: 800,
-    height: 600,
-};
 
 /// Switches whose native effect is a networking, replay, string-table or debug
 /// mode this engine has no subsystem for. Native accepts them silently, so the
@@ -95,8 +65,8 @@ pub struct ScreenSize {
     pub height: u32,
 }
 
-/// Everything the native pre-window startup path decides from the command line
-/// and `RA2MD.INI`.
+/// Everything the native pre-window command-line pass decides. The retained
+/// profile applies `RA2MD.INI` later, using these screen fields as defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetailStartupOptions {
     /// A help form was passed: print usage and terminate before a window opens.
@@ -137,69 +107,6 @@ impl RetailStartupOptions {
     /// resolves `-CD` from the process argv the same way.
     pub fn from_process_arguments() -> Self {
         consume_retail_switches(std::env::args_os().skip(1).collect()).0
-    }
-
-    /// Apply `[Video] ScreenWidth` / `ScreenHeight` from `{ra2_dir}/RA2MD.INI`.
-    ///
-    /// Native passes the *current* field values as the read defaults, so a key
-    /// present in the file wins over the command line and an absent key changes
-    /// nothing. A missing or unparsable file leaves both fields untouched,
-    /// which is what a `RawFileClass` open failure does natively.
-    ///
-    /// Known divergence, recorded not fixed: a key present with an unparsable
-    /// value yields zero here rather than the caller's default, because that is
-    /// what the shared INI integer reader does. Changing it would affect every
-    /// other caller of that reader, so it does not belong in this module.
-    ///
-    /// **No production caller yet** — see `resolve_screen_size`.
-    pub fn apply_ra2md_video_section(&mut self, ra2_dir: &Path) {
-        let path = ra2_dir.join(RA2MD_INI_FILENAME);
-        let Ok(bytes) = std::fs::read(&path) else {
-            return;
-        };
-        let Ok(ini) = IniFile::from_bytes(&bytes) else {
-            log::warn!("Could not parse {} for [Video]", path.display());
-            return;
-        };
-        self.apply_video_section(&ini);
-    }
-
-    fn apply_video_section(&mut self, ini: &IniFile) {
-        let Some(video) = ini.section(VIDEO_SECTION) else {
-            return;
-        };
-        if let Some(width) = video.get_i32(SCREEN_WIDTH_KEY) {
-            self.screen_width = width;
-        }
-        if let Some(height) = video.get_i32(SCREEN_HEIGHT_KEY) {
-            self.screen_height = height;
-        }
-    }
-
-    /// The client size the window would be created at.
-    ///
-    /// Native applies the built-in default pair when *either* field is still
-    /// the sentinel, replacing both — a file that sets only one of the two keys
-    /// does not get a half-configured size.
-    ///
-    /// The 640x480 branch of the native rule is unreachable here: reaching it
-    /// needs the platform-version term false *and* the display-memory query
-    /// reporting 2 MiB or less, and wgpu exposes no equivalent query on a host
-    /// that could report so little. VERA-internal substitution; the native
-    /// display-memory term is UNCHECKED against a low-memory adapter.
-    ///
-    /// **Not yet applied to the window.** `App::initialize` still creates the
-    /// window from its own constants, and `App::enter_shell_window_mode`
-    /// re-applies them on every shell entry, so honouring this value needs both
-    /// of those fed from one `AppState` field rather than a call here.
-    pub fn resolve_screen_size(&self) -> ScreenSize {
-        if self.screen_width == SCREEN_SIZE_UNSET || self.screen_height == SCREEN_SIZE_UNSET {
-            return BUILT_IN_DEFAULT_SCREEN;
-        }
-        ScreenSize {
-            width: self.screen_width.max(1) as u32,
-            height: self.screen_height.max(1) as u32,
-        }
     }
 
     fn apply(&mut self, recognized: RecognizedSwitch) {
@@ -379,7 +286,6 @@ mod tests {
         assert_eq!(options.screen_width, SCREEN_SIZE_UNSET);
         assert_eq!(options.screen_height, SCREEN_SIZE_UNSET);
         assert!(options.audio_enabled);
-        assert_eq!(options.resolve_screen_size(), BUILT_IN_DEFAULT_SCREEN);
     }
 
     #[test]
@@ -411,13 +317,6 @@ mod tests {
     fn numeric_switches_follow_the_sscanf_shape() {
         let (both, _) = consume(&["-1024X768"]);
         assert_eq!((both.screen_width, both.screen_height), (1024, 768));
-        assert_eq!(
-            both.resolve_screen_size(),
-            ScreenSize {
-                width: 1024,
-                height: 768
-            }
-        );
         // Lowercase `x` survives because native uppercases the argument first.
         let (lower, _) = consume(&["-640x480"]);
         assert_eq!((lower.screen_width, lower.screen_height), (640, 480));
@@ -426,7 +325,6 @@ mod tests {
         let (four_eighty, _) = consume(&["-480"]);
         assert_eq!(four_eighty.screen_width, 480);
         assert_eq!(four_eighty.screen_height, SCREEN_SIZE_UNSET);
-        assert_eq!(four_eighty.resolve_screen_size(), BUILT_IN_DEFAULT_SCREEN);
         let (sixteen, _) = consume(&["-16"]);
         assert_eq!(sixteen.screen_width, 16);
     }
@@ -478,32 +376,5 @@ mod tests {
         let (options, rest) = consume(&["-noaudio", "--not-a-real-option"]);
         assert!(!options.audio_enabled);
         assert_eq!(rest, vec!["--not-a-real-option".to_string()]);
-    }
-
-    #[test]
-    fn video_keys_override_the_command_line_and_absent_keys_do_not() {
-        let ini = IniFile::from_bytes(b"[Video]\nScreenWidth=640\nScreenHeight=480\n")
-            .expect("parse video ini");
-        let (mut options, _) = consume(&["-1024X768"]);
-        options.apply_video_section(&ini);
-        assert_eq!((options.screen_width, options.screen_height), (640, 480));
-
-        let empty = IniFile::from_bytes(b"[Audio]\nScoreVolume=0.500000\n").expect("parse ini");
-        let (mut untouched, _) = consume(&["-1024X768"]);
-        untouched.apply_video_section(&empty);
-        assert_eq!(
-            (untouched.screen_width, untouched.screen_height),
-            (1024, 768)
-        );
-    }
-
-    #[test]
-    fn one_video_key_alone_still_falls_back_to_the_built_in_pair() {
-        let ini = IniFile::from_bytes(b"[Video]\nScreenWidth=1280\n").expect("parse video ini");
-        let mut options = RetailStartupOptions::default();
-        options.apply_video_section(&ini);
-        assert_eq!(options.screen_width, 1280);
-        assert_eq!(options.screen_height, SCREEN_SIZE_UNSET);
-        assert_eq!(options.resolve_screen_size(), BUILT_IN_DEFAULT_SCREEN);
     }
 }

@@ -7,7 +7,7 @@ use super::input::dispatch;
 use super::{
     ActiveEventLoop, App, AppState, ApplicationHandler, ControlFlow, GameScreen, Instant, KeyCode,
     KeyEventExtModifierSupplement, MouseButton, MouseScrollDelta, PhysicalKey, PhysicalSize,
-    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, ShellKey, WindowEvent, WindowId,
+    ShellKey, WindowEvent, WindowId,
     auto_detect_ui_scale,
 };
 
@@ -30,7 +30,7 @@ impl App {
 
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
         state.platform.window.set_resizable(false);
-        let target = PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT);
+        let target = state.platform.shell_client_size;
         if state.platform.window.inner_size() == target {
             return;
         }
@@ -62,7 +62,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match Self::initialize(event_loop, capture_dimensions, self.startup_audio) {
+        match Self::initialize(event_loop, capture_dimensions, self.startup_options) {
             Ok(mut state) => {
                 if let Some(session) = self.shell_capture.as_mut() {
                     session.prepare_state(&mut state);
