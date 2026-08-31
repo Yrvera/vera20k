@@ -152,6 +152,31 @@ impl Simulation {
         Some(stable_id)
     }
 
+    /// Apply native ParticleSystemClass vtable `+0xF8` mark-only destruction to
+    /// the attached damage-smoke slot once health is strictly above yellow.
+    /// The owner pointer remains until physical particle-system expiry.
+    pub(crate) fn stop_damage_smoke_if_above_yellow(
+        &mut self,
+        stable_id: u64,
+        rules: &RuleSet,
+    ) -> bool {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return false;
+        };
+        let above_yellow = i64::from(entity.health.current) * 1000
+            > i64::from(entity.health.max) * rules.general.condition_yellow_x1000;
+        if !above_yellow {
+            return false;
+        }
+        let current_system = entity.damage_smoke_system_id;
+        if let Some(system_id) = current_system
+            && let Some(system) = self.particle_systems_mut().get_mut(system_id)
+        {
+            system.done_spawning = true;
+        }
+        true
+    }
+
     /// Maintain TechnoClass's attached damage-Smoke slot from the surviving
     /// ReceiveDamage postlude (`TechnoClass +0x310`). This runs synchronously
     /// before the receiver may retaliate or return to Infantry scatter.
@@ -164,21 +189,9 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return;
         };
-        let above_yellow = i64::from(entity.health.current) * 1000
-            > i64::from(entity.health.max) * rules.general.condition_yellow_x1000;
         let current_system = entity.damage_smoke_system_id;
 
-        if above_yellow {
-            if let Some(system_id) = current_system
-                && let Some(system) = self.particle_systems_mut().get_mut(system_id)
-            {
-                // ParticleSystemClass vtable +0xF8 is the mark-only Destroy
-                // entry — its body is `*(byte*)(this+0xF8) = 1`, the same byte
-                // the lifetime and spawn-cutoff paths set. The owner slot
-                // remains live until pointer expiry at physical finalization,
-                // preventing a same-frame duplicate.
-                system.done_spawning = true;
-            }
+        if self.stop_damage_smoke_if_above_yellow(stable_id, rules) {
             return;
         }
 

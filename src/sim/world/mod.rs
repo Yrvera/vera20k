@@ -4527,6 +4527,14 @@ impl Simulation {
         if old_owner == new_owner {
             return;
         }
+        if category == EntityCategory::Structure {
+            // BuildingClass::ChangeOwner clears Repairing but retains the
+            // private repair pulse latch. A Selling mission admitted earlier
+            // in the frame is ordinary MissionClass state and survives capture.
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.repairing = false;
+            }
+        }
         // FootClass::ChangeOwner @ 0x004DBED0 removes from the deposited old
         // owner and adds to the new owner before later readers observe it.
         if let Some(rules) = rules {
@@ -5509,6 +5517,44 @@ impl Simulation {
         finished
     }
 
+    fn arm_completed_building_ready_latches(
+        &mut self,
+        completed_buildings: &[u64],
+    ) -> Vec<u64> {
+        let mut construction_missions = Vec::new();
+        for &stable_id in completed_buildings {
+            let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
+                continue;
+            };
+            debug_assert_eq!(entity.category, EntityCategory::Structure);
+            let construction_completed = entity.mission.effective().known()
+                == Some(crate::sim::mission::MissionType::Construction);
+            entity.mission_leaf.set_building_ready_latch(1);
+            if construction_completed {
+                construction_missions.push(stable_id);
+            }
+        }
+        construction_missions
+    }
+
+    fn queue_completed_building_guard(&mut self, construction_missions: &[u64]) {
+        let now = self.session.binary_frame;
+        for &stable_id in construction_missions {
+            let queued = self
+                .mission_queue_exact(
+                    stable_id,
+                    crate::sim::mission::MissionId::from_known(
+                        crate::sim::mission::MissionType::Guard,
+                    ),
+                    0,
+                    now,
+                    &crate::sim::mission::authority::EntityReadyInputProvider,
+                )
+                .is_ok();
+            debug_assert!(queued, "completed Construction receiver remains present");
+        }
+    }
+
     /// Advance building-down (undeploy) animations. When done, despawn the
     /// building and spawn the mobile unit (e.g., ConYard → MCV).
     /// Returns true if any entities were spawned (triggers atlas refresh).
@@ -5529,9 +5575,9 @@ impl Simulation {
                 }
             }
         }
-        let any_finished = !finished.is_empty();
+        let mut spawned_any = false;
         for sid in finished {
-            // Extract spawn data before despawning.
+            // Extract spawn data before beginning the conversion transaction.
             let spawn_data = self.substrate.entities.get(sid).and_then(|e| {
                 e.building_down.as_ref().map(|bd| {
                     (
@@ -5541,22 +5587,27 @@ impl Simulation {
                         bd.spawn_ry,
                         bd.spawn_z,
                         bd.was_selected,
+                        e.attached_trigger_tag,
                     )
                 })
             });
-            let Some((unit_type_id, owner_id, rx, ry, z, was_selected)) = spawn_data else {
+            let Some((unit_type_id, owner_id, rx, ry, z, was_selected, attached_trigger_tag)) =
+                spawn_data
+            else {
                 continue;
             };
             let rules = match rules {
-                Some(rules) => {
-                    self.uninit_with_rules(sid, rules);
-                    rules
-                }
+                Some(rules) => rules,
                 None => {
                     self.uninit(sid);
                     continue;
                 }
             };
+            // BuildingDown has finished, so remove the source footprint before
+            // the Unit's concrete Unlimbo. Keep the source object alive until
+            // that result commits; a rejected target restores this exact source
+            // instead of publishing a half-conversion.
+            let _ = self.techno_limbo_with_rules(sid, rules);
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
             if let Some(new_sid) =
@@ -5572,11 +5623,21 @@ impl Simulation {
                 )
             {
                 if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
+                    ge.attached_trigger_tag = attached_trigger_tag;
                     ge.selected = was_selected;
                 }
+                if attached_trigger_tag.is_some()
+                    && let Some(source) = self.substrate.entities.get_mut(sid)
+                {
+                    source.attached_trigger_tag = None;
+                }
+                self.uninit_with_rules(sid, rules);
+                spawned_any = true;
+            } else {
+                let _ = self.reveal(sid);
             }
         }
-        any_finished
+        spawned_any
     }
 
     fn apply_one_due_command(
@@ -6190,6 +6251,12 @@ impl Simulation {
         // --- Phase 9: Building animations + cleanup ---
         // DEPENDS ON: production (newly placed buildings start build-up).
         let completed_buildings = self.tick_building_up();
+        // Successful local placement reaches `OnConstructionComplete(0)` through
+        // Building vtable +0x198 and arms Building+0x6DD before power-on and
+        // FreeUnit work. Ordinary factory placement writes no Mission; deploy
+        // targets retain Construction so its later tail can queue Guard.
+        let construction_missions =
+            self.arm_completed_building_ready_latches(&completed_buildings);
         if let Some(rules) = rules {
             for &stable_id in &completed_buildings {
                 self.add_building_sensor_array_if_powered(stable_id, rules);
@@ -6203,6 +6270,10 @@ impl Simulation {
                 overlay_registry,
             );
         }
+        // `Mission_Construction @ 0x00449A50` queues Guard only for receivers
+        // actually running Construction. The next object-AI promotion consumes
+        // their armed latch before that visit evaluates low-credit sell admission.
+        self.queue_completed_building_guard(&construction_missions);
         // Advance building-down (undeploy) animations; spawn units when done.
         *spawned_entities |= self.tick_building_down(rules, overlay_registry);
 
@@ -7364,7 +7435,6 @@ impl Simulation {
             self.trace_house_ai_activation_order(
                 HouseAiActivationOrderTestEvent::ProductionCompleted,
             );
-            production::tick_repairs(self, rules);
             building_dock::tick_building_docks(self, rules);
             crate::sim::docking::bunker_install::tick_bunker_install(
                 self,

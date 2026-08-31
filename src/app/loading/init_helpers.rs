@@ -950,7 +950,9 @@ mod tests {
     fn map_ini_overrides_rules_values() {
         let mut ini = IniFile::from_str(RULES_BASE);
         let map = IniFile::from_str(
-            "[Basic]\nName=Fixture\n[General]\nBuildSpeed=1\n[CombatDamage]\nC4Delay=.06\n",
+            "[Basic]\nName=Fixture\n\
+             [General]\nBuildSpeed=1\nRepairRate=.02\nRepairStep=9\nRepairPercent=20%\n\
+             [CombatDamage]\nC4Delay=.06\n",
         );
         ini.merge_rules_overrides(&map);
         let rules = RuleSet::from_ini(&ini).expect("triple-merged rules parse");
@@ -959,6 +961,15 @@ mod tests {
         // BuildSpeed consumer — assert the deterministic x1000 field, not the
         // f32 mirror: map override 1 -> 1000 (base .7 would be 700).
         assert_eq!(rules.production.build_speed_x1000, 1000);
+        assert_eq!(rules.general.building_repair_step, 9);
+        assert_eq!(
+            f64::from_bits(rules.general.building_repair_rate.bits()),
+            0.02_f32 as f64,
+        );
+        assert_eq!(
+            f64::from_bits(rules.general.building_repair_percent.bits()),
+            0.20_f32 as f64,
+        );
     }
 
     /// AT-9 inverse: a map with no rules-shaped sections changes nothing.

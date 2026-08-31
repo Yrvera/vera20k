@@ -13,6 +13,7 @@ use super::helpers::{
     is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
+use crate::app::presentation::building_anim::selected_building_anim_view;
 use crate::app::presentation::render::draw_plan_lowering::{
     GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedBuildingPieceInstance,
     PlannedGroundObjectInstance,
@@ -86,7 +87,14 @@ pub(crate) fn build_shp_instances(
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas) {
+    let (sim, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.sprite_atlas,
+    ) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -100,10 +108,10 @@ pub(crate) fn build_shp_instances(
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.match_state.sandbox_full_visibility;
-    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);
+    let art_reg: Option<&crate::rules::art_data::ArtRegistry> =
+        state.rules().map(|rules| &rules.art_registry);
 
-    let encounter_order =
-        super::helpers::tactical_entity_encounter_order(sim, state.rules());
+    let encounter_order = super::helpers::tactical_entity_encounter_order(sim, state.rules());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -127,7 +135,8 @@ pub(crate) fn build_shp_instances(
         // wall overlay instances in the unified merge (draw_merged_object_pass),
         // not here. Skip them to avoid drawing frame 0 (isolated pillar).
         if entity.category == EntityCategory::Structure {
-            let is_wall = state.rules()
+            let is_wall = state
+                .rules()
                 .and_then(|r| r.object(type_str))
                 .map(|o| o.wall)
                 .unwrap_or(false);
@@ -137,7 +146,9 @@ pub(crate) fn build_shp_instances(
         }
         let pos = &entity.position;
         let hc: HouseColorIndex = state
-            .match_state.match_presentation.house_color_map
+            .match_state
+            .match_presentation
+            .house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
@@ -222,7 +233,8 @@ pub(crate) fn build_shp_instances(
                             .map(|c| c.count())
                             .unwrap_or(0);
                         let tech_level = obj.map(|o| o.tech_level).unwrap_or(-1);
-                        let (cy, cr) = state.rules()
+                        let (cy, cr) = state
+                            .rules()
                             .map(|r| (r.general.condition_yellow, r.general.condition_red))
                             .unwrap_or((0.5, 0.25));
                         rendered_garrison_body_frame_index(
@@ -257,7 +269,8 @@ pub(crate) fn build_shp_instances(
             Some(e) => e,
             None if shp_frame != 0
                 && entity.category == EntityCategory::Structure
-                && state.rules()
+                && state
+                    .rules()
                     .and_then(|r| r.object(type_str))
                     .map(|o| o.can_be_occupied)
                     .unwrap_or(false) =>
@@ -306,9 +319,11 @@ pub(crate) fn build_shp_instances(
             &state.match_state.match_presentation.lighting_grid,
             (pos.rx, pos.ry),
             entity.category,
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_unit_light),
-            state.rules()
+            state
+                .rules()
                 .map_or(0, |rules| rules.general.extra_infantry_light),
         );
         let under_bridge = is_under_bridge_render_state(state, entity)
@@ -418,10 +433,18 @@ pub(crate) fn build_shp_instances(
                 let is_garrisoned = entity.passenger_role.cargo().is_some_and(|c| !c.is_empty());
                 let is_player_owned = !crate::rules::house_colors::is_non_player_house(owner_str);
                 let world_height: f32 = state
-                    .match_state.match_presentation.terrain_grid
+                    .match_state
+                    .match_presentation
+                    .terrain_grid
                     .as_ref()
                     .map(|g| g.world_height)
                     .unwrap_or(1.0);
+                let slot_runtimes = state
+                    .match_state
+                    .match_presentation
+                    .building_anim_phase_base
+                    .get(&entity.stable_id)
+                    .map(|phase| phase.slots.as_slice());
                 emit_building_anims(
                     &mut building_pieces,
                     atlas,
@@ -434,10 +457,7 @@ pub(crate) fn build_shp_instances(
                     depth,
                     tint,
                     entity.building_anim_overlays.as_ref(),
-                    crate::app::presentation::building_anim::building_anim_elapsed_logic_frames(
-                        state,
-                        entity.stable_id,
-                    ),
+                    slot_runtimes,
                     Some(&sim.session.game_options),
                     Some(&sim.interner),
                     is_garrisoned,
@@ -488,7 +508,8 @@ pub(crate) fn build_shp_instances(
                 y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
                 z: i32::from(pos.z),
             };
-            let actual_type = state.rules()
+            let actual_type = state
+                .rules()
                 .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
             if let Some(parent) = actual_type.and_then(|object_type| {
                 ground_order.building_object_draw(
@@ -645,16 +666,8 @@ fn emit_building_bib(
 /// of how long this animation has existed — which is why identical buildings
 /// raised at different times do not animate in lockstep.
 ///
-/// DRIFT — the first sweep is missing when `Start=` differs from `LoopStart=`.
-/// The native counter is relative to `Start` and begins at zero, so the drawn
-/// frame is `Start + counter`: the animation plays `Start..LoopEnd` once when it
-/// is created and only then settles into `LoopStart..LoopEnd-1`. This goes
-/// straight into the loop. Trigger: creation of the slot animation — building
-/// placement for `[CAWA19_A]`, `[GACTWR_A]`, `[NATBNK_A]`, `[NATBNK_B]` and
-/// `[YAROCK_A]`, and crossing `ConditionYellow` for the 21 `…_AD` damaged
-/// replacements that also qualify. Effect: a one-off sweep through the other
-/// half of the SHP is skipped. Frequency: once per animation creation, never
-/// repeating, so it costs a brief transient and nothing steady-state.
+/// The counter is relative to `Start`: each newly created object plays
+/// `Start..LoopEnd-1` once, then settles into `LoopStart..LoopEnd-1`.
 fn looping_frame_values(
     loop_start: u16,
     loop_end: u16,
@@ -666,14 +679,20 @@ fn looping_frame_values(
     // LoopEnd is EXCLUSIVE in RA2 art.ini — e.g. GAPOWR_A has LoopStart=0,
     // LoopEnd=8 meaning frames 0..8 (0-7), while GAPOWR_AD starts at frame 8.
     // The ranges are contiguous: normal=[0..8), damaged=[8..16).
-    let range: u16 = loop_end.saturating_sub(loop_start).max(1);
     let rate: u32 = u32::from(rate_logic_frames).max(1);
     let tick: u32 = elapsed_logic_frames / rate;
 
     if ping_pong {
         return ping_pong_frame_value(loop_end, start_frame, tick);
     }
-    loop_start + (tick % range as u32) as u16
+    // The counter is initially relative to Start, not LoopStart. Play the
+    // initial Start..LoopEnd sweep once, then settle into LoopStart..LoopEnd.
+    let first_sweep = u32::from(loop_end.saturating_sub(start_frame));
+    if tick < first_sweep {
+        return start_frame.saturating_add(tick as u16);
+    }
+    let range = u32::from(loop_end.saturating_sub(loop_start).max(1));
+    loop_start + ((tick - first_sweep) % range) as u16
 }
 
 /// Frame of a `PingPong=yes` building animation `tick` frame-advances after
@@ -735,47 +754,6 @@ fn infantry_absorb_slot_is_hidden(active_slot_ordinal: usize, is_garrisoned: boo
     }
 }
 
-struct BuildingAnimFrameView<'a> {
-    anim_type: &'a str,
-    loop_start: u16,
-    loop_end: u16,
-    loop_count: i32,
-    start_frame: u16,
-    ping_pong: bool,
-}
-
-fn selected_building_anim_view<'a>(
-    anim: &'a crate::rules::art_data::BuildingAnimConfig,
-    building_damage_state_active: bool,
-    is_garrisoned: bool,
-) -> BuildingAnimFrameView<'a> {
-    let variant = if building_damage_state_active {
-        anim.damaged_variant.as_ref()
-    } else if is_garrisoned {
-        anim.garrisoned_variant.as_ref()
-    } else {
-        None
-    };
-    match variant {
-        Some(v) => BuildingAnimFrameView {
-            anim_type: &v.anim_type,
-            loop_start: v.loop_start,
-            loop_end: v.loop_end,
-            loop_count: v.loop_count,
-            start_frame: v.start_frame,
-            ping_pong: v.ping_pong,
-        },
-        None => BuildingAnimFrameView {
-            anim_type: &anim.anim_type,
-            loop_start: anim.loop_start,
-            loop_end: anim.loop_end,
-            loop_count: anim.loop_count,
-            start_frame: anim.start_frame,
-            ping_pong: anim.ping_pong,
-        },
-    }
-}
-
 /// Emit SpriteInstances for a building's animation overlays.
 ///
 /// Each anim overlay (e.g., CAOILD_A for Oil Derrick's tower) is looked up
@@ -793,7 +771,7 @@ fn emit_building_anims(
     building_depth: f32,
     tint: [f32; 3],
     overlays: Option<&crate::sim::components::BuildingAnimOverlays>,
-    anim_elapsed_logic_frames: u32,
+    slot_runtimes: Option<&[Option<crate::sim::components::AnimRuntime>]>,
     game_options: Option<&crate::sim::game_options::GameOptions>,
     interner: Option<&crate::sim::intern::StringInterner>,
     is_garrisoned: bool,
@@ -815,7 +793,7 @@ fn emit_building_anims(
     // order (`ActiveAnim`, `…Two`, `…Three`, `…Four`), so counting Active-kind
     // entries reproduces the slot index the native branches switch on.
     let mut active_slot_ordinal: usize = 0;
-    for anim in &art_entry.building_anims {
+    for (slot_index, anim) in art_entry.building_anims.iter().enumerate() {
         let this_active_ordinal: usize = active_slot_ordinal;
         if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Active) {
             active_slot_ordinal += 1;
@@ -827,7 +805,15 @@ fn emit_building_anims(
         // Special/Super: event-triggered one-shot — skip entirely if not in overlays.
         let selected =
             selected_building_anim_view(anim, building_damage_state_active, is_garrisoned);
-        let anim_upper: String = anim.anim_type.to_uppercase();
+        let slot_runtime = slot_runtimes
+            .and_then(|slots| slots.get(slot_index))
+            .and_then(Option::as_ref);
+        let rendered_anim_type = slot_runtime
+            .map(|runtime| runtime.type_name.as_str())
+            .unwrap_or(selected.anim_type);
+        let runtime_frame =
+            slot_runtime.and_then(|runtime| building_slot_runtime_draw_frame(runtime, art_reg));
+        let anim_upper: String = rendered_anim_type.to_uppercase();
         let anim_upper_id: Option<crate::sim::intern::InternedId> =
             interner.and_then(|i| i.get(&anim_upper));
         let frame: u16 = if matches!(
@@ -866,20 +852,25 @@ fn emit_building_anims(
                 // (country flags, etc.) always animate.
                 let is_capturable: bool = obj.map(|o| o.capturable).unwrap_or(false);
                 if anim.is_primary && is_capturable && !is_player_owned {
-                    selected.start_frame
+                    art_reg
+                        .anim_runtime_config(rendered_anim_type)
+                        .and_then(|config| u16::try_from(config.start).ok())
+                        .unwrap_or(selected.start_frame)
                 } else {
-                    looping_frame_values(
-                        selected.loop_start,
-                        selected.loop_end,
-                        selected.start_frame,
-                        crate::app::presentation::building_anim::building_anim_rate_logic_frames(
-                            art_reg,
-                            selected.anim_type,
-                            game_options,
-                        ),
-                        selected.ping_pong,
-                        anim_elapsed_logic_frames,
-                    )
+                    runtime_frame.unwrap_or_else(|| {
+                        looping_frame_values(
+                            selected.loop_start,
+                            selected.loop_end,
+                            selected.start_frame,
+                            crate::app::presentation::building_anim::building_anim_rate_logic_frames(
+                                art_reg,
+                                selected.anim_type,
+                                game_options,
+                            ),
+                            selected.ping_pong,
+                            0,
+                        )
+                    })
                 }
             } else {
                 // One-shot: look up current frame from ECS BuildingAnimOverlays component.
@@ -895,18 +886,20 @@ fn emit_building_anims(
                     })
             }
         } else if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Idle) {
-            looping_frame_values(
-                selected.loop_start,
-                selected.loop_end,
-                selected.start_frame,
-                crate::app::presentation::building_anim::building_anim_rate_logic_frames(
-                    art_reg,
-                    selected.anim_type,
-                    game_options,
-                ),
-                selected.ping_pong,
-                anim_elapsed_logic_frames,
-            )
+            runtime_frame.unwrap_or_else(|| {
+                looping_frame_values(
+                    selected.loop_start,
+                    selected.loop_end,
+                    selected.start_frame,
+                    crate::app::presentation::building_anim::building_anim_rate_logic_frames(
+                        art_reg,
+                        selected.anim_type,
+                        game_options,
+                    ),
+                    selected.ping_pong,
+                    0,
+                )
+            })
         } else {
             // Special/Super are one-shot event-triggered animations (e.g., GAREFNOR ore
             // conveyor). Only render if actively playing in the BuildingAnimOverlays state.
@@ -922,7 +915,7 @@ fn emit_building_anims(
         // This prevents a visual glitch where the anim disappears for one
         // tick when the atlas has fewer frames than the art.ini loop range.
         let mut anim_key: ShpSpriteKey = ShpSpriteKey {
-            type_id: selected.anim_type.to_string(),
+            type_id: rendered_anim_type.to_string(),
             facing: 0,
             frame,
             house_color,
@@ -952,7 +945,7 @@ fn emit_building_anims(
         // a constant -2px bias. Negative = toward camera. This orders anims
         // correctly against OTHER nearby objects.
         let type_z_adjust: i32 = art_reg
-            .anim_runtime_config(&selected.anim_type)
+            .anim_runtime_config(rendered_anim_type)
             .map(|c| c.z_adjust)
             .unwrap_or(0);
         let z_adjust_px: i32 =
@@ -979,6 +972,14 @@ fn emit_building_anims(
     }
 }
 
+fn building_slot_runtime_draw_frame(
+    runtime: &crate::sim::components::AnimRuntime,
+    art: &crate::rules::art_data::ArtRegistry,
+) -> Option<u16> {
+    let config = art.anim_runtime_config(&runtime.type_name)?;
+    u16::try_from(config.start.saturating_add(runtime.current_frame)).ok()
+}
+
 #[cfg(test)]
 fn resting_building_anim_frame(anim: &crate::rules::art_data::BuildingAnimConfig) -> u16 {
     resting_building_anim_frame_values(anim.loop_start, anim.loop_end, anim.start_frame)
@@ -1001,7 +1002,8 @@ fn resolve_infantry_shp_frame(
     // Pass raw facing (not canonical) to resolve_shp_frame so the
     // facing-to-index division works correctly for any facing count
     // (6, 8, 10, etc.). The absolute frame index encodes the direction.
-    let sequence_set = state.rules()
+    let sequence_set = state
+        .rules()
         .and_then(|rules| rules.animation_sequence(type_id));
     if entity.category == EntityCategory::Unit
         && !entity.is_voxel
@@ -1096,6 +1098,7 @@ fn building_frame_index(
 #[cfg(test)]
 mod tests {
     use super::building_frame_index;
+    use super::building_slot_runtime_draw_frame;
     use super::infantry_absorb_slot_is_hidden;
     use super::looping_frame_values;
     use super::rendered_garrison_body_frame_index;
@@ -1109,6 +1112,7 @@ mod tests {
         ArtRegistry, BuildingAnimConfig, BuildingAnimKind, BuildingAnimVariantConfig,
     };
     use crate::rules::ini_parser::IniFile;
+    use crate::sim::components::AnimRuntime;
     use crate::sim::game_options::GameOptions;
 
     /// Stock `[GAPOWR_A]`, the Allied power plant's looping smokestack.
@@ -1172,6 +1176,28 @@ mod tests {
     }
 
     #[test]
+    fn building_slot_runtime_draw_adds_type_start_to_relative_current_frame() {
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[OFFSET]\nStart=2\nLoopStart=2\nLoopEnd=8\nRate=300\n",
+        ));
+        let runtime = AnimRuntime {
+            type_name: "OFFSET".to_string(),
+            current_frame: 3,
+            frame_step: 1,
+            delay_logic_frames: 0,
+            reload_logic_frames: 3,
+            rate_elapsed_logic_frames: 0,
+            loop_remaining: u8::MAX,
+            first_ai_guard: false,
+            expired: false,
+            constructor_reverse: false,
+            elapsed_logic_ms: 0,
+        };
+
+        assert_eq!(building_slot_runtime_draw_frame(&runtime, &art), Some(5));
+    }
+
+    #[test]
     fn looping_building_anim_advances_one_frame_per_rate_logic_frames() {
         // 8 frames at 6 logic frames each: frame 0 holds for logic frames 0..5,
         // frame 1 begins on logic frame 6, and the cycle wraps after 48.
@@ -1180,6 +1206,19 @@ mod tests {
         assert_eq!(looping_frame_values(0, 8, 0, 6, false, 6), 1);
         assert_eq!(looping_frame_values(0, 8, 0, 6, false, 47), 7);
         assert_eq!(looping_frame_values(0, 8, 0, 6, false, 48), 0);
+    }
+
+    #[test]
+    fn looping_building_anim_plays_start_to_loop_end_once_before_loop_start() {
+        assert_eq!(
+            (0..18)
+                .map(|elapsed| looping_frame_values(1, 16, 0, 1, false, elapsed))
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 1, 2]
+        );
+        assert_eq!(looping_frame_values(19, 20, 0, 1, false, 19), 19);
+        assert_eq!(looping_frame_values(19, 20, 0, 1, false, 20), 19);
+        assert_eq!(looping_frame_values(19, 20, 0, 1, false, 21), 19);
     }
 
     #[test]

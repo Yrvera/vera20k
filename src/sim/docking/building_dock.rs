@@ -130,7 +130,8 @@ fn cell_distance(ax: u16, ay: u16, bx: u16, by: u16) -> u32 {
 
 /// Advance building dock state machines for all entities with `dock_state`.
 ///
-/// Called once per tick from `advance_tick()`, after `tick_repairs()`.
+/// Called once per tick from `advance_tick()`, after the Building repair/sell
+/// visits and their deferred AI-sale completion.
 /// Uses the two-phase snapshot pattern to avoid borrow conflicts.
 pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
     // Phase 1: Cleanup dead/dying entities from dock reservations. Dying

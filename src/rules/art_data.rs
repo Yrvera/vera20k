@@ -1652,9 +1652,11 @@ pub fn voxel_asset_names(image_id: &str) -> (String, String) {
 const BUILDING_ANIM_KEYS: &[(&str, &[&str])] = &[
     ("ActiveAnim", &["", "Two", "Three", "Four"]),
     ("IdleAnim", &["", "Two"]),
-    ("SuperAnim", &[""]),
+    ("SuperAnim", &["", "Two", "Three", "Four"]),
     ("SpecialAnim", &["", "Two", "Three", "Four"]),
     ("ProductionAnim", &[""]),
+    ("LowPower", &[""]),
+    ("SuperLowPower", &[""]),
 ];
 
 fn parse_building_anims(section: &IniSection, ini: &IniFile) -> Vec<BuildingAnimConfig> {
@@ -1664,7 +1666,7 @@ fn parse_building_anims(section: &IniSection, ini: &IniFile) -> Vec<BuildingAnim
         let kind: BuildingAnimKind = match base {
             "ActiveAnim" => BuildingAnimKind::Active,
             "IdleAnim" => BuildingAnimKind::Idle,
-            "SuperAnim" => BuildingAnimKind::Super,
+            "SuperAnim" | "LowPower" | "SuperLowPower" => BuildingAnimKind::Super,
             "SpecialAnim" => BuildingAnimKind::Special,
             "ProductionAnim" => BuildingAnimKind::Production,
             _ => BuildingAnimKind::Idle,

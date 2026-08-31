@@ -312,6 +312,58 @@ fn parses_all_four_special_anim_suffixes_in_document_order() {
 }
 
 #[test]
+fn parses_active_retail_super_and_low_power_slot_descriptors() {
+    let ini = IniFile::from_str(
+        "[YAGNTC]\n\
+         SuperAnim=YAGNTC_E\nSuperAnimDamaged=YAGNTC_ED\n\
+         SuperAnimTwo=YAGNTC_F\nSuperAnimTwoDamaged=YAGNTC_FD\n\
+         SuperAnimThree=YAGNTC_G\nSuperAnimThreeDamaged=YAGNTC_GD\n\
+         SuperAnimFour=YAGNTC_H\nSuperAnimFourDamaged=YAGNTC_HD\n\
+         SuperLowPower=YAGNTC_P\nSuperLowPowerDamaged=YAGNTC_PD\n\
+         [NANRCT]\nLowPower=NANRCT_P\nLowPowerDamaged=NANRCT_PD\n",
+    );
+    let registry = ArtRegistry::from_ini(&ini);
+    let yuri = registry.get("YAGNTC").expect("YAGNTC art");
+    let super_slots = yuri
+        .building_anims
+        .iter()
+        .filter(|anim| matches!(anim.kind, BuildingAnimKind::Super))
+        .map(|anim| {
+            (
+                anim.anim_type.as_str(),
+                anim.damaged_variant
+                    .as_ref()
+                    .map(|variant| variant.anim_type.as_str()),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        super_slots,
+        vec![
+            ("YAGNTC_E", Some("YAGNTC_ED")),
+            ("YAGNTC_F", Some("YAGNTC_FD")),
+            ("YAGNTC_G", Some("YAGNTC_GD")),
+            ("YAGNTC_H", Some("YAGNTC_HD")),
+            ("YAGNTC_P", Some("YAGNTC_PD")),
+        ]
+    );
+    let reactor = registry.get("NANRCT").expect("NANRCT art");
+    assert_eq!(reactor.building_anims.len(), 1);
+    assert!(matches!(
+        reactor.building_anims[0].kind,
+        BuildingAnimKind::Super
+    ));
+    assert_eq!(reactor.building_anims[0].anim_type, "NANRCT_P");
+    assert_eq!(
+        reactor.building_anims[0]
+            .damaged_variant
+            .as_ref()
+            .map(|variant| variant.anim_type.as_str()),
+        Some("NANRCT_PD")
+    );
+}
+
+#[test]
 fn active_anim_garrisoned_replaces_base_slot_not_extra_overlay() {
     let ini: IniFile = IniFile::from_str(
         "[CAWASH19]\nActiveAnim=CAWA19_A\nActiveAnimGarrisoned=CAWA19_AG\nActiveAnimDamaged=CAWA19_AD\n",
@@ -688,10 +740,7 @@ fn gsi_05_10_delayed_building_fire_art_fields_keep_defaults_and_signed_delay() {
 #[test]
 fn populate_anim_frame_dims_binds_smudge_inputs_without_a_renderer() {
     let root = AnimDimTestRoot::new();
-    std::fs::write(
-        root.path().join("BIGIMAGE.SHP"),
-        single_frame_shp(61, 51),
-    )
+    std::fs::write(root.path().join("BIGIMAGE.SHP"), single_frame_shp(61, 51))
         .expect("write big smudge anim SHP");
     let assets = crate::assets::asset_manager::AssetManager::from_loose_root_for_test(root.path());
     let mut registry = ArtRegistry::from_ini(&IniFile::from_str(
@@ -700,8 +749,7 @@ fn populate_anim_frame_dims_binds_smudge_inputs_without_a_renderer() {
          [UNFLAGGED]\nImage=BIGIMAGE\n",
     ));
 
-    let (populated, fallback) =
-        registry.populate_anim_frame_dims(&assets, "TEM", "TEMPERATE");
+    let (populated, fallback) = registry.populate_anim_frame_dims(&assets, "TEM", "TEMPERATE");
 
     assert_eq!((populated, fallback), (1, 1));
     let big = registry.get("BIG").expect("bound big anim");
@@ -730,8 +778,7 @@ fn single_frame_shp(width: u16, height: u16) -> Vec<u8> {
     data
 }
 
-static NEXT_ANIM_DIM_TEST_ROOT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static NEXT_ANIM_DIM_TEST_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct AnimDimTestRoot(std::path::PathBuf);
 

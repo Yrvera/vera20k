@@ -84,11 +84,7 @@ mod drive_ship_slope_hash_tests {
             _ => unreachable!(),
         };
         if stashed {
-            assert!(locomotor.begin_piggyback(
-                LocomotorKind::Teleport,
-                MovementLayer::Ground,
-                90,
-            ));
+            assert!(locomotor.begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground, 90,));
         }
         entity.locomotor = Some(locomotor);
         sim.substrate.entities.insert(entity);
@@ -213,17 +209,9 @@ mod shared_dummy_bridge_hash_tests {
     #[test]
     fn gsi_04_03_hashes_dummy_level_slope_without_retained_projectile() {
         let mut sim = Simulation::new();
-        sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(
-            0,
-            0,
-            Vec::new(),
-        ));
+        sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(0, 0, Vec::new()));
         let dummy = sim.effective_shared_cell_dummy();
-        let terrain_dummy = sim
-            .resolved_terrain
-            .as_ref()
-            .unwrap()
-            .shared_cell_dummy();
+        let terrain_dummy = sim.resolved_terrain.as_ref().unwrap().shared_cell_dummy();
         assert!(
             dummy.same_identity(&terrain_dummy),
             "the hash authority must be the dummy bound into production terrain"
@@ -424,7 +412,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true,
+            true, true, true, true, true, true,
         )
     }
 
@@ -436,7 +424,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false,
         )
     }
 
@@ -448,7 +436,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false,
         )
     }
 
@@ -458,7 +446,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false, false, false, false,
+            false, false, false, false, false, false,
         )
     }
 
@@ -469,7 +457,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false,
+            false, false, false, false, false, false,
         )
     }
 
@@ -480,7 +468,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false, false,
+            true, false, false, false, false, false,
         )
     }
 
@@ -489,7 +477,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false, false,
+            true, true, false, false, false, false,
         )
     }
 
@@ -498,7 +486,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false, false,
+            true, true, true, false, false, false,
         )
     }
 
@@ -508,7 +496,16 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false,
+            true, true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v114 Building repair fields.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_building_repair_v114(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, false,
         )
     }
 
@@ -533,6 +530,7 @@ impl Simulation {
         include_base_plan_center_v111: bool,
         include_house_deploy_latches_v112: bool,
         include_house_update_activation_v113: bool,
+        include_building_repair_v114: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -585,6 +583,7 @@ impl Simulation {
             include_base_plan_center_v111,
             include_house_deploy_latches_v112,
             include_house_update_activation_v113,
+            include_building_repair_v114,
         );
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -652,6 +651,7 @@ impl Simulation {
             include_techno_constructor_v104,
             include_naval_build_const_v109,
             include_base_plan_v110,
+            include_building_repair_v114,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -806,6 +806,7 @@ impl Simulation {
         include_base_plan_center_v111: bool,
         include_house_deploy_latches_v112: bool,
         include_house_update_activation_v113: bool,
+        include_building_repair_v114: bool,
     ) {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
@@ -828,6 +829,10 @@ impl Simulation {
             house.owned_building_count.hash(hasher);
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
+            if include_building_repair_v114 {
+                b"building-ai-sell-house-v1".hash(hasher);
+                house.scenario_iq.hash(hasher);
+            }
             hash_house_ai_activation_fields(
                 house,
                 include_house_deploy_latches_v112,
@@ -1222,12 +1227,12 @@ impl Simulation {
         include_techno_constructor_v104: bool,
         include_naval_build_const_v109: bool,
         include_base_plan_v110: bool,
+        include_building_repair_v114: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
             if include_techno_constructor_v104
-                && (entity.techno_ctor_random_word != 0
-                    || entity.structure_upgrade_link.is_some())
+                && (entity.techno_ctor_random_word != 0 || entity.structure_upgrade_link.is_some())
             {
                 b"techno-constructor-v1".hash(hasher);
                 entity.techno_ctor_random_word.hash(hasher);
@@ -1361,6 +1366,17 @@ impl Simulation {
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
+            if include_building_repair_v114 {
+                b"building-ai-sell-tag-v1".hash(hasher);
+                entity.attached_trigger_tag.hash(hasher);
+                if entity.category == crate::map::entities::EntityCategory::Structure {
+                    b"building-click-repair-v2".hash(hasher);
+                    entity.repairing.hash(hasher);
+                    entity.repair_pulse_latch.hash(hasher);
+                    entity.building_ai_sell_enabled.hash(hasher);
+                    entity.building_make_shape_initialized.hash(hasher);
+                }
+            }
             entity.damage_fire_state_active.hash(hasher);
             entity.damage_fire_anim_ids.hash(hasher);
             entity.vision_range.hash(hasher);
@@ -2586,6 +2602,72 @@ mod rally_hash_tests {
         sim_b.substrate.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn building_repair_fields_are_v114_hash_authority() {
+        fn fixture(
+            repairing: bool,
+            latch: bool,
+            ai_sell_enabled: bool,
+            make_initialized: bool,
+            tagged: bool,
+        ) -> Simulation {
+            let mut sim = Simulation::new();
+            let mut entity = GameEntity::test_default(1, "GAPOWR", "Americans", 10, 10);
+            entity.category = crate::map::entities::EntityCategory::Structure;
+            entity.repairing = repairing;
+            entity.repair_pulse_latch = latch;
+            entity.building_ai_sell_enabled = ai_sell_enabled;
+            entity.building_make_shape_initialized = make_initialized;
+            if tagged {
+                entity.attached_trigger_tag = Some(sim.interner.intern("AI_BLOCK"));
+            }
+            sim.substrate.entities.insert(entity);
+            sim
+        }
+
+        let fixtures = [
+            fixture(false, false, false, false, false),
+            fixture(true, false, false, false, false),
+            fixture(false, true, false, false, false),
+            fixture(false, false, true, false, false),
+            fixture(false, false, false, true, false),
+            fixture(false, false, false, false, true),
+        ];
+        let current = fixtures
+            .iter()
+            .map(Simulation::state_hash)
+            .collect::<Vec<_>>();
+        for left in 0..current.len() {
+            for right in left + 1..current.len() {
+                assert_ne!(current[left], current[right]);
+            }
+        }
+        let legacy = fixtures[0].state_hash_without_building_repair_v114();
+        for fixture in &fixtures[1..] {
+            assert_eq!(legacy, fixture.state_hash_without_building_repair_v114());
+        }
+    }
+
+    #[test]
+    fn building_ai_scenario_iq_is_v114_hash_authority() {
+        fn fixture(scenario_iq: i32) -> Simulation {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("AI");
+            let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 10);
+            house.scenario_iq = scenario_iq;
+            sim.houses.insert(owner, house);
+            sim
+        }
+        let baseline = fixture(0);
+        let changed = fixture(1);
+
+        assert_ne!(baseline.state_hash(), changed.state_hash());
+        assert_eq!(
+            baseline.state_hash_without_building_repair_v114(),
+            changed.state_hash_without_building_repair_v114()
+        );
     }
 
     #[test]

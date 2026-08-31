@@ -17,10 +17,10 @@ use crate::map::tags::TagMap;
 use crate::map::terrain::TerrainGrid;
 use crate::map::waypoints::Waypoint;
 use crate::render::bridge_atlas::BridgeAtlas;
-use crate::render::minimap::MinimapRenderer;
-use crate::render::selection_overlay::SelectionOverlay;
 use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
+use crate::render::minimap::MinimapRenderer;
 use crate::render::overlay_atlas::OverlayAtlas;
+use crate::render::selection_overlay::SelectionOverlay;
 use crate::render::sidebar_cameo_atlas::SidebarCameoAtlas;
 use crate::render::sidebar_chrome::SidebarChromeSet;
 use crate::render::sprite_atlas::SpriteAtlas;
@@ -126,21 +126,20 @@ pub(crate) struct MatchPresentationState {
     pub(crate) parachute_anims: Vec<crate::sim::components::ParachuteAnim>,
     /// Global elapsed time for looping terrain overlay animations.
     pub(crate) idle_anim_elapsed_ms: u32,
-    /// Logic frame on which each building's slot animations were created, by
-    /// entity id.
+    /// App-owned AnimClass runtime for every represented looping building slot,
+    /// keyed by entity id and aligned with immutable ART slot order.
     ///
-    /// gamemd gives every building animation slot its own animation object whose
-    /// frame timer is based at the frame it was constructed, so two identical
-    /// buildings placed at different times run out of phase with each other.
-    /// Presentation-only, so it lives here rather than on the entity.
+    /// gamemd gives every occupied slot its own animation object. Damage-state
+    /// replacement reconstructs only that slot, carries its native-relative
+    /// current frame, and resets the new object's timer. Presentation-only, so
+    /// these objects live here rather than on the entity.
     ///
     /// DRIFT: gamemd serializes each animation object with its own timer, so a
     /// saved game restores the phases it was saved with. This map is not in the
     /// snapshot, so loading re-stamps every surviving structure at the load
-    /// frame and the whole base pulses in unison again — the exact symptom the
-    /// per-building phase exists to remove. Fires once per save load, and only
-    /// unwinds as those buildings are replaced.
-    pub(crate) building_anim_phase_base: std::collections::BTreeMap<u64, u64>,
+    /// frame and the whole base pulses in unison again. Fires once per save load,
+    /// and only unwinds as those buildings are replaced.
+    pub(crate) building_anim_phase_base: std::collections::BTreeMap<u64, BuildingAnimPhaseBase>,
     // -- Reusable per-frame scratch buffers (avoid allocation each frame) --
     /// Overlay instance scratch vec — cleared and refilled each frame.
     pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,
@@ -213,4 +212,13 @@ pub(crate) struct MatchPresentationState {
     pub(crate) show_hotkey_help: bool,
     /// Save/load panel visible. Toggle with F5.
     pub(crate) show_save_load_panel: bool,
+}
+
+/// Presentation observation of one Building's occupied slot animations.
+#[derive(Debug, Clone)]
+pub(crate) struct BuildingAnimPhaseBase {
+    pub(crate) observed_reset_revision: u32,
+    /// Index is the immutable `ArtEntry::building_anims` ordinal. `None` means
+    /// the native slot is absent or is owned by an authoritative one-shot path.
+    pub(crate) slots: Vec<Option<crate::sim::components::AnimRuntime>>,
 }

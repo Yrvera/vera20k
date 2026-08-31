@@ -56,7 +56,8 @@ pub struct HouseDefinition {
     pub side: Option<String>,
     /// Optional player-control hint from `PlayerControl=`.
     pub player_control: Option<bool>,
-    /// Optional scenario-authored `IQ=` read into HouseClass CurrentIQ.
+    /// Optional scenario-authored `IQ=` read into both HouseClass scenario IQ
+    /// (`+0x1D0`) and live CurrentIQ (`+0x24C`).
     pub iq: Option<i32>,
     /// Allies listed in the house section.
     pub allies: Vec<String>,

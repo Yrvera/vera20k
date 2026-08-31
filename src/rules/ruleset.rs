@@ -17,7 +17,7 @@
 //!   rules/weapon_type, rules/warhead_type.
 //! - No dependencies on sim/, render/, ui/, etc.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::rules::combat_damage::CombatDamageDefaults;
@@ -40,6 +40,7 @@ use crate::rules::voxel_anim_type::{VoxelAnimType, VoxelAnimTypeId};
 use crate::rules::warhead_type::WarheadType;
 use crate::rules::weapon_type::WeaponType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
+use crate::util::native_x87::NativeF64Bits;
 
 /// Country-level fields needed by gameplay systems.
 #[derive(Debug, Clone)]
@@ -705,6 +706,16 @@ pub struct GeneralRules {
     /// Fallback 25 (25%) matches the engine constructor default; retail rulesmd
     /// sets 15%. Total cost = cost * repair_percent / 100.
     pub repair_percent: u16,
+    /// Raw BuildingClass click-repair cadence (`RepairRate=`), retained as the
+    /// native widened-double bits. Building repair chops `rate * 900`; this is
+    /// separate from service-depot `URepairRate=` and its rounded tick count.
+    pub building_repair_rate: NativeF64Bits,
+    /// Raw signed click-repair HP step (`RepairStep=`). The BuildingType
+    /// virtual returns this dword without the service-depot clamp.
+    pub building_repair_step: i32,
+    /// Raw click-repair full-step percentage (`RepairPercent=`), represented as
+    /// a fraction (`15% == 0.15`).
+    pub building_repair_percent: NativeF64Bits,
 
     // -- Aircraft ammo reload --
     /// Ticks to reload one ammo point at an airfield (from ReloadRate= minutes in [General]).
@@ -1091,6 +1102,9 @@ impl Default for GeneralRules {
             unit_repair_rate_ticks: 14,
             repair_step: 5,
             repair_percent: 25,
+            building_repair_rate: NativeF64Bits::from_bits(0.016_f64.to_bits()),
+            building_repair_step: 5,
+            building_repair_percent: NativeF64Bits::from_bits(0.25_f64.to_bits()),
             // ReloadRate=.3 min = 18 sec = 270 ticks at 15 Hz.
             reload_rate_ticks: 270,
             // PathDelay=.01 min = 0.6 sec = 9 ticks at 15 Hz.
@@ -2005,6 +2019,21 @@ impl GeneralRules {
                 .get_percent("RepairPercent")
                 .map(|frac| (frac * 100.0).round() as u16)
                 .unwrap_or(defaults.repair_percent),
+            building_repair_rate: NativeF64Bits::from_bits(
+                general
+                    .get_f64("RepairRate")
+                    .unwrap_or_else(|| f64::from_bits(defaults.building_repair_rate.bits()))
+                    .to_bits(),
+            ),
+            building_repair_step: general
+                .get_i32("RepairStep")
+                .unwrap_or(defaults.building_repair_step),
+            building_repair_percent: NativeF64Bits::from_bits(
+                general
+                    .get_f64("RepairPercent")
+                    .unwrap_or_else(|| f64::from_bits(defaults.building_repair_percent.bits()))
+                    .to_bits(),
+            ),
             reload_rate_ticks: general
                 .get_f32("ReloadRate")
                 .map(|minutes| {
@@ -2406,6 +2435,10 @@ pub struct RuleSet {
     /// Retained art.ini registry. Populated by the app loading path (`app::loading::init`) after `merge_art_data`
     /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
     pub art_registry: crate::rules::art_data::ArtRegistry,
+    /// GPU-independent availability of each BuildingType's resolved build-up
+    /// SHP. `None` means an asset-less test ruleset has not been bound; active
+    /// app/headless loads always bind `Some`, including an empty set.
+    building_make_shapes: Option<BTreeSet<String>>,
     /// GPU-independent SHP frame counts used by authoritative world-effect
     /// and particle timing. Bound once from the active assets and ART data.
     effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog,
@@ -3137,6 +3170,7 @@ impl RuleSet {
             voxel_anim_types_by_name,
             smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
+            building_make_shapes: None,
             effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog::default(),
             terrain_spawner_assets:
                 crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog::default(),
@@ -3319,17 +3353,19 @@ impl RuleSet {
     }
 
     /// Compatibility identity for processed rules plus the resolved animation,
-    /// effect-frame, terrain-spawner frame, and smudge-selection inputs bound
-    /// to this ruleset.
+    /// effect-frame, terrain-spawner frame, building-animation slot, and
+    /// smudge-selection inputs bound to this ruleset.
     /// Other asset-derived simulation inputs are added by later ownership
     /// slices and are not claimed by this hash yet.
     pub fn simulation_config_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        b"rules-simulation-config-v4".hash(&mut hasher);
+        b"rules-simulation-config-v6".hash(&mut hasher);
         self.source_ini_hash.hash(&mut hasher);
         self.animation_sequences.hash(&mut hasher);
         self.effect_assets.hash(&mut hasher);
         self.terrain_spawner_assets.hash(&mut hasher);
+        b"building-make-shapes-v1".hash(&mut hasher);
+        self.building_make_shapes.hash(&mut hasher);
         b"art-smudge-config-v1".hash(&mut hasher);
         let smudge_anim_inputs = self
             .art_registry
@@ -3349,6 +3385,69 @@ impl RuleSet {
             })
             .collect::<BTreeMap<_, _>>();
         smudge_anim_inputs.hash(&mut hasher);
+        b"art-building-anim-config-v1".hash(&mut hasher);
+        let mut building_anim_entries = self
+            .art_registry
+            .iter_entries()
+            .filter(|(_, entry)| !entry.building_anims.is_empty())
+            .collect::<Vec<_>>();
+        building_anim_entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        building_anim_entries.len().hash(&mut hasher);
+        let mut referenced_building_anim_types = BTreeSet::new();
+        for (name, entry) in building_anim_entries {
+            name.hash(&mut hasher);
+            entry.building_anims.len().hash(&mut hasher);
+            for anim in &entry.building_anims {
+                anim.anim_type.hash(&mut hasher);
+                referenced_building_anim_types.insert(anim.anim_type.to_ascii_uppercase());
+                match anim.kind {
+                    crate::rules::art_data::BuildingAnimKind::Active => 0u8,
+                    crate::rules::art_data::BuildingAnimKind::Idle => 1,
+                    crate::rules::art_data::BuildingAnimKind::Super => 2,
+                    crate::rules::art_data::BuildingAnimKind::Special => 3,
+                    crate::rules::art_data::BuildingAnimKind::Production => 4,
+                }
+                .hash(&mut hasher);
+                anim.is_primary.hash(&mut hasher);
+                anim.x.hash(&mut hasher);
+                anim.y.hash(&mut hasher);
+                anim.y_sort.hash(&mut hasher);
+                anim.z_adjust.hash(&mut hasher);
+                anim.loop_start.hash(&mut hasher);
+                anim.loop_end.hash(&mut hasher);
+                anim.loop_count.hash(&mut hasher);
+                anim.rate.hash(&mut hasher);
+                anim.start_frame.hash(&mut hasher);
+                anim.ping_pong.hash(&mut hasher);
+                for variant in [&anim.damaged_variant, &anim.garrisoned_variant] {
+                    variant.is_some().hash(&mut hasher);
+                    if let Some(variant) = variant {
+                        variant.anim_type.hash(&mut hasher);
+                        referenced_building_anim_types
+                            .insert(variant.anim_type.to_ascii_uppercase());
+                        variant.loop_start.hash(&mut hasher);
+                        variant.loop_end.hash(&mut hasher);
+                        variant.loop_count.hash(&mut hasher);
+                        variant.rate.hash(&mut hasher);
+                        variant.start_frame.hash(&mut hasher);
+                        variant.ping_pong.hash(&mut hasher);
+                    }
+                }
+            }
+        }
+        b"art-building-anim-runtime-references-v1".hash(&mut hasher);
+        referenced_building_anim_types.len().hash(&mut hasher);
+        for anim_type in referenced_building_anim_types {
+            anim_type.hash(&mut hasher);
+            match self.art_registry.anim_runtime_config(&anim_type) {
+                Some(config) => {
+                    true.hash(&mut hasher);
+                    config.rate_logic_frames.hash(&mut hasher);
+                    config.normalized.hash(&mut hasher);
+                }
+                None => false.hash(&mut hasher),
+            }
+        }
         hasher.finish()
     }
 
@@ -3718,6 +3817,65 @@ impl RuleSet {
             asset_manager,
             theater_ext,
             theater_name,
+        );
+    }
+
+    /// Bind the per-Building build-up SHP pointer used by
+    /// `BuildingClass::Init_Managers` and `StartSelling` without consulting a
+    /// renderer atlas. Keys are canonical BuildingType IDs so construction can
+    /// stamp the two native instance bytes deterministically.
+    pub fn bind_building_make_shapes(
+        &mut self,
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) {
+        let mut available = BTreeSet::new();
+        for object in self
+            .object_list
+            .iter()
+            .filter(|object| object.category == ObjectCategory::Building)
+        {
+            let image_id = self
+                .art_registry
+                .resolve_effective_image_id(&object.id, &object.image);
+            let candidates = crate::rules::art_data::make_shp_candidates(
+                Some(&self.art_registry),
+                &image_id,
+                theater_ext,
+                theater_name,
+            );
+            // Filename fallback advances only while a candidate is missing.
+            // Once a file resolves, its parse result owns the manager outcome;
+            // a malformed higher-priority override cannot be skipped in favour
+            // of a later retail fallback.
+            let initialized = candidates
+                .iter()
+                .find_map(|candidate| asset_manager.get_ref(candidate))
+                .is_some_and(|data| crate::assets::shp_file::ShpFile::from_bytes(data).is_ok());
+            if initialized {
+                available.insert(object.id.to_ascii_uppercase());
+            }
+        }
+        self.building_make_shapes = Some(available);
+    }
+
+    /// Whether `BuildingClass::Init_Managers` obtained a build-up SHP for this
+    /// type. Asset-less unit rulesets preserve their historical constructor
+    /// fixtures by assuming availability; production paths bind explicitly.
+    pub fn building_make_shape_available(&self, type_id: &str) -> bool {
+        self.building_make_shapes
+            .as_ref()
+            .is_none_or(|available| available.contains(&type_id.to_ascii_uppercase()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_building_make_shapes_for_test(&mut self, type_ids: &[&str]) {
+        self.building_make_shapes = Some(
+            type_ids
+                .iter()
+                .map(|type_id| type_id.to_ascii_uppercase())
+                .collect(),
         );
     }
 
@@ -4251,6 +4409,39 @@ SpawnCount=3
     }
     use super::*;
     use crate::rules::ini_parser::RulesLayerKind;
+
+    #[test]
+    fn building_click_repair_defaults_and_raw_retail_values_are_distinct_from_service_repair() {
+        let defaults = GeneralRules::default();
+        assert_eq!(
+            f64::from_bits(defaults.building_repair_rate.bits()),
+            0.016_f64
+        );
+        assert_eq!(defaults.building_repair_step, 5);
+        assert_eq!(
+            f64::from_bits(defaults.building_repair_percent.bits()),
+            0.25_f64
+        );
+
+        let parsed = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\n\
+             RepairRate=.016\n\
+             RepairStep=-8\n\
+             RepairPercent=15%\n\
+             URepairRate=.1\n",
+        ));
+        assert_eq!(
+            f64::from_bits(parsed.building_repair_rate.bits()),
+            0.016_f32 as f64
+        );
+        assert_eq!(parsed.building_repair_step, -8);
+        assert_eq!(
+            f64::from_bits(parsed.building_repair_percent.bits()),
+            0.15_f32 as f64
+        );
+        assert_eq!(parsed.unit_repair_rate_ticks, 90);
+        assert_eq!(parsed.repair_step, 1, "service repair keeps its own clamp");
+    }
 
     #[test]
     fn cloak_global_defaults_and_native_minute_conversion_parse() {
@@ -6642,6 +6833,31 @@ ZAdjust=-10
     }
 
     #[test]
+    fn simulation_config_hash_covers_bound_building_make_shape_availability() {
+        let ini = IniFile::from_str(
+            "[BuildingTypes]\n0=GAPOWR\n1=GAWEAP\n\
+             [GAPOWR]\nStrength=100\n[GAWEAP]\nStrength=100\n",
+        );
+        let unbound = RuleSet::from_ini(&ini).expect("unbound rules");
+        let mut first = RuleSet::from_ini(&ini).expect("first bound rules");
+        let mut second = RuleSet::from_ini(&ini).expect("second bound rules");
+        first.building_make_shapes = Some(BTreeSet::from(["GAPOWR".to_string()]));
+        second.building_make_shapes = Some(BTreeSet::from(["GAWEAP".to_string()]));
+
+        assert!(unbound.building_make_shape_available("missing-test-fixture"));
+        assert!(first.building_make_shape_available("gapowr"));
+        assert!(!first.building_make_shape_available("GAWEAP"));
+        assert_ne!(
+            unbound.simulation_config_hash(),
+            first.simulation_config_hash()
+        );
+        assert_ne!(
+            first.simulation_config_hash(),
+            second.simulation_config_hash()
+        );
+    }
+
+    #[test]
     fn simulation_config_hash_covers_canonical_smudge_anim_dimensions() {
         let ini = IniFile::from_str("[InfantryTypes]\n[VehicleTypes]\n");
         let mut first = RuleSet::from_ini(&ini).expect("first rules");
@@ -6679,6 +6895,62 @@ ZAdjust=-10
         assert_ne!(
             first.simulation_config_hash(),
             changed.simulation_config_hash()
+        );
+    }
+
+    #[test]
+    fn simulation_config_hash_covers_canonical_building_animation_slots() {
+        let ini =
+            IniFile::from_str("[BuildingTypes]\n0=GAPOWR\n[GAPOWR]\nStrength=100\nArmor=wood\n");
+        let mut first = RuleSet::from_ini(&ini).expect("first rules");
+        let mut reordered = RuleSet::from_ini(&ini).expect("reordered rules");
+        let mut changed = RuleSet::from_ini(&ini).expect("changed rules");
+        let mut normalized_changed = RuleSet::from_ini(&ini).expect("normalized rules");
+
+        first.merge_art_data(&crate::rules::art_data::ArtRegistry::from_ini(
+            &IniFile::from_str(
+                "[GAPOWR]\nActiveAnim=GAPOWR_A\nActiveAnimDamaged=GAPOWR_AD\n\
+                 [GAPOWR_A]\nStart=2\nLoopStart=1\nLoopEnd=8\nRate=300\n\
+                 [GAPOWR_AD]\nStart=12\nLoopStart=11\nLoopEnd=18\nRate=150\n",
+            ),
+        ));
+        reordered.merge_art_data(&crate::rules::art_data::ArtRegistry::from_ini(
+            &IniFile::from_str(
+                "[GAPOWR_AD]\nRate=150\nLoopEnd=18\nLoopStart=11\nStart=12\n\
+                 [GAPOWR_A]\nRate=300\nLoopEnd=8\nLoopStart=1\nStart=2\n\
+                 [GAPOWR]\nActiveAnimDamaged=GAPOWR_AD\nActiveAnim=GAPOWR_A\n",
+            ),
+        ));
+        changed.merge_art_data(&crate::rules::art_data::ArtRegistry::from_ini(
+            &IniFile::from_str(
+                "[GAPOWR]\nActiveAnim=GAPOWR_A\nActiveAnimDamaged=GAPOWR_AD\n\
+                 [GAPOWR_A]\nStart=3\nLoopStart=1\nLoopEnd=8\nRate=300\n\
+                 [GAPOWR_AD]\nStart=12\nLoopStart=11\nLoopEnd=18\nRate=150\n",
+            ),
+        ));
+        normalized_changed.merge_art_data(&crate::rules::art_data::ArtRegistry::from_ini(
+            &IniFile::from_str(
+                "[GAPOWR]\nActiveAnim=GAPOWR_A\nActiveAnimDamaged=GAPOWR_AD\n\
+                 [GAPOWR_A]\nStart=2\nLoopStart=1\nLoopEnd=8\nRate=300\nNormalized=yes\n\
+                 [GAPOWR_AD]\nStart=12\nLoopStart=11\nLoopEnd=18\nRate=150\n",
+            ),
+        ));
+
+        assert_eq!(first.source_ini_hash(), reordered.source_ini_hash());
+        assert_eq!(
+            first.simulation_config_hash(),
+            reordered.simulation_config_hash(),
+            "ART section/key order must not affect compatibility"
+        );
+        assert_ne!(
+            first.simulation_config_hash(),
+            changed.simulation_config_hash(),
+            "repair-transition slot timing is hash-authoritative simulation input"
+        );
+        assert_ne!(
+            first.simulation_config_hash(),
+            normalized_changed.simulation_config_hash(),
+            "Normalized changes effective building-slot cadence"
         );
     }
 }

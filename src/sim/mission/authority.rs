@@ -593,7 +593,11 @@ fn commence_leaf(entity: &mut crate::sim::game_entity::GameEntity, now: u32) -> 
             entity.mission_leaf.clear_aircraft_action_for_commence();
         }
     }
-    verb::commence_base(&mut entity.mission, now)
+    let commenced = verb::commence_base(&mut entity.mission, now);
+    if commenced && entity.mission_leaf.as_building().is_some() {
+        entity.mission_leaf.set_building_ready_latch(0);
+    }
+    commenced
 }
 
 impl Simulation {
@@ -947,7 +951,6 @@ impl Simulation {
         if !commence_leaf(entity, now) {
             return Ok(false);
         }
-        entity.mission_leaf.set_building_ready_latch(0);
         Ok(true)
     }
 

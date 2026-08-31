@@ -160,6 +160,8 @@ pub fn populate(
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],

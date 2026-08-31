@@ -731,7 +731,7 @@ pub struct BuildingAnimOverlays {
 }
 
 /// App-side runtime state for a normal AnimClass-like SHP animation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AnimRuntime {
     /// Current art section / SHP type, uppercase (e.g. "UCFLASH").
     pub type_name: String,

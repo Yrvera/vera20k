@@ -328,7 +328,13 @@ use crate::sim::world::Simulation;
 // latches co-enabled by successful qualifying base-unit deployment.
 // Bumped 112 -> 113: persist House AutocreateAllowed beside the three deploy
 // latches in native conceptual byte order.
-const SNAPSHOT_VERSION: u32 = 113;
+// Bumped 113 -> 114: GameEntity persists BuildingClass Repairing, its private
+// pulse latch, and the presentation reset generation. The same parity slice
+// adds the two manager-init sale bytes, attached TriggerType identity, and
+// per-house scenario IQ. Older bincode records cannot supply these positional
+// fields; every simulation input above joins the deterministic hash, while the
+// presentation-only reset generation remains snapshot-only.
+const SNAPSHOT_VERSION: u32 = 114;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2741,10 +2747,12 @@ mod tests {
     /// House BuildConst vector and immutable entity membership; 109 -> 110
     /// adds ordered BasePlan state and immutable BuildingType facts; 110 -> 111
     /// adds the distinct BaseClass plan center; 111 -> 112 adds the three House
-    /// AI activation latches; 112 -> 113 adds House AutocreateAllowed.
+    /// AI activation latches; 112 -> 113 adds House AutocreateAllowed; 113 ->
+    /// 114 adds Building click-repair state, its presentation generation, the
+    /// manager/tag AI-sale inputs, and the distinct per-house scenario IQ.
     #[test]
-    fn phase3_house_ai_activation_snapshot_version_is_113() {
-        assert_eq!(super::SNAPSHOT_VERSION, 113);
+    fn phase8_building_repair_snapshot_version_is_114() {
+        assert_eq!(super::SNAPSHOT_VERSION, 114);
     }
 
     #[test]
@@ -2883,13 +2891,8 @@ mod tests {
     #[test]
     fn techno_constructor_word_and_upgrade_link_roundtrip_without_a_draw_and_hash() {
         let mut sim = Simulation::new();
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "UP1",
-            "Americans",
-            4,
-            5,
-        );
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "UP1", "Americans", 4, 5);
         entity.techno_ctor_random_word = 0xA55A;
         entity.structure_upgrade_link = Some(crate::sim::game_entity::StructureUpgradeLink {
             parent_stable_id: 77,
@@ -2941,13 +2944,8 @@ mod tests {
     #[test]
     fn techno_constructor_manager_owned_slave_pool_roundtrips_and_hashes_identity_order() {
         let mut sim = Simulation::new();
-        let mut parent = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "SMIN",
-            "Americans",
-            4,
-            5,
-        );
+        let mut parent =
+            crate::sim::game_entity::GameEntity::test_default(1, "SMIN", "Americans", 4, 5);
         parent.techno_ctor_random_word = 0x1111;
         sim.substrate.entities.insert(parent);
         for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
@@ -2970,7 +2968,10 @@ mod tests {
         let bytes = GameSnapshot::save(&sim, 0, 0, "techno-constructor-manager-pool", 0);
         let restored = GameSnapshot::load(&bytes).unwrap().sim;
         assert_eq!(restored.scenario_rng.logical_state(), source_rng);
-        assert_eq!(restored.production.slave_bindings.get(&1), Some(&vec![2, 3]));
+        assert_eq!(
+            restored.production.slave_bindings.get(&1),
+            Some(&vec![2, 3])
+        );
         for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
             let slave = restored.substrate.entities.get(stable_id).unwrap();
             assert_eq!(slave.techno_ctor_random_word, word);
@@ -3004,7 +3005,7 @@ mod tests {
     }
 
     #[test]
-    fn house_ai_activation_all_combinations_roundtrip_v113() {
+    fn house_ai_activation_all_combinations_roundtrip_v114() {
         use crate::sim::house_state::{HouseAiActivationLatches, HouseState};
 
         for bits in 0u8..16 {
@@ -3028,7 +3029,7 @@ mod tests {
                 super::SNAPSHOT_VERSION
             );
             let restored = GameSnapshot::load(&bytes)
-                .expect("current v113 snapshot")
+                .expect("current v114 snapshot")
                 .sim;
             assert_eq!(restored.houses[&owner].ai_activation, latches);
         }
@@ -3068,8 +3069,7 @@ mod tests {
         let owner = sim.interner.intern("AMERICANS");
         let country = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("GACNST");
-        let house =
-            crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
+        let house = crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
@@ -3618,7 +3618,7 @@ mod tests {
     }
 
     #[test]
-    fn building_anim_overlay_roundtrips_with_current_hash_and_version() {
+    fn building_anim_and_click_repair_roundtrip_with_current_hash_and_version() {
         use crate::map::entities::EntityCategory;
         use crate::sim::components::{AnimOverlayState, BuildingAnimOverlays, Health};
         use crate::sim::game_entity::GameEntity;
@@ -3628,6 +3628,7 @@ mod tests {
         let owner = sim.interner.intern("Allies");
         let type_ref = sim.interner.intern("GACNST");
         let anim_type = sim.interner.intern("GACNST_B");
+        let attached_tag = sim.interner.intern("TAG_AI_SELL_BLOCK");
         let mut entity = GameEntity::new_at_frame_zero_for_test(
             entity_id,
             5,
@@ -3656,6 +3657,12 @@ mod tests {
                 finished: false,
             }],
         });
+        entity.repairing = true;
+        entity.building_ai_sell_enabled = false;
+        entity.building_make_shape_initialized = true;
+        entity.repair_pulse_latch = true;
+        entity.building_anim_reset_revision = 7;
+        entity.attached_trigger_tag = Some(attached_tag);
         sim.substrate.entities.insert(entity);
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
@@ -3677,6 +3684,22 @@ mod tests {
             .building_anim_overlays
             .as_ref()
             .expect("restored building overlays");
+        let restored_entity = restored
+            .substrate
+            .entities
+            .get(entity_id)
+            .expect("restored Construction Yard");
+        assert!(restored_entity.repairing);
+        assert!(!restored_entity.building_ai_sell_enabled);
+        assert!(restored_entity.building_make_shape_initialized);
+        assert!(restored_entity.repair_pulse_latch);
+        assert_eq!(restored_entity.building_anim_reset_revision, 7);
+        assert_eq!(
+            restored_entity
+                .attached_trigger_tag
+                .map(|tag| restored.interner.resolve(tag)),
+            Some("TAG_AI_SELL_BLOCK")
+        );
         assert_eq!(overlays.anims.len(), 1);
         let overlay = &overlays.anims[0];
         assert_eq!(restored.interner.resolve(overlay.anim_type), "GACNST_B");
@@ -4291,6 +4314,7 @@ mod tests {
         sim.substrate.next_stable_object_id = 5;
         let owner = sim.interner.intern("ComputerIQ");
         let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 51);
+        house.scenario_iq = 2;
         house.current_iq = 2;
         let threat_peer = sim.interner.intern("ThreatPeer");
         house.grudge_scores.insert(threat_peer, 350);
@@ -4377,6 +4401,9 @@ mod tests {
         sim.houses.get_mut(&owner).unwrap().current_iq = 1;
         assert_ne!(sim.state_hash(), expected_hash, "CurrentIQ is hashed");
         sim.houses.get_mut(&owner).unwrap().current_iq = 2;
+        sim.houses.get_mut(&owner).unwrap().scenario_iq = 1;
+        assert_ne!(sim.state_hash(), expected_hash, "scenario IQ is hashed");
+        sim.houses.get_mut(&owner).unwrap().scenario_iq = 2;
         sim.houses
             .get_mut(&owner)
             .unwrap()
@@ -4462,6 +4489,7 @@ mod tests {
             Some([3, 4].as_slice())
         );
         assert_eq!(restored.houses.get(&owner).unwrap().current_iq, 2);
+        assert_eq!(restored.houses.get(&owner).unwrap().scenario_iq, 2);
         assert_eq!(
             restored.houses[&owner].grudge_scores.get(&threat_peer),
             Some(&350)

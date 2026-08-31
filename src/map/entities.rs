@@ -32,9 +32,7 @@ pub enum EntityCategory {
 
 /// A single entity placement parsed from a map file.
 ///
-/// Contains the minimum data needed to spawn an ECS entity.
-/// Advanced fields (trigger tags and remaining AI flags) are not yet parsed
-/// — they'll be added when trigger/AI systems are implemented.
+/// Contains the scenario fields needed to construct the authoritative object.
 #[derive(Debug, Clone)]
 pub struct MapEntity {
     /// House/faction name (e.g., "Americans", "Soviet", "Neutral").
@@ -63,6 +61,13 @@ pub struct MapEntity {
     /// `Sleep(0)`, so the two must not be folded together. `[Structures]` has
     /// no MISSION column at all and is always `None`.
     pub mission: Option<MissionType>,
+    /// Category-specific scenario TAG identity. `[Structures]` uses field 6,
+    /// Units/Aircraft field 7, and Infantry field 8. The token resolves against
+    /// `[Tags]` ID/name aliases; any unresolved token is null.
+    pub attached_tag: Option<String>,
+    /// `[Structures]` field 7, written to native Building+0x6DC after manager
+    /// initialization. Non-structure categories always store false.
+    pub structure_ai_sell_enabled: bool,
     /// First persistent scenario recruitment-admission byte (`Techno+0x421`).
     /// Unit/Infantry/Aircraft scenario lines store it at trailing field 12;
     /// constructors and absent fields default true.
@@ -101,18 +106,19 @@ fn parse_mission_field(fields: &[&str]) -> Option<MissionType> {
 /// if none of these sections exist (e.g., empty skirmish maps).
 pub fn parse_map_entities(ini: &IniFile) -> Vec<MapEntity> {
     let mut entities: Vec<MapEntity> = Vec::new();
+    let tag_aliases = parse_tag_aliases(ini);
 
     if let Some(section) = ini.section("Units") {
-        parse_units_section(section, &mut entities);
+        parse_units_section(section, &tag_aliases, &mut entities);
     }
     if let Some(section) = ini.section("Aircraft") {
-        parse_aircraft_section(section, &mut entities);
+        parse_aircraft_section(section, &tag_aliases, &mut entities);
     }
     if let Some(section) = ini.section("Infantry") {
-        parse_infantry_section(section, &mut entities);
+        parse_infantry_section(section, &tag_aliases, &mut entities);
     }
     if let Some(section) = ini.section("Structures") {
-        parse_structures_section(section, &mut entities);
+        parse_structures_section(section, &tag_aliases, &mut entities);
     }
 
     log::info!(
@@ -143,6 +149,7 @@ pub fn parse_map_entities(ini: &IniFile) -> Vec<MapEntity> {
 /// Minimum 6 fields needed (owner, id, health, x, y, facing).
 fn parse_units_section(
     section: &crate::rules::ini_parser::IniSection,
+    tag_aliases: &[(String, Option<String>)],
     entities: &mut Vec<MapEntity>,
 ) {
     for key in section.keys() {
@@ -158,7 +165,8 @@ fn parse_units_section(
             );
             continue;
         }
-        let Some(entity) = parse_common_fields(&fields, EntityCategory::Unit, key) else {
+        let Some(entity) = parse_common_fields(&fields, EntityCategory::Unit, key, tag_aliases)
+        else {
             continue;
         };
         entities.push(entity);
@@ -169,6 +177,7 @@ fn parse_units_section(
 /// Note: infantry has SUB_CELL at index 5 and FACING at index 7 (different from units).
 fn parse_infantry_section(
     section: &crate::rules::ini_parser::IniSection,
+    tag_aliases: &[(String, Option<String>)],
     entities: &mut Vec<MapEntity>,
 ) {
     for key in section.keys() {
@@ -220,6 +229,8 @@ fn parse_infantry_section(
             veterancy,
             high: parse_boolish_field(fields.get(11).copied()),
             mission: parse_mission_field(&fields),
+            attached_tag: resolve_trigger_tag_field(fields.get(8).copied(), tag_aliases),
+            structure_ai_sell_enabled: false,
             recruitable_a: parse_recruitment_field(fields.get(12).copied()),
             recruitable_b: parse_recruitment_field(fields.get(13).copied()),
             structure_upgrades: [None, None, None],
@@ -231,6 +242,7 @@ fn parse_infantry_section(
 /// Minimum 6 fields needed.
 fn parse_structures_section(
     section: &crate::rules::ini_parser::IniSection,
+    tag_aliases: &[(String, Option<String>)],
     entities: &mut Vec<MapEntity>,
 ) {
     for key in section.keys() {
@@ -246,9 +258,12 @@ fn parse_structures_section(
             );
             continue;
         }
-        let Some(mut entity) = parse_common_fields(&fields, EntityCategory::Structure, key) else {
+        let Some(mut entity) =
+            parse_common_fields(&fields, EntityCategory::Structure, key, tag_aliases)
+        else {
             continue;
         };
+        entity.structure_ai_sell_enabled = parse_atoi_bool_field(fields.get(7).copied());
         entity.structure_upgrades = parse_structure_upgrades(&fields);
         entities.push(entity);
     }
@@ -258,6 +273,7 @@ fn parse_structures_section(
 /// Minimum 6 fields needed.
 fn parse_aircraft_section(
     section: &crate::rules::ini_parser::IniSection,
+    tag_aliases: &[(String, Option<String>)],
     entities: &mut Vec<MapEntity>,
 ) {
     for key in section.keys() {
@@ -273,7 +289,8 @@ fn parse_aircraft_section(
             );
             continue;
         }
-        let Some(entity) = parse_common_fields(&fields, EntityCategory::Aircraft, key) else {
+        let Some(entity) = parse_common_fields(&fields, EntityCategory::Aircraft, key, tag_aliases)
+        else {
             continue;
         };
         entities.push(entity);
@@ -284,7 +301,12 @@ fn parse_aircraft_section(
 ///
 /// Field layout: OWNER(0), ID(1), HEALTH(2), X(3), Y(4), FACING(5).
 /// Veterancy at index 8 for units/aircraft, index 9 for structures — we try both.
-fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> Option<MapEntity> {
+fn parse_common_fields(
+    fields: &[&str],
+    category: EntityCategory,
+    key: &str,
+    tag_aliases: &[(String, Option<String>)],
+) -> Option<MapEntity> {
     let owner: String = fields[0].to_string();
     let type_id: String = fields[1].to_string();
     let health: u16 = fields[2].parse::<u16>().unwrap_or(256).min(256);
@@ -338,6 +360,17 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
         high: matches!(category, EntityCategory::Unit)
             && parse_atoi_bool_field(fields.get(10).copied()),
         mission,
+        attached_tag: resolve_trigger_tag_field(
+            fields
+                .get(match category {
+                    EntityCategory::Structure => 6,
+                    EntityCategory::Unit | EntityCategory::Aircraft => 7,
+                    EntityCategory::Infantry => 8,
+                })
+                .copied(),
+            tag_aliases,
+        ),
+        structure_ai_sell_enabled: false,
         recruitable_a: matches!(category, EntityCategory::Structure)
             || parse_recruitment_field(fields.get(12).copied()),
         recruitable_b: matches!(category, EntityCategory::Structure)
@@ -369,10 +402,44 @@ fn parse_structure_upgrades(fields: &[&str]) -> [Option<String>; 3] {
     })
 }
 
+/// Canonical TagType identities plus their optional field-1 names, in native
+/// `[Tags]` source order. The live object readers resolve either spelling via
+/// `FUN_006E5E70`; dangling tokens yield a null attached Tag pointer.
+fn parse_tag_aliases(ini: &IniFile) -> Vec<(String, Option<String>)> {
+    let Some(section) = ini.section("Tags") else {
+        return Vec::new();
+    };
+    section
+        .keys()
+        .filter_map(|id| {
+            let value = section.get(id)?;
+            let name = value
+                .split(',')
+                .nth(1)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string);
+            Some((id.to_string(), name))
+        })
+        .collect()
+}
+
+fn resolve_trigger_tag_field(
+    value: Option<&str>,
+    tag_aliases: &[(String, Option<String>)],
+) -> Option<String> {
+    let value = value?.trim();
+    tag_aliases.iter().find_map(|(id, name)| {
+        (id.eq_ignore_ascii_case(value)
+            || name
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(value)))
+        .then(|| id.clone())
+    })
+}
+
 fn parse_atoi_bool_field(value: Option<&str>) -> bool {
-    value
-        .and_then(|value| value.trim().parse::<i32>().ok())
-        .is_some_and(|value| value != 0)
+    value.is_some_and(|value| crate::rules::ini_value::atoi_lenient(value.trim()) != 0)
 }
 
 fn parse_boolish_field(value: Option<&str>) -> bool {
@@ -396,6 +463,61 @@ fn parse_recruitment_field(value: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+
+    #[test]
+    fn category_tag_columns_resolve_id_and_name_alias_to_canonical_tag() {
+        let ini = IniFile::from_str(
+            "[Tags]\nTAG_A=0,AliasA,TRIG\n\
+             [Units]\n0=AI,MTNK,256,10,11,64,Guard,TAG_A\n\
+             [Aircraft]\n0=AI,ORCA,256,12,13,96,Guard,AliasA\n\
+             [Infantry]\n0=AI,E1,256,14,15,2,Guard,128,AliasA\n\
+             [Structures]\n0=AI,GAPOWR,256,16,17,32,TAG_A,1\n",
+        );
+        let entities = parse_map_entities(&ini);
+        assert_eq!(entities.len(), 4);
+        for entity in &entities {
+            assert_eq!(entity.attached_tag.as_deref(), Some("TAG_A"));
+        }
+        assert_eq!(entities[0].mission, Some(MissionType::Guard));
+        assert_eq!(entities[0].facing, 64);
+        assert_eq!(entities[1].mission, Some(MissionType::Guard));
+        assert_eq!(entities[1].facing, 96);
+        assert_eq!(entities[2].mission, Some(MissionType::Guard));
+        assert_eq!(entities[2].sub_cell, 2);
+        assert_eq!(entities[2].facing, 128);
+        assert_eq!(entities[3].category, EntityCategory::Structure);
+        assert_eq!(entities[3].facing, 32);
+        assert!(entities[3].structure_ai_sell_enabled);
+    }
+
+    #[test]
+    fn tag_nullness_and_structure_field_seven_follow_native_resolvers() {
+        let ini = IniFile::from_str(
+            "[Tags]\nNone=0,LiteralNone,TRIG\nTAG_A=0,AliasA,TRIG\n\
+             [Structures]\n\
+             0=AI,B0,256,1,1,0,None,0\n\
+             1=AI,B1,256,2,1,0,AliasA,-1\n\
+             2=AI,B2,256,3,1,0,Dangling,1junk\n\
+             3=AI,B3,256,4,1,0,Dangling,true\n\
+             4=AI,B4,256,5,1,0\n",
+        );
+        let entities = parse_map_entities(&ini);
+        assert_eq!(entities.len(), 5);
+        assert_eq!(entities[0].attached_tag.as_deref(), Some("None"));
+        assert_eq!(entities[1].attached_tag.as_deref(), Some("TAG_A"));
+        assert!(
+            entities[2..]
+                .iter()
+                .all(|entity| entity.attached_tag.is_none())
+        );
+        assert_eq!(
+            entities
+                .iter()
+                .map(|entity| entity.structure_ai_sell_enabled)
+                .collect::<Vec<_>>(),
+            vec![false, true, true, false, false]
+        );
+    }
 
     #[test]
     fn test_parse_units() {

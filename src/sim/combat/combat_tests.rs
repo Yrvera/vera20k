@@ -6767,7 +6767,7 @@ fn gsi_04_07_damage_hostile_building_hit_latches_was_attacked_for_ai_repair() {
          [BuildingTypes]\n0=GAPOWR\n\
          [Warheads]\n0=HITWH\n\
          [MTNK]\nStrength=300\nArmor=heavy\n\
-         [GAPOWR]\nStrength=1000\nArmor=wood\nCost=800\nCrewed=no\n\
+         [GAPOWR]\nStrength=1000\nArmor=wood\nCost=800\nCrewed=no\nClickRepairable=yes\nRepairable=yes\n\
          [HITWH]\nCellSpread=0\nPercentAtMax=1\nAffectsAllies=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
     ))
     .expect("hostile-hit rules");
@@ -6777,14 +6777,11 @@ fn gsi_04_07_damage_hostile_building_hit_latches_was_attacked_for_ai_repair() {
     let ally_owner = sim.interner.intern("ALLY");
     let scenario_ini = IniFile::from_str("[Houses]\n0=AI\n[AI]\nIQ=1\n");
     let scenario_houses =
-        crate::map::houses::parse_house_roster(
-            &scenario_ini,
-            &rules.color_schemes,
-            Some(&rules),
-        );
+        crate::map::houses::parse_house_roster(&scenario_ini, &rules.color_schemes, Some(&rules));
     let mut ai_house = HouseState::new(ai_owner, 0, None, false, 0, 51);
-    ai_house.current_iq =
-        scenario_houses.houses[0].scenario_current_iq(rules.general.max_iq_levels);
+    let scenario_iq = scenario_houses.houses[0].scenario_current_iq(rules.general.max_iq_levels);
+    ai_house.scenario_iq = scenario_iq;
+    ai_house.current_iq = scenario_iq;
     sim.houses.insert(ai_owner, ai_house);
     let heights = BTreeMap::new();
     let hostile_target = sim
@@ -6902,7 +6899,9 @@ fn gsi_04_07_damage_hostile_building_hit_latches_was_attacked_for_ai_repair() {
         .was_attacked_by_enemy = true;
 
     let low_iq_rng = sim.scenario_rng.logical_state();
-    crate::sim::production::tick_repairs(&mut sim, &rules);
+    for stable_id in [hostile_target, allied_target, null_target] {
+        crate::sim::production::tick_ai_low_credit_sell_start(&mut sim, &rules, stable_id);
+    }
     assert!(
         sim.substrate
             .entities
@@ -6918,15 +6917,26 @@ fn gsi_04_07_damage_hostile_building_hit_latches_was_attacked_for_ai_repair() {
         "an IQ-gated-out building draws no low-credit sale RNG"
     );
 
-    sim.houses.get_mut(&ai_owner).unwrap().current_iq = 2;
+    {
+        let house = sim.houses.get_mut(&ai_owner).unwrap();
+        house.scenario_iq = 2;
+        house.current_iq = 2;
+    }
     let mut expected_rng = sim.scenario_rng.clone();
     assert!(
         expected_rng.next_range_u32_inclusive(0, 0x32) < 51,
         "TechLevel 51 makes every inclusive native roll win"
     );
-    crate::sim::production::tick_repairs(&mut sim, &rules);
+    for stable_id in [hostile_target, allied_target, null_target] {
+        crate::sim::production::tick_ai_low_credit_sell_start(&mut sim, &rules, stable_id);
+    }
     let sold = sim.substrate.entities.get(hostile_target).unwrap();
-    assert!(!sold.lifecycle.object_alive && sold.lifecycle.in_limbo);
+    assert!(sold.lifecycle.object_alive && !sold.lifecycle.in_limbo);
+    assert_eq!(
+        sold.mission.current(),
+        crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Selling)
+    );
+    assert_eq!(sold.mission.queued(), crate::sim::mission::MissionId::NONE);
     assert!(
         sim.substrate
             .entities

@@ -141,7 +141,6 @@ impl MissionLeafState {
         self.expect_aircraft_mut().action_latch = 0;
     }
 
-    #[cfg(test)]
     pub(crate) fn set_building_ready_latch(&mut self, raw: u8) {
         self.expect_building_mut().ready_latch = raw;
     }
@@ -172,7 +171,6 @@ impl MissionLeafState {
     }
 
     #[track_caller]
-    #[cfg(test)]
     fn expect_building_mut(&mut self) -> &mut BuildingMissionLeaf {
         match self {
             Self::Building(leaf) => leaf,

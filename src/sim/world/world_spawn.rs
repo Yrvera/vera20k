@@ -28,6 +28,8 @@ use crate::sim::game_entity::{
 };
 use crate::sim::intern::InternedId;
 use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
+use crate::sim::mission::authority::EntityReadyInputProvider;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::production::{ProductionCategory, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
@@ -479,6 +481,10 @@ impl Simulation {
             );
             ge.base_defense_response.recruitable_a = map_ent.recruitable_a;
             ge.base_defense_response.recruitable_b = map_ent.recruitable_b;
+            ge.attached_trigger_tag = map_ent
+                .attached_tag
+                .as_deref()
+                .map(|tag| self.interner.intern(tag));
 
             if self.debug_event_logging {
                 ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
@@ -589,6 +595,14 @@ impl Simulation {
             }
 
             stamp_building_cell_profile(&mut ge, obj);
+            if let Some(ruleset) = rules {
+                stamp_building_make_shape_state(&mut ge, ruleset, &map_ent.type_id);
+            }
+            if map_ent.category == EntityCategory::Structure {
+                // BuildingClass::ReadFromINI overwrites +0x6DC after
+                // constructor/Init_Managers have derived it from the make SHP.
+                ge.building_ai_sell_enabled = map_ent.structure_ai_sell_enabled;
+            }
             // TechnoClass::Init_Managers for map-placed parents.
             if let Some(ruleset) = rules
                 && let Some(obj) = ruleset.object(&map_ent.type_id)
@@ -873,6 +887,61 @@ impl Simulation {
         .expect("fresh Techno constructor initialization cannot fail")
     }
 
+    /// Construct a forward-deploy Building, queue Construction before its
+    /// concrete Unlimbo, and publish it only when placement succeeds.
+    ///
+    /// `UnitClass::Deploy @ 0x007393C0` creates the target Building in limbo,
+    /// calls `Queue_Mission(Construction, false)`, and only then calls Unlimbo.
+    /// Keeping the target identity private until reveal succeeds also leaves
+    /// the source Unit and its manager state untouched on a rejected deploy.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_deploy_target_building_at_height_with_overlay_context(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> Option<u64> {
+        let stable_id =
+            self.spawn_object_limbo_at_height(type_id, owner, rx, ry, facing, z, rules)?;
+        let construction = MissionId::from_known(MissionType::Construction);
+        let now = self.session.binary_frame;
+        if self
+            .mission_queue_exact(stable_id, construction, 0, now, &EntityReadyInputProvider)
+            .is_err()
+        {
+            let _ = self.discard_constructed_limbo(stable_id);
+            return None;
+        }
+
+        let Some(stable_id) = self.reveal_constructed_object_at_height_with_unit_context(
+            stable_id,
+            rx,
+            ry,
+            facing,
+            z,
+            PlacementEvidence::EvaluateMark,
+            rules,
+            overlay_registry,
+            stable_id,
+        ) else {
+            let _ = self.discard_constructed_limbo(stable_id);
+            return None;
+        };
+
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.building_up = Some(BuildingUp {
+                elapsed_ticks: 0,
+                total_ticks: 30,
+            });
+        }
+        Some(stable_id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_object_at_height_with_overlay_registry(
         &mut self,
@@ -1040,6 +1109,7 @@ impl Simulation {
         }
 
         stamp_building_cell_profile(&mut ge, Some(obj));
+        stamp_building_make_shape_state(&mut ge, rules, type_id);
         // TechnoClass::Init_Managers — manager-owned children are committed
         // after this parent enters the limbo store and before its Unlimbo.
         ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
@@ -1226,6 +1296,7 @@ impl Simulation {
         }
 
         stamp_building_cell_profile(&mut ge, Some(obj));
+        stamp_building_make_shape_state(&mut ge, rules, type_id);
 
         ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
         ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
@@ -1817,6 +1888,7 @@ impl Simulation {
                 yard_type.clone(),
                 yard_obj.deploy_facing,
                 entity.selected,
+                entity.attached_trigger_tag,
                 yard_obj.foundation.clone(),
                 entity.facing,
                 yard_obj.construction_yard,
@@ -1830,6 +1902,7 @@ impl Simulation {
             yard_type,
             deploy_facing,
             was_selected,
+            attached_trigger_tag,
             foundation,
             source_facing,
             is_construction_yard,
@@ -1930,21 +2003,32 @@ impl Simulation {
         // target Building was created successfully. Keep the source MCV live
         // until target Unlimbo commits so a late placement rejection is atomic.
         let owner_str = self.interner.resolve(owner_id).to_string();
-        let Some(new_sid) =
-            self.spawn_object_at_height(&yard_type, &owner_str, rx, ry, 0, z, rules)
-        else {
+        let Some(new_sid) = self.spawn_deploy_target_building_at_height_with_overlay_context(
+            &yard_type, &owner_str, rx, ry, 0, z, rules, None,
+        ) else {
             return false;
         };
 
+        // UnitClass::Deploy transfers the AttachedTag pointer (including its
+        // native refcount ownership) only after the target Building placement
+        // succeeds. Keeping this write after the atomic spawn preserves the
+        // source tag on every rejected deploy.
+        self.substrate
+            .entities
+            .get_mut(new_sid)
+            .expect("successfully spawned deploy target remains present")
+            .attached_trigger_tag = attached_trigger_tag;
+        if attached_trigger_tag.is_some()
+            && let Some(source) = self.substrate.entities.get_mut(stable_id)
+        {
+            source.attached_trigger_tag = None;
+        }
+
         self.uninit_with_rules(stable_id, rules);
 
-        // Set selected and building-up state on the new entity.
+        // Restore selection only after the complete deploy handoff commits.
         if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
             ge.selected = was_selected;
-            ge.building_up = Some(BuildingUp {
-                elapsed_ticks: 0,
-                total_ticks: 30,
-            });
         }
 
         if let Some((country_name, side_index, difficulty, tech_level, _)) = recalc_context {
@@ -2212,6 +2296,18 @@ fn stamp_building_cell_profile(
     }
 }
 
+/// Project `BuildingClass::Init_Managers`' build-up SHP result onto the two
+/// instance bytes it owns. Map scenario loading may overwrite +0x6DC later;
+/// +0x6E9 remains the manager-init result for `StartSelling`.
+fn stamp_building_make_shape_state(ge: &mut GameEntity, rules: &RuleSet, type_id: &str) {
+    if ge.category != EntityCategory::Structure {
+        return;
+    }
+    let initialized = rules.building_make_shape_available(type_id);
+    ge.building_ai_sell_enabled = initialized;
+    ge.building_make_shape_initialized = initialized;
+}
+
 #[cfg(test)]
 mod techno_constructor_tests {
     use super::*;
@@ -2255,10 +2351,203 @@ mod techno_constructor_tests {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
         }
+    }
+
+    fn constructor_rules_with_bound_base_make(present: bool) -> RuleSet {
+        let mut rules = constructor_rules();
+        rules.set_building_make_shapes_for_test(if present { &["BASE"] } else { &[] });
+        rules
+    }
+
+    #[test]
+    fn map_structure_stamps_tag_and_overwrites_only_field_6dc_after_manager_init() {
+        for (make_present, field_seven, expected_6dc, expected_6e9) in
+            [(false, 1, true, false), (true, 0, false, true)]
+        {
+            let rules = constructor_rules_with_bound_base_make(make_present);
+            let ini = IniFile::from_str(&format!(
+                "[Tags]\nTAG_A=0,AliasA,TRIG\n\
+                 [Structures]\n0=Americans,BASE,256,4,5,0,AliasA,{field_seven}\n"
+            ));
+            let placements = crate::map::entities::parse_map_entities(&ini);
+            let mut sim = Simulation::new();
+            assert_eq!(
+                sim.spawn_from_map(&placements, Some(&rules), &BTreeMap::new()),
+                1
+            );
+            let entity = sim.substrate.entities.values().next().unwrap();
+            assert_eq!(
+                entity
+                    .attached_trigger_tag
+                    .map(|tag| sim.interner.resolve(tag)),
+                Some("TAG_A")
+            );
+            assert_eq!(entity.building_ai_sell_enabled, expected_6dc);
+            assert_eq!(entity.building_make_shape_initialized, expected_6e9);
+        }
+    }
+
+    #[test]
+    fn immediate_and_held_limbo_buildings_share_bound_make_shape_state() {
+        let rules = constructor_rules_with_bound_base_make(true);
+        let mut sim = Simulation::new();
+        install_american_house(&mut sim);
+        install_constructor_test_playfield(&mut sim);
+        install_constructor_flat_terrain(&mut sim);
+
+        let immediate = sim
+            .spawn_object("BASE", "Americans", 6, 5, 0, &rules, &BTreeMap::new())
+            .expect("immediate BASE");
+        let held = sim
+            .spawn_object_limbo_at_height("BASE", "Americans", 7, 7, 0, 0, &rules)
+            .expect("held-limbo BASE");
+
+        for id in [immediate, held] {
+            let entity = sim.substrate.entities.get(id).unwrap();
+            assert!(entity.building_ai_sell_enabled);
+            assert!(entity.building_make_shape_initialized);
+        }
+        assert!(
+            !sim.substrate
+                .entities
+                .get(immediate)
+                .unwrap()
+                .lifecycle
+                .in_limbo
+        );
+        assert!(sim.substrate.entities.get(held).unwrap().lifecycle.in_limbo);
+    }
+
+    #[test]
+    fn unit_deploy_transfers_attached_tag_to_the_successful_building() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=AMCV\n\
+             [BuildingTypes]\n0=BASE\n\
+             [AMCV]\nStrength=1000\nSpeed=4\nDeploysInto=BASE\n\
+             [BASE]\nStrength=500\nFoundation=2x2\nDeployFacing=0\nConstructionYard=yes\n",
+        ))
+        .expect("tagged deploy rules");
+        let mut sim = Simulation::new();
+        install_american_house(&mut sim);
+        install_constructor_test_playfield(&mut sim);
+        install_constructor_flat_terrain(&mut sim);
+        let source = sim
+            .spawn_object("AMCV", "Americans", 8, 8, 0, &rules, &BTreeMap::new())
+            .expect("tagged deploy source");
+        let tag = sim.interner.intern("TAG_DEPLOY_BLOCK");
+        sim.substrate
+            .entities
+            .get_mut(source)
+            .unwrap()
+            .attached_trigger_tag = Some(tag);
+
+        assert!(sim.deploy_mcv(source, &rules, &BTreeMap::new()));
+        let consumed_source = sim
+            .substrate
+            .entities
+            .get(source)
+            .expect("consumed MCV remains resolvable until the delete flush");
+        assert!(consumed_source.dying);
+        assert_eq!(consumed_source.attached_trigger_tag, None);
+        let building = sim
+            .substrate
+            .entities
+            .values()
+            .find(|entity| entity.category == EntityCategory::Structure)
+            .expect("deployed Building");
+        assert_eq!(building.attached_trigger_tag, Some(tag));
+        let building_id = building.stable_id;
+        assert_eq!(building.mission.current(), MissionId::NONE);
+        assert_eq!(
+            building.mission.queued(),
+            MissionId::from_known(MissionType::Construction)
+        );
+        assert_eq!(
+            building.mission.effective(),
+            MissionId::from_known(MissionType::Construction)
+        );
+        assert_eq!(
+            building
+                .mission_leaf
+                .as_building()
+                .expect("Building mission leaf")
+                .ready_latch(),
+            0
+        );
+        assert!(building.building_up.is_some());
+
+        sim.substrate
+            .entities
+            .get_mut(building_id)
+            .unwrap()
+            .building_up
+            .as_mut()
+            .unwrap()
+            .elapsed_ticks = 29;
+        let completed = sim.tick_building_up();
+        let construction_missions = sim.arm_completed_building_ready_latches(&completed);
+        sim.queue_completed_building_guard(&construction_missions);
+        let completed_building = sim.substrate.entities.get(building_id).unwrap();
+        assert_eq!(completed_building.mission.current(), MissionId::NONE);
+        assert_eq!(
+            completed_building.mission.queued(),
+            MissionId::from_known(MissionType::Guard)
+        );
+        assert_eq!(
+            completed_building
+                .mission_leaf
+                .as_building()
+                .unwrap()
+                .ready_latch(),
+            1
+        );
+        let now = sim.session.binary_frame;
+        sim.mission_host_promote(building_id, now, &rules);
+        let guarded = sim.substrate.entities.get(building_id).unwrap();
+        assert_eq!(
+            guarded.mission.current(),
+            MissionId::from_known(MissionType::Guard)
+        );
+        assert_eq!(guarded.mission.queued(), MissionId::NONE);
+        assert_eq!(guarded.mission_leaf.as_building().unwrap().ready_latch(), 0);
+        assert_eq!(sim.interner.resolve(tag), "TAG_DEPLOY_BLOCK");
+        sim.flush_pending_delete();
+        assert!(sim.substrate.entities.get(source).is_none());
+    }
+
+    #[test]
+    fn ordinary_building_completion_does_not_publish_a_deploy_mission() {
+        let rules = constructor_rules();
+        let mut sim = Simulation::new();
+        let building = sim
+            .spawn_object_at_height("BASE", "Americans", 4, 4, 0, 0, &rules)
+            .expect("ordinary Building");
+        sim.substrate
+            .entities
+            .get_mut(building)
+            .unwrap()
+            .building_up = Some(BuildingUp {
+            elapsed_ticks: 29,
+            total_ticks: 30,
+        });
+
+        let completed = sim.tick_building_up();
+        let construction_missions = sim.arm_completed_building_ready_latches(&completed);
+        sim.queue_completed_building_guard(&construction_missions);
+
+        let building = sim.substrate.entities.get(building).unwrap();
+        assert_eq!(building.mission.current(), MissionId::NONE);
+        assert_eq!(building.mission.queued(), MissionId::NONE);
+        assert_eq!(
+            building.mission_leaf.as_building().unwrap().ready_latch(),
+            1
+        );
     }
 
     fn install_american_house(sim: &mut Simulation) {
@@ -2457,8 +2746,7 @@ mod techno_constructor_tests {
             bridge.bridge_deck_level = 7;
             bridge.has_bridge_deck = true;
             bridge.bridge_walkable = true;
-            bridge.bridge_facts.raw_flags =
-                crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
             bridge.bridge_facts.overlay_id = Some(0);
         }
         sim.bridge_state = Some(
@@ -2514,7 +2802,13 @@ mod techno_constructor_tests {
                 &registry,
             )
             .expect("non-wall overlay must not veto runtime Unit Unlimbo");
-        assert_eq!((sim.substrate.entities.get(runtime).unwrap().position.rx, sim.substrate.entities.get(runtime).unwrap().position.ry), ore_runtime);
+        assert_eq!(
+            (
+                sim.substrate.entities.get(runtime).unwrap().position.rx,
+                sim.substrate.entities.get(runtime).unwrap().position.ry
+            ),
+            ore_runtime
+        );
 
         let mut expected = SimRng::new(seed);
         for _ in 0..3 {
@@ -2567,10 +2861,21 @@ mod techno_constructor_tests {
             .is_none()
         );
         let rejected = sim.substrate.entities.get(parent_id).unwrap();
-        assert_eq!((rejected.position.rx, rejected.position.ry, rejected.position.z), (2, 2, 0));
+        assert_eq!(
+            (
+                rejected.position.rx,
+                rejected.position.ry,
+                rejected.position.z
+            ),
+            (2, 2, 0)
+        );
         assert_eq!(rejected.facing, 9);
         assert!(rejected.lifecycle.in_limbo && !rejected.lifecycle.cell_marked);
-        assert!(child_ids.iter().all(|id| sim.substrate.entities.contains(*id)));
+        assert!(
+            child_ids
+                .iter()
+                .all(|id| sim.substrate.entities.contains(*id))
+        );
 
         let mut expected = SimRng::new(seed);
         for _ in 0..4 {

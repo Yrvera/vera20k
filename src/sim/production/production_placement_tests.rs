@@ -858,6 +858,24 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
         &grid,
         &height_map,
     );
+    let assert_ordinary_placement_mission = |sim: &Simulation, expected_latch: u8| {
+        let refinery = sim
+            .substrate
+            .entities
+            .get(refinery_id)
+            .expect("ordinary placed refinery remains present");
+        assert_eq!(refinery.mission.current().known(), None);
+        assert_eq!(refinery.mission.queued().known(), None);
+        assert_eq!(
+            refinery
+                .mission_leaf
+                .as_building()
+                .expect("refinery owns Building mission leaf")
+                .ready_latch(),
+            expected_latch
+        );
+    };
+    assert_ordinary_placement_mission(&sim, 0);
     block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
     install_refinery_test_terrain(&mut sim);
     set_ticks_until_completion(&mut sim, refinery_id, 2);
@@ -871,6 +889,7 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
             .get(refinery_id)
             .is_some_and(|entity| entity.building_up.is_some())
     );
+    assert_ordinary_placement_mission(&sim, 0);
     assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
@@ -881,10 +900,12 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
             .get(refinery_id)
             .is_some_and(|entity| entity.building_up.is_none())
     );
+    assert_ordinary_placement_mission(&sim, 1);
     assert_eq!(unit_ids(&sim, "Americans", "CMIN").len(), 1);
 
     let later = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
     assert!(!later.spawned_entities);
+    assert_ordinary_placement_mission(&sim, 1);
     assert_eq!(unit_ids(&sim, "Americans", "CMIN").len(), 1);
 }
 

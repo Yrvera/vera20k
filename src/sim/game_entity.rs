@@ -468,7 +468,29 @@ pub struct GameEntity {
     /// combat.rs sets `selected = false` on death/transport entry.
     pub selected: bool,
     /// Building is being repaired (spending credits to heal).
+    #[serde(default)]
     pub repairing: bool,
+    /// Native `BuildingClass+0x6DC`. The Building constructor seeds it true,
+    /// `Init_Managers` clears it when no build-up SHP is available, and a
+    /// map-authored `[Structures]` field 7 overwrites it afterward. In native
+    /// game mode zero it gates the low-credit AI sale decision.
+    #[serde(default)]
+    pub building_ai_sell_enabled: bool,
+    /// Native `BuildingClass+0x6E9`: `Init_Managers` sets it only after the
+    /// type's build-up SHP manager is initialized. `StartSelling` rejects a
+    /// Building while this byte is clear.
+    #[serde(default)]
+    pub building_make_shape_initialized: bool,
+    /// Native BuildingClass `+0x6DE`: set when damaged repair is armed and
+    /// inverted before every due pulse, including an unaffordable one. It is
+    /// persisted/hashed but does not gate the visible repair wrench.
+    #[serde(default)]
+    pub repair_pulse_latch: bool,
+    /// Repair-only revision for native recreation of occupied Building
+    /// animation slots when a funded pulse crosses from damaged to healthy.
+    /// Presentation re-bases represented looping slots once per revision.
+    #[serde(default)]
+    pub building_anim_reset_revision: u32,
     /// LogicClass active-vector membership — mirrors gamemd ObjectClass+0x98.
     /// True iff this entity is currently in `Simulation::logic`. Not serialized:
     /// Rust snapshots rebuild it from the serialized LogicVector order. Exact
@@ -566,6 +588,10 @@ pub struct GameEntity {
     /// pointer and is consumed by the building AI low-credit sell decision.
     #[serde(default)]
     pub was_attacked_by_enemy: bool,
+    /// Scenario TriggerType identity attached through the category-specific
+    /// map TAG column. A non-null tag blocks the low-credit Building AI sale.
+    #[serde(default)]
+    pub attached_trigger_tag: Option<InternedId>,
     /// Independent turret/barrel facing — only on entities with Turret=yes in rules.ini.
     /// Timer-based 16-bit interpolator mirroring gamemd's BarrelFacing primitive.
     pub barrel_facing: Option<crate::sim::movement::FacingClass>,
@@ -1109,6 +1135,10 @@ impl GameEntity {
             is_voxel,
             selected: false,
             repairing: false,
+            building_ai_sell_enabled: category == EntityCategory::Structure,
+            building_make_shape_initialized: false,
+            repair_pulse_latch: false,
+            building_anim_reset_revision: 0,
             in_logic_vector: false,
             lifecycle: ObjectLifecycle::default(),
             in_playfield: false,
@@ -1130,6 +1160,7 @@ impl GameEntity {
             rally_target: None,
             last_attacker_id: None,
             was_attacked_by_enemy: false,
+            attached_trigger_tag: None,
             barrel_facing: None,
             building_up: None,
             building_down: None,

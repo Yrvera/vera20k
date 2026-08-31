@@ -49,10 +49,7 @@ impl Simulation {
             .retain(|_, linked_wave_id| *linked_wave_id != wave_id);
     }
 
-    pub(crate) fn wave_update_context(
-        &self,
-        wave_id: u64,
-    ) -> crate::sim::wave::WaveUpdateContext {
+    pub(crate) fn wave_update_context(&self, wave_id: u64) -> crate::sim::wave::WaveUpdateContext {
         use crate::sim::combat::TargetKind;
         use crate::sim::projectile::ProjectileCoord;
 
@@ -72,32 +69,25 @@ impl Simulation {
             ProjectileCoord::new(
                 i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
                 i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
-                crate::sim::combat::object_world_z_leptons(
-                    entity,
-                    self.resolved_terrain.as_ref(),
-                ),
+                crate::sim::combat::object_world_z_leptons(entity, self.resolved_terrain.as_ref()),
             )
         });
         let owner_current_target = owner
             .and_then(|entity| entity.attack_target.as_ref())
             .map(|attack| attack.target);
         let target_position = match wave.target_ref {
-            Some(TargetKind::Entity(target_id)) => self
-                .substrate
-                .entities
-                .get(target_id)
-                .map(|entity| {
+            Some(TargetKind::Entity(target_id)) => {
+                self.substrate.entities.get(target_id).map(|entity| {
                     ProjectileCoord::new(
-                        i32::from(entity.position.rx) * 256
-                            + entity.position.sub_x.to_num::<i32>(),
-                        i32::from(entity.position.ry) * 256
-                            + entity.position.sub_y.to_num::<i32>(),
+                        i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                        i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
                         crate::sim::combat::object_world_z_leptons(
                             entity,
                             self.resolved_terrain.as_ref(),
                         ),
                     )
-                }),
+                })
+            }
             Some(TargetKind::Cell(rx, ry)) => Some(self.wave_cell_target_position(rx, ry)),
             None => None,
         };
@@ -450,23 +440,16 @@ fn techno_ai_shell(
             // between them — see the block comment above
             // `passive_target_scan`'s neighbours for why.
             //
-            // The clear is DEAD for structures as things stand, and is kept only
-            // so the arm keeps the body's shape: a structure never carries a
-            // destination, a navigation goal or a standing order, so its
-            // committed mission always reads as finished, the derived Guard
-            // reading always wins, and Guard is not one of the twelve missions
-            // that strip a scanner target. It starts doing work the moment a
-            // structure gains live mission machinery.
-            //
-            // RESIDUAL, same root cause: a structure being sold holds the
-            // Selling mission with nothing running, so it reads Guard and keeps
-            // scanning, acquiring and firing for the couple of seconds the sale
-            // takes. Same shape as the `building_up` residual noted on
-            // `passive_acquire_step`.
+            // Structures now carry the same live Mission pair this shared body
+            // reads: deploy targets run Construction until completion queues
+            // Guard, while the AI sell path publishes Selling. Keep the clear
+            // here in the native common-body position so those effective reads
+            // govern target retention before the passive scan.
             clear_passive_target_off_mission(sim, id);
             // BuildingClass::Update consumes its ready latch via Ready→Commence
-            // (`0x0043FE43`/`0x0043FFA3`); with no latch writers live the
-            // promotion evaluates to not-ready (recorded residual).
+            // (`0x0043FE43`/`0x0043FFA3`). Construction completion arms the
+            // latch and queues Guard; this next object visit promotes Guard and
+            // clears the reusable latch before the late sell/repair tail.
             mission_common_step(sim, id, rules);
             passive_acquire_step(sim, id, rules);
             // BuildingClass::Update consumes the shared C4/PostMortem latch at
@@ -474,6 +457,20 @@ fn techno_ai_shell(
             // LogicVector visit so nested death effects precede the next slot.
             if let Some(rules) = rules {
                 sim.tick_pending_building_detonation(id, rules, ctx.overlay_registry);
+                // UpdateRepairAndPower's low-credit sale arm and click-repair
+                // tail are late BuildingClass work in this exact live slot.
+                // A preceding Bullet/Wave therefore lands first, while one in
+                // a later Logic slot observes the repaired HP and wallet.
+                let still_live = sim.substrate.entities.get(id).is_some_and(|entity| {
+                    entity.category == EntityCategory::Structure
+                        && entity.is_active()
+                        && entity.health.current != 0
+                        && !entity.dying
+                });
+                if still_live {
+                    crate::sim::production::tick_ai_low_credit_sell_start(sim, rules, id);
+                    crate::sim::production::tick_building_repair_tail(sim, rules, id);
+                }
             }
         }
         // AircraftClass::AI reaches the shared Foot/mission work before its
@@ -1673,6 +1670,8 @@ mod tests {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],

@@ -201,6 +201,9 @@ impl TriggerRuntime {
             }
 
             if !trigger.repeating {
+                if let Some(simulation) = simulation.as_deref_mut() {
+                    expire_attached_trigger_tags(simulation, &linked.tag_ids);
+                }
                 self.fired_one_shot_triggers.insert(trigger_id);
             }
         }
@@ -429,6 +432,36 @@ impl TriggerRuntime {
                 effects.push(TriggerEffect::MissionResult { title, detail });
             }
             _ => {}
+        }
+    }
+}
+
+/// Destroy the entity-facing references owned by one or more expired map Tags.
+///
+/// Native one-shot trigger teardown destroys each linked `TagClass` after its
+/// actions have run. `ObjectClass` expiry listeners then clear every matching
+/// AttachedTag pointer before the same frame's object-AI walk. The graph's tag
+/// ids are canonical, but compare case-insensitively so legacy snapshots whose
+/// interner retained source spelling still resolve to the same map identity.
+fn expire_attached_trigger_tags(simulation: &mut Simulation, tag_ids: &[String]) {
+    if tag_ids.is_empty() {
+        return;
+    }
+
+    for stable_id in simulation.substrate.entities.keys_sorted() {
+        let should_clear = simulation
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|entity| entity.attached_trigger_tag)
+            .is_some_and(|tag_id| {
+                let attached = simulation.interner.resolve(tag_id);
+                tag_ids
+                    .iter()
+                    .any(|expired| attached.eq_ignore_ascii_case(expired))
+            });
+        if should_clear && let Some(entity) = simulation.substrate.entities.get_mut(stable_id) {
+            entity.attached_trigger_tag = None;
         }
     }
 }

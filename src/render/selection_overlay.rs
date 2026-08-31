@@ -38,6 +38,7 @@ const PIP_VARIANT_COUNT: u32 = 4;
 
 /// Number of unit pip variants packed into the unit pip atlas (green, yellow, red).
 const UNIT_PIP_VARIANT_COUNT: u32 = 3;
+const WRENCH_FRAME_COUNT: u32 = 7;
 
 /// Manages textures and rendering for selection overlays.
 pub struct SelectionOverlay {
@@ -104,6 +105,11 @@ pub struct SelectionOverlay {
     tiberium_pip_frame_w: u32,
     tiberium_pip_frame_h: u32,
     tiberium_pip_canvas_adj: (f32, f32),
+    /// WRENCH.SHP frames packed as seven complete native canvases, coloured by
+    /// MOUSEPAL.PAL. This is the Building click-repair indicator, not a cursor.
+    wrench_texture: Option<BatchTexture>,
+    wrench_canvas_w: u32,
+    wrench_canvas_h: u32,
 }
 
 impl SelectionOverlay {
@@ -195,6 +201,8 @@ impl SelectionOverlay {
             tib_adj_x,
             tib_adj_y,
         ) = load_tiberium_pip_atlas(gpu, batch, assets).unwrap_or((None, 0, 0, 0.0, 0.0));
+        let (wrench_texture, wrench_canvas_w, wrench_canvas_h) =
+            load_wrench_atlas(gpu, batch, assets).unwrap_or((None, 0, 0));
 
         Self {
             drag_texture,
@@ -228,6 +236,9 @@ impl SelectionOverlay {
             tiberium_pip_frame_w,
             tiberium_pip_frame_h,
             tiberium_pip_canvas_adj: (tib_adj_x, tib_adj_y),
+            wrench_texture,
+            wrench_canvas_w,
+            wrench_canvas_h,
         }
     }
 
@@ -475,6 +486,25 @@ impl SelectionOverlay {
     /// Canvas centering adjustment for tiberium cargo pips.
     pub fn tiberium_pip_canvas_adj(&self) -> (f32, f32) {
         self.tiberium_pip_canvas_adj
+    }
+
+    pub fn wrench_texture(&self) -> Option<&BatchTexture> {
+        self.wrench_texture.as_ref()
+    }
+
+    pub fn wrench_canvas_size(&self) -> [f32; 2] {
+        [self.wrench_canvas_w as f32, self.wrench_canvas_h as f32]
+    }
+
+    pub fn wrench_uv_origin(&self, frame: u32) -> [f32; 2] {
+        [
+            frame.min(WRENCH_FRAME_COUNT - 1) as f32 / WRENCH_FRAME_COUNT as f32,
+            0.0,
+        ]
+    }
+
+    pub fn wrench_uv_size(&self) -> [f32; 2] {
+        [1.0 / WRENCH_FRAME_COUNT as f32, 1.0]
     }
 
     /// Get the pipbrd atlas texture for non-building health bar backgrounds.
@@ -804,6 +834,72 @@ fn load_pip_atlas(
         adj_y,
     );
     Some((Some(texture), max_w, max_h, adj_x, adj_y))
+}
+
+/// Load the repair wrench with its dedicated cursor palette. Every atlas slot
+/// is a complete SHP canvas, so per-frame crop offsets are baked and the draw
+/// anchor is the native `(-width/2, -height/2)` for all seven frames.
+fn load_wrench_atlas(
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    assets: Option<&AssetManager>,
+) -> Option<(Option<BatchTexture>, u32, u32)> {
+    let assets = assets?;
+    let shp = ShpFile::from_bytes(&assets.get("wrench.shp")?).ok()?;
+    if shp.frames.len() != WRENCH_FRAME_COUNT as usize || shp.width == 0 || shp.height == 0 {
+        log::warn!(
+            "wrench.shp has invalid canvas/frames ({}x{}, {} frames)",
+            shp.width,
+            shp.height,
+            shp.frames.len()
+        );
+        return Some((None, 0, 0));
+    }
+    let palette = Palette::from_bytes(&assets.get("mousepal.pal")?).ok()?;
+    let canvas_w = u32::from(shp.width);
+    let canvas_h = u32::from(shp.height);
+    let atlas_w = canvas_w * WRENCH_FRAME_COUNT;
+    let mut rgba = vec![0u8; (atlas_w * canvas_h * 4) as usize];
+    for (slot, frame) in shp
+        .frames
+        .iter()
+        .take(WRENCH_FRAME_COUNT as usize)
+        .enumerate()
+    {
+        let frame_w = u32::from(frame.frame_width);
+        let frame_h = u32::from(frame.frame_height);
+        let frame_x = u32::from(frame.frame_x);
+        let frame_y = u32::from(frame.frame_y);
+        for py in 0..frame_h {
+            for px in 0..frame_w {
+                let palette_index = frame.pixels[(py * frame_w + px) as usize];
+                if palette_index == 0 {
+                    continue;
+                }
+                let dst_x = slot as u32 * canvas_w + frame_x + px;
+                let dst_y = frame_y + py;
+                if dst_x >= atlas_w || dst_y >= canvas_h {
+                    continue;
+                }
+                let color = palette.colors[palette_index as usize];
+                let dst = ((dst_y * atlas_w + dst_x) * 4) as usize;
+                rgba[dst] = color.r;
+                rgba[dst + 1] = color.g;
+                rgba[dst + 2] = color.b;
+                rgba[dst + 3] = 255;
+            }
+        }
+    }
+    let texture = batch.create_texture(gpu, &rgba, atlas_w, canvas_h);
+    log::info!(
+        "Repair wrench atlas: {}x{} ({} full {}x{} canvases, MOUSEPAL.PAL)",
+        atlas_w,
+        canvas_h,
+        WRENCH_FRAME_COUNT,
+        canvas_w,
+        canvas_h
+    );
+    Some((Some(texture), canvas_w, canvas_h))
 }
 
 /// Load pips.shp frames 16-18 for unit/infantry health bars into a 3-variant atlas.

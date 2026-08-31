@@ -2348,11 +2348,17 @@ pub(crate) fn initialize_map_roster_houses(
             .collect();
         // HouseClass::Read_Scenario_INI reads `IQ=` from this exact named
         // house section, defaults it to zero, and changes a value above
-        // MaxIQLevels to literal one before storing CurrentIQ (+0x24C).
-        house_state.current_iq = rules.map_or_else(
+        // MaxIQLevels to literal one before storing both House+0x1D0 and
+        // CurrentIQ+0x24C.
+        let scenario_iq = rules.map_or_else(
             || house.iq.unwrap_or(0),
             |rules| house.scenario_current_iq(rules.general.max_iq_levels),
         );
+        // HouseClass::Read_Scenario_INI writes the resolved `IQ=` result to
+        // both House+0x1D0 and live CurrentIQ+0x24C. Generated skirmish houses
+        // do not pass through this reader and keep scenario_iq at constructor 0.
+        house_state.scenario_iq = scenario_iq;
+        house_state.current_iq = scenario_iq;
         // MultiplayPassive lives on the country/house type. A roster section
         // with no `Country=` resolves through `[Countries]` entry zero.
         house_state.multiplay_passive =
@@ -2374,6 +2380,28 @@ mod tests {
         ScenarioDescriptor {
             seed,
             ..ScenarioDescriptor::default()
+        }
+    }
+
+    #[test]
+    fn named_map_house_iq_stamps_scenario_and_live_fields_together() {
+        let rules = RuleSet::from_ini(&IniFile::from_str("[IQ]\nMaxIQLevels=5\n"))
+            .expect("IQ fixture rules");
+        let ini = IniFile::from_str(
+            "[Houses]\n0=AtMax\n1=AboveMax\n2=Missing\n\
+             [AtMax]\nIQ=5\n[AboveMax]\nIQ=6\n[Missing]\nFixtureOnly=1\n",
+        );
+        let roster =
+            crate::map::houses::parse_house_roster(&ini, &rules.color_schemes, Some(&rules));
+        let mut sim = Simulation::new();
+
+        initialize_map_roster_houses(&mut sim, &roster, Some(&rules));
+
+        for (name, expected) in [("AtMax", 5), ("AboveMax", 1), ("Missing", 0)] {
+            let owner = sim.interner.get(name).unwrap();
+            let house = &sim.houses[&owner];
+            assert_eq!(house.scenario_iq, expected, "{name}");
+            assert_eq!(house.current_iq, expected, "{name}");
         }
     }
 
@@ -3231,6 +3259,8 @@ mod tests {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],

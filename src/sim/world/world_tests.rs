@@ -48,6 +48,8 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
         veterancy: 0,
         high: false,
         mission: None,
+        attached_tag: None,
+        structure_ai_sell_enabled: false,
         recruitable_a: true,
         recruitable_b: true,
         structure_upgrades: [None, None, None],
@@ -3651,6 +3653,8 @@ fn test_spawn_from_map_high_unit_uses_bridge_layer_and_deck_level() {
             veterancy: 0,
             high: true,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -3752,6 +3756,8 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
             veterancy: 0,
             high: true,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -3961,6 +3967,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
             veterancy: 0,
             high: true,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -4023,6 +4031,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
             veterancy: 0,
             high: true,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -4090,6 +4100,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
             veterancy: 0,
             high: true,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -4149,6 +4161,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
             veterancy: 0,
             high: true,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -4211,6 +4225,8 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
             veterancy: 0,
             high: true,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -4284,6 +4300,8 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -5568,6 +5586,8 @@ fn test_execute_tick_delay_blocks_early_execution() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -5648,6 +5668,8 @@ fn test_move_queue_command_appends_waypoint() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -5712,6 +5734,8 @@ fn test_stop_command_clears_move_and_attack_intent() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -5772,6 +5796,8 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -6006,6 +6032,8 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -6112,6 +6140,8 @@ fn test_move_command_rejects_non_owned_entity() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -6293,6 +6323,8 @@ fn test_attack_command_rejects_friendly_target() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                attached_tag: None,
+                structure_ai_sell_enabled: false,
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
@@ -6309,6 +6341,8 @@ fn test_attack_command_rejects_friendly_target() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                attached_tag: None,
+                structure_ai_sell_enabled: false,
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
@@ -6357,6 +6391,8 @@ fn test_attack_move_auto_acquires_enemy() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                attached_tag: None,
+                structure_ai_sell_enabled: false,
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
@@ -6373,6 +6409,8 @@ fn test_attack_move_auto_acquires_enemy() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                attached_tag: None,
+                structure_ai_sell_enabled: false,
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
@@ -6445,6 +6483,8 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                attached_tag: None,
+                structure_ai_sell_enabled: false,
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
@@ -6461,6 +6501,8 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                attached_tag: None,
+                structure_ai_sell_enabled: false,
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
@@ -6536,6 +6578,8 @@ fn test_guard_returns_to_anchor_when_displaced() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -7221,12 +7265,11 @@ fn command_death_is_ignored_before_ordinary_tail_drain() {
     );
 }
 
-/// Combat-death counterpart: a structure killed in combat (Phase 5) now lives in the
-/// Dying window through Phase 7 and is freed only by the single end-of-tick drain. The
-/// Phase-7 auto-repair scan is dying-gated, so a destroyed building on auto-repair is
-/// NOT healed (no credits spent) on the death tick, and after the tick it is gone.
+/// Compatibility-combat counterpart: this fixture has no `Projectile=` and therefore
+/// retains Rust's later immediate-combat approximation. The Building's earlier live
+/// Logic slot repairs first; combat then kills it, and the common tail frees it.
 #[test]
-fn combat_death_not_repaired_then_freed_at_end_of_tick() {
+fn live_slot_repair_precedes_later_immediate_combat_death_and_tail_free() {
     use crate::sim::components::Health;
     use crate::sim::house_state::HouseState;
 
@@ -7252,7 +7295,8 @@ fn combat_death_not_repaired_then_freed_at_end_of_tick() {
         current: 300,
         max: 300,
     };
-    // Damaged, auto-repairing enemy building MTNK destroys this tick at Phase 5.
+    // Damaged repairing enemy building: its live slot precedes this fixture's
+    // later immediate attack resolution.
     let mut bld = GameEntity::test_default(2, "TARGB", "Russia", 7, 5);
     bld.category = EntityCategory::Structure;
     bld.foundation = "1x1".to_string();
@@ -7284,8 +7328,97 @@ fn combat_death_not_repaired_then_freed_at_end_of_tick() {
     );
     assert_eq!(
         sim.houses.get(&russia).map(|h| h.credits),
-        Some(1000),
-        "destroyed building must not be repaired at Phase 7 (dying-gated, no credits spent)",
+        Some(999),
+        "the due frame-zero Building slot spends one pulse before later combat kills it",
+    );
+}
+
+#[test]
+fn building_down_transfers_attached_tag_before_deferred_source_cleanup() {
+    let mut sim = Simulation::new();
+    let rules = combat_test_rules();
+    insert_house_with_counts(&mut sim, "Americans", 0, 0);
+    let yard = sim
+        .spawn_object_at_height("GACNST", "Americans", 19, 21, 0, 0, &rules)
+        .expect("ConYard");
+    let tag = sim.interner.intern("TAG_REVERSE_DEPLOY");
+    {
+        let source = sim.substrate.entities.get_mut(yard).unwrap();
+        source.attached_trigger_tag = Some(tag);
+        source.building_up = None;
+    }
+    assert!(sim.undeploy_building(yard, &rules));
+    sim.substrate
+        .entities
+        .get_mut(yard)
+        .unwrap()
+        .building_down
+        .as_mut()
+        .unwrap()
+        .elapsed_ticks = 29;
+
+    assert!(sim.tick_building_down(Some(&rules), None));
+
+    let mcv = sim
+        .substrate
+        .entities
+        .values()
+        .find(|entity| sim.interner.resolve(entity.type_ref) == "AMCV")
+        .expect("replacement MCV");
+    assert_eq!(mcv.attached_trigger_tag, Some(tag));
+    let source = sim
+        .substrate
+        .entities
+        .get(yard)
+        .expect("deferred source remains resolvable");
+    assert!(source.dying);
+    assert_eq!(source.attached_trigger_tag, None);
+}
+
+#[test]
+fn failed_building_down_restores_the_tagged_source() {
+    let mut sim = Simulation::new();
+    let rules = combat_test_rules();
+    insert_house_with_counts(&mut sim, "Americans", 0, 0);
+    let yard = sim
+        .spawn_object_at_height("GACNST", "Americans", 19, 21, 0, 0, &rules)
+        .expect("ConYard before restricting the playfield");
+    let tag = sim.interner.intern("TAG_REVERSE_DEPLOY");
+    {
+        let source = sim.substrate.entities.get_mut(yard).unwrap();
+        source.attached_trigger_tag = Some(tag);
+        source.building_up = None;
+    }
+    assert!(sim.undeploy_building(yard, &rules));
+    sim.substrate
+        .entities
+        .get_mut(yard)
+        .unwrap()
+        .building_down
+        .as_mut()
+        .unwrap()
+        .elapsed_ticks = 29;
+    sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+        base: 0,
+        off_fc: 0,
+        off_100: 0,
+        off_104: 0,
+        off_108: 0,
+    });
+
+    assert!(!sim.tick_building_down(Some(&rules), None));
+    let source = sim
+        .substrate
+        .entities
+        .get(yard)
+        .expect("late Unit rejection restores the exact ConYard");
+    assert!(source.is_active());
+    assert_eq!(source.attached_trigger_tag, Some(tag));
+    assert!(
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| sim.interner.resolve(entity.type_ref) != "AMCV")
     );
 }
 

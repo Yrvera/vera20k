@@ -7,7 +7,7 @@ use crate::app::input::commands::preferred_local_owner_name;
 use crate::app::input::cursor::{
     current_cursor_feedback_kind, cursor_id_for_feedback, software_cursor_frame_for,
 };
-use crate::app::presentation::instances::in_view;
+use crate::app::presentation::instances::{in_view, tactical_entity_render_admission};
 use crate::app::types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
 use crate::map::entities::EntityCategory;
 use crate::render::batch::{BatchTexture, SpriteInstance};
@@ -35,9 +35,130 @@ const PIP_STEP_Y: f32 = 2.0;
 /// NOTE: Phobos `Height * 12` is for bracket EXTENT (vertical span), NOT z_screen.
 const PIP_HEIGHT_FACTOR: f32 = 15.0;
 
+/// Native WRENCH.SHP frame selector from TechnoClass::DrawExtras.
+pub(crate) fn repair_wrench_frame(
+    binary_frame: u32,
+    game_options: &crate::sim::game_options::GameOptions,
+) -> u32 {
+    let period = (u32::from(game_options.normalized_anim_delay(14)) / 4).max(2);
+    (binary_frame % period) * 6 / (period - 1)
+}
+
+fn repair_wrench_entity_admitted(entity: &crate::sim::game_entity::GameEntity) -> bool {
+    entity.category == EntityCategory::Structure && entity.repairing && entity.is_active()
+}
+
+/// Emit the click-repair wrench for every tactically admitted repairing
+/// Building. The indicator is independent of selection, owner, power, mission,
+/// and the private repair pulse latch.
+pub(crate) fn build_repair_wrench_instances(
+    state: &AppState,
+    sw: f32,
+    sh: f32,
+) -> Vec<SpriteInstance> {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|runtime| &runtime.simulation)
+    else {
+        return Vec::new();
+    };
+    let Some(overlay) = state
+        .match_state
+        .match_presentation
+        .selection_overlay
+        .as_ref()
+    else {
+        return Vec::new();
+    };
+    if overlay.wrench_texture().is_none() {
+        return Vec::new();
+    }
+    let canvas = overlay.wrench_canvas_size();
+    if canvas[0] <= 0.0 || canvas[1] <= 0.0 {
+        return Vec::new();
+    }
+    let local_owner = preferred_local_owner_name(state);
+    let local_owner_id = local_owner
+        .as_deref()
+        .and_then(|owner| sim.interner.get(owner));
+    let frame = repair_wrench_frame(sim.session.binary_frame, &sim.session.game_options);
+    let cam_x = state.match_state.input.camera_x;
+    let cam_y = state.match_state.input.camera_y;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
+    let mut instances = Vec::new();
+    for stable_id in
+        crate::app::presentation::instances::tactical_entity_encounter_order(sim, state.rules())
+    {
+        let Some(entity) = sim.entities().get(stable_id) else {
+            continue;
+        };
+        if !repair_wrench_entity_admitted(entity) {
+            continue;
+        }
+        let owner = sim.interner.resolve(entity.owner);
+        if tactical_entity_render_admission(
+            entity,
+            owner,
+            local_owner.as_deref(),
+            local_owner_id,
+            &sim.fog,
+            ignore_visibility,
+            sim.session.binary_frame,
+            0,
+            crate::render::draw_state::ObserverDrawContext {
+                owner_is_allied: local_owner.as_deref().is_some_and(|observer| {
+                    crate::map::houses::is_allied_with(&sim.house_alliances, observer, owner)
+                }),
+                detects_cloak: local_owner_id.is_some_and(|observer| {
+                    sim.fog
+                        .has_sensor_for_house(observer, entity.position.rx, entity.position.ry)
+                }),
+            },
+        )
+        .is_none()
+        {
+            continue;
+        }
+        let anchor = crate::render::locomotor_visual::screen_position(entity);
+        let position = [
+            anchor.0 - (canvas[0] as u32 / 2) as f32,
+            anchor.1 - (canvas[1] as u32 / 2) as f32,
+        ];
+        if !in_view(
+            position[0],
+            position[1],
+            canvas[0],
+            canvas[1],
+            cam_x,
+            cam_y,
+            sw,
+            sh,
+            0.0,
+        ) {
+            continue;
+        }
+        instances.push(SpriteInstance {
+            position,
+            size: canvas,
+            uv_origin: overlay.wrench_uv_origin(frame),
+            uv_size: overlay.wrench_uv_size(),
+            // Native DrawExtras submits WRENCH at the 0xE00 UI priority,
+            // ahead of later bracket/status families.
+            depth: 0.0003,
+            tint: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            ..Default::default()
+        });
+    }
+    instances
+}
+
 /// Get INI-driven health condition thresholds, falling back to RA2 defaults.
 fn condition_thresholds(state: &AppState) -> (f32, f32) {
-    state.rules()
+    state
+        .rules()
         .map(|r| (r.general.condition_yellow, r.general.condition_red))
         .unwrap_or((0.5, 0.25))
 }
@@ -52,10 +173,17 @@ fn health_bar_hover_target(
     state: &AppState,
     local_owner: Option<&str>,
 ) -> Option<(u64, HoverTargetKind)> {
-    let sim = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
+    let sim = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)?;
     let local_owner = local_owner?;
-    let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
+    let (world_x, world_y) = crate::app::match_runtime::sim_tick::screen_point_to_world(
+        state,
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
+    );
     let hover = crate::app::input::entity_pick::hover_target_at_point(
         sim,
         world_x,
@@ -64,7 +192,12 @@ fn health_bar_hover_target(
         state.match_state.sandbox_full_visibility,
         state.rules(),
         &state.height_map(),
-        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
+        Some(
+            &state
+                .match_state
+                .match_presentation
+                .tactical_bridge_inverse_map,
+        ),
     )?;
     match hover.kind {
         HoverTargetKind::FriendlyStructure
@@ -159,7 +292,14 @@ pub(crate) fn build_building_status_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.selection_overlay,
+    ) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
@@ -211,7 +351,8 @@ pub(crate) fn build_building_status_instances(
                 if img.is_empty() { o.id.as_str() } else { img }
             })
             .unwrap_or(type_str);
-        let art_height: f32 = state.rules()
+        let art_height: f32 = state
+            .rules()
             .and_then(|rules| rules.art_registry.get(art_key))
             .map(|entry| entry.height as f32)
             .unwrap_or(2.0);
@@ -353,7 +494,14 @@ pub(crate) fn build_occupant_pip_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.selection_overlay,
+    ) else {
         return Vec::new();
     };
     let has_tex = overlay.occupant_pip_texture().is_some();
@@ -547,7 +695,14 @@ pub(crate) fn build_unit_status_bg_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.selection_overlay,
+    ) else {
         return Vec::new();
     };
     if overlay.pipbrd_texture().is_none() {
@@ -596,7 +751,8 @@ pub(crate) fn build_unit_status_bg_instances(
                 overlay.pipbrd_vehicle_uv().1,
             )
         };
-        let bracket_delta: f32 = state.rules()
+        let bracket_delta: f32 = state
+            .rules()
             .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
             .map(|obj| obj.pixel_selection_bracket_delta as f32)
             .unwrap_or(0.0);
@@ -637,7 +793,14 @@ pub(crate) fn build_unit_status_fill_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.selection_overlay,
+    ) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
@@ -683,7 +846,8 @@ pub(crate) fn build_unit_status_fill_instances(
         } else {
             UNIT_PIPS_VEHICLE
         };
-        let bracket_delta: f32 = state.rules()
+        let bracket_delta: f32 = state
+            .rules()
             .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
             .map(|obj| obj.pixel_selection_bracket_delta as f32)
             .unwrap_or(0.0);
@@ -787,7 +951,14 @@ const CARGO_PIP_STEP_X: f32 = 4.0;
 /// Empty slots shown as variant 0. Start at (sx - 15 + canvas_adj_x, sy + 10 + canvas_adj_y),
 /// step (+4, 0) per pip. Draw order: gem pips first, then ore pips, then empty slots.
 pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.selection_overlay,
+    ) else {
         return Vec::new();
     };
     let Some(_tib_tex) = overlay.tiberium_pip_texture() else {
@@ -812,7 +983,8 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
         if !e.selected {
             continue;
         }
-        let obj = state.rules()
+        let obj = state
+            .rules()
             .and_then(|r| r.object(sim.interner.resolve(e.type_ref)));
         let is_tiberium_scale = obj
             .map(|o| o.pip_scale == crate::rules::object_type::PipScale::Tiberium)
@@ -947,7 +1119,14 @@ pub(crate) fn build_building_radius_ring_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(rules)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
+    let (Some(sim), Some(rules)) = (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        state.rules().map(|r| r),
+    ) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
@@ -1099,7 +1278,11 @@ fn health_pip_variant(ratio: f32, condition_yellow: f32, condition_red: f32) -> 
 /// The id travels with the sequence because the animation phase is keyed on it —
 /// changing shape restarts the sequence at frame 0.
 fn active_cursor_sequence(state: &AppState) -> Option<(CursorId, &SoftwareCursorSequence)> {
-    let cursor = state.match_state.match_presentation.software_cursor.as_ref()?;
+    let cursor = state
+        .match_state
+        .match_presentation
+        .software_cursor
+        .as_ref()?;
     let id: CursorId = current_cursor_feedback_kind(state)
         .and_then(cursor_id_for_feedback)
         .unwrap_or(CursorId::Default);
@@ -1122,8 +1305,10 @@ pub(crate) fn build_software_cursor_instances(state: &AppState) -> Vec<SpriteIns
     // Note: cursor_x/y are in screen space; camera offset is NOT applied (cursor is UI).
     vec![SpriteInstance {
         position: [
-            state.match_state.input.cursor_x + state.match_state.input.camera_x - sequence.hotspot[0],
-            state.match_state.input.cursor_y + state.match_state.input.camera_y - sequence.hotspot[1],
+            state.match_state.input.cursor_x + state.match_state.input.camera_x
+                - sequence.hotspot[0],
+            state.match_state.input.cursor_y + state.match_state.input.camera_y
+                - sequence.hotspot[1],
         ],
         size: [frame.width, frame.height],
         uv_origin: [0.0, 0.0],
@@ -1176,6 +1361,52 @@ pub(crate) fn health_fill_color(ratio: f32, condition_yellow: f32, condition_red
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repair_wrench_uses_global_normalized_seven_frame_ramp() {
+        let options = crate::sim::game_options::GameOptions::default();
+        // Default speed normalizes 14 to 56, then the native quarter yields a
+        // 14-frame period. Integer interpolation visits exactly frames 0..6.
+        assert_eq!(repair_wrench_frame(0, &options), 0);
+        assert_eq!(repair_wrench_frame(13, &options), 6);
+        assert_eq!(repair_wrench_frame(14, &options), 0);
+        assert!((0..100).all(|frame| repair_wrench_frame(frame, &options) <= 6));
+
+        let mut fastest = options.clone();
+        fastest.game_speed = 7;
+        // normalized(14)=14; 14/4=3, so the sequence is 0,3,6.
+        assert_eq!(
+            (0..6)
+                .map(|frame| repair_wrench_frame(frame, &fastest))
+                .collect::<Vec<_>>(),
+            vec![0, 3, 6, 0, 3, 6]
+        );
+    }
+
+    #[test]
+    fn repair_wrench_admission_uses_repairing_not_selection_owner_or_latch() {
+        let mut building =
+            crate::sim::game_entity::GameEntity::test_default(1, "GAPOWR", "Americans", 4, 5);
+        building.category = EntityCategory::Structure;
+        building.lifecycle.object_alive = true;
+        building.lifecycle.in_limbo = false;
+        building.dying = false;
+        building.repairing = true;
+        building.selected = false;
+        building.repair_pulse_latch = false;
+        assert!(repair_wrench_entity_admitted(&building));
+
+        building.selected = true;
+        building.repair_pulse_latch = true;
+        building.owner = crate::sim::intern::InternedId::from_index(77);
+        assert!(repair_wrench_entity_admitted(&building));
+
+        building.repairing = false;
+        assert!(!repair_wrench_entity_admitted(&building));
+        building.repairing = true;
+        building.category = EntityCategory::Unit;
+        assert!(!repair_wrench_entity_admitted(&building));
+    }
 
     /// A selected object draws both halves — bracket and pips.
     #[test]

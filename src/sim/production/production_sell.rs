@@ -8,7 +8,6 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::DestroyedGarrisonBuilding;
 use crate::sim::components::{Health, Position};
 use crate::sim::intern::InternedId;
-use crate::sim::mission::MissionType;
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::passenger::PassengerRole;
@@ -19,7 +18,9 @@ use crate::sim::world::{
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 use crate::util::lepton;
 
-use super::production_queue::{credits_entry_for_owner, credits_for_owner};
+use super::production_queue::credits_entry_for_owner;
+#[cfg(test)]
+use super::production_queue::credits_for_owner;
 use super::production_tech::foundation_dimensions;
 
 /// RA2 sell refund: 50% of cost (integer percentage).
@@ -780,158 +781,45 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     true
 }
 
-/// Toggle repair mode on a building. If already repairing, stop. Otherwise start.
-pub fn toggle_repair(sim: &mut Simulation, stable_id: u64) -> bool {
-    let Some(entity) = sim.substrate.entities.get_mut(stable_id) else {
+/// BuildingClass repair vslot (`-1`): invert Repairing. Starting while
+/// damaged arms the private pulse latch; starting at full health deliberately
+/// leaves that latch untouched and still succeeds.
+pub fn toggle_repair(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> bool {
+    let Some((category, active, current, type_ref)) =
+        sim.substrate.entities.get(stable_id).map(|entity| {
+            (
+                entity.category,
+                entity.is_active(),
+                entity.health.current,
+                entity.type_ref,
+            )
+        })
+    else {
         return false;
     };
-    if entity.category != EntityCategory::Structure {
+    if category != EntityCategory::Structure || !active {
         return false;
     }
+    let strength = rules
+        .object(sim.interner.resolve(type_ref))
+        .map(|object| object.strength)
+        .unwrap_or(i32::from(current));
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(stable_id)
+        .expect("repair toggle target remained present");
     if entity.repairing {
         entity.repairing = false;
         log::info!("Repair stopped on entity {}", stable_id);
     } else {
         entity.repairing = true;
+        if i32::from(current) != strength {
+            entity.repair_pulse_latch = true;
+        }
         log::info!("Repair started on entity {}", stable_id);
     }
     true
-}
-
-/// Repair cost: 25% of building cost spread across all HP.
-const REPAIR_COST_PERCENT: u32 = 25;
-/// HP healed per sim tick (at 15 Hz this is ~60 HP/sec).
-const REPAIR_HP_PER_TICK: u16 = 4;
-
-/// Run the `WasAttackedByEnemy` consumer from
-/// `BuildingClass::UpdateRepairAndPower @ 0x00450630` in stable building order.
-///
-/// CurrentIQ is persisted per house because named scenario houses can carry a
-/// lower `IQ=` than generated skirmish computer houses. The sale itself uses
-/// the existing authoritative building-sale transaction.
-fn tick_ai_low_credit_sell_decisions(sim: &mut Simulation, rules: &RuleSet) {
-    let building_ids: Vec<u64> = sim
-        .substrate
-        .entities
-        .values()
-        .filter(|entity| entity.category == EntityCategory::Structure)
-        .map(|entity| entity.stable_id)
-        .collect();
-
-    for stable_id in building_ids {
-        let Some((owner, eligible_building)) =
-            sim.substrate.entities.get(stable_id).map(|entity| {
-                let mission = entity.mission.current().known();
-                let below_red = entity.health.max != 0
-                    && f64::from(entity.health.current) / f64::from(entity.health.max)
-                        < f64::from(rules.general.condition_red);
-                (
-                    entity.owner,
-                    entity.is_active()
-                        && !entity.lifecycle.in_limbo
-                        && entity.was_attacked_by_enemy
-                        && !matches!(
-                            mission,
-                            Some(MissionType::Selling | MissionType::Construction)
-                        )
-                        && below_red,
-                )
-            })
-        else {
-            continue;
-        };
-        if !eligible_building {
-            continue;
-        }
-
-        let Some(house) = sim.houses.get(&owner) else {
-            continue;
-        };
-        let house_iq = house.current_iq;
-        if house_iq < rules.general.iq_repair_sell
-            || house.credits >= rules.general.credit_reserve
-            || house_iq < rules.general.iq_sell_back
-        {
-            continue;
-        }
-        // Native draws inclusive RandomRanged(0, 0x32), then performs an
-        // unsigned comparison against HouseClass TechLevel.
-        let roll = sim.scenario_rng.next_range_u32_inclusive(0, 0x32);
-        if roll >= house.tech_level as u32 {
-            continue;
-        }
-
-        // The native vslot starts the Building sell/construction path. VERA's
-        // existing building-sale authority completes that same gameplay
-        // transaction synchronously; keeping it here preserves stable-ID and
-        // RNG/credit visibility for the next building decision.
-        let _ = sell_building(sim, rules, stable_id);
-    }
-}
-
-/// Tick all repairing buildings: heal HP and deduct credits.
-pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
-    // UpdateRepairAndPower evaluates the low-credit sale arm before its active
-    // repair tick for the same building.
-    tick_ai_low_credit_sell_decisions(sim, rules);
-    // Collect snapshot of repairing structures.
-    let actions: Vec<(u64, String, String, u16, u16)> = sim
-        .substrate
-        .entities
-        .values()
-        .filter(|e| {
-            // A Dying building corpse (destroyed this tick, awaiting the end-of-
-            // tick drain) must not be auto-repaired — no credits spent on a dead
-            // building.
-            !e.dying
-                && e.repairing
-                && e.category == EntityCategory::Structure
-                && e.health.current < e.health.max
-        })
-        .map(|e| {
-            (
-                e.stable_id,
-                sim.interner.resolve(e.owner).to_string(),
-                sim.interner.resolve(e.type_ref).to_string(),
-                e.health.current,
-                e.health.max,
-            )
-        })
-        .collect();
-    let mut stop_repairing: Vec<u64> = Vec::new();
-    for (stable_id, owner, type_id, current_hp, max_hp) in actions {
-        let cost_per_hp: i32 = rules
-            .object(&type_id)
-            .map(|obj| {
-                // total_repair_cost = cost * 25 / 100, then / max_hp (ceiling division)
-                let total_repair_cost: u32 = obj.cost.max(0) as u32 * REPAIR_COST_PERCENT / 100;
-                total_repair_cost.div_ceil(max_hp.max(1) as u32).max(1) as i32
-            })
-            .unwrap_or(1);
-        let credits = credits_for_owner(sim, &owner);
-        if credits < cost_per_hp {
-            stop_repairing.push(stable_id);
-            continue;
-        }
-        let heal = REPAIR_HP_PER_TICK.min(max_hp - current_hp);
-        if heal == 0 {
-            stop_repairing.push(stable_id);
-            continue;
-        }
-        *credits_entry_for_owner(sim, &owner) -= cost_per_hp * heal as i32;
-        if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
-            entity.health.current = (entity.health.current + heal).min(entity.health.max);
-            entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
-            if entity.health.current >= entity.health.max {
-                stop_repairing.push(stable_id);
-            }
-        }
-    }
-    for stable_id in stop_repairing {
-        if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
-            entity.repairing = false;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -981,6 +869,7 @@ mod tests {
              [VehicleTypes]\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n0=GAPOWR\n\n\
+             [General]\nRepairRate=.016\nRepairStep=8\nRepairPercent=15%\n\n\
              [GAPOWR]\nStrength=100\nArmor=wood\nCost=800\n\n\
              [AudioVisual]\nConditionYellow=50%\n",
         );
@@ -1085,16 +974,21 @@ mod tests {
         building.repairing = true;
         building.building_damage_state_active = true;
         sim.substrate.entities.insert(building);
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, true, 100, 10),
+        );
 
-        tick_repairs(&mut sim, &rules);
+        crate::sim::production::tick_building_repair_tail(&mut sim, &rules, 1);
 
         let building = sim
             .substrate
             .entities
             .get(1)
             .expect("building should remain");
-        assert_eq!(building.health.current, 53);
+        assert_eq!(building.health.current, 57);
         assert!(!building.building_damage_state_active);
+        assert_eq!(sim.houses[&owner].credits, 91);
     }
 
     fn insert_captured_player_owned_garrison(

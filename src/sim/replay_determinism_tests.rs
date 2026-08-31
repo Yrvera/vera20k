@@ -28,6 +28,8 @@ fn make_test_sim() -> Simulation {
         veterancy: 0,
         high: false,
         mission: None,
+        attached_tag: None,
+        structure_ai_sell_enabled: false,
         recruitable_a: true,
         recruitable_b: true,
         structure_upgrades: [None, None, None],
@@ -136,6 +138,8 @@ fn replay_reapplies_header_seed() {
             veterancy: 0,
             high: false,
             mission: None,
+            attached_tag: None,
+            structure_ai_sell_enabled: false,
             recruitable_a: true,
             recruitable_b: true,
             structure_upgrades: [None, None, None],
@@ -190,7 +194,8 @@ fn replay_reapplies_header_seed() {
         ..Default::default()
     };
     let mut playback = sim_with_unit(&descriptor_from_header(&replay.header));
-    let replayed = ReplayRunner::run_fixture(&mut playback, &replay, None, &heights, Some(&grid), TICK_MS);
+    let replayed =
+        ReplayRunner::run_fixture(&mut playback, &replay, None, &heights, Some(&grid), TICK_MS);
     assert_eq!(
         live, replayed,
         "playback from header.seed must match the recorded timeline"
@@ -200,7 +205,8 @@ fn replay_reapplies_header_seed() {
     let mut corrupted = replay.clone();
     corrupted.header.seed ^= 1;
     let mut wrong = sim_with_unit(&descriptor_from_header(&corrupted.header));
-    let diverged = ReplayRunner::run_fixture(&mut wrong, &corrupted, None, &heights, Some(&grid), TICK_MS);
+    let diverged =
+        ReplayRunner::run_fixture(&mut wrong, &corrupted, None, &heights, Some(&grid), TICK_MS);
     assert_ne!(
         live, diverged,
         "a corrupted header seed must not reproduce the timeline"

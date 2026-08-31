@@ -218,6 +218,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         fallback_smudge_dims,
     );
     rules.art_registry = art;
+    rules.bind_building_make_shapes(&assets, theater.extension, &map.header.theater);
     rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
     rules.bind_terrain_spawner_assets(&rules_ini, &assets, theater.extension, &map.header.theater);
     rules.bind_animation_sequences(&infantry_sequences);

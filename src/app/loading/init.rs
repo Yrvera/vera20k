@@ -1074,6 +1074,7 @@ impl MapLoadInitial {
         )
         .expect("retail scheduler animation closure");
         rules.art_registry = art.clone();
+        rules.bind_building_make_shapes(asset_manager, theater_ext, &map_data.header.theater);
         rules.bind_effect_assets(asset_manager, theater_ext, &map_data.header.theater);
         rules.bind_terrain_spawner_assets(
             &rules_ini,
@@ -1902,6 +1903,12 @@ pub(crate) fn load_map_from_initial(
             &map_data.header.theater,
         );
         r.bind_animation_sequences(&infantry_sequences);
+    }
+    // Building manager construction depends on the make SHP even when no ART
+    // registry was available to merge. Bind from rules Image=/type fallback so
+    // active simulation never inherits the asset-less test assumption.
+    if let Some(r) = rules.as_mut() {
+        r.bind_building_make_shapes(&asset_manager, theater_ext, &map_data.header.theater);
     }
     let variant_table_generated = variant_selector.generated_table();
     let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();

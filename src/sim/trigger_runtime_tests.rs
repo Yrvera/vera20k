@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::map::actions::MapAction;
 use crate::map::entities::EntityCategory;
 use crate::map::events::MapEvent;
+use crate::map::tags::{MapTag, TagMap};
 use crate::map::trigger_graph::build_trigger_graph;
 use crate::map::triggers::{MapTrigger, TriggerDifficulty};
 use crate::map::variable_names::{LocalVariable, LocalVariableMap};
@@ -568,6 +569,141 @@ fn time_trigger_can_center_camera_at_waypoint() {
             )
             .is_empty()
     );
+}
+
+#[test]
+fn one_shot_trigger_expiry_clears_every_matching_attached_tag_only() {
+    let triggers: TriggerMap = [
+        (
+            "TRIG_A".to_string(),
+            make_trigger("TRIG_A", None, "One Shot", true, false),
+        ),
+        (
+            "TRIG_B".to_string(),
+            make_trigger("TRIG_B", None, "Repeating", true, true),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let elapsed_event = |id: &str| MapEvent {
+        id: id.to_string(),
+        fields: vec![
+            "1".to_string(),
+            "47".to_string(),
+            "3".to_string(),
+            "0".to_string(),
+        ],
+        conditions: vec![EventCondition {
+            kind: 47,
+            params: vec!["3".to_string(), "0".to_string()],
+        }],
+    };
+    let events: EventMap = [
+        ("TRIG_A".to_string(), elapsed_event("TRIG_A")),
+        ("TRIG_B".to_string(), elapsed_event("TRIG_B")),
+    ]
+    .into_iter()
+    .collect();
+    let actions = ActionMap::new();
+    let tags: TagMap = [
+        (
+            "TAG_A".to_string(),
+            MapTag {
+                id: "TAG_A".to_string(),
+                fields: vec!["0".to_string(), "Alias A".to_string(), "TRIG_A".to_string()],
+            },
+        ),
+        (
+            "TAG_B".to_string(),
+            MapTag {
+                id: "TAG_B".to_string(),
+                fields: vec!["0".to_string(), "Alias B".to_string(), "TRIG_B".to_string()],
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let graph = build_trigger_graph(&HashMap::new(), &tags, &triggers, &events, &actions);
+    let mut sim = Simulation::new();
+    let first = spawn_type(&mut sim, "E1");
+    let second = spawn_type(&mut sim, "E2");
+    let control = spawn_type(&mut sim, "E3");
+    let tag_a = sim.interner.intern("TAG_A");
+    let tag_b = sim.interner.intern("TAG_B");
+    sim.substrate
+        .entities
+        .get_mut(first)
+        .unwrap()
+        .attached_trigger_tag = Some(tag_a);
+    sim.substrate
+        .entities
+        .get_mut(second)
+        .unwrap()
+        .attached_trigger_tag = Some(tag_a);
+    sim.substrate
+        .entities
+        .get_mut(control)
+        .unwrap()
+        .attached_trigger_tag = Some(tag_b);
+    let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+
+    let _ = runtime.advance_at_frame(
+        44,
+        &graph,
+        &triggers,
+        &events,
+        &actions,
+        Some(&mut sim),
+        None,
+        &HashMap::new(),
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(first)
+            .unwrap()
+            .attached_trigger_tag,
+        Some(tag_a)
+    );
+
+    let _ = runtime.advance_at_frame(
+        45,
+        &graph,
+        &triggers,
+        &events,
+        &actions,
+        Some(&mut sim),
+        None,
+        &HashMap::new(),
+    );
+
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(first)
+            .unwrap()
+            .attached_trigger_tag,
+        None
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(second)
+            .unwrap()
+            .attached_trigger_tag,
+        None
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(control)
+            .unwrap()
+            .attached_trigger_tag,
+        Some(tag_b),
+        "repeat type 2 retains its TagClass"
+    );
+    assert!(runtime.fired_one_shot_triggers.contains("TRIG_A"));
+    assert!(!runtime.fired_one_shot_triggers.contains("TRIG_B"));
 }
 
 #[test]

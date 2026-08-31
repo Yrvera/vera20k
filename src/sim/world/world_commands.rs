@@ -1353,7 +1353,8 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                production::toggle_repair(self, *entity_id)
+                let Some(rules) = rules else { return false };
+                production::toggle_repair(self, rules, *entity_id)
             }
             Command::MinerReturn {
                 entity_id,

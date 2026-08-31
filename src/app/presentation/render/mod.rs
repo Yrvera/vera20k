@@ -289,6 +289,7 @@ fn upload_to_gpu(
     }
 
     // UI overlays
+    pool.upload(&state.renderer.gpu, "repair_wrenches", &ui.repair_wrench);
     pool.upload(&state.renderer.gpu, "drag", &ui.drag);
     pool.upload(&state.renderer.gpu, "selection_brackets_back", &ui.bracket_back);
     pool.upload(

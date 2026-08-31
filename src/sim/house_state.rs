@@ -334,6 +334,11 @@ pub struct HouseState {
     pub base_reservation: BaseReservationState,
     /// Max tech level for this player. From game options at match start.
     pub tech_level: i32,
+    /// Native HouseClass scenario IQ (`+0x1D0`). Named scenario-house `IQ=`
+    /// writes this and CurrentIQ together; generated skirmish houses retain
+    /// the constructor value zero here even when their live CurrentIQ is raised.
+    #[serde(default)]
+    pub scenario_iq: i32,
     /// Live HouseClass CurrentIQ (+0x24C), used by AI behavior thresholds.
     ///
     /// Named scenario houses read their own `IQ=`. Generated skirmish computer
@@ -513,6 +518,7 @@ impl HouseState {
             base_plan_center: (0, 0),
             base_reservation: BaseReservationState::default(),
             tech_level,
+            scenario_iq: 0,
             current_iq: 0,
             grudge_scores: BTreeMap::new(),
             enemy_house: None,

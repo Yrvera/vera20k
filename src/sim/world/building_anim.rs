@@ -72,6 +72,166 @@ pub(crate) fn building_anim_rate_logic_frames(
     }
 }
 
+/// Recreate only the Building animation objects that currently have a Rust
+/// runtime occupant. Native walks its fixed slot array and replaces each
+/// non-null pointer when the yellow-condition body gate changes; absent slots
+/// stay absent and unrelated runtime overlays keep their identity and order.
+pub(crate) fn recreate_existing_slots_for_damage_state(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    stable_id: u64,
+) {
+    struct Replacement {
+        index: usize,
+        anim_type: String,
+        frame: u16,
+        loop_start: u16,
+        loop_end: u16,
+        rate_logic_frames: u32,
+    }
+
+    let Some((type_name, rules_image, damaged, garrisoned, occupied)) =
+        sim.substrate.entities.get(stable_id).and_then(|entity| {
+            let overlays = entity.building_anim_overlays.as_ref()?;
+            let type_name = sim.interner.resolve(entity.type_ref).to_string();
+            let rules_image = rules
+                .object(&type_name)
+                .map(|object| object.image.clone())
+                .unwrap_or_else(|| type_name.clone());
+            let occupied = overlays
+                .anims
+                .iter()
+                .map(|state| {
+                    (
+                        sim.interner.resolve(state.anim_type).to_string(),
+                        state.frame,
+                    )
+                })
+                .collect::<Vec<_>>();
+            Some((
+                type_name,
+                rules_image,
+                entity.building_damage_state_active,
+                entity
+                    .passenger_role
+                    .cargo()
+                    .is_some_and(|cargo| !cargo.is_empty()),
+                occupied,
+            ))
+        })
+    else {
+        return;
+    };
+    let Some(entry) = rules
+        .art_registry
+        .resolve_metadata_entry(&type_name, &rules_image)
+    else {
+        return;
+    };
+
+    let mut replacements = Vec::new();
+    for (index, (occupied_name, occupied_frame)) in occupied.iter().enumerate() {
+        let Some(config) =
+            entry.building_anims.iter().find(|config| {
+                config.anim_type.eq_ignore_ascii_case(occupied_name)
+                    || config.damaged_variant.as_ref().is_some_and(|variant| {
+                        variant.anim_type.eq_ignore_ascii_case(occupied_name)
+                    })
+                    || config.garrisoned_variant.as_ref().is_some_and(|variant| {
+                        variant.anim_type.eq_ignore_ascii_case(occupied_name)
+                    })
+            })
+        else {
+            continue;
+        };
+        let old_start = if config.anim_type.eq_ignore_ascii_case(occupied_name) {
+            config.start_frame
+        } else if let Some(variant) = config
+            .damaged_variant
+            .as_ref()
+            .filter(|variant| variant.anim_type.eq_ignore_ascii_case(occupied_name))
+        {
+            variant.start_frame
+        } else if let Some(variant) = config
+            .garrisoned_variant
+            .as_ref()
+            .filter(|variant| variant.anim_type.eq_ignore_ascii_case(occupied_name))
+        {
+            variant.start_frame
+        } else {
+            continue;
+        };
+        let (anim_type, loop_start, loop_end, start_frame) = if damaged {
+            let Some(variant) = config.damaged_variant.as_ref() else {
+                // Native's selected descriptor is null: retain this occupant.
+                continue;
+            };
+            (
+                variant.anim_type.as_str(),
+                variant.loop_start,
+                variant.loop_end,
+                variant.start_frame,
+            )
+        } else if let Some(variant) = garrisoned
+            .then_some(config.garrisoned_variant.as_ref())
+            .flatten()
+        {
+            (
+                variant.anim_type.as_str(),
+                variant.loop_start,
+                variant.loop_end,
+                variant.start_frame,
+            )
+        } else {
+            (
+                config.anim_type.as_str(),
+                config.loop_start,
+                config.loop_end,
+                config.start_frame,
+            )
+        };
+        if anim_type.is_empty() {
+            continue;
+        }
+        replacements.push(Replacement {
+            index,
+            anim_type: anim_type.to_ascii_uppercase(),
+            frame: (i32::from(start_frame)
+                .saturating_add(i32::from(*occupied_frame) - i32::from(old_start)))
+            .clamp(0, i32::from(u16::MAX)) as u16,
+            loop_start,
+            loop_end,
+            rate_logic_frames: u32::from(building_anim_rate_logic_frames(
+                &rules.art_registry,
+                anim_type,
+                Some(&sim.session.game_options),
+            )),
+        });
+    }
+
+    for replacement in replacements {
+        let anim_type = sim.interner.intern(&replacement.anim_type);
+        let Some(state) = sim
+            .substrate
+            .entities
+            .get_mut(stable_id)
+            .and_then(|entity| entity.building_anim_overlays.as_mut())
+            .and_then(|overlays| overlays.anims.get_mut(replacement.index))
+        else {
+            continue;
+        };
+        *state = AnimOverlayState {
+            anim_type,
+            frame: replacement.frame,
+            loop_start: replacement.loop_start,
+            loop_end: replacement.loop_end,
+            rate_logic_frames: replacement.rate_logic_frames,
+            elapsed_logic_frames: 0,
+            finished: false,
+        };
+    }
+}
+
 fn tick_overlays(sim: &mut Simulation, dt_logic_frames: u32) {
     let keys = sim.entities().keys_sorted();
     for id in keys {
@@ -583,6 +743,137 @@ mod tests {
         ));
         rules.merge_art_data(&art);
         rules
+    }
+
+    #[test]
+    fn damage_gate_recreates_only_occupied_retail_slot_descriptors_in_place() {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=YAGNTC\n[YAGNTC]\nStrength=1000\nCost=2500\nArmor=concrete\n",
+        ))
+        .expect("YAGNTC rules");
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[YAGNTC]\n\
+             SuperAnim=YAGNTC_E\nSuperAnimDamaged=YAGNTC_ED\n\
+             SuperAnimTwo=YAGNTC_F\nSuperAnimTwoDamaged=YAGNTC_FD\n\
+             SuperAnimThree=YAGNTC_G\nSuperAnimThreeDamaged=YAGNTC_GD\n\
+             SuperAnimFour=YAGNTC_H\nSuperAnimFourDamaged=YAGNTC_HD\n\
+             SuperLowPower=YAGNTC_P\nSuperLowPowerDamaged=YAGNTC_PD\n\
+             [YAGNTC_F]\nStart=2\nLoopStart=1\nLoopEnd=8\nRate=300\n\
+             [YAGNTC_FD]\nStart=12\nLoopStart=11\nLoopEnd=18\nRate=150\n\
+             [YAGNTC_G]\nStart=3\nLoopStart=1\nLoopEnd=9\nRate=300\n\
+             [YAGNTC_GD]\nStart=13\nLoopStart=11\nLoopEnd=19\nRate=150\n\
+             [YAGNTC_H]\nStart=4\nLoopStart=1\nLoopEnd=10\nRate=300\n\
+             [YAGNTC_HD]\nStart=14\nLoopStart=11\nLoopEnd=20\nRate=150\n\
+             [YAGNTC_P]\nStart=5\nLoopStart=2\nLoopEnd=11\nRate=300\n\
+             [YAGNTC_PD]\nStart=15\nLoopStart=12\nLoopEnd=21\nRate=150\n",
+        ));
+        rules.merge_art_data(&art);
+        let mut sim = Simulation::new();
+        insert_building(&mut sim, 17, "YAGNTC", 4, 5);
+        let occupied = [
+            "YAGNTC_FD",
+            "UNRELATED",
+            "YAGNTC_GD",
+            "YAGNTC_HD",
+            "YAGNTC_PD",
+        ];
+        let old_frames = [15, 99, 16, 17, 18];
+        let states = occupied
+            .iter()
+            .zip(old_frames)
+            .map(|(name, frame)| AnimOverlayState {
+                anim_type: sim.interner.intern(name),
+                frame,
+                loop_start: 90,
+                loop_end: 100,
+                rate_logic_frames: 77,
+                elapsed_logic_frames: 66,
+                finished: true,
+            })
+            .collect();
+        sim.entities_mut()
+            .get_mut(17)
+            .unwrap()
+            .building_anim_overlays = Some(BuildingAnimOverlays { anims: states });
+
+        recreate_existing_slots_for_damage_state(&mut sim, &rules, 17);
+
+        let overlays = &sim
+            .entities()
+            .get(17)
+            .unwrap()
+            .building_anim_overlays
+            .as_ref()
+            .unwrap()
+            .anims;
+        let names = overlays
+            .iter()
+            .map(|state| sim.interner.resolve(state.anim_type))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["YAGNTC_F", "UNRELATED", "YAGNTC_G", "YAGNTC_H", "YAGNTC_P"]
+        );
+        assert_eq!(
+            overlays.iter().map(|state| state.frame).collect::<Vec<_>>(),
+            vec![5, 99, 6, 7, 8]
+        );
+        for state in overlays
+            .iter()
+            .filter(|state| sim.interner.resolve(state.anim_type) != "UNRELATED")
+        {
+            assert_eq!(state.rate_logic_frames, 3);
+            assert_eq!(state.elapsed_logic_frames, 0);
+            assert!(!state.finished);
+        }
+        assert_eq!(
+            overlays.len(),
+            occupied.len(),
+            "absent YAGNTC_E stays absent"
+        );
+    }
+
+    #[test]
+    fn entering_damage_without_a_damaged_descriptor_retains_the_occupant() {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=TEST\n[TEST]\nStrength=100\nCost=100\nArmor=wood\n",
+        ))
+        .unwrap();
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[TEST]\nActiveAnim=TEST_A\n[TEST_A]\nStart=2\nLoopStart=2\nLoopEnd=8\n",
+        ));
+        rules.merge_art_data(&art);
+        let mut sim = Simulation::new();
+        insert_building(&mut sim, 9, "TEST", 2, 2);
+        let anim_type = sim.interner.intern("TEST_A");
+        let original = AnimOverlayState {
+            anim_type,
+            frame: 6,
+            loop_start: 2,
+            loop_end: 8,
+            rate_logic_frames: 5,
+            elapsed_logic_frames: 4,
+            finished: false,
+        };
+        let entity = sim.entities_mut().get_mut(9).unwrap();
+        entity.building_damage_state_active = true;
+        entity.building_anim_overlays = Some(BuildingAnimOverlays {
+            anims: vec![original.clone()],
+        });
+
+        recreate_existing_slots_for_damage_state(&mut sim, &rules, 9);
+
+        let state = &sim
+            .entities()
+            .get(9)
+            .unwrap()
+            .building_anim_overlays
+            .as_ref()
+            .unwrap()
+            .anims[0];
+        assert_eq!(state.anim_type, original.anim_type);
+        assert_eq!(state.frame, original.frame);
+        assert_eq!(state.elapsed_logic_frames, original.elapsed_logic_frames);
     }
 
     #[test]

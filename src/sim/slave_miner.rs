@@ -497,24 +497,29 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
             entity.position.z,
             entity.facing,
             entity.selected,
+            entity.attached_trigger_tag,
             target_type.to_string(),
             enslaves,
             slaves_number,
         ))
     }?;
 
-    let (owner, rx, ry, z, _facing, was_selected, target_type, slave_type, slaves_number) =
-        deploy_data;
+    let (
+        owner,
+        rx,
+        ry,
+        z,
+        _facing,
+        was_selected,
+        attached_trigger_tag,
+        target_type,
+        slave_type,
+        slaves_number,
+    ) = deploy_data;
 
-    // Preserve any existing manager/bindings when this is a redeploy after a
-    // retail-style YAREFN -> SMIN reverse conversion.
-    let existing_slave_ids = sim.production.slave_bindings.remove(&stable_id);
-
-    // Despawn the SMIN vehicle.
-    sim.uninit_with_rules(stable_id, rules);
-
-    // Spawn the YAREFN building at the same cell.
-    let new_sid: u64 = sim.spawn_object_at_height_with_overlay_context(
+    // Construct and reveal the YAREFN before consuming any source state. A
+    // rejected target Unlimbo leaves the SMIN, tag, and slave manager intact.
+    let new_sid: u64 = sim.spawn_deploy_target_building_at_height_with_overlay_context(
         &target_type,
         &owner,
         rx,
@@ -525,9 +530,9 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
         overlay_registry,
     )?;
 
-    if let Some(ge) = sim.substrate.entities.get_mut(new_sid) {
-        ge.selected = was_selected;
-    }
+    // Preserve any existing manager/bindings when this is a redeploy after a
+    // retail-style YAREFN -> SMIN reverse conversion.
+    let existing_slave_ids = sim.production.slave_bindings.remove(&stable_id);
 
     let slave_capacity: u16 = rules
         .object_case_insensitive(&slave_type)
@@ -592,15 +597,34 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
         );
     }
 
+    // `PowerUp_Cleanup @ 0x006AF580` has now installed the donated manager.
+    // UnitClass::Deploy next moves the AttachedTag reference and only then
+    // destroys the old Unit, so pointer-expiry observers see the new masters.
+    sim.substrate
+        .entities
+        .get_mut(new_sid)
+        .expect("successfully spawned YAREFN remains stored")
+        .attached_trigger_tag = attached_trigger_tag;
+    if attached_trigger_tag.is_some()
+        && let Some(source) = sim.substrate.entities.get_mut(stable_id)
+    {
+        source.attached_trigger_tag = None;
+    }
+    sim.uninit_with_rules(stable_id, rules);
+
+    if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
+        target.selected = was_selected;
+    }
+
     Some(new_sid)
 }
 
 /// Undeploy a Slave Miner refinery (YAREFN) back into vehicle form (SMIN).
 ///
 /// 1. Preserve the live slave manager bindings
-/// 2. Despawn the YAREFN building
-/// 3. Spawn the SMIN vehicle at the same cell
-/// 4. Transfer slave bindings to the new SMIN entity and rewrite slave masters
+/// 2. Limbo the YAREFN footprint while retaining the source object
+/// 3. Construct and reveal the SMIN vehicle at the same cell
+/// 4. Transfer slave bindings and tags before destroying the old YAREFN
 ///
 /// Returns the new SMIN stable_id, or None if undeploy failed.
 pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
@@ -627,19 +651,19 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
             entity.position.ry,
             entity.position.z,
             entity.selected,
+            entity.attached_trigger_tag,
             target_type.to_string(),
         ))
     }?;
 
-    let (owner, rx, ry, z, was_selected, target_type) = undeploy_data;
+    let (owner, rx, ry, z, was_selected, attached_trigger_tag, target_type) = undeploy_data;
 
-    let slave_ids = sim.production.slave_bindings.remove(&stable_id);
+    // Remove the refinery footprint but retain the source object and manager
+    // until the replacement Unit's Unlimbo succeeds.
+    let _ = sim.techno_limbo_with_rules(stable_id, rules);
 
-    // Despawn the YAREFN building.
-    sim.uninit_with_rules(stable_id, rules);
-
-    // Spawn the SMIN vehicle.
-    let new_sid: u64 = sim.spawn_object_at_height_with_overlay_context(
+    // Spawn the SMIN vehicle. Restore the exact source on any late rejection.
+    let Some(new_sid) = sim.spawn_object_at_height_with_overlay_context(
         &target_type,
         &owner,
         rx,
@@ -648,11 +672,12 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
         z,
         rules,
         overlay_registry,
-    )?;
+    ) else {
+        let _ = sim.reveal(stable_id);
+        return None;
+    };
 
-    if let Some(ge) = sim.substrate.entities.get_mut(new_sid) {
-        ge.selected = was_selected;
-    }
+    let slave_ids = sim.production.slave_bindings.remove(&stable_id);
 
     if let Some(slave_ids) = slave_ids {
         // The SMIN constructor's own fresh pool and its draws already exist;
@@ -672,6 +697,19 @@ pub(crate) fn undeploy_slave_miner_with_overlay_context(
         sim.production
             .slave_bindings
             .insert(new_sid, live_slave_ids);
+    }
+
+    if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
+        target.attached_trigger_tag = attached_trigger_tag;
+    }
+    if attached_trigger_tag.is_some()
+        && let Some(source) = sim.substrate.entities.get_mut(stable_id)
+    {
+        source.attached_trigger_tag = None;
+    }
+    sim.uninit_with_rules(stable_id, rules);
+    if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
+        target.selected = was_selected;
     }
 
     Some(new_sid)
@@ -868,6 +906,7 @@ fn manhattan_distance(ax: u16, ay: u16, bx: u16, by: u16) -> u16 {
 mod tests {
     use super::*;
     use crate::sim::miner::ResourceType;
+    use crate::sim::mission::{MissionId, MissionType};
     use crate::sim::rng::SimRng;
 
     #[test]
@@ -916,6 +955,12 @@ mod tests {
             .get(&yarefn)
             .cloned()
             .expect("YAREFN should own slave manager");
+        let tag = sim.interner.intern("TAG_YAREFN_UNDEPLOY");
+        sim.substrate
+            .entities
+            .get_mut(yarefn)
+            .unwrap()
+            .attached_trigger_tag = Some(tag);
         assert_eq!(slave_ids, vec![2, 3, 4, 5, 6]);
         for discarded_id in 8..=12 {
             assert!(sim.substrate.entities.get(discarded_id).is_none());
@@ -932,6 +977,22 @@ mod tests {
         }
         assert!(sim.production.slave_bindings.get(&yarefn).is_none());
         assert_eq!(sim.production.slave_bindings.get(&smin), Some(&slave_ids));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(smin)
+                .unwrap()
+                .attached_trigger_tag,
+            Some(tag)
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(yarefn)
+                .expect("deferred YAREFN source")
+                .attached_trigger_tag,
+            None
+        );
         for slave_id in slave_ids {
             let slave = sim
                 .substrate
@@ -940,6 +1001,131 @@ mod tests {
                 .expect("slave remains live");
             assert_eq!(slave.slave_harvester.as_ref().unwrap().master_id, smin);
         }
+    }
+
+    #[test]
+    fn deploy_transfers_attached_tag_to_new_yarefn_and_clears_source() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E002);
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0, 0, &rules)
+            .expect("spawn tagged SMIN");
+        let tag = sim.interner.intern("TAG_SMIN_DEPLOY");
+        sim.substrate
+            .entities
+            .get_mut(smin)
+            .expect("live SMIN")
+            .attached_trigger_tag = Some(tag);
+
+        let yarefn = deploy_slave_miner(&mut sim, smin, &rules).expect("deploy tagged SMIN");
+
+        let target = sim.substrate.entities.get(yarefn).expect("new YAREFN");
+        assert_eq!(target.attached_trigger_tag, Some(tag));
+        assert_eq!(target.mission.current(), MissionId::NONE);
+        assert_eq!(
+            target.mission.queued(),
+            MissionId::from_known(MissionType::Construction)
+        );
+        assert_eq!(
+            target.mission.effective(),
+            MissionId::from_known(MissionType::Construction)
+        );
+        assert_eq!(
+            target
+                .mission_leaf
+                .as_building()
+                .expect("YAREFN Building leaf")
+                .ready_latch(),
+            0
+        );
+        assert!(target.building_up.is_some());
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(smin)
+                .expect("deferred-deletion SMIN remains resolvable")
+                .attached_trigger_tag,
+            None,
+            "successful transfer clears the dying source reference"
+        );
+        assert_eq!(sim.interner.resolve(tag), "TAG_SMIN_DEPLOY");
+    }
+
+    #[test]
+    fn failed_undeploy_restores_yarefn_tag_and_slave_manager() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E004);
+        let yarefn = sim
+            .spawn_object_at_height("YAREFN", "YuriCountry", 10, 10, 0, 0, &rules)
+            .expect("spawn tagged YAREFN before restricting the playfield");
+        let tag = sim.interner.intern("TAG_YAREFN_UNDEPLOY");
+        sim.substrate
+            .entities
+            .get_mut(yarefn)
+            .expect("live YAREFN")
+            .attached_trigger_tag = Some(tag);
+        let slave_ids = sim
+            .production
+            .slave_bindings
+            .get(&yarefn)
+            .cloned()
+            .expect("YAREFN constructor owns its slave manager");
+        sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+            base: 0,
+            off_fc: 0,
+            off_100: 0,
+            off_104: 0,
+            off_108: 0,
+        });
+
+        assert_eq!(undeploy_slave_miner(&mut sim, yarefn, &rules), None);
+        let source = sim
+            .substrate
+            .entities
+            .get(yarefn)
+            .expect("failed undeploy restores the exact YAREFN source");
+        assert!(source.is_active());
+        assert_eq!(source.attached_trigger_tag, Some(tag));
+        assert_eq!(
+            sim.production.slave_bindings.get(&yarefn),
+            Some(&slave_ids),
+            "late Unit rejection must not consume the source manager"
+        );
+    }
+
+    #[test]
+    fn failed_deploy_keeps_attached_tag_on_source() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E003);
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0, 0, &rules)
+            .expect("spawn tagged SMIN before restricting the playfield");
+        let tag = sim.interner.intern("TAG_SMIN_DEPLOY");
+        sim.substrate
+            .entities
+            .get_mut(smin)
+            .expect("live SMIN")
+            .attached_trigger_tag = Some(tag);
+        sim.playfield_bounds = Some(crate::map::playfield::PlayfieldBounds {
+            base: 0,
+            off_fc: 0,
+            off_100: 0,
+            off_104: 0,
+            off_108: 0,
+        });
+
+        assert_eq!(deploy_slave_miner(&mut sim, smin, &rules), None);
+        assert!(sim.substrate.entities.get(smin).unwrap().is_active());
+        assert!(sim.production.slave_bindings.contains_key(&smin));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(smin)
+                .expect("failed deploy source remains resolvable")
+                .attached_trigger_tag,
+            Some(tag),
+            "target construction failure must not detach the source tag"
+        );
     }
 
     #[test]

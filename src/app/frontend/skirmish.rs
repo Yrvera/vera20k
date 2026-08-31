@@ -1034,14 +1034,17 @@ mod tests {
             .collect();
         assert_eq!(order, ["Player", "Computer1", "Neutral", "Special"]);
         assert_eq!(sim.houses.len(), 4);
-        let current_iq = |owner: &str| {
+        let iq_fields = |owner: &str| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
-                .map(|house| house.current_iq)
+                .map(|house| (house.current_iq, house.scenario_iq))
         };
-        assert_eq!(current_iq("Player"), Some(0));
-        assert_eq!(current_iq("Computer1"), Some(rules.general.max_iq_levels));
-        assert_eq!(current_iq("Neutral"), Some(0));
-        assert_eq!(current_iq("Special"), Some(0));
+        assert_eq!(iq_fields("Player"), Some((0, 0)));
+        assert_eq!(
+            iq_fields("Computer1"),
+            Some((rules.general.max_iq_levels, 0))
+        );
+        assert_eq!(iq_fields("Neutral"), Some((0, 0)));
+        assert_eq!(iq_fields("Special"), Some((0, 0)));
     }
 
     #[test]
@@ -1086,6 +1089,8 @@ mod tests {
                 veterancy: 0,
                 high: false,
                 mission: None,
+                attached_tag: None,
+                structure_ai_sell_enabled: false,
                 recruitable_a: true,
                 recruitable_b: true,
                 structure_upgrades: [None, None, None],
@@ -1841,14 +1846,18 @@ mod tests {
         assert_eq!(difficulty("Computer1"), Some(HouseDifficulty::Hard));
         assert_eq!(difficulty("Computer2"), Some(HouseDifficulty::Normal));
         assert_eq!(difficulty("Computer3"), Some(HouseDifficulty::Easy));
-        let current_iq = |owner: &str| {
+        let iq_fields = |owner: &str| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
-                .map(|house| house.current_iq)
+                .map(|house| (house.current_iq, house.scenario_iq))
         };
-        assert_eq!(current_iq("Player"), Some(0));
-        assert_eq!(current_iq("Computer1"), Some(rules.general.max_iq_levels));
-        assert_eq!(current_iq("Computer2"), Some(rules.general.max_iq_levels));
-        assert_eq!(current_iq("Computer3"), Some(rules.general.max_iq_levels));
+        assert_eq!(iq_fields("Player"), Some((0, 0)));
+        for owner in ["Computer1", "Computer2", "Computer3"] {
+            assert_eq!(
+                iq_fields(owner),
+                Some((rules.general.max_iq_levels, 0)),
+                "{owner}"
+            );
+        }
     }
 
     #[test]

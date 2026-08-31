@@ -28,76 +28,245 @@ pub(crate) fn tick_terrain_overlay_animations(state: &mut AppState, dt_ms: u32) 
 
 pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames;
 
-/// Record the logic frame each structure's slot animations were created on, and
-/// drop the record for structures that no longer exist.
-///
-/// gamemd builds a building's animation slots when the building is placed on the
-/// map, and each slot's animation object bases its own frame timer on the frame
-/// it was constructed. The looping animation therefore has a per-building phase:
-/// two power plants raised a few seconds apart never pulse together. This map is
-/// the app-side stand-in for that construction frame — recorded once, the first
-/// logic frame the structure is seen.
-pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        state.match_state.match_presentation.building_anim_phase_base.clear();
-        return;
-    };
-    let tick = sim.session.tick;
-    let live: Vec<u64> = sim
-        .entities()
-        .iter_sorted()
-        .filter(|(_, entity)| entity.category == crate::map::entities::EntityCategory::Structure)
-        .map(|(id, _)| id)
-        .collect();
-    record_building_anim_phase_bases(&mut state.match_state.match_presentation.building_anim_phase_base, &live, tick);
+pub(crate) struct BuildingAnimFrameView<'a> {
+    pub(crate) anim_type: &'a str,
+    pub(crate) loop_start: u16,
+    pub(crate) loop_end: u16,
+    pub(crate) loop_count: i32,
+    pub(crate) start_frame: u16,
+    pub(crate) ping_pong: bool,
 }
 
-/// Insert a phase base for every newly seen structure and forget the ones that
-/// are gone.
-///
-/// An existing entry is never re-stamped: the animation object outlives every
-/// intervening frame, so re-basing it would restart the loop and put the whole
-/// base back in step.
-///
-/// `live_structures` must be sorted ascending — `EntityStore::iter_sorted`
-/// yields stable ids in that order.
-fn record_building_anim_phase_bases(
-    bases: &mut std::collections::BTreeMap<u64, u64>,
-    live_structures: &[u64],
-    tick: u64,
-) {
-    bases.retain(|id, _| live_structures.binary_search(id).is_ok());
-    for id in live_structures {
-        bases.entry(*id).or_insert(tick);
+pub(crate) fn selected_building_anim_view<'a>(
+    anim: &'a crate::rules::art_data::BuildingAnimConfig,
+    building_damage_state_active: bool,
+    is_garrisoned: bool,
+) -> BuildingAnimFrameView<'a> {
+    let variant = if building_damage_state_active {
+        anim.damaged_variant.as_ref()
+    } else if is_garrisoned {
+        anim.garrisoned_variant.as_ref()
+    } else {
+        None
+    };
+    match variant {
+        Some(variant) => BuildingAnimFrameView {
+            anim_type: &variant.anim_type,
+            loop_start: variant.loop_start,
+            loop_end: variant.loop_end,
+            loop_count: variant.loop_count,
+            start_frame: variant.start_frame,
+            ping_pong: variant.ping_pong,
+        },
+        None => BuildingAnimFrameView {
+            anim_type: &anim.anim_type,
+            loop_start: anim.loop_start,
+            loop_end: anim.loop_end,
+            loop_count: anim.loop_count,
+            start_frame: anim.start_frame,
+            ping_pong: anim.ping_pong,
+        },
     }
 }
 
-/// Logic frames elapsed since a building's slot animations were created.
-///
-/// Falls back to zero for a structure with no recorded base, which renders the
-/// animation's first loop frame rather than an arbitrary one.
-pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u64) -> u32 {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        return 0;
+fn fresh_building_slot_runtime(
+    anim_type: &str,
+    art: &crate::rules::art_data::ArtRegistry,
+    options: &crate::sim::game_options::GameOptions,
+    frame_counts: &HashMap<String, u16>,
+) -> Option<AnimRuntime> {
+    if anim_type.is_empty() {
+        return None;
+    }
+    let config = art.anim_runtime_config(anim_type)?;
+    let mut runtime = garrison_occupant_anim_runtime(
+        anim_type,
+        config,
+        anim_total_frames(frame_counts, anim_type),
+    );
+    runtime.reload_logic_frames = building_anim_rate_logic_frames(art, anim_type, Some(options));
+    Some(runtime)
+}
+
+/// Recreate one occupied native slot for a damage-state edge. Only the old
+/// AnimClass `CurrentFrame` field survives; constructor direction, cadence,
+/// loop byte, and first-AI guard all come from the newly selected descriptor.
+fn replace_occupied_slot_for_damage_state(
+    slot: &mut Option<AnimRuntime>,
+    anim: &crate::rules::art_data::BuildingAnimConfig,
+    damaged: bool,
+    art: &crate::rules::art_data::ArtRegistry,
+    options: &crate::sim::game_options::GameOptions,
+    frame_counts: &HashMap<String, u16>,
+) -> bool {
+    let Some(old) = slot.as_ref() else {
+        return false;
     };
-    state
-        .match_state.match_presentation.building_anim_phase_base
-        .get(&stable_id)
-        .map(|base| sim.session.tick.saturating_sub(*base).min(u32::MAX as u64) as u32)
-        .unwrap_or(0)
+    let selected_type = if damaged {
+        let Some(variant) = anim.damaged_variant.as_ref() else {
+            return false;
+        };
+        variant.anim_type.as_str()
+    } else {
+        anim.anim_type.as_str()
+    };
+    let Some(mut replacement) =
+        fresh_building_slot_runtime(selected_type, art, options, frame_counts)
+    else {
+        return false;
+    };
+    replacement.current_frame = old.current_frame;
+    *slot = Some(replacement);
+    true
+}
+
+fn app_owns_looping_building_slot(
+    anim: &crate::rules::art_data::BuildingAnimConfig,
+    damaged: bool,
+    is_garrisoned: bool,
+) -> bool {
+    let selected = selected_building_anim_view(anim, damaged, is_garrisoned);
+    matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Idle)
+        || matches!(
+            anim.kind,
+            crate::rules::art_data::BuildingAnimKind::Active
+                | crate::rules::art_data::BuildingAnimKind::Production
+        ) && selected.loop_count < 0
+}
+
+/// Tick each represented looping Building animation once per committed logic
+/// frame and reconcile per-slot damage replacement edges.
+pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState, frame_committed: bool) {
+    if !frame_committed {
+        return;
+    }
+
+    let match_state = &mut state.match_state;
+    let Some(runtime) = match_state.sim_runtime.as_ref() else {
+        match_state
+            .match_presentation
+            .building_anim_phase_base
+            .clear();
+        return;
+    };
+    let sim = &runtime.simulation;
+    let rules = &runtime.resources.rules;
+    let art = &rules.art_registry;
+    let options = &sim.session.game_options;
+    let (atlas, phase_bases) = (
+        &match_state.match_presentation.sprite_atlas,
+        &mut match_state.match_presentation.building_anim_phase_base,
+    );
+    let Some(atlas) = atlas.as_ref() else {
+        return;
+    };
+    let frame_counts = &atlas.active_anim_frame_counts;
+    let live_ids: Vec<u64> = sim
+        .entities()
+        .iter_sorted()
+        .filter(|(_, entity)| entity.category == crate::map::entities::EntityCategory::Structure)
+        .map(|(stable_id, _)| stable_id)
+        .collect();
+    phase_bases.retain(|stable_id, _| live_ids.binary_search(stable_id).is_ok());
+
+    for stable_id in live_ids {
+        let Some(entity) = sim.entities().get(stable_id) else {
+            continue;
+        };
+        let building_type = sim.interner.resolve(entity.type_ref);
+        let rules_image = rules
+            .object(building_type)
+            .map(|object| object.image.as_str())
+            .unwrap_or(building_type);
+        let Some(entry) = art.resolve_metadata_entry(building_type, rules_image) else {
+            phase_bases.remove(&stable_id);
+            continue;
+        };
+        let damaged = entity.building_damage_state_active;
+        let is_garrisoned = entity
+            .passenger_role
+            .cargo()
+            .is_some_and(|cargo| !cargo.is_empty());
+        let reset_revision = entity.building_anim_reset_revision;
+
+        use std::collections::btree_map::Entry;
+        let phase = match phase_bases.entry(stable_id) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(crate::app::presentation::state::BuildingAnimPhaseBase {
+                    observed_reset_revision: reset_revision,
+                    slots: entry
+                        .building_anims
+                        .iter()
+                        .map(|anim| {
+                            app_owns_looping_building_slot(anim, damaged, is_garrisoned)
+                                .then(|| {
+                                    let selected =
+                                        selected_building_anim_view(anim, damaged, is_garrisoned);
+                                    fresh_building_slot_runtime(
+                                        selected.anim_type,
+                                        art,
+                                        options,
+                                        frame_counts,
+                                    )
+                                })
+                                .flatten()
+                        })
+                        .collect(),
+                })
+            }
+            Entry::Occupied(occupied) => occupied.into_mut(),
+        };
+
+        if phase.observed_reset_revision != reset_revision {
+            for (anim, slot) in entry.building_anims.iter().zip(&mut phase.slots) {
+                let _ = replace_occupied_slot_for_damage_state(
+                    slot,
+                    anim,
+                    damaged,
+                    art,
+                    options,
+                    frame_counts,
+                );
+            }
+            phase.observed_reset_revision = reset_revision;
+        }
+
+        for slot in &mut phase.slots {
+            if let Some(runtime) = slot.as_mut() {
+                advance_anim_runtime_visit(runtime, sim, art, frame_counts);
+            }
+            if slot.as_ref().is_some_and(|runtime| runtime.expired) {
+                *slot = None;
+            }
+        }
+    }
 }
 
 /// Tick the sidebar power bar animation (segment-by-segment transition).
 pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let owner_name = preferred_local_owner_name(state);
-    let (power_produced, power_drained) =
-        match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules(), owner_name.as_deref()) {
-            (Some(sim), Some(rules), Some(owner)) => {
-                production::power_balance_for_owner(sim, rules, owner)
-            }
-            _ => (0, 0),
-        };
-    let theoretical = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), owner_name.as_deref()) {
+    let (power_produced, power_drained) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        state.rules(),
+        owner_name.as_deref(),
+    ) {
+        (Some(sim), Some(rules), Some(owner)) => {
+            production::power_balance_for_owner(sim, rules, owner)
+        }
+        _ => (0, 0),
+    };
+    let theoretical = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        owner_name.as_deref(),
+    ) {
         (Some(sim), Some(owner)) => production::theoretical_power_for_owner(sim, owner),
         _ => 0,
     };
@@ -111,17 +280,27 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let region_top = layout.tabs_y + spec.power_bar_top_y;
     let bar_height_px = (region_bottom - region_top).max(0.0) as i32;
 
-    state.match_state.match_presentation.power_bar_anim.set_max_segments(bar_height_px);
     state
-        .match_state.match_presentation.power_bar_anim
-        .update(power_produced, power_drained, theoretical);
+        .match_state
+        .match_presentation
+        .power_bar_anim
+        .set_max_segments(bar_height_px);
+    state.match_state.match_presentation.power_bar_anim.update(
+        power_produced,
+        power_drained,
+        theoretical,
+    );
     state.match_state.match_presentation.power_bar_anim.tick();
 }
 
 /// Update radar availability from ECS and tick the radar chrome animation.
 pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
     let new_has_radar: bool = match (
-        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation),
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
         state.rules(),
         preferred_local_owner_name(state).as_deref(),
     ) {
@@ -179,7 +358,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     }
     let vp_w = state.render_width() as f32;
     let vp_h = state.render_height() as f32;
-    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
+    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager())
+    else {
         return;
     };
     let cam_x = state.match_state.input.camera_x;
@@ -237,7 +417,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             } => {
                 let spatial_vol = if let Some((sx, sy)) = screen_pos {
                     let (range, min_vol) = state
-                        .audio.sound_registry
+                        .audio
+                        .sound_registry
                         .get(sound_id)
                         .map(|entry| (entry.range, entry.min_volume))
                         .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -265,7 +446,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                 if let Some(stop_sound_id) = stop_sound_id.as_deref().filter(|id| !id.is_empty()) {
                     let spatial_vol = if let Some((sx, sy)) = screen_pos {
                         let (range, min_vol) = state
-                            .audio.sound_registry
+                            .audio
+                            .sound_registry
                             .get(stop_sound_id)
                             .map(|entry| (entry.range, entry.min_volume))
                             .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -326,7 +508,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                 if !sound_id.is_empty() {
                     let spatial_vol = if let Some((sx, sy)) = screen_pos {
                         let (range, min_vol) = state
-                            .audio.sound_registry
+                            .audio
+                            .sound_registry
                             .get(sound_id)
                             .map(|e| (e.range, e.min_volume))
                             .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -368,7 +551,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             _ => {
                 let spatial_vol = if let Some((sx, sy)) = event.screen_pos() {
                     let (range, min_vol) = state
-                        .audio.sound_registry
+                        .audio
+                        .sound_registry
                         .get(event.sound_id())
                         .map(|e| (e.range, e.min_volume))
                         .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -401,40 +585,62 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
 pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
     // Phase 1: spawn new flashes from pending fire events.
     let new_flashes: Vec<GarrisonMuzzleFlash> = {
-        let sim = match state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+        let sim = match state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation)
+        {
             Some(s) => s,
             None => {
-                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+                state
+                    .match_state
+                    .match_presentation
+                    .garrison_muzzle_flashes
+                    .clear();
                 return;
             }
         };
         let art_reg = match state.rules().map(|rules| &rules.art_registry) {
             Some(a) => a,
             None => {
-                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+                state
+                    .match_state
+                    .match_presentation
+                    .garrison_muzzle_flashes
+                    .clear();
                 return;
             }
         };
         let rules = match state.rules() {
             Some(r) => r,
             None => {
-                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+                state
+                    .match_state
+                    .match_presentation
+                    .garrison_muzzle_flashes
+                    .clear();
                 return;
             }
         };
         let frame_counts = state
-            .match_state.match_presentation.sprite_atlas
+            .match_state
+            .match_presentation
+            .sprite_atlas
             .as_ref()
             .map(|atlas| &atlas.active_anim_frame_counts);
         state
-            .match_state.match_presentation.pending_fire_effects
+            .match_state
+            .match_presentation
+            .pending_fire_effects
             .iter()
             .filter_map(|ev| {
                 let anim_name = ev.occupant_anim.as_ref()?;
                 let anim_section = sim.interner.resolve(*anim_name).to_ascii_uppercase();
-                let origin =
-                    crate::app::presentation::fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
-                        .ok()?;
+                let origin = crate::app::presentation::fire_effects::resolve_fire_origin_from_sim(
+                    sim, rules, art_reg, ev,
+                )
+                .ok()?;
                 let runtime_config = art_reg.anim_runtime_config(&anim_section)?;
                 let total_frames =
                     presentation_anim_frame_count(frame_counts, &anim_section).unwrap_or(1);
@@ -457,26 +663,42 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             })
             .collect()
     };
-    state.match_state.match_presentation.garrison_muzzle_flashes.extend(new_flashes);
+    state
+        .match_state
+        .match_presentation
+        .garrison_muzzle_flashes
+        .extend(new_flashes);
 
     // Phase 2: advance all flashes and remove finished ones. This is fed from
     // completed fixed sim ticks, not render-frame wall time.
     let Some((sim, art_reg)) = state
-        .match_state.sim_runtime
+        .match_state
+        .sim_runtime
         .as_ref()
-        .map(|rt| (&rt.simulation, &rt.resources.rules.art_registry)) else {
-        state.match_state.match_presentation.garrison_muzzle_flashes.clear();
+        .map(|rt| (&rt.simulation, &rt.resources.rules.art_registry))
+    else {
+        state
+            .match_state
+            .match_presentation
+            .garrison_muzzle_flashes
+            .clear();
         return;
     };
     let empty_frame_counts = HashMap::new();
     let frame_counts = state
-        .match_state.match_presentation.sprite_atlas
+        .match_state
+        .match_presentation
+        .sprite_atlas
         .as_ref()
         .map(|atlas| &atlas.active_anim_frame_counts)
         .unwrap_or(&empty_frame_counts);
-    state.match_state.match_presentation.garrison_muzzle_flashes.retain_mut(|flash| {
-        advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
-    });
+    state
+        .match_state
+        .match_presentation
+        .garrison_muzzle_flashes
+        .retain_mut(|flash| {
+            advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
+        });
 }
 
 fn advance_garrison_muzzle_flash(
@@ -758,29 +980,112 @@ mod tests {
     use crate::rules::ini_parser::IniFile;
     use crate::sim::world::Simulation;
 
-    #[test]
-    fn building_anim_phase_base_is_stamped_once_and_never_rebased() {
-        // Two power plants placed 15 logic frames apart keep their own bases for
-        // as long as they live, which is what holds their loops out of phase.
-        let mut bases = std::collections::BTreeMap::new();
-
-        record_building_anim_phase_bases(&mut bases, &[10], 100);
-        record_building_anim_phase_bases(&mut bases, &[10, 11], 115);
-        record_building_anim_phase_bases(&mut bases, &[10, 11], 130);
-
-        assert_eq!(bases.get(&10), Some(&100));
-        assert_eq!(bases.get(&11), Some(&115));
+    fn building_slot_replacement_art() -> ArtRegistry {
+        ArtRegistry::from_ini(&IniFile::from_str(
+            "[GAPOWR]\n\
+             ActiveAnim=GAPOWR_A\n\
+             ActiveAnimDamaged=GAPOWR_AD\n\
+             ActiveAnimTwo=UNCHANGED_A\n\
+             [GAPOWR_A]\nStart=2\nLoopStart=1\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [GAPOWR_AD]\nStart=12\nLoopStart=11\nLoopEnd=18\nLoopCount=-1\nRate=150\n\
+             [UNCHANGED_A]\nStart=4\nLoopStart=4\nLoopEnd=9\nLoopCount=-1\nRate=300\n",
+        ))
     }
 
     #[test]
-    fn building_anim_phase_base_is_dropped_when_the_building_dies() {
-        let mut bases = std::collections::BTreeMap::new();
+    fn building_slot_damage_replacement_carries_only_relative_current_frame() {
+        let art = building_slot_replacement_art();
+        let options = crate::sim::game_options::GameOptions::default();
+        let frame_counts =
+            HashMap::from([("GAPOWR_A".to_string(), 20), ("GAPOWR_AD".to_string(), 20)]);
+        let anim = &art.get("GAPOWR").expect("building art").building_anims[0];
+        let mut old = fresh_building_slot_runtime("GAPOWR_AD", &art, &options, &frame_counts)
+            .expect("damaged runtime");
+        // Native absolute frame 15 with Start=12 is CurrentFrame=3.
+        old.current_frame = 3;
+        old.frame_step = -1;
+        old.delay_logic_frames = 7;
+        old.rate_elapsed_logic_frames = 2;
+        old.loop_remaining = 3;
+        old.first_ai_guard = false;
+        let mut slot = Some(old);
 
-        record_building_anim_phase_bases(&mut bases, &[10, 11], 100);
-        record_building_anim_phase_bases(&mut bases, &[11], 140);
+        assert!(replace_occupied_slot_for_damage_state(
+            &mut slot,
+            anim,
+            false,
+            &art,
+            &options,
+            &frame_counts,
+        ));
+        let replacement = slot.expect("healthy replacement");
+        assert_eq!(replacement.type_name, "GAPOWR_A");
+        assert_eq!(replacement.current_frame, 3);
+        assert_eq!(replacement.frame_step, 1);
+        assert_eq!(replacement.delay_logic_frames, 0);
+        assert_eq!(replacement.rate_elapsed_logic_frames, 0);
+        assert_eq!(replacement.loop_remaining, u8::MAX);
+        assert!(replacement.first_ai_guard);
+        assert_eq!(replacement.reload_logic_frames, 3);
+    }
 
-        assert_eq!(bases.get(&10), None);
-        assert_eq!(bases.get(&11), Some(&100));
+    #[test]
+    fn building_slot_missing_damaged_descriptor_and_absent_slot_are_untouched() {
+        let art = building_slot_replacement_art();
+        let options = crate::sim::game_options::GameOptions::default();
+        let frame_counts = HashMap::from([("UNCHANGED_A".to_string(), 10)]);
+        let anim = &art.get("GAPOWR").expect("building art").building_anims[1];
+        let old = fresh_building_slot_runtime("UNCHANGED_A", &art, &options, &frame_counts)
+            .expect("base runtime");
+        let mut occupied = Some(old.clone());
+        let mut absent = None;
+
+        assert!(!replace_occupied_slot_for_damage_state(
+            &mut occupied,
+            anim,
+            true,
+            &art,
+            &options,
+            &frame_counts,
+        ));
+        assert_eq!(occupied, Some(old));
+        assert!(!replace_occupied_slot_for_damage_state(
+            &mut absent,
+            anim,
+            false,
+            &art,
+            &options,
+            &frame_counts,
+        ));
+        assert_eq!(absent, None);
+    }
+
+    #[test]
+    fn building_slot_runtimes_keep_independent_cadence() {
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[SLOT_FAST]\nStart=0\nLoopStart=0\nLoopEnd=8\nLoopCount=-1\nRate=300\n\
+             [SLOT_SLOW]\nStart=0\nLoopStart=0\nLoopEnd=8\nLoopCount=-1\nRate=150\n",
+        ));
+        let options = crate::sim::game_options::GameOptions::default();
+        let frame_counts =
+            HashMap::from([("SLOT_FAST".to_string(), 8), ("SLOT_SLOW".to_string(), 8)]);
+        let sim = Simulation::new();
+        let mut fast = fresh_building_slot_runtime("SLOT_FAST", &art, &options, &frame_counts)
+            .expect("fast slot runtime");
+        let mut slow = fresh_building_slot_runtime("SLOT_SLOW", &art, &options, &frame_counts)
+            .expect("slow slot runtime");
+
+        // First visit consumes each constructor guard; the next three visits
+        // complete only the fast slot's independent 900/Rate timer.
+        for _ in 0..4 {
+            advance_anim_runtime_visit(&mut fast, &sim, &art, &frame_counts);
+            advance_anim_runtime_visit(&mut slow, &sim, &art, &frame_counts);
+        }
+
+        assert_eq!(fast.current_frame, 1);
+        assert_eq!(fast.rate_elapsed_logic_frames, 0);
+        assert_eq!(slow.current_frame, 0);
+        assert_eq!(slow.rate_elapsed_logic_frames, 3);
     }
 
     #[test]
