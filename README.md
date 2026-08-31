@@ -1,8 +1,3 @@
-
-# VERA20K
-
-![PRs Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue)](https://yrvera.github.io/vera20k/)
-
 <img src="docs/images/new-conscirpt-hero-image.png" alt="VERA20k hero image" width="100%">
 
 Red Alert 2: Yuri's Revenge — rebuilt from scratch in Rust for large multiplayer battles.
