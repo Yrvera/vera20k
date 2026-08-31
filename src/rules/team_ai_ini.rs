@@ -818,6 +818,59 @@ mod tests {
     }
 
     #[test]
+    fn stage_b_05_06_source_override_and_enable_section_defaults_are_exact() {
+        let fixed = IniFile::from_str(&format!(
+            "[AITriggerTypes]\nFIXED={}\nOVERRIDE={}\n",
+            eighteen_tokens("fixed unlisted", "<none>"),
+            eighteen_tokens("fixed before override", "<none>")
+        ));
+        let scenario = IniFile::from_str(&format!(
+            "[AITriggerTypes]\nOVERRIDE={}\nMAPNEW={}\nLISTED={}\n\
+             [AITriggerTypesEnable]\nLISTED=no\n",
+            eighteen_tokens("map override", "<none>"),
+            eighteen_tokens("map-new unlisted", "<none>"),
+            eighteen_tokens("ordinary listed false", "<none>")
+        ));
+
+        let campaign = TeamAiIniRegistry::from_sources(&fixed, &scenario, false);
+        let by_id = |id: &str| {
+            campaign
+                .ai_triggers
+                .iter()
+                .find(|trigger| trigger.id.eq_ignore_ascii_case(id))
+                .expect("named AITrigger")
+        };
+        assert!(by_id("FIXED").enabled, "fixed unlisted rows start enabled");
+        assert!(
+            by_id("OVERRIDE").enabled,
+            "a map override retains the existing fixed identity's enabled byte"
+        );
+        assert_eq!(by_id("OVERRIDE").source, TeamAiDefinitionSource::Scenario);
+        assert!(!by_id("MAPNEW").enabled, "map-new unlisted rows start disabled");
+        assert!(!by_id("LISTED").enabled, "mode zero honors a listed false value");
+
+        let skirmish = TeamAiIniRegistry::from_sources(&fixed, &scenario, true);
+        assert!(
+            skirmish
+                .ai_triggers
+                .iter()
+                .find(|trigger| trigger.id.eq_ignore_ascii_case("LISTED"))
+                .unwrap()
+                .enabled,
+            "ordinary nonzero game modes force every listed row enabled"
+        );
+        assert!(
+            !skirmish
+                .ai_triggers
+                .iter()
+                .find(|trigger| trigger.id.eq_ignore_ascii_case("MAPNEW"))
+                .unwrap()
+                .enabled,
+            "an unlisted map-new row stays disabled in ordinary games"
+        );
+    }
+
+    #[test]
     fn script_gaps_compact_and_task_forces_stop_after_six_keys() {
         let fixed = IniFile::from_str(
             "[ScriptTypes]\n0=S\n[S]\n0=2,0\n3=-1,9\n49=64,-7\n50=6,2\n\
