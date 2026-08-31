@@ -25,6 +25,10 @@
 
 use crate::ui::client_theme;
 
+pub(crate) mod options;
+
+pub(crate) use options::OptionsDialogState;
+
 /// Resolves a CSF string key to display text, with an English fallback when the
 /// table is missing the key. Provided by the caller (which owns the CSF table).
 pub(crate) type CsfLookup<'a> = dyn Fn(&str, &str) -> String + 'a;
@@ -118,34 +122,23 @@ pub(crate) fn draw_exit_confirm_modal(
 }
 
 // ---------------------------------------------------------------------------
-// Options launcher dialog (open-level only)
+// Options launcher dialog compatibility entry
 // ---------------------------------------------------------------------------
 
-/// CSF title key for the Options dialog. UNKNOWN: the decode pass on the
-/// options launcher dialog has not pinned the title string key, so this uses a
-/// non-CSF descriptive fallback rather than inventing a key.
-const OPTIONS_TITLE_FALLBACK: &str = "Options";
-
-/// State for the Options launcher dialog shell. The real option widgets and the
-/// ra2md.ini write-back are not decoded yet — this is an open-level shell only.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct OptionsDialogState;
-
+/// Temporary production adapter retained until the launcher transaction commit
+/// connects the retained semantic parent from `options` to AppState effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OptionsDialogAction {
     None,
-    /// Back/OK pressed — close and return to the menu.
     Close,
 }
 
 pub(crate) fn draw_options_dialog(ctx: &egui::Context, csf: &CsfLookup<'_>) -> OptionsDialogAction {
     let palette = client_theme::apply_client_theme(ctx);
     let mut action = OptionsDialogAction::None;
-    // GUI:Back is a verified shared label used by these shell dialogs.
     let back_label = csf("GUI:Back", "Back");
 
     draw_backdrop(ctx, "options_backdrop");
-
     egui::Window::new("")
         .title_bar(false)
         .collapsible(false)
@@ -158,10 +151,8 @@ pub(crate) fn draw_options_dialog(ctx: &egui::Context, csf: &CsfLookup<'_>) -> O
             ui.vertical(|ui| {
                 client_theme::section_label(ui, "OPTIONS", palette);
                 ui.add_space(4.0);
-                // Title key for this dialog is not yet decoded; use a plain
-                // fallback string rather than guessing a CSF key.
                 ui.label(
-                    egui::RichText::new(OPTIONS_TITLE_FALLBACK)
+                    egui::RichText::new("Options")
                         .size(24.0)
                         .strong()
                         .color(palette.text),
@@ -181,7 +172,6 @@ pub(crate) fn draw_options_dialog(ctx: &egui::Context, csf: &CsfLookup<'_>) -> O
                 }
             });
         });
-
     action
 }
 
