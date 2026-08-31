@@ -66,6 +66,7 @@ pub fn empty_map_file(options: &RmgOptions, gen_w: u32, gen_h: u32) -> MapFile {
         cells: Vec::new(),
         iso_map_pack_lookups: Vec::new(),
         entities: Vec::new(),
+        overlay_identity: Default::default(),
         overlays: Vec::new(),
         overlay_data: Default::default(),
         smudges: Vec::new(),

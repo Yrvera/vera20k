@@ -4005,6 +4005,7 @@ mod tests {
             cells,
             iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
+            overlay_identity: Default::default(),
             overlays,
             overlay_data: crate::map::overlay::OverlayDataPack::default(),
             smudges: Vec::new(),

@@ -22,7 +22,9 @@ use crate::map::briefing::{self, BriefingSection};
 use crate::map::cell_tags::{self, CellTagMap};
 use crate::map::entities::{self, MapEntity};
 use crate::map::events::{self, EventMap};
-use crate::map::overlay::{self, OverlayDataPack, OverlayEntry, TerrainObject};
+use crate::map::overlay::{
+    self, OverlayDataPack, OverlayEntry, OverlayIdentityPack, TerrainObject,
+};
 use crate::map::preview::{self, PreviewSection};
 use crate::map::tags::{self, TagMap};
 use crate::map::trigger_graph::{self, TriggerGraph};
@@ -211,6 +213,9 @@ pub struct MapFile {
     pub(crate) iso_map_pack_lookups: Vec<IsoMapPackLookup>,
     /// Entity placements from [Units], [Infantry], [Structures], [Aircraft] sections.
     pub entities: Vec<MapEntity>,
+    /// Raw decoded `[OverlayPack]` body. The authored finalizer consumes its
+    /// actual byte-read results; `overlays` remains a compatibility projection.
+    pub overlay_identity: OverlayIdentityPack,
     /// Overlay objects from [OverlayPack] + [OverlayDataPack] (ore, walls, fences, etc.).
     pub overlays: Vec<OverlayEntry>,
     /// Full `[OverlayDataPack]` bytes. Presence is tracked because missing packs
@@ -267,7 +272,11 @@ impl MapFile {
         }
         let iso_map_pack = parse_iso_map_pack(&ini)?;
         let entities: Vec<MapEntity> = entities::parse_map_entities(&ini);
-        let overlay_packs = overlay::parse_overlay_packs(&ini);
+        let overlay::ParsedOverlayPacks {
+            identity: overlay_identity,
+            entries: overlays,
+            data: overlay_data,
+        } = overlay::parse_overlay_packs(&ini);
         let terrain_objects: Vec<TerrainObject> = overlay::parse_terrain_objects(&ini);
         let smudges: Vec<MapSmudgeEntry> = parse_map_smudges(&ini);
         let waypoints: HashMap<u32, Waypoint> = waypoints::parse_waypoints(&ini);
@@ -288,8 +297,9 @@ impl MapFile {
             cells: iso_map_pack.cells,
             iso_map_pack_lookups: iso_map_pack.lookups,
             entities,
-            overlays: overlay_packs.entries,
-            overlay_data: overlay_packs.data,
+            overlay_identity,
+            overlays,
+            overlay_data,
             smudges,
             terrain_objects,
             waypoints,

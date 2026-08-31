@@ -19,13 +19,51 @@ use crate::util::base64;
 use crate::util::lcw;
 
 /// Width of the overlay grid (RA2 maps are max 512×512 cells).
-const OVERLAY_GRID_SIZE: usize = 512;
+pub(crate) const OVERLAY_GRID_SIZE: usize = 512;
 
 /// Total cells in the overlay grid (512 × 512 = 262,144).
-const OVERLAY_TOTAL_CELLS: usize = OVERLAY_GRID_SIZE * OVERLAY_GRID_SIZE;
+pub(crate) const OVERLAY_TOTAL_CELLS: usize = OVERLAY_GRID_SIZE * OVERLAY_GRID_SIZE;
 
 /// Sentinel value meaning "no overlay at this cell".
 const NO_OVERLAY: u8 = 0xFF;
+
+/// Raw decoded `[OverlayPack]` body retained for the one native y/x reader.
+///
+/// The vector keeps its actual decoded length: `ReadMapOverlayPacks` attempts
+/// one byte at every 512x512 coordinate and a short body's failed reads keep
+/// the initialized `0xFF` sentinel. A zero-length body is inactive under the
+/// reader's signed-positive length gate.
+#[derive(Debug, Default)]
+pub struct OverlayIdentityPack {
+    bytes: Vec<u8>,
+}
+
+impl OverlayIdentityPack {
+    pub fn from_decoded(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+
+    pub fn has_positive_length(&self) -> bool {
+        !self.bytes.is_empty()
+    }
+
+    pub fn decoded_len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Return the decoded byte for one fixed-grid reader coordinate. `None`
+    /// represents native's failed byte read and is not the `0xFF` sentinel.
+    pub fn read_byte(&self, rx: u16, ry: u16) -> Option<u8> {
+        if usize::from(rx) >= OVERLAY_GRID_SIZE
+            || usize::from(ry) >= OVERLAY_GRID_SIZE
+        {
+            return None;
+        }
+        self.bytes
+            .get(usize::from(ry) * OVERLAY_GRID_SIZE + usize::from(rx))
+            .copied()
+    }
+}
 
 /// An overlay placed on a specific map cell.
 ///
@@ -55,11 +93,12 @@ pub struct OverlayDataPack {
 
 impl OverlayDataPack {
     pub fn from_decoded(bytes: Vec<u8>) -> Self {
+        let present = !bytes.is_empty();
         let mut normalized = bytes;
         normalized.resize(OVERLAY_TOTAL_CELLS, 0);
         Self {
             bytes: normalized,
-            present: true,
+            present,
         }
     }
 
@@ -106,8 +145,9 @@ impl Default for OverlayDataPack {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ParsedOverlayPacks {
+    pub identity: OverlayIdentityPack,
     pub entries: Vec<OverlayEntry>,
     pub data: OverlayDataPack,
 }
@@ -136,27 +176,18 @@ pub fn parse_overlays(ini: &IniFile) -> Vec<OverlayEntry> {
 
 /// Parse overlay entries and preserve the full overlay-data byte grid.
 pub fn parse_overlay_packs(ini: &IniFile) -> ParsedOverlayPacks {
-    let overlay_pack: Vec<u8> = match decode_pack_section(ini, "OverlayPack") {
-        Some(data) => data,
-        None => {
-            log::trace!("No [OverlayPack] section in map");
-            return ParsedOverlayPacks {
-                entries: Vec::new(),
-                data: decode_pack_section(ini, "OverlayDataPack")
-                    .map(OverlayDataPack::from_decoded)
-                    .unwrap_or_else(OverlayDataPack::missing),
-            };
-        }
-    };
+    let identity = decode_pack_section(ini, "OverlayPack")
+        .map(OverlayIdentityPack::from_decoded)
+        .unwrap_or_default();
     let data: OverlayDataPack = decode_pack_section(ini, "OverlayDataPack")
         .map(OverlayDataPack::from_decoded)
         .unwrap_or_else(OverlayDataPack::missing);
 
     let mut entries: Vec<OverlayEntry> = Vec::new();
-    let max_idx: usize = overlay_pack.len().min(OVERLAY_TOTAL_CELLS);
+    let max_idx: usize = identity.decoded_len().min(OVERLAY_TOTAL_CELLS);
 
     for idx in 0..max_idx {
-        let overlay_id: u8 = overlay_pack[idx];
+        let overlay_id: u8 = identity.bytes[idx];
         if overlay_id == NO_OVERLAY {
             continue;
         }
@@ -173,7 +204,11 @@ pub fn parse_overlay_packs(ini: &IniFile) -> ParsedOverlayPacks {
     }
 
     log::info!("Parsed {} overlay entries from OverlayPack", entries.len());
-    ParsedOverlayPacks { entries, data }
+    ParsedOverlayPacks {
+        identity,
+        entries,
+        data,
+    }
 }
 
 /// Parse terrain objects from the [Terrain] INI section.
@@ -353,6 +388,30 @@ pub fn compute_wall_connectivity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_identity_pack_distinguishes_sentinel_from_failed_short_read() {
+        let mut bytes = vec![NO_OVERLAY; OVERLAY_GRID_SIZE + 1];
+        bytes[OVERLAY_GRID_SIZE] = 7;
+        let pack = OverlayIdentityPack::from_decoded(bytes);
+
+        assert!(pack.has_positive_length());
+        assert_eq!(pack.read_byte(0, 0), Some(NO_OVERLAY));
+        assert_eq!(pack.read_byte(0, 1), Some(7));
+        assert_eq!(pack.read_byte(1, 1), None);
+        assert_eq!(pack.read_byte(512, 0), None);
+    }
+
+    #[test]
+    fn zero_length_pack_does_not_enter_signed_positive_body_gate() {
+        let identity = OverlayIdentityPack::from_decoded(Vec::new());
+        let data = OverlayDataPack::from_decoded(Vec::new());
+
+        assert!(!identity.has_positive_length());
+        assert_eq!(identity.read_byte(0, 0), None);
+        assert!(!data.is_present());
+        assert_eq!(data.byte_at(0, 0), 0);
+    }
 
     #[test]
     fn overlay_data_pack_returns_byte_for_empty_overlay_cell() {
