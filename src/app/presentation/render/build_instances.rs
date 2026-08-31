@@ -64,7 +64,7 @@ pub(super) struct WorldInstances {
     /// all ground objects + cliffs, below debug/shroud/UI.
     pub particle_paged: Vec<Vec<SpriteInstance>>,
     /// PixelFX water/ore sparkles — 1-pixel cell dots emitted per frame.
-    /// Empty when graphics.extra_animations is false.
+    /// Empty when the live `[Options] DetailLevel` projection is zero.
     pub cell_sparkles: Vec<SpriteInstance>,
     /// Persistent WaveClass bucket-3 registrations lowered to white-pixel instances.
     pub weapon_waves: Vec<SpriteInstance>,
@@ -413,6 +413,15 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 /// Assembles the SparkleInput from AppState and returns the Vec. The module
 /// itself gates on the extra_animations toggle; the wrapper short-circuits
 /// when required sim/render state is missing (no map loaded).
+fn pixel_fx_enabled_for_detail_level(detail_level: u32) -> bool {
+    // Retail provenance: `DrawPixelFXSparkles @ 0x006D7840` tests
+    // `g_ExtraAnimationsEnabled @ 0x00A8EB78` for nonzero. The write/read
+    // owners bind that global to `OptionsClass::DetailLevel +0x18` in
+    // `OptionsClass__ApplyFromInGameDialog @ 0x004E1DE0` and
+    // `OptionsClass__ReadFromINI @ 0x005FA620`.
+    detail_level != 0
+}
+
 fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
     use crate::render::pixel_fx_sparkles::{SparkleInput, build_sparkle_instances};
 
@@ -432,12 +441,13 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
         return Vec::new();
     };
 
-    // Cosmetic toggle — default to ON when config failed to load, matching
-    // gamemd's default.
-    let enable_extra_animations = state
-        .platform.game_config
-        .as_ref()
-        .map_or(true, |c| c.graphics.extra_animations);
+    // gamemd-derived: the `DAT_00A8EB78 != 0` PixelFX gate is the process
+    // `[Options] DetailLevel` field (`OptionsClass + 0x18`). The in-game state
+    // is the live projection of that retained profile value, so config.toml is
+    // not a second interactive authority for the same retail option.
+    let enable_extra_animations = pixel_fx_enabled_for_detail_level(
+        state.match_state.match_presentation.in_game_options.detail_level,
+    );
 
     let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = match (state.match_state.sandbox_full_visibility, &local_owner_name) {
@@ -1040,6 +1050,13 @@ fn order_top_shp_by_registration(
 mod tests {
     use super::*;
     use crate::render::draw_state::DrawState;
+
+    #[test]
+    fn pixel_fx_uses_the_profile_detail_level_nonzero_gate() {
+        assert!(!pixel_fx_enabled_for_detail_level(0));
+        assert!(pixel_fx_enabled_for_detail_level(1));
+        assert!(pixel_fx_enabled_for_detail_level(2));
+    }
 
     #[test]
     fn paired_unit_sort_keeps_page_tags_and_equal_depth_order() {

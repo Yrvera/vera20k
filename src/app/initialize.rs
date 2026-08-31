@@ -1,5 +1,10 @@
 //! Process, window, GPU, frontend, and initial app-state construction.
 
+use std::path::Path;
+
+use crate::app::frontend::startup_options::{RetailStartupOptions, ScreenSize};
+use crate::app::persistence::options_profile::{RetailOptionsLoad, RetailOptionsProfile};
+
 use super::presentation::render;
 use super::frontend::list_maps;
 use super::{
@@ -8,11 +13,76 @@ use super::{
     GpuContext, HashMap, HashSet, HouseRoster, Instant, LightingConfig,
     ModifiersState, MusicPlayer, PhysicalSize, PlatformState, RandomMapGenerationRetention,
     Result,
-    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
+    SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
     SidebarTab, StartupAudioDisposition, Window, WindowAttributes,
     auto_detect_ui_scale, frontend::startup_splash,
     should_load_audio_indices,
 };
+
+fn startup_window_projection(
+    profile_screen: ScreenSize,
+    capture_dimensions: Option<(u32, u32)>,
+) -> (u32, u32, bool) {
+    capture_dimensions.map_or(
+        (profile_screen.width, profile_screen.height, true),
+        |(width, height)| (width, height, false),
+    )
+}
+
+fn select_startup_options_load<LoadProfile>(
+    capture_dimensions: Option<(u32, u32)>,
+    startup_options: &RetailStartupOptions,
+    ra2_dir: Option<&Path>,
+    load_profile: LoadProfile,
+) -> RetailOptionsLoad
+where
+    LoadProfile: FnOnce(&Path, &RetailStartupOptions) -> RetailOptionsLoad,
+{
+    if capture_dimensions.is_some() {
+        RetailOptionsLoad::without_ra2md(&RetailStartupOptions::default())
+    } else if let Some(ra2_dir) = ra2_dir {
+        load_profile(ra2_dir, startup_options)
+    } else {
+        RetailOptionsLoad::without_ra2md(startup_options)
+    }
+}
+
+trait StartupAudioProfileOperations {
+    fn set_sound_volume(&mut self, volume: f64);
+    fn set_voice_volume(&mut self, volume: f64);
+    fn set_score_volume(&mut self, volume: f64);
+}
+
+impl StartupAudioProfileOperations for crate::app::audio_runtime::AppAudioRuntime {
+    fn set_sound_volume(&mut self, volume: f64) {
+        if let Some(player) = self.sfx_player.as_mut() {
+            player.set_sound_volume(volume);
+        }
+    }
+
+    fn set_voice_volume(&mut self, volume: f64) {
+        if let Some(player) = self.sfx_player.as_mut() {
+            player.set_voice_volume(volume);
+        }
+    }
+
+    fn set_score_volume(&mut self, volume: f64) {
+        if let Some(player) = self.music_player.as_mut() {
+            player.set_volume(volume);
+        }
+    }
+}
+
+fn apply_startup_audio_profile(
+    profile: &RetailOptionsProfile,
+    operations: &mut impl StartupAudioProfileOperations,
+) {
+    // gamemd-derived: the Audio tail of `OptionsClass__ReadFromINI @ 0x005FA620`
+    // applies SoundVolume, VoiceVolume, then ScoreVolume through distinct owners.
+    operations.set_sound_volume(f64::from(profile.sound_volume));
+    operations.set_voice_volume(f64::from(profile.voice_volume));
+    operations.set_score_volume(f64::from(profile.score_volume));
+}
 
 impl App {
     fn build_startup_asset_manager(config: Option<&GameConfig>) -> Option<AssetManager> {
@@ -35,12 +105,29 @@ impl App {
     pub(super) fn initialize(
         event_loop: &ActiveEventLoop,
         capture_dimensions: Option<(u32, u32)>,
-        startup_audio: StartupAudioDisposition,
+        startup_options: RetailStartupOptions,
     ) -> Result<AppState> {
-        let (window_width, window_height, window_visible) = capture_dimensions
-            .map_or((SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT, true), |size| {
-                (size.0, size.1, false)
-            });
+        // One parsed retail profile snapshot yields two ordered products: the
+        // early Video/fallback pair that selects the window, and the later
+        // full-read profile retained by persistence. Capture is a sealed
+        // automation lane, so it uses exact defaults and its explicit
+        // dimensions instead of ingesting operator argv/profile screen state.
+        let game_config = GameConfig::load().ok();
+        let options_load = select_startup_options_load(
+            capture_dimensions,
+            &startup_options,
+            game_config
+                .as_ref()
+                .map(|config| config.paths.ra2_dir.as_path()),
+            RetailOptionsLoad::from_ra2md,
+        );
+        let profile_screen = options_load.startup_screen;
+        let options_profile = options_load.retained_profile;
+        let (window_width, window_height, window_visible) =
+            startup_window_projection(profile_screen, capture_dimensions);
+        let shell_client_size = PhysicalSize::new(window_width, window_height);
+        let startup_audio =
+            StartupAudioDisposition::for_audio_enabled(startup_options.audio_enabled);
         let window_attrs: WindowAttributes = WindowAttributes::default()
             .with_title("RA2 Engine")
             .with_inner_size(PhysicalSize::new(window_width, window_height))
@@ -56,7 +143,6 @@ impl App {
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
         let shell_surface_presenter =
             crate::render::shell_surface_present::ShellSurfacePresenter::new(&gpu)?;
-        let game_config = GameConfig::load().ok();
         let input_delay_ticks: u64 = game_config
             .as_ref()
             .map(|cfg| cfg.gameplay.input_delay_ticks.max(1) as u64)
@@ -343,25 +429,19 @@ impl App {
         });
         let hotkey_bindings =
             crate::app::input::hotkeys::HotkeyBindings::load(startup_asset_manager.as_ref());
-        let saved_scroll_rate = game_config
-            .as_ref()
-            .and_then(|config| {
-                crate::app::persistence::options::read_scroll_rate_from_ra2md(&config.paths.ra2_dir)
-            })
-            .unwrap_or_else(|| {
-                crate::ui::shell::in_game_options_state::InGameOptionsState::default().scroll_rate
-            });
-        let saved_detail_level = game_config
-            .as_ref()
-            .and_then(|config| {
-                crate::app::persistence::options::read_detail_level_from_ra2md(&config.paths.ra2_dir)
-            })
-            .unwrap_or_else(|| {
-                crate::ui::shell::in_game_options_state::InGameOptionsState::default().detail_level
-            });
+        let startup_in_game_options =
+            crate::app::persistence::options::in_game_options_from_profile(&options_profile);
+        let mut startup_tooltips = crate::ui::tooltips::TooltipService::new();
+        let mut startup_target_lines =
+            crate::app::presentation::target_lines::TargetLineState::default();
+        crate::app::persistence::options::apply_presentation_option_gates(
+            &mut startup_target_lines,
+            &mut startup_tooltips,
+            &startup_in_game_options,
+        );
 
         let mut state = AppState {
-            platform: PlatformState::new(window, game_config),
+            platform: PlatformState::new(window, game_config, shell_client_size),
             match_state: crate::app::match_runtime::state::MatchState {
             sim_runtime: None,
             input: crate::app::input::state::MatchInputState {
@@ -405,7 +485,7 @@ impl App {
             ui_scale,
             sidebar_scroll_rows: 0,
             sidebar_scroll_rows_parked: [0; 4],
-            tooltips: crate::ui::tooltips::TooltipService::new(),
+            tooltips: startup_tooltips,
             tooltip_epoch: Instant::now(),
             message_list: crate::ui::messages::MessageList::new(
                 3,
@@ -415,12 +495,7 @@ impl App {
             ),
             message_clock: crate::ui::messages::PauseAwareClock::default(),
             in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
-            in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
-                game_speed: crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
-                scroll_rate: saved_scroll_rate,
-                detail_level: saved_detail_level,
-                ..Default::default()
-            },
+            in_game_options: startup_in_game_options,
             in_game_options_anchor: None,
             show_hotkey_help: false,
             show_save_load_panel: false,
@@ -435,7 +510,7 @@ impl App {
             tactical_bridge_inverse_map: BTreeMap::new(),
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),
-            target_lines: crate::app::presentation::target_lines::TargetLineState::default(),
+            target_lines: startup_target_lines,
             pending_fire_effects: Vec::new(),
             garrison_muzzle_flashes: Vec::new(),
             weapon_muzzle_flashes: Vec::new(),
@@ -578,7 +653,7 @@ impl App {
                 audio_indices_enabled: startup_audio.load_audio_indices,
                 eva_registry: startup_eva_registry,
             },
-            persistence: crate::app::persistence::PersistenceState::new(),
+            persistence: crate::app::persistence::PersistenceState::new(options_profile),
             diag: crate::app::diagnostics::state::DiagnosticsState {
                 debug_frame_step_requested: false,
                 debug_show_pathgrid: false,
@@ -603,19 +678,10 @@ impl App {
             },
         };
 
-        // Seed the live music volume from the user's saved RA2MD.INI
-        // [Audio] ScoreVolume, falling back to the engine default when the
-        // file/section/key is absent. Matches the original reading this at boot.
-        if let Some(player) = state.audio.music_player.as_mut() {
-            let saved_volume = state
-                .platform.game_config
-                .as_ref()
-                .and_then(|config| {
-                    crate::audio::music::read_score_volume_from_ra2md(&config.paths.ra2_dir)
-                })
-                .unwrap_or(crate::audio::music::DEFAULT_SCORE_VOLUME);
-            player.set_volume(saved_volume);
-        }
+        // Project all three retained profile gains before any player can start
+        // an audible source. The profile keeps native negative values for
+        // round-trip; the output owners provide the documented safe clamp.
+        apply_startup_audio_profile(&state.persistence.options_profile, &mut state.audio);
 
         if state.frontend.dev_skirmish_shell_enabled {
             Self::ensure_active_cooperative_shell_selection(&mut state);
@@ -629,5 +695,133 @@ impl App {
         }
 
         Ok(state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq)]
+    enum StartupAudioCall {
+        Sound(f64),
+        Voice(f64),
+        Score(f64),
+    }
+
+    #[derive(Default)]
+    struct RecordingStartupAudioOperations {
+        calls: Vec<StartupAudioCall>,
+    }
+
+    impl StartupAudioProfileOperations for RecordingStartupAudioOperations {
+        fn set_sound_volume(&mut self, volume: f64) {
+            self.calls.push(StartupAudioCall::Sound(volume));
+        }
+
+        fn set_voice_volume(&mut self, volume: f64) {
+            self.calls.push(StartupAudioCall::Voice(volume));
+        }
+
+        fn set_score_volume(&mut self, volume: f64) {
+            self.calls.push(StartupAudioCall::Score(volume));
+        }
+    }
+
+    #[test]
+    fn startup_audio_profile_applies_exact_values_in_native_order() {
+        let profile = RetailOptionsProfile {
+            sound_volume: 0.125,
+            voice_volume: 0.5,
+            score_volume: 0.875,
+            ..Default::default()
+        };
+        let mut operations = RecordingStartupAudioOperations::default();
+
+        apply_startup_audio_profile(&profile, &mut operations);
+
+        assert_eq!(
+            operations.calls,
+            vec![
+                StartupAudioCall::Sound(0.125),
+                StartupAudioCall::Voice(0.5),
+                StartupAudioCall::Score(0.875),
+            ]
+        );
+    }
+
+    #[test]
+    fn capture_dimensions_override_profile_and_remain_hidden() {
+        let capture_dimensions = Some((1024, 768));
+        let startup_options = RetailStartupOptions {
+            audio_enabled: false,
+            screen_width: 320,
+            screen_height: 200,
+            ..RetailStartupOptions::default()
+        };
+        let conflicting_ra2md_load = RetailOptionsLoad {
+            retained_profile: crate::app::persistence::options_profile::RetailOptionsProfile {
+                detail_level: 0,
+                unit_action_lines: false,
+                tooltips: false,
+                screen_width: 640,
+                screen_height: 480,
+                sound_volume: 0.1,
+                voice_volume: 0.2,
+                score_volume: 0.3,
+                ..Default::default()
+            },
+            startup_screen: ScreenSize {
+                width: 640,
+                height: 480,
+            },
+        };
+        let profile_loader_called = std::cell::Cell::new(false);
+        let options_load = select_startup_options_load(
+            capture_dimensions,
+            &startup_options,
+            Some(Path::new("C:/operator-profile")),
+            |_, _| {
+                profile_loader_called.set(true);
+                conflicting_ra2md_load
+            },
+        );
+
+        assert!(!profile_loader_called.get());
+        assert_eq!(
+            options_load,
+            RetailOptionsLoad::without_ra2md(&RetailStartupOptions::default())
+        );
+        assert_eq!(
+            startup_window_projection(options_load.startup_screen, capture_dimensions),
+            (1024, 768, false)
+        );
+        assert_eq!(
+            options_load.startup_screen,
+            ScreenSize {
+                width: 800,
+                height: 600,
+            }
+        );
+
+        let profile = &options_load.retained_profile;
+        assert_eq!((profile.screen_width, profile.screen_height), (800, 600));
+        assert_eq!(profile.detail_level, 2);
+        assert!(profile.unit_action_lines);
+        assert!(profile.tooltips);
+        assert_eq!(
+            (
+                profile.sound_volume,
+                profile.voice_volume,
+                profile.score_volume,
+            ),
+            (0.7, 0.7, 0.4)
+        );
+
+        let options_projection =
+            crate::app::persistence::options::in_game_options_from_profile(profile);
+        assert_eq!(options_projection.detail_level, 2);
+        assert!(options_projection.unit_action_lines);
+        assert!(options_projection.tooltips);
     }
 }

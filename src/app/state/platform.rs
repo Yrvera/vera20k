@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::app::match_runtime::frame_pacer::LocalFramePacer;
@@ -38,12 +39,17 @@ pub(crate) struct PlatformState {
     /// fails. Set once at process start from `GameConfig::load()`; not
     /// mutated afterwards.
     pub(crate) game_config: Option<crate::util::config::GameConfig>,
+    /// Effective shell client size for this process. Interactive launches use
+    /// the resolved retail profile pair; sealed captures retain their explicit
+    /// dimensions as the higher-priority automation projection.
+    pub(crate) shell_client_size: PhysicalSize<u32>,
 }
 
 impl PlatformState {
     pub(crate) fn new(
         window: Arc<Window>,
         game_config: Option<crate::util::config::GameConfig>,
+        shell_client_size: PhysicalSize<u32>,
     ) -> Self {
         Self {
             window,
@@ -52,6 +58,7 @@ impl PlatformState {
             frame_pacer_epoch: Instant::now(),
             frame_pacer: LocalFramePacer::new(),
             game_config,
+            shell_client_size,
         }
     }
 }

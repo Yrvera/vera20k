@@ -7,9 +7,60 @@ use super::input::dispatch;
 use super::{
     ActiveEventLoop, App, AppState, ApplicationHandler, ControlFlow, GameScreen, Instant, KeyCode,
     KeyEventExtModifierSupplement, MouseButton, MouseScrollDelta, PhysicalKey, PhysicalSize,
-    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, ShellKey, WindowEvent, WindowId,
+    ShellKey, WindowEvent, WindowId,
     auto_detect_ui_scale,
 };
+
+trait ShellWindowModeOperations {
+    fn shell_client_size(&self) -> PhysicalSize<u32>;
+    fn set_resizable(&mut self, resizable: bool);
+    fn inner_size(&self) -> PhysicalSize<u32>;
+    fn request_inner_size(&mut self, size: PhysicalSize<u32>) -> Option<PhysicalSize<u32>>;
+    fn resize_surface_for_window_size(&mut self, size: PhysicalSize<u32>);
+    fn request_redraw(&mut self);
+}
+
+struct PlatformShellWindowModeOperations<'a> {
+    state: &'a mut AppState,
+}
+
+impl ShellWindowModeOperations for PlatformShellWindowModeOperations<'_> {
+    fn shell_client_size(&self) -> PhysicalSize<u32> {
+        self.state.platform.shell_client_size
+    }
+
+    fn set_resizable(&mut self, resizable: bool) {
+        self.state.platform.window.set_resizable(resizable);
+    }
+
+    fn inner_size(&self) -> PhysicalSize<u32> {
+        self.state.platform.window.inner_size()
+    }
+
+    fn request_inner_size(&mut self, size: PhysicalSize<u32>) -> Option<PhysicalSize<u32>> {
+        self.state.platform.window.request_inner_size(size)
+    }
+
+    fn resize_surface_for_window_size(&mut self, size: PhysicalSize<u32>) {
+        App::resize_surface_for_window_size(self.state, size);
+    }
+
+    fn request_redraw(&mut self) {
+        self.state.platform.window.request_redraw();
+    }
+}
+
+fn enter_shell_window_mode_with_operations(operations: &mut impl ShellWindowModeOperations) {
+    operations.set_resizable(false);
+    let target = operations.shell_client_size();
+    if operations.inner_size() == target {
+        return;
+    }
+    if let Some(applied_size) = operations.request_inner_size(target) {
+        operations.resize_surface_for_window_size(applied_size);
+    }
+    operations.request_redraw();
+}
 
 impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
@@ -29,19 +80,91 @@ impl App {
     }
 
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
-        state.platform.window.set_resizable(false);
-        let target = PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT);
-        if state.platform.window.inner_size() == target {
-            return;
-        }
-        if let Some(applied_size) = state.platform.window.request_inner_size(target) {
-            Self::resize_surface_for_window_size(state, applied_size);
-        }
-        state.platform.window.request_redraw();
+        let mut operations = PlatformShellWindowModeOperations { state };
+        enter_shell_window_mode_with_operations(&mut operations);
     }
 
     pub(super) fn enter_game_window_mode(state: &AppState) {
         state.platform.window.set_resizable(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct RecordingShellWindowModeOperations {
+        shell_client_size: PhysicalSize<u32>,
+        current_size: PhysicalSize<u32>,
+        applied_size: Option<PhysicalSize<u32>>,
+        resizable_values: Vec<bool>,
+        requested_sizes: Vec<PhysicalSize<u32>>,
+        resized_surfaces: Vec<PhysicalSize<u32>>,
+        redraw_requests: usize,
+    }
+
+    impl RecordingShellWindowModeOperations {
+        fn new(shell_client_size: PhysicalSize<u32>, current_size: PhysicalSize<u32>) -> Self {
+            Self {
+                shell_client_size,
+                current_size,
+                applied_size: Some(shell_client_size),
+                resizable_values: Vec::new(),
+                requested_sizes: Vec::new(),
+                resized_surfaces: Vec::new(),
+                redraw_requests: 0,
+            }
+        }
+    }
+
+    impl ShellWindowModeOperations for RecordingShellWindowModeOperations {
+        fn shell_client_size(&self) -> PhysicalSize<u32> {
+            self.shell_client_size
+        }
+
+        fn set_resizable(&mut self, resizable: bool) {
+            self.resizable_values.push(resizable);
+        }
+
+        fn inner_size(&self) -> PhysicalSize<u32> {
+            self.current_size
+        }
+
+        fn request_inner_size(&mut self, size: PhysicalSize<u32>) -> Option<PhysicalSize<u32>> {
+            self.requested_sizes.push(size);
+            self.applied_size
+        }
+
+        fn resize_surface_for_window_size(&mut self, size: PhysicalSize<u32>) {
+            self.resized_surfaces.push(size);
+        }
+
+        fn request_redraw(&mut self) {
+            self.redraw_requests += 1;
+        }
+    }
+
+    #[test]
+    fn shell_window_mode_requests_retained_target_only_when_size_differs() {
+        let target = PhysicalSize::new(640, 480);
+        let mut unequal =
+            RecordingShellWindowModeOperations::new(target, PhysicalSize::new(800, 600));
+
+        enter_shell_window_mode_with_operations(&mut unequal);
+
+        assert_eq!(unequal.resizable_values, [false]);
+        assert_eq!(unequal.requested_sizes, [target]);
+        assert_eq!(unequal.resized_surfaces, [target]);
+        assert_eq!(unequal.redraw_requests, 1);
+
+        let mut equal = RecordingShellWindowModeOperations::new(target, target);
+
+        enter_shell_window_mode_with_operations(&mut equal);
+
+        assert_eq!(equal.resizable_values, [false]);
+        assert!(equal.requested_sizes.is_empty());
+        assert!(equal.resized_surfaces.is_empty());
+        assert_eq!(equal.redraw_requests, 0);
     }
 }
 
@@ -62,7 +185,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match Self::initialize(event_loop, capture_dimensions, self.startup_audio) {
+        match Self::initialize(event_loop, capture_dimensions, self.startup_options) {
             Ok(mut state) => {
                 if let Some(session) = self.shell_capture.as_mut() {
                     session.prepare_state(&mut state);

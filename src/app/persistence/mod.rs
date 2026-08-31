@@ -10,6 +10,7 @@
 //! beside the repository they drive.
 
 pub(crate) mod options;
+pub(crate) mod options_profile;
 pub(crate) mod save_load_panel;
 
 use std::path::{Path, PathBuf};
@@ -28,6 +29,9 @@ const DEFAULT_SAVES_DIRECTORY: &str = "saves";
 
 /// Process-lifetime save-game state owned by the app persistence domain.
 pub(crate) struct PersistenceState {
+    /// The process-lifetime retail Options/Video/Audio profile. UI, window,
+    /// render, and audio state are projections of this single retained value.
+    pub(crate) options_profile: options_profile::RetailOptionsProfile,
     pub(crate) repository: SaveRepository,
     pub(crate) save_list_cache: SaveListCache,
     pub(crate) last_save_tick: Option<u64>,
@@ -36,8 +40,9 @@ pub(crate) struct PersistenceState {
 }
 
 impl PersistenceState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(options_profile: options_profile::RetailOptionsProfile) -> Self {
         Self {
+            options_profile,
             repository: SaveRepository::new(),
             save_list_cache: SaveListCache::new(),
             last_save_tick: None,
@@ -600,7 +605,8 @@ mod tests {
             frame_pacer.record_admitted_frame(32);
             let mut lighting_grid = CellLightGrid::new();
             lighting_grid.set_compat_tint((3, 4), [0.25, 0.5, 0.75]);
-            let mut persistence = PersistenceState::new();
+            let mut persistence =
+                PersistenceState::new(options_profile::RetailOptionsProfile::default());
             persistence.last_loaded_save_path = Some(PathBuf::from("before-load.bin"));
             persistence.save_list_cache.dirty = false;
 

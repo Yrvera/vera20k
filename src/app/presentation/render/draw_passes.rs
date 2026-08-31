@@ -600,7 +600,7 @@ pub(super) fn dispatch_draw_passes(
     // object/effect/status/action/placement drawing and before screen-fixed
     // chrome. In VERA the global shroud translation must therefore run first.
     // The passthrough pipeline bypasses depth; an empty buffer when
-    // graphics.extra_animations is off short-circuits at count == 0.
+    // `[Options] DetailLevel=0` short-circuits at count == 0.
     if let (Some(overlay), Some((buf, count))) =
         (state.match_state.match_presentation.selection_overlay.as_ref(), pool.get("cell_sparkles"))
     {

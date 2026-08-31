@@ -164,27 +164,113 @@ pub(crate) struct DecodedAudio {
 struct QueuedVoice {
     sound_id: String,
     decoded: DecodedAudio,
-    volume: f32,
+    /// Sound-entry gain only. The current Voice master is applied when this
+    /// cue reaches the dedicated slot, not when it enters the queue.
+    base_gain: f32,
 }
 
-/// Absolute gain retained beside one live secondary output.
+impl QueuedVoice {
+    fn new(sound_id: String, decoded: DecodedAudio, base_gain: f32) -> Self {
+        Self {
+            sound_id,
+            decoded,
+            base_gain,
+        }
+    }
+
+    fn prepare_for_dequeue(self, scales: SfxOutputScales) -> (String, PreparedSfxOutput) {
+        let output = prepare_direct_voice_output(self.decoded, self.base_gain, scales);
+        (self.sound_id, output)
+    }
+}
+
+/// User-controlled master channel for one secondary output.
 ///
-/// The intended gain already includes the user, sound-entry, and spatial
-/// factors. Lifecycle and foreground gates are recomposed from it so opening a
-/// gate after zero never has to infer the original value from a muted Player.
+/// gamemd-derived: `OptionsClass::SetDefaults @ 0x005FA350` and
+/// `OptionsClass__ReadFromINI @ 0x005FA620` retain independent SoundVolume and
+/// VoiceVolume settings; ordinary/animation effects use Sound while unit and
+/// EVA speech use Voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SfxChannel {
+    Sound,
+    Voice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SfxOutputScales {
+    sound_volume: f32,
+    voice_volume: f32,
+    lifecycle_scale: f32,
+    focus_output_scale: f32,
+}
+
+/// Master-independent gain retained beside one live secondary output.
+///
+/// The base gain includes sound-entry and spatial factors, but not the user
+/// master. User, lifecycle, and foreground factors are recomposed from it so
+/// changing or reopening a gate never has to infer the original value from a
+/// muted Player.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SfxOutputGain {
-    intended: f32,
+    base_gain: f32,
+    channel: SfxChannel,
 }
 
 impl SfxOutputGain {
-    fn new(intended: f32) -> Self {
-        Self { intended }
+    fn new(base_gain: f32, channel: SfxChannel) -> Self {
+        Self { base_gain, channel }
     }
 
-    fn effective(self, lifecycle_scale: f32, focus_output_scale: f32) -> f32 {
-        self.intended * lifecycle_scale * focus_output_scale
+    fn effective(self, scales: SfxOutputScales) -> f32 {
+        let master = match self.channel {
+            SfxChannel::Sound => scales.sound_volume,
+            SfxChannel::Voice => scales.voice_volume,
+        };
+        self.base_gain * master * scales.lifecycle_scale * scales.focus_output_scale
     }
+}
+
+/// Device-independent construction shared by tests and the rodio startup path.
+/// `initial_volume` is the exact volume applied before the decoded source is
+/// appended; `gain` remains master-independent for later live recomposition.
+struct PreparedSfxOutput {
+    decoded: DecodedAudio,
+    gain: SfxOutputGain,
+    initial_volume: f32,
+}
+
+impl PreparedSfxOutput {
+    fn new(decoded: DecodedAudio, gain: SfxOutputGain, scales: SfxOutputScales) -> Self {
+        Self {
+            decoded,
+            gain,
+            initial_volume: gain.effective(scales),
+        }
+    }
+}
+
+fn prepare_normal_sfx_output(
+    decoded: DecodedAudio,
+    base_gain: f32,
+    scales: SfxOutputScales,
+) -> PreparedSfxOutput {
+    PreparedSfxOutput::new(
+        decoded,
+        SfxOutputGain::new(base_gain, SfxChannel::Sound),
+        scales,
+    )
+}
+
+fn prepare_direct_voice_output(
+    decoded: DecodedAudio,
+    base_gain: f32,
+    scales: SfxOutputScales,
+) -> PreparedSfxOutput {
+    PreparedSfxOutput::new(
+        decoded,
+        SfxOutputGain::new(base_gain, SfxChannel::Voice),
+        scales,
+    )
 }
 
 struct LiveSfxOutput {
@@ -193,16 +279,13 @@ struct LiveSfxOutput {
 }
 
 impl LiveSfxOutput {
-    fn new(player: Player, intended_volume: f32) -> Self {
-        Self {
-            player,
-            gain: SfxOutputGain::new(intended_volume),
-        }
+    fn new(player: Player, gain: SfxOutputGain, initial_volume: f32) -> Self {
+        player.set_volume(initial_volume);
+        Self { player, gain }
     }
 
-    fn apply_scales(&self, lifecycle_scale: f32, focus_output_scale: f32) {
-        self.player
-            .set_volume(self.gain.effective(lifecycle_scale, focus_output_scale));
+    fn apply_scales(&self, scales: SfxOutputScales) {
+        self.player.set_volume(self.gain.effective(scales));
     }
 }
 
@@ -225,8 +308,10 @@ pub struct SfxPlayer {
     queued_voice: VecDeque<QueuedVoice>,
     /// Sound id currently occupying the dedicated voice slot, when known.
     current_voice_id: Option<String>,
-    /// SFX master volume (0.0 to 1.0).
-    volume: f64,
+    /// Ordinary and animation SFX master volume (0.0 to 1.0).
+    sound_volume: f64,
+    /// Unit and EVA voice master volume (0.0 to 1.0).
+    voice_volume: f64,
     /// Temporary app-lifecycle multiplier over every live SFX/voice output.
     output_scale: f32,
     /// Foreground-owned primary-output gate. Secondary Players stay running so
@@ -251,11 +336,21 @@ impl SfxPlayer {
             voice_player: None,
             queued_voice: VecDeque::new(),
             current_voice_id: None,
-            volume: 0.7,
+            sound_volume: 0.7,
+            voice_volume: 0.7,
             output_scale: 1.0,
             focus_output_scale: 1.0,
             random_counter: 0,
         })
+    }
+
+    fn output_scales(&self) -> SfxOutputScales {
+        SfxOutputScales {
+            sound_volume: self.sound_volume as f32,
+            voice_volume: self.voice_volume as f32,
+            lifecycle_scale: self.output_scale,
+            focus_output_scale: self.focus_output_scale,
+        }
     }
 
     /// Play a sound by its sound.ini ID (e.g., "VGCannon1") or audio.bag name.
@@ -282,9 +377,8 @@ impl SfxPlayer {
                 let filename: &str = &entry.sounds[idx];
 
                 if let Some(decoded) = load_sfx(filename, assets, audio_indices) {
-                    let entry_volume: f64 = entry.volume as f64 / 100.0;
-                    let final_volume: f32 = (entry_volume * self.volume) as f32;
-                    return self.play_decoded(decoded, final_volume);
+                    let base_gain = entry.volume as f32 / 100.0;
+                    return self.play_decoded(decoded, base_gain);
                 }
             }
         }
@@ -292,8 +386,7 @@ impl SfxPlayer {
         // Fallback: try sound_id directly as an audio.bag entry name
         // (EVA announcements and other sounds not in sound.ini).
         if let Some(decoded) = load_sfx(sound_id, assets, audio_indices) {
-            let final_volume: f32 = self.volume as f32;
-            return self.play_decoded(decoded, final_volume);
+            return self.play_decoded(decoded, 1.0);
         }
 
         log::trace!("SFX: could not resolve '{}'", sound_id);
@@ -319,16 +412,14 @@ impl SfxPlayer {
                 let filename = &entry.sounds[idx];
 
                 if let Some(decoded) = load_sfx(filename, assets, audio_indices) {
-                    let entry_volume = entry.volume as f64 / 100.0;
-                    let final_volume = (entry_volume * self.volume) as f32 * spatial_volume;
-                    return self.play_decoded(decoded, final_volume);
+                    let base_gain = entry.volume as f32 / 100.0 * spatial_volume;
+                    return self.play_decoded(decoded, base_gain);
                 }
             }
         }
 
         if let Some(decoded) = load_sfx(sound_id, assets, audio_indices) {
-            let final_volume = self.volume as f32 * spatial_volume;
-            return self.play_decoded(decoded, final_volume);
+            return self.play_decoded(decoded, spatial_volume);
         }
 
         false
@@ -355,8 +446,8 @@ impl SfxPlayer {
         let Some(decoded) = load_sfx(filename, assets, audio_indices) else {
             return false;
         };
-        let final_volume = (entry_volume * self.volume) as f32 * spatial_volume;
-        self.play_decoded(decoded, final_volume)
+        let base_gain = entry_volume as f32 * spatial_volume;
+        self.play_decoded(decoded, base_gain)
     }
 
     /// Start or replace the sound owned by one animation object.
@@ -370,24 +461,29 @@ impl SfxPlayer {
         audio_indices: &[crate::assets::audio_bag::AudioIndex],
     ) -> bool {
         self.stop_animation_sound(anim_id);
-        let decoded_and_volume = if let Some(entry) = registry.get(sound_id) {
+        let decoded_and_gain = if let Some(entry) = registry.get(sound_id) {
             if entry.sounds.is_empty() {
                 None
             } else {
                 self.random_counter = self.random_counter.wrapping_add(1);
                 let filename = &entry.sounds[(self.random_counter as usize) % entry.sounds.len()];
                 load_sfx(filename, assets, audio_indices).map(|decoded| {
-                    let volume = entry.volume as f64 / 100.0;
-                    (decoded, (volume * self.volume) as f32 * spatial_volume)
+                    let base_gain = entry.volume as f32 / 100.0 * spatial_volume;
+                    (decoded, base_gain)
                 })
             }
         } else {
-            load_sfx(sound_id, assets, audio_indices)
-                .map(|decoded| (decoded, self.volume as f32 * spatial_volume))
+            load_sfx(sound_id, assets, audio_indices).map(|decoded| (decoded, spatial_volume))
         };
-        let Some((decoded, final_volume)) = decoded_and_volume else {
+        let Some((decoded, base_gain)) = decoded_and_gain else {
             return false;
         };
+        let prepared = prepare_normal_sfx_output(decoded, base_gain, self.output_scales());
+        let PreparedSfxOutput {
+            decoded,
+            gain,
+            initial_volume,
+        } = prepared;
         let Some(channels) = NonZero::new(decoded.channels) else {
             return false;
         };
@@ -396,8 +492,7 @@ impl SfxPlayer {
         };
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player = Player::connect_new(self._device.mixer());
-        let output = LiveSfxOutput::new(player, final_volume);
-        output.apply_scales(self.output_scale, self.focus_output_scale);
+        let output = LiveSfxOutput::new(player, gain, initial_volume);
         output.player.append(source);
         self.animation_active.insert(anim_id, output);
         true
@@ -442,8 +537,7 @@ impl SfxPlayer {
             }
         };
 
-        let final_volume = (entry_volume * self.volume) as f32;
-        self.play_voice(decoded, final_volume, Some(sound_id.to_string()))
+        self.play_voice(decoded, entry_volume as f32, Some(sound_id.to_string()))
     }
 
     /// Queue an EVA-style announcement without interrupting the current voice.
@@ -474,11 +568,11 @@ impl SfxPlayer {
                 Some(resolved) => resolved,
                 None => return false,
             };
-        self.queued_voice.push_back(QueuedVoice {
-            sound_id: sound_id.to_string(),
+        self.queued_voice.push_back(QueuedVoice::new(
+            sound_id.to_string(),
             decoded,
-            volume: (entry_volume * self.volume) as f32,
-        });
+            entry_volume as f32,
+        ));
         self.advance_voice_queue();
         true
     }
@@ -509,11 +603,7 @@ impl SfxPlayer {
                 Some(resolved) => resolved,
                 None => return false,
             };
-        self.play_voice(
-            decoded,
-            (entry_volume * self.volume) as f32,
-            Some(sound_id.to_string()),
-        )
+        self.play_voice(decoded, entry_volume as f32, Some(sound_id.to_string()))
     }
 
     /// Replace only the dedicated EVA/voice channel with an INTERRUPT cue.
@@ -539,11 +629,7 @@ impl SfxPlayer {
                 Some(resolved) => resolved,
                 None => return false,
             };
-        self.play_voice(
-            decoded,
-            (entry_volume * self.volume) as f32,
-            Some(sound_id.to_string()),
-        )
+        self.play_voice(decoded, entry_volume as f32, Some(sound_id.to_string()))
     }
 
     fn resolve_voice_audio(
@@ -582,14 +668,24 @@ impl SfxPlayer {
         let Some(queued) = self.queued_voice.pop_front() else {
             return;
         };
-        self.play_voice(queued.decoded, queued.volume, Some(queued.sound_id));
+        let (sound_id, prepared) = queued.prepare_for_dequeue(self.output_scales());
+        self.play_prepared_voice(prepared, Some(sound_id));
     }
 
     /// Play decoded audio on the dedicated voice slot, cutting off any current voice.
     fn play_voice(
         &mut self,
-        mut decoded: DecodedAudio,
-        final_volume: f32,
+        decoded: DecodedAudio,
+        base_gain: f32,
+        sound_id: Option<String>,
+    ) -> bool {
+        let prepared = prepare_direct_voice_output(decoded, base_gain, self.output_scales());
+        self.play_prepared_voice(prepared, sound_id)
+    }
+
+    fn play_prepared_voice(
+        &mut self,
+        prepared: PreparedSfxOutput,
         sound_id: Option<String>,
     ) -> bool {
         // Cut off previous voice immediately.
@@ -597,6 +693,12 @@ impl SfxPlayer {
             old.player.stop();
         }
         self.current_voice_id = None;
+
+        let PreparedSfxOutput {
+            mut decoded,
+            gain,
+            initial_volume,
+        } = prepared;
 
         apply_fade(
             &mut decoded.samples,
@@ -616,16 +718,21 @@ impl SfxPlayer {
 
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        let output = LiveSfxOutput::new(player, final_volume);
-        output.apply_scales(self.output_scale, self.focus_output_scale);
+        let output = LiveSfxOutput::new(player, gain, initial_volume);
         output.player.append(source);
         self.voice_player = Some(output);
         self.current_voice_id = sound_id;
         true
     }
 
-    /// Play already-decoded audio on the SFX pool at the given volume.
-    fn play_decoded(&mut self, mut decoded: DecodedAudio, final_volume: f32) -> bool {
+    /// Play already-decoded audio on the SFX pool at the given master-independent gain.
+    fn play_decoded(&mut self, decoded: DecodedAudio, base_gain: f32) -> bool {
+        let prepared = prepare_normal_sfx_output(decoded, base_gain, self.output_scales());
+        let PreparedSfxOutput {
+            mut decoded,
+            gain,
+            initial_volume,
+        } = prepared;
         apply_fade(
             &mut decoded.samples,
             decoded.sample_rate,
@@ -654,8 +761,7 @@ impl SfxPlayer {
 
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        let output = LiveSfxOutput::new(player, final_volume);
-        output.apply_scales(self.output_scale, self.focus_output_scale);
+        let output = LiveSfxOutput::new(player, gain, initial_volume);
         output.player.append(source);
         self.active.push_back(output);
         true
@@ -669,9 +775,24 @@ impl SfxPlayer {
         self.advance_voice_queue();
     }
 
-    /// Set the SFX master volume (0.0 = silent, 1.0 = full).
+    /// Compatibility setter: apply one master to both SFX and voice channels.
     pub fn set_volume(&mut self, volume: f64) {
-        self.volume = volume.clamp(0.0, 1.0);
+        let volume = volume.clamp(0.0, 1.0);
+        self.sound_volume = volume;
+        self.voice_volume = volume;
+        self.apply_live_output_scales();
+    }
+
+    /// Set the ordinary and animation SFX master volume.
+    pub fn set_sound_volume(&mut self, volume: f64) {
+        self.sound_volume = volume.clamp(0.0, 1.0);
+        self.apply_live_output_scales();
+    }
+
+    /// Set the unit and EVA voice master volume.
+    pub fn set_voice_volume(&mut self, volume: f64) {
+        self.voice_volume = volume.clamp(0.0, 1.0);
+        self.apply_live_output_scales();
     }
 
     /// Apply a temporary multiplier to all live outputs without changing the
@@ -694,14 +815,15 @@ impl SfxPlayer {
     }
 
     fn apply_live_output_scales(&self) {
+        let scales = self.output_scales();
         for output in &self.active {
-            output.apply_scales(self.output_scale, self.focus_output_scale);
+            output.apply_scales(scales);
         }
         for output in self.animation_active.values() {
-            output.apply_scales(self.output_scale, self.focus_output_scale);
+            output.apply_scales(scales);
         }
         if let Some(output) = self.voice_player.as_ref() {
-            output.apply_scales(self.output_scale, self.focus_output_scale);
+            output.apply_scales(scales);
         }
     }
 
@@ -729,7 +851,12 @@ impl SfxPlayer {
 
     /// Get the current SFX master volume.
     pub fn volume(&self) -> f64 {
-        self.volume
+        self.sound_volume
+    }
+
+    /// Get the current unit and EVA voice master volume.
+    pub fn voice_volume(&self) -> f64 {
+        self.voice_volume
     }
 
     /// Number of currently active (playing) sound effects.
@@ -1141,28 +1268,99 @@ mod tests {
                 "an invalid Voc identity must not become a raw-bag fallback: {invalid}"
             );
         }
-        assert_eq!(counter, 1, "rejected identities do not advance sound selection");
+        assert_eq!(
+            counter, 1,
+            "rejected identities do not advance sound selection"
+        );
+    }
+
+    fn test_decoded_audio() -> DecodedAudio {
+        DecodedAudio {
+            samples: vec![0.0, 0.0],
+            sample_rate: 22_050,
+            channels: 2,
+        }
+    }
+
+    fn test_output_scales(
+        sound_volume: f32,
+        voice_volume: f32,
+        lifecycle_scale: f32,
+        focus_output_scale: f32,
+    ) -> SfxOutputScales {
+        SfxOutputScales {
+            sound_volume,
+            voice_volume,
+            lifecycle_scale,
+            focus_output_scale,
+        }
     }
 
     #[test]
     fn gsi_01_02_focus_gate_restores_distinct_live_sfx_gains_absolutely() {
-        let quiet = SfxOutputGain::new(0.2);
-        let loud = SfxOutputGain::new(0.75);
+        let inactive = test_output_scales(1.0, 0.4, 0.6, 0.0);
+        let quiet = prepare_normal_sfx_output(test_decoded_audio(), 0.2, inactive);
+        let loud = prepare_normal_sfx_output(test_decoded_audio(), 0.75, inactive);
 
-        assert_eq!(quiet.effective(0.6, 0.0), 0.0);
-        assert_eq!(loud.effective(0.6, 0.0), 0.0);
-        assert!((quiet.effective(0.6, 1.0) - 0.12).abs() < f32::EPSILON);
-        assert!((loud.effective(0.6, 1.0) - 0.45).abs() < f32::EPSILON);
+        assert_eq!(quiet.initial_volume, 0.0);
+        assert_eq!(loud.initial_volume, 0.0);
+        let active = test_output_scales(1.0, 0.4, 0.6, 1.0);
+        assert!((quiet.gain.effective(active) - 0.12).abs() < f32::EPSILON);
+        assert!((loud.gain.effective(active) - 0.45).abs() < f32::EPSILON);
     }
 
     #[test]
     fn gsi_01_02_sfx_armed_while_inactive_retains_gain_for_restore() {
         // Construction while inactive still creates/starts the Player in the
         // production path; only this independently retained output gain is 0.
-        let armed_while_inactive = SfxOutputGain::new(0.35);
+        let armed_while_inactive = prepare_normal_sfx_output(
+            test_decoded_audio(),
+            0.35,
+            test_output_scales(1.0, 0.4, 1.0, 0.0),
+        );
 
-        assert_eq!(armed_while_inactive.effective(1.0, 0.0), 0.0);
-        assert!((armed_while_inactive.effective(1.0, 1.0) - 0.35).abs() < f32::EPSILON);
+        assert_eq!(armed_while_inactive.initial_volume, 0.0);
+        assert!(
+            (armed_while_inactive
+                .gain
+                .effective(test_output_scales(1.0, 0.4, 1.0, 1.0))
+                - 0.35)
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn options_profile_production_routes_sound_and_direct_voice_independently() {
+        for (sound_volume, voice_volume, expected_sound, expected_voice) in
+            [(0.0, 1.0, 0.0, 0.5), (1.0, 0.0, 0.5, 0.0)]
+        {
+            let scales = test_output_scales(sound_volume, voice_volume, 1.0, 1.0);
+            let sound = prepare_normal_sfx_output(test_decoded_audio(), 0.5, scales);
+            let direct_voice = prepare_direct_voice_output(test_decoded_audio(), 0.5, scales);
+
+            assert_eq!(sound.initial_volume, expected_sound);
+            assert_eq!(direct_voice.initial_volume, expected_voice);
+        }
+    }
+
+    #[test]
+    fn options_profile_queued_eva_uses_current_voice_master_at_dequeue() {
+        // QueuedVoice retains no master snapshot. The scales supplied by the
+        // production dequeue seam alone decide the startup volume.
+        let queued_for_voice_enabled_dequeue =
+            QueuedVoice::new("eva-a".to_string(), test_decoded_audio(), 0.8);
+        let (sound_id, started_with_voice_enabled) = queued_for_voice_enabled_dequeue
+            .prepare_for_dequeue(test_output_scales(0.0, 1.0, 1.0, 1.0));
+        assert_eq!(sound_id, "eva-a");
+        assert!((started_with_voice_enabled.initial_volume - 0.8).abs() < f32::EPSILON);
+
+        let queued_for_voice_muted_dequeue =
+            QueuedVoice::new("eva-b".to_string(), test_decoded_audio(), 0.8);
+        let (sound_id, started_with_voice_muted) = queued_for_voice_muted_dequeue
+            .prepare_for_dequeue(test_output_scales(1.0, 0.0, 1.0, 1.0));
+        assert_eq!(sound_id, "eva-b");
+        assert_eq!(started_with_voice_muted.initial_volume, 0.0);
     }
 
     /// An idle voice slot with an empty queue reports no active voices. Skips
