@@ -452,10 +452,10 @@ impl App {
         }
         let activated = state.frontend.shell_controller.on_pointer_up(x, y, &feed);
         match activated {
-            // OK -> quit (result 0). Persist settings to RA2MD.INI BEFORE teardown
-            // (4b-i), then run the graceful cascade (music fade → trailing-voice
-            // wait → hard stop → exit) via render_frame instead of exiting
-            // immediately. The screen fade-to-black is sub-step 4b-ii-b.
+            // OK -> quit (result 0). Dismiss the confirmation first, persist
+            // settings to RA2MD.INI, then run the graceful cascade (music fade
+            // → trailing-voice wait → hard stop → exit) via render_frame instead
+            // of exiting immediately. The screen fade-to-black is sub-step 4b-ii-b.
             Some(id) if id == crate::ui::shell::modal::control::OK => {
                 let mut operations = AppStateConfirmedQuitOperations { state };
                 dispatch_shell_controller_confirmed_quit(&mut operations);
@@ -721,10 +721,11 @@ impl App {
             if let Some(modal) = state.frontend.exit_confirm_modal.clone() {
                 match dialogs::draw_exit_confirm_modal(&state.renderer.egui.ctx, &modal) {
                     dialogs::ExitConfirmAction::Confirm => {
-                        // Persist BEFORE teardown (4b-i), then start the graceful
-                        // cascade. Return false (not true) so exit is owned by the
-                        // cascade; this degraded egui-fallback path runs the audio
-                        // phases (the SHP fade overlay is unavailable here).
+                        // Dismiss the confirmation first, persist settings, then
+                        // start the graceful cascade. Return false (not true) so
+                        // exit is owned by the cascade; this degraded egui-fallback
+                        // path runs the audio phases (the SHP fade overlay is
+                        // unavailable here).
                         let mut operations = AppStateConfirmedQuitOperations { state };
                         dispatch_egui_fallback_confirmed_quit(&mut operations);
                         return false;
