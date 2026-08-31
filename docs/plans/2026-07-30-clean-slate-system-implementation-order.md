@@ -49,10 +49,11 @@ isolated projects:
    substitute for this check.
 4. Trace the loop in its actual runtime stage order and locate its **first
    player-visible or determinism-relevant divergence**.
-5. Use this document's dependency order to identify the smallest prerequisite
-   that divergence needs, then close only that bounded mechanism in its
-   existing Rust owner. Do not implement an entire earlier phase just because
-   it appears first.
+5. Use this document's dependency order to identify the smallest coherent prerequisite
+   capability—not merely the smallest patch—that the divergence needs. This may include
+   bounded foundational work required to avoid duplicate authority, temporary adapters,
+   architectural drift, or predictable rework. Deliver a separable foundation first.
+   Do not implement an entire earlier phase or absorb unrelated backlog.
 6. Independently review the evidence-to-code mapping and run the scoped
    deterministic plus production-path check.
 7. Rerun the parent loop. If its end-to-end check passes, close it and select
@@ -190,12 +191,12 @@ Select one ordinary-stock end-to-end loop, enumerate its GSI participants,
 and reconcile current HEAD, Rust production owners, tests, research, INIs,
 parity evidence, git history, dirty files, and parallel ownership. Trace the
 participants in actual runtime stage order and locate the first player-visible
-or determinism-relevant divergence. Use the clean-slate dependency order to
-identify only the smallest prerequisite it needs. Verify active gamemd
-behavior and TS/YR reachability, then implement that bounded mechanism in the
-existing Rust owner. Do not rebuild already-present foundations or expand
-into another system's backlog. Obtain an independent review and run scoped
-deterministic and production-path checks. Rerun the parent loop: close it only
+or determinism-relevant divergence. Use the clean-slate dependency order to identify
+and close the smallest coherent foundational prerequisite capability—not merely the
+smallest patch—the loop needs. Deliver a separable foundation first, with its own
+evidence, validation, and review. Do not rebuild already-present foundations or expand
+into unrelated backlog. Obtain an independent review and run scoped deterministic and
+production-path checks. Rerun the parent loop: close it only
 if its end-to-end check passes; otherwise record residuals and leave the next
 slice in that same loop. Write the handoff, then stop.
 ```
