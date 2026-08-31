@@ -10,10 +10,12 @@ file adds only what is specific to autonomous runs.
 
 - **Own one slice at a time.** Finish it and hand off. Do not select another system, start
   another feature, or expand into a new dependency chain because it looks adjacent.
-- Promote a prerequisite only when its behavior is necessary to locate, implement, or
-  validate the current slice's first divergence *and* it is missing, disconnected, or
-  unverified. Close the smallest prerequisite the parent needs — not that system's whole
-  backlog. Record indirect dependencies as residuals.
+- Promote a prerequisite when it is necessary to locate, implement, or validate the
+  current slice, or when a narrower patch would create duplicate authority, a temporary
+  adapter, architectural drift, or predictable rework. Close the smallest coherent
+  foundational capability—not merely the smallest patch—needed by the parent mechanism.
+  A separable foundation is its own prerequisite slice and feature branch/PR, merged
+  before its consumer. Do not absorb that system's unrelated backlog; record it as residuals.
 - Newly discovered expert-only or scheduler-tail differences become recorded residuals
   unless they are required for correctness, determinism, architecture, or the ordinary
   player-visible loop being closed.
