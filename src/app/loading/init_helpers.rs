@@ -534,7 +534,9 @@ pub(crate) fn construct_app_scenario<F>(
 where
     F: FnOnce(&mut Simulation),
 {
-    let mut sim = crate::sim::runtime::construct_scenario_with_generated_inits(
+    let mut sim = bootstrap_rng.into_simulation(descriptor);
+    populate_staged_app_scenario(
+        &mut sim,
         map_data,
         resolved_terrain,
         theater_name,
@@ -545,10 +547,61 @@ where
         overlay_grid,
         bridge_destroyability_mode,
         descriptor,
-        bootstrap_rng,
         generated_inits,
         initialize_houses_before_objects,
     )?;
+    bind_staged_app_scenario_metadata(&mut sim, asset_manager, rules, art);
+    Ok(sim)
+}
+
+/// Populate the already-staged gameplay owner with map object sections.
+///
+/// The caller creates this exact Simulation before Fill and keeps it through
+/// authored overlay finalization.  This helper deliberately cannot construct a
+/// replacement owner.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn populate_staged_app_scenario<F>(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    resolved_terrain: &ResolvedTerrainGrid,
+    theater_name: &str,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    bridge_destroyability_mode: BridgeDestroyabilityMode,
+    descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    generated_inits: Option<&crate::sim::world::GeneratedTechnoInitTable>,
+    initialize_houses_before_objects: F,
+) -> Result<(), crate::sim::world::GeneratedTechnoInitError>
+where
+    F: FnOnce(&mut Simulation),
+{
+    crate::sim::runtime::populate_staged_scenario_with_generated_inits(
+        sim,
+        map_data,
+        resolved_terrain,
+        theater_name,
+        rules,
+        art,
+        height_map,
+        overlay_registry,
+        overlay_grid,
+        bridge_destroyability_mode,
+        descriptor,
+        generated_inits,
+        initialize_houses_before_objects,
+    )
+}
+
+/// Attach app-only, GPU-free metadata after staged gameplay construction.
+pub(crate) fn bind_staged_app_scenario_metadata(
+    sim: &mut Simulation,
+    asset_manager: &AssetManager,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+) {
     // F09: HVA frame counts are sim metadata — parse them through the GPU-free
     // catalog before any atlas exists, so the renderer never writes into the
     // simulation. Atlas seeding derives its own copy from the same functions.
@@ -560,7 +613,6 @@ where
         art,
     );
     sim.update_voxel_anim_frame_counts(&frame_catalog);
-    Ok(sim)
 }
 
 /// Build voxel + SHP sprite atlases for an already-constructed simulation.

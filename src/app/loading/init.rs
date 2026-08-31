@@ -1832,6 +1832,63 @@ pub(crate) fn load_map_from_initial(
         .as_ref()
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
+
+    // Parse Scenario-owned lighting before Fill so the one authoritative
+    // Simulation can be constructed and receive the prefix cursors first.
+    // Presentation milestones remain at their native-shaped point below.
+    let lighting_config = lighting::parse_lighting(&map_data.ini);
+    let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
+    let native_start_bounds =
+        crate::sim::scenario_bootstrap::NativeStartBounds::from_map_header(&map_data.header)
+            .ok_or_else(|| anyhow::anyhow!("map Size does not produce a valid fresh cell array"))?;
+    let scenario_cell_extent = native_start_bounds
+        .min_rx
+        .checked_add(native_start_bounds.width)
+        .ok_or_else(|| anyhow::anyhow!("fresh cell-array extent overflow"))?;
+    let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
+        seed: match_seed,
+        map_name: skirmish_launch_session
+            .and_then(|s| s.selected_map_file.clone())
+            .or_else(|| map_data.basic.name.clone())
+            .unwrap_or_default(),
+        theater: map_data.header.theater.clone(),
+        game_mode_nonzero: skirmish_launch_session.is_some(),
+        // Campaign/editor reads `[SpecialFlags] Inert=`. Nonzero game modes
+        // replace active SpecialFlags from session staging.
+        no_damage: skirmish_launch_session.is_none()
+            && map_data.special_flags.inert.unwrap_or(false),
+        // Native Resize constructs a square cell-array extent of SizeW+SizeH.
+        map_width: scenario_cell_extent,
+        map_height: scenario_cell_extent,
+        local_left: map_data.header.local_left as u16,
+        local_top: map_data.header.local_top as u16,
+        local_width: map_data.header.local_width as u16,
+        local_height: map_data.header.local_height as u16,
+        mp_start_waypoints: scenario_start_waypoints_for_load(
+            &map_data,
+            scenario_prefix_plan.as_ref(),
+        ),
+        lighting: crate::sim::scenario_session::ScenarioLightingState::new(
+            crate::sim::scenario_session::ScenarioLightProfileUnits {
+                ambient_percent: lighting_profiles.normal.ambient_percent,
+                red_percent: lighting_profiles.normal.red_percent,
+                green_percent: lighting_profiles.normal.green_percent,
+                blue_percent: lighting_profiles.normal.blue_percent,
+                ground_units: lighting_profiles.normal.ground_units,
+                level_units: lighting_profiles.normal.level_units,
+            },
+            crate::sim::scenario_session::ScenarioLightProfileUnits {
+                ambient_percent: lighting_profiles.ion.ambient_percent,
+                red_percent: lighting_profiles.ion.red_percent,
+                green_percent: lighting_profiles.ion.green_percent,
+                blue_percent: lighting_profiles.ion.blue_percent,
+                ground_units: lighting_profiles.ion.ground_units,
+                level_units: lighting_profiles.ion.level_units,
+            },
+        ),
+    };
+    log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
+
     let mut bootstrap_rng = ScenarioBootstrapRng::new(match_seed);
     if let Some(continuation) = mapgen_rng_continuation {
         bootstrap_rng.install_generated_mapgen_continuation(continuation);
@@ -1854,7 +1911,11 @@ pub(crate) fn load_map_from_initial(
         }
         (None, None) => {}
     }
-    let (mut scenario_fill_rng, mut variant_main_rng) = bootstrap_rng.terrain_draws();
+    // Consume the bootstrap owner here: Fill and every later load constructor
+    // now mutate the same Simulation identity that reaches gameplay.
+    let mut staged_simulation = bootstrap_rng.into_simulation(&scenario_descriptor);
+    staged_simulation.bind_shared_cell_dummy(shared_cell_dummy.clone());
+    let (mut scenario_fill_rng, mut variant_main_rng) = staged_simulation.terrain_load_draws();
     let mut scenario_fill_ranged =
         |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
     let mut variant_draw = || variant_main_rng.next_u32();
@@ -1882,6 +1943,17 @@ pub(crate) fn load_map_from_initial(
             crate::map::resolved_terrain::OverlayLoadSource::Authored
         },
     );
+    if resolved_terrain.width() != scenario_descriptor.map_width
+        || resolved_terrain.height() != scenario_descriptor.map_height
+    {
+        anyhow::bail!(
+            "fresh Resize extent {}x{} disagrees with materialized terrain {}x{}",
+            scenario_descriptor.map_width,
+            scenario_descriptor.map_height,
+            resolved_terrain.width(),
+            resolved_terrain.height(),
+        );
+    }
     // Bind the complete scheduler closure only after theater Tile##Anim rows
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.
@@ -1914,10 +1986,10 @@ pub(crate) fn load_map_from_initial(
     // Launch-time `.SED` generation already chose all geometry. Replay only
     // its Techno constructor effects now, after the Full-Init stock-offline
     // prefix and terrain Fill, on the one Scenario owner later moved into Simulation.
-    let generated_techno_inits = replay_launch_generated_construction(
-        &mut bootstrap_rng,
-        generated_construction_trace.as_ref(),
-    )?;
+    let generated_techno_inits = generated_construction_trace
+        .as_ref()
+        .map(|trace| staged_simulation.replay_staged_generated_construction_trace(trace))
+        .transpose()?;
     // Native Fill snapshots prior process-global ClearTile/WaterSet values
     // before the current theater registry reload. Rust loads assets earlier,
     // so defer publishing current results until materialization is complete.
@@ -1951,10 +2023,8 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(50);
     progress.milestone(55);
 
-    // Build per-cell lighting from map [Lighting] section.
-    let lighting_config = lighting::parse_lighting(&map_data.ini);
-    let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
-    // [Basic]/lighting read complete (gamemd Read_INI_Basic milestones).
+    // Lighting was parsed before staged Simulation construction; publish the
+    // native-shaped progress edge only after the map/side prelude completes.
     progress.milestone(58);
     progress.milestone(60);
 
@@ -2060,58 +2130,6 @@ pub(crate) fn load_map_from_initial(
             }
         });
 
-    // Every shell startup carries its one fresh pre-loading seed unchanged.
-    // Generic loading alone retains the explicitly noncertifying SystemTime
-    // fallback. In every case the selected word exists before Simulation.
-    let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
-        seed: match_seed,
-        map_name: skirmish_launch_session
-            .and_then(|s| s.selected_map_file.clone())
-            .or_else(|| map_data.basic.name.clone())
-            .unwrap_or_default(),
-        theater: map_data.header.theater.clone(),
-        game_mode_nonzero: skirmish_launch_session.is_some(),
-        // Campaign/editor reads `[SpecialFlags] Inert=`. Nonzero game modes
-        // replace active SpecialFlags from session staging; ordinary skirmish
-        // has no writer for bit 0x20 and therefore starts false.
-        no_damage: skirmish_launch_session.is_none()
-            && map_data.special_flags.inert.unwrap_or(false),
-        // CANONICAL CELL-ARRAY FRAME, not [Map] Size=. Sim cell coordinates
-        // (entities, waypoints, vision) live in the iso array whose extent is
-        // ~(SizeW+SizeH); seeding bounds from Size= verbatim leaves most of
-        // the diamond — including start waypoints — outside the fog window.
-        // The raw Size= width stays available on `Simulation.playfield_bounds`.
-        map_width: resolved_terrain.width(),
-        map_height: resolved_terrain.height(),
-        local_left: map_data.header.local_left as u16,
-        local_top: map_data.header.local_top as u16,
-        local_width: map_data.header.local_width as u16,
-        local_height: map_data.header.local_height as u16,
-        mp_start_waypoints: scenario_start_waypoints_for_load(
-            &map_data,
-            scenario_prefix_plan.as_ref(),
-        ),
-        lighting: crate::sim::scenario_session::ScenarioLightingState::new(
-            crate::sim::scenario_session::ScenarioLightProfileUnits {
-                ambient_percent: lighting_profiles.normal.ambient_percent,
-                red_percent: lighting_profiles.normal.red_percent,
-                green_percent: lighting_profiles.normal.green_percent,
-                blue_percent: lighting_profiles.normal.blue_percent,
-                ground_units: lighting_profiles.normal.ground_units,
-                level_units: lighting_profiles.normal.level_units,
-            },
-            crate::sim::scenario_session::ScenarioLightProfileUnits {
-                ambient_percent: lighting_profiles.ion.ambient_percent,
-                red_percent: lighting_profiles.ion.red_percent,
-                green_percent: lighting_profiles.ion.green_percent,
-                blue_percent: lighting_profiles.ion.blue_percent,
-                ground_units: lighting_profiles.ion.ground_units,
-                level_units: lighting_profiles.ion.level_units,
-            },
-        ),
-    };
-    log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
-
     let initialize_houses_before_objects = |sim: &mut Simulation| {
         if let Some(descriptor) = match_launch_descriptor.as_ref() {
             let ruleset = rules
@@ -2122,12 +2140,10 @@ pub(crate) fn load_map_from_initial(
             initialize_map_roster_houses(sim, &house_roster, rules.as_ref());
         }
     };
-    // F09 seam: GPU-free construction first, then the presentation manifest
-    // is derived from the constructed simulation — never fed back into it.
-    let constructed = crate::app::loading::init_helpers::construct_app_scenario(
+    crate::app::loading::init_helpers::populate_staged_app_scenario(
+        &mut staged_simulation,
         &map_data,
         &resolved_terrain,
-        &asset_manager,
         &map_data.header.theater,
         rules.as_ref(),
         art.as_ref(),
@@ -2136,12 +2152,19 @@ pub(crate) fn load_map_from_initial(
         Some(&overlay_grid),
         bridge_destroyability_mode,
         &scenario_descriptor,
-        bootstrap_rng,
         generated_techno_inits.as_ref(),
         initialize_houses_before_objects,
     )?;
+    crate::app::loading::init_helpers::bind_staged_app_scenario_metadata(
+        &mut staged_simulation,
+        &asset_manager,
+        rules.as_ref(),
+        art.as_ref(),
+    );
+    // F09 seam: presentation derives from the one staged Simulation and never
+    // feeds state back into it.
     let manifest = crate::app::loading::init_helpers::build_presentation_manifest(
-        &constructed,
+        &staged_simulation,
         &asset_manager,
         gpu,
         batch,
@@ -2165,7 +2188,7 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(74);
     progress.milestone(76);
     progress.milestone(78);
-    let mut simulation = Some(constructed);
+    let mut simulation = Some(staged_simulation);
     // Pre-intern all rule type IDs so that build_option_for_owner can resolve
     // InternedIds for types that haven't been spawned yet (e.g. GAPOWR).
     // Without this, sidebar cameo lookups fail because unspawned types get

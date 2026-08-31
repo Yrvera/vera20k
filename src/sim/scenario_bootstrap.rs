@@ -2153,31 +2153,7 @@ impl ScenarioBootstrapRng {
         crate::sim::world::GeneratedTechnoInitTable,
         crate::sim::world::GeneratedTechnoInitError,
     > {
-        let mut emitted = Vec::new();
-        for (expected_ordinal, event) in trace.events.iter().enumerate() {
-            if event.ordinal != expected_ordinal {
-                return Err(
-                    crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
-                        expected: expected_ordinal,
-                        found: event.ordinal,
-                    },
-                );
-            }
-            let techno_ctor_random_word = (self.scenario.next_u32() & 0xFFFF) as u16;
-            if let crate::map::construction_trace::RmgConstructionOutcome::Emitted {
-                entity_index,
-                cell,
-            } = &event.outcome
-            {
-                emitted.push(crate::sim::game_entity::GeneratedTechnoInit {
-                    entity_index: *entity_index,
-                    techno_type: event.techno_type.clone(),
-                    cell: *cell,
-                    techno_ctor_random_word,
-                });
-            }
-        }
-        crate::sim::world::GeneratedTechnoInitTable::try_new(emitted)
+        replay_generated_construction_trace_with_rng(&mut self.scenario, trace)
     }
 
     #[cfg(test)]
@@ -2207,7 +2183,66 @@ impl ScenarioBootstrapRng {
     }
 }
 
+fn replay_generated_construction_trace_with_rng(
+    scenario: &mut SimRng,
+    trace: &crate::map::construction_trace::RmgConstructionTrace,
+) -> Result<
+    crate::sim::world::GeneratedTechnoInitTable,
+    crate::sim::world::GeneratedTechnoInitError,
+> {
+    let mut emitted = Vec::new();
+    for (expected_ordinal, event) in trace.events.iter().enumerate() {
+        if event.ordinal != expected_ordinal {
+            return Err(
+                crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
+                    expected: expected_ordinal,
+                    found: event.ordinal,
+                },
+            );
+        }
+        let techno_ctor_random_word = (scenario.next_u32() & 0xFFFF) as u16;
+        if let crate::map::construction_trace::RmgConstructionOutcome::Emitted {
+            entity_index,
+            cell,
+        } = &event.outcome
+        {
+            emitted.push(crate::sim::game_entity::GeneratedTechnoInit {
+                entity_index: *entity_index,
+                techno_type: event.techno_type.clone(),
+                cell: *cell,
+                techno_ctor_random_word,
+            });
+        }
+    }
+    crate::sim::world::GeneratedTechnoInitTable::try_new(emitted)
+}
+
 impl Simulation {
+    /// Borrow the two load-time streams from the already-staged gameplay owner.
+    /// No second bootstrap owner can exist after `into_simulation` consumes it.
+    pub(crate) fn terrain_load_draws(&mut self) -> (ScenarioFillRng<'_>, VariantMainRng<'_>) {
+        (
+            ScenarioFillRng {
+                rng: &mut self.scenario_rng,
+            },
+            VariantMainRng {
+                rng: &mut self.main_rng,
+            },
+        )
+    }
+
+    /// Replay accepted launch-generation constructor effects on the staged
+    /// Scenario stream after Fill, before authored object-section projection.
+    pub(crate) fn replay_staged_generated_construction_trace(
+        &mut self,
+        trace: &crate::map::construction_trace::RmgConstructionTrace,
+    ) -> Result<
+        crate::sim::world::GeneratedTechnoInitTable,
+        crate::sim::world::GeneratedTechnoInitError,
+    > {
+        replay_generated_construction_trace_with_rng(&mut self.scenario_rng, trace)
+    }
+
     #[cfg(test)]
     pub(crate) fn gather_native_start_positions(
         &mut self,
@@ -3386,6 +3421,51 @@ mod tests {
 
         assert_eq!(actual.scenario, after.logical_state());
         assert_eq!(actual.main, before.logical_state());
+    }
+
+    #[test]
+    fn staged_simulation_owns_fill_and_generated_replay_without_reconstruction() {
+        use crate::map::construction_trace::{RmgConstructionPhase, RmgConstructionTrace};
+
+        let seed = 0x51C0_1005;
+        let mut reference = SimRng::new(u64::from(seed));
+        let owner = ScenarioBootstrapRng::new(seed);
+        let mut sim = owner.into_simulation(&descriptor(seed));
+        sim.session.binary_frame = 77;
+        let retained_handle = sim.allocate_stable_id();
+
+        {
+            let (mut scenario_fill, mut variant_main) = sim.terrain_load_draws();
+            assert_eq!(
+                scenario_fill.next_range_u32_inclusive(5, 17),
+                reference.next_range_u32_inclusive(5, 17),
+            );
+            let _ = variant_main.next_u32();
+        }
+
+        let mut trace = RmgConstructionTrace::default();
+        trace.push_emitted(
+            RmgConstructionPhase::BridgeRepairHut,
+            "CABHUT".to_string(),
+            0,
+            (10, 11),
+        );
+        let expected_word = (reference.next_u32() & 0xFFFF) as u16;
+        let bindings = sim
+            .replay_staged_generated_construction_trace(&trace)
+            .expect("staged owner replays the accepted constructor event");
+
+        assert_eq!(
+            bindings
+                .entry(0)
+                .expect("emitted constructor binding")
+                .techno_ctor_random_word,
+            expected_word,
+        );
+        assert_eq!(sim.rng_state().scenario, reference.logical_state());
+        assert_eq!(sim.session.binary_frame, 77);
+        assert_eq!(retained_handle, 1);
+        assert_eq!(sim.allocate_stable_id(), 2);
     }
 
     #[test]

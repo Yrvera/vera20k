@@ -521,12 +521,55 @@ where
     F: FnOnce(&mut Simulation),
 {
     let mut sim: Simulation = bootstrap_rng.into_simulation(descriptor);
+    populate_staged_scenario_with_generated_inits(
+        &mut sim,
+        map_data,
+        resolved_terrain,
+        theater_name,
+        rules,
+        art,
+        height_map,
+        overlay_registry,
+        overlay_grid,
+        bridge_destroyability_mode,
+        descriptor,
+        generated_inits,
+        initialize_houses_before_objects,
+    )?;
+    Ok(sim)
+}
+
+/// Populate the one Simulation that already owns the post-prefix load cursors.
+///
+/// Fresh-load orchestration stages this owner before terrain Fill.  Keeping the
+/// object-section funnel separate from construction prevents a later shadow
+/// Simulation from replacing the registries and identities that OverlayPack
+/// finalization has already touched.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn populate_staged_scenario_with_generated_inits<F>(
+    sim: &mut Simulation,
+    map_data: &crate::map::map_file::MapFile,
+    resolved_terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    theater_name: &str,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    art: Option<&crate::rules::art_data::ArtRegistry>,
+    height_map: &std::collections::BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    bridge_destroyability_mode: crate::map::basic::BridgeDestroyabilityMode,
+    descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    generated_inits: Option<&crate::sim::world::GeneratedTechnoInitTable>,
+    initialize_houses_before_objects: F,
+) -> Result<(), crate::sim::world::GeneratedTechnoInitError>
+where
+    F: FnOnce(&mut Simulation),
+{
     // Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
     // `ScenarioClass__Create_Houses @ 0x00687F10` before
     // `TerrainClass__Read_Map_Section @ 0x0071CA70` and every Techno section.
     // Keep the app-specific roster construction outside sim while making that
     // order an explicit prerequisite of the shared object-construction funnel.
-    initialize_houses_before_objects(&mut sim);
+    initialize_houses_before_objects(sim);
     // Frame tripwire: every MP start waypoint must sit inside the session
     // bounds (= the fog window, cell-array frame). A start outside means the
     // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the
@@ -624,7 +667,7 @@ where
     // counts are known.
     if let Some(rules) = rules {
         let constructed = crate::sim::terrain_spawn::construct_terrain_objects(
-            &mut sim,
+            sim,
             &map_data.terrain_objects,
             rules,
             theater_name.eq_ignore_ascii_case("SNOW"),
@@ -637,7 +680,7 @@ where
     }
     if !map_data.entities.is_empty() || generated_inits.is_some() {
         let _count: u32 = project_map_entities(
-            &mut sim,
+            sim,
             &map_data.entities,
             rules,
             height_map,
@@ -655,13 +698,13 @@ where
     if !resolved_terrain.tile_animations().is_empty() {
         let rules = rules.expect("resolved terrain animations require bound art/rules data");
         let spawned =
-            spawn_terrain_tile_animations(&mut sim, rules, resolved_terrain.tile_animations());
+            spawn_terrain_tile_animations(sim, rules, resolved_terrain.tile_animations());
         log::info!(
             "Spawned {} terrain-attached animations after map objects",
             spawned.len()
         );
     }
-    Ok(sim)
+    Ok(())
 }
 
 /// BuildingClass::GetCoords projects the stored north-west anchor to the
