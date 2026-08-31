@@ -65,6 +65,30 @@ pub(crate) enum GeneratedTechnoInitError {
     },
 }
 
+/// Result of the shared UnitClass `DeploysInto` transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnitDeployOutcome {
+    /// Entry, placement, construction, or Unlimbo rejected the transaction.
+    Rejected,
+    /// Placement succeeded, but the Unit must finish turning before AI retries.
+    FacingRetry,
+    /// The replacement Building committed and owns this stable ID.
+    Deployed(u64),
+}
+
+impl UnitDeployOutcome {
+    pub(crate) const fn accepted(self) -> bool {
+        !matches!(self, Self::Rejected)
+    }
+
+    pub(crate) const fn deployed_id(self) -> Option<u64> {
+        match self {
+            Self::Deployed(stable_id) => Some(stable_id),
+            Self::Rejected | Self::FacingRetry => None,
+        }
+    }
+}
+
 impl fmt::Display for GeneratedTechnoInitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1901,9 +1925,24 @@ impl Simulation {
         rules: &RuleSet,
         _height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
+        self.deploy_unit_into_building_with_overlay_context(stable_id, rules, None)
+            .accepted()
+    }
+
+    /// Shared active-retail UnitClass forward conversion. Placement is proved
+    /// before the target BuildingType facing gate; a mismatch requests a
+    /// locomotor turn and leaves every source/manager/RNG fact untouched until
+    /// a later Unit AI visit re-enters this transaction.
+    pub(crate) fn deploy_unit_into_building_with_overlay_context(
+        &mut self,
+        stable_id: u64,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> UnitDeployOutcome {
         // Read deploy data from EntityStore before mutating.
         let deploy_data = self.substrate.entities.get(stable_id).and_then(|entity| {
             let type_str = self.interner.resolve(entity.type_ref);
+            let source_obj = rules.object_case_insensitive(type_str)?;
             let yard_type = construction_yard_type_for_mcv(type_str, rules)?;
             let yard_obj = rules.object(&yard_type)?;
             let (spawn_rx, spawn_ry) = deploy_origin_from_unit_cell(
@@ -1924,6 +1963,7 @@ impl Simulation {
                 yard_obj.foundation.clone(),
                 entity.facing,
                 yard_obj.construction_yard,
+                source_obj.enslaves.is_some(),
             ))
         });
         let Some((
@@ -1939,9 +1979,10 @@ impl Simulation {
             foundation,
             source_facing,
             is_construction_yard,
+            source_has_slave_manager,
         )) = deploy_data
         else {
-            return false;
+            return self.reject_forward_deploy(stable_id);
         };
 
         // Check that all footprint cells are free before deploying.
@@ -1977,7 +2018,7 @@ impl Simulation {
                     log::info!("MCV deploy blocked: structure at ({},{})", cell_x, cell_y,);
                     self.sound_events
                         .push(SimSoundEvent::CannotDeployHere { owner: owner_id });
-                    return false;
+                    return self.reject_forward_deploy(stable_id);
                 }
                 // Check terrain build-blocked.
                 if self
@@ -1987,18 +2028,28 @@ impl Simulation {
                     log::info!("MCV deploy blocked: terrain at ({},{})", cell_x, cell_y,);
                     self.sound_events
                         .push(SimSoundEvent::CannotDeployHere { owner: owner_id });
-                    return false;
+                    return self.reject_forward_deploy(stable_id);
                 }
             }
         }
 
+        // `UnitClass::Deploy @ 0x007393C0` facing arm writes the desired
+        // locomotor heading, sets UnitClass +0x68C at `0x00739650`, and returns
+        // without constructing the Building. Mission_Deploy_Building state 1/2
+        // owns later Deploy calls, including footprint revalidation mid-turn.
         if source_facing != deploy_facing {
             if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                 entity.facing_target = Some(deploy_facing);
-                entity.facing = deploy_facing;
+                entity.forward_deploy_retry = true;
                 entity.movement_target = None;
             }
-            return true;
+            return UnitDeployOutcome::FacingRetry;
+        }
+
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.forward_deploy_retry = false;
+            entity.facing_target = None;
+            entity.body_facing = None;
         }
 
         // Native successful deploy transaction:
@@ -2025,11 +2076,24 @@ impl Simulation {
         });
         if let Some((country_name, side_index, difficulty, _, true)) = &recalc_context {
             let Some(country_name) = country_name.as_deref() else {
-                return false;
+                return self.reject_forward_deploy(stable_id);
             };
             if preflight_recalc(rules, country_name, *side_index, *difficulty).is_err() {
-                return false;
+                return self.reject_forward_deploy(stable_id);
             }
+        }
+
+        if source_has_slave_manager {
+            return crate::sim::slave_miner::commit_aligned_slave_miner_deploy_with_overlay_context(
+                self,
+                stable_id,
+                &yard_type,
+                rx,
+                ry,
+                rules,
+                overlay_registry,
+            )
+            .map_or(UnitDeployOutcome::Rejected, UnitDeployOutcome::Deployed);
         }
 
         // Native reaches the bounded post-deploy transaction only after the
@@ -2037,9 +2101,16 @@ impl Simulation {
         // until target Unlimbo commits so a late placement rejection is atomic.
         let owner_str = self.interner.resolve(owner_id).to_string();
         let Some(new_sid) = self.spawn_deploy_target_building_at_height_with_overlay_context(
-            &yard_type, &owner_str, rx, ry, 0, z, rules, None,
+            &yard_type,
+            &owner_str,
+            rx,
+            ry,
+            0,
+            z,
+            rules,
+            overlay_registry,
         ) else {
-            return false;
+            return self.reject_forward_deploy(stable_id);
         };
 
         if let Some(target) = self.substrate.entities.get_mut(new_sid) {
@@ -2102,7 +2173,98 @@ impl Simulation {
             house.enable_ai_deploy_latches();
         }
 
-        true
+        UnitDeployOutcome::Deployed(new_sid)
+    }
+
+    fn reject_forward_deploy(&mut self, stable_id: u64) -> UnitDeployOutcome {
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.forward_deploy_retry = false;
+        }
+        UnitDeployOutcome::Rejected
+    }
+
+    /// Re-enter the shared UnitClass deploy transaction from each owning Unit
+    /// AI visit while translational locomotion is stopped. Native state 1 calls
+    /// Drive `ILocomotion::Is_Moving @ 0x004AFB80`, which ignores a pure facing
+    /// turn, before calling `UnitClass::Deploy @ 0x007393C0`; Deploy's later
+    /// `Is_Moving_Now @ 0x004AFC20` does observe FacingClass rotation. Returns
+    /// true only when this visit consumed the source.
+    pub(crate) fn retry_forward_deploy_on_unit_ai(
+        &mut self,
+        stable_id: u64,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> bool {
+        let Some((is_unit, is_translating, had_retry)) =
+            self.substrate.entities.get(stable_id).map(|entity| {
+                (
+                    entity.category == EntityCategory::Unit,
+                    entity.movement_target.is_some()
+                        || crate::sim::movement::drive_locomotor_is_moving(entity),
+                    entity.forward_deploy_retry,
+                )
+            })
+        else {
+            return false;
+        };
+        if !had_retry {
+            return false;
+        }
+        if !is_unit {
+            self.reject_forward_deploy(stable_id);
+            return false;
+        }
+        if is_translating {
+            return false;
+        }
+
+        matches!(
+            self.deploy_unit_into_building_with_overlay_context(
+                stable_id,
+                rules,
+                overlay_registry,
+            ),
+            UnitDeployOutcome::Deployed(_)
+        )
+    }
+
+    /// Drive a stationary Unit body turn at the ordinary post-Unit-AI,
+    /// pre-position-advance point. Forward-deploy rejection clears its retry
+    /// latch but native leaves the requested FacingClass rotation running, so
+    /// facing ownership is intentionally independent of that latch.
+    pub(crate) fn tick_stationary_body_turn_one(&mut self, stable_id: u64) {
+        let turn_input = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Unit
+                && (entity.facing_target.is_some() || entity.body_facing.is_some()))
+            .then(|| {
+                (
+                    entity.movement_target.is_some()
+                        || crate::sim::movement::drive_locomotor_is_moving(entity),
+                    entity.locomotor.as_ref().map(|locomotor| locomotor.rot),
+                )
+            })
+        });
+        let Some((is_translating, rot)) = turn_input else {
+            return;
+        };
+        if is_translating {
+            return;
+        }
+        let Some(_rot) = rot else {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.forward_deploy_retry = false;
+                entity.facing_target = None;
+                entity.body_facing = None;
+            }
+            return;
+        };
+
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            let _ = crate::sim::movement::tick_stationary_body_facing(
+                entity,
+                self.session.binary_frame,
+            );
+        }
     }
 
     /// Undeploy a structure back into its mobile unit (e.g. ConYard → MCV).

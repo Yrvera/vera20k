@@ -42,7 +42,9 @@ pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
 pub(crate) use logic_vector::LogicVector;
 pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
-pub(crate) use world_spawn::{GeneratedTechnoInitError, GeneratedTechnoInitTable};
+pub(crate) use world_spawn::{
+    GeneratedTechnoInitError, GeneratedTechnoInitTable, UnitDeployOutcome,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -5745,13 +5747,18 @@ impl Simulation {
         );
         let placed_building_owner =
             self.successful_non_wall_placement_owner(cmd, applied, rules);
+        let deploy_committed = match &cmd.payload {
+            Command::DeployMcv { entity_id } => applied
+                && self
+                    .substrate
+                    .entities
+                    .get(*entity_id)
+                    .is_none_or(|source| !source.lifecycle.object_alive || source.dying),
+            _ => false,
+        };
         let spawned_entity = placed_building_owner.is_some()
-            || applied
-                && matches!(
-                    cmd.payload,
-                    Command::DeployMcv { .. }
-                        | Command::LaunchSuperWeapon { .. }
-                );
+            || deploy_committed
+            || applied && matches!(cmd.payload, Command::LaunchSuperWeapon { .. });
         let destroyed_structure = applied
             && matches!(cmd.payload, Command::SellBuilding { .. });
         (
@@ -6708,7 +6715,20 @@ impl Simulation {
                 .entities
                 .get(stable_id)
                 .is_some_and(|entity| entity.category == EntityCategory::Structure);
+            let forward_deploy_retry_at_entry = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| entity.forward_deploy_retry);
+            let next_stable_id_before_object_ai = sim.substrate.next_stable_object_id;
             sim.object_ai_visit_one(stable_id, rules, object_ctx);
+            spawned_entities |= forward_deploy_retry_at_entry
+                && sim.substrate.next_stable_object_id != next_stable_id_before_object_ai
+                && sim
+                    .substrate
+                    .entities
+                    .get(stable_id)
+                    .is_none_or(|source| !source.lifecycle.object_alive || source.dying);
             if was_structure
                 && sim
                     .substrate
@@ -6726,6 +6746,8 @@ impl Simulation {
             {
                 return;
             }
+
+            sim.tick_stationary_body_turn_one(stable_id);
 
             let before_movement = sim.movement_sound_probe(stable_id);
             let cell_before_movement = sim

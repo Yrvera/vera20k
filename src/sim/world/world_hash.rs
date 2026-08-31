@@ -412,7 +412,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true,
         )
     }
 
@@ -424,7 +424,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -436,7 +436,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -446,7 +446,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false,
         )
     }
 
@@ -457,7 +457,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false,
         )
     }
 
@@ -468,7 +468,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false,
         )
     }
 
@@ -477,7 +477,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false, false, false, false,
+            true, true, false, false, false, false, false, false,
         )
     }
 
@@ -486,7 +486,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false, false, false, false,
+            true, true, true, false, false, false, false, false,
         )
     }
 
@@ -496,7 +496,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false, false, false,
+            true, true, true, true, false, false, false, false,
         )
     }
 
@@ -505,7 +505,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_building_repair_v114(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, false, false,
+            true, true, true, true, true, false, false, false,
         )
     }
 
@@ -514,7 +514,16 @@ impl Simulation {
     pub(crate) fn state_hash_without_building_down_v115(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true, false,
+            true, true, true, true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v116 forward deploy retry.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_forward_deploy_retry_v116(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, false,
         )
     }
 
@@ -541,6 +550,7 @@ impl Simulation {
         include_house_update_activation_v113: bool,
         include_building_repair_v114: bool,
         include_building_down_v115: bool,
+        include_forward_deploy_retry_v116: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -663,6 +673,7 @@ impl Simulation {
             include_base_plan_v110,
             include_building_repair_v114,
             include_building_down_v115,
+            include_forward_deploy_retry_v116,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -1255,6 +1266,7 @@ impl Simulation {
         include_base_plan_v110: bool,
         include_building_repair_v114: bool,
         include_building_down_v115: bool,
+        include_forward_deploy_retry_v116: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -1326,6 +1338,9 @@ impl Simulation {
             entity.position.sub_y.hash(hasher);
             entity.facing.hash(hasher);
             entity.facing_target.hash(hasher);
+            if include_forward_deploy_retry_v116 && entity.forward_deploy_retry {
+                b"forward-deploy-retry-v1".hash(hasher);
+            }
             // Body-rotation interpolator (present only while turning in place).
             if let Some(ref bf) = entity.body_facing {
                 1u8.hash(hasher);
@@ -2761,6 +2776,26 @@ mod rally_hash_tests {
                 "v114 must exclude BuildingDown variant={variant:?}"
             );
         }
+    }
+
+    #[test]
+    fn forward_deploy_retry_is_v116_hash_authority() {
+        fn fixture(retry: bool) -> Simulation {
+            let mut sim = Simulation::new();
+            let mut entity = GameEntity::test_default(1, "SMIN", "YuriCountry", 10, 10);
+            entity.category = crate::map::entities::EntityCategory::Unit;
+            entity.forward_deploy_retry = retry;
+            sim.substrate.entities.insert(entity);
+            sim
+        }
+
+        let idle = fixture(false);
+        let retry = fixture(true);
+        assert_ne!(idle.state_hash(), retry.state_hash());
+        assert_eq!(
+            idle.state_hash_without_forward_deploy_retry_v116(),
+            retry.state_hash_without_forward_deploy_retry_v116()
+        );
     }
 
     #[test]

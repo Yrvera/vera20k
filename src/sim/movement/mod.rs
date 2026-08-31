@@ -47,9 +47,9 @@ use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 #[cfg(test)]
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
 #[cfg(test)]
 use crate::util::fixed_math::SIM_ZERO;
+use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
 
 // --- Internal submodules ---
 mod drive_locomotion;
@@ -114,6 +114,28 @@ pub(crate) use movement_path::{
 pub(crate) use movement_tick::{
     sync_formation_speeds_after_live_pass, tick_movement_object_with_grids,
 };
+
+/// Advance one stationary UnitClass body turn through the same FacingClass
+/// authority used by ordinary Drive/Ship stop-rotate-go movement.
+///
+/// Forward deploy uses this path even after a failed retry clears its request
+/// latch: native leaves the already-commanded locomotor facing turn running.
+pub(crate) fn tick_stationary_body_facing(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    native_frame: u32,
+) -> bool {
+    let rot = entity
+        .locomotor
+        .as_ref()
+        .map_or(0, |locomotor| locomotor.rot);
+    !movement_step::advance_vehicle_facing(
+        &mut entity.facing,
+        &mut entity.facing_target,
+        &mut entity.body_facing,
+        rot,
+        native_frame,
+    )
+}
 // Legacy batch tick used by focused movement fixtures.
 #[cfg(test)]
 pub(crate) use movement_tick::tick_movement_with_grids;

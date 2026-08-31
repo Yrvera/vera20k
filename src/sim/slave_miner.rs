@@ -30,7 +30,7 @@ use crate::sim::miner::{CargoBale, MinerConfig};
 use crate::sim::miner::{extract_bale, search_local_ore};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_entry_for_owner;
-use crate::sim::world::{PlacementEvidence, Simulation};
+use crate::sim::world::{PlacementEvidence, Simulation, UnitDeployOutcome};
 
 /// Deployed state of a Slave Miner (SMIN vehicle ↔ YAREFN building).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -469,14 +469,24 @@ impl SlaveMinerConfig {
 /// `PowerUp_Cleanup @ 0x006AF580` then destroys that temporary manager and
 /// transfers the SMIN's existing pool, retaining every constructor RNG draw.
 ///
-/// Returns the new YAREFN stable_id, or None if deploy failed.
+/// Returns the new YAREFN stable_id only when conversion commits. `None` means
+/// either rejection or an accepted target-facing turn whose later Unit AI retry
+/// still owns the commit.
 pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
-    deploy_slave_miner_with_overlay_context(sim, stable_id, rules, None)
+    let outcome: UnitDeployOutcome =
+        sim.deploy_unit_into_building_with_overlay_context(stable_id, rules, None);
+    outcome.deployed_id()
 }
 
-pub(crate) fn deploy_slave_miner_with_overlay_context(
+/// Commit the already-placed and already-facing SMIN/YAREFN specialization of
+/// the shared UnitClass forward transaction. The shared owner must prove the
+/// target foundation and `DeployFacing` before entering here.
+pub(crate) fn commit_aligned_slave_miner_deploy_with_overlay_context(
     sim: &mut Simulation,
     stable_id: u64,
+    target_type: &str,
+    rx: u16,
+    ry: u16,
     rules: &RuleSet,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> Option<u64> {
@@ -485,45 +495,32 @@ pub(crate) fn deploy_slave_miner_with_overlay_context(
         let entity = sim.substrate.entities.get(stable_id)?;
         let type_str = sim.interner.resolve(entity.type_ref);
         let obj = rules.object_case_insensitive(type_str)?;
-        let target_type: &str = obj.deploys_into.as_deref()?;
-        // Verify target exists in rules.
+        let authored_target = obj.deploys_into.as_deref()?;
+        if !authored_target.eq_ignore_ascii_case(target_type) {
+            return None;
+        }
         rules.object(target_type)?;
         let enslaves: String = obj.enslaves.clone()?;
         let slaves_number: i32 = obj.slaves_number.max(0);
         let owner_str = sim.interner.resolve(entity.owner).to_string();
         Some((
             owner_str,
-            entity.position.rx,
-            entity.position.ry,
             entity.position.z,
-            entity.facing,
             entity.selected,
             entity.attached_trigger_tag,
             entity.health,
-            target_type.to_string(),
             enslaves,
             slaves_number,
         ))
     }?;
 
-    let (
-        owner,
-        rx,
-        ry,
-        z,
-        _facing,
-        was_selected,
-        attached_trigger_tag,
-        source_health,
-        target_type,
-        slave_type,
-        slaves_number,
-    ) = deploy_data;
+    let (owner, z, was_selected, attached_trigger_tag, source_health, slave_type, slaves_number) =
+        deploy_data;
 
     // Construct and reveal the YAREFN before consuming any source state. A
     // rejected target Unlimbo leaves the SMIN, tag, and slave manager intact.
     let new_sid: u64 = sim.spawn_deploy_target_building_at_height_with_overlay_context(
-        &target_type,
+        target_type,
         &owner,
         rx,
         ry,
@@ -1088,6 +1085,9 @@ fn manhattan_distance(ax: u16, ay: u16, bx: u16, by: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::sim::command::Command;
     use crate::sim::house_state::HouseState;
     use crate::sim::miner::ResourceType;
     use crate::sim::mission::{MissionId, MissionType};
@@ -1280,6 +1280,122 @@ mod tests {
             "successful transfer clears the dying source reference"
         );
         assert_eq!(sim.interner.resolve(tag), "TAG_SMIN_DEPLOY");
+    }
+
+    #[test]
+    fn misfaced_stock_smin_turns_then_ai_retry_transplants_manager_once() {
+        let rules = make_test_rules();
+        let seed = 0x51A7_E006;
+        let mut sim = Simulation::with_seed(seed);
+        let yuri = sim.interner.intern("YuriCountry");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.session.house_order.push(yuri);
+        let height_map = BTreeMap::new();
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0, 0x80, &rules)
+            .expect("spawn misfaced SMIN");
+        let original_slave_ids = sim
+            .production
+            .slave_bindings
+            .get(&smin)
+            .cloned()
+            .expect("SMIN constructor manager");
+        assert_eq!(original_slave_ids.len(), 5);
+        let tag = sim.interner.intern("TAG_SMIN_FACING_RETRY");
+        sim.substrate
+            .entities
+            .get_mut(smin)
+            .expect("live SMIN")
+            .attached_trigger_tag = Some(tag);
+        let rng_before_command = sim.scenario_rng.clone();
+
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        let source = sim.substrate.entities.get(smin).expect("turning SMIN");
+        assert_eq!(source.facing, 0x80);
+        assert_eq!(source.facing_target, Some(0));
+        assert!(source.forward_deploy_retry);
+        assert_eq!(source.attached_trigger_tag, Some(tag));
+        assert_eq!(
+            sim.production.slave_bindings.get(&smin),
+            Some(&original_slave_ids)
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            rng_before_command.logical_state(),
+            "facing retry must not construct a target or draw RNG"
+        );
+        assert!(
+            !sim.substrate
+                .entities
+                .values()
+                .any(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+        );
+
+        let mut committed = None;
+        for _ in 0..40 {
+            let tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+            let yarefn = sim
+                .substrate
+                .entities
+                .values()
+                .find(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+                .map(|entity| entity.stable_id);
+            if let Some(yarefn) = yarefn {
+                committed = Some((yarefn, tick));
+                break;
+            }
+        }
+        let (yarefn, commit_tick) = committed.expect("matching Unit AI retry commits YAREFN");
+        assert!(commit_tick.spawned_entities);
+        assert!(sim.substrate.entities.get(smin).is_none());
+        assert_eq!(
+            sim.substrate
+                .entities
+                .values()
+                .filter(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+                .count(),
+            1
+        );
+        let target = sim
+            .substrate
+            .entities
+            .get(yarefn)
+            .expect("committed YAREFN");
+        assert_eq!(target.attached_trigger_tag, Some(tag));
+        assert!(target.building_up.is_some());
+        assert_eq!(
+            sim.production.slave_bindings.get(&yarefn),
+            Some(&original_slave_ids),
+            "fresh constructor pool must be discarded and source identities transplanted"
+        );
+        for slave_id in &original_slave_ids {
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(*slave_id)
+                    .expect("transplanted slave remains live")
+                    .slave_harvester
+                    .as_ref()
+                    .expect("slave manager link")
+                    .master_id,
+                yarefn
+            );
+        }
+        let mut expected_rng = rng_before_command;
+        for _ in 0..6 {
+            let _ = expected_rng.next_u32();
+        }
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
     }
 
     #[test]
@@ -1527,7 +1643,7 @@ mod tests {
 [VehicleTypes]\n1=SMIN\n\
 [BuildingTypes]\n1=YAREFN\n\
 [SLAV]\nStrength=125\nSpeed=3\nSlaved=yes\nStorage=4\nHarvestRate=150\n\
-[SMIN]\nStrength=2000\nSpeed=3\nEnslaves=SLAV\nSlavesNumber=5\nDeploysInto=YAREFN\nResourceGatherer=yes\nResourceDestination=yes\n\
+[SMIN]\nStrength=2000\nSpeed=3\nROT=5\nEnslaves=SLAV\nSlavesNumber=5\nDeploysInto=YAREFN\nResourceGatherer=yes\nResourceDestination=yes\n\
 [YAREFN]\nStrength=2000\nCost=1750\nSoylent=1750\nDeployFacing=0\nEnslaves=SLAV\nSlavesNumber=5\nUndeploysInto=SMIN\nFoundation=2x2\n\
 [General]\nRefundPercent=50%\nSlaveMinerShortScan=8\nSlaveMinerSlaveScan=14\nSlaveMinerLongScan=48\nSlaveMinerScanCorrection=3\nSlaveMinerKickFrameDelay=150\n\
 [AudioVisual]\nSlavesFreeSound=SlaveWorkerLiberated\n\

@@ -731,6 +731,24 @@ fn unit_techno_bracket(
     if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
         return BracketReach::DiedInPre;
     }
+    if let Some(rules) = rules
+        && sim.retry_forward_deploy_on_unit_ai(id, rules, ctx.overlay_registry)
+    {
+        return BracketReach::Dispatched;
+    }
+    // `UnitClass::Mission_Deploy_Building @ 0x0073D630` state 1/2 owns this
+    // period and re-enters `UnitClass::Deploy @ 0x007393C0`; the facing arm's
+    // UnitClass +0x68C request/progress byte keeps unrelated mission work out.
+    // The Rust latch owns the equivalent Unit AI visit while the world loop
+    // advances the locomotor FacingClass independently.
+    if sim
+        .substrate
+        .entities
+        .get(id)
+        .is_some_and(|entity| entity.forward_deploy_retry)
+    {
+        return BracketReach::Dispatched;
+    }
     // The off-mission passive-target clear runs BEFORE the +0xC4 counter.
     clear_passive_target_off_mission(sim, id);
     mission_common_step(sim, id, rules);

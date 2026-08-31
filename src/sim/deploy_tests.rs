@@ -157,6 +157,7 @@ Name=Allied MCV
 Strength=450
 Armor=heavy
 Speed=5
+ROT=5
 DeploysInto=GACNST
 
 [SMIN]
@@ -217,7 +218,7 @@ fn make_recalc_mcv_rules(vector_values: &str) -> RuleSet {
          [GAWEAP]\nOwner=Americans\nAIBuildThis=yes\nTechLevel=1\nStrength=1000\nFoundation=3x2\n\
          [GAAIRC]\nOwner=Americans\nAIBuildThis=no\nStrength=600\nFoundation=2x2\n\
          [GATECH]\nOwner=Americans\nAIBuildThis=no\nStrength=500\nFoundation=2x2\n\
-         [YAREFN]\nOwner=Americans\nStrength=1000\nFoundation=2x2\n"
+         [YAREFN]\nOwner=Americans\nStrength=1000\nFoundation=2x2\nDeployFacing=0\n"
     );
     RuleSet::from_ini(&IniFile::from_str(&text)).expect("Recalc deploy fixture")
 }
@@ -568,6 +569,7 @@ fn deploy_mcv_waits_for_target_building_deploy_facing() {
     let mcv = sim
         .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
         .expect("spawn MCV");
+    let rng_before_command = sim.scenario_rng.logical_state();
 
     let applied = sim.apply_command(
         "Americans",
@@ -582,8 +584,12 @@ fn deploy_mcv_waits_for_target_building_deploy_facing() {
         .entities
         .get(mcv)
         .expect("MCV should remain while turning");
-    assert_eq!(entity.facing, 0x80);
+    assert_eq!(entity.facing, 0x40);
     assert_eq!(entity.facing_target, Some(0x80));
+    assert!(entity.forward_deploy_retry);
+    let retry_ai_counter = entity.mission.ai_counter();
+    let retry_locomotor_phase = entity.locomotor.as_ref().expect("MCV locomotor").phase;
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before_command);
     assert!(
         sim.interner.get("GACNST").map_or(true, |yard| !sim
             .substrate
@@ -593,6 +599,284 @@ fn deploy_mcv_waits_for_target_building_deploy_facing() {
         "facing gate must run before ConYard creation"
     );
     assert_eq!(sim.houses[&owner].ai_activation, SPLIT_AI_ACTIVATION);
+
+    // Frame zero installs the FacingClass turn; frame one must be visibly
+    // intermediate rather than the old one-command snap.
+    sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+    sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+    let intermediate = sim
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("MCV remains during gradual turn");
+    assert!(intermediate.facing > 0x40 && intermediate.facing < 0x80);
+    assert!(intermediate.forward_deploy_retry);
+    assert!(intermediate.movement_target.is_none());
+    assert_eq!(
+        intermediate
+            .locomotor
+            .as_ref()
+            .expect("turning MCV locomotor")
+            .phase,
+        retry_locomotor_phase,
+        "a stationary deploy turn must not enter a translation phase"
+    );
+    assert_eq!(
+        intermediate.mission.ai_counter(),
+        retry_ai_counter,
+        "Mission_Deploy_Building ownership suppresses unrelated mission dispatch"
+    );
+
+    for _ in 0..20 {
+        if sim
+            .interner
+            .get("GACNST")
+            .is_some_and(|yard| sim.substrate.entities.values().any(|e| e.type_ref == yard))
+        {
+            break;
+        }
+        sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+    }
+    let yard = sim.interner.get("GACNST").expect("interned GACNST");
+    assert_eq!(
+        sim.substrate
+            .entities
+            .values()
+            .filter(|entity| entity.type_ref == yard)
+            .count(),
+        1,
+        "the first matching Unit AI retry commits exactly one target"
+    );
+    assert!(sim.substrate.entities.get(mcv).is_none());
+}
+
+#[test]
+fn forward_deploy_retry_snapshot_resumes_identical_mcv_commit() {
+    use crate::sim::snapshot::GameSnapshot;
+
+    let rules = make_mcv_rules();
+    let height_map = BTreeMap::new();
+    let mut live = Simulation::new();
+    add_house(&mut live, "Americans", false);
+    let mcv = live
+        .spawn_object("AMCV", "Americans", 20, 22, 0x40, &rules, &height_map)
+        .expect("spawn MCV");
+    assert!(live.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+
+    live.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+    live.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+    let turning = live
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("live MCV remains mid-turn");
+    assert!(turning.forward_deploy_retry);
+    assert!(turning.body_facing.is_some());
+    assert_eq!(turning.locomotor.as_ref().map(|loco| loco.rot), Some(5));
+    assert!(turning.facing > 0x40 && turning.facing < 0x80);
+    assert_eq!(turning.facing_target, Some(0x80));
+    assert!(turning.movement_target.is_none());
+
+    // Full native-shaped load resets Scenario RNG to Seed(0). Normalize the
+    // live branch at the save boundary so continued execution compares only
+    // the persisted retry transaction.
+    let yard = live.interner.intern("GACNST");
+    live.scenario_rng = crate::sim::rng::SimRng::new(0);
+    let saved_hash = live.state_hash();
+    let bytes = GameSnapshot::save(&live, 0, 0, "forward-deploy-mid-turn", 0);
+    let mut restored = GameSnapshot::load(&bytes)
+        .expect("current forward-deploy snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("forward-deploy snapshot restores structurally");
+    assert_eq!(restored.state_hash(), saved_hash);
+
+    let mut commit_step = None;
+    for step in 1..=32 {
+        let live_tick = live.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+        let restored_tick = restored.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+        assert_eq!(restored_tick.spawned_entities, live_tick.spawned_entities);
+        assert_eq!(restored.state_hash(), live.state_hash());
+        assert_eq!(
+            restored.scenario_rng.logical_state(),
+            live.scenario_rng.logical_state()
+        );
+
+        let live_yards = live
+            .substrate
+            .entities
+            .values()
+            .filter(|entity| entity.type_ref == yard)
+            .count();
+        let restored_yards = restored
+            .substrate
+            .entities
+            .values()
+            .filter(|entity| entity.type_ref == yard)
+            .count();
+        assert_eq!(restored_yards, live_yards);
+        if live_yards == 1 {
+            assert!(live_tick.spawned_entities);
+            commit_step = Some(step);
+            break;
+        }
+    }
+
+    assert!(
+        commit_step.is_some(),
+        "both branches must commit after load"
+    );
+    assert!(live.substrate.entities.get(mcv).is_none());
+    assert!(restored.substrate.entities.get(mcv).is_none());
+    assert_eq!(
+        live.substrate
+            .entities
+            .values()
+            .filter(|entity| entity.type_ref == yard)
+            .count(),
+        1
+    );
+    assert_eq!(live.state_hash(), restored.state_hash());
+}
+
+#[test]
+fn zero_rot_misfaced_command_reports_spawn_only_on_ai_commit() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[InfantryTypes]
+[VehicleTypes]
+0=AMCV
+[AircraftTypes]
+[BuildingTypes]
+0=GACNST
+[AMCV]
+Strength=450
+Speed=5
+ROT=0
+DeploysInto=GACNST
+[GACNST]
+Strength=1000
+Foundation=4x3
+ConstructionYard=yes
+",
+    ))
+    .expect("zero-ROT deploy rules");
+    let height_map = BTreeMap::new();
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    let owner = sim.interner.get("Americans").expect("owner interned");
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 0x40, &rules, &height_map)
+        .expect("spawn zero-ROT MCV");
+    let command = CommandEnvelope::new(
+        owner,
+        sim.session.tick + 1,
+        Command::DeployMcv { entity_id: mcv },
+    );
+
+    let facing_tick = sim.advance_tick(&[command], Some(&rules), &height_map, None, None, 16);
+    assert!(!facing_tick.spawned_entities);
+    let source = sim
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("zero-ROT source survives its command frame");
+    assert_eq!(source.facing, 0x80);
+    assert_eq!(source.facing_target, None);
+    assert!(source.forward_deploy_retry);
+
+    let commit_tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+    assert!(commit_tick.spawned_entities);
+    assert!(sim.substrate.entities.get(mcv).is_none());
+    let yard = sim.interner.get("GACNST").expect("interned GACNST");
+    assert_eq!(
+        sim.substrate
+            .entities
+            .values()
+            .filter(|entity| entity.type_ref == yard)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn forward_deploy_retry_rechecks_blocker_during_turn_and_cancels() {
+    let rules = make_mcv_rules();
+    let height_map = BTreeMap::new();
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 0x40, &rules, &height_map)
+        .expect("spawn MCV");
+    let tag = sim.interner.intern("TAG_DEPLOY_RETRY_BLOCKED");
+    sim.substrate
+        .entities
+        .get_mut(mcv)
+        .expect("live MCV")
+        .attached_trigger_tag = Some(tag);
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+    let blocker = sim
+        .spawn_object("GAPOWR", "Soviets", 21, 22, 0, &rules, &height_map)
+        .expect("insert transient footprint blocker");
+    let sound_count_before_turn = sim.sound_events.len();
+
+    let rejected_tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+    assert!(!rejected_tick.spawned_entities);
+    let source = sim
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("blocked retry retains source");
+    assert!(!source.forward_deploy_retry);
+    assert_eq!(source.facing_target, Some(0x80));
+    assert!(source.body_facing.is_some());
+    assert_eq!(source.attached_trigger_tag, Some(tag));
+    assert_eq!(
+        sim.sound_events.len(),
+        sound_count_before_turn + 1,
+        "state 1 rechecks the footprint while pure facing rotation continues"
+    );
+    assert!(sim.interner.get("GACNST").is_none_or(|yard| {
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| entity.type_ref != yard)
+    }));
+
+    sim.uninit_with_rules(blocker, &rules);
+    sim.flush_pending_delete();
+    for _ in 0..32 {
+        let tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+        assert!(!tick.spawned_entities);
+    }
+    let source = sim
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("cleared retry never consumes the source");
+    assert_eq!(source.facing, 0x80);
+    assert_eq!(source.facing_target, None);
+    assert!(source.body_facing.is_none());
+    assert_eq!(source.attached_trigger_tag, Some(tag));
+    assert!(sim.interner.get("GACNST").is_none_or(|yard| {
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| entity.type_ref != yard)
+    }));
 }
 
 #[test]
@@ -637,8 +921,9 @@ DeployFacing=2
         .entities
         .get(mcv)
         .expect("MCV should remain while turning");
-    assert_eq!(entity.facing, 0x40);
+    assert_eq!(entity.facing, 0x80);
     assert_eq!(entity.facing_target, Some(0x40));
+    assert!(entity.forward_deploy_retry);
 }
 
 #[test]
@@ -818,7 +1103,7 @@ fn base_plan_recalc_deploy_skips_human_campaign_and_non_conyard_targets() {
     sim.session.game_mode_nonzero = true;
     sim.scenario_rng = crate::sim::rng::SimRng::new(0x99AA_BBCC);
     let miner = sim
-        .spawn_object("SMIN", "Americans", 20, 22, 128, &rules, &height_map)
+        .spawn_object("SMIN", "Americans", 20, 22, 0, &rules, &height_map)
         .expect("spawn deployable miner");
     let mut expected_rng = sim.scenario_rng.clone();
     let _replacement_constructor_word = expected_rng.next_u32();
@@ -1002,9 +1287,10 @@ fn base_plan_recalc_deploy_late_yard_unlimbo_failure_preserves_source_and_plan()
     assert!(!source.dying);
     assert!(!source.lifecycle.in_limbo);
     assert!(
-        sim.substrate.entities.values().all(|entity| {
-            sim.interner.resolve(entity.type_ref) != "GACNST" || entity.dying
-        }),
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| { sim.interner.resolve(entity.type_ref) != "GACNST" || entity.dying }),
         "the rejected yard constructor leaves no live target"
     );
     let house = &sim.houses[&owner];

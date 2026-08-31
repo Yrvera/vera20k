@@ -340,7 +340,9 @@ use crate::sim::world::Simulation;
 // Bumped 114 -> 115: BuildingDown was already serialized, but its Option
 // discriminant and complete deferred-spawn payload now join the lockstep hash.
 // Older saves do not certify the same future-affecting hash authority.
-const SNAPSHOT_VERSION: u32 = 115;
+// Bumped 115 -> 116: persist UnitClass's pending forward DeploysInto-facing
+// retry, which controls later AI conversion and therefore future topology/RNG.
+const SNAPSHOT_VERSION: u32 = 116;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2776,10 +2778,11 @@ mod tests {
     /// 114 adds Building click-repair state, its presentation generation, the
     /// manager/tag AI-sale inputs, the distinct per-house scenario IQ, and the
     /// narrow deferred reverse-failure SlaveManager finalizer reason; 114 ->
-    /// 115 makes the already-serialized BuildingDown state hash-authoritative.
+    /// 115 makes the already-serialized BuildingDown state hash-authoritative;
+    /// 115 -> 116 adds UnitClass's pending forward DeploysInto-facing retry.
     #[test]
-    fn phase8_building_down_hash_snapshot_version_is_115() {
-        assert_eq!(super::SNAPSHOT_VERSION, 115);
+    fn phase8_forward_deploy_retry_snapshot_version_is_116() {
+        assert_eq!(super::SNAPSHOT_VERSION, 116);
     }
 
     #[test]
@@ -3850,6 +3853,44 @@ mod tests {
         assert_eq!(building_down.spawn_ry, 8);
         assert_eq!(building_down.spawn_z, 2);
         assert!(building_down.was_selected);
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn forward_deploy_retry_roundtrips_with_matching_hash() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::with_seed(0);
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "SMIN", "YuriCountry", 10, 10);
+        entity.owner = sim.intern("YuriCountry");
+        entity.type_ref = sim.intern("SMIN");
+        entity.category = EntityCategory::Unit;
+        entity.facing = 0x80;
+        entity.facing_target = Some(0);
+        entity.forward_deploy_retry = true;
+        sim.substrate.entities.insert(entity);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "forward-deploy-retry.map", 0);
+        let header = GameSnapshot::read_header(&bytes).expect("current deploy-retry header");
+        assert_eq!(header.version, SNAPSHOT_VERSION);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("current deploy-retry snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("deploy-retry snapshot restores structurally");
+        let restored_entity = restored
+            .substrate
+            .entities
+            .get(entity_id)
+            .expect("restored SMIN");
+
+        assert!(restored_entity.forward_deploy_retry);
+        assert_eq!(restored_entity.facing, 0x80);
+        assert_eq!(restored_entity.facing_target, Some(0));
         assert_eq!(restored.state_hash(), expected_hash);
     }
 

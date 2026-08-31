@@ -351,6 +351,12 @@ pub struct GameEntity {
     /// cleared to `None` whenever no in-place rotation is in progress.
     #[serde(default)]
     pub body_facing: Option<crate::sim::movement::FacingClass>,
+    /// Rust's pending forward `DeploysInto` request/progress latch. Native
+    /// `UnitClass::Deploy @ 0x007393C0` sets UnitClass `+0x68C` on the facing
+    /// mismatch arm (`0x00739650`); `Mission_Deploy_Building @ 0x0073D630`
+    /// state 1/2 then owns later Deploy calls until commit or rejection.
+    #[serde(default)]
+    pub forward_deploy_retry: bool,
     /// Persistent FootClass body-animation counter (`FootClass+0x538`).
     /// Unit SHP drawing takes the walk-frame remainder from this counter; it
     /// advances on absolute binary-frame cadence and never resets on a visual
@@ -1113,6 +1119,7 @@ impl GameEntity {
             facing,
             facing_target: None,
             body_facing: None,
+            forward_deploy_retry: false,
             body_frame_counter: 0,
             owner,
             health,

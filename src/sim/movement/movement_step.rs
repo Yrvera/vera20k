@@ -399,7 +399,7 @@ pub(super) enum RotationResult {
     ReadyToMove,
 }
 
-/// Handle vehicle in-place rotation before movement begins.
+/// Advance the facing-only part of vehicle in-place rotation.
 ///
 /// Vehicles rotate toward `facing_target` before advancing. When `ROT > 0` the
 /// hull turns through a native-frame `FacingClass` at the unit's rules ROT —
@@ -414,6 +414,44 @@ pub(super) enum RotationResult {
 /// in progress — it is cleared as soon as there is no active rotation.
 ///
 /// Takes individual fields to avoid borrow conflicts with `entity.movement_target`.
+pub(super) fn advance_vehicle_facing(
+    facing: &mut u8,
+    facing_target: &mut Option<u8>,
+    body_facing: &mut Option<super::facing_class::FacingClass>,
+    rot: i32,
+    native_frame: u32,
+) -> bool {
+    let Some(target_facing) = *facing_target else {
+        body_facing.take();
+        return false;
+    };
+    if rot <= 0 {
+        *facing = target_facing;
+        *facing_target = None;
+        *body_facing = None;
+        return false;
+    }
+
+    let rot_byte = rot.min(0x7F) as u8;
+    let bf = body_facing.get_or_insert_with(|| {
+        super::facing_class::FacingClass::new((*facing as u16) << 8, rot_byte)
+    });
+    bf.set((target_facing as u16) << 8, native_frame);
+    *facing = (bf.current(native_frame) >> 8) as u8;
+
+    if bf.is_rotating(native_frame) {
+        true
+    } else {
+        *facing = target_facing;
+        *facing_target = None;
+        *body_facing = None;
+        false
+    }
+}
+
+/// Ordinary locomotion wrapper around [`advance_vehicle_facing`]. A live path
+/// owns the translation-phase transition and its debug event while the body is
+/// still rotating; stationary deploy facing calls the factored helper directly.
 pub(super) fn handle_vehicle_rotation(
     facing: &mut u8,
     facing_target: &mut Option<u8>,
@@ -424,55 +462,29 @@ pub(super) fn handle_vehicle_rotation(
     native_frame: u32,
     sim_tick: u64,
 ) -> RotationResult {
-    let Some(target_facing) = *facing_target else {
-        // No in-place rotation in progress — drop any stale interpolator so the
-        // next turn starts fresh from the then-current heading.
-        *body_facing = None;
-        return RotationResult::ReadyToMove;
-    };
-    if rot <= 0 {
-        // ROT=0 — instant turn, no gradual rotation.
-        *facing = target_facing;
-        *facing_target = None;
-        *body_facing = None;
+    if !advance_vehicle_facing(facing, facing_target, body_facing, rot, native_frame) {
         return RotationResult::ReadyToMove;
     }
 
-    // Rules ROT drives the hull FacingClass. `set` is a no-op once already aimed
-    // at the target, so calling it each tick is safe and yields smooth retargets
-    // (it snapshots the live animated value into the rotation origin).
-    let rot_byte = rot.min(0x7F) as u8;
-    let bf = body_facing.get_or_insert_with(|| {
-        super::facing_class::FacingClass::new((*facing as u16) << 8, rot_byte)
-    });
-    bf.set((target_facing as u16) << 8, native_frame);
-    *facing = (bf.current(native_frame) >> 8) as u8;
-
-    if bf.is_rotating(native_frame) {
-        // Still rotating in place — advance facing but don't move.
-        let mut debug_events = Vec::new();
-        if let Some(loco) = locomotor {
-            let old_phase = loco.phase;
-            loco.phase = GroundMovePhase::Accelerating;
-            if old_phase != GroundMovePhase::Accelerating {
-                debug_events.push((
-                    sim_tick as u32,
-                    DebugEventKind::PhaseChange {
-                        from: format!("{:?}", old_phase),
-                        to: "Accelerating".into(),
-                        reason: "movement started".into(),
-                    },
-                ));
-            }
+    // Still rotating in place — ordinary locomotion owns the movement-phase
+    // transition. Deploy-only facing calls the factored helper above directly
+    // and deliberately skip this translation-side effect.
+    let mut debug_events = Vec::new();
+    if let Some(loco) = locomotor {
+        let old_phase = loco.phase;
+        loco.phase = GroundMovePhase::Accelerating;
+        if old_phase != GroundMovePhase::Accelerating {
+            debug_events.push((
+                sim_tick as u32,
+                DebugEventKind::PhaseChange {
+                    from: format!("{:?}", old_phase),
+                    to: "Accelerating".into(),
+                    reason: "movement started".into(),
+                },
+            ));
         }
-        RotationResult::StillRotating { debug_events }
-    } else {
-        // Rotation complete — snap to the exact target and start moving.
-        *facing = target_facing;
-        *facing_target = None;
-        *body_facing = None;
-        RotationResult::ReadyToMove
     }
+    RotationResult::StillRotating { debug_events }
 }
 
 /// Result of lepton position advancement.

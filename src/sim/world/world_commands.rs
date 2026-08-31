@@ -1118,24 +1118,12 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                if self
-                    .substrate
-                    .entities
-                    .get(*entity_id)
-                    .is_some_and(|entity| {
-                        self.object_type(entity.type_ref, rules)
-                            .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
-                    })
-                {
-                    return crate::sim::slave_miner::deploy_slave_miner_with_overlay_context(
-                        self,
-                        *entity_id,
-                        rules,
-                        overlay_registry,
-                    )
-                    .is_some();
-                }
-                self.deploy_mcv(*entity_id, rules, height_map)
+                self.deploy_unit_into_building_with_overlay_context(
+                    *entity_id,
+                    rules,
+                    overlay_registry,
+                )
+                .accepted()
             }
             Command::UndeployBuilding { entity_id } => {
                 let Some(rules) = rules else { return false };
