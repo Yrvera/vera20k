@@ -18,7 +18,7 @@ use crate::app::frontend::skirmish::{
     build_overlay_atlas_from_map, house_color_map_for_launch_session,
 };
 use crate::app::loading::init_helpers::{
-    build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
+    build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas,
     load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
     scheduler_anim_roots, theater_ext_for,
 };
@@ -1130,14 +1130,15 @@ impl MapLoadInitial {
         let mode_override_ini = asset_manager
             .get_ref(&match_launch_descriptor.session().mode.override_file)
             .and_then(|bytes| IniFile::from_bytes(bytes).ok());
-        let (mut rules, rules_ini) = load_rules_with_merged_ini(
-            asset_manager,
-            mode_override_ini.as_ref(),
-            Some(&map_data.ini),
-        )
-        .expect("retail generated-map rules")
-        .into_parts();
-        let (mut art, art_ini) = load_art_ini(asset_manager).expect("retail ARTMD.INI");
+        let (mut rules, rules_ini, _native_type_construction_trace, art_ini) =
+            load_rules_with_merged_ini(
+                asset_manager,
+                mode_override_ini.as_ref(),
+                Some(&map_data.ini),
+            )
+            .expect("retail generated-map rules")
+            .into_parts();
+        let mut art = ArtRegistry::from_ini(&art_ini);
         rules.merge_art_data(&mut art);
         rules.art_registry = art.clone();
         rules.general.resolve_art_rates(&art_ini);
@@ -1866,13 +1867,15 @@ pub(crate) fn load_map_from_initial(
                 })
         }
     };
-    let (loaded_rules, rules_ini) = load_rules_with_merged_ini(
-        &asset_manager,
-        mode_override_ini.as_ref(),
-        Some(&map_data.ini),
-    )
-    .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?
-    .into_parts();
+    let (loaded_rules, rules_ini, native_type_construction_trace, fixed_art_ini) =
+        load_rules_with_merged_ini(
+            &asset_manager,
+            mode_override_ini.as_ref(),
+            Some(&map_data.ini),
+        )
+        .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?
+        .into_parts();
+    let _native_type_construction_trace = native_type_construction_trace;
     let fixed_team_ai_ini =
         crate::app::loading::init_helpers::load_retail_team_ai_source(&asset_manager)
             .ok_or_else(|| anyhow::anyhow!("failed to load active YR aimd.ini"))?;
@@ -1892,11 +1895,8 @@ pub(crate) fn load_map_from_initial(
         log::warn!("Team AI INI diagnostic: {diagnostic:?}");
     }
     let mut rules: Option<RuleSet> = Some(loaded_rules);
-    let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
-    let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
-        Some((reg, ini)) => (Some(reg), Some(ini)),
-        None => (None, None),
-    };
+    let mut art = Some(ArtRegistry::from_ini(&fixed_art_ini));
+    let art_ini = Some(fixed_art_ini);
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
         r.merge_art_data(a);
         // Eagerly populate per-anim SHP frame dimensions so the smudge

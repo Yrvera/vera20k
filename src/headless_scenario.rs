@@ -172,15 +172,15 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         .ok_or_else(|| format!("load theater {}", map.header.theater))?;
 
     // Production rules layering: RULESMD, then the map's own INI on top.
-    let (mut rules, rules_ini) = crate::app::loading::init_helpers::load_rules_with_merged_ini(
-        &assets,
-        None,
-        Some(&map.ini),
-    )
-    .ok_or_else(|| "load merged rules".to_string())?
-    .into_parts();
-    let (mut art, art_ini) = crate::app::loading::init_helpers::load_art_ini(&assets)
-        .ok_or_else(|| "load merged art".to_string())?;
+    let (mut rules, rules_ini, _native_type_construction_trace, art_ini) =
+        crate::app::loading::init_helpers::load_rules_with_merged_ini(
+            &assets,
+            None,
+            Some(&map.ini),
+        )
+        .ok_or_else(|| "load merged rules".to_string())?
+        .into_parts();
+    let mut art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
     rules.merge_art_data(&art);
     rules.general.resolve_art_rates(&art_ini);
     let infantry_sequences =

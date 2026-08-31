@@ -2544,8 +2544,12 @@ fn native_atoi_bytes(value: &[u8]) -> i32 {
 impl RuleSet {
     /// Build from the active ordered rules sources.
     pub fn from_rules_layers(layers: &RulesLayerStack) -> Result<Self, RulesError> {
-        let processed = layers.process();
-        Self::from_processed_rules(&processed)
+        let processed = layers.process()?;
+        let content_hash = processed.content_hash();
+        let ini = processed.into_projection_discarding_native_receipt();
+        let mut rules = Self::from_ini(&ini)?;
+        rules.source_ini_hash = content_hash;
+        Ok(rules)
     }
 
     pub(crate) fn from_processed_rules(

@@ -660,15 +660,24 @@ The bounded stock activation audit establishes these load-bearing checkpoints:
   different 17-of-20 activation pattern and must not be merged underneath YR.
 - 88 of the 89 `[General]` sites are present. The binary reads `Paratrooper`,
   while retail has the different key `PParatrooper`; that one site is inactive.
-- after the explicit registries, stock General emits exactly four new events in
-  this order: Anim `WCLBOLT2` from the middle `WeatherConBolts` token; Unit
-  `VISC_LRG`; Unit `VISC_SML`; Weapon `Vulcan2` from `DropPodWeapon`.
+- after the explicit registries, stock General emits exactly five new events in
+  this order: Anim `D`, created because `CCINIClass::ReadString @ 0x00528A10`
+  copies at most 127 characters for the `0x80`-byte `MetallicDebris` caller at
+  `RulesClass::ReadGeneral @ 0x0066D530`, leaving the final partial token `D`;
+  Anim `WCLBOLT2` from the middle `WeatherConBolts` token; Unit `VISC_LRG`;
+  Unit `VISC_SML`; Weapon `Vulcan2` from `DropPodWeapon`. The earlier four-event
+  classification incorrectly reasoned from the untruncated retail value.
 - `Visceroids=no`, dormant TS DropPod gameplay, and legacy-looking key names do
-  not suppress those four unconditional load-time parser calls.
+  not suppress those unconditional load-time parser calls.
 - fixed Art and the later member-major readers add further events that an
   explicit-only recount misses. Verified stock examples include Anim `SMOKEY2`
-  from an Art `TrailerAnim`, Anims `APMUZZLE` and `YURICNTL` from Weapon bodies,
-  and Anims `BBBLELRG` and `DURASMOKE` from Bullet-image Art `Trailer` reads.
+  from an Art `TrailerAnim`, Anims `YURICNTL` then `APMUZZLE` from Weapon bodies,
+  and Anim `BBBLELRG` from the active Torpedo Bullet-image Art `Trailer` read.
+  `DURASMOKE` is a live custom-data possibility through `[DREDMISS] Trailer=`,
+  but stock `DredMissile` is referenced only by the unreferenced
+  `[DredCollision]` Weapon body, so it is not constructed by the stock Rules
+  pass. The earlier stock classification incorrectly treated the ART row itself
+  as reachability evidence.
 - stock Building bodies freshly allocate Anims in registry order:
   `gtpowexp` (`GACNST`), `tstlexp` (`NAPOWR`), `CAWA15DM`, then `CACH06DM`;
   `YAPOWR` later repeats `gtpowexp`. Warhead-body processing freshly allocates Anim
@@ -877,7 +886,7 @@ The narrow implementation suite must include:
   `none`, Particle zero-cost, 31-byte caller truncation, and repeated >24-byte
   stored-ID collision;
 - all 20 `[AI]` and 89 General sites in exact order, absence of
-  `ParaDropPlane`, and the stock four-event General checkpoint;
+  `ParaDropPlane`, and the stock five-event General checkpoint;
 - House and Super member-major paths plus bodyless Super count;
 - recursive fixed-Art Anim same-sweep growth, fixed-Art Aircraft Trailer, and
   fixed-Art Building ToOverlay;
