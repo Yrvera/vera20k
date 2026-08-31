@@ -84,7 +84,22 @@ do not try to pre-decide everything.
    approximations — a defined pass condition, not a review ritual. On
    BLOCK: close the largest meaningful gap and resubmit to a fresh critic
    until pass; re-verify the previous round's fixes before judging anything
-   new; commit. When publication is authorized, **publish per tier**: open or
+   new; commit. For each publishable tier that changes Rust, give a fresh
+   read-only auditor the tier-base SHA, complete diff, requirement, evidence,
+   and literal validation, and explicitly invoke
+   `$rust-scan --changed --base <tier-base-sha>`. Independently, if the tier
+   changes module or state ownership, dependency direction, API visibility,
+   lifecycle seams, Rust file or package placement, or
+   Cargo targets, give a separate fresh auditor the same packet and explicitly
+   invoke `$architecture-scan --changed --base <tier-base-sha>`. These scans
+   sample change-caused engineering risk; they neither prove gamemd parity nor
+   authorize unrelated cleanup. Confirmed tier-caused CRITICAL or WARNING
+   findings block publication; fix and re-audit only the affected scope. At
+   phase completion, when multiple accepted tiers changed shared authority or
+   crossed subsystem boundaries, give a fresh read-only auditor the complete
+   phase diff and explicitly invoke
+   `$architecture-scan --changed --base <phase-base-sha>`. When publication is
+   authorized, **publish per tier**: open or
    update the PR when a tier completes — correctness fixes never wait on
    refactor slices. For parity work, every mechanism records `LIVE` evidence
    (the decisive native body and representative callsites were checked),
