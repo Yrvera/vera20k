@@ -546,6 +546,47 @@ fn constructor_lists_collapse_empty_fields_without_trimming_individual_tokens() 
     );
 }
 
+fn native_type_family_oracle_code(family: NativeTypeConstructorFamily) -> u8 {
+    match family {
+        NativeTypeConstructorFamily::HouseType => 0,
+        NativeTypeConstructorFamily::Side => 1,
+        NativeTypeConstructorFamily::OverlayType => 2,
+        NativeTypeConstructorFamily::SuperWeaponType => 3,
+        NativeTypeConstructorFamily::WarheadType => 4,
+        NativeTypeConstructorFamily::SmudgeType => 5,
+        NativeTypeConstructorFamily::TerrainType => 6,
+        NativeTypeConstructorFamily::BuildingType => 7,
+        NativeTypeConstructorFamily::UnitType => 8,
+        NativeTypeConstructorFamily::AircraftType => 9,
+        NativeTypeConstructorFamily::InfantryType => 10,
+        NativeTypeConstructorFamily::AnimType => 11,
+        NativeTypeConstructorFamily::VoxelAnimType => 12,
+        NativeTypeConstructorFamily::ParticleSystemType => 13,
+        NativeTypeConstructorFamily::WeaponType => 14,
+        NativeTypeConstructorFamily::BulletType => 15,
+    }
+}
+
+fn extend_native_type_event_oracle_hash(
+    mut hash: u64,
+    events: &[NativeTypeConstructionEvent],
+) -> u64 {
+    for event in events {
+        for byte in std::iter::once(native_type_family_oracle_code(event.family()))
+            .chain(event.native_stored_id().bytes())
+            .chain(std::iter::once(0xff))
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+
+fn native_type_event_oracle_hash(events: &[NativeTypeConstructionEvent]) -> u64 {
+    extend_native_type_event_oracle_hash(0xcbf29ce484222325_u64, events)
+}
+
 #[test]
 fn retail_rulesmd_artmd_constructor_trace_matches_verified_base_oracle() {
     let rules = IniFile::from_bytes(include_bytes!("../../ini/rulesmd.ini"))
@@ -557,37 +598,11 @@ fn retail_rulesmd_artmd_constructor_trace_matches_verified_base_oracle() {
         .expect("stock base Rules pass processes");
     let events = processed.native_type_construction_trace().events();
 
-    let mut hash = 0xcbf29ce484222325_u64;
-    for event in events {
-        let family_code = match event.family() {
-            NativeTypeConstructorFamily::HouseType => 0_u8,
-            NativeTypeConstructorFamily::Side => 1,
-            NativeTypeConstructorFamily::OverlayType => 2,
-            NativeTypeConstructorFamily::SuperWeaponType => 3,
-            NativeTypeConstructorFamily::WarheadType => 4,
-            NativeTypeConstructorFamily::SmudgeType => 5,
-            NativeTypeConstructorFamily::TerrainType => 6,
-            NativeTypeConstructorFamily::BuildingType => 7,
-            NativeTypeConstructorFamily::UnitType => 8,
-            NativeTypeConstructorFamily::AircraftType => 9,
-            NativeTypeConstructorFamily::InfantryType => 10,
-            NativeTypeConstructorFamily::AnimType => 11,
-            NativeTypeConstructorFamily::VoxelAnimType => 12,
-            NativeTypeConstructorFamily::ParticleSystemType => 13,
-            NativeTypeConstructorFamily::WeaponType => 14,
-            NativeTypeConstructorFamily::BulletType => 15,
-        };
-        for byte in std::iter::once(family_code)
-            .chain(event.native_stored_id().bytes())
-            .chain(std::iter::once(0xff))
-        {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    }
-
     assert_eq!(events.len(), 1_975);
-    assert_eq!(hash, 0x24516fbd1a096a12);
+    assert_eq!(
+        native_type_event_oracle_hash(events),
+        0x24516fbd1a096a12
+    );
 
     let explicit_boundary = events[1_699..1_704]
         .iter()
@@ -673,6 +688,237 @@ fn retail_rulesmd_artmd_constructor_trace_matches_verified_base_oracle() {
     assert!(events.iter().all(|event| {
         event.family() != NativeTypeConstructorFamily::AnimType
             || event.native_stored_id() != "DURASMOKE"
+    }));
+}
+
+#[test]
+fn retail_cold_start_and_noncampaign_prepass_match_verified_native_oracles() {
+    let rules = IniFile::from_bytes(include_bytes!("../../ini/rulesmd.ini"))
+        .expect("stock RULESMD.INI parses");
+    let fixed_art = IniFile::from_bytes(include_bytes!("../../ini/artmd.ini"))
+        .expect("stock ARTMD.INI parses");
+    let (startup, startup_boundaries) = process_native_rules_cold_start_inner(
+        NativeRulesRegistryState::default(),
+        &rules,
+        &fixed_art,
+        None,
+    )
+    .expect("stock cold startup processes");
+
+    assert_eq!(startup_boundaries, [1, 608, 612, 1_014, 1_070]);
+    assert_eq!(startup.event_count(), 1_070);
+    assert_eq!(
+        native_type_event_oracle_hash(startup.events()),
+        0x408b802af3a4cfce
+    );
+    assert_eq!(
+        startup.events()[..3]
+            .iter()
+            .map(|event| (event.family(), event.native_stored_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativeTypeConstructorFamily::AnimType, "xxxx"),
+            (NativeTypeConstructorFamily::AnimType, "TWLT100"),
+            (NativeTypeConstructorFamily::AnimType, "ELECTRO"),
+        ]
+    );
+    assert_eq!(
+        startup.events()[608..612]
+            .iter()
+            .map(|event| (event.family(), event.native_stored_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativeTypeConstructorFamily::AnimType, "SMOKEY2"),
+            (NativeTypeConstructorFamily::WarheadType, "HE"),
+            (NativeTypeConstructorFamily::OverlayType, "TIB2_01"),
+            (NativeTypeConstructorFamily::WarheadType, "TankOGas"),
+        ]
+    );
+    for (family, expected) in [
+        (NativeTypeConstructorFamily::AnimType, 613),
+        (NativeTypeConstructorFamily::BuildingType, 402),
+        (NativeTypeConstructorFamily::WeaponType, 31),
+        (NativeTypeConstructorFamily::OverlayType, 9),
+        (NativeTypeConstructorFamily::UnitType, 7),
+        (NativeTypeConstructorFamily::ParticleSystemType, 5),
+        (NativeTypeConstructorFamily::WarheadType, 2),
+        (NativeTypeConstructorFamily::InfantryType, 1),
+    ] {
+        assert_eq!(startup.registry_state().family_len(family), expected);
+    }
+    for family in [
+        NativeTypeConstructorFamily::HouseType,
+        NativeTypeConstructorFamily::Side,
+        NativeTypeConstructorFamily::SuperWeaponType,
+        NativeTypeConstructorFamily::SmudgeType,
+        NativeTypeConstructorFamily::TerrainType,
+        NativeTypeConstructorFamily::AircraftType,
+        NativeTypeConstructorFamily::VoxelAnimType,
+        NativeTypeConstructorFamily::BulletType,
+    ] {
+        assert_eq!(startup.registry_state().family_len(family), 0);
+    }
+    assert_eq!(startup.allocated_super_weapon_type_count(), 0);
+    assert_eq!(
+        startup
+            .registry_state()
+            .families
+            .get(&RulesTypeFamily::Particle)
+            .map_or(0, Vec::len),
+        1,
+        "VirusCloud1 is a retained Particle but spends no native Type ID",
+    );
+
+    let startup_hash = native_type_event_oracle_hash(startup.events());
+    let startup_state = startup.into_registry_state_discarding_events();
+    let (prepass, prepass_boundaries) =
+        process_native_noncampaign_rules_prepass_inner(startup_state, &rules);
+    assert_eq!(prepass_boundaries, [14, 46, 51]);
+    assert_eq!(prepass.event_count(), 51);
+    assert_eq!(
+        native_type_event_oracle_hash(prepass.events()),
+        0x45b8b69cd005937d
+    );
+    assert_eq!(
+        extend_native_type_event_oracle_hash(startup_hash, prepass.events()),
+        0x026859d66424f324
+    );
+    assert_eq!(prepass.allocated_super_weapon_type_count(), 0);
+    for (family, expected) in [
+        (NativeTypeConstructorFamily::HouseType, 14),
+        (NativeTypeConstructorFamily::Side, 5),
+        (NativeTypeConstructorFamily::OverlayType, 9),
+        (NativeTypeConstructorFamily::SuperWeaponType, 0),
+        (NativeTypeConstructorFamily::WarheadType, 4),
+        (NativeTypeConstructorFamily::SmudgeType, 0),
+        (NativeTypeConstructorFamily::TerrainType, 5),
+        (NativeTypeConstructorFamily::BuildingType, 402),
+        (NativeTypeConstructorFamily::UnitType, 12),
+        (NativeTypeConstructorFamily::AircraftType, 5),
+        (NativeTypeConstructorFamily::InfantryType, 11),
+        (NativeTypeConstructorFamily::AnimType, 615),
+        (NativeTypeConstructorFamily::VoxelAnimType, 3),
+        (NativeTypeConstructorFamily::ParticleSystemType, 5),
+        (NativeTypeConstructorFamily::WeaponType, 31),
+        (NativeTypeConstructorFamily::BulletType, 0),
+    ] {
+        assert_eq!(prepass.registry_state().family_len(family), expected);
+    }
+}
+
+#[test]
+fn native_startup_prepass_repeat_and_reset_keep_each_phase_on_one_registry_owner() {
+    let root = IniFile::from_str(
+        "[AudioVisual]\nSmoke=SEED\n\
+         [Animations]\n0=A\n\
+         [BuildingTypes]\n0=B\n\
+         [Countries]\n0=HOUSE\n\
+         [General]\nDamageFireTypes=SEED,PREANIM\n\
+         [A]\nNext=RULES_ANIM_BODY_IGNORED\n\
+         [B]\nPrimary=W\nExplosion=BA\nFreeUnit=U\nSecretBuilding=B2\n\
+         [B2]\nPrimary=W2\n\
+         [W]\nWarhead=TOO_LATE_WEAPON_BODY\n\
+         [U]\nPrimary=TOO_LATE_UNIT_BODY\n\
+         [BA]\nNext=TOO_LATE_ANIM_BODY\n\
+         [HOUSE]\nVeteranInfantry=INF\nVeteranUnits=HUNIT\nVeteranAircraft=HAIR\nSide=HSIDE\n",
+    );
+    let fixed_art = IniFile::from_str(
+        "[A]\nNext=A2\n\
+         [A2]\nWarhead=ANIMWH\n\
+         [B]\nToOverlay=BOV\n\
+         [B2]\nToOverlay=B2OV\n\
+         [BA]\nNext=TOO_LATE_ANIM_BODY\n",
+    );
+    let (startup, boundaries) = process_native_rules_cold_start_inner(
+        NativeRulesRegistryState::default(),
+        &root,
+        &fixed_art,
+        None,
+    )
+    .expect("synthetic startup processes");
+    assert_eq!(boundaries, [1, 2, 4, 5, 12]);
+    assert_eq!(
+        startup.events()[..4]
+            .iter()
+            .map(|event| (event.family(), event.native_stored_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativeTypeConstructorFamily::AnimType, "SEED"),
+            (NativeTypeConstructorFamily::AnimType, "A"),
+            (NativeTypeConstructorFamily::AnimType, "A2"),
+            (NativeTypeConstructorFamily::WarheadType, "ANIMWH"),
+        ],
+        "AudioVisual reads Smoke twice but allocates once; the live fixed-Art Anim loop reaches A2",
+    );
+    let startup_ids = startup
+        .events()
+        .iter()
+        .map(NativeTypeConstructionEvent::native_stored_id)
+        .collect::<Vec<_>>();
+    for expected in ["W", "BA", "U", "B2", "BOV", "W2", "B2OV"] {
+        assert!(startup_ids.contains(&expected), "missing startup event {expected}");
+    }
+    for forbidden in [
+        "RULES_ANIM_BODY_IGNORED",
+        "TOO_LATE_WEAPON_BODY",
+        "TOO_LATE_UNIT_BODY",
+        "TOO_LATE_ANIM_BODY",
+    ] {
+        assert!(!startup_ids.contains(&forbidden));
+    }
+
+    let startup_state = startup.into_registry_state_discarding_events();
+    let (repeat, repeat_boundaries) =
+        process_native_rules_cold_start_inner(startup_state, &root, &fixed_art, None)
+            .expect("direct startup repeat processes retained state");
+    assert_eq!(repeat_boundaries, [0, 0, 1, 1, 1]);
+    assert_eq!(
+        repeat
+            .events()
+            .iter()
+            .map(|event| (event.family(), event.native_stored_id()))
+            .collect::<Vec<_>>(),
+        vec![(
+            NativeTypeConstructorFamily::AnimType,
+            "TOO_LATE_ANIM_BODY"
+        )],
+        "the repeat's live Anim sweep must reach BA, which the prior Building sweep allocated after the first Anim sweep",
+    );
+
+    let retained_state = repeat.into_registry_state_discarding_events();
+    let (prepass, prepass_boundaries) =
+        process_native_noncampaign_rules_prepass_inner(retained_state, &root);
+    assert_eq!(prepass_boundaries, [1, 2, 6]);
+    assert_eq!(
+        prepass
+            .events()
+            .iter()
+            .map(|event| (event.family(), event.native_stored_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (NativeTypeConstructorFamily::HouseType, "HOUSE"),
+            (NativeTypeConstructorFamily::AnimType, "PREANIM"),
+            (NativeTypeConstructorFamily::InfantryType, "INF"),
+            (NativeTypeConstructorFamily::UnitType, "HUNIT"),
+            (NativeTypeConstructorFamily::AircraftType, "HAIR"),
+            (NativeTypeConstructorFamily::Side, "HSIDE"),
+        ],
+        "prepass must retain lookup state and read each House body in Infantry/Unit/Aircraft/Side order",
+    );
+
+    let reset_state = prepass
+        .into_registry_state_discarding_events()
+        .destructive_reset();
+    let processed = RulesLayerStack::new(root)
+        .process_with_fixed_art_and_registry_state(&fixed_art, reset_state)
+        .expect("post-reset full Process succeeds");
+    let post_reset_events = processed.native_type_construction_trace().events();
+    assert!(post_reset_events.iter().any(|event| {
+        event.family() == NativeTypeConstructorFamily::HouseType
+            && event.native_stored_id() == "HOUSE"
+    }));
+    assert!(post_reset_events.iter().any(|event| {
+        event.family() == NativeTypeConstructorFamily::AnimType && event.native_stored_id() == "A"
     }));
 }
 

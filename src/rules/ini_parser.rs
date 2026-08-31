@@ -615,6 +615,121 @@ impl RulesLayerStack {
     }
 }
 
+/// Reproduce the Type-constructor portion of active YR's cold rules startup.
+///
+/// This is deliberately not a `RulesClass::Process` call for the selected
+/// RULESMD root. `Load_Game_Rules @ 0x0052CD70` first runs only
+/// `ReadAudioVisual(root)`, may then run one full Process for optional
+/// `LANGRULE.INI`, and `Init_Game @ 0x0052BA60` follows with the root Anim and
+/// Building master/body sweeps. Both body loops reload their live family count.
+///
+/// The input state makes the native direct-repeat behavior explicit. The real
+/// cold call supplies [`NativeRulesRegistryState::default`]; a repeat without a
+/// destructive reset continues the retained registries and emits only new
+/// successful constructor events.
+pub(crate) fn process_native_rules_cold_start(
+    registry_state: NativeRulesRegistryState,
+    selected_rules_root: &IniFile,
+    fixed_art: &IniFile,
+    langrule: Option<&IniFile>,
+) -> Result<NativeTypeConstructionTrace, RulesError> {
+    process_native_rules_cold_start_inner(
+        registry_state,
+        selected_rules_root,
+        fixed_art,
+        langrule,
+    )
+    .map(|(trace, _phase_event_counts)| trace)
+}
+
+/// Shared production/test implementation. Counts are cumulative boundaries
+/// after AudioVisual, Anim master, Anim bodies, Building master, and Building
+/// bodies respectively; retaining them here keeps the stock oracle tied to the
+/// exact production sequence instead of duplicating that sequence in a test.
+fn process_native_rules_cold_start_inner(
+    registry_state: NativeRulesRegistryState,
+    selected_rules_root: &IniFile,
+    fixed_art: &IniFile,
+    langrule: Option<&IniFile>,
+) -> Result<(NativeTypeConstructionTrace, [usize; 5]), RulesError> {
+    let mut processor = RulesPassProcessor::with_registry_state(registry_state);
+    processor.allocate_audio_visual_references(selected_rules_root);
+    let after_audio_visual = processor.native_type_construction_events.len();
+    if let Some(langrule) = langrule {
+        processor.apply_pass(langrule, fixed_art)?;
+    }
+    processor.allocate_explicit_family(
+        selected_rules_root,
+        "Animations",
+        RulesTypeFamily::Animation,
+    );
+    let after_animation_master = processor.native_type_construction_events.len();
+    processor.process_anim_family(fixed_art);
+    let after_animation_bodies = processor.native_type_construction_events.len();
+    processor.allocate_explicit_family(
+        selected_rules_root,
+        "BuildingTypes",
+        RulesTypeFamily::Building,
+    );
+    let after_building_master = processor.native_type_construction_events.len();
+    processor.process_techno_family(
+        RulesTypeFamily::Building,
+        selected_rules_root,
+        fixed_art,
+    );
+    let after_building_bodies = processor.native_type_construction_events.len();
+    let (_, trace) = processor.finish();
+    Ok((
+        trace,
+        [
+            after_audio_visual,
+            after_animation_master,
+            after_animation_bodies,
+            after_building_master,
+            after_building_bodies,
+        ],
+    ))
+}
+
+/// Run the constructor-capable noncampaign prefix before Full_Init's rules
+/// destruction boundary.
+///
+/// Active YR `ScenarioClass::Full_Init @ 0x00686B20` performs the root
+/// Countries master, root General references, then a live HouseType body loop
+/// against the process-retained startup registries. The returned event vector
+/// is therefore only `E_multi`; the caller must already have drained the older
+/// cold-start events while retaining their registry state.
+pub(crate) fn process_native_noncampaign_rules_prepass(
+    registry_state: NativeRulesRegistryState,
+    selected_rules_root: &IniFile,
+) -> NativeTypeConstructionTrace {
+    process_native_noncampaign_rules_prepass_inner(registry_state, selected_rules_root).0
+}
+
+/// Shared production/test implementation. Counts are cumulative `E_multi`
+/// boundaries after Countries, General, and the live HouseType body loop.
+fn process_native_noncampaign_rules_prepass_inner(
+    registry_state: NativeRulesRegistryState,
+    selected_rules_root: &IniFile,
+) -> (NativeTypeConstructionTrace, [usize; 3]) {
+    let mut processor = RulesPassProcessor::with_registry_state(registry_state);
+    processor.allocate_explicit_family(
+        selected_rules_root,
+        "Countries",
+        RulesTypeFamily::Country,
+    );
+    let after_countries = processor.native_type_construction_events.len();
+    processor.allocate_general_references(selected_rules_root);
+    let after_general = processor.native_type_construction_events.len();
+    processor.process_house_family(selected_rules_root);
+    let after_house_bodies = processor.native_type_construction_events.len();
+    let (_, trace) = processor.finish();
+    (
+        trace,
+        [after_countries, after_general, after_house_bodies],
+    )
+}
+
 /// Result of applying an ordered rules stack.
 #[derive(Debug)]
 pub struct ProcessedRulesLayers {
@@ -743,6 +858,16 @@ impl NativeTypeConstructionTrace {
             self.registry_state,
         )
     }
+
+    /// Drain constructor history at a native numeric-ID reset while retaining
+    /// the one live Type-registry authority for the next lookup pass.
+    ///
+    /// Cold startup events predate Full_Init's `Clear_Scene` reset. They affect
+    /// `E_multi` duplicate suppression but must not be charged to the fresh
+    /// Scenario cursor.
+    pub(crate) fn into_registry_state_discarding_events(self) -> NativeRulesRegistryState {
+        self.registry_state
+    }
 }
 
 /// Process-resident live Type registries after one or more Rules passes.
@@ -769,6 +894,15 @@ impl NativeRulesRegistryState {
 
     pub(crate) fn tiberium_slot_count(&self) -> usize {
         self.tiberiums.len()
+    }
+
+    /// Consume the pre-reset registry owner at Full_Init's destructive Rules
+    /// reset and return a genuinely empty post-reset owner.
+    ///
+    /// Numeric-ID history is intentionally not represented here and therefore
+    /// cannot be rewound by this operation.
+    pub(crate) fn destructive_reset(self) -> Self {
+        Self::default()
     }
 }
 
@@ -906,19 +1040,7 @@ impl RulesPassProcessor {
         // 0x00668BF0`. Colors precede every Type registry but spend no Type ID.
         self.allocate_colors(pass);
         for &(registry, family) in EXPLICIT_RULE_TYPE_FAMILIES {
-            let Some(section) = pass.section(registry) else {
-                continue;
-            };
-            for key in section.keys() {
-                let identity = if family == RulesTypeFamily::Side {
-                    key.to_string()
-                } else {
-                    section.read_string(key, "", 32)
-                };
-                if !identity.is_empty() {
-                    self.find_or_allocate(family, &identity);
-                }
-            }
+            self.allocate_explicit_family(pass, registry, family);
         }
 
         // JumpjetControls and MultiplayerSettings contain no Type factory.
@@ -937,6 +1059,27 @@ impl RulesPassProcessor {
         self.process_tiberiums(pass)?;
         // AdvancedCommandBar contains no Type factory.
         Ok(())
+    }
+
+    fn allocate_explicit_family(
+        &mut self,
+        pass: &IniFile,
+        registry: &str,
+        family: RulesTypeFamily,
+    ) {
+        let Some(section) = pass.section(registry) else {
+            return;
+        };
+        for key in section.keys() {
+            let identity = if family == RulesTypeFamily::Side {
+                key.to_string()
+            } else {
+                section.read_string(key, "", 32)
+            };
+            if !identity.is_empty() {
+                self.find_or_allocate(family, &identity);
+            }
+        }
     }
 
     fn family_mut(&mut self, family: RulesTypeFamily) -> &mut Vec<ProcessedType> {
