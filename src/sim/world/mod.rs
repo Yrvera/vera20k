@@ -14,6 +14,7 @@ pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
 pub mod edge_cell;
 mod lifecycle;
+mod load_object_lifecycle;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
@@ -37,6 +38,7 @@ pub(crate) use lifecycle::{
     ConcealOutcome, LifecycleOutput, NULL_TARGET_CELL_SENTINEL, PlacementEvidence, RevealOutcome,
     RevealPosition, RevealRequest, UninitContext,
 };
+pub(crate) use load_object_lifecycle::LoadObjectLifecycle;
 #[cfg(test)]
 pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
 pub(crate) use logic_vector::LogicVector;
@@ -684,6 +686,10 @@ pub struct Simulation {
     /// can consume the already-assigned IDs without recounting filtered facts.
     #[serde(skip, default)]
     pub(crate) native_map_tubes: Option<crate::map::tubes::NativeMapTubeReceipt>,
+    /// Fresh-map-only OverlayClass registry/deferred-delete owner. These
+    /// ephemeral objects are neither gameplay objects nor snapshot/hash state.
+    #[serde(skip, default)]
+    pub(crate) load_objects: LoadObjectLifecycle,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
     /// Static alliance graph derived from map house data.
@@ -2982,6 +2988,7 @@ impl Simulation {
             mapgen_rng: SimRng::new(0),
             native_unique_ids: None,
             native_map_tubes: None,
+            load_objects: LoadObjectLifecycle::default(),
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
