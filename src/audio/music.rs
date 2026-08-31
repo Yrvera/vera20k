@@ -1,39 +1,18 @@
-//! Music playback using rodio.
+//! Optional rodio music output.
 //!
-//! Loads theme tracks from THEME.MIX / thememd.mix, decodes WAV/AUD payloads
-//! to PCM, and plays them through rodio. Supports play, stop,
-//! next track, and live volume control.
-//!
-//! ## Track resolution
-//! Track names come from thememd.ini / theme.ini or the map's [Basic] Theme= field.
-//! The INI `Sound=` value resolves to the actual payload stem, which is looked
-//! up first as `{stem}.wav`, then as `{stem}.aud`.
-//!
-//! ## Dependency rules
-//! - Part of audio/ — depends on assets/ (aud_file decoder, AssetManager)
-//!   and rules/ini_parser for theme metadata.
-//! - Does NOT depend on render/, ui/, sidebar/, sim/.
+//! Theme catalog and lifecycle ownership live in `audio::theme`. This module
+//! owns only the physical device/player plus independent gain projections.
 
-use std::collections::HashMap;
 use std::num::NonZero;
 
 use rodio::buffer::SamplesBuffer;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
 
-use crate::assets::asset_manager::AssetManager;
-use crate::assets::aud_file;
-use crate::audio::sfx::decode_wav;
-use crate::rules::ini_parser::IniFile;
+use crate::audio::theme::{MusicOutputState, PreparedTrack};
 
-/// Engine default for the score (music) volume, applied before any user
-/// settings file is read. The original game seeds its live music volume to
-/// this same default when the saved `ScoreVolume` setting is absent.
+/// Engine default for the score (music) volume.
 pub const DEFAULT_SCORE_VOLUME: f64 = 0.4;
 
-/// Compose the independent gains that reach the music output buffer.
-///
-/// Keeping this absolute avoids reconstructing a non-zero volume from a muted
-/// player when either the lifecycle or foreground gate opens again.
 fn effective_music_volume(
     user_volume: f64,
     lifecycle_scale: f64,
@@ -43,351 +22,92 @@ fn effective_music_volume(
     (user_volume * lifecycle_scale * theme_scale * focus_output_scale) as f32
 }
 
-const SCENARIO_THEME_FADE_MS: u64 = 1_000;
-
-const FALLBACK_TRACKS: &[&str] = &[
-    "Grinder", "Power", "Fortific", "InDeep", "Tension", "EagleHun", "Industro", "Jank",
-    "200Meter", "BlowItUp", "Destroy", "Burn", "Motorize", "HM2", "Ra2-Opt", "RA2-Sco", "Drok",
-    "Bully", "OptionX", "ScoreX", "BrainFre", "Deceiver", "PhatAtta", "Defend", "Tactics",
-    "TranceLV",
-];
-
-/// Resolved Start_Scenario theme request. `Auto` is native theme index `-1`;
-/// `Specific` stores the section's resolved `Sound=` stem.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ScenarioThemeRequest {
-    Auto,
-    Specific(String),
-}
-
-#[derive(Debug, Clone)]
-struct PendingScenarioTheme {
-    request: ScenarioThemeRequest,
-    fade_started_at_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone)]
-struct ScenarioThemeTransition {
-    pending: Option<PendingScenarioTheme>,
-    internal_scale: f64,
-}
-
-impl Default for ScenarioThemeTransition {
-    fn default() -> Self {
-        Self {
-            pending: None,
-            internal_scale: 1.0,
-        }
-    }
-}
-
-impl ScenarioThemeTransition {
-    fn request(
-        &mut self,
-        request: ScenarioThemeRequest,
-        wall_ms: u64,
-        current_stream_active: bool,
-    ) {
-        self.pending = Some(PendingScenarioTheme {
-            request,
-            fade_started_at_ms: current_stream_active.then_some(wall_ms),
-        });
-        self.internal_scale = 1.0;
-    }
-
-    fn cancel(&mut self) {
-        self.pending = None;
-        self.internal_scale = 1.0;
-    }
-
-    fn update(
-        &mut self,
-        wall_ms: u64,
-        current_stream_active: bool,
-    ) -> Option<ScenarioThemeRequest> {
-        let mut pending = self.pending.take()?;
-        if current_stream_active {
-            let started_at_ms = *pending.fade_started_at_ms.get_or_insert(wall_ms);
-            let elapsed_ms = wall_ms.saturating_sub(started_at_ms);
-            if elapsed_ms < SCENARIO_THEME_FADE_MS {
-                self.internal_scale = 1.0 - elapsed_ms as f64 / SCENARIO_THEME_FADE_MS as f64;
-                self.pending = Some(pending);
-                return None;
-            }
-            self.internal_scale = 0.0;
-        } else {
-            self.internal_scale = 1.0;
-        }
-        Some(pending.request)
-    }
-
-    fn complete_play(&mut self) {
-        self.internal_scale = 1.0;
-    }
-}
-
-/// Manages background music playback.
 pub struct MusicPlayer {
     /// rodio mixer device sink — must be kept alive or all audio stops.
     _device: MixerDeviceSink,
-    /// Player handle for the currently playing track, if any.
     current_player: Option<Player>,
-    /// Name of the currently playing track.
-    current_track: Option<String>,
-    /// Playlist of track names to cycle through.
-    playlist: Vec<String>,
-    /// Theme alias -> actual sound stem, uppercase keys.
-    aliases: HashMap<String, String>,
-    /// Theme section key -> sound stem, excluding sound-stem aliases. Used by
-    /// `[Basic] Theme=` which calls the retail section-key resolver.
-    scenario_theme_sections: HashMap<String, String>,
-    /// Index into the playlist for the next track.
-    playlist_index: usize,
-    /// Music volume (0.0 to 1.0).
     volume: f64,
-    /// App-owned output multiplier used by lifecycle fades. Kept separate from
-    /// the user setting so a scenario teardown never overwrites ScoreVolume.
     output_scale: f64,
-    /// Foreground-owned primary-output gate. This never pauses the stream: its
-    /// cursor and theme transition continue while the window is inactive.
+    theme_scale: f64,
     focus_output_scale: f64,
-    /// When set, the resolved sound stem to re-play on finish instead of
-    /// advancing the playlist (honors a theme's `Repeat=yes`, e.g. the menu
-    /// [INTRO] theme which loops the entire time the shell is shown).
-    looping_track: Option<String>,
-    /// Resolved sound stem of the menu [INTRO] theme, from theme INI.
-    menu_theme: Option<String>,
-    /// Whether the menu [INTRO] theme is marked `Repeat=yes` in the INI.
-    menu_theme_repeats: bool,
-    /// Start_Scenario's pending QueueSong/automatic request and Theme-owned
-    /// fade. Separate from lifecycle `output_scale`.
-    scenario_theme: ScenarioThemeTransition,
 }
 
 impl MusicPlayer {
-    /// Create a new MusicPlayer. Returns None if audio output cannot be opened.
+    /// Create a physical music output. Theme construction never depends on
+    /// this succeeding.
     pub fn new() -> Option<Self> {
         let device = DeviceSinkBuilder::open_default_sink()
-            .map_err(|e| log::error!("Failed to initialize music audio: {}", e))
+            .map_err(|error| log::error!("Failed to initialize music audio: {error}"))
             .ok()?;
-
         Some(Self {
             _device: device,
             current_player: None,
-            current_track: None,
-            playlist: FALLBACK_TRACKS.iter().map(|s| s.to_string()).collect(),
-            aliases: HashMap::new(),
-            scenario_theme_sections: HashMap::new(),
-            playlist_index: 0,
             volume: DEFAULT_SCORE_VOLUME,
             output_scale: 1.0,
+            theme_scale: 1.0,
             focus_output_scale: 1.0,
-            looping_track: None,
-            menu_theme: None,
-            menu_theme_repeats: false,
-            scenario_theme: ScenarioThemeTransition::default(),
         })
     }
 
-    /// Play a specific track by name. Loads from the AssetManager on demand.
-    /// Returns true if the track was found and playback started.
-    ///
-    /// This is the one-shot entry point used for gameplay tracks; it clears
-    /// any active looping so a menu loop does not bleed into a started map.
-    pub fn play_track(&mut self, track_name: &str, assets: &AssetManager) -> bool {
-        self.looping_track = None;
-        self.ensure_theme_config(assets);
-        self.start_track(track_name, assets)
+    pub(crate) fn state(&self) -> MusicOutputState {
+        match self.current_player.as_ref() {
+            Some(player) if player.empty() => MusicOutputState::Finished,
+            Some(_) => MusicOutputState::Playing,
+            None => MusicOutputState::Idle,
+        }
     }
 
-    /// Start the menu [INTRO] theme, looping it if the INI marks it
-    /// `Repeat=yes`. Idempotent: if the menu theme is already the current
-    /// track, this is a no-op so it is safe to call every frame the shell is
-    /// shown. Returns true if the menu theme is playing afterward.
-    ///
-    /// The theme name and repeat flag come from the theme INI ([INTRO]
-    /// section), not a hardcoded stem.
-    pub fn play_menu_theme(&mut self, assets: &AssetManager) -> bool {
-        self.ensure_theme_config(assets);
-
-        let Some(stem) = self.menu_theme.clone() else {
+    pub(crate) fn submit(&mut self, prepared: PreparedTrack) -> bool {
+        let Some(channels) = NonZero::new(2u16) else {
             return false;
         };
-
-        // Already playing the menu theme — don't restart it.
-        if self
-            .current_track
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case(&stem))
-        {
-            return true;
-        }
-
-        let repeats = self.menu_theme_repeats;
-        let started = self.start_track(&stem, assets);
-        if started && repeats {
-            // start_track stores the resolved stem in current_track.
-            self.looping_track = self.current_track.clone();
-        }
-        started
-    }
-
-    /// Resolve, load, and begin playing a track. Does NOT touch the loop flag
-    /// — callers manage looping. Returns true if playback started.
-    fn start_track(&mut self, track_name: &str, assets: &AssetManager) -> bool {
-        // Stop the current player without clearing loop state owned by caller.
+        let Some(rate) = NonZero::new(prepared.sample_rate) else {
+            return false;
+        };
         if let Some(player) = self.current_player.take() {
             player.stop();
         }
-        self.current_track = None;
-
-        let resolved_name: String = self.resolve_track_name(track_name);
-        let (samples, sample_rate) = match load_track(&resolved_name, assets) {
-            Some(data) => data,
-            None => {
-                log::warn!(
-                    "Music track not found: requested='{}', resolved='{}'",
-                    track_name,
-                    resolved_name
-                );
-                return false;
-            }
-        };
-
-        let channels = match NonZero::new(2u16) {
-            Some(c) => c,
-            None => return false,
-        };
-        let rate = match NonZero::new(sample_rate) {
-            Some(r) => r,
-            None => return false,
-        };
-
-        let source = SamplesBuffer::new(channels, rate, samples);
-        let player: Player = Player::connect_new(self._device.mixer());
+        let source = SamplesBuffer::new(channels, rate, prepared.samples);
+        let player = Player::connect_new(self._device.mixer());
         player.set_volume(self.effective_volume());
         player.append(source);
-        log::info!(
-            "Playing music track: requested='{}', resolved='{}'",
-            track_name,
-            resolved_name
-        );
+        log::info!("Playing prepared music track: {}", prepared.stem);
         self.current_player = Some(player);
-        self.current_track = Some(resolved_name);
         true
     }
 
-    /// Stop the currently playing track. Also cancels any active loop so a
-    /// stopped menu theme does not silently re-trigger on the next update.
     pub fn stop(&mut self) {
-        self.cancel_scenario_theme_request();
-        self.looping_track = None;
         if let Some(player) = self.current_player.take() {
             player.stop();
         }
-        self.current_track = None;
     }
 
-    /// Play the next track in the playlist. Wraps around at the end.
-    /// Returns the name of the track that started playing, or None if no track loaded.
-    pub fn play_next(&mut self, assets: &AssetManager) -> Option<String> {
-        self.ensure_theme_config(assets);
-
-        if self.playlist.is_empty() {
-            return None;
-        }
-
-        let len: usize = self.playlist.len();
-        for attempt in 0..len {
-            let idx: usize = (self.playlist_index + attempt) % len;
-            let track_name: String = self.playlist[idx].clone();
-            self.playlist_index = (idx + 1) % len;
-            if self.play_track(&track_name, assets) {
-                return Some(track_name);
-            }
-        }
-        None
-    }
-
-    /// Check if the current track has finished and auto-advance to the next.
-    /// Call this once per frame from the game loop.
-    pub fn update(&mut self, assets: &AssetManager, wall_ms: u64) {
-        if self.scenario_theme.pending.is_some() {
-            // Theme::Stop(fade=1) takes the fade arm only while the stream is
-            // actually playing; a retained but empty rodio handle is the
-            // native no-playing immediate-clear path.
-            let current_stream_active = self
-                .current_player
-                .as_ref()
-                .is_some_and(|player| !player.empty());
-            let request = self.scenario_theme.update(wall_ms, current_stream_active);
-            self.apply_effective_volume();
-            if let Some(request) = request {
-                if let Some(player) = self.current_player.take() {
-                    player.stop();
-                }
-                self.current_track = None;
-                self.looping_track = None;
-                self.scenario_theme.complete_play();
-                match request {
-                    ScenarioThemeRequest::Auto => {
-                        let _ = self.play_next(assets);
-                    }
-                    ScenarioThemeRequest::Specific(stem) => {
-                        if self.play_track(&stem, assets)
-                            && let Some(next_index) =
-                                playlist_index_after_specific(&self.playlist, &stem)
-                        {
-                            self.playlist_index = next_index;
-                        }
-                    }
-                }
-            }
-            return;
-        }
-
-        let finished: bool = match &self.current_player {
-            Some(player) => player.empty(),
-            None => self.current_track.is_some(),
-        };
-
-        if finished {
+    pub(crate) fn discard_finished(&mut self) {
+        if self.state() == MusicOutputState::Finished {
             self.current_player = None;
-            self.current_track = None;
-            // A looping track (e.g. the menu [INTRO] theme, Repeat=yes)
-            // re-plays itself instead of advancing the playlist.
-            if let Some(stem) = self.looping_track.clone() {
-                if self.start_track(&stem, assets) {
-                    return;
-                }
-                // Failed to restart — fall through to playlist advance.
-                self.looping_track = None;
-            }
-            let _ = self.play_next(assets);
         }
     }
 
-    /// Set the music volume (0.0 = silent, 1.0 = full).
-    /// Applies immediately to the currently playing track.
     pub fn set_volume(&mut self, volume: f64) {
         self.volume = volume.clamp(0.0, 1.0);
         self.apply_effective_volume();
     }
 
-    /// Apply a temporary app-lifecycle multiplier without changing the saved
-    /// user volume. Existing and newly started tracks observe the same scale.
     pub fn set_output_scale(&mut self, scale: f64) {
         self.output_scale = scale.clamp(0.0, 1.0);
         self.apply_effective_volume();
     }
 
+    pub(crate) fn set_theme_scale(&mut self, scale: f64) {
+        self.theme_scale = scale.clamp(0.0, 1.0);
+        self.apply_effective_volume();
+    }
+
     /// Gate the primary music output on the application-activation edge.
     ///
-    /// gamemd-derived: the active `WM_ACTIVATEAPP` changed edge at `0x007778AC`
-    /// reaches primary-buffer Stop through `FUN_00407020 @
-    /// 0x00407020` -> `FUN_0040A940 @ 0x0040A940`, and primary-buffer restore /
-    /// looping Play through `FUN_00407040 @ 0x00407040` -> `FUN_0040A950 @
-    /// 0x0040A950`. Secondary playback cursors are not paused.
+    /// gamemd-derived: `WM_ACTIVATEAPP` at `0x007778AC` reaches primary
+    /// Stop/restore through `0x00407020`/`0x00407040`; secondary cursors keep
+    /// advancing.
     pub fn set_focus_output_active(&mut self, active: bool) {
         self.focus_output_scale = if active { 1.0 } else { 0.0 };
         self.apply_effective_volume();
@@ -397,279 +117,20 @@ impl MusicPlayer {
         effective_music_volume(
             self.volume,
             self.output_scale,
-            self.scenario_theme.internal_scale,
+            self.theme_scale,
             self.focus_output_scale,
         )
     }
 
     fn apply_effective_volume(&self) {
-        if let Some(ref player) = self.current_player {
+        if let Some(player) = self.current_player.as_ref() {
             player.set_volume(self.effective_volume());
         }
     }
 
-    /// Get the current music volume.
     pub fn volume(&self) -> f64 {
         self.volume
     }
-
-    /// Get the name of the currently playing track, if any.
-    pub fn current_track(&self) -> Option<&str> {
-        self.current_track.as_deref()
-    }
-
-    /// Replace the playlist with custom track names.
-    pub fn set_playlist(&mut self, tracks: Vec<String>) {
-        self.playlist = tracks;
-        self.playlist_index = 0;
-    }
-
-    /// Queue Start_Scenario's theme request without replacing the current
-    /// shell stream inline. The first subsequent update owns fade/start work.
-    pub(crate) fn request_scenario_theme(&mut self, request: ScenarioThemeRequest, wall_ms: u64) {
-        let current_stream_active = self
-            .current_player
-            .as_ref()
-            .is_some_and(|player| !player.empty());
-        self.scenario_theme
-            .request(request, wall_ms, current_stream_active);
-        self.apply_effective_volume();
-    }
-
-    pub(crate) fn cancel_scenario_theme_request(&mut self) {
-        self.scenario_theme.cancel();
-        self.apply_effective_volume();
-    }
-
-    /// Resolve `[Basic] Theme=` strictly as a theme-section key. Sound stems
-    /// and unknown/sentinel values retain native index `-1` and select Auto.
-    pub(crate) fn resolve_scenario_theme(
-        &mut self,
-        requested_section: Option<&str>,
-        assets: &AssetManager,
-    ) -> ScenarioThemeRequest {
-        self.ensure_theme_config(assets);
-        resolve_scenario_theme_section(requested_section, &self.scenario_theme_sections)
-    }
-
-    fn resolve_track_name(&self, track_name: &str) -> String {
-        self.aliases
-            .get(&track_name.to_ascii_uppercase())
-            .cloned()
-            .unwrap_or_else(|| track_name.to_string())
-    }
-
-    fn ensure_theme_config(&mut self, assets: &AssetManager) {
-        if !self.aliases.is_empty() {
-            return;
-        }
-
-        let base = load_theme_ini(assets, "theme.ini");
-        let md = load_theme_ini(assets, "thememd.ini");
-
-        // Build aliases from both INIs (md values override base on conflict).
-        if let Some(ref ini) = base {
-            merge_theme_aliases(&mut self.aliases, ini);
-            merge_theme_section_stems(&mut self.scenario_theme_sections, ini);
-        }
-        if let Some(ref ini) = md {
-            merge_theme_aliases(&mut self.aliases, ini);
-            merge_theme_section_stems(&mut self.scenario_theme_sections, ini);
-        }
-
-        // Merge playlists from both INIs — the original game plays RA2 and YR
-        // tracks together. thememd.ini comments out RA2 entries, so we need
-        // theme.ini to provide those tracks.
-        let mut playlist = Vec::new();
-        if let Some(ref ini) = base {
-            playlist = playlist_from_theme_ini(ini, &self.aliases);
-        }
-        if let Some(ref ini) = md {
-            for track in playlist_from_theme_ini(ini, &self.aliases) {
-                if !playlist.iter().any(|t| t.eq_ignore_ascii_case(&track)) {
-                    playlist.push(track);
-                }
-            }
-        }
-
-        if !playlist.is_empty() {
-            self.playlist = playlist;
-            self.playlist_index = 0;
-        }
-
-        // Resolve the menu [INTRO] theme (the shell loops this the whole time
-        // the player is on the main menu). md overrides base on conflict.
-        for ini in [base.as_ref(), md.as_ref()].into_iter().flatten() {
-            if let Some((stem, repeats)) = menu_theme_from_ini(ini, &self.aliases) {
-                self.menu_theme = Some(stem);
-                self.menu_theme_repeats = repeats;
-            }
-        }
-    }
-}
-
-/// Load a track and decode to interleaved f32 stereo samples.
-/// Returns (samples, sample_rate) or None if not found / decode fails.
-fn load_track(track_name: &str, assets: &AssetManager) -> Option<(Vec<f32>, u32)> {
-    for filename in [format!("{}.wav", track_name), format!("{}.aud", track_name)] {
-        let Some(data) = assets.get_ref(&filename) else {
-            continue;
-        };
-
-        if data.len() >= 44 && &data[0..4] == b"RIFF" {
-            if let Some(decoded) = decode_wav(data, &filename) {
-                return Some((decoded.samples, decoded.sample_rate));
-            }
-        }
-
-        let (header, samples) = match aud_file::decode_aud(data) {
-            Some(decoded) => decoded,
-            None => continue,
-        };
-        if samples.is_empty() {
-            log::warn!("Track {} decoded to 0 samples", track_name);
-            return None;
-        }
-
-        // Convert i16 PCM to interleaved f32 stereo.
-        let stereo: Vec<f32> = if header.is_stereo() {
-            samples.iter().map(|&s| s as f32 / 32768.0).collect()
-        } else {
-            samples
-                .iter()
-                .flat_map(|&s| {
-                    let f = s as f32 / 32768.0;
-                    [f, f]
-                })
-                .collect()
-        };
-
-        log::info!(
-            "Decoded track {} from {}: {}Hz, {} channels, {} frames ({:.1}s)",
-            track_name,
-            filename,
-            header.sample_rate,
-            header.channels(),
-            stereo.len() / 2,
-            stereo.len() as f64 / 2.0 / header.sample_rate as f64,
-        );
-
-        return Some((stereo, header.sample_rate as u32));
-    }
-
-    None
-}
-
-fn load_theme_ini(assets: &AssetManager, name: &str) -> Option<IniFile> {
-    let bytes = assets.get_ref(name)?;
-    IniFile::from_bytes(bytes).ok()
-}
-
-fn merge_theme_aliases(into: &mut HashMap<String, String>, ini: &IniFile) {
-    for section_name in ini.section_names() {
-        let Some(section) = ini.section(section_name) else {
-            continue;
-        };
-        let Some(sound) = section.get("Sound") else {
-            continue;
-        };
-        if sound.is_empty() {
-            continue;
-        }
-
-        let sound = sound.to_string();
-        into.insert(section_name.to_ascii_uppercase(), sound.clone());
-        into.insert(sound.to_ascii_uppercase(), sound);
-    }
-}
-
-fn merge_theme_section_stems(into: &mut HashMap<String, String>, ini: &IniFile) {
-    let Some(themes) = ini.section("Themes") else {
-        return;
-    };
-    for section_name in themes.get_values() {
-        let Some(sound) = ini
-            .section(section_name)
-            .and_then(|section| section.get("Sound"))
-            .filter(|sound| !sound.is_empty())
-        else {
-            continue;
-        };
-        into.insert(section_name.to_ascii_uppercase(), sound.to_string());
-    }
-}
-
-fn resolve_scenario_theme_section(
-    requested_section: Option<&str>,
-    section_aliases: &HashMap<String, String>,
-) -> ScenarioThemeRequest {
-    let Some(requested) = requested_section
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("No theme"))
-    else {
-        return ScenarioThemeRequest::Auto;
-    };
-    section_aliases
-        .get(&requested.to_ascii_uppercase())
-        .cloned()
-        .map(ScenarioThemeRequest::Specific)
-        .unwrap_or(ScenarioThemeRequest::Auto)
-}
-
-fn playlist_index_after_specific(playlist: &[String], stem: &str) -> Option<usize> {
-    let index = playlist
-        .iter()
-        .position(|candidate| candidate.eq_ignore_ascii_case(stem))?;
-    Some((index + 1) % playlist.len())
-}
-
-/// The section name of the main-menu shell theme in the theme INI.
-const MENU_THEME_SECTION: &str = "INTRO";
-
-/// Resolve the menu [INTRO] theme to (sound stem, repeats?) from a theme INI.
-/// `repeats` reflects the [INTRO] `Repeat=` value (defaults to no if absent).
-/// Returns None if the INI has no [INTRO] section with a resolvable sound.
-fn menu_theme_from_ini(ini: &IniFile, aliases: &HashMap<String, String>) -> Option<(String, bool)> {
-    let section = ini.section(MENU_THEME_SECTION)?;
-    // Prefer the alias-resolved stem so casing matches what load_track uses.
-    let stem = aliases
-        .get(&MENU_THEME_SECTION.to_ascii_uppercase())
-        .cloned()
-        .or_else(|| {
-            section
-                .get("Sound")
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        })?;
-    let repeats = section.get_bool("Repeat").unwrap_or(false);
-    Some((stem, repeats))
-}
-
-fn playlist_from_theme_ini(ini: &IniFile, aliases: &HashMap<String, String>) -> Vec<String> {
-    let Some(themes) = ini.section("Themes") else {
-        return Vec::new();
-    };
-
-    themes
-        .get_values()
-        .into_iter()
-        .filter(|value| !value.is_empty())
-        .filter_map(|theme_name| {
-            let sound = aliases.get(&theme_name.to_ascii_uppercase())?;
-            // Skip non-Normal tracks (INTRO, SCORE, LOADING, CREDITS) —
-            // they're menu/loading music, not gameplay playlist entries.
-            // Normal defaults to yes if absent.
-            if let Some(section) = ini.section(theme_name) {
-                if section
-                    .get("Normal")
-                    .is_some_and(|v| v.eq_ignore_ascii_case("no"))
-                {
-                    return None;
-                }
-            }
-            Some(sound.clone())
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -681,144 +142,10 @@ mod tests {
         let audible = effective_music_volume(0.8, 0.5, 0.25, 1.0);
         let inactive = effective_music_volume(0.8, 0.5, 0.25, 0.0);
         let restored = effective_music_volume(0.8, 0.5, 0.25, 1.0);
-
         assert!((audible - 0.1).abs() < f32::EPSILON);
         assert_eq!(inactive, 0.0);
         assert_eq!(restored, audible);
-        // Theme/lifecycle state continues changing behind a closed primary
-        // output, then contributes at its current value when output returns.
         assert_eq!(effective_music_volume(0.8, 0.75, 0.4, 0.0), 0.0);
         assert!((effective_music_volume(0.8, 0.75, 0.4, 1.0) - 0.24).abs() < f32::EPSILON);
     }
-
-    #[test]
-    fn gsi_01_04_start_theme_resolver_uses_section_keys_not_sound_aliases() {
-        let ini = IniFile::from_str(
-            "[Themes]\n0=Fortification\n1=Power\n\
-             [Fortification]\nSound=Fortific\nNormal=yes\n\
-             [Power]\nSound=Power\nNormal=yes\n",
-        );
-        let mut sections = HashMap::new();
-        merge_theme_section_stems(&mut sections, &ini);
-
-        for requested in [None, Some("No theme"), Some("Missing"), Some("Fortific")] {
-            assert_eq!(
-                resolve_scenario_theme_section(requested, &sections),
-                ScenarioThemeRequest::Auto
-            );
-        }
-        assert_eq!(
-            resolve_scenario_theme_section(Some("fOrTiFiCaTiOn"), &sections),
-            ScenarioThemeRequest::Specific("Fortific".to_string())
-        );
-    }
-
-    #[test]
-    fn gsi_01_04_start_specific_fortific_advances_cycle_to_indeep() {
-        let playlist = ["Grinder", "Power", "Fortific", "InDeep"]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-
-        let next_index = playlist_index_after_specific(&playlist, "fOrTiFiC")
-            .expect("Fortific is in the cyclic playlist");
-
-        assert_eq!(playlist[next_index], "InDeep");
-    }
-
-    #[test]
-    fn gsi_01_04_start_explicit_and_auto_preserve_intro_until_fade_completes() {
-        for request in [
-            ScenarioThemeRequest::Auto,
-            ScenarioThemeRequest::Specific("Fortific".to_string()),
-        ] {
-            let mut transition = ScenarioThemeTransition::default();
-            transition.request(request.clone(), 125, true);
-            assert!(transition.pending.is_some(), "queueing is not inline play");
-            assert_eq!(transition.internal_scale, 1.0);
-
-            assert_eq!(transition.update(125, true), None);
-            assert_eq!(transition.internal_scale, 1.0);
-            assert_eq!(transition.update(625, true), None);
-            assert_eq!(transition.internal_scale, 0.5);
-            assert_eq!(transition.update(1_124, true), None);
-            assert!((transition.internal_scale - 0.001).abs() < f64::EPSILON * 8.0);
-            assert_eq!(transition.update(1_125, true), Some(request));
-            assert_eq!(transition.internal_scale, 0.0);
-            transition.complete_play();
-            assert_eq!(transition.internal_scale, 1.0);
-            assert!(transition.pending.is_none());
-        }
-    }
-
-    #[test]
-    fn gsi_01_04_start_without_current_stream_waits_for_next_update() {
-        let mut transition = ScenarioThemeTransition::default();
-        transition.request(ScenarioThemeRequest::Auto, 900, false);
-
-        assert!(
-            transition.pending.is_some(),
-            "request itself has no play action"
-        );
-        assert_eq!(
-            transition.update(900, false),
-            Some(ScenarioThemeRequest::Auto)
-        );
-        assert!(transition.pending.is_none());
-    }
-
-    #[test]
-    fn gsi_01_04_start_stop_or_reset_cancels_pending_and_restores_internal_scale() {
-        let mut transition = ScenarioThemeTransition::default();
-        transition.request(
-            ScenarioThemeRequest::Specific("Fortific".to_string()),
-            100,
-            true,
-        );
-        assert_eq!(transition.update(100, true), None);
-        assert_eq!(transition.update(600, true), None);
-        assert_eq!(transition.internal_scale, 0.5);
-
-        transition.cancel();
-
-        assert!(transition.pending.is_none());
-        assert_eq!(transition.internal_scale, 1.0);
-        assert_eq!(transition.update(2_000, true), None);
-    }
-
-    /// Mirrors thememd.ini [INTRO]: Sound=Drok, Repeat=yes (the looping menu
-    /// theme). Verifies we resolve the correct stem and honor Repeat=yes.
-    #[test]
-    fn menu_theme_resolves_intro_with_loop() {
-        let ini =
-            IniFile::from_str("[INTRO]\nName=THEME:Intro\nSound=Drok\nNormal=no\nRepeat=yes\n");
-        let mut aliases = HashMap::new();
-        merge_theme_aliases(&mut aliases, &ini);
-
-        let (stem, repeats) =
-            menu_theme_from_ini(&ini, &aliases).expect("INTRO theme must resolve");
-        assert_eq!(stem, "Drok");
-        assert!(repeats, "INTRO has Repeat=yes, must loop");
-    }
-
-    /// Repeat= absent defaults to no (non-looping), so we never force a loop on
-    /// a theme that did not ask for one.
-    #[test]
-    fn menu_theme_repeat_defaults_to_no() {
-        let ini = IniFile::from_str("[INTRO]\nSound=Drok\n");
-        let aliases = HashMap::new();
-        let (stem, repeats) =
-            menu_theme_from_ini(&ini, &aliases).expect("INTRO theme must resolve");
-        assert_eq!(stem, "Drok");
-        assert!(!repeats);
-    }
-
-    /// No [INTRO] section -> no menu theme.
-    #[test]
-    fn menu_theme_absent_returns_none() {
-        let ini = IniFile::from_str("[SCORE]\nSound=Score\n");
-        let aliases = HashMap::new();
-        assert!(menu_theme_from_ini(&ini, &aliases).is_none());
-    }
-
 }

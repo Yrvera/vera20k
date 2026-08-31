@@ -105,9 +105,7 @@ impl App {
                 player.set_volume(vol);
             }
             if tick.stop_music {
-                if let Some(player) = state.audio.music_player.as_mut() {
-                    player.stop();
-                }
+                state.audio.stop_theme();
             }
             if tick.finished {
                 state.frontend.quit_cascade = None;

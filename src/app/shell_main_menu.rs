@@ -560,9 +560,8 @@ impl App {
             return;
         }
         let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
-        if let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager()) {
-            player.play_menu_theme(assets);
-            player.update(assets, now_ms);
+        if let Some(assets) = state.process_assets.manager() {
+            state.audio.maintain_main_menu_theme(assets, now_ms);
         }
     }
 
