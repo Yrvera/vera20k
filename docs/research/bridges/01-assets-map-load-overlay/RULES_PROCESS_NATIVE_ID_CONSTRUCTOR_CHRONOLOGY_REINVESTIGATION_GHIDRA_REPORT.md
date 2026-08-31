@@ -806,9 +806,13 @@ without contaminating the merged Rules INI or its hash.
   data; TS gameplay is not imported. (evidence: `ini/rulesmd.ini`,
   `ini/artmd.ini`, active binary call graph)
 - `[RESOLVED] OQ-15` — `Load_Game_Rules @ 0x0052CD70` opens `ARTMD.INI` before
-  the base `Process` call at `0x0052D317`; every pass later reads the same
-  `g_ArtINI`. Rust must pass fixed Art independently of Rules layers. (evidence:
-  `0x0052D00F..0x0052D317`, `0x00679A10`)
+  the availability-gated `Process` call at `0x0052D317`, whose immediate
+  argument is the stack-local `LANGRULE.INI`, not selected `RULESMD.INI`.
+  Active stock has no LANGRULE and skips that call. Every later pass reads the
+  same `g_ArtINI`; Rust must pass fixed Art independently of Rules layers.
+  (evidence: `0x0052D00F..0x0052D317`,
+  `LOAD_GAME_RULES_COLD_START_NATIVE_REGISTRY_PRESTATE_REINVESTIGATION_GHIDRA_REPORT.md`,
+  `0x00679A10`)
 - `[RESOLVED] OQ-16` — Section 7 gives the live Rust match/omit/misorder table.
 - `[RESOLVED] OQ-17` — Final registry lengths cannot reconstruct member-major
   order, same/later-pass body activation, duplicate long-name constructors, or
@@ -946,8 +950,10 @@ The narrow implementation suite must include:
 - Active `gamemd.exe` in the connected live Ghidra project:
   `RulesClass::Process @ 0x00668BF0`, `ReadTypeData @ 0x00679A10`, and every
   constructor/reader/helper address cited above.
-- Active startup topology: `Load_Game_Rules @ 0x0052CD70`, base Process call
-  `0x0052D317`, fixed `g_ArtINI @ 0x00887180`.
+- Active startup topology: `Load_Game_Rules @ 0x0052CD70`, optional
+  stack-local LANGRULE Process call `0x0052D317`, fixed
+  `g_ArtINI @ 0x00887180`, then the caller's live Anim and Building sweeps;
+  see `LOAD_GAME_RULES_COLD_START_NATIVE_REGISTRY_PRESTATE_REINVESTIGATION_GHIDRA_REPORT.md`.
 - Native name owner: `AbstractTypeClass::Constructor @ 0x00410800`;
   `AbstractClass::AssignUniqueID @ 0x00410230`; `SideClass::Constructor @
   0x006A4550`; Side scan `0x006A46D0`.

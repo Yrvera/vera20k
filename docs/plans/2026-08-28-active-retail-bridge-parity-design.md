@@ -296,9 +296,12 @@ Where a consumer currently receives an impoverished Boolean, extend that consume
    seeds it at `1,000,000`. Let `R(W,H)=H*(2W-1)+1` be every real Size-diamond Cell plus the dummy,
    `HB(H,S)=H*(1+S)` be one House followed by every current Super, and `P` be the complete post-reset
    source-ordered first-new ID-bearing Type event stream including lazy Weapon/Bullet allocations but
-   excluding ParticleType. `E_campaign` is the optional early campaign companion/sidecar Rules
-   first-new stream; `E_multi` is the early noncampaign Countries/General first-new delta against the
-   current pre-reset registries. `P_preview` is the corresponding actual successful first-new Type
+   excluding ParticleType. Cold active stock first builds and retains the exact 1,070-event startup
+   Type-registry state; its event vector predates the Scenario cursor reset and is drained, not added
+   to the fresh-load formula. `E_campaign` is the optional early campaign companion/sidecar Rules
+   first-new stream; `E_multi` is the early noncampaign Countries -> General -> live HouseType-body
+   first-new delta against the current pre-reset registries (51 events on stock startup state).
+   `P_preview` is the corresponding actual successful first-new Type
    stream reached only by a missing/changed preview rebuild. All four symbols are ordered source- and
    prestate-dependent constructor-event streams, never counts inferred from final registries. With
    wrapping dword addition, campaign snapshots

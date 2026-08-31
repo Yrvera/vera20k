@@ -399,7 +399,8 @@ Let:
 - `E_campaign` be actual new ID-bearing types created by the optional early
   campaign companion/sidecar Rules pass before the later reset;
 - `E_multi` be actual new ID-bearing types created by the noncampaign early
-  Countries/General prepass against the process's current pre-reset registries;
+  Countries -> General -> live HouseType-body prepass against the process's
+  current pre-reset registries;
 - `H1,S0,R1` describe the disposable noncampaign House/Super and Resize pass;
 - `P` be the complete ordered post-reset base/language/mode/map type event stream;
 - `H2,S1,R2` describe the final House/Super and final map Resize pass;
@@ -407,6 +408,13 @@ Let:
 
 These symbols are actual successful constructor event counts. They are source and
 prestate inputs, not estimates.
+
+The active-stock cold owner entering the first noncampaign prepass is now closed by
+`LOAD_GAME_RULES_COLD_START_NATIVE_REGISTRY_PRESTATE_REINVESTIGATION_GHIDRA_REPORT.md`:
+startup produces 1,070 ID-bearing Type events and retained registry state, but its
+event vector predates the Scenario cursor reset and is not part of `E_multi`. Against
+that retained state, Countries -> General -> live HouseType bodies emits exactly 51
+stock `E_multi` events (E-only hash `0x45b8b69cd005937d`) before Create_Houses.
 
 #### 3.5.2 Campaign
 
