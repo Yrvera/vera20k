@@ -465,17 +465,6 @@ pub(crate) fn load_art_ini(asset_manager: &AssetManager) -> Option<(ArtRegistry,
     Some((reg, ini))
 }
 
-/// Preserve the pre-existing SystemTime mix for explicitly unverified legacy
-/// and generic loads. Accepted ordinary Windows startup never calls this path;
-/// it carries the one stored `GetTickCount` word from `match_bootstrap`.
-pub(crate) fn generate_unverified_legacy_match_seed() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    now.subsec_nanos() ^ (now.as_secs() as u32).rotate_left(16)
-}
-
 /// Scheduler asset roots required by this map's surviving runtime objects.
 ///
 /// Damage-fire roots remain part of the established closure. Terrain animation

@@ -968,8 +968,8 @@ mod tests {
         );
 
         let mut bootstrap_rng = ScenarioBootstrapRng::new(9);
-        bootstrap_rng
-            .install_pre_fill_scenario_prefix_plan(&plan)
+        let projection = bootstrap_rng
+            .install_pre_fill_scenario_prefix_plan(plan)
             .expect("matching pre-Fill prefix");
         let mut sim =
             bootstrap_rng.into_simulation(&crate::sim::scenario_session::ScenarioDescriptor {
@@ -987,7 +987,7 @@ mod tests {
             &test_height_map(),
             &terrain,
             &launch_descriptor(&session),
-            &plan,
+            &projection,
         );
 
         assert_eq!(
@@ -1003,8 +1003,8 @@ mod tests {
             )
             .and_then(|house| house.base_center),
             Some((
-                plan.final_gathered_starts()[1].rx,
-                plan.final_gathered_starts()[1].ry,
+                projection.final_gathered_starts()[1].rx,
+                projection.final_gathered_starts()[1].ry,
             ))
         );
         assert_eq!(
@@ -1425,7 +1425,10 @@ mod tests {
         .expect("complete stock-offline Scenario prefix");
 
         let loading_assignments =
-            crate::app::loading::pump::selected_map_start_assignments(&session, Some(&plan));
+            crate::app::loading::pump::selected_map_start_assignments(
+                &session,
+                Some(plan.projection()),
+            );
         assert_eq!(
             loading_assignments,
             vec![
@@ -1443,8 +1446,8 @@ mod tests {
         );
 
         let mut bootstrap_rng = ScenarioBootstrapRng::new(launch_seed);
-        bootstrap_rng
-            .install_pre_fill_scenario_prefix_plan(&plan)
+        let projection = bootstrap_rng
+            .install_pre_fill_scenario_prefix_plan(plan)
             .expect("fresh launch cursor matches plan prestate");
         let descriptor = crate::sim::scenario_session::ScenarioDescriptor {
             seed: launch_seed,
@@ -1470,7 +1473,7 @@ mod tests {
             &test_height_map(),
             &terrain,
             &launch_descriptor(&session),
-            &plan,
+            &projection,
         );
         assert_eq!(result.active_slots, 2);
         let table_owner = |start_idx| {
