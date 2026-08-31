@@ -4,6 +4,12 @@
 //! collision-free stable handles and of every RNG stream. Constructors
 //! preincrement it; they neither search for nor prevent duplicate values.
 
+use crate::map::tubes::{
+    NativeMapTubeReceipt, RawTubeSection, TubeConstructionError, construct_raw_tube_section,
+};
+use crate::rules::ini_parser::IniFile;
+use crate::sim::world::Simulation;
+
 pub(crate) const FRESH_SCENARIO_NATIVE_ID_SEED: u32 = 1_000_000;
 pub(crate) const MAP_READ_NATIVE_ID_RESERVATION: u32 = 0x2710;
 
@@ -66,6 +72,58 @@ impl NativeUniqueIdCursor {
 pub(crate) enum NativeIdentityError {
     #[error("fresh native-ID map-read reservation was already applied")]
     MapReadReservationAlreadyApplied,
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum NativeMapTubeConstructionError {
+    #[error("fresh Simulation has no native-ID cursor installed")]
+    MissingFreshCursor,
+    #[error("fresh Simulation already owns a raw [Tubes] receipt")]
+    ReceiptAlreadyInstalled,
+    #[error(transparent)]
+    Identity(#[from] NativeIdentityError),
+    #[error(transparent)]
+    Tube(#[from] TubeConstructionError),
+}
+
+impl Simulation {
+    /// Apply the one gameplay map-read reservation and construct every raw
+    /// `[Tubes]` row in source order. This runs only after fallible asset-root
+    /// discovery, so an earlier asset error leaves the saved prefix untouched.
+    pub(crate) fn construct_native_map_tubes(
+        &mut self,
+        map_ini: &IniFile,
+    ) -> Result<(), NativeMapTubeConstructionError> {
+        self.construct_native_map_tubes_with_allocator(map_ini, |_| true)
+    }
+
+    fn construct_native_map_tubes_with_allocator(
+        &mut self,
+        map_ini: &IniFile,
+        mut allocate: impl FnMut(usize) -> bool,
+    ) -> Result<(), NativeMapTubeConstructionError> {
+        if self.native_map_tubes.is_some() {
+            return Err(NativeMapTubeConstructionError::ReceiptAlreadyInstalled);
+        }
+        let cursor = self
+            .native_unique_ids
+            .as_mut()
+            .ok_or(NativeMapTubeConstructionError::MissingFreshCursor)?;
+        cursor.reserve_map_read_from_saved()?;
+
+        let raw_section = RawTubeSection::from_ini(map_ini);
+        let receipt = self
+            .native_map_tubes
+            .insert(NativeMapTubeReceipt::default());
+        let mut assign_native_id = || cursor.next_id();
+        construct_raw_tube_section(
+            raw_section,
+            receipt,
+            &mut allocate,
+            &mut assign_native_id,
+        )?;
+        Ok(())
+    }
 }
 
 /// Consumed-once native-ID half of the stock-offline pre-Fill plan.
@@ -169,8 +227,18 @@ fn resize_constructor_count(map_width: u32, map_height: u32) -> u32 {
 mod tests {
     use super::{
         MAP_READ_NATIVE_ID_RESERVATION, NativeFreshIdPrefixCheckpoints,
+        NativeMapTubeConstructionError, NativeUniqueIdCursor,
         build_noncampaign_fresh_id_prefix,
     };
+    use crate::map::tubes::{AllocatedTubeParseError, TubeConstructionError};
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::world::Simulation;
+
+    fn simulation_with_saved_prefix(saved: u32) -> Simulation {
+        let mut simulation = Simulation::with_seed(0);
+        simulation.native_unique_ids = Some(NativeUniqueIdCursor::from_saved_prefix(saved));
+        simulation
+    }
 
     #[test]
     fn fixture_b_folds_both_house_and_resize_generations_in_order() {
@@ -201,5 +269,184 @@ mod tests {
         );
         assert_eq!(cursor.current_raw(), 0x0000_2700);
         assert!(cursor.reserve_map_read_from_saved().is_err());
+    }
+
+    #[test]
+    fn raw_tubes_reserve_then_assign_every_source_row_in_order() {
+        let ini = IniFile::from_str(
+            "[Tubes]\n\
+             7=7,0,6,4,0,6,6,-1\n\
+             2=2,0,2,5,0,2,2,-1\n",
+        );
+        let mut simulation = simulation_with_saved_prefix(1_000_037);
+
+        simulation.construct_native_map_tubes(&ini).unwrap();
+
+        assert_eq!(
+            simulation.native_unique_ids.as_ref().unwrap().current_raw(),
+            1_010_039
+        );
+        let receipt = simulation.native_map_tubes.as_ref().unwrap();
+        assert_eq!(receipt.entries.len(), 2);
+        assert_eq!(
+            receipt.entries[0].native_init.source_entry_ordinal,
+            0
+        );
+        assert_eq!(
+            receipt.entries[0].native_init.native_unique_id,
+            1_010_038
+        );
+        assert_eq!(receipt.entries[0].fact.entry, (7, 0));
+        assert_eq!(
+            receipt.entries[1].native_init.source_entry_ordinal,
+            1
+        );
+        assert_eq!(
+            receipt.entries[1].native_init.native_unique_id,
+            1_010_039
+        );
+        assert_eq!(receipt.entries[1].fact.entry, (2, 0));
+    }
+
+    #[test]
+    fn allocated_malformed_tube_spends_one_id_then_stops_the_section() {
+        let ini = IniFile::from_str(
+            "[Tubes]\n\
+             first=7,0,6,4,0,6,6,-1\n\
+             bad=1,2,2,4,2,2,2\n\
+             later=7,0,6,4,0,6,6,-1\n",
+        );
+        let mut simulation = simulation_with_saved_prefix(1_000_037);
+        let mut allocation_visits = Vec::new();
+
+        let error = simulation
+            .construct_native_map_tubes_with_allocator(&ini, |source| {
+                allocation_visits.push(source);
+                true
+            })
+            .unwrap_err();
+
+        assert_eq!(allocation_visits, vec![0, 1]);
+        assert_eq!(
+            error,
+            NativeMapTubeConstructionError::Tube(
+                TubeConstructionError::AllocatedRowMalformed {
+                    ordinal: 1,
+                    native_unique_id: 1_010_039,
+                    error: AllocatedTubeParseError::PathRunsOutBeforeNativeStop,
+                }
+            )
+        );
+        assert_eq!(
+            simulation.native_unique_ids.as_ref().unwrap().current_raw(),
+            1_010_039
+        );
+        let receipt = simulation.native_map_tubes.as_ref().unwrap();
+        assert_eq!(receipt.entries.len(), 1);
+        assert_eq!(receipt.entries[0].native_init.source_entry_ordinal, 0);
+        assert_eq!(
+            receipt.entries[0].native_init.native_unique_id,
+            1_010_038
+        );
+    }
+
+    #[test]
+    fn tube_allocation_null_spends_no_id_then_stops_the_section() {
+        let ini = IniFile::from_str(
+            "[Tubes]\n\
+             null=1,2,2,4,2,2,2,-1\n\
+             later=7,0,6,4,0,6,6,-1\n",
+        );
+        let mut simulation = simulation_with_saved_prefix(1_000_037);
+        let mut allocation_visits = Vec::new();
+
+        let error = simulation
+            .construct_native_map_tubes_with_allocator(&ini, |source| {
+                allocation_visits.push(source);
+                false
+            })
+            .unwrap_err();
+
+        assert_eq!(allocation_visits, vec![0]);
+        assert_eq!(
+            error,
+            NativeMapTubeConstructionError::Tube(TubeConstructionError::AllocationNull {
+                ordinal: 0,
+            })
+        );
+        assert_eq!(
+            simulation.native_unique_ids.as_ref().unwrap().current_raw(),
+            1_010_037
+        );
+        assert!(
+            simulation
+                .native_map_tubes
+                .as_ref()
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn filtered_convenience_tubes_are_not_native_identity_authority() {
+        let ini = IniFile::from_str(
+            "[Tubes]\n\
+             malformed=1,2,2,4,2,2,2\n\
+             valid=7,0,6,4,0,6,6,-1\n",
+        );
+        assert_eq!(crate::map::tubes::parse_tubes(&ini).len(), 1);
+        let mut simulation = simulation_with_saved_prefix(1_000_018);
+
+        let error = simulation.construct_native_map_tubes(&ini).unwrap_err();
+
+        assert_eq!(
+            error,
+            NativeMapTubeConstructionError::Tube(
+                TubeConstructionError::AllocatedRowMalformed {
+                    ordinal: 0,
+                    native_unique_id: 1_010_019,
+                    error: AllocatedTubeParseError::PathRunsOutBeforeNativeStop,
+                }
+            )
+        );
+        assert_eq!(
+            simulation.native_unique_ids.as_ref().unwrap().current_raw(),
+            1_010_019
+        );
+        assert!(
+            simulation
+                .native_map_tubes
+                .as_ref()
+                .unwrap()
+                .entries
+                .is_empty(),
+            "the later convenience fact must never become a native binding"
+        );
+    }
+
+    #[test]
+    fn empty_tube_section_still_consumes_the_one_map_read_reservation() {
+        let ini = IniFile::from_str("[Map]\nSize=0,0,2,3\n");
+        let mut simulation = simulation_with_saved_prefix(0xFFFF_FFF0);
+
+        simulation.construct_native_map_tubes(&ini).unwrap();
+
+        assert_eq!(
+            simulation.native_unique_ids.as_ref().unwrap().current_raw(),
+            0x0000_2700
+        );
+        assert!(
+            simulation
+                .native_map_tubes
+                .as_ref()
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+        assert_eq!(
+            simulation.construct_native_map_tubes(&ini).unwrap_err(),
+            NativeMapTubeConstructionError::ReceiptAlreadyInstalled
+        );
     }
 }

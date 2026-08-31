@@ -2042,6 +2042,14 @@ pub(crate) fn load_map_from_initial(
             resolved_terrain.height(),
         );
     }
+    let variant_table_generated = variant_selector.generated_table();
+    let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();
+    let variant_table_draws = variant_selector.raw_draw_count();
+    drop(variant_selector);
+    drop(variant_draw);
+    drop(scenario_fill_ranged);
+    drop(variant_main_rng);
+    drop(scenario_fill_rng);
     // Bind the complete scheduler closure only after theater Tile##Anim rows
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.
@@ -2063,14 +2071,16 @@ pub(crate) fn load_map_from_initial(
         );
         r.bind_animation_sequences(&infantry_sequences);
     }
-    let variant_table_generated = variant_selector.generated_table();
-    let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();
-    let variant_table_draws = variant_selector.raw_draw_count();
-    drop(variant_selector);
-    drop(variant_draw);
-    drop(scenario_fill_ranged);
-    drop(variant_main_rng);
-    drop(scenario_fill_rng);
+    // `Read_Map_Section_And_IsoMapPacks @ 0x004ACE70` snapshots the fresh
+    // prefix before theater Tile##Anim resolution, then sets the cursor from
+    // that snapshot plus 0x2710. Only after that reservation does
+    // `MapClass::ReadTubesINI @ 0x007283C0` allocate, assign, and parse each
+    // raw row. Keep these successful bindings separate from the existing
+    // convenience topology; its later owning transaction consumes the IDs
+    // without allocating again.
+    staged_simulation
+        .construct_native_map_tubes(&map_data.ini)
+        .map_err(|error| anyhow::anyhow!("failed native [Tubes] construction: {error}"))?;
     // Launch-time `.SED` generation already chose all geometry. Replay only
     // its Techno constructor effects now, after the Full-Init stock-offline
     // prefix and terrain Fill, on the one Scenario owner later moved into Simulation.

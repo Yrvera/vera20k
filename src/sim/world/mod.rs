@@ -679,6 +679,11 @@ pub struct Simulation {
     /// They are load-transient until persistence behavior is separately proved.
     #[serde(skip, default)]
     pub(crate) native_unique_ids: Option<crate::sim::native_identity::NativeUniqueIdCursor>,
+    /// Successful raw `[Tubes]` constructor bindings from this fresh map read.
+    /// Kept separate from resolved topology so its later owning transaction
+    /// can consume the already-assigned IDs without recounting filtered facts.
+    #[serde(skip, default)]
+    pub(crate) native_map_tubes: Option<crate::map::tubes::NativeMapTubeReceipt>,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
     /// Static alliance graph derived from map house data.
@@ -2976,6 +2981,7 @@ impl Simulation {
             main_rng: SimRng::new(seed),
             mapgen_rng: SimRng::new(0),
             native_unique_ids: None,
+            native_map_tubes: None,
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
