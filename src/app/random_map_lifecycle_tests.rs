@@ -157,6 +157,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         0x0412_0003,
         None,
         None,
+        None,
         skirmish_global_defaults(&SkirmishShellState::default()),
     );
     let shared_cell_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();

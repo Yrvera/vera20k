@@ -1415,6 +1415,7 @@ mod tests {
                 0x0412_959B,
                 None,
                 None,
+                None,
                 crate::app::frontend::skirmish_session::skirmish_global_defaults(
                     &crate::ui::skirmish_shell::SkirmishShellState::default(),
                 ),

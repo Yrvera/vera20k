@@ -794,6 +794,12 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 }
             };
             let startup = session.request.take_startup();
+            if !state.process_assets.has_native_rules() {
+                restore_job_asset_manager(state, &mut session);
+                return LoadingPump::Failed(anyhow::anyhow!(
+                    "loading requires the process-resident native Rules owner"
+                ));
+            }
             let Some(asset_manager) = session.job.asset_manager.as_mut() else {
                 restore_job_asset_manager(state, &mut session);
                 return LoadingPump::Failed(anyhow::anyhow!(
@@ -801,6 +807,10 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 ));
             };
             let shared_cell_dummy = state.process_assets.shared_cell_dummy.clone();
+            let (native_rules_owner, tile_variant_selector_cache) =
+                state.process_assets.native_rules_mut_with_tile_cache();
+            let native_rules_owner = native_rules_owner
+                .expect("native Rules availability checked before split borrow");
             let load_result = match session.native.as_mut() {
                 // Only repaint when the atlas is present; without it the bar
                 // cannot draw, so fall back to the gate-only sink.
@@ -837,8 +847,9 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
+                        native_rules_owner,
                         shared_cell_dummy.clone(),
-                        &mut state.process_assets.tile_variant_selector_cache,
+                        tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -860,8 +871,9 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
+                        native_rules_owner,
                         shared_cell_dummy.clone(),
-                        &mut state.process_assets.tile_variant_selector_cache,
+                        tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -876,8 +888,9 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     false,
                     0,
                     state.renderer.vxl_compute.as_mut(),
+                    native_rules_owner,
                     shared_cell_dummy,
-                    &mut state.process_assets.tile_variant_selector_cache,
+                    tile_variant_selector_cache,
                     &mut NoopProgressSink,
                 ),
             };

@@ -25,6 +25,7 @@ use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::{
     IniFile, NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack,
 };
+use crate::rules::process_owner::NativeRulesProcessOwner;
 use crate::rules::ruleset::RuleSet;
 
 use crate::sim::world::Simulation;
@@ -285,9 +286,6 @@ impl LoadedRules {
         )
     }
 
-    fn into_rules_discarding_native_receipt(self) -> RuleSet {
-        self.rules
-    }
 }
 
 /// Compose the active YR rules passes in retail order.
@@ -328,8 +326,72 @@ fn load_retail_rules_root(asset_manager: &AssetManager) -> Option<(IniFile, Opti
     Some((rulesmd, langrule))
 }
 
-pub(crate) fn load_retail_rules_source(asset_manager: &AssetManager) -> Option<IniFile> {
-    load_retail_rules_source_with_fixed_art(asset_manager).map(|(rules, _fixed_art)| rules)
+/// Cold-start native Rules authority plus the one shell compatibility
+/// projection derived from the same selected INI snapshots.
+pub(crate) struct StartupRulesLoad {
+    compatibility_rules: Option<RuleSet>,
+    compatibility_projection: Option<IniFile>,
+    native_owner: NativeRulesProcessOwner,
+}
+
+impl StartupRulesLoad {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Option<RuleSet>,
+        Option<IniFile>,
+        NativeRulesProcessOwner,
+    ) {
+        (
+            self.compatibility_rules,
+            self.compatibility_projection,
+            self.native_owner,
+        )
+    }
+}
+
+/// Select RULESMD/LANGRULE/ARTMD once and reproduce cold native construction.
+///
+/// The shell-facing projection is deliberately separate. If its typed Rust
+/// parse fails, native process ownership still survives instead of being
+/// reconstructed later from a `RuleSet`.
+pub(crate) fn load_startup_rules(asset_manager: &AssetManager) -> Option<StartupRulesLoad> {
+    let (rulesmd, langrule) = load_retail_rules_root(asset_manager)?;
+    let fixed_art = load_retail_ini(asset_manager, "artmd.ini").or_else(|| {
+        log::warn!("artmd.ini not found or could not be parsed during native rules startup");
+        None
+    })?;
+    let native_owner = NativeRulesProcessOwner::from_cold_start_sources(
+        rulesmd,
+        langrule,
+        fixed_art,
+    )
+    .map_err(|error| log::warn!("Native rules cold startup failed: {error}"))
+    .ok()?;
+
+    let (compatibility_rules, compatibility_projection) =
+        match native_owner.startup_compatibility_projection() {
+            Ok(processed) => {
+                let compatibility_rules = RuleSet::from_processed_rules(&processed)
+                    .map_err(|error| {
+                        log::warn!("Failed to parse startup rules projection: {error}")
+                    })
+                    .ok();
+                let compatibility_projection =
+                    processed.into_projection_discarding_native_receipt();
+                (compatibility_rules, Some(compatibility_projection))
+            }
+            Err(error) => {
+                log::warn!("Failed to build startup rules projection: {error}");
+                (None, None)
+            }
+        };
+
+    Some(StartupRulesLoad {
+        compatibility_rules,
+        compatibility_projection,
+        native_owner,
+    })
 }
 
 fn load_retail_rules_source_with_fixed_art(
@@ -435,46 +497,6 @@ pub(crate) fn load_rules_with_merged_ini(
             None
         }
     }
-}
-
-/// Load the merged rules for callers that do not need the transient source.
-pub(crate) fn load_rules_ini(
-    asset_manager: &AssetManager,
-    mode_rules_override: Option<&IniFile>,
-    map_rules_overrides: Option<&IniFile>,
-) -> Option<RuleSet> {
-    load_rules_with_merged_ini(asset_manager, mode_rules_override, map_rules_overrides)
-        .map(LoadedRules::into_rules_discarding_native_receipt)
-}
-
-/// Seed dialog 0x102's Credits/Unit Count trackbar bounds from
-/// `[MultiplayerDialogSettings]`, mirroring gamemd reading MinMoney/MaxMoney/
-/// MoneyIncrement and MinUnitCount/MaxUnitCount from the live Rules instance when
-/// it builds the skirmish dialog. The startup RULESMD/LANGRULE passes are the
-/// authority. Falls back to stock constants only when retail data is unavailable.
-pub(crate) fn load_skirmish_trackbar_bounds(
-    asset_manager: &AssetManager,
-) -> crate::ui::skirmish_shell::SkirmishTrackbarBounds {
-    use crate::ui::skirmish_shell::SkirmishTrackbarBounds;
-
-    let Some(ini) = load_retail_rules_source(asset_manager) else {
-        return SkirmishTrackbarBounds::default();
-    };
-    SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini)
-}
-
-/// Seed the per-match option values from `[MultiplayerDialogSettings]`,
-/// mirroring the original reading this section once into the rules data that
-/// both the skirmish setup dialog and the launched match read from.
-pub(crate) fn load_skirmish_game_options(
-    asset_manager: &AssetManager,
-) -> crate::sim::game_options::GameOptions {
-    use crate::sim::game_options::GameOptions;
-
-    let Some(ini) = load_retail_rules_source(asset_manager) else {
-        return GameOptions::default();
-    };
-    GameOptions::from_multiplayer_dialog_settings(&ini)
 }
 
 fn load_retail_ini(asset_manager: &AssetManager, name: &str) -> Option<IniFile> {

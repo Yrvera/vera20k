@@ -105,6 +105,7 @@ impl OfflineSkirmishRuntime {
         seed: u32,
         ra2_dir: Option<&Path>,
         assets: Option<&AssetManager>,
+        startup_rules_projection: Option<&crate::rules::ini_parser::IniFile>,
         defaults: SkirmishGlobalDefaults,
     ) -> Self {
         let mut scenario_rng = SimRng::new(u64::from(seed));
@@ -122,8 +123,8 @@ impl OfflineSkirmishRuntime {
                     log::warn!("Could not construct Cooperative progress state: {err}");
                     CooperativeProgressState::default()
                 });
-        let cooperative_country_roster = assets
-            .map(cooperative_country_roster_from_assets)
+        let cooperative_country_roster = startup_rules_projection
+            .map(cooperative_country_roster_from_rules)
             .unwrap_or_else(stock_cooperative_country_roster);
         let ini_path = ra2_dir.map(|root| root.join(RA2MD_INI));
         let (snapshot, local_preferences) = load_persistence(ini_path.as_deref(), defaults);
@@ -791,17 +792,15 @@ fn menu_country_item_data(country: SkirmishCountry) -> i32 {
         .unwrap_or(0)
 }
 
-fn cooperative_country_roster_from_assets(
-    assets: &AssetManager,
+fn cooperative_country_roster_from_rules(
+    rules: &crate::rules::ini_parser::IniFile,
 ) -> Vec<CooperativeCountryRosterEntry> {
-    let rules = crate::app::loading::init_helpers::load_retail_rules_source(assets);
     SkirmishCountry::ALL
         .into_iter()
         .map(|country| {
             let id = country.country_name();
             let name = rules
-                .as_ref()
-                .and_then(|ini| ini.section(id))
+                .section(id)
                 .and_then(|section| section.get("Name"));
             CooperativeCountryRosterEntry::new(id, name)
         })

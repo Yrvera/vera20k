@@ -9,7 +9,7 @@
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::{
     IniFile, NativeRulesRegistryState, NativeTypeConstructionEvent,
-    NativeTypeConstructionTrace, RulesLayerKind, RulesLayerStack,
+    NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack,
     process_native_noncampaign_rules_prepass, process_native_rules_cold_start,
 };
 use crate::rules::ruleset::RuleSet;
@@ -64,6 +64,10 @@ impl NativeRulesPhaseReceipt {
     pub(crate) fn allocated_super_weapon_type_count(&self) -> usize {
         self.allocated_super_weapon_type_count
     }
+
+    pub(crate) fn into_parts(self) -> (Vec<NativeTypeConstructionEvent>, usize) {
+        (self.events, self.allocated_super_weapon_type_count)
+    }
 }
 
 /// The exact constructor receipts on the two sides of Full_Init's destructive
@@ -81,6 +85,10 @@ impl NativeScenarioRulesReceipt {
 
     pub(crate) fn post_reset(&self) -> &NativeRulesPhaseReceipt {
         &self.post_reset
+    }
+
+    pub(crate) fn into_parts(self) -> (NativeRulesPhaseReceipt, NativeRulesPhaseReceipt) {
+        (self.pre_reset, self.post_reset)
     }
 }
 
@@ -139,9 +147,11 @@ impl NativeRulesProcessOwner {
 
     /// Build the shell-facing compatibility projection without changing the
     /// one native registry owner.
-    pub(crate) fn startup_compatibility_rules(&self) -> Result<RuleSet, RulesError> {
-        let processed = self.startup_layers().process_with_fixed_art(&self.sources.fixed_art)?;
-        RuleSet::from_processed_rules(&processed)
+    pub(crate) fn startup_compatibility_projection(
+        &self,
+    ) -> Result<ProcessedRulesLayers, RulesError> {
+        self.startup_layers()
+            .process_with_fixed_art(&self.sources.fixed_art)
     }
 
     /// Execute the active noncampaign Full_Init Rules chronology in place.

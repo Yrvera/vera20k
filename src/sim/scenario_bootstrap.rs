@@ -337,8 +337,18 @@ pub(crate) struct PreFillScenarioPrefixPlan {
     scenario_rng_before_fingerprint: u64,
     scenario_rng_after: SimRngLogicalState,
     scenario_rng_after_cursor: SimRng,
+    native_resize_width: u32,
+    native_resize_height: u32,
     #[cfg(test)]
     rng_checkpoints: ScenarioPrefixRngCheckpoints,
+}
+
+/// Paired Scenario-RNG and native numeric-ID prefix for one supported fresh
+/// stock-offline Full_Init. Neither half can reach production independently.
+#[derive(Debug)]
+pub(crate) struct BoundStockOfflineFreshPrefixPlan {
+    scenario: PreFillScenarioPrefixPlan,
+    native_ids: crate::sim::native_identity::NativeFreshIdPrefixReceipt,
 }
 
 /// Draw-free stock-offline state retained after the prefix cursor receipt is
@@ -417,6 +427,33 @@ impl PreFillScenarioPrefixPlan {
         &self.rng_checkpoints
     }
 
+    /// Bind the move-only E/P Rules chronology to the already-validated House,
+    /// Resize, and Scenario prefix. Type/House/Cell constructors advance only
+    /// the independent native-ID cursor; Scenario RNG remains byte-for-byte
+    /// owned by this plan.
+    pub(crate) fn bind_native_rules_receipt(
+        self,
+        receipt: crate::rules::process_owner::NativeScenarioRulesReceipt,
+    ) -> BoundStockOfflineFreshPrefixPlan {
+        let (early, rebuilt) = receipt.into_parts();
+        let (early_events, first_super_weapon_type_count) = early.into_parts();
+        let (rebuilt_events, final_super_weapon_type_count) = rebuilt.into_parts();
+        let native_ids = crate::sim::native_identity::build_noncampaign_fresh_id_prefix(
+            early_events.len(),
+            first_super_weapon_type_count,
+            self.first_house_timers.len(),
+            rebuilt_events.len(),
+            final_super_weapon_type_count,
+            self.second_house_timers.len(),
+            self.native_resize_width,
+            self.native_resize_height,
+        );
+        BoundStockOfflineFreshPrefixPlan {
+            scenario: self,
+            native_ids,
+        }
+    }
+
     /// Validate and transfer the one pre-loading RNG prefix to the stream that
     /// later terrain Fill and Simulation construction will continue.
     fn install_before_terrain(
@@ -434,6 +471,21 @@ impl PreFillScenarioPrefixPlan {
         *scenario_rng = self.scenario_rng_after_cursor;
         debug_assert_eq!(scenario_rng.logical_state(), self.scenario_rng_after);
         Ok(self.projection)
+    }
+}
+
+impl BoundStockOfflineFreshPrefixPlan {
+    pub(crate) fn projection(&self) -> &StockOfflinePrefixProjection {
+        self.scenario.projection()
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        PreFillScenarioPrefixPlan,
+        crate::sim::native_identity::NativeFreshIdPrefixReceipt,
+    ) {
+        (self.scenario, self.native_ids)
     }
 }
 
@@ -556,6 +608,8 @@ pub(crate) fn prepare_stock_offline_scenario_prefix_plan(
         scenario_rng_before_fingerprint,
         scenario_rng_after,
         scenario_rng_after_cursor: scenario_rng,
+        native_resize_width: map_data.header.width,
+        native_resize_height: map_data.header.height,
         #[cfg(test)]
         rng_checkpoints: ScenarioPrefixRngCheckpoints {
             after_first_house_pass,
@@ -2143,11 +2197,26 @@ impl ScenarioBootstrapRng {
     }
 
     /// Install the already-resolved stock-offline pre-Fill prefix exactly once.
+    #[cfg(test)]
     pub(crate) fn install_pre_fill_scenario_prefix_plan(
         &mut self,
         plan: PreFillScenarioPrefixPlan,
     ) -> Result<StockOfflinePrefixProjection, PreFillScenarioPrefixPlanError> {
         plan.install_before_terrain(&mut self.scenario)
+    }
+
+    /// Consume the paired stock-offline RNG/native-ID prefix into the one staged
+    /// Simulation before terrain Fill.
+    pub(crate) fn into_stock_offline_staged_simulation(
+        mut self,
+        descriptor: &ScenarioDescriptor,
+        bound_prefix: BoundStockOfflineFreshPrefixPlan,
+    ) -> Result<(Simulation, StockOfflinePrefixProjection), PreFillScenarioPrefixPlanError> {
+        let (scenario_prefix, native_id_prefix) = bound_prefix.into_parts();
+        let projection = scenario_prefix.install_before_terrain(&mut self.scenario)?;
+        let mut simulation = self.into_simulation(descriptor);
+        simulation.native_unique_ids = Some(native_id_prefix.into_cursor());
+        Ok((simulation, projection))
     }
 
     /// Borrow the two independent load-time consumers without exposing either
@@ -3059,6 +3128,66 @@ mod tests {
         let map = prefix_map_with_starts(&starts);
         let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
             .unwrap();
+
+        let native_plan =
+            prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed).unwrap();
+        let mut native_rules =
+            crate::rules::process_owner::NativeRulesProcessOwner::from_cold_start_sources(
+                IniFile::from_bytes(b"").unwrap(),
+                None,
+                IniFile::from_bytes(b"").unwrap(),
+            )
+            .unwrap();
+        let native_load = native_rules
+            .load_noncampaign_scenario(None, &map.ini)
+            .unwrap();
+        let (_, _, _, receipt) = native_load.into_parts();
+        let early_count = receipt.pre_reset().event_count() as u32;
+        let first_super_count = receipt.pre_reset().allocated_super_weapon_type_count() as u32;
+        let rebuilt_count = receipt.post_reset().event_count() as u32;
+        let final_super_count = receipt.post_reset().allocated_super_weapon_type_count() as u32;
+        let bound_native = native_plan.bind_native_rules_receipt(receipt);
+        let native_checkpoints = bound_native.native_ids.checkpoints();
+        let resize_count = map
+            .header
+            .height
+            .wrapping_mul(map.header.width.wrapping_mul(2).wrapping_sub(1))
+            .wrapping_add(1);
+        assert_eq!(
+            native_checkpoints.after_early_types,
+            1_000_000 + early_count
+        );
+        assert_eq!(
+            native_checkpoints.after_first_house_generation,
+            native_checkpoints
+                .after_early_types
+                .wrapping_add(6 * (1 + first_super_count)),
+            "observer, both valid AI rows, ordinary human, Neutral, and Special all construct"
+        );
+        assert_eq!(
+            native_checkpoints.after_first_resize,
+            native_checkpoints
+                .after_first_house_generation
+                .wrapping_add(resize_count),
+            "the first native Cell generation uses [Map] Size and includes the dummy"
+        );
+        assert_eq!(
+            native_checkpoints.after_rebuilt_types,
+            native_checkpoints.after_first_resize.wrapping_add(rebuilt_count)
+        );
+        assert_eq!(
+            native_checkpoints.after_final_house_generation,
+            native_checkpoints
+                .after_rebuilt_types
+                .wrapping_add(6 * (1 + final_super_count))
+        );
+        assert_eq!(
+            native_checkpoints.after_final_resize,
+            native_checkpoints
+                .after_final_house_generation
+                .wrapping_add(resize_count),
+            "the same live Cell identities reconstruct in the second Resize generation"
+        );
 
         let mut reference = SimRng::new(u64::from(seed));
         let first_timers: Vec<_> = (0..6)

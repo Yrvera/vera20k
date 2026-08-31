@@ -674,6 +674,11 @@ pub struct Simulation {
     /// retention remains UNCHECKED.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) mapgen_rng: SimRng,
+    /// Independent wrapping `AbstractClass+0x10` identity during fresh load.
+    /// Native numeric IDs may duplicate and are neither stable handles nor RNG.
+    /// They are load-transient until persistence behavior is separately proved.
+    #[serde(skip, default)]
+    pub(crate) native_unique_ids: Option<crate::sim::native_identity::NativeUniqueIdCursor>,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
     /// Static alliance graph derived from map house data.
@@ -2970,6 +2975,7 @@ impl Simulation {
             scenario_rng: SimRng::new(seed),
             main_rng: SimRng::new(seed),
             mapgen_rng: SimRng::new(0),
+            native_unique_ids: None,
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),

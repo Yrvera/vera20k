@@ -1777,6 +1777,7 @@ pub(crate) fn load_map_from_initial(
     theater_cache_mismatch: bool,
     runtime_color_scheme_count: usize,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+    native_rules_owner: &mut crate::rules::process_owner::NativeRulesProcessOwner,
     shared_cell_dummy: crate::map::resolved_terrain::SharedCellDummy,
     tile_variant_selector_cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
     progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
@@ -1850,32 +1851,32 @@ pub(crate) fn load_map_from_initial(
         if override_file.is_empty() {
             None
         } else {
-            asset_manager
+            let (data, source) = asset_manager
                 .get_with_source(override_file)
-                .and_then(|(data, source)| {
-                    log::info!(
-                        "Loading game-mode rules override {} ({} bytes) from {}",
-                        override_file,
-                        data.len(),
-                        source
-                    );
-                    IniFile::from_bytes(&data)
-                        .map_err(|err| {
-                            log::warn!("Failed to parse game-mode override {override_file}: {err}")
-                        })
-                        .ok()
-                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "selected game-mode rules override {override_file} is unavailable"
+                    )
+                })?;
+            log::info!(
+                "Loading game-mode rules override {} ({} bytes) from {}",
+                override_file,
+                data.len(),
+                source
+            );
+            Some(IniFile::from_bytes(&data).map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to parse selected game-mode override {override_file}: {error}"
+                )
+            })?)
         }
     };
-    let (loaded_rules, rules_ini, native_type_construction_trace, fixed_art_ini) =
-        load_rules_with_merged_ini(
-            &asset_manager,
-            mode_override_ini.as_ref(),
-            Some(&map_data.ini),
-        )
-        .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?
+    let (loaded_rules, rules_ini, fixed_art_ini, native_rules_receipt) = native_rules_owner
+        .load_noncampaign_scenario(mode_override_ini.as_ref(), &map_data.ini)
+        .map_err(|error| anyhow::anyhow!("failed native noncampaign rules rebuild: {error}"))?
         .into_parts();
-    let _native_type_construction_trace = native_type_construction_trace;
+    let bound_scenario_prefix =
+        scenario_prefix_plan.bind_native_rules_receipt(native_rules_receipt);
     let fixed_team_ai_ini =
         crate::app::loading::init_helpers::load_retail_team_ai_source(&asset_manager)
             .ok_or_else(|| anyhow::anyhow!("failed to load active YR aimd.ini"))?;
@@ -1958,10 +1959,6 @@ pub(crate) fn load_map_from_initial(
     if let Some(continuation) = mapgen_rng_continuation {
         bootstrap_rng.install_generated_mapgen_continuation(continuation);
     }
-    // Native resolves both House passes and both selected-mode start callbacks
-    // before Fill. Consume that complete cursor receipt exactly once.
-    let scenario_prefix_projection =
-        bootstrap_rng.install_pre_fill_scenario_prefix_plan(scenario_prefix_plan)?;
     let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
         seed: match_seed,
         map_name: skirmish_launch_session
@@ -1983,7 +1980,7 @@ pub(crate) fn load_map_from_initial(
         local_height: map_data.header.local_height as u16,
         mp_start_waypoints: scenario_start_waypoints_for_load(
             &map_data,
-            Some(&scenario_prefix_projection),
+            Some(bound_scenario_prefix.projection()),
         ),
         lighting: crate::sim::scenario_session::ScenarioLightingState::new(
             crate::sim::scenario_session::ScenarioLightProfileUnits {
@@ -2005,9 +2002,10 @@ pub(crate) fn load_map_from_initial(
         ),
     };
     log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
-    // Consume the bootstrap owner here: Fill and every later load constructor
-    // now mutate the same Simulation identity that reaches gameplay.
-    let mut staged_simulation = bootstrap_rng.into_simulation(&scenario_descriptor);
+    // Consume the paired RNG/native-ID prefix here: Fill and every later load
+    // constructor now mutate the same Simulation identity that reaches gameplay.
+    let (mut staged_simulation, scenario_prefix_projection) = bootstrap_rng
+        .into_stock_offline_staged_simulation(&scenario_descriptor, bound_scenario_prefix)?;
     staged_simulation.bind_shared_cell_dummy(shared_cell_dummy.clone());
     let (mut scenario_fill_rng, mut variant_main_rng) = staged_simulation.terrain_load_draws();
     let mut scenario_fill_ranged =
