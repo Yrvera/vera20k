@@ -58,6 +58,23 @@ pub(crate) enum OverlayLoadSource {
     GeneratedMaterialized,
 }
 
+/// Controls whether Fill stops at pristine CellClass materialization or also
+/// performs the legacy eager projection retained for synthetic/generated
+/// callers. Active authored loads execute LAT, OverlayClass::Mark, Recalc,
+/// Terrain occupation, tile Anim construction, CliffBack, and Tube creation at
+/// their native later seams, so none of those effects belong in Fill itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerrainBuildProjection {
+    EagerCompatibility,
+    PendingAuthored,
+}
+
+impl TerrainBuildProjection {
+    const fn is_eager(self) -> bool {
+        matches!(self, Self::EagerCompatibility)
+    }
+}
+
 /// Exact overlay portion of RecalcZoneType. `Some(GROUND)` is the terminal
 /// IsRubble result and is intentionally distinct from no overlay result.
 pub(crate) fn overlay_reduced_zone_type(flags: Option<&OverlayTypeFlags>) -> Option<u8> {
@@ -1292,6 +1309,22 @@ pub struct ResolvedTerrainGrid {
     /// Immutable active-theater sparse TMP authority used only by the two
     /// verified destroyable-cliff callers.
     destroyable_cliff_catalog: Option<DestroyableCliffCatalog>,
+}
+
+/// Type barrier for the pristine authored Fill product. It intentionally does
+/// not expose `ResolvedTerrainGrid`'s pathing/presentation surface: the inner
+/// grid must first be consumed by the native Tube/overlay/Recalc transaction.
+pub(crate) struct AuthoredTerrainFill(ResolvedTerrainGrid);
+
+impl AuthoredTerrainFill {
+    pub(crate) fn into_pending_grid(self) -> ResolvedTerrainGrid {
+        self.0
+    }
+
+    #[cfg(test)]
+    fn pending_grid(&self) -> &ResolvedTerrainGrid {
+        &self.0
+    }
 }
 
 impl ResolvedTerrainGrid {
@@ -2589,6 +2622,7 @@ impl ResolvedTerrainGrid {
             lat_enabled,
             cliff_back_impassability,
             OverlayLoadSource::Authored,
+            TerrainBuildProjection::EagerCompatibility,
             None,
             None,
             None,
@@ -2609,6 +2643,7 @@ impl ResolvedTerrainGrid {
             false,
             0,
             OverlayLoadSource::GeneratedMaterialized,
+            TerrainBuildProjection::EagerCompatibility,
             None,
             None,
             None,
@@ -2638,6 +2673,7 @@ impl ResolvedTerrainGrid {
             lat_enabled,
             cliff_back_impassability,
             OverlayLoadSource::Authored,
+            TerrainBuildProjection::EagerCompatibility,
             Some(scenario_fill_ranged),
             Some(variant_selector),
             None,
@@ -2673,10 +2709,45 @@ impl ResolvedTerrainGrid {
             lat_enabled,
             cliff_back_impassability,
             overlay_load_source,
+            TerrainBuildProjection::EagerCompatibility,
             Some(scenario_fill_ranged),
             Some(variant_selector),
             Some(shared_cell_dummy),
         )
+    }
+
+    /// Active authored-map Fill boundary. This materializes the native Size
+    /// diamond, pristine TMP metadata, and variant selection only. Executable
+    /// map-load effects are deliberately deferred until the staged Simulation
+    /// owns native identity and can run the consuming overlay transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_pending_authored_with_variant_selector_and_shared_dummy(
+        map: &MapFile,
+        theater_data: Option<&TheaterData>,
+        asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+        terrain_rules: Option<&TerrainRules>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        lat_enabled: bool,
+        cliff_back_impassability: u8,
+        scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
+        variant_selector: &mut TileVariantSelectionContext<'_, '_>,
+        shared_cell_dummy: SharedCellDummy,
+    ) -> AuthoredTerrainFill {
+        AuthoredTerrainFill(Self::build_inner(
+            map,
+            theater_data,
+            asset_manager,
+            terrain_rules,
+            overlay_registry,
+            None,
+            lat_enabled,
+            cliff_back_impassability,
+            OverlayLoadSource::Authored,
+            TerrainBuildProjection::PendingAuthored,
+            Some(scenario_fill_ranged),
+            Some(variant_selector),
+            Some(shared_cell_dummy),
+        ))
     }
 
     fn build_inner(
@@ -2689,6 +2760,7 @@ impl ResolvedTerrainGrid {
         lat_enabled: bool,
         cliff_back_impassability: u8,
         overlay_load_source: OverlayLoadSource,
+        projection: TerrainBuildProjection,
         mut scenario_fill_ranged: Option<&mut dyn FnMut(u32, u32) -> u32>,
         mut variant_selector: Option<&mut TileVariantSelectionContext<'_, '_>>,
         shared_cell_dummy: Option<SharedCellDummy>,
@@ -2757,7 +2829,7 @@ impl ResolvedTerrainGrid {
             }
             mask
         });
-        let load_slope_states = if lat_enabled {
+        let load_slope_states = if projection.is_eager() && lat_enabled {
             theater_data.map(|td| {
                 let lat_config = lat::parse_lat_config(&td.ini_data, &td.lookup);
                 let slope_config = lat::SlopeFixupConfig {
@@ -2809,9 +2881,11 @@ impl ResolvedTerrainGrid {
             final_cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
 
         let snow_theater = map.header.theater.eq_ignore_ascii_case("SNOW");
-        let terrain_objects: HashMap<(u16, u16), u8> = map
-            .terrain_objects
-            .iter()
+        let terrain_objects: HashMap<(u16, u16), u8> = projection
+            .is_eager()
+            .then_some(map.terrain_objects.iter())
+            .into_iter()
+            .flatten()
             .map(|obj| {
                 let occupation = terrain_object_types
                     .and_then(|types| types.get(&obj.name.to_ascii_uppercase()))
@@ -2829,7 +2903,12 @@ impl ResolvedTerrainGrid {
             .collect();
 
         let mut overlays_by_cell: HashMap<(u16, u16), Vec<&OverlayEntry>> = HashMap::new();
-        for overlay in &map.overlays {
+        for overlay in projection
+            .is_eager()
+            .then_some(map.overlays.iter())
+            .into_iter()
+            .flatten()
+        {
             overlays_by_cell
                 .entry((overlay.rx, overlay.ry))
                 .or_default()
@@ -2979,7 +3058,8 @@ impl ResolvedTerrainGrid {
                 // this single pass over each cell is that latch. Two earlier
                 // returns exclude cells here too: a missing or out-of-range tile
                 // id, and an overlay that claims the cell's attributes.
-                if !uses_clear_fallback
+                if projection.is_eager()
+                    && !uses_clear_fallback
                     && !sparse_subtile_fallback
                     && !overlay_effects.claims_cell_attributes
                 {
@@ -3194,7 +3274,12 @@ impl ResolvedTerrainGrid {
         // OverlayClass anchor is an allocated CellClass; its setter then walks
         // through MapClass lookups, so missing neighbors stamp/mutate the one
         // shared dummy rather than disappearing at the rectangular edge.
-        for overlay in &map.overlays {
+        for overlay in projection
+            .is_eager()
+            .then_some(map.overlays.iter())
+            .into_iter()
+            .flatten()
+        {
             let anchor_index = native_resolved_cell_index(
                 width,
                 height,
@@ -3224,10 +3309,11 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        let raw_overlay_data = map
-            .overlay_data_pack()
-            .expect("legacy terrain projection must precede authored pack consumption");
-        if raw_overlay_data.is_present() {
+        let raw_overlay_data = projection.is_eager().then(|| {
+            map.overlay_data_pack()
+                .expect("legacy terrain projection must precede authored pack consumption")
+        });
+        if let Some(raw_overlay_data) = raw_overlay_data.filter(|data| data.is_present()) {
             for (index, cell) in cells.iter_mut().enumerate() {
                 if native_allocated
                     .as_deref()
@@ -3238,7 +3324,12 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        for cell in &mut cells {
+        for cell in projection
+            .is_eager()
+            .then_some(cells.iter_mut())
+            .into_iter()
+            .flatten()
+        {
             let facts = cell.bridge_facts;
             if facts.has_structural_bridge() {
                 cell.has_bridge_deck = true;
@@ -3266,7 +3357,9 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        if let Some(td) = theater_data {
+        if projection.is_eager()
+            && let Some(td) = theater_data
+        {
             if let (Some(bs_idx), Some(ramp_table)) = (
                 td.bridge_set,
                 crate::map::theater::BridgeRampTileTable::from_theater(td),
@@ -3343,7 +3436,7 @@ impl ResolvedTerrainGrid {
         // overlay is unconditional, unusable/sparse subtile is Clear-only, and
         // the normal path accepts Clear, Water, Beach, or Ice. Non-2 bytes have
         // no observable write, so this load resolver output-gates the pure scan.
-        if cliff_back_impassability == 2 {
+        if projection.is_eager() && cliff_back_impassability == 2 {
             const CLIFF_BACK_HEIGHT_DIFF: i16 = 4;
             // 6 neighbor offsets in (dx, dy) matching gamemd.exe RecalcAttributes:
             // (X, Y-1), (X-1, Y), (X+2, Y+2), (X+1, Y+1), (X-1, Y+1), (X+1, Y-1)
@@ -3457,40 +3550,13 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        // Pre-classify author-damaged anchor placements: cells whose
-        // tileset is BridgeSet AND whose final_tile_index matches one of
-        // the 4 NS or 4 EW variant tile_ids get a non-None
-        // bridgehead_anchor_class_at_load. Sim's bridge-state init reads
-        // this so maps that author pre-damaged anchors render correctly
-        // from frame 1.
-        if let Some(td) = theater_data {
-            if let Some(table) = crate::map::theater::BridgeAnchorVariantTable::from_theater(td) {
-                if let Some(bs_idx) = td.bridge_set {
-                    for cell in cells.iter_mut() {
-                        if cell.tileset_index != Some(bs_idx) {
-                            continue;
-                        }
-                        if cell.final_tile_index < 0 {
-                            continue;
-                        }
-                        let tid = if cell.final_tile_index == 0xFFFF {
-                            0
-                        } else {
-                            cell.final_tile_index as u16
-                        };
-                        if let Some((_axis, class)) = table.match_tile_id(tid) {
-                            cell.bridgehead_anchor_class_at_load = Some(class);
-                        }
-                    }
-                }
-            }
+        let mut tube_facts = Vec::new();
+        if projection.is_eager() {
+            tube_facts = seed_explicit_map_tubes(&mut cells, width, height, &map.explicit_tubes);
+            build_auto_low_bridge_tubes(&mut cells, width, height, theater_data, &mut tube_facts);
         }
 
-        let mut tube_facts =
-            seed_explicit_map_tubes(&mut cells, width, height, &map.explicit_tubes);
-        build_auto_low_bridge_tubes(&mut cells, width, height, theater_data, &mut tube_facts);
-
-        Self {
+        let mut grid = Self {
             width,
             height,
             cells,
@@ -3517,6 +3583,44 @@ impl ResolvedTerrainGrid {
                 asset_manager,
                 terrain_rules,
             ),
+        };
+        if projection.is_eager()
+            && let Some(theater) = theater_data
+        {
+            grid.rebuild_bridgehead_anchor_classes_from_final_tiles(theater);
+        }
+        grid
+    }
+
+    /// Rebuild the authored bridgehead classification from the current,
+    /// finalized tile surface. Pending authored Fill deliberately leaves this
+    /// empty because LAT/Recalc has not established final tile authority yet.
+    pub(crate) fn rebuild_bridgehead_anchor_classes_from_final_tiles(
+        &mut self,
+        theater: &TheaterData,
+    ) {
+        for cell in &mut self.cells {
+            cell.bridgehead_anchor_class_at_load = None;
+        }
+        let Some(table) = crate::map::theater::BridgeAnchorVariantTable::from_theater(theater)
+        else {
+            return;
+        };
+        let Some(bridge_set) = theater.bridge_set else {
+            return;
+        };
+        for cell in &mut self.cells {
+            if cell.tileset_index != Some(bridge_set) || cell.final_tile_index < 0 {
+                continue;
+            }
+            let tile_id = if cell.final_tile_index == 0xFFFF {
+                0
+            } else {
+                cell.final_tile_index as u16
+            };
+            if let Some((_axis, class)) = table.match_tile_id(tile_id) {
+                cell.bridgehead_anchor_class_at_load = Some(class);
+            }
         }
     }
 
@@ -4689,7 +4793,7 @@ mod tests {
     use crate::assets::asset_manager::{AssetManager, MediaArchiveMode};
     use crate::assets::mix_hash::mix_hash;
     use crate::assets::tmp_file::TmpTile;
-    use crate::map::overlay::TerrainObject;
+    use crate::map::overlay::{OverlayDataPack, TerrainObject};
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::tube_facts::TubeSource;
     use crate::rules::ini_parser::IniFile;
@@ -5728,6 +5832,245 @@ mod tests {
     }
 
     #[test]
+    fn authored_fill_defers_all_executable_projection() {
+        let mut theater = synthetic_theater_from_ini(
+            b"[General]\nBridgeSet=0\nBridgeMiddle1=1\nBridgeMiddle2=5\n\
+              [TileSet0000]\nTilesInSet=8\nFileName=tunnel\nSetName=Tunnel FX\n\
+              [Tunnel FX]\nTile01Anim=TUNNELFX\nTile01AttachesTo=0\n",
+        );
+        theater.bridge_set = Some(0);
+        theater.bridge_middle_1 = Some(1);
+        theater.bridge_middle_2 = Some(5);
+        theater.tunnels = Some(0);
+        let tmp_name = theater
+            .lookup
+            .filename_for_variant(0, 0)
+            .expect("tunnel TMP name")
+            .to_string();
+        let suffix_name = tmp_name.replace(".tem", "a.tem");
+        let tmp = gsi_04_02_last_tiles_tmp_bytes(5, [1, 2, 3], [4, 5, 6]);
+        let suffix_tmp = gsi_04_02_last_tiles_tmp_bytes(5, [7, 8, 9], [10, 11, 12]);
+        let (_directory, assets) = gsi_04_02_asset_manager_with_loose_tmps(&[
+            (tmp_name.as_str(), tmp.as_slice()),
+            (suffix_name.as_str(), suffix_tmp.as_slice()),
+        ]);
+        crate::map::theater::resolve_contiguous_variant_chains_for_test(
+            &mut theater.lookup,
+            &assets,
+        );
+        assert_eq!(theater.lookup.total_file_count(0), 2);
+        let mut map = make_map(
+            vec![MapCell {
+                rx: 2,
+                ry: 3,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            }],
+            vec![OverlayEntry {
+                rx: 2,
+                ry: 3,
+                overlay_id: 0x18,
+                frame: 7,
+            }],
+            vec![TerrainObject {
+                rx: 2,
+                ry: 3,
+                name: "TREE".to_string(),
+            }],
+        );
+        map.explicit_tubes = vec![TubeFact::explicit((2, 3), (2, 3), 2, Vec::new())];
+        map.replace_unconsumed_overlay_data(OverlayDataPack::from_cells([(2, 3, 99)]))
+            .expect("fixture overlay data remains unconsumed");
+
+        let mut eager_scenario_rng = SimRng::new(0x401);
+        let mut eager_fill_calls = 0usize;
+        let mut eager_fill = |low, high| {
+            eager_fill_calls += 1;
+            eager_scenario_rng.next_range_u32_inclusive(low, high)
+        };
+        let mut eager_main_rng = SimRng::new(0x402);
+        let mut eager_main_draw = || eager_main_rng.next_u32();
+        let mut eager_cache =
+            crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let (eager, eager_selector_metrics) = {
+            let mut selector = eager_cache.begin_load(&mut eager_main_draw);
+            let grid = ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
+                &map,
+                Some(&theater),
+                Some(&assets),
+                None,
+                None,
+                None,
+                true,
+                2,
+                &mut eager_fill,
+                &mut selector,
+                SharedCellDummy::fresh(),
+                OverlayLoadSource::Authored,
+            );
+            let metrics = (
+                selector.generated_table(),
+                selector.map_fill_scenario_advance_count(),
+                selector.raw_draw_count(),
+            );
+            (grid, metrics)
+        };
+        drop(eager_fill);
+        drop(eager_main_draw);
+        let eager_cell = eager.cell(2, 3).expect("eager fixture cell");
+        assert!(eager_cell.bridge_facts.has_structural_bridge());
+        assert_eq!(eager_cell.bridge_facts.state_byte, 99);
+        assert_eq!(eager_cell.terrain_object_occupation, Some(7));
+        assert_eq!(
+            eager_cell.bridgehead_anchor_class_at_load,
+            Some(crate::map::bridge_facts::BridgeheadAnchorClass::Variant0)
+        );
+        assert!(!eager.tile_animations().is_empty());
+        assert!(!eager.tube_facts().is_empty());
+
+        let mut pending_scenario_rng = SimRng::new(0x401);
+        let mut pending_fill_calls = 0usize;
+        let mut pending_fill = |low, high| {
+            pending_fill_calls += 1;
+            pending_scenario_rng.next_range_u32_inclusive(low, high)
+        };
+        let mut pending_main_rng = SimRng::new(0x402);
+        let mut pending_main_draw = || pending_main_rng.next_u32();
+        let mut pending_cache =
+            crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let dummy = SharedCellDummy::fresh();
+        let (pending, pending_selector_metrics) = {
+            let mut selector = pending_cache.begin_load(&mut pending_main_draw);
+            let fill =
+                ResolvedTerrainGrid::build_pending_authored_with_variant_selector_and_shared_dummy(
+                    &map,
+                    Some(&theater),
+                    Some(&assets),
+                    None,
+                    None,
+                    true,
+                    2,
+                    &mut pending_fill,
+                    &mut selector,
+                    dummy.clone(),
+                );
+            let metrics = (
+                selector.generated_table(),
+                selector.map_fill_scenario_advance_count(),
+                selector.raw_draw_count(),
+            );
+            (fill, metrics)
+        };
+        drop(pending_fill);
+        drop(pending_main_draw);
+        assert_eq!(pending_fill_calls, eager_fill_calls);
+        assert_eq!(
+            pending_scenario_rng.logical_state(),
+            eager_scenario_rng.logical_state()
+        );
+        assert_eq!(
+            pending_main_rng.logical_state(),
+            eager_main_rng.logical_state()
+        );
+        assert_eq!(pending_selector_metrics, eager_selector_metrics);
+        assert!(pending_selector_metrics.0);
+        assert!(pending_selector_metrics.2 > 0);
+        assert_eq!(
+            pending
+                .pending_grid()
+                .iter()
+                .map(|cell| (cell.rx, cell.ry, cell.variant))
+                .collect::<Vec<_>>(),
+            eager
+                .iter()
+                .map(|cell| (cell.rx, cell.ry, cell.variant))
+                .collect::<Vec<_>>()
+        );
+        let pending_grid = pending.pending_grid();
+        let pending_cell = pending_grid.cell(2, 3).expect("pending fixture cell");
+        assert_eq!(
+            pending_cell.final_tile_index,
+            pending_cell.source_tile_index
+        );
+        assert_eq!(pending_cell.bridge_facts, BridgeCellFacts::default());
+        assert_eq!(pending_cell.terrain_object_occupation, None);
+        assert!(!pending_cell.terrain_object_blocks);
+        assert!(pending_grid.tile_animations().is_empty());
+        assert!(pending_grid.tube_facts().is_empty());
+        assert_eq!(pending_cell.tube_index, None);
+        assert_eq!(pending_cell.bridgehead_anchor_class_at_load, None);
+        assert_eq!(dummy.snapshot().bridge_flags_0x1180, 0);
+        assert_eq!(
+            map.overlay_data_pack()
+                .expect("pending Fill retains authored overlay data")
+                .byte_at(2, 3),
+            99
+        );
+
+        let consumed = pending.into_pending_grid();
+        assert_eq!(consumed.cell(2, 3).unwrap().source_tile_index, 0);
+
+        let lat_theater = synthetic_theater_from_ini(
+            b"[General]\nRoughTile=1\nClearToRoughLat=2\n\
+              [TileSet0000]\nSetName=Clear\nFileName=clear\nTilesInSet=5\n\
+              [TileSet0001]\nSetName=Rough\nFileName=rough\nTilesInSet=5\n\
+              [TileSet0002]\nSetName=ClearToRough\nFileName=crgh\nTilesInSet=16\n",
+        );
+        let lat_map = make_map(
+            vec![
+                anim_cell(5, 5, 5, 0, 0),
+                anim_cell(5, 4, 0, 0, 0),
+                anim_cell(4, 5, 6, 0, 0),
+                anim_cell(6, 5, 1, 0, 0),
+                anim_cell(5, 6, 7, 0, 0),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let pending_lat = ResolvedTerrainGrid::build_inner(
+            &lat_map,
+            Some(&lat_theater),
+            None,
+            None,
+            None,
+            None,
+            true,
+            0,
+            OverlayLoadSource::Authored,
+            TerrainBuildProjection::PendingAuthored,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(pending_lat.cell(5, 5).unwrap().final_tile_index, 5);
+
+        let cliff_map = make_map(
+            vec![anim_cell(1, 1, 0, 0, 0), anim_cell(1, 0, 0, 0, 4)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let pending_cliff = ResolvedTerrainGrid::build_inner(
+            &cliff_map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            2,
+            OverlayLoadSource::Authored,
+            TerrainBuildProjection::PendingAuthored,
+            None,
+            None,
+            None,
+        );
+        let cliff_cell = pending_cliff.cell(1, 1).unwrap();
+        assert_eq!(cliff_cell.land_type, LandType::Clear.as_index());
+        assert!(!cliff_cell.ground_walk_blocked);
+    }
+
+    #[test]
     fn gsi_04_01_production_overlaypack_stamps_two_anchors_in_row_major_order() {
         let mut map = make_map(
             Vec::new(),
@@ -5828,6 +6171,7 @@ mod tests {
             false,
             0,
             OverlayLoadSource::Authored,
+            TerrainBuildProjection::EagerCompatibility,
             None,
             None,
             None,
@@ -5842,6 +6186,7 @@ mod tests {
             false,
             0,
             OverlayLoadSource::GeneratedMaterialized,
+            TerrainBuildProjection::EagerCompatibility,
             None,
             None,
             None,
@@ -7327,6 +7672,7 @@ SnowOccupationBits=0
             false,
             0,
             OverlayLoadSource::Authored,
+            TerrainBuildProjection::EagerCompatibility,
             None,
             None,
             None,
@@ -7352,6 +7698,7 @@ SnowOccupationBits=0
             false,
             0,
             OverlayLoadSource::Authored,
+            TerrainBuildProjection::EagerCompatibility,
             None,
             None,
             None,
