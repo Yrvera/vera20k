@@ -6,7 +6,7 @@ use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
 use crate::assets::shp_file::ShpFile;
 use crate::map::overlay::OverlayEntry;
-use crate::map::overlay_types::{OverlayTypeFlags, OverlayTypeRegistry};
+use crate::map::overlay_types::{OverlayTypeFlags, OverlayTypeRegistry, is_high_bridge_index};
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::OverlaySpriteEntry;
@@ -59,11 +59,16 @@ impl BridgeAtlas {
 /// instance builders can be exercised in unit tests with a pure-data mock.
 pub trait BridgeAtlasLookup {
     fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry>;
+    fn shadow_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry>;
 }
 
 impl BridgeAtlasLookup for BridgeAtlas {
     fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
         BridgeAtlas::body_entry(self, name, frame)
+    }
+
+    fn shadow_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+        BridgeAtlas::shadow_entry(self, name, frame)
     }
 }
 
@@ -83,6 +88,16 @@ pub fn is_high_bridge_body_name(name: &str) -> bool {
     )
 }
 
+/// Route a live high-bridge body by the CellClass numeric identity first.
+///
+/// Native `OverlayClass::Mark @ 0x005FC570` dispatches the four high-anchor
+/// setters by numeric OverlayType index, so a layered rules file may retain
+/// high-bridge semantics under a noncanonical art name. Canonical names remain
+/// accepted for the established destroy-band cells written by bridge runtime.
+pub fn is_high_bridge_body_identity(overlay_id: u8, name: &str) -> bool {
+    is_high_bridge_index(overlay_id) || is_high_bridge_body_name(name)
+}
+
 fn needed_bridge_sprite_keys(
     overlays: &[OverlayEntry],
     overlay_names: &BTreeMap<u8, String>,
@@ -92,7 +107,7 @@ fn needed_bridge_sprite_keys(
     let mut names = HashSet::new();
     for entry in overlays {
         if let Some(name) = overlay_names.get(&entry.overlay_id)
-            && is_high_bridge_body_name(name)
+            && is_high_bridge_body_identity(entry.overlay_id, name)
         {
             names.insert(name.clone());
         }
@@ -115,7 +130,7 @@ fn needed_bridge_sprite_keys(
             .get(&overlay_id)
             .map(String::as_str)
             .or_else(|| overlay_registry.name(overlay_id));
-        if let Some(name) = name.filter(|name| is_high_bridge_body_name(name)) {
+        if let Some(name) = name {
             names.insert(name.to_string());
         }
     }
@@ -513,17 +528,18 @@ mod tests {
         let mut rules_text = String::from("[OverlayTypes]\n");
         for id in 0..=0x18u8 {
             let name = if id == 0x18 {
-                "BRIDGE1".to_string()
+                "HIGHANCHOR".to_string()
             } else {
                 format!("OV{id:03}")
             };
             writeln!(&mut rules_text, "{id}={name}").unwrap();
         }
+        rules_text.push_str("[HIGHANCHOR]\nCrate=yes\n");
         let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&rules_text), None);
         let crate_rules = CrateRules {
-            wood_crate_img: Some("BRIDGE1".to_string()),
-            crate_img: Some("BRIDGE1".to_string()),
-            water_crate_img: Some("BRIDGE1".to_string()),
+            wood_crate_img: Some("HIGHANCHOR".to_string()),
+            crate_img: Some("HIGHANCHOR".to_string()),
+            water_crate_img: Some("HIGHANCHOR".to_string()),
             ..CrateRules::default()
         };
 
@@ -533,7 +549,7 @@ mod tests {
         for frame in 0..18 {
             for kind in [BridgeFrameKind::Body, BridgeFrameKind::Shadow] {
                 assert!(keys.contains(&BridgeAtlasKey {
-                    name: "BRIDGE1".to_string(),
+                    name: "HIGHANCHOR".to_string(),
                     frame,
                     kind,
                 }));

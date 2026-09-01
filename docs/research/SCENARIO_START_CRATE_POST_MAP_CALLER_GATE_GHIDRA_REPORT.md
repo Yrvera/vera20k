@@ -1,10 +1,14 @@
 # Scenario-Start Crate Post-Map Caller Gate — Ghidra Report
 
-**Date:** 2026-09-01  
-**Investigation mode:** exhaustive slice  
-**Claimed scope:** the active callers, caller gates, count loop, and relative order of scenario-start random-crate placement around `ScenarioClass__Post_Map_Init @ 0x00686890`.  
-**Explicit non-scope:** random-cell placement internals, crate pickup/effects, death drops, regeneration cadence, network-mode implementation, and unrelated post-map house mechanics.  
-**Active binary:** installed Yuri's Revenge `gamemd.exe`, PE image base `0x00400000`, Ghidra program `/gamemd.exe`.  
+**Date:** 2026-09-01
+
+**Investigation mode:** exhaustive slice
+
+**Claimed scope:** the active callers, caller gates, count loop, and relative order of scenario-start random-crate placement around `ScenarioClass__Post_Map_Init @ 0x00686890`.
+
+**Explicit non-scope:** random-cell placement internals, crate pickup/effects, death drops, regeneration cadence, network-mode implementation, and unrelated post-map house mechanics.
+
+**Active binary:** installed Yuri's Revenge `gamemd.exe`, PE image base `0x00400000`, Ghidra program `/gamemd.exe`.
 **Confidence:** HIGH for every implementation-facing conclusion below.
 
 ## 1. Overview

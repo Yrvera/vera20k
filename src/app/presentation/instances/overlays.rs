@@ -15,7 +15,7 @@ use crate::map::lighting::DEFAULT_TINT;
 use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
-use crate::render::bridge_atlas::is_high_bridge_body_name;
+use crate::render::bridge_atlas::is_high_bridge_body_identity;
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{
@@ -85,6 +85,13 @@ fn overlay_body_frame(is_crate: bool, overlay_data: u8) -> u8 {
     } else {
         overlay_data
     }
+}
+
+/// The ordinary overlay pass must not own any identity whose live numeric ID
+/// dispatches through native high-bridge Mark, even when layered rules rename
+/// its art away from the stock BRIDGE1/2 family.
+fn ordinary_overlay_accepts_identity(overlay_id: u8, name: &str) -> bool {
+    !is_high_bridge_body_identity(overlay_id, name)
 }
 
 /// Resolve the CellClass overlay identity/data used by the tactical overlay
@@ -624,7 +631,7 @@ pub(crate) fn build_overlay_instances(
         // High-bridge bodies are emitted by `instances::bridges` reading
         // `BridgeRuntimeCell` post-tick. Skip them here so they don't double-
         // render via the static map overlay list.
-        if is_high_bridge_body_name(static_name) {
+        if !ordinary_overlay_accepts_identity(entry.overlay_id, static_name) {
             continue;
         }
 
@@ -671,7 +678,7 @@ pub(crate) fn build_overlay_instances(
         let Some(name) = name else {
             continue;
         };
-        if is_high_bridge_body_name(&name) {
+        if !ordinary_overlay_accepts_identity(live_overlay_id, &name) {
             continue;
         }
 
@@ -1387,8 +1394,8 @@ mod tests {
     use super::{
         ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, anim_instance_alpha,
         anim_render_destination, apply_shape_z_adjust, garrison_flash_depth, overlay_body_frame,
-        overlay_display_identity, overlay_render_identity, terrain_object_is_render_visible,
-        weapon_muzzle_flash_key, world_effect_screen_position,
+        ordinary_overlay_accepts_identity, overlay_display_identity, overlay_render_identity,
+        terrain_object_is_render_visible, weapon_muzzle_flash_key, world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
     use crate::map::overlay_types::OverlayTypeRegistry;
@@ -1402,6 +1409,15 @@ mod tests {
     use crate::sim::production::ProductionState;
     use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
     use crate::util::fixed_math::SimFixed;
+
+    #[test]
+    fn numeric_high_bridge_identity_has_no_ordinary_overlay_instance_route() {
+        assert!(!ordinary_overlay_accepts_identity(0x18, "HIGHANCHOR"));
+        assert!(!ordinary_overlay_accepts_identity(0x19, "RENAMED_EW"));
+        assert!(!ordinary_overlay_accepts_identity(0xED, "RENAMED_NS"));
+        assert!(!ordinary_overlay_accepts_identity(0xEE, "BRIDGEB2"));
+        assert!(ordinary_overlay_accepts_identity(0x20, "HIGHANCHOR"));
+    }
 
     #[test]
     fn gsi_05_12_owner_attached_anim_is_forced_onto_the_sorted_ground_layer() {

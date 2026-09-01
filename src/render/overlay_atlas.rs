@@ -240,6 +240,7 @@ fn runtime_crate_sprite_keys(
             continue;
         };
         if flags.crate_type
+            && crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay_id).is_none()
             && let Some(name) = resolve_overlay_name_for_render(overlay_registry, overlay_id)
         {
             keys.insert(OverlaySpriteKey {
@@ -1206,6 +1207,7 @@ mod tests {
             };
             writeln!(&mut high_ini, "{id}={name}").unwrap();
         }
+        high_ini.push_str("[HIGHANCHOR]\nCrate=yes\n");
         let high_registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&high_ini), None);
         let high_rules = CrateRules {
             wood_crate_img: Some("HIGHANCHOR".to_owned()),
