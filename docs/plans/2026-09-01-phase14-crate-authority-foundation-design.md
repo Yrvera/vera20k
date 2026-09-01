@@ -40,6 +40,8 @@ presentation list, and performs AI opening credits before crates.
 | Aliased configured identities | Water identity comparison has priority. If water and wood/common resolve to the same identity, the selected identity uses Float facts. |
 | Configured `none` image | Null identity survives the hard prechecks, then becomes an accepted timed ghost; it does not retry or fail closed. |
 | Terrain object, non-exempt steep slope, occupation, speed-zero, bridge-plane, allocation, Unlimbo, or Mark failure after hard prechecks | The call is accepted as a ghost: the slot and timer persist, RNG is consumed, and no visible overlay is stamped. Raw overlay ID `0xB2` is the exact retail exception that remains Mark-eligible above slope four. |
+| Custom configured Mark-special identity | The selected dense runtime ID follows the active `OverlayClass::Mark` branch: high-anchor bridge stamping, Railroad bypass, wall placement/connectivity, low-bridge endpoint transaction, Road tiberium germination, and ordinary `CellAnim` are not collapsed to the default crate write. |
+| Configured TS veins/veinhole identity (`0x7E`/`0xA7`) | The startup slot is accepted and timed, but Rust creates no overlay or TS world mutation. GSI-18.01 remains explicitly excluded. |
 | Occupied overlay or snapped cell outside the playfield | The attempt is rejected before construction and retries, preserving the exact draw sequence. |
 | All 256 slots occupied | The random call returns without consuming RNG. |
 | Save/restore or lockstep hash | Every raw slot word round-trips and affects VERA's versioned state hash; retail's narrow multiplayer checksum remains unchanged. |
@@ -60,6 +62,10 @@ presentation list, and performs AI opening credits before crates.
   and occupied-overlay hard prechecks that is representable in Rust.
 - Exact timer draw/interpolation, pre-increment frame ownership, and `aux` word.
 - Crate-specific overlay writes that preserve unrelated cell fields.
+- Every active-YR `OverlayClass::Mark` branch reachable through a custom
+  configured startup identity: high anchors `0x18/0x19/0xED/0xEE`, Railroad,
+  walls, low endpoint triggers `0x7A..0x7D/0xE9..0xEC`, Road+tiberium
+  germination, ordinary `CellAnim`, and the common Recalc tail.
 - Snapshot version 114 and a version-gated world-hash fold for the raw slot
   table. No change to the retail quick checksum.
 - Production post-map routing for fixed-map mode 5, the successful playable
@@ -92,6 +98,9 @@ presentation list, and performs AI opening credits before crates.
   UniqueID. Gameplay-observable slot/timer/RNG and cell results are retained.
 - Invalid-domain OOM, corrupt pointer graphs, and malformed nonfinite rule
   inputs.
+- TS veins and veinhole mutation behind dense IDs `0x7E` and `0xA7`
+  (GSI-18.01). Their reachable startup call is retained as an accepted ghost;
+  no TS mechanics are imported.
 
 The exclusions remain open Phase 14 work. This PR may establish shared types
 that later mechanisms reuse, but it must not claim those later consumers as
@@ -107,6 +116,9 @@ closed.
 | Rules finalization and option/count/order | `Full_Init @ 0x00686B20`; `Post_Map_Init @ 0x00686890`, especially `0x0068695C..0x00686AF2` |
 | Rules constructor and layered reader for the six startup fields | `RulesClass__Constructor @ 0x00665650`; `RulesClass__ReadCrateRules @ 0x0066B900` |
 | Random placement, slots, and Mark facts | `MapClass__PlaceRandomCrate`, `MapClass__PlaceCrate`, and `MapClass__CrateSlot` bodies/callers in the placement/runtime report |
+| Mark branch dispatch and ordering | `OverlayClass::Mark @ 0x005FC570`; high-anchor setter reports; `REGULAR_OVERLAY_WALL_AUTOFILL_COMMIT_GHIDRA_REPORT.md` |
+| Low endpoint tables, dummy alias, search, overwrites, and raw Scenario draws | `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_FIXED_MAP_STAMP_RNG_TRANSACTION_GHIDRA_REPORT.md` |
+| Road tiberium density postwrite | `CellClass::SpreadCellGerminate @ 0x004818E0`; dword table `0x0081CD28` = `[0,1,3,4,6,7,8,10,11,7,0,1]` |
 | Timer formula | accepted placement body: `regen*450`, `regen*1800`, `RandomRanged(0,0x7ffffffe)`, forward interpolation, x87 truncate |
 | Slot lifetime shape | 256 entries × 16 bytes: signed start, aux word, signed duration, packed signed 16-bit x/y; `(0,0)` is the sole empty test |
 | Retail installed values | active `rulesmd.ini`: min 1, max 255, regen 3, wood/common CRATE, water WCRATE; `[MultiplayerDialogSettings] Crates=yes` |
@@ -249,21 +261,30 @@ The transaction order is explicit:
 3. Reject and retry if the snapped cell is outside the playfield or already has
    an overlay.
 4. Select the water or wood/common configured identity.
-5. Classify Mark movement by identity, not destination surface:
-   compare the selected identity with current `WaterCrateImg` first and use
-   Float on equality; otherwise, matching `CrateImg` or `WoodCrateImg` uses
-   Track. Water-first priority preserves configured pointer aliases.
-6. Run constructor/Unlimbo/Mark facts. A null/unknown selected identity,
+5. Apply the universal slope gate, then dispatch the selected dense runtime ID
+   through the same active-YR Mark branches as the native object: high bridge
+   anchors preserve prior data and stamp bridge flags; Railroad writes data
+   zero before ordinary blockers; walls use building passability and refresh
+   connectivity; low endpoint IDs run their exact fixed/search/body transaction.
+   Dense IDs `0x7E`/`0xA7` stop as accepted ghosts because their only mutation
+   is excluded TS veins/veinhole behavior.
+6. For the remaining ordinary branch, classify movement by identity, not
+   destination surface: compare current `WaterCrateImg` first and use Float on
+   equality; otherwise matching `CrateImg` or `WoodCrateImg` uses Track.
+   Water-first priority preserves configured pointer aliases.
+7. Run constructor/Unlimbo/ordinary-Mark facts. A null/unknown selected identity,
    terrain object, slope above four when the selected raw overlay ID is not
    exact `0xB2`, nonzero selected occupation byte,
    non-bridge selected-speed zero, bridge-plane failure, allocation failure,
    Unlimbo failure, or Mark failure is an accepted ghost.
-7. Structural bridge `raw_flags & 0x100` selects deck occupation and bypasses
+8. Structural bridge `raw_flags & 0x100` selects deck occupation and bypasses
    the non-bridge terrain-speed-zero rejection.
-8. Visible success stamps overlay identity, then Mark data: zero ordinarily,
-   one for `Land=Road`, and finally `0xFF` only when the selected type declares
-   `Crate=yes`. A ghost leaves the cell unchanged. Both stop retries.
-9. Record the slot coordinate, draw/install the timer, and report the outcome.
+9. Ordinary success writes identity and data zero, Road writes one then calls
+   `SpreadCellGerminate(false)` for tiberium, `Crate=yes` finally overrides data
+   with `0xFF`, and `CellAnim` spawns before the common Recalc tail. Ordinary
+   Mark failures may still spawn `CellAnim`; both visible and ghost outcomes
+   stop retries.
+10. Record the slot coordinate, draw/install the timer, and report the outcome.
 
 Only the outside-playfield and occupied-overlay checks in step 3 are retryable
 hard rejections after a snapped candidate exists. Every later failure consumes
@@ -309,13 +330,15 @@ duration overflow stores zero rather than aborting scenario load.
 
 Do not route crate placement through generic
 `place_overlay_native_runtime`, whose wall/protection gates differ. Add the
-smallest crate-specific `OverlayGrid` primitive:
+smallest crate-specific raw-field primitive and keep branch ordering in
+`sim::crates`:
 
-- install the chosen identity and Mark data zero, Road one, or `0xFF` only for
-  `Crate=yes`;
+- write only identity/data first; branch code owns Railroad/wall/bridge rules,
+  Road germination, the later `Crate=yes` override, `CellAnim`, and Recalc;
 - preserve wall-owner and unrelated cell authority;
-- run existing synchronous passability invalidation/publication;
-- enqueue the existing dirty-cell fact once for a visible result.
+- project runtime bridge identity/flags into the map-owned bridge cache;
+- enqueue existing dirty-cell facts for every real native field write, then run
+  synchronous passability publication in native write order.
 
 Ghost placement leaves the cell untouched. Native zero-rectangle dirty/redraw
 attempts map to a Rust-native no-pixel no-op; no persistent render queue is
@@ -363,9 +386,10 @@ identity and do not appear.
 `preregister_runtime_overlay_names` will include every registry entry with
 `Crate=yes` and all three resolved `CrateRules` identities, even when a
 late-allocated custom type retains constructor-default `Crate=false`, alongside
-existing wall and low-bridge registration. Atlas preload follows the selected
-type's actual draw path: frame zero for `Crate=yes`, otherwise ordinary Mark
-data zero or Road frame one.
+existing wall and low-bridge registration. Atlas preload follows every output
+the selected type's actual Mark branch can create: crate frame zero, ordinary
+data, wall frames, low fixed/body IDs and states, high-anchor preserved data,
+Railroad zero, and Road-tiberium density frames.
 
 ```text
 active rules layers

@@ -57,8 +57,15 @@ retail order, and the app consumes live overlay state through the existing
 - No active TS-only path is used. Network raw modes, pickup/effects,
   regeneration scans, removal, and specific-cell producers remain outside this
   PR.
-- No consequential unknown remains. Test-only injection will represent native
-  allocation/Unlimbo failure without importing a native object graph.
+- A fresh implementation critic invalidated the original “ordinary Mark only”
+  scope hypothesis: custom startup image names can resolve to every active-YR
+  special branch in `OverlayClass::Mark @ 0x005FC570`. The implementation must
+  therefore reproduce high anchors, Railroad, walls, low endpoint tables/raw
+  Scenario draws, Road tiberium germination, and `CellAnim`. Dense IDs
+  `0x7E`/`0xA7` remain accepted ghosts because GSI-18.01 TS mutation is excluded.
+- No consequential unknown remains after the special-branch correction.
+  Test-only injection represents native allocation/Unlimbo failure without
+  importing a native object graph.
 
 ## Key Technical Decisions
 
@@ -83,6 +90,13 @@ retail order, and the app consumes live overlay state through the existing
   Mark except for exact raw overlay ID `0xB2`. — **Confidence: high**
   - **Source:** active placement report; `CrateSlot__ValidateCellAndCreateOverlay
     @ 0x004A18F0`.
+- **Dispatch the complete reachable Mark body:** the universal slope gate
+  precedes high bridge, TS legacy, Railroad, wall, low endpoint, and ordinary
+  branches. Low bodies use `3*L` raw Scenario draws and exact dense-ID tables;
+  Road tiberium calls `SpreadCellGerminate(false)`. — **Confidence: high**
+  - **Source:** `OverlayClass::Mark @ 0x005FC570`;
+    `LOW_OVERLAY_MARK_FIXED_MAP_STAMP_RNG_TRANSACTION_GHIDRA_REPORT.md`;
+    `CellClass::SpreadCellGerminate @ 0x004818E0`.
 - **Use native x87 helper:** timer math uses `NativeF64Bits` and
   `X87Chop53`; no host `f64` arithmetic executes in `sim/`. — **Confidence:
   high**
@@ -616,7 +630,7 @@ It never tops up visible/accepted count.
 - Origin water selects FNPC Float; every other origin selects Track.
 - Retry at most 1,000 times.
 
-**Step 3: Implement hard prechecks and identity-based Mark**
+**Step 3: Implement hard prechecks and complete reachable Mark dispatch**
 
 After FNPC returns a snapped cell:
 
@@ -624,46 +638,59 @@ After FNPC returns a snapped cell:
 2. existing overlay identity -> retry;
 3. destination `yr_cell_land_type == Water` selects resolved
    `WaterCrateImg`, otherwise resolved `WoodCrateImg`;
-4. compare selected numeric identity with resolved current water ID first ->
-   Float; otherwise matching current crate or wood ID -> Track;
-5. a selected `None`, unresolved terrain cell, terrain object,
+4. apply the universal slope gate, then dispatch high anchors, explicit
+   `0x7E`/`0xA7` TS ghosts, Railroad, walls, and low endpoint trigger tables;
+5. only the ordinary branch compares selected numeric identity with resolved
+   current water ID first -> Float; otherwise matching current crate or wood ID
+   -> Track;
+6. in the ordinary branch, a selected `None`, unresolved terrain cell, terrain object,
    `slope_type > 4` when the selected raw overlay ID is not exact `0xB2`, any
    nonzero selected occupation byte, selected
    non-bridge speed zero, or injected allocation/Unlimbo/Mark failure ->
    accepted ghost;
-6. `bridge_facts.raw_flags & 0x100 != 0` selects
+7. `bridge_facts.raw_flags & 0x100 != 0` selects
    `raw_cell_occupation.deck_bits` and bypasses non-bridge speed-zero;
    otherwise select `ground_bits`;
-7. visible success calls only the crate-specific stamp.
+8. ordinary success preserves native write order: identity/data zero, Road data
+   one and optional tiberium germination, `Crate=yes` override, `CellAnim`, then
+   common Recalc.
 
 Do not use `OBJECT_OCCUPATION_BIT` masking and do not use
 `place_overlay_native_runtime` wall/protection semantics.
 
-**Step 4: Add the specialized stamp**
+**Step 4: Add the specialized raw-field stamp and branch helpers**
 
 ```rust
-pub(crate) fn place_crate_overlay(
+pub(crate) fn write_crate_mark_fields(
     &mut self,
     resolved_terrain: &mut ResolvedTerrainGrid,
     registry: &OverlayTypeRegistry,
     rx: u16,
     ry: u16,
     overlay_id: u8,
+    overlay_data: u8,
 ) -> bool {
     let Some(index) = index_of(self.width, self.height, rx, ry) else {
         return false;
     };
-    let Some(flags) = registry.flags(overlay_id) else {
+    let Some(name) = registry.name(overlay_id) else {
         return false;
     };
     self.cells[index].overlay_id = Some(overlay_id);
-    self.cells[index].overlay_data = native_mark_overlay_data(flags);
+    self.cells[index].overlay_data = overlay_data;
     // Preserve wall_owner/unrelated fields rather than replacing OverlayCell.
     self.dirty_cells.push((rx, ry));
-    recalc_overlay_passability(self, resolved_terrain, registry, rx, ry);
+    resolved_terrain.set_runtime_overlay_bridge_identity(
+        rx, ry, overlay_id, overlay_data, name,
+    );
     true
 }
 ```
+
+`sim::crates` owns the exact high-anchor setters, wall connectivity, low bridge
+fixed/search/body transaction and shared-dummy alias, Road tiberium density,
+`CellAnim`, and the common Recalc tail. Do not fold those branches back into a
+single `native_mark_overlay_data` approximation.
 
 **Step 5: Install accepted slot/timer in native order**
 
@@ -697,6 +724,10 @@ Cover:
 - occupied overlay/outside playfield retry and do not install timer;
 - visible stamp writes zero ordinarily, one for Road, and `0xFF` for
   `Crate=yes`, preserves wall owner, and dirties once;
+- Railroad bypass/data zero; wall passability/connectivity/data ordering; high
+  anchor flag family and preserved data; every low trigger table with exact
+  `3*L` raw draws plus occupied-row no-op; Road tiberium neighbor density;
+  visible and failed ordinary `CellAnim`; explicit TS legacy ghosts;
 - ghost preserves the cell;
 - both visible and ghost slots store coordinate then timer words;
 - 1,000 hard rejections return with empty slot.
@@ -781,10 +812,11 @@ the same index contract without constructing `AppState`.
 
 Extend `preregister_runtime_overlay_names` to accept registry entries whose
 flags have `crate_type` plus all three resolved `CrateRules` identities, in
-addition to walls and low bridges. Preload frame zero for flagged crates and
-the native Mark data frame (zero or Road one) for configured `Crate=false`
-types. Keep counters separate so crate additions are not misreported as
-bridges.
+addition to walls and low bridges. Preload the actual reachable Mark outputs:
+frame zero for flagged crates, ordinary/Railroad data, wall frames, low
+fixed/body IDs and states, all preserved high-anchor data values, and Road
+tiberium density frames. Keep counters separate so crate additions are not
+misreported as bridges.
 
 **Step 5: Add focused production tests**
 

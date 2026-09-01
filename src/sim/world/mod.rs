@@ -2820,6 +2820,31 @@ impl Simulation {
         }
     }
 
+    /// High-bridge anchor construction uses the same literal setter as bridge
+    /// damage/repair, but it additionally creates the family/anchor relations
+    /// from which Rust derives live bridge topology.
+    pub(crate) fn apply_runtime_bridge_mark_stamp(
+        &mut self,
+        stamp: crate::map::bridge_facts::BridgeFlagStamp,
+        family: crate::map::bridge_facts::BridgeStampFamily,
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        if !terrain.bridge_flag_authority_matches_shape(&self.real_cell_bridge_flags_0x1180) {
+            self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
+        }
+        let updates = self
+            .resolved_terrain
+            .as_mut()
+            .expect("terrain presence checked before runtime bridge Mark setter")
+            .apply_runtime_bridge_mark_stamp(stamp, family);
+        for (index, flags) in updates {
+            self.real_cell_bridge_flags_0x1180
+                .set_allocated_cell(index, flags);
+        }
+    }
+
     /// Commit the allocated real-cell half of a runtime setter that already
     /// executed synchronously through `CellClassBridgeFlagState`. Dummy
     /// coordinate/flag effects are live at the native call point and must not

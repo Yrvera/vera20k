@@ -10,7 +10,7 @@
 use crate::map::overlay::{OverlayDataPack, OverlayEntry};
 use crate::map::overlay_types::{
     OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index,
-    native_mark_overlay_data, retained_overlay_land,
+    retained_overlay_land,
 };
 use crate::map::resolved_terrain::{
     ResolvedTerrainGrid, overlay_reduced_zone_type, recalc_zone_type,
@@ -366,34 +366,38 @@ impl OverlayGrid {
         NativeOverlayPlacementResult::Placed
     }
 
-    /// Commit a crate overlay after `CrateSlot__ValidateCellAndCreateOverlay`
-    /// has accepted its native Mark predicates.
-    ///
-    /// This is deliberately narrower than [`Self::place_overlay_native_runtime`]:
-    /// the crate validator owns terrain, slope, occupation, speed, and identity
-    /// checks, while this writer only reproduces the successful CellClass
-    /// mutation: identity, then ordinary data zero / Road data one / Crate data
-    /// `0xFF`. A cleared wall's inert owner is unrelated Cell authority and
-    /// therefore survives the write.
-    pub(crate) fn place_crate_overlay(
+    /// Write the two literal CellClass overlay fields without running the
+    /// common `RecalcAttributes` tail yet. Ordinary Mark needs this split so
+    /// Road germination, the Crate-data override, and CellAnim construction
+    /// occur in their native order before the tail recalc.
+    pub(crate) fn write_crate_mark_fields(
         &mut self,
         resolved_terrain: &mut ResolvedTerrainGrid,
         registry: &OverlayTypeRegistry,
         rx: u16,
         ry: u16,
         overlay_id: u8,
+        overlay_data: u8,
     ) -> bool {
         let Some(idx) = index_of(self.width, self.height, rx, ry) else {
             return false;
         };
-        let Some(flags) = registry.flags(overlay_id) else {
+        if registry.flags(overlay_id).is_none() {
+            return false;
+        }
+        let Some(name) = registry.name(overlay_id) else {
             return false;
         };
         self.cells[idx].overlay_id = Some(overlay_id);
-        self.cells[idx].overlay_data = native_mark_overlay_data(flags);
+        self.cells[idx].overlay_data = overlay_data;
         self.dirty_cells.push((rx, ry));
-        let changed = recalc_overlay_passability(self, resolved_terrain, registry, rx, ry);
-        self.record_synchronous_passability_change_at(rx, ry, changed);
+        resolved_terrain.set_runtime_overlay_bridge_identity(
+            rx,
+            ry,
+            overlay_id,
+            overlay_data,
+            name,
+        );
         true
     }
 

@@ -234,24 +234,114 @@ fn runtime_crate_sprite_keys(
     .flatten()
     .filter_map(|name| overlay_registry.id_for_name(name))
     .collect();
-
-    (0u8..=u8::MAX)
-        .filter_map(|overlay_id| {
-            let flags = overlay_registry.flags(overlay_id)?;
-            if !flags.crate_type && !selected_ids.contains(&overlay_id) {
-                return None;
-            }
-            let name = resolve_overlay_name_for_render(overlay_registry, overlay_id)?;
-            Some(OverlaySpriteKey {
+    let mut keys = HashSet::new();
+    for overlay_id in 0u8..=u8::MAX {
+        let Some(flags) = overlay_registry.flags(overlay_id) else {
+            continue;
+        };
+        if flags.crate_type
+            && let Some(name) = resolve_overlay_name_for_render(overlay_registry, overlay_id)
+        {
+            keys.insert(OverlaySpriteKey {
                 name,
-                frame: if flags.crate_type {
-                    CRATE_BODY_FRAME
-                } else {
-                    native_mark_overlay_data(flags)
-                },
-            })
-        })
-        .collect()
+                frame: CRATE_BODY_FRAME,
+            });
+        }
+    }
+
+    for selected_id in selected_ids {
+        let Some(flags) = overlay_registry.flags(selected_id) else {
+            continue;
+        };
+        let mut reachable: Vec<(u8, std::ops::RangeInclusive<u8>)> = Vec::new();
+        match selected_id {
+            // Active-YR low endpoint Mark replaces the trigger with one fixed
+            // identity and may fill four body variants, all with states 0/1/2.
+            0x7A => {
+                reachable.push((0x5C, 0..=2));
+                for id in 0x4A..=0x4D {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            0x7B => {
+                reachable.push((0x5E, 0..=2));
+                for id in 0x4A..=0x4D {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            0x7C => {
+                reachable.push((0x60, 0..=2));
+                for id in 0x53..=0x56 {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            0x7D => {
+                reachable.push((0x62, 0..=2));
+                for id in 0x53..=0x56 {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            0xE9 => {
+                reachable.push((0xDF, 0..=2));
+                for id in 0xCD..=0xD0 {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            0xEA => {
+                reachable.push((0xE1, 0..=2));
+                for id in 0xCD..=0xD0 {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            0xEB => {
+                reachable.push((0xE3, 0..=2));
+                for id in 0xD6..=0xD9 {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            0xEC => {
+                reachable.push((0xE5, 0..=2));
+                for id in 0xD6..=0xD9 {
+                    reachable.push((id, 0..=2));
+                }
+            }
+            // High-anchor Mark preserves the target cell's prior raw data.
+            0x18 | 0x19 | 0xED | 0xEE => {
+                reachable.push((selected_id, 0..=u8::MAX));
+            }
+            _ if flags.wall => {
+                // The general wall preload below owns the complete frame set.
+            }
+            _ if flags.crate_type => {
+                // Crate=yes stores 0xFF but the draw path selects the crate
+                // body frame; the general crate preload above owns that key.
+            }
+            _ if flags.land == crate::rules::terrain_rules::LandType::Railroad => {
+                reachable.push((selected_id, 0..=0));
+            }
+            _ if flags.land == crate::rules::terrain_rules::LandType::Road && flags.tiberium => {
+                reachable.push((selected_id, 0..=11));
+            }
+            _ => {
+                reachable.push((
+                    selected_id,
+                    native_mark_overlay_data(flags)..=native_mark_overlay_data(flags),
+                ));
+            }
+        }
+        for (overlay_id, frames) in reachable {
+            let Some(name) = resolve_overlay_name_for_render(overlay_registry, overlay_id) else {
+                continue;
+            };
+            for frame in frames {
+                keys.insert(OverlaySpriteKey {
+                    name: name.clone(),
+                    frame,
+                });
+            }
+        }
+    }
+    keys
 }
 
 /// UV and offset data for one overlay sprite within the atlas.
@@ -1014,6 +1104,8 @@ mod radar_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::{
         MAX_OVERLAY_FRAME_COUNT, OverlaySpriteKey, OverlayTypeFlags, body_frame_count,
         decrement_numeric_suffix, resolve_body_frame, runtime_flat_tiberium_sprite_keys,
@@ -1072,6 +1164,60 @@ mod tests {
             frame: 1,
         }));
         assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn startup_crate_preload_includes_special_mark_outputs() {
+        let mut low_ini = String::from("[OverlayTypes]\n");
+        for id in 0..=0x7Au8 {
+            let name = if id == 0x7A {
+                "LOWTRIGGER".to_owned()
+            } else {
+                format!("OV{id:03}")
+            };
+            writeln!(&mut low_ini, "{id}={name}").unwrap();
+        }
+        let low_registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&low_ini), None);
+        let low_rules = CrateRules {
+            wood_crate_img: Some("LOWTRIGGER".to_owned()),
+            crate_img: Some("LOWTRIGGER".to_owned()),
+            water_crate_img: Some("LOWTRIGGER".to_owned()),
+            ..CrateRules::default()
+        };
+        let low_keys = runtime_crate_sprite_keys(&low_registry, &low_rules);
+        for id in [0x5C, 0x4A, 0x4B, 0x4C, 0x4D] {
+            let name = low_registry.name(id).unwrap().to_owned();
+            for frame in 0..=2 {
+                assert!(low_keys.contains(&OverlaySpriteKey {
+                    name: name.clone(),
+                    frame,
+                }));
+            }
+        }
+
+        let mut high_ini = String::from("[OverlayTypes]\n");
+        for id in 0..=0x18u8 {
+            let name = if id == 0x18 {
+                "HIGHANCHOR".to_owned()
+            } else {
+                format!("OV{id:03}")
+            };
+            writeln!(&mut high_ini, "{id}={name}").unwrap();
+        }
+        let high_registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&high_ini), None);
+        let high_rules = CrateRules {
+            wood_crate_img: Some("HIGHANCHOR".to_owned()),
+            crate_img: Some("HIGHANCHOR".to_owned()),
+            water_crate_img: Some("HIGHANCHOR".to_owned()),
+            ..CrateRules::default()
+        };
+        let high_keys = runtime_crate_sprite_keys(&high_registry, &high_rules);
+        for frame in [0, 7, u8::MAX] {
+            assert!(high_keys.contains(&OverlaySpriteKey {
+                name: "HIGHANCHOR".to_owned(),
+                frame,
+            }));
+        }
     }
 
     #[test]
