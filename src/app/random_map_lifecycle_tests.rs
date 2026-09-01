@@ -503,6 +503,28 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         ui_launch.post_map_output.tiberium_queues.is_some(),
         "shared Post_Map_Init must rebuild the generated overlay queues"
     );
+    assert_eq!(
+        ui_launch.post_map_output.crates,
+        Some(crate::sim::crates::CratePlacement {
+            requested: 1,
+            accepted: 1,
+            visible: ui_launch
+                .startup_crate_slots
+                .iter()
+                .filter(|(_, _, overlay)| overlay.is_some())
+                .count() as u32,
+        }),
+        "accepted playable RMG must reach the ordinary startup-crate post-map seam"
+    );
+    assert_eq!(ui_launch.startup_crate_slots.len(), 1);
+    let (slot_index, slot, live_overlay) = ui_launch.startup_crate_slots[0];
+    assert_eq!(slot_index, 0, "first accepted crate owns slot zero");
+    assert!(!slot.is_empty());
+    assert_eq!(slot.start_frame, 0);
+    assert_ne!(slot.aux, 0);
+    assert!(slot.duration > 0);
+    let (_, data) = live_overlay.expect("retail lifecycle fixture places a visible startup crate");
+    assert_eq!(data, u8::MAX);
 
     std::fs::remove_file(seed_dir.join(seed_name)).expect("remove lifecycle .SED");
     std::fs::remove_file(randmap_img).expect("remove common-teardown preview");

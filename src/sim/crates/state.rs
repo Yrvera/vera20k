@@ -61,6 +61,20 @@ impl CrateAuthority {
     pub(crate) fn slot_mut(&mut self, index: usize) -> &mut CrateSlot {
         &mut self.slots[index]
     }
+
+    /// Accepted coordinates in native ascending slot order. Negative packed
+    /// values are malformed snapshot state and cannot name a Rust grid cell.
+    pub(crate) fn occupied_cells(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+        self.slots.iter().filter_map(|slot| {
+            if slot.is_empty() {
+                return None;
+            }
+            Some((
+                u16::try_from(slot.cell_x).ok()?,
+                u16::try_from(slot.cell_y).ok()?,
+            ))
+        })
+    }
 }
 
 /// Compute the accepted-slot timer words in the verified x87 expression
@@ -178,6 +192,10 @@ mod tests {
             slot.cell_x = i16::try_from(index + 1).expect("slot index fits i16");
         }
         assert_eq!(authority.first_empty_index(), None);
+        assert_eq!(
+            authority.occupied_cells().take(3).collect::<Vec<_>>(),
+            vec![(1, 0), (2, 0), (3, 0)]
+        );
     }
 
     #[test]

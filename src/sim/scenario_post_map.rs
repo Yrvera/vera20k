@@ -36,6 +36,16 @@ pub(crate) struct ScenarioPostMapOutput {
     pub(crate) tiberium_queues: Option<NativeTiberiumRebuildStats>,
     pub(crate) navigation_published: bool,
     pub(crate) crates: Option<CratePlacement>,
+    #[cfg(test)]
+    pub(crate) skirmish_order: [Option<ScenarioPostMapStep>; 3],
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScenarioPostMapStep {
+    StartupCrates,
+    AiOpeningCredits,
+    LaunchAlliances,
 }
 
 impl Simulation {
@@ -89,11 +99,16 @@ impl Simulation {
         // placement below pins the newly published path snapshot.
         let navigation_published = self.rebuild_dynamic_navigation(input.rules);
 
+        #[cfg(test)]
+        let mut skirmish_order = [None; 3];
         let crates = if let Some(descriptor) = input.skirmish_session {
             let session = descriptor.session();
-            crate::sim::scenario_bootstrap::apply_skirmish_ai_opening_credits(self);
             let player_count = crate::sim::crates::human_player_count(self);
             let initial_path = self.path_grid_snapshot();
+            #[cfg(test)]
+            {
+                skirmish_order[0] = Some(ScenarioPostMapStep::StartupCrates);
+            }
             let placement = crate::sim::crates::place_scenario_start_crates(
                 self,
                 input.rules,
@@ -101,6 +116,15 @@ impl Simulation {
                 initial_path.as_deref(),
                 player_count,
             );
+            #[cfg(test)]
+            {
+                skirmish_order[1] = Some(ScenarioPostMapStep::AiOpeningCredits);
+            }
+            crate::sim::scenario_bootstrap::apply_skirmish_ai_opening_credits(self);
+            #[cfg(test)]
+            {
+                skirmish_order[2] = Some(ScenarioPostMapStep::LaunchAlliances);
+            }
             crate::sim::scenario_bootstrap::apply_skirmish_launch_alliances(
                 self,
                 input.house_roster,
@@ -116,6 +140,8 @@ impl Simulation {
             tiberium_queues,
             navigation_published,
             crates,
+            #[cfg(test)]
+            skirmish_order,
         }
     }
 }
@@ -387,6 +413,14 @@ mod tests {
             .collect();
         assert_eq!(crate_cells, vec![expected_crate_cell]);
         assert_eq!(sim.scenario_rng.state(), expected_rng.state());
+        assert_eq!(
+            output.skirmish_order,
+            [
+                Some(ScenarioPostMapStep::StartupCrates),
+                Some(ScenarioPostMapStep::AiOpeningCredits),
+                Some(ScenarioPostMapStep::LaunchAlliances),
+            ]
+        );
         assert!(
             sim.house_alliances
                 .get("PLAYER")
@@ -451,6 +485,7 @@ mod tests {
         assert_eq!(output.tiberium_queues, None);
         assert!(output.navigation_published);
         assert_eq!(output.crates, None);
+        assert_eq!(output.skirmish_order, [None; 3]);
         assert_eq!(sim.scenario_rng.state(), rng_before);
         assert_eq!(sim.houses[&owner].credits, 7_500);
         assert!(

@@ -97,6 +97,87 @@ fn resolved_overlay_shp_ids(
     available
 }
 
+/// Append visible accepted startup crates to the initial presentation index.
+/// Ghost slots remain authoritative simulation state but have no live overlay
+/// identity and therefore produce no render entry.
+fn connect_startup_crate_overlays(
+    overlays: &mut Vec<OverlayEntry>,
+    simulation: &Simulation,
+) -> usize {
+    let Some(grid) = simulation.overlay_grid.as_ref() else {
+        return 0;
+    };
+    let candidates = simulation
+        .crate_authority
+        .occupied_cells()
+        .filter_map(|(rx, ry)| {
+            let cell = grid.cell(rx, ry);
+            Some(OverlayEntry {
+                rx,
+                ry,
+                overlay_id: cell.overlay_id?,
+                frame: cell.overlay_data,
+            })
+        })
+        .collect();
+    let mut index = crate::app::presentation::overlay_index::OverlayRenderIndex::default();
+    index.replace_from_source(std::mem::take(overlays));
+    let synced = index.upsert_occupied(candidates);
+    *overlays = index.as_slice().to_vec();
+    synced
+}
+
+#[cfg(test)]
+mod startup_crate_presentation_tests {
+    use super::*;
+    use crate::sim::crates::CrateSlot;
+    use crate::sim::overlay_grid::OverlayGrid;
+
+    #[test]
+    fn startup_crate_presentation_appends_visible_slots_and_excludes_ghosts() {
+        let mut simulation = Simulation::new();
+        simulation.overlay_grid = Some(OverlayGrid::new(16, 16));
+        *simulation.crate_authority.slot_mut(0) = CrateSlot {
+            start_frame: 0,
+            aux: 1,
+            duration: 2,
+            cell_x: 9,
+            cell_y: 4,
+        };
+        *simulation.crate_authority.slot_mut(1) = CrateSlot {
+            start_frame: 0,
+            aux: 3,
+            duration: 4,
+            cell_x: 7,
+            cell_y: 8,
+        };
+        simulation
+            .overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_overlay(9, 4, 33, u8::MAX);
+        let mut source = vec![OverlayEntry {
+            rx: 2,
+            ry: 3,
+            overlay_id: 5,
+            frame: 6,
+        }];
+
+        assert_eq!(connect_startup_crate_overlays(&mut source, &simulation), 1);
+        assert_eq!(
+            source
+                .iter()
+                .map(|entry| (entry.rx, entry.ry, entry.overlay_id, entry.frame))
+                .collect::<Vec<_>>(),
+            vec![(2, 3, 5, 6), (9, 4, 33, u8::MAX),]
+        );
+        assert!(
+            source.iter().all(|entry| (entry.rx, entry.ry) != (7, 8)),
+            "a timed ghost has no initial render entry"
+        );
+    }
+}
+
 #[cfg(test)]
 mod native_overlay_shp_tests {
     use super::*;
@@ -910,6 +991,7 @@ pub(crate) struct RandomMapLaunchSnapshot {
     pub(crate) mapgen_continuation: crate::sim::rng::SimRngLogicalState,
     pub(crate) final_rng: crate::sim::world::SimulationRngState,
     pub(crate) post_map_output: crate::sim::scenario_post_map::ScenarioPostMapOutput,
+    pub(crate) startup_crate_slots: Vec<(usize, crate::sim::crates::CrateSlot, Option<(u8, u8)>)>,
 }
 
 #[cfg(test)]
@@ -1251,6 +1333,24 @@ impl MapLoadInitial {
             &house_roster,
             Some(match_launch_descriptor),
         );
+        let startup_crate_slots = simulation
+            .crate_authority
+            .slots()
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, slot)| !slot.is_empty())
+            .map(|(index, slot)| {
+                let live_overlay = u16::try_from(slot.cell_x)
+                    .ok()
+                    .zip(u16::try_from(slot.cell_y).ok())
+                    .and_then(|(rx, ry)| {
+                        let cell = simulation.overlay_grid.as_ref()?.cell(rx, ry);
+                        Some((cell.overlay_id?, cell.overlay_data))
+                    });
+                (index, slot, live_overlay)
+            })
+            .collect();
         let final_rng = simulation.rng_state();
         RandomMapLaunchSnapshot {
             map,
@@ -1261,6 +1361,7 @@ impl MapLoadInitial {
             mapgen_continuation,
             final_rng,
             post_map_output,
+            startup_crate_slots,
         }
     }
 }
@@ -2359,12 +2460,13 @@ pub(crate) fn load_map_from_initial(
     // authoritative post-map tail — runs through the same sim-owned function
     // the headless loader uses.
     //
-    // The overlay render entries are filtered BEFORE the call, against the
+    // The source overlay render entries are filtered BEFORE the call, against the
     // grid state the entries were derived from: the shared finalization's only
     // pre-install grid mutation is wall-owner reconstruction (wall_owner
     // fields, never overlay ids), while its post-map tail may place
-    // scenario-start crates — new overlay occupancy this presentation filter
-    // must not react to.
+    // scenario-start crates. Visible accepted crate coordinates are appended
+    // from the live post-map grid immediately afterward through the same
+    // coordinate-retaining OverlayRenderIndex used by runtime updates.
     overlays_connected
         .retain(|entry| overlay_grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id));
     let rules_for_post_map = rules
@@ -2389,6 +2491,12 @@ pub(crate) fn load_map_from_initial(
         }
         if !output.navigation_published {
             log::error!("Initial navigation rebuild failed: resolved terrain is unavailable");
+        }
+        let connected_crates = connect_startup_crate_overlays(&mut overlays_connected, sim);
+        if connected_crates != 0 {
+            log::info!(
+                "Connected {connected_crates} visible startup crate cell(s) to initial overlay presentation"
+            );
         }
     }
 
