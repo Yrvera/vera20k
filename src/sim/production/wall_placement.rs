@@ -136,24 +136,17 @@ pub(super) fn stamp_wall(
         return false;
     }
     grid.place_owned_wall(rx, ry, overlay_id, 0, owner);
-    refresh_wall_connectivity_after_placement(grid, registry, rx, ry);
+    refresh_wall_connectivity_after_placement(
+        grid,
+        registry,
+        sim.resolved_terrain.as_mut(),
+        rx,
+        ry,
+    );
+    grid.add_retained_wall_neighbor_source(sim.resolved_terrain.as_ref(), rx, ry);
     if let Some(terrain) = sim.resolved_terrain.as_mut() {
-        const PLACEMENT_CROSS: [(i32, i32); 5] =
-            [(0, 0), (0, -1), (1, 0), (0, 1), (-1, 0)];
-        for (dx, dy) in PLACEMENT_CROSS {
-            let nx = i32::from(rx) + dx;
-            let ny = i32::from(ry) + dy;
-            if nx < 0
-                || ny < 0
-                || nx >= i32::from(grid.width())
-                || ny >= i32::from(grid.height())
-            {
-                continue;
-            }
-            let (nx, ny) = (nx as u16, ny as u16);
-            let changed = recalc_overlay_passability(grid, terrain, registry, nx, ny);
-            grid.record_synchronous_passability_change_at(nx, ny, changed);
-        }
+        let changed = recalc_overlay_passability(grid, terrain, registry, rx, ry);
+        grid.record_synchronous_passability_change_at(rx, ry, changed);
     }
     true
 }

@@ -16,7 +16,7 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::canonical_cell_coord;
 use crate::sim::combat;
-use crate::sim::combat::combat_aoe::{CellTargetDetach, detach_cell_target_references};
+use crate::sim::combat::combat_aoe::{CellTargetDetach, expire_cell_target_references};
 use crate::sim::command::{
     COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord, ExitRecord, MegaMissionMoveRecord,
     SellWallAtCellRecord,
@@ -31,7 +31,7 @@ use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::teleport_movement;
 use crate::sim::overlay_grid::{
-    RecomputeResult, recalc_overlay_passability, recompute_wall_connectivity_at,
+    RecomputeResult, recalc_overlay_passability, runtime_wall_cleanup_visit_at,
 };
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
@@ -323,6 +323,7 @@ impl Simulation {
         tail_grid: &PathGrid,
         sold_cell: (u16, u16),
         repair_cell: (u16, u16),
+        repair: ZoneRepairKind,
     ) {
         let Some(terrain) = self.resolved_terrain.as_ref() else {
             return;
@@ -342,7 +343,7 @@ impl Simulation {
         let _ = repair_zone_cell(
             zone_grid,
             PackedZoneCoord::new(repair_cell.0 as i16, repair_cell.1 as i16),
-            ZoneRepairKind::AssignOrphaned,
+            repair,
             tail_grid,
             &self.terrain_costs,
             terrain,
@@ -425,27 +426,47 @@ impl Simulation {
         // Selling invokes exactly one PostDestructionWallCleanup at the sold
         // cell: N, E, S, W, self. It is not damage's four-cardinal fan-out.
         const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
+        let mut detach_trace: Vec<CellTargetDetach> = Vec::new();
         for (dx, dy) in CROSS {
-            let nx = i32::from(rx) + dx;
-            let ny = i32::from(ry) + dy;
-            if nx < 0 || ny < 0 {
+            let Some(visit) = self.overlay_grid.as_mut().and_then(|grid| {
+                runtime_wall_cleanup_visit_at(
+                    grid,
+                    overlays,
+                    self.resolved_terrain.as_ref(),
+                    i32::from(rx) + dx,
+                    i32::from(ry) + dy,
+                )
+            }) else {
                 continue;
-            }
-            let (nx, ny) = (nx as u16, ny as u16);
-            let in_bounds = self
-                .overlay_grid
-                .as_ref()
-                .is_some_and(|grid| nx < grid.width() && ny < grid.height());
-            if !in_bounds {
-                continue;
-            }
+            };
 
-            self.tactical_dirty_cells.push((nx, ny));
-            self.mark_radar_terrain_dirty_cells([(nx, ny)]);
-            let mut result = RecomputeResult::NoChange;
+            self.tactical_dirty_cells.push(visit.packed_coord);
+            self.mark_radar_terrain_dirty_cells([visit.packed_coord]);
+            if !visit.was_wall {
+                continue;
+            }
+            let Some((nx, ny)) = visit.real_cell else {
+                // RecalcAttributes suppresses the cleared/updated shared
+                // dummy after the overlay step, so it has no represented
+                // navigation, zone, or retained-count output.
+                continue;
+            };
+            let result = visit.recomputed;
+            if result == RecomputeResult::Destroyed {
+                expire_cell_target_references(
+                    &mut self.substrate.entities,
+                    nx,
+                    ny,
+                    &mut detach_trace,
+                );
+            }
             let mut navigation_changed = false;
+            let old_zone = self
+                .resolved_terrain
+                .as_ref()
+                .and_then(|terrain| terrain.cell(nx, ny))
+                .map(|cell| cell.zone_type);
             if let Some(grid) = self.overlay_grid.as_mut() {
-                result = recompute_wall_connectivity_at(grid, overlays, nx, ny);
                 if let Some(terrain) = self.resolved_terrain.as_mut() {
                     navigation_changed =
                         recalc_overlay_passability(grid, terrain, overlays, nx, ny);
@@ -453,22 +474,53 @@ impl Simulation {
                 }
             }
             self.refresh_wall_sale_recalc_prefix(&mut tail_grid, nx, ny, navigation_changed);
-            if result == RecomputeResult::Destroyed
+            let cleanup_zone_changed = old_zone
+                .zip(
+                    self.resolved_terrain
+                        .as_ref()
+                        .and_then(|terrain| terrain.cell(nx, ny))
+                        .map(|cell| cell.zone_type),
+                )
+                .is_some_and(|(old, new)| old != new);
+            if cleanup_zone_changed
                 && let Some(prefix_grid) = tail_grid.as_ref()
             {
-                self.repair_wall_sale_zone_prefix(prefix_grid, (rx, ry), (nx, ny));
+                self.repair_wall_sale_zone_prefix(
+                    prefix_grid,
+                    (rx, ry),
+                    (nx, ny),
+                    if result == RecomputeResult::Destroyed {
+                        ZoneRepairKind::AssignOrphaned
+                    } else {
+                        ZoneRepairKind::MergeAdjacent
+                    },
+                );
+            }
+            if result == RecomputeResult::Destroyed && cleanup_zone_changed {
+                let terrain = self
+                    .resolved_terrain
+                    .as_ref()
+                    .expect("wall-sale cleanup zone comparison requires terrain");
+                self.overlay_grid
+                    .as_mut()
+                    .expect("wall-sale cleanup requires overlay grid")
+                    .remove_retained_wall_neighbor_source(Some(terrain), nx, ny);
             }
         }
         self.mark_radar_terrain_dirty_cells([(rx, ry)]);
 
-        let mut detach_trace: Vec<CellTargetDetach> = Vec::new();
-        detach_cell_target_references(&mut self.substrate.entities, rx, ry, &mut detach_trace);
+        expire_cell_target_references(&mut self.substrate.entities, rx, ry, &mut detach_trace);
 
         if let Some(tail_grid) = tail_grid {
             if self.zone_grid.is_some() {
                 // HouseClass performs the sold-cell AssignOrphaned/graph tail
                 // after PostDestructionWallCleanup has completed every visit.
-                self.repair_wall_sale_zone_prefix(&tail_grid, (rx, ry), (rx, ry));
+                self.repair_wall_sale_zone_prefix(
+                    &tail_grid,
+                    (rx, ry),
+                    (rx, ry),
+                    ZoneRepairKind::AssignOrphaned,
+                );
             } else {
                 self.rebuild_zone_grid_full(&tail_grid);
             }

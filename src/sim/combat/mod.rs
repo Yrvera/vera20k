@@ -81,7 +81,7 @@ use crate::sim::mission::authority::{
 };
 use crate::sim::mission::concrete_effects::represented_assign_target;
 use crate::sim::mission::{MissionId, MissionType};
-use crate::sim::overlay_grid::{OverlayGrid, WallMutation};
+use crate::sim::overlay_grid::{OverlayGrid, WallMutation, WallZoneRepairKind};
 use crate::sim::power_system::PowerState;
 use crate::sim::projectile::{
     ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectileGuidance,
@@ -1323,7 +1323,10 @@ pub struct CombatTickResult {
     pub bridge_damage_events: Vec<BridgeDamageEvent>,
     /// Wall writes committed inline in exact cell/recursive cleanup order.
     pub wall_mutations: Vec<WallMutation>,
-    /// Scanned-cell target detach visits committed inline, descending stable ID.
+    /// Packed radar terrain coordinates emitted inline by wall destruction.
+    pub wall_radar_dirty_cells: Vec<(u16, u16)>,
+    /// Scanned-cell pointer-expiry visits committed inline in forward stable-ID
+    /// order, clearing before conditional Restore.
     /// Runtime applies them in-place; tests retain the ledger as an order audit.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
@@ -1667,6 +1670,7 @@ pub(crate) struct DeathEffects {
     pub(crate) invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect>,
     pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
     pub(crate) wall_mutations: Vec<WallMutation>,
+    pub(crate) wall_radar_dirty_cells: Vec<(u16, u16)>,
     pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
     pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     pub(crate) death_sounds: Vec<(InternedId, u16, u16)>,
@@ -1754,6 +1758,15 @@ pub(crate) trait CombatInlineHooks {
     fn mark_cliff_radar_dirty(&mut self, _cell: (u16, u16)) {}
 
     fn mark_cliff_tactical_dirty(&mut self, _cells: &[(u16, u16)]) {}
+
+    fn wall_navigation_step(
+        &mut self,
+        _terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        _cell: (u16, u16),
+        _navigation_changed: bool,
+        _repair: WallZoneRepairKind,
+    ) {
+    }
 
     fn spawn_cliff_anims(
         &mut self,
@@ -1845,7 +1858,7 @@ fn tiberium_reduction_amount(
 /// owns World-only ore-growth/dirty state; combat_aoe lends the map and RNG
 /// fields it already owns for the duration of one cell.
 struct CombatTiberiumCellPrelude<'a, 'hook> {
-    amount: i32,
+    amount: Option<i32>,
     deferred: &'a mut Vec<TiberiumReductionRequest>,
     inline_hooks: &'a mut Option<&'hook mut dyn CombatInlineHooks>,
     rules: &'a RuleSet,
@@ -1864,6 +1877,9 @@ impl self::combat_aoe::AoECellPrelude for CombatTiberiumCellPrelude<'_, '_> {
         terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
         scenario_rng: Option<&mut SimRng>,
     ) {
+        let Some(amount) = self.amount else {
+            return;
+        };
         if !self::combat_aoe::tiberium_reduction_cell_admitted(
             overlay_grid.as_deref(),
             overlay_registry,
@@ -1875,7 +1891,7 @@ impl self::combat_aoe::AoECellPrelude for CombatTiberiumCellPrelude<'_, '_> {
         let request = TiberiumReductionRequest {
             rx,
             ry,
-            amount: self.amount,
+            amount,
         };
         if let Some(hooks) = self.inline_hooks.as_deref_mut() {
             let scenario_rng = scenario_rng
@@ -1892,6 +1908,18 @@ impl self::combat_aoe::AoECellPrelude for CombatTiberiumCellPrelude<'_, '_> {
             );
         } else {
             self.deferred.push(request);
+        }
+    }
+
+    fn wall_navigation_step(
+        &mut self,
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
+    ) {
+        if let Some(hooks) = self.inline_hooks.as_deref_mut() {
+            hooks.wall_navigation_step(terrain, cell, navigation_changed, repair);
         }
     }
 }
@@ -1978,6 +2006,8 @@ impl DeathEffects {
         self.bridge_damage_events
             .append(&mut other.bridge_damage_events);
         self.wall_mutations.append(&mut other.wall_mutations);
+        self.wall_radar_dirty_cells
+            .append(&mut other.wall_radar_dirty_cells);
         self.cell_target_detaches
             .append(&mut other.cell_target_detaches);
         self.tiberium_reduction_requests
@@ -2099,6 +2129,7 @@ fn handle_entity_deaths(
     let mut invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut wall_mutations: Vec<WallMutation> = Vec::new();
+    let mut wall_radar_dirty_cells: Vec<(u16, u16)> = Vec::new();
     let mut cell_target_detaches: Vec<combat_aoe::CellTargetDetach> = Vec::new();
     let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
     let mut concrete_smudge_plans: Vec<ConcreteDeathSmudgePlan> = Vec::new();
@@ -2400,14 +2431,14 @@ fn handle_entity_deaths(
                 }
             });
             let aoe = {
-                let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
-                    amount,
+                let mut cell_prelude = CombatTiberiumCellPrelude {
+                    amount: ore_amount,
                     deferred: &mut tiberium_reduction_requests,
                     inline_hooks,
                     rules,
                     resource_nodes,
                     terrain_area_state: terrain_area_state.as_deref(),
-                });
+                };
                 self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
                     entities,
                     *rx,
@@ -2429,12 +2460,11 @@ fn handle_entity_deaths(
                     },
                     terrain_collection,
                     scenario_no_damage,
-                    ore_prelude
-                        .as_mut()
-                        .map(|prelude| prelude as &mut dyn self::combat_aoe::AoECellPrelude),
+                    Some(&mut cell_prelude),
                 )
             };
             wall_mutations.extend(aoe.wall_mutations);
+            wall_radar_dirty_cells.extend(aoe.wall_radar_dirty_cells);
             cell_target_detaches.extend(aoe.cell_target_detaches);
             if !scenario_no_damage && !routed_wall && warhead.wall && *dmg > 0 {
                 let wh_iid = *wh_id;
@@ -2495,6 +2525,7 @@ fn handle_entity_deaths(
             invulnerability_impact_effects.append(&mut nested.invulnerability_impact_effects);
             bridge_damage_events.append(&mut nested.bridge_damage_events);
             wall_mutations.append(&mut nested.wall_mutations);
+            wall_radar_dirty_cells.append(&mut nested.wall_radar_dirty_cells);
             cell_target_detaches.append(&mut nested.cell_target_detaches);
             tiberium_reduction_requests.append(&mut nested.tiberium_reduction_requests);
             death_sounds.append(&mut nested.death_sounds);
@@ -2595,6 +2626,7 @@ fn handle_entity_deaths(
         invulnerability_impact_effects,
         bridge_damage_events,
         wall_mutations,
+        wall_radar_dirty_cells,
         cell_target_detaches,
         tiberium_reduction_requests,
         death_sounds,
@@ -3157,14 +3189,14 @@ pub(crate) fn commit_area_damage_receivers_with_scenario(
                         cells: state.terrain_object_cells(),
                     };
                     let aoe = {
-                        let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
-                            amount,
+                        let mut cell_prelude = CombatTiberiumCellPrelude {
+                            amount: ore_amount,
                             deferred: &mut effects.tiberium_reduction_requests,
                             inline_hooks,
                             rules,
                             resource_nodes,
                             terrain_area_state: Some(&*state),
-                        });
+                        };
                         combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
                             entities,
                             lethal.cell.0,
@@ -3186,12 +3218,13 @@ pub(crate) fn commit_area_damage_receivers_with_scenario(
                             },
                             Some(terrain_collection),
                             scenario_no_damage,
-                            ore_prelude
-                                .as_mut()
-                                .map(|prelude| prelude as &mut dyn combat_aoe::AoECellPrelude),
+                            Some(&mut cell_prelude),
                         )
                     };
                     effects.wall_mutations.extend(aoe.wall_mutations);
+                    effects
+                        .wall_radar_dirty_cells
+                        .extend(aoe.wall_radar_dirty_cells);
                     effects
                         .cell_target_detaches
                         .extend(aoe.cell_target_detaches);
@@ -3899,6 +3932,8 @@ fn absorb_inline_death_effects(
     out.bridge_damage_events
         .append(&mut death.bridge_damage_events);
     out.wall_mutations.append(&mut death.wall_mutations);
+    out.wall_radar_dirty_cells
+        .append(&mut death.wall_radar_dirty_cells);
     out.cell_target_detaches
         .append(&mut death.cell_target_detaches);
     out.tiberium_reduction_requests
@@ -3931,6 +3966,7 @@ pub(crate) struct CombatEmit {
     pub(crate) reveal_events: Vec<RevealEvent>,
     pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
     pub(crate) wall_mutations: Vec<WallMutation>,
+    pub(crate) wall_radar_dirty_cells: Vec<(u16, u16)>,
     pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
     pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     pub(crate) explosion_effects: Vec<ExplosionEffect>,
@@ -4336,14 +4372,14 @@ fn emit_one_projectile_detonation(
         tiberium_reduction_amount(detonation.payload.base_damage, true, warhead)
     };
     let aoe = {
-        let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
-            amount,
+        let mut cell_prelude = CombatTiberiumCellPrelude {
+            amount: ore_amount,
             deferred: &mut out.tiberium_reduction_requests,
             inline_hooks,
             rules,
             resource_nodes,
             terrain_area_state,
-        });
+        };
         self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
             entities,
             impact_rx,
@@ -4369,12 +4405,12 @@ fn emit_one_projectile_detonation(
             },
             terrain_objects,
             scenario_no_damage,
-            ore_prelude
-                .as_mut()
-                .map(|prelude| prelude as &mut dyn self::combat_aoe::AoECellPrelude),
+            Some(&mut cell_prelude),
         )
     };
     out.wall_mutations.extend(aoe.wall_mutations);
+    out.wall_radar_dirty_cells
+        .extend(aoe.wall_radar_dirty_cells);
     out.cell_target_detaches.extend(aoe.cell_target_detaches);
     out.damage_events.extend(aoe.receivers);
 
@@ -4594,14 +4630,14 @@ fn emit_missile_detonations(
             tiberium_reduction_amount(det.damage, true, warhead)
         };
         let aoe = {
-            let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
-                amount,
+            let mut cell_prelude = CombatTiberiumCellPrelude {
+                amount: ore_amount,
                 deferred: &mut out.tiberium_reduction_requests,
                 inline_hooks,
                 rules,
                 resource_nodes,
                 terrain_area_state,
-            });
+            };
             combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
                 entities,
                 det.rx,
@@ -4623,12 +4659,12 @@ fn emit_missile_detonations(
                 },
                 terrain_objects,
                 scenario_no_damage,
-                ore_prelude
-                    .as_mut()
-                    .map(|prelude| prelude as &mut dyn combat_aoe::AoECellPrelude),
+                Some(&mut cell_prelude),
             )
         };
         out.wall_mutations.extend(aoe.wall_mutations);
+        out.wall_radar_dirty_cells
+            .extend(aoe.wall_radar_dirty_cells);
         out.cell_target_detaches.extend(aoe.cell_target_detaches);
         out.damage_events.extend(aoe.receivers);
     }
@@ -4848,6 +4884,9 @@ pub(crate) fn commit_logic_projectile_detonations(
         .append(&mut emit.bridge_damage_events);
     effects.wall_mutations.append(&mut emit.wall_mutations);
     effects
+        .wall_radar_dirty_cells
+        .append(&mut emit.wall_radar_dirty_cells);
+    effects
         .cell_target_detaches
         .append(&mut emit.cell_target_detaches);
     effects
@@ -5030,6 +5069,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             structure_destroyed: false,
             bridge_damage_events: Vec::new(),
             wall_mutations: Vec::new(),
+            wall_radar_dirty_cells: Vec::new(),
             cell_target_detaches: Vec::new(),
             terrain_navigation_changed_cells: Vec::new(),
             tiberium_reduction_requests: Vec::new(),
@@ -5774,6 +5814,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         reveal_events,
         mut bridge_damage_events,
         mut wall_mutations,
+        mut wall_radar_dirty_cells,
         mut cell_target_detaches,
         mut tiberium_reduction_requests,
         mut explosion_effects,
@@ -5959,6 +6000,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     }
     bridge_damage_events.append(&mut late_death.bridge_damage_events);
     wall_mutations.append(&mut late_death.wall_mutations);
+    wall_radar_dirty_cells.append(&mut late_death.wall_radar_dirty_cells);
     cell_target_detaches.append(&mut late_death.cell_target_detaches);
     tiberium_reduction_requests.append(&mut late_death.tiberium_reduction_requests);
     explosion_effects.append(&mut late_death.explosion_effects);
@@ -6005,6 +6047,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         structure_destroyed: death.structure_destroyed,
         bridge_damage_events,
         wall_mutations,
+        wall_radar_dirty_cells,
         cell_target_detaches,
         terrain_navigation_changed_cells: terrain_area_state
             .as_deref()
@@ -7058,14 +7101,14 @@ pub(crate) fn resolve_attacker_fire(
             tiberium_reduction_amount(base_damage, true, warhead)
         };
         let aoe = {
-            let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
-                amount,
+            let mut cell_prelude = CombatTiberiumCellPrelude {
+                amount: ore_amount,
                 deferred: &mut out.tiberium_reduction_requests,
                 inline_hooks,
                 rules,
                 resource_nodes,
                 terrain_area_state,
-            });
+            };
             self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
                 entities,
                 target_rx,
@@ -7087,12 +7130,12 @@ pub(crate) fn resolve_attacker_fire(
                 },
                 terrain_objects,
                 scenario_no_damage,
-                ore_prelude
-                    .as_mut()
-                    .map(|prelude| prelude as &mut dyn self::combat_aoe::AoECellPrelude),
+                Some(&mut cell_prelude),
             )
         };
         out.wall_mutations.extend(aoe.wall_mutations);
+        out.wall_radar_dirty_cells
+            .extend(aoe.wall_radar_dirty_cells);
         out.cell_target_detaches.extend(aoe.cell_target_detaches);
 
         out.damage_events.extend(aoe.receivers);

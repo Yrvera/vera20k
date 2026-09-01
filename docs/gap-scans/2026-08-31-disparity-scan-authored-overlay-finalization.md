@@ -91,7 +91,7 @@ Intervening PR #197 added only Team-AI INI tests and did not touch a transaction
 | Ordinary/high identity-state writes and high anchor restore | Verified | Replace split late high-only projection |
 | Base-object tactical dirty before derived dispatch | Verified | Implement one intent per accepted object; no generated-body repeats |
 | Authored OverlayClass allocation/registries/Mark/UnInit/shared-drain and slope-survivor lifecycle | Verified, including direct base Unlimbo, child Anim interleaving, authored-wall common-success reachability, generic counter-zero rejection exclusion, unconditional generated/body-absent drain, non-presentation slope survival, and absolute prefix-relative IDs | Implement one lightweight load-object registry/queue owner from the closed OQ-33/OQ-34 evidence; authored walls use the common queued tail |
-| Authored `Wall=yes` ScenarioInit success, cardinal connectivity, owner `-1`, and blocker-neighbor count plane | Verified, including native order, signed fixed-map real aliases, wrapping `u8`, later low-body overwrite retention, and active retail census | Implement inside the ordered row transaction; retain the real-cell count plane in the consumed-once payload and forbid final-wall reconstruction |
+| Authored `Wall=yes` ScenarioInit success, cardinal connectivity, owner `-1`, and blocker-neighbor count plane | Verified, including native order, signed fixed-map real aliases, wrapping `u8`, later low-body overwrite retention, active retail census, runtime removal conditions, shared-dummy traversal, pointer-expiry ordering, and sale exclusion | Plane/persistence/pathfinding and runtime count/dummy/navigation/radar owners are implemented and focused-validated on the transaction branch; fresh criticism remains open, as do production authored-row dispatch/consumed-once installation and the unrepresented native non-entity pointer-listener roster |
 | Low fixed/search/body algorithm and exact `3*L` raw RNG | Verified by settled reports and cold checks | Implement without reordering or ranged substitution |
 | Persistent dummy, signed `i16 y*512+x` lookup, overlay/state fields | Verified | Extend existing shared identity; do not add derived fields |
 | Independent OverlayData traversal | Verified | Execute after the one Mark transaction; real cells only |
@@ -390,17 +390,21 @@ later owning transactions/reverse audit are complete.
   validated overlay identity, final state byte, and the authored real-cell blocker-neighbor plane
   produced by ordered wall Mark writes. Land/zone/LAT/cache remain live derived cell state. Later
   consumers do not decode the packs or reconstruct authored wall counts again.
-- **Rust state:** the transaction branch now has `FinalizedOverlayPayload` and a narrow final-payload
-  OverlayGrid constructor, but the payload carries identity/state only. The production count builder
-  separately scans final `Wall=yes` identities, losing later-overwritten contributions and signed
-  fixed-stride real aliases.
-- **Required delta:** extend the one map-produced `FinalizedOverlayPayload` with the real-cell wrapping
-  authored count plane and consume identity/state/count exactly once through narrow OverlayGrid/global-
-  count installation with no raw pack, rules, RNG, filter, Recalc, final-wall scan, or dummy export.
+- **Rust state:** the transaction branch now carries identity/state plus the real-cell wrapping count
+  plane through a non-Clone `FinalizedOverlayPayload`, installs `Some(plane)` through the narrow
+  OverlayGrid constructor, persists/hashes/shape-validates it, and seeds the global count builder
+  without scanning final walls. Production and headless still use legacy raw constructors, so live
+  maps and their current v114 saves remain `None` and deliberately retain the temporary final-wall
+  fallback until the one production payload boundary lands.
+- **Required delta:** consume identity/state/count exactly once in production and headless through the
+  narrow OverlayGrid/global-count installation with no raw pack, rules, RNG, filter, Recalc, final-wall
+  scan, or dummy export. Once every gameplay builder produces `Some(plane)`, reject `None` at the
+  current-version save/restore boundary; if any v114 `None` save escapes before that gate lands, bump
+  the snapshot version again rather than silently upgrading it through final identities.
 - **Acceptance:** procedural/rejected/identity-empty/data-only/wall-overwritten cells match one-for-one
   in terrain, runtime grid, global counts, hashes, and later mutation; real fixed-stride aliases survive,
   true dummy misses add no output, and duplicate consumption/second decode/final-wall rebuild are impossible.
-- **Verdict:** MISSING.
+- **Verdict:** PARTIAL / PRODUCTION DISCONNECTED; G7 REMAINS OPEN.
 - **Priority rationale:** every production load currently uses the duplicate constructor; it is
   harmless only when both projections happen to agree and becomes immediately player-visible on
   the first procedural or Recalc-cleared identity.
@@ -692,27 +696,56 @@ later owning transactions/reverse audit are complete.
   the shared dummy, whose count write has no fresh-game output. Active retail contains 13,064 such wall
   cells across 71 winning MIX entries / 187 logical maps, so the success path is routine rather than
   dormant.
-- **Rust state:** the transaction branch's `LiveOverlayCells` / `FinalizedOverlayPayload` retains only
-  final identity/state. `build_blocker_neighbor_counts_with_overlays` subsequently scans the final
-  `OverlayGrid` for `Wall=yes` identities and clips neighbor writes to the rectangular runtime grid.
-  It therefore loses both overwritten authored-wall contributions and signed fixed-stride real-slot
-  aliases. The current lifecycle surface also exposes a generic `finish_wall_reject`; that method is a
-  valid counter-zero primitive but must not be selected by the authored row transaction.
-- **Required delta:** extend the map-native live surface with a real-cell wrapping-`u8` authored
-  blocker-neighbor plane and transfer it exactly once in `FinalizedOverlayPayload`. Dispatch an admitted
-  wall through the proved stamp, cleanup/connectivity, count-write, second-anchor-Recalc, and common
-  lifecycle sequence. Preserve real fixed-stride aliases and suppress dummy output. OverlayData and
-  later low writes must not rebuild or undo the plane. Seed the simulation's authoritative global
-  blocker count state from that payload, then compose terrain/building/foot and runtime wall lifecycle
-  deltas; remove the final-wall scan as authored authority while preserving generic counter-zero wall
-  rejection for non-authored callers.
+- **Runtime lifecycle refinement:** direct `DestroyOverlay` decrements unconditionally after its full
+  cardinal cleanup. Cleanup auto-removal decrements only after Recalc changes zone type. House wall
+  sale has no sold-anchor `+0x122` access and deliberately leaves that contribution stale. The binary
+  also contains CYCL/BARB/FENC threshold rows, but retail never sets those types `Wall=yes`; only
+  GASAND/GAWALL/NAWALL are active and the TS/mod-only rows remain excluded. Runtime cardinal and
+  cleanup probes use the same signed fixed-grid lookup as their count tails: a real alias is visited,
+  connected, dirtied, Recalced, and conditionally removed; it is not rectangle-clipped. Direct
+  terminal cleanup receivers run `N,W,S,E`, while the penultimate chain remains `N,E,S,W`; each
+  cleanup receiver completes its `N,E,S,W,self` walk. A true miss returns the persistent dummy,
+  whose overlay identity/state can affect later visits and whose packed coordinate is a real radar
+  dirty output even though no dummy count enters the exported real plane. Direct cell-pointer expiry
+  follows the complete cleanup fan-out and precedes the direct count decrement; cleanup-removal
+  expiry precedes its Recalc. Active retail `[IonWH]` has `Wall=yes`, so Lightning Storm is a live
+  caller; `[MutateExplosion]` has no wall flags and is a dormant Genetic Mutator exclusion.
+- **Rust state:** the transaction branch now carries a wrapping real-cell plane through
+  `LiveOverlayCells -> FinalizedOverlayPayload -> OverlayGrid`, serializes/hashes/shape-validates it,
+  seeds `BlockerNeighborCounts` from `Some(plane)` without a final-wall scan, preserves legacy `None`
+  only for old constructors, and applies verified runtime placement/direct/conditional-cleanup/sale
+  deltas. Direct removal now executes its represented Recalc before cleanup; every visited live wall
+  Recalcs in cleanup order; cleanup count reversal follows its changed-zone Recalc; and the direct
+  decrement remains after the full fan-out. All eight count probes now use the stamping lookup;
+  chain/cleanup/sale preserve shared-dummy state and exact packed radar coordinates. Standard combat,
+  ambient Wave, crush, world-event, sale, and Lightning paths have synchronous navigation/radar
+  ownership, and represented Techno Cell targets use the native forward clear-first expiry order.
+  Focused validation now passes the 106-test `wall` filter, 58 overlay-grid tests, 11 Lightning
+  tests, the pointer-expiry order test, the shared-dummy hash test, and three distinct live-object
+  detach-sweep controls; fresh criticism remains pending. The broader native non-entity
+  expiry-listener roster is not represented and remains open. The authored wall helper itself
+  remains test-only: no
+  production authored-row reader calls it or consumes the finalized payload, so live maps still enter
+  legacy mode. Generic
+  `finish_wall_reject` remains valid only for counter-zero non-authored construction.
+- **Required delta:** wire the proved wall helper into the one synchronous authored row transaction,
+  apply its cleanup/count/common effects through the real load-effect and common lifecycle owners, and
+  consume the finalized payload in production/headless construction. Preserve real fixed-stride aliases,
+  suppress only dummy count-plane output while retaining runtime dummy state/radar output, and keep
+  OverlayData/later low writes count-neutral. Complete fresh criticism of the runtime slice, then
+  remove production's legacy
+  constructor path so authored authority can never fall back to final-wall reconstruction, then reject
+  current-version `None` saves/restores (or bump beyond v114 if such a save has escaped).
 - **Acceptance:** fixtures pin ScenarioInit predicate bypass on a slope-accepted wall; exact
   N/E/S/W/self cleanup and N/E/S/W connectivity; owner `-1`; eight-neighbor wrapping increments;
   overlap wrapping; later low-body identity overwrite with retained counts; fixed-stride real alias
-  update; true-dummy output absence; OverlayData state-only behavior; common two-broadcast authored-
+  update; runtime fixed-alias connectivity/chain/cleanup/sale; authored true-dummy count-output
+  absence plus runtime dummy state/radar presence; exact direct/cleanup pointer-expiry order; active
+  Lightning navigation/radar publication; OverlayData
+  state-only behavior; common two-broadcast authored-
   wall finalization; separate generic counter-zero rejection; and a finalized-payload consumer that
   receives the count plane without scanning final walls.
-- **Verdict:** MISSING / ORDERED STATE LOSS.
+- **Verdict:** PARTIAL / PRODUCTION DISCONNECTED; G13 REMAINS OPEN.
 - **Priority rationale:** the active-winner census contains 13,064 encoded authored-wall occurrences
   across 71 retail entries, and at least one shipped flat-wall witness proves the successful path is
   reachable. Every reader-admitted, allocated, slope-accepted authored wall executes it. The ordinary

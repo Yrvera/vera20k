@@ -1,6 +1,6 @@
 # CellClass+0x122 Dynamic Blocker Lifecycle Rust Mapping - Ghidra Research Report
 
-**Address(es):** `0x00429A90`, `0x005FC570`, `0x00480630`, `0x00480CB0`, `0x00440580`, `0x00445880`, `0x004D7170`, `0x004DB260`, `0x004D85D0`, `0x0071C930`, `0x0071D000`, `0x004CE840`, `0x0047E8A0`, `0x0047EA90`
+**Address(es):** `0x00429A90`, `0x005FC570`, `0x00480630`, `0x00480CB0`, `0x004FCE80`, `0x00440580`, `0x00445880`, `0x004D7170`, `0x004DB260`, `0x004D85D0`, `0x0071C930`, `0x0071D000`, `0x004CE840`, `0x0047E8A0`, `0x0047EA90`
 **Investigation Mode:** exhaustive-slice
 **Claimed Scope:** Dynamic writer lifecycle of `CellClass+0x122` only as needed to build production Rust `BlockerNeighborCounts`: wall overlay placement/destruction, building limbo/unlimbo, foot limbo/unlimbo/per-cell movement, terrain object limbo/unlimbo, and aircraft descent writer caveats.
 **Non-Scope:** Full A* hierarchy producer, retry edge lifetime, full `Can_Enter_Cell`, full bridge pathing, all aircraft landing behavior, all overlay classes, and Rust implementation patches.
@@ -66,9 +66,10 @@ Assembly evidence: `0x005FC762..0x005FC775` loads `[EAX+0x122]`, `INC DL`, store
 Destruction/removal decrements the same neighbor set:
 
 - `CellClass::DestroyOverlay @ 0x00480CB0` is wall-gated by `OverlayTypeClass+0x2A8`; after clearing the wall overlay and updating four cardinal neighbors, it decrements all 8 neighbors of the destroyed wall cell. Evidence: decompile plus assembly `0x00481070..0x00481082` (`DEC DL`, loop `< 8`). Active in YR: **Yes**.
-- `CellClass::PostDestructionWallCleanup @ 0x00480630` can auto-destroy isolated/damaged wall cells after recomputing connectivity; when it clears such a wall, it decrements all 8 neighbors. Evidence: decompile branch with `bVar4` true plus assembly `0x004809DD..0x004809EF`. Active in YR: **Yes**.
+- `CellClass::PostDestructionWallCleanup @ 0x00480630` can auto-destroy isolated/damaged wall cells after recomputing connectivity. It clears the wall, runs Recalc at `0x00480969`, compares old/new zone at `0x0048096E..0x00480977`, and decrements all 8 neighbors at `0x004809DD..0x004809EF` **only when the zone changed**. The hardcoded GASAND/GAWALL/NAWALL rows are active retail; CYCL/BARB/FENC rows are dormant/mod-conditional because retail never sets their `Wall` flag.
+- `HouseClass::Sell_Building_At_Cell @ 0x004FCE80` is a native exception. It clears the sold wall, Recalcs, and invokes one cleanup call, but a full 132-instruction scan contains no `+0x122` access. The sold anchor contribution remains stale; only a neighboring wall independently auto-removed by cleanup may decrement, subject to the changed-zone condition.
 
-Rust rule: a runtime wall contributes while its live wall lifecycle owns the counter write, but the authored-load baseline is the retained counter plane produced by ordered Mark effects. It is not equivalent to scanning final `Wall=yes` identities, because a later procedural body can replace the identity without reversing the earlier authored increment. Ore and non-wall overlays do not independently create wall contributions.
+Rust rule: a runtime wall contributes while its live wall lifecycle owns the counter write, but removal is path-specific: direct destruction decrements unconditionally after its cardinal cleanup; cleanup auto-removal decrements only after a changed-zone Recalc; sale does not decrement the sold anchor. The authored-load baseline is the retained counter plane produced by ordered Mark effects. It is not equivalent to scanning final `Wall=yes` identities, because a later procedural body can replace the identity without reversing the earlier authored increment. Ore and non-wall overlays do not independently create wall contributions.
 
 ### 3.3 Buildings
 
@@ -142,16 +143,29 @@ Do not source counts from `MovementZone`, `TooBigToFitUnderBridge`, ore density,
 
 ## 6. Current Rust Implementation Status
 
-Current Rust has the read-side shape and a production count builder, but its authored-wall baseline is reconstructed from final identities:
+Current Rust has the read-side shape, a production count builder, and the retained authored-wall
+authority infrastructure:
 
 - `src/sim/pathfinding/core.rs:170-219`: `BlockerNeighborCounts` stores per-cell `u8` and `HierarchyGate::allows` accepts marked zones or `count_at(x,y) != 0`.
 - `src/sim/pathfinding/core.rs:1950-1988`: `find_path_with_costs_hierarchy_marker` can receive counts.
 - `src/sim/pathfinding/zone_search.rs:276-303`: hierarchy-marker path only activates when `blocker_neighbor_counts` is `Some`.
 - `src/sim/movement/movement_path.rs:458-462,533-545`: production movement passes `ctx.blocker_neighbor_counts` into zoned marker search.
-- `src/sim/movement/bump_crush.rs:233-295`: `build_blocker_neighbor_counts_with_overlays` composes terrain objects, entities/buildings, and final live `Wall=yes` identities into one global count plane. The entity/building shapes are useful, but the final-wall scan is not an authored-load authority.
+- `src/sim/movement/bump_crush.rs`: `build_blocker_neighbor_counts_with_overlays` seeds from
+  `OverlayGrid::retained_wall_neighbor_counts()` when it is `Some`, then composes terrain objects,
+  entities, and expanded buildings. Only temporary legacy `None` constructors fall back to a final
+  live-wall scan.
+- `src/map/authored_overlay.rs` and `src/sim/overlay_grid.rs`: ordered authored Mark effects now carry
+  a wrapping real-cell wall plane through the non-Clone finalized payload. Runtime placement, direct
+  destruction, changed-zone cleanup removal, and sale update or deliberately retain that same plane
+  with their path-specific native rules, including represented fixed-stride aliases.
+- `src/sim/snapshot.rs` and `src/sim/world/world_hash.rs`: retained storage is shape-validated,
+  serialized, and hashed with `None` distinct from `Some(all-zero)`.
 - `src/map/resolved_terrain.rs:74-117`, `409-486`, `543-545`: `ResolvedTerrainCell` exposes `terrain_object_blocks` and `overlay_blocks`, the closest static source for terrain-object and wall/blocking-overlay contributions.
 
-Current delta: production composition exists, but authored wall counts are still inferred from the final overlay grid. That loses ordered side effects when a later low body overwrites a wall and clips native fixed-stride aliases to the Rust rectangle. The finalized authored payload must carry its consumed-once real-cell counter plane instead.
+Current delta: the payload and runtime consumer are implemented, but the production/headless authored
+reader still constructs legacy `None` grids and therefore never supplies the retained plane. G7/G13
+remain open until every gameplay-equivalent builder consumes the finalized payload and current-version
+save/restore rejects `None` (or advances the version if a `None` v114 save escapes).
 
 ## 7. Coverage Ledger
 
@@ -167,7 +181,7 @@ Current delta: production composition exists, but authored wall counts are still
 | Terrain object unlimbo/limbo | verified | decompile `0x0071D000`, `0x0071C930`; assembly `0x0071D085`, `0x0071C9A6` | none |
 | Aircraft descent writers | verified for count participation | decompile `0x004CE840`; assembly `0x004CEDA4`, `0x004CEE18`, `0x004CEE8B` | exact Rust aircraft search integration can be deferred |
 | Global vs layer-specific | verified | all writer assembly writes `CellClass+0x122`; object-list layer docs for `0x0047E8A0/0x0047EA90` | none |
-| Current Rust count producer | present / partial | `build_blocker_neighbor_counts_with_overlays`; production callers listed by `rg` | replace final-wall reconstruction with the consumed authored baseline; preserve existing building/entity/terrain composition |
+| Current Rust count producer | infrastructure complete / production disconnected | finalized payload, `OverlayGrid` retained plane, runtime deltas, and `build_blocker_neighbor_counts_with_overlays` | replace production/headless legacy constructors with the consumed payload; then close the no-`None` persistence gate |
 
 ## 8. Open Questions - Final State of the Investigation Log
 
@@ -191,9 +205,9 @@ Current delta: production composition exists, but authored wall counts are still
 
 | Verified behavior | Evidence | Current Rust delta | Affected Rust surface | Required implementation effect | Acceptance scenario | Risk / do-not-do |
 |---|---|---|---|---|---|---|
-| `CellClass+0x122` is global and read as zero/nonzero by hierarchical A*, not as a selected-layer value. Active in YR: Yes. | `0x00429EB1..0x00429EC1`; writer assembly to `[CellClass+0x122]` | Production builder exists, but its authored-wall baseline comes from final identities rather than ordered writes | `src/sim/pathfinding/core.rs`, `src/sim/pathfinding/zone_search.rs`, `src/sim/movement/bump_crush.rs` and callers | Supply one global `BlockerNeighborCounts` state seeded from the consumed authored plane; do not treat absent counts as all-zero production data or rebuild authored walls from a snapshot | Off-marker candidate adjacent to an authored fixed-stride alias is allowed by count even after the source wall identity is overwritten; identical candidate with no adjacent source is pruned | Do not build from only `MovementLayer::Ground`, only hard blocks, or only final overlay identities |
+| `CellClass+0x122` is global and read as zero/nonzero by hierarchical A*, not as a selected-layer value. Active in YR: Yes. | `0x00429EB1..0x00429EC1`; writer assembly to `[CellClass+0x122]` | The consumed plane and `Some` baseline exist, but production/headless still instantiate legacy `None` | `FinalizedOverlayPayload`, `OverlayGrid`, `src/sim/pathfinding/core.rs`, `src/sim/movement/bump_crush.rs` and callers | Move the one finalized payload into every gameplay builder; reject `None` at the current snapshot boundary after migration and never reconstruct from a snapshot | Off-marker candidate adjacent to an authored fixed-stride alias is allowed by count even after the source wall identity is overwritten; identical candidate with no adjacent source is pruned | Do not build from only `MovementLayer::Ground`, only hard blocks, or only final overlay identities |
 | Buildings write one expanded foundation rectangle on unlimbo/limbo. Active in YR: Yes. | `BuildingClass::Unlimbo 0x00440580`; `BuildingClass::Limbo 0x00445880`; assembly `0x00440CD9`, `0x00445D11` | Current builder already calls `add_building_expanded_foundation`; preserve it while changing the authored baseline | `src/sim/movement/bump_crush.rs`, building/rules foundation helpers | Keep each live structure's one count source over anchor-expanded rectangle `(x-1..x+width, y-1..y+height)` in bounds | A 2x2 building increments the 4x4 surrounding rectangle once per cell, not double-counted at overlapping neighbor cells | Do not regress to summing eight neighbors per occupied foundation cell while composing the new authored baseline |
-| Walls, terrain objects, and foot objects use 8-neighbor lifecycle writes; authored wall writes survive a later identity overwrite; foot movement updates old and new cells. Active in YR: Yes. | Wall `0x005FC762`, terrain `0x0071D085/0x0071C9A6`, foot `0x004D729A/0x004DB2D7/0x004D86D8/0x004D8745`; authored chronology report | Current Rust scans final `Wall=yes` identities, so it cannot preserve ordered authored contributions or real fixed-stride aliases | `FinalizedOverlayPayload`, `src/sim/movement/bump_crush.rs`, `terrain_object_blocks`, occupancy/entity iteration, overlay mutation paths | Seed the global plane from the consumed-once authored count plane, then compose terrain/building/foot and later runtime wall lifecycle writes; never reconstruct the authored baseline from final wall identities | A later authored low-body overwrite removes the final wall identity but retains its eight real-cell neighbor increments; wall destruction and a moving unit still reverse/transfer their runtime contributions before the next hierarchy search | Do not include ore, water, cliff-only, generic `!walkable` cells, or a second scan of final authored walls |
+| Walls, terrain objects, and foot objects use 8-neighbor lifecycle writes; authored wall writes survive a later identity overwrite; foot movement updates old and new cells. Active in YR: Yes. | Wall `0x005FC762`, terrain `0x0071D085/0x0071C9A6`, foot `0x004D729A/0x004DB2D7/0x004D86D8/0x004D8745`; authored chronology report | Wall retained/runtime infrastructure now preserves ordered writes and real aliases; only production authored delivery is disconnected | `FinalizedOverlayPayload`, `src/sim/overlay_grid.rs`, `src/sim/movement/bump_crush.rs`, `terrain_object_blocks`, occupancy/entity iteration | Preserve the implemented plane and runtime path-specific deltas while wiring the consumed payload; never reconstruct the authored baseline from final identities | A later authored low-body overwrite removes the final wall identity but retains its eight real-cell neighbor increments; direct/cleanup/sale paths retain their distinct native count tails | Do not include ore, water, cliff-only, generic `!walkable` cells, or a second scan of final authored walls |
 
 ## 10. Negative Facts / Do Not Do
 
@@ -208,7 +222,8 @@ Current delta: production composition exists, but authored wall counts are still
 
 - Aircraft descent should be included only when Rust aircraft landing/descent uses the same hierarchy search surface. Binary participation is verified, but current Rust ground movement does not need aircraft-specific activation to produce correct normal ground `BlockerNeighborCounts`.
 - `BuildingType+0xE58` gates the ordinary `BuildingClass::Limbo` decrement block in the decompile. The exact field name is not needed for the normal production-building source rule, but future special building-to-overlay cases should avoid assuming every limbo path decrements the structure rectangle.
-- The authored baseline and runtime lifecycle contributions require one authoritative composition surface: consume the load-produced plane once, then apply wall/terrain-object/building/foot increments and decrements to that state rather than rebuilding authored walls from a snapshot.
+- Production/headless still must consume the implemented load-produced plane once. Until that cutover
+  and the no-`None` snapshot gate close, focused infrastructure tests cannot certify live-map parity.
 
 ## 12. Proposed Rust Test Names
 

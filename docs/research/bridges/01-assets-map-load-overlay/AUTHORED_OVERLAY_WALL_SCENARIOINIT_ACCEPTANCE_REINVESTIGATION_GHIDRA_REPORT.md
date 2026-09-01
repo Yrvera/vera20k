@@ -102,13 +102,13 @@ For every reader-admitted, allocated, slope-accepted packed `Wall=yes` row whose
 
 ### Authored auto-destruction is excluded
 
-`PostDestructionWallCleanup` contains generic hardcoded removal branches for isolated damaged `GAWALL`, `NAWALL`, `GASAND`, `CYCL`, `FENC`, and `BARB` states and decrements eight neighbor counts after such a removal. Those branches are active generic runtime code but cannot fire during this authored identity pass:
+`PostDestructionWallCleanup` contains hardcoded removal rows for isolated damaged `GAWALL`, `NAWALL`, `GASAND`, `CYCL`, `FENC`, and `BARB` states. Only GASAND, GAWALL, and NAWALL are active retail `Wall=yes` types; CYCL, BARB, and FENC have no retail type/art section, retain constructor-default `Wall=false`, and are dormant/mod-conditional. The active rows still cannot fire during this authored identity pass:
 
 - `CellClass::Constructor 0x0047BBF0` initializes identity `-1`, data `0`, owner `-1`, and `+0x122=0` (`0x0047BC21..0x0047BC2A`, `0x0047BD1C`, `0x0047BD34`).
 - Every earlier packed authored wall Mark writes data `0`. Retail low procedural writes use state `0/1/2` on bridge-body identities and never call wall cleanup; those bytes remain below every hardcoded damage threshold. High bridge work does not introduce a damaged wall byte.
 - OverlayData, including any damage upper nibble, is applied only after all Mark calls and does not call the cleanup helper.
 
-Thus authored finalization must reproduce connectivity/Recalc/count effects but must not invent a damaged-neighbor auto-destruction fixture for this phase. Runtime wall damage/cleanup keeps those generic branches.
+Thus authored finalization must reproduce connectivity/Recalc/count effects but must not invent a damaged-neighbor auto-destruction fixture for this phase. Runtime wall damage/cleanup keeps the three active-retail rows; dormant TS/mod rows remain excluded.
 
 ## Native fixed-grid lookup and the count plane
 
@@ -150,12 +150,12 @@ The stock activation is not inferred from byte occurrence alone. Active lookup r
 
 ## Current Rust ownership and mismatches
 
-1. `src/map/authored_overlay.rs::LiveOverlayCells` and `FinalizedOverlayPayload` retain only overlay identity/state. They have no authored real-cell `+0x122` plane.
+1. The transaction branch now gives `LiveOverlayCells` and `FinalizedOverlayPayload` an authored real-cell `+0x122` plane, but the production authored-row reader does not yet call the wall helper or consume that payload.
 2. `SharedCellDummy` retains coordinate/level/slope/bridge bits plus overlay identity/state, but no neighbor count. That is sufficient for this fresh-load count result only if true dummy increments remain output-inert; real fixed-stride aliases must still resolve through `LiveOverlayCells::target` / `ResolvedTerrainGrid::native_fixed_cell_index`.
-3. `src/sim/movement/bump_crush.rs::build_blocker_neighbor_counts_with_overlays` reconstructs wall contributions from final wall identities. It necessarily loses stale contributions from a later low-body overwrite and can clip native real aliases.
-4. `src/sim/pathfinding/core.rs::BlockerNeighborCounts` already uses wrapping `u8` add/sub semantics, but its ordinary rectangular increment helper is not the authored fixed-grid lookup authority.
-5. `src/sim/overlay_grid.rs::refresh_wall_connectivity_after_placement` visits self before `N,E,S,W`; native placement cleanup visits `N,E,S,W,self`. It cannot be reused unchanged for the authored transaction.
-6. `src/sim/production/wall_placement.rs::stamp_wall` also publishes its passability cross self-first. That ordinary runtime owner is a recorded neighboring mismatch; authored finalization must not inherit its order accidentally.
+3. `build_blocker_neighbor_counts_with_overlays` now treats `Some(retained_plane)`, including all-zero, as sole wall baseline and retains final-wall scanning only for legacy `None`; production maps remain legacy until the finalized payload is installed.
+4. `BlockerNeighborCounts` now accepts a shape-checked retained baseline; runtime wall deltas use the fixed-map CellClass lookup rather than rectangular clipping.
+5. Runtime placement cleanup now visits `N,E,S,W,self`, publishes each wall Recalc in visit order, increments the source afterward, and runs the common anchor Recalc second.
+6. Runtime cleanup auto-removal reverses its source only after the Recalc projection changes zone type; direct destruction remains unconditional after its complete cardinal cleanup. House wall sale intentionally leaves the sold anchor source stale.
 7. `src/sim/world/load_object_lifecycle.rs::finish_wall_reject` models the generic rejection lifecycle. The function may remain for counter-zero runtime construction, but authored loading must never select it. Existing comments/tests that present it as an authored terminal path are stale.
 8. The current authored loader does not run this wall success transaction at all, so it cannot emit cleanup Recalc/effect order, connectivity, owner-none proof, or raw neighbor counts.
 

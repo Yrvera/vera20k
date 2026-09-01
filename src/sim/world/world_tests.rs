@@ -950,14 +950,54 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
     let credits_before = sim.houses.get(&wall_owner).unwrap().credits;
     let rng_before = sim.scenario_rng.state();
 
-    let mut grid = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+    let terrain = gsi_04_10_clear_terrain(8, 8);
+    let mut retained_wall_counts = vec![0u8; 64];
+    let adjust_source = |counts: &mut [u8], source: (u16, u16), add: bool| {
+        const ADJACENT_8: [(i16, i16); 8] = [
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ];
+        for (dx, dy) in ADJACENT_8 {
+            let x = (source.0 as i16).wrapping_add(dx);
+            let y = (source.1 as i16).wrapping_add(dy);
+            let Some(index) = terrain.native_fixed_cell_index(x, y) else {
+                continue;
+            };
+            counts[index] = if add {
+                counts[index].wrapping_add(1)
+            } else {
+                counts[index].wrapping_sub(1)
+            };
+        }
+    };
+    for source in [(4, 4), (4, 3), (5, 4)] {
+        adjust_source(&mut retained_wall_counts, source, true);
+    }
+    let mut expected_after_sale = retained_wall_counts.clone();
+    for cleanup_removed_source in [(4, 3), (5, 4)] {
+        adjust_source(&mut expected_after_sale, cleanup_removed_source, false);
+    }
+    let mut grid = crate::sim::overlay_grid::OverlayGrid::from_finalized_map_payload(
+        crate::map::authored_overlay::FinalizedOverlayPayload::from_cells_for_test(
+            8,
+            8,
+            vec![(-1, 0); 64],
+            retained_wall_counts,
+        ),
+    );
     grid.place_owned_wall(4, 4, 2, 0x03, wall_owner);
     // Damaged GAWALLs connected south/west to the sold cell. Sale cleanup
     // removes north first, then east, preserving each stale owner.
     grid.place_owned_wall(4, 3, 2, 0x24, wall_owner);
     grid.place_owned_wall(5, 4, 2, 0x28, wall_owner);
     sim.overlay_grid = Some(grid);
-    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(8, 8));
+    sim.resolved_terrain = Some(terrain);
     {
         let grid = sim.overlay_grid.as_mut().unwrap();
         let terrain = sim.resolved_terrain.as_mut().unwrap();
@@ -1033,6 +1073,19 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
     assert_eq!(east_cleanup.overlay_id, None);
     assert_eq!(east_cleanup.wall_owner, Some(wall_owner));
     assert_eq!(
+        sim.overlay_grid
+            .as_ref()
+            .unwrap()
+            .retained_wall_neighbor_counts(),
+        Some(expected_after_sale.as_slice()),
+        "native sale leaves the sold wall contribution stale and reverses only cleanup removals"
+    );
+    assert_eq!(
+        expected_after_sale[5 * 8 + 3],
+        1,
+        "a cell adjacent only to the sold source proves that source was not decremented"
+    );
+    assert_eq!(
         sim.tactical_dirty_cells,
         vec![(4, 3), (5, 4), (4, 5), (3, 4), (4, 4)]
     );
@@ -1045,16 +1098,15 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
             .attack_target
             .is_none()
     );
-    assert!(matches!(
+    assert!(
         sim.substrate
             .entities
             .get(20)
             .unwrap()
             .attack_target
-            .as_ref()
-            .map(|t| t.target),
-        Some(crate::sim::combat::TargetKind::Cell(4, 3))
-    ));
+            .is_none(),
+        "cleanup removal expires the represented Cell target"
+    );
     assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 4));
     assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 3));
     assert!(sim.path_grid.as_deref().unwrap().is_walkable(5, 4));
@@ -1187,6 +1239,125 @@ fn canonical_path_grid_snapshot_remains_pinned_after_publication() {
         &sim.path_grid_snapshot()
             .expect("second navigation snapshot")
     ));
+}
+
+#[test]
+fn wall_sale_preserves_the_sold_anchor_retained_count_source() {
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+    let mut sim = Simulation::new();
+    let (wall_owner, _) = gsi_04_07_wall_sell_seed_houses(&mut sim);
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(5, 5));
+    let mut retained = vec![0u8; 25];
+    for index in [6usize, 7, 8, 11, 13, 16, 17, 18] {
+        retained[index] = 1;
+    }
+    let expected = retained.clone();
+    let mut grid = crate::sim::overlay_grid::OverlayGrid::from_finalized_map_payload(
+        crate::map::authored_overlay::FinalizedOverlayPayload::from_cells_for_test(
+            5,
+            5,
+            vec![(-1, 0); 25],
+            retained,
+        ),
+    );
+    grid.place_owned_wall(2, 2, 2, 0, wall_owner);
+    sim.overlay_grid = Some(grid);
+
+    assert!(sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 2, y: 2 },
+        Some(&rules),
+        None,
+        &empty_heights(),
+        Some(&overlays),
+    ));
+    let grid = sim.overlay_grid.as_ref().expect("overlay authority");
+    assert_eq!(grid.cell(2, 2).overlay_id, None);
+    assert_eq!(
+        grid.retained_wall_neighbor_counts(),
+        Some(expected.as_slice()),
+        "HouseClass sale has no CellClass+0x122 decrement for the sold anchor"
+    );
+}
+
+#[test]
+fn wall_sale_cleanup_reaches_fixed_stride_alias_and_reverses_that_source_only() {
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+    let mut sim = Simulation::new();
+    let (wall_owner, _) = gsi_04_07_wall_sell_seed_houses(&mut sim);
+    let mut terrain = gsi_04_10_clear_terrain(512, 2);
+    let mut retained = vec![0u8; 1024];
+    let adjust_source = |counts: &mut [u8], source: (u16, u16), add: bool| {
+        const ADJACENT_8: [(i16, i16); 8] = [
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ];
+        for (dx, dy) in ADJACENT_8 {
+            let Some(index) = terrain.native_fixed_cell_index(
+                (source.0 as i16).wrapping_add(dx),
+                (source.1 as i16).wrapping_add(dy),
+            ) else {
+                continue;
+            };
+            counts[index] = if add {
+                counts[index].wrapping_add(1)
+            } else {
+                counts[index].wrapping_sub(1)
+            };
+        }
+    };
+    for source in [(0, 1), (511, 0)] {
+        adjust_source(&mut retained, source, true);
+    }
+    let mut expected = retained.clone();
+    adjust_source(&mut expected, (511, 0), false);
+
+    let mut grid = crate::sim::overlay_grid::OverlayGrid::from_finalized_map_payload(
+        crate::map::authored_overlay::FinalizedOverlayPayload::from_cells_for_test(
+            512,
+            2,
+            vec![(-1, 0); 1024],
+            retained,
+        ),
+    );
+    grid.place_owned_wall(0, 1, 2, 0x08, wall_owner);
+    grid.place_owned_wall(511, 0, 2, 0x22, wall_owner);
+    for (rx, ry) in [(0, 1), (511, 0)] {
+        let _ = crate::sim::overlay_grid::recalc_overlay_passability(
+            &mut grid,
+            &mut terrain,
+            &overlays,
+            rx,
+            ry,
+        );
+    }
+    sim.overlay_grid = Some(grid);
+    sim.resolved_terrain = Some(terrain);
+
+    assert!(sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 0, y: 1 },
+        Some(&rules),
+        None,
+        &empty_heights(),
+        Some(&overlays),
+    ));
+    let grid = sim.overlay_grid.as_ref().expect("overlay authority");
+    assert_eq!(grid.cell(0, 1).overlay_id, None);
+    assert_eq!(grid.cell(511, 0).overlay_id, None);
+    assert_eq!(
+        grid.retained_wall_neighbor_counts(),
+        Some(expected.as_slice()),
+        "sale keeps the sold aliasing source but reverses the cleanup-removed aliased source"
+    );
+    assert!(sim.tactical_dirty_cells.contains(&(511, 0)));
+    assert!(sim.radar_terrain_dirty_cells.contains(&(511, 0)));
 }
 
 #[test]
@@ -1566,14 +1737,14 @@ fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
             (9, 4),
             (7, 4),
             (8, 4),
-            (10, 5),
-            (9, 6),
-            (9, 5),
-            (8, 7),
             (7, 6),
-            (8, 6),
             (6, 5),
             (7, 5),
+            (9, 6),
+            (8, 7),
+            (8, 6),
+            (10, 5),
+            (9, 5),
         ],
         "combat-result commit projects the complete DestroyOverlay visit stencil",
     );

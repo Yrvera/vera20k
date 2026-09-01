@@ -1783,7 +1783,7 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
             .iter()
             .map(|event| (event.listener_id, event.restored, event.cleared))
             .collect::<Vec<_>>(),
-        vec![(20, true, false), (10, false, true)]
+        vec![(10, false, true), (20, true, true)]
     );
 }
 
@@ -1917,7 +1917,7 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
         fatal
             .cell_target_detaches
             .iter()
-            .any(|detach| { detach.listener_id == 20 && detach.restored && !detach.cleared })
+            .any(|detach| { detach.listener_id == 20 && detach.restored && detach.cleared })
     );
     assert_eq!(
         fatal_entities
@@ -5383,14 +5383,14 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
             (6, 4),
             (4, 4),
             (5, 4),
-            (7, 5),
-            (6, 6),
-            (6, 5),
-            (5, 7),
             (4, 6),
-            (5, 6),
             (3, 5),
             (4, 5),
+            (6, 6),
+            (5, 7),
+            (5, 6),
+            (7, 5),
+            (6, 5),
         ],
         "direct wall damage uses the terminal DestroyOverlay visit stencil",
     );
