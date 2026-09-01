@@ -811,8 +811,8 @@ fn advance_in_game_runtime_mode(
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app::input::gadget_input::idle_tick(state);
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
-    if let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager()) {
-        player.update(assets, music_now_ms);
+    if let Some(assets) = state.process_assets.manager() {
+        state.audio.update_theme(assets, music_now_ms);
     }
     if decision.tactical_mutation {
         crate::app::input::camera::update_camera(state);

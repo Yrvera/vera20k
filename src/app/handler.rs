@@ -62,6 +62,13 @@ fn enter_shell_window_mode_with_operations(operations: &mut impl ShellWindowMode
     operations.request_redraw();
 }
 
+/// Active YR's launcher parent ignores IDCANCEL. Taking only an immutable
+/// reference makes the no-close/no-replacement guarantee explicit at the
+/// keyboard routing seam.
+fn launcher_options_consumes_escape<T>(dialog: &Option<T>, is_escape: bool) -> bool {
+    is_escape && dialog.is_some()
+}
+
 impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
         state.renderer.gpu.resize(size.width, size.height);
@@ -165,6 +172,23 @@ mod tests {
         assert!(equal.requested_sizes.is_empty());
         assert!(equal.resized_surfaces.is_empty());
         assert_eq!(equal.redraw_requests, 0);
+    }
+
+    #[test]
+    fn launcher_options_escape_is_consumed_without_replacing_the_parent() {
+        let dialog = crate::ui::main_menu_dialogs::OptionsDialogState::default();
+        let mut slot = Some(dialog);
+        let identity_before = slot.as_ref().map(|value| value as *const _);
+
+        assert!(launcher_options_consumes_escape(&slot, true));
+        assert_eq!(
+            slot.as_ref().map(|value| value as *const _),
+            identity_before
+        );
+        assert!(!launcher_options_consumes_escape(&slot, false));
+
+        slot = None;
+        assert!(!launcher_options_consumes_escape(&slot, true));
     }
 }
 
@@ -372,6 +396,10 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Close requested");
+                // Active YR treats a terminated launcher Options pump as an
+                // always-apply final result: Apply -> destroy -> one write.
+                // Complete that transaction before unrelated shell teardown.
+                Self::close_launcher_options_terminal(state);
                 if Self::native_skirmish_shell_active(state) {
                     // Pump/quit exits write the last durable snapshot after
                     // teardown, without a fresh control pack or RNG draw.
@@ -449,6 +477,13 @@ impl ApplicationHandler for App {
                                     Self::close_exit_confirm_modal_from_controller(state);
                                     state.platform.window.request_redraw();
                                 }
+                            } else if launcher_options_consumes_escape(
+                                &state.frontend.options_dialog,
+                                is_escape,
+                            ) {
+                                // `0xD5` ignores IDCANCEL=2. Preserve the same
+                                // dialog instance and emit no Apply/write/event.
+                                state.platform.window.request_redraw();
                             } else {
                                 Self::close_main_menu_dialogs(state);
                                 state.platform.window.request_redraw();
