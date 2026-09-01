@@ -522,6 +522,8 @@ pub struct GeneralRules {
     pub gui_move_in_sound: Option<String>,
     /// Generic shell click sound from [AudioVisual] GenericClick.
     pub generic_click_sound: Option<String>,
+    /// Launcher Options Sound/Voice preview cue from [AudioVisual] GenericBeep.
+    pub generic_beep_sound: Option<String>,
     /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
     pub gui_checkbox_sound: Option<String>,
     /// Sidebar tab click sound from [AudioVisual] GUITabSound (retail
@@ -1038,6 +1040,7 @@ impl Default for GeneralRules {
             gui_main_button_sound: None,
             gui_move_in_sound: None,
             generic_click_sound: None,
+            generic_beep_sound: None,
             gui_checkbox_sound: None,
             gui_tab_sound: None,
             incoming_message_sound: None,
@@ -1792,6 +1795,11 @@ impl GeneralRules {
                 .map(str::to_string),
             generic_click_sound: audio_visual
                 .and_then(|s| s.get("GenericClick"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            generic_beep_sound: audio_visual
+                .and_then(|s| s.get("GenericBeep"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
@@ -5246,6 +5254,7 @@ FlightLevel=500
 [AudioVisual]
 GUIMainButtonSound=MainButtonClick
 GenericClick=GenericPress
+GenericBeep=GenericBeep
 GUICheckboxSound=CheckboxTick
 GUIComboOpenSound=ComboOpen
 GUIComboCloseSound=ComboClose
@@ -5257,6 +5266,7 @@ GUIComboCloseSound=ComboClose
             Some("MainButtonClick")
         );
         assert_eq!(general.generic_click_sound.as_deref(), Some("GenericPress"));
+        assert_eq!(general.generic_beep_sound.as_deref(), Some("GenericBeep"));
         assert_eq!(general.gui_checkbox_sound.as_deref(), Some("CheckboxTick"));
         assert_eq!(general.gui_combo_open_sound.as_deref(), Some("ComboOpen"));
         assert_eq!(general.gui_combo_close_sound.as_deref(), Some("ComboClose"));
@@ -5269,6 +5279,7 @@ GUIComboCloseSound=ComboClose
             "[AudioVisual]\n",
             "ChuteSound=  ParachuteDrop  \n",
             "GenericClick=  MenuClick  \n",
+            "GenericBeep=   \n",
             "GUICheckboxSound=\n",
             "GUIComboOpenSound=   \n",
             "GUIComboCloseSound=MenuACBClose\n",
@@ -5277,6 +5288,7 @@ GUIComboCloseSound=ComboClose
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.chute_sound.as_deref(), Some("ParachuteDrop"));
         assert_eq!(general.generic_click_sound.as_deref(), Some("MenuClick"));
+        assert!(general.generic_beep_sound.is_none());
         assert!(general.gui_checkbox_sound.is_none());
         assert!(general.gui_combo_open_sound.is_none());
         assert_eq!(

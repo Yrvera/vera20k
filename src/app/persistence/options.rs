@@ -12,6 +12,8 @@ use crate::ui::shell::in_game_options_state::{
 use crate::ui::shell::modal::ModalResult;
 use crate::ui::tooltips::TooltipService;
 
+pub(crate) mod launcher;
+
 /// Normal Back result. Native result 1 applies then writes; result 2 performs
 /// neither operation.
 pub(crate) const IN_GAME_OPTIONS_RESULT_BACK: i32 = 1;
