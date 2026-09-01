@@ -2625,7 +2625,7 @@ pub fn deployable_building_types<'a>(
     result
 }
 
-fn preregister_runtime_overlay_names(
+pub(crate) fn preregister_runtime_overlay_names(
     overlay_registry: &OverlayTypeRegistry,
     overlay_names: &mut BTreeMap<u8, String>,
 ) -> (u32, u32, u32) {

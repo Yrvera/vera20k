@@ -982,6 +982,24 @@ pub(crate) struct RandomMapProjection {
 
 #[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RandomMapStartupCrateProjection {
+    pub(crate) crates_enabled: bool,
+    pub(crate) minimum: i32,
+    pub(crate) maximum: i32,
+    pub(crate) regen_bits: u64,
+    pub(crate) wood_name: Option<String>,
+    pub(crate) common_name: Option<String>,
+    pub(crate) water_name: Option<String>,
+    pub(crate) wood_id: Option<u8>,
+    pub(crate) common_id: Option<u8>,
+    pub(crate) water_id: Option<u8>,
+    pub(crate) runtime_names: Vec<(u8, String)>,
+    pub(crate) presented: Vec<(u16, u16, u8, u8)>,
+    pub(crate) body_frame: u8,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RandomMapLaunchSnapshot {
     pub(crate) map: RandomMapProjection,
     pub(crate) trace: crate::map::rmg::RmgConstructionTrace,
@@ -992,6 +1010,7 @@ pub(crate) struct RandomMapLaunchSnapshot {
     pub(crate) final_rng: crate::sim::world::SimulationRngState,
     pub(crate) post_map_output: crate::sim::scenario_post_map::ScenarioPostMapOutput,
     pub(crate) startup_crate_slots: Vec<(usize, crate::sim::crates::CrateSlot, Option<(u8, u8)>)>,
+    pub(crate) startup_crate: RandomMapStartupCrateProjection,
 }
 
 #[cfg(test)]
@@ -1333,6 +1352,38 @@ impl MapLoadInitial {
             &house_roster,
             Some(match_launch_descriptor),
         );
+        let crate_name_id =
+            |name: Option<&str>| name.and_then(|name| overlay_registry.id_for_name(name));
+        let mut runtime_names = BTreeMap::new();
+        crate::app::frontend::skirmish::preregister_runtime_overlay_names(
+            &overlay_registry,
+            &mut runtime_names,
+        );
+        runtime_names.retain(|id, _| {
+            overlay_registry
+                .flags(*id)
+                .is_some_and(|flags| flags.crate_type)
+        });
+        let mut presented = Vec::new();
+        connect_startup_crate_overlays(&mut presented, &simulation);
+        let startup_crate = RandomMapStartupCrateProjection {
+            crates_enabled: simulation.session.game_options.crates,
+            minimum: rules.crate_rules.minimum,
+            maximum: rules.crate_rules.maximum,
+            regen_bits: rules.crate_rules.regen.bits(),
+            wood_id: crate_name_id(rules.crate_rules.wood_crate_img.as_deref()),
+            common_id: crate_name_id(rules.crate_rules.crate_img.as_deref()),
+            water_id: crate_name_id(rules.crate_rules.water_crate_img.as_deref()),
+            wood_name: rules.crate_rules.wood_crate_img.clone(),
+            common_name: rules.crate_rules.crate_img.clone(),
+            water_name: rules.crate_rules.water_crate_img.clone(),
+            runtime_names: runtime_names.into_iter().collect(),
+            presented: presented
+                .into_iter()
+                .map(|entry| (entry.rx, entry.ry, entry.overlay_id, entry.frame))
+                .collect(),
+            body_frame: crate::render::overlay_atlas::CRATE_BODY_FRAME,
+        };
         let startup_crate_slots = simulation
             .crate_authority
             .slots()
@@ -1362,6 +1413,7 @@ impl MapLoadInitial {
             final_rng,
             post_map_output,
             startup_crate_slots,
+            startup_crate,
         }
     }
 }
