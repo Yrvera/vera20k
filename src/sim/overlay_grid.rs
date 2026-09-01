@@ -603,6 +603,29 @@ impl OverlayGrid {
         true
     }
 
+    /// Erase the two literal CellClass overlay fields a crate removal clears.
+    ///
+    /// `CrateSlot__RemoveCrateOverlayFromCell @ 0x004A1AA0` writes
+    /// `CellClass+0x44 = -1` and `CellClass+0x11E = 0` after its screen-dirty
+    /// request and changes no other field, so this deliberately keeps
+    /// `wall_owner` and runs no passability recalc of its own — unlike
+    /// [`OverlayGrid::clear_overlay`], which resets the whole cell.
+    pub(crate) fn clear_crate_mark_fields(
+        &mut self,
+        resolved_terrain: &mut ResolvedTerrainGrid,
+        rx: u16,
+        ry: u16,
+    ) -> bool {
+        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        self.cells[idx].overlay_id = None;
+        self.cells[idx].overlay_data = 0;
+        self.dirty_cells.push((rx, ry));
+        resolved_terrain.clear_runtime_overlay_identity(rx, ry);
+        true
+    }
+
     /// Write only the raw `CellClass::OverlayData` byte and emit the setter's
     /// immediate radar-dirty event. High-bridge setters do this even when the
     /// target cell has no overlay identity yet.

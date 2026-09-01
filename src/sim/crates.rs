@@ -14,16 +14,19 @@
 //! `WaterCrateImg` or `WoodCrateImg` from its own land type.
 //!
 //! This module owns startup placement and its persistent slot/timer result.
-//! Crate contents, pickup effects, removal, and `CrateRegen` scanning remain
-//! later crate-system mechanisms.
+//! The [`runtime`] submodule owns the live slot clear, the identity-specific
+//! overlay removal, and the per-tick `CrateRegen` scan. Crate contents and
+//! pickup effects remain later crate-system mechanisms.
 //!
 //! ## Dependency rules
 //! Part of `sim/` — depends on `rules/`, `map/` grid types and other `sim/`
 //! modules only. Never on render/, ui/, sidebar/, audio/, net/.
 
+mod runtime;
 mod state;
 
 pub use state::{CrateAuthority, CrateSlot};
+pub(crate) use runtime::{CrateRegeneration, tick_crate_regeneration};
 
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_STRUCTURAL, BridgeFlagStamp, BridgeStampFamily, BridgeStampSlot,
@@ -905,7 +908,11 @@ fn packed_offset(cell: (i16, i16), offset: (i16, i16)) -> (i16, i16) {
     (cell.0.wrapping_add(offset.0), cell.1.wrapping_add(offset.1))
 }
 
-fn low_bridge_search_in_bounds(sim: &Simulation, cell: (i16, i16)) -> bool {
+/// `MapClass::In_Bounds @ 0x00568300` — the active diamond test against
+/// `MapClass+0xF4` (size width) and `MapClass+0xF8` (size height). The low
+/// bridge search and `CrateSlot__RemoveCrateOverlayFromCell @ 0x004A1AA0` both
+/// call it before touching a CellClass.
+fn map_cell_in_bounds(sim: &Simulation, cell: (i16, i16)) -> bool {
     let (Some(bounds), Some(height)) = (sim.playfield_bounds, sim.playfield_size_height) else {
         return false;
     };
@@ -947,7 +954,7 @@ fn execute_low_bridge_crate_mark(
 
         let mut search = packed_step(origin, spec.join_direction);
         let mut found = None;
-        while low_bridge_search_in_bounds(sim, search) {
+        while map_cell_in_bounds(sim, search) {
             let fields = read_crate_mark_fields(sim, search);
             if fields == (Some(spec.opposite_id), 1) {
                 found = Some(search);
@@ -1213,7 +1220,7 @@ mod tests {
 
     const MAP: u16 = 40;
 
-    fn crate_registry() -> OverlayTypeRegistry {
+    pub(crate) fn crate_registry() -> OverlayTypeRegistry {
         let ini = IniFile::from_str(
             "[OverlayTypes]\n0=TIB01\n1=SILVER\n2=WOOD\n3=WATER\n\
              [TIB01]\nTiberium=yes\n[SILVER]\nCrate=yes\n\
@@ -1222,7 +1229,7 @@ mod tests {
         OverlayTypeRegistry::from_ini(&ini, None)
     }
 
-    fn crate_ruleset(extra: &str) -> RuleSet {
+    pub(crate) fn crate_ruleset(extra: &str) -> RuleSet {
         let ini = IniFile::from_str(&format!(
             "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
              [CrateRules]\nCrateImg=SILVER\nWoodCrateImg=WOOD\nWaterCrateImg=WATER\n{extra}",
@@ -1277,7 +1284,7 @@ mod tests {
     }
 
     /// `seed` positions the scenario cursor; the placer draws from there.
-    fn sim_with_grid(seed: u64) -> Simulation {
+    pub(crate) fn sim_with_grid(seed: u64) -> Simulation {
         let mut sim = Simulation::new();
         sim.session.seed = seed;
         sim.scenario_rng = crate::sim::rng::SimRng::new(seed);
@@ -1318,7 +1325,7 @@ mod tests {
         cells
     }
 
-    fn crate_cells(sim: &Simulation, registry: &OverlayTypeRegistry) -> Vec<(u16, u16)> {
+    pub(crate) fn crate_cells(sim: &Simulation, registry: &OverlayTypeRegistry) -> Vec<(u16, u16)> {
         cells_with_overlay(sim, registry, "WOOD")
     }
 

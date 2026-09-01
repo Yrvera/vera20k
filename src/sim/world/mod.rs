@@ -636,6 +636,13 @@ where
     Ok(SimRng::new(0))
 }
 
+/// Constructor-time lighting for a Simulation that has not reached Post_Map_Init
+/// yet, and the value a deserialized snapshot starts from before the load path
+/// re-supplies the live scenario profile.
+fn default_scenario_normal_lighting() -> crate::map::lighting::LightingProfileUnits {
+    crate::map::lighting::ParsedLightingProfiles::default().normal
+}
+
 /// The game simulation - owns all authoritative game state.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Simulation {
@@ -859,6 +866,13 @@ pub struct Simulation {
     /// Persistent MapClass scenario-crate slots, including accepted ghosts and
     /// their native timer words. This is authoritative save/hash state.
     pub(crate) crate_authority: crate::sim::crates::CrateAuthority,
+    /// The scenario's ordinary `[Lighting]` profile, retained so the runtime
+    /// crate-regeneration rung reaches `OverlayClass::Mark` with the same
+    /// CellClass `+0x10A` source scenario start used. Static map data, not
+    /// simulation state: NOT serialized, NOT hashed, and carried across an
+    /// in-scenario load beside the other process-scoped values.
+    #[serde(skip, default = "default_scenario_normal_lighting")]
+    pub(crate) scenario_normal_lighting: crate::map::lighting::LightingProfileUnits,
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
@@ -3028,6 +3042,9 @@ impl Simulation {
         self.main_rng = live.main_rng.clone();
         self.mapgen_rng = live.mapgen_rng.clone();
         self.bind_shared_cell_dummy(live.effective_shared_cell_dummy());
+        // Static map data, not saved state: the live scenario is still the one
+        // being reloaded, so its parsed lighting profile carries over.
+        self.scenario_normal_lighting = live.scenario_normal_lighting;
     }
 
     /// Apply the successful load's native MapClass Resize reconstruction to
@@ -3317,6 +3334,7 @@ impl Simulation {
             bridge_state: None,
             overlay_grid: None,
             crate_authority: crate::sim::crates::CrateAuthority::default(),
+            scenario_normal_lighting: default_scenario_normal_lighting(),
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,
@@ -7590,6 +7608,29 @@ impl Simulation {
                 overlay_registry,
                 &tube_turn_owned_ids,
             );
+            // `LogicClass__PerTickUpdate @ 0x0055AFB0` calls
+            // `MapClass__UpdateCrateRegenTimers @ 0x0056BBE0` at `0x0055B65A`,
+            // between `AlphaShapeClass::PurgeDisabled` and the Tactical,
+            // Factory and House callbacks, on the pre-increment frame counter
+            // this tick's phases have all observed.
+            if let Some(overlay_registry) = overlay_registry {
+                let regen = crate::sim::crates::tick_crate_regeneration(
+                    self,
+                    rules,
+                    overlay_registry,
+                    phase_six_path_grid,
+                    self.scenario_normal_lighting,
+                );
+                if regen.visible != 0 {
+                    // Native Mark mutates live CellClass land/zone/bridge state
+                    // synchronously. Rust's BridgeRuntimeState is a derived
+                    // cache, so refresh it once per pass that installed an
+                    // overlay and let the existing frame-boundary navigation
+                    // seam republish; this adds no RNG or ordering boundary.
+                    bridge_state_changed |= self.refresh_bridge_runtime_after_crate_mark();
+                }
+            }
+
             // --- Phase 7: Scatter + Production + Repairs + Docks + Ore ---
             // DEPENDS ON: combat (dead entities removed), movement (positions stable).
             // PRODUCES: new entities (spawned units), credit changes, ore growth.
