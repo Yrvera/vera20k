@@ -224,8 +224,9 @@ path-replay block with the nearest ownership/provenance comment:
 
 ```rust
 // Drive path installation preserves the target/current speed fractions.
-// Active YR produces the target only in DriveLocomotionClass::Process_Movement
-// @ 0x004B2630 and applies it in Process_Drive_Track @ 0x004B0F20.
+// On the ordinary Move path, active YR produces the target in
+// DriveLocomotionClass::Process_Movement @ 0x004B2630 and applies it in
+// Process_Drive_Track @ 0x004B0F20.
 ```
 
 Do not change destination, path replay, turn fields, first-track selection,

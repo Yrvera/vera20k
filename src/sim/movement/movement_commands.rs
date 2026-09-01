@@ -715,8 +715,9 @@ pub(crate) fn issue_move_command_with_layered(
             drive.turn.rate_timer = 0;
             drive.turn.first_movement_allowed = false;
             // Drive path installation preserves the target/current speed fractions.
-            // Active YR produces the target only in DriveLocomotionClass::Process_Movement
-            // @ 0x004B2630 and applies it in Process_Drive_Track @ 0x004B0F20.
+            // On the ordinary Move path, active YR produces the target in
+            // DriveLocomotionClass::Process_Movement @ 0x004B2630 and applies it in
+            // Process_Drive_Track @ 0x004B0F20.
         } else if uses_ship_locomotor {
             let ship = entity_mut
                 .ship_locomotion
