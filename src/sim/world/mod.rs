@@ -688,6 +688,20 @@ pub struct Simulation {
     /// They are load-transient until persistence behavior is separately proved.
     #[serde(skip, default)]
     pub(crate) native_unique_ids: Option<crate::sim::native_identity::NativeUniqueIdCursor>,
+    /// `MapClass+0x134` (`0x0087F91C`) analogue: the wrapping signed total that
+    /// authored `ScenarioClass::Full_Init @ 0x00686B20` stores from
+    /// `InitCellAttributes(0)`'s value-only `Get_Tiberium_Value` pass. No active
+    /// reader is proved; cell-array teardown (a new Simulation) resets it and
+    /// generated loads leave it `None`.
+    #[serde(skip, default)]
+    pub(crate) authored_tiberium_value_total: Option<i32>,
+    /// `DAT_00A8ED78` analogue for this fresh load: the GasCloudSys
+    /// `ParticleSystemClass` has been constructed by a post-load setup
+    /// (`FUN_00684C30`) since `Clear_Scene` nulled it. A generated launch
+    /// constructs it inside the synthetic `Full_Init`'s setup before any
+    /// generator constructor; the later post-`Post_Map_Init` setup then skips.
+    #[serde(skip, default)]
+    pub(crate) post_load_particle_system_constructed: bool,
     /// Successful raw `[Tubes]` constructor bindings from this fresh map read.
     /// Kept separate from resolved topology so its later owning transaction
     /// can consume the already-assigned IDs without recounting filtered facts.
@@ -3257,6 +3271,8 @@ impl Simulation {
             main_rng: SimRng::new(seed),
             mapgen_rng: SimRng::new(0),
             native_unique_ids: None,
+            authored_tiberium_value_total: None,
+            post_load_particle_system_constructed: false,
             native_map_tubes: crate::map::tubes::NativeMapTubesState::default(),
             load_objects: LoadObjectLifecycle::default(),
             fog: FogState::default(),
@@ -7009,7 +7025,7 @@ impl Simulation {
             sim.object_ai_post_movement_promote_one(stable_id, rules);
         });
         if let Some(rules) = rules {
-            self.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, rules));
+            self.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, rules, None));
         }
         // Spawn-manager missiles that reached their target during the movement
         // pass are consumed here — the missile leaves the world at the moment

@@ -802,6 +802,35 @@ impl Simulation {
         Ok(stable_id)
     }
 
+    /// `CellClass::Get_Tiberium_Value @ 0x00485020` of the cell under a world
+    /// coordinate. Native resolves the raw Location through
+    /// `MapClass::Get_CellClass_At_Coord @ 0x00565730` and reads the shared
+    /// dummy on a miss; VERA reads the grid cell for any coordinate inside the
+    /// rectangular grid and the dummy's overlay pair outside it (the
+    /// in-rectangle/outside-diamond difference is unreachable for retail art).
+    fn anim_cell_tiberium_value(
+        &self,
+        world_coord: AnimWorldCoord,
+        rules: &RuleSet,
+        overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    ) -> i32 {
+        let rx = u16::try_from(world_coord.x.div_euclid(LEPTONS_PER_CELL)).ok();
+        let ry = u16::try_from(world_coord.y.div_euclid(LEPTONS_PER_CELL)).ok();
+        let (overlay_id, overlay_data) = match (rx, ry, self.overlay_grid.as_ref()) {
+            (Some(rx), Some(ry), Some(grid)) if rx < grid.width() && ry < grid.height() => {
+                let cell = grid.cell(rx, ry);
+                (cell.overlay_id, cell.overlay_data)
+            }
+            _ => self.effective_shared_cell_dummy().overlay_fields(),
+        };
+        crate::sim::ore_twinkle::tiberium_value(
+            overlay_id,
+            overlay_data,
+            overlay_registry,
+            &rules.tiberium_types,
+        )
+    }
+
     pub(crate) fn for_each_multiplayer_feedback_anim<F>(&mut self, mut body: F)
     where
         F: FnMut(&mut Simulation, AnimId),
@@ -816,7 +845,12 @@ impl Simulation {
         }
     }
 
-    pub(crate) fn visit_anim(&mut self, id: AnimId, rules: &RuleSet) {
+    pub(crate) fn visit_anim(
+        &mut self,
+        id: AnimId,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
         // `AnimClass::GetCoords @ 0x00422BE0`, not the stored field: an
         // owner-attached anim stores an owner-relative delta.
         let Some(world_coord) = self.anim_absolute_coord(id) else {
@@ -836,6 +870,22 @@ impl Simulation {
             self.destroy_anim(id);
             return;
         };
+
+        // `AnimClass::AI @ 0x00423AC0`, before the MakeInfantry `vtable+0xF0`
+        // call, the bounce-landing block, and the trailer block: with
+        // `AnimType+0x359 HideIfNoOre`, `AnimClass+0x19D` is rewritten every
+        // tick from the anim coordinate's cell — hidden when the cell is
+        // missing or `CellClass::Get_Tiberium_Value @ 0x00485020` is zero,
+        // visible otherwise. Only drawing is suppressed; the AI keeps running.
+        // Registry-less callers (fixtures) keep the current flag.
+        if config.hide_if_no_ore
+            && let Some(overlay_registry) = overlay_registry
+        {
+            let hidden = self.anim_cell_tiberium_value(world_coord, rules, overlay_registry) == 0;
+            if let Some(anim) = self.anim_mut_by_id(id) {
+                anim.draw_runtime.hidden = hidden;
+            }
+        }
 
         // AnimClass::AI performs this before its first-AI, inactive, delay,
         // visibility, and frame-timer gates. Repeated visits OR the same raw
@@ -1939,7 +1989,7 @@ mod tests {
         let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
 
         assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
-        sim.visit_anim(id, &rules);
+        sim.visit_anim(id, &rules, None);
         assert_eq!(
             sim.substrate.raw_cell_occupation.ground_bits(3, 4),
             0x04,
@@ -1948,7 +1998,7 @@ mod tests {
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
 
         sim.session.binary_frame = 1;
-        sim.visit_anim(id, &rules);
+        sim.visit_anim(id, &rules, None);
 
         assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
         assert!(sim.substrate.pending_delete.contains(&id));
@@ -1971,10 +2021,10 @@ mod tests {
         descriptor.sub_y = SimFixed::from_num(192);
         let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
 
-        sim.visit_anim(id, &rules);
+        sim.visit_anim(id, &rules, None);
         assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(5, 6), 0x08);
         sim.session.binary_frame = 1;
-        sim.visit_anim(id, &rules);
+        sim.visit_anim(id, &rules, None);
 
         assert_eq!(sim.anim(id).unwrap().type_id, plain);
         assert_eq!(
@@ -2057,15 +2107,15 @@ mod tests {
             .spawn_anim_object(&rules, runtime_descriptor(type_id, 1))
             .unwrap();
 
-        sim.visit_anim(id, &rules); // constructor first-AI guard at frame 0
+        sim.visit_anim(id, &rules, None); // constructor first-AI guard at frame 0
         sim.session.binary_frame = 1;
-        sim.visit_anim(id, &rules); // delay 1 -> 0
+        sim.visit_anim(id, &rules, None); // delay 1 -> 0
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
         sim.session.binary_frame = 2;
-        sim.visit_anim(id, &rules); // constructor-anchored timer is already due
+        sim.visit_anim(id, &rules, None); // constructor-anchored timer is already due
 
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
-        sim.visit_anim(id, &rules); // a second visit in the same frame cannot advance again
+        sim.visit_anim(id, &rules, None); // a second visit in the same frame cannot advance again
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
         assert_eq!(sim.scenario_rng.logical_state(), rng_before);
     }
@@ -2110,12 +2160,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(sim.anim(id).unwrap().runtime.rate_reload, 6);
-        sim.visit_anim(id, &rules);
+        sim.visit_anim(id, &rules, None);
         sim.session.binary_frame = 5;
-        sim.visit_anim(id, &rules);
+        sim.visit_anim(id, &rules, None);
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
         sim.session.binary_frame = 6;
-        sim.visit_anim(id, &rules);
+        sim.visit_anim(id, &rules, None);
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
     }
 
@@ -2137,11 +2187,11 @@ mod tests {
             [SimSoundEvent::AnimationStarted { anim_id, .. }] if *anim_id == id
         ));
 
-        sim.visit_anim(id, &rules); // guard
+        sim.visit_anim(id, &rules, None); // guard
         sim.session.binary_frame = 1;
-        sim.visit_anim(id, &rules); // frame 1
+        sim.visit_anim(id, &rules, None); // frame 1
         sim.session.binary_frame = 2;
-        sim.visit_anim(id, &rules); // frame 2 -> SECOND in place + Middle
+        sim.visit_anim(id, &rules, None); // frame 2 -> SECOND in place + Middle
         let anim = sim.anim(id).unwrap();
         assert_eq!(sim.interner.resolve(anim.type_id), "SECOND");
         assert_eq!(anim.runtime.current_frame, 0);
@@ -2154,9 +2204,9 @@ mod tests {
         );
 
         sim.session.binary_frame = 3;
-        sim.visit_anim(id, &rules); // SECOND frame 1 (Next does not restore guard)
+        sim.visit_anim(id, &rules, None); // SECOND frame 1 (Next does not restore guard)
         sim.session.binary_frame = 4;
-        sim.visit_anim(id, &rules); // SECOND frame 2 -> destroy
+        sim.visit_anim(id, &rules, None); // SECOND frame 2 -> destroy
         sim.destroy_anim(id);
         assert!(sim.anim(id).unwrap().runtime.inactive);
         assert!(!sim.live_object_order_snapshot().contains(&id));
@@ -2183,7 +2233,7 @@ mod tests {
             .spawn_anim_object(&rules, runtime_descriptor(parent_type, 0))
             .unwrap();
 
-        sim.for_each_live_object(|sim, id| sim.visit_anim(id, &rules));
+        sim.for_each_live_object(|sim, id| sim.visit_anim(id, &rules, None));
 
         let order = sim.live_object_order_snapshot();
         assert_eq!(order.len(), 2);
@@ -2227,10 +2277,10 @@ mod tests {
                 .is_none()
         );
 
-        sim.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, &rules));
+        sim.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, &rules, None));
         assert!(!sim.anim(id).unwrap().runtime.first_ai_guard);
         sim.session.binary_frame = 1;
-        sim.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, &rules));
+        sim.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, &rules, None));
         assert!(sim.anim(id).unwrap().runtime.inactive);
         assert_eq!(sim.substrate.multiplayer_feedback_pending_delete, vec![id]);
 
@@ -2271,7 +2321,7 @@ mod tests {
         assert!(sim.live_object_order_snapshot().contains(&anim_id));
         assert!(!sim.substrate.pending_delete.contains(&anim_id));
 
-        sim.visit_anim(anim_id, &rules);
+        sim.visit_anim(anim_id, &rules, None);
         assert!(!sim.live_object_order_snapshot().contains(&anim_id));
         assert_eq!(sim.substrate.pending_delete, vec![anim_id]);
     }
@@ -2652,7 +2702,7 @@ mod tests {
             .damage_fire_anim_ids[0]
             .unwrap();
         let frame = sim.anim(anim_id).unwrap().runtime.current_frame;
-        sim.visit_anim(anim_id, &rules);
+        sim.visit_anim(anim_id, &rules, None);
         let anim = sim.anim(anim_id).unwrap();
         assert_eq!(anim.runtime.current_frame, frame);
         assert!(!anim.runtime.first_ai_guard);

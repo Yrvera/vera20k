@@ -8,7 +8,7 @@ The result must preserve behavior that already matches, replace behavior that co
 
 ## Status and Scope Decision
 
-**Revision 21 is TRANSACTION-3-SLICE-A-LANDED. PR #207 (`feature/bridge-authored-overlay-finalization`, merged with `main` @ `15a48e55`) carries the fresh authored load corridor: the one y-outer/x-inner OverlayPack/OverlayData transaction with the ephemeral Overlay object lifecycle, ordinary/high/low/wall Mark, Land-5 germination, the unconditional drain, the first anti-diagonal Recalc with per-Mark/first-sweep terrain Anims, the consumed-once finalized identity/state/authored-wall-count payload, Terrain/growth-then-spread-queue/Techno/Smudge native-ID ordering, scalar deletion and the final unlatch/Recalc sweep, the synchronous wall-mutation host, and both production ingresses (`load_map_from_initial` authored arm and `headless_scenario::load`). Its critic chain is wall critic 1 NEEDS_FIX on `95f77159`, wall critic 2 PASS on `da38da27`, and full-slice critic 3 PASS on the merged HEAD with zero blocking findings and six recorded residuals (below). Transaction 3 remains the active transaction: G10 (generated phase journal), G11 (preview lifetime), the value-only `MapClass+0x134` aggregate, the ancillary `InitCellAttributes` slot seam, the `None` retained-plane rejection gate, the CellAnim tiberium remap/ZAdjust child fields, and the newly found post-`Full_Init` OreTwinkle Scenario draws (OQ-37) stay open, so no `BR-M` row closes here.**
+**Revision 22 is TRANSACTION-3-SLICE-B-LANDED. PR #211 (`feature/bridge-post-load-tail`, on `main` @ `c06e4f65`) carries the post-`Full_Init` setup tail: the GasCloudSys particle-system native ID on every fresh load (spent inside the synthetic `Full_Init` on generated launches), the `[General] OreTwinkle` / `[AudioVisual] OreTwinkleChance` native readers, one Scenario `RandomRanged(0, chance-1)` draw per resource cell in `CellIterator` order with a `TWNK1` Anim on every zero roll, the `HideIfNoOre` `AnimClass::AI` consumer, the signed `RandomRanged` bounds, and the value-only `MapClass+0x134` aggregate stored by the authored final sweep. Its critic chain is critic 1 NEEDS_FIX on `e2e44865`, critic 2 PASS on `792a32ce` with its one residual (the `HideIfNoOre` block position) applied verbatim in `b535249e`. PR #207 (`feature/bridge-authored-overlay-finalization`, merged with `main` @ `15a48e55`) carries the fresh authored load corridor: the one y-outer/x-inner OverlayPack/OverlayData transaction with the ephemeral Overlay object lifecycle, ordinary/high/low/wall Mark, Land-5 germination, the unconditional drain, the first anti-diagonal Recalc with per-Mark/first-sweep terrain Anims, the consumed-once finalized identity/state/authored-wall-count payload, Terrain/growth-then-spread-queue/Techno/Smudge native-ID ordering, scalar deletion and the final unlatch/Recalc sweep, the synchronous wall-mutation host, and both production ingresses (`load_map_from_initial` authored arm and `headless_scenario::load`). Its critic chain is wall critic 1 NEEDS_FIX on `95f77159`, wall critic 2 PASS on `da38da27`, and full-slice critic 3 PASS on the merged HEAD with zero blocking findings and six recorded residuals (below). Transaction 3 remains the active transaction: G10 (generated phase journal, whose generator-tail `InitCellAttributes(1)` germination and growth-then-spread queue order is the next slice), G11 (preview lifetime), the ancillary `InitCellAttributes` slot seam, the `None` retained-plane rejection gate, the CellAnim tiberium remap/ZAdjust child fields, and the `FUN_00586BF0` bridge-record restamp (routed to transactions 4/13) stay open, so no `BR-M` row closes here.**
 
 `docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows; the living inventory now has 37 explicit questions (OQ-37 was opened by PR #207's fresh critic). OQ-34 closed the complete pre-map native-ID prefix, while the same zero-add pass reopened and then routed the terminal raw `0x100000`/`0x200000` clear/restamp and ordinary-cell LightConvert recomputation as OQ-35/OQ-36. The tenth broad pass added nothing. Before every transaction the inventory is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
 
@@ -36,7 +36,8 @@ closure gates. A transaction may supply part of more than one mechanism, and a m
 more than one transaction; neither fact permits a mechanism to inherit another row's pass.
 
 Current implementation baseline is freshly fetched `origin/main` commit
-`15a48e5528` (2026-09-01, PR #209 crate authority) plus PR #207's authored load corridor,
+`15a48e5528` (2026-09-01, PR #209 crate authority) plus PR #207's authored load corridor and PR #211's
+post-`Full_Init` setup tail,
 with PR #170 merge `f4baff6e` confirmed as an ancestor. PR #170 merged P0, transaction 1 (load inputs/raw facts), and
 transaction 2 (RMG low-bridge launch construction), including their focused validation and critic
 corrections. PR #196 then merged P0-R1's universal stock-offline Scenario prefix, accepted-RMG
@@ -1012,25 +1013,78 @@ radar replay remains. Existing exact connectivity/count/snapshot/hash tests rema
 
 Recorded open items, each with its native reading and owner. None is closed by PR #207.
 
-- **OQ-37 post-`Full_Init` OreTwinkle Scenario draws (non-deferrable).** `FUN_00684C30` (called
-  by `ScenarioClass::Read_Scenario @ 0x00684620` after `Full_Init`) runs, in order: a third full
-  `RecalcAttributes` sweep (`0x00684FAB..0x00684FC0`), `ComputeBridgeZones @ 0x0056D6E0`,
-  `RebuildZoneConnectivity @ 0x0056C510`, `RebuildAllZoneLevels @ 0x00581F50`, `FUN_00586BF0`, one
-  `ParticleSystemClass @ 0x0062DC50` construction (native ID), then, when `Rules+0x1870`
-  (`OreTwinkle=TWNK1`) is non-null, an anti-diagonal pass over every real cell that calls
-  `Random::RandomRanged @ 0x0065C7E0` on the Scenario RNG (`ECX = Scenario+0x218`,
-  `0x00685095`) with range `(0, OreTwinkleChance-1)` for every cell whose
-  `CellClass::Get_Tiberium_Value @ 0x00485020` is nonzero and constructs `AnimClass @ 0x00421EA0` on a
-  zero roll. Rust's `finalize_scenario_post_map` has no twinkle step, so every fresh load with ore
-  advances the Scenario cursor differently from gamemd before the first tick and the start-of-match
-  twinkle animations are absent. Frequency: every map with resource overlays. Owner: the post-map
-  tail (transaction 3 continuation), inserted after the modeled AiOpeningCredits loop
-  (`HouseClass::Add_Tiberium_Credits` at `0x00684F45..0x00684F69` precedes all of the above).
-- **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6).** The final
-  authored sweep (`src/sim/runtime.rs` `finalize_and_populate_staged_authored_scenario`) performs
-  unlatch -> Recalc -> wall owner but not the arg-0 value call, the wrapping signed-32 sum, or the
-  `Full_Init` store to `0x0087F91C` with cell-array teardown reset. No active reader is proved; owner:
-  transaction 3 continuation.
+- **OQ-37 post-`Full_Init` setup tail (`FUN_00684C30`) — IMPLEMENTED by transaction-3 slice B
+  (`feature/bridge-post-load-tail`).** `ScenarioClass::Read_Scenario @ 0x00684620` calls
+  `FUN_00684C30` after `Full_Init`. Live-read order: increment the editor/suppression counter; call
+  `BuildingClass` vtable `+0x4E0` (`0x004456D0`) on every alive Building; `FUN_004F42F0(2)`
+  (Tactical `+0xD7D` flag plus `MapClass::IncrementBridgeCounter`, presentation); non-editor
+  `FUN_006D04F0(1)` sidebar toggle and, for `g_GameMode == 0` only, the campaign start-cell view
+  setup; the TagType attach/registry pass; `[Basic] FillSilos` (`Scenario+0x34B2`) credits-to-
+  tiberium loop (`HouseClass::Add_Tiberium_Credits` at `0x00684F45..0x00684F69`);
+  `MapClass::ParanoidUnrevealAll(1,0)`; `FUN_0075F020` (sqrt/sin lookup tables, no sim state); a
+  third full `RecalcAttributes(-1)` sweep (`0x00684FAB..0x00684FC0`); `ComputeBridgeZones @
+  0x0056D6E0`; `RebuildZoneConnectivity @ 0x0056C510`; `RebuildAllZoneLevels @ 0x00581F50`;
+  `FUN_00586BF0` (see transaction 4 below); then, when `DAT_00A8ED78` is null, one GasCloudSys
+  `ParticleSystemClass @ 0x0062DC50` at leptons `(0xA80, 0xA80, 0)` whose constructor assigns a
+  native ID (`ParticleSystemTypeClass::Find_Or_Allocate @ 0x00644630` finds the retail
+  `[ParticleSystems]` entry, so no Type is constructed); then, when `Rules+0x1870` is non-null, an
+  anti-diagonal `CellIterator` pass that draws `Random::RandomRanged @ 0x0065C7E0` on the Scenario
+  RNG (`ECX = Scenario+0x218`, `0x00685095`) over `(0, Rules+0x186C - 1)` for every cell whose
+  `Get_Tiberium_Value @ 0x00485020` is nonzero and constructs `AnimClass @ 0x00421EA0` at the
+  `CellClass` vtable `+0x48` centre coordinate (`0x00486840`) with `(delay 0, loop 1, flags 0x600,
+  ZAdjust 0, reverse 0)` on a zero roll; finally `FUN_0055AF40/50` write two globals with no
+  simulation reader. `Clear_Scene @ 0x006851F0` deletes the particle system and nulls
+  `DAT_00A8ED78` at `0x0068562E`, so every fresh `Full_Init` load reconstructs it (once-per-process
+  behavior exists only between shell previews, which is G11's domain). Rules readers are verified:
+  `ReadGeneral @ 0x0066D661..0x0066D699` reads `[General] OreTwinkle` (empty default, capacity
+  0x80, `AnimTypeClass::Find_Or_Allocate @ 0x00428B80`) and `ReadAudioVisual @ 0x0066B7F8..
+  0x0066B812` reads `[AudioVisual] OreTwinkleChance` (constructor default 0x32); retail sets
+  `TWNK1`/30. The `AnimClass` constructor assigns its native ID and registers before the optional
+  `RandomRate` draw, has no DetailLevel gate, and `TWNK1` (`LoopCount=-1`, `RandomLoopDelay=120,300`,
+  `Rate=450`) draws nothing at construction. Slice B models the particle-system native-ID spend, the
+  per-resource-cell Scenario draws in `CellIterator` order, and the zero-roll Anim construction with
+  its native ID (`src/sim/ore_twinkle.rs`, `src/sim/scenario_post_map.rs`, rules
+  `GeneralRules::{ore_twinkle, ore_twinkle_chance}`); the twinkle draws run at the end of
+  `finalize_scenario_post_map`, after the modeled Post_Map_Init credit/crate/alliance work, for
+  skirmish and generic fresh loads. The particle-system ID position differs by ingress: an authored
+  load runs `FUN_00684C30` once (`Read_Scenario_INI @ 0x00686730` -> `Full_Init` with `XOR DL,DL`
+  at `0x0068683A`), so the spend sits in the post-map pass; a generated launch first runs
+  `RandomMapGenerator::InitMapFromSyntheticINI @ 0x00599650` (launch branch `0x00599A3A..
+  0x00599A5B`: `Full_Init` with DL=1, whose `Clear_Scene` nulls `DAT_00A8ED78`, then `FUN_00684C30`),
+  which constructs the object before any generator constructor, and the post-`Post_Map_Init` call
+  finds it constructed and spends nothing. Rust mirrors both through
+  `Simulation::construct_post_load_particle_system_id` (generated arm of `load_map_from_initial`
+  before the construction-trace replay; post-map pass otherwise) and the
+  `post_load_particle_system_constructed` flag. `HideIfNoOre` (`AnimType+0x359`) now has its
+  `AnimClass::AI @ 0x00423AC0` consumer: before the MakeInfantry `vtable+0xF0` call, the
+  bounce-landing block, and the trailer block, `AnimClass+0x19D` is rewritten every tick from the
+  cell's `Get_Tiberium_Value`, so twinkles hide on harvested cells and reappear on regrowth
+  (`Simulation::visit_anim`, draw-only suppression; the `+0x373` and `Rules+0xB8` AI blocks that also
+  write `+0x19D` remain unmodeled, retail reachability UNCHECKED). Each live twinkle now also draws
+  the Scenario RNG at every loop end (`RandomLoopDelay=120,300`, native `0x004247DA`, Rust
+  `anim_class.rs` loop-end path) — consistent with gamemd, recorded because slice B activates that
+  stream on every retail skirmish.
+  `RandomRanged` bounds for `OreTwinkleChance <= 0` follow the native signed compare/swap
+  (`SimRng::next_range_i32_inclusive`): chance 0 draws once over `{-1, 0}`, chance 1 draws nothing
+  and spawns on every resource cell. Recorded, not modeled: the ParticleSystem object itself (no sim
+  consumer proved), the FillSilos loop (scenario-flag-conditional, not modeled in Rust at all), the
+  `+0x4E0` per-Building call (player-owned prebuilt Buildings only; kind switch on
+  `BuildingType+0xEB8`, inert for a skirmish player at load), the tag-attach pass (trigger system),
+  the campaign view setup, `MapClass::ParanoidUnrevealAll(1,0)` (re-shrouds load-time reveals
+  before tick 0; owner: the shroud system; magnitude UNCHECKED), the constructor's `ZAdjust`
+  substitution (`AnimClass @ 0x00421EA0` stores `AnimType+0x348` when the argument is 0; Rust's
+  load-anim path stores 0; `AnimTypeClass @ 0x00427530` defaults `+0x348` to 0 and `[TWNK1]` sets
+  no `ZAdjust`, so the two agree for retail), and a map-INI `OreTwinkle=` with an
+  empty value (native keeps the rules pointer through the zero-length `ReadString` return; Rust reads
+  the merged INI, so shadowing semantics are UNCHECKED; no retail map sets the key).
+- **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6) — IMPLEMENTED
+  by slice B.** The final authored sweep now calls the `Get_Tiberium_Value @ 0x00485020` model
+  (`TiberiumClass.Value * (OverlayData + 1)`, signed wrapping) for every real cell before that cell's
+  Recalc and stores the wrapping total in `Simulation::authored_tiberium_value_total`
+  (`MapClass+0x134` / `0x0087F91C` analogue, `serde(skip)`, `None` on a new Simulation). A
+  generated launch natively stores the synthetic `Full_Init`'s own `InitCellAttributes(0)` result
+  on the pre-generation map (zero), which Rust leaves `None`; the generator's later argument-1 call
+  is not stored. No active reader is proved and none is invented.
 - **Ancillary `InitCellAttributes` slot seam.** The raw `0x300000` clear pass, per-cell `+0x30 = 0`,
   `FUN_00483E30(0,0x10000,0,1000,1000,1000)` light routing, latch clear, and AttachedTag `0x19`/`0x1A`
   restamp are not exposed as ordered slots by the final sweep. Owners remain the generic trigger
@@ -1050,6 +1104,18 @@ Recorded open items, each with its native reading and owner. None is closed by P
   phase14 code): `PostDestructionWallCleanup` publishes tactical and radar dirty per visit; the
   hostless wrapper does not. Frequency zero on retail (no `Wall=yes` crate image); recorded, not owned
   by the bridge program.
+- **`FUN_00586BF0` (post-load bridge-record gap restamp) — routed to transaction 4/13.** After the
+  zone rebuilds, `FUN_00684C30` walks the `MapClass+0x54` bridge-record array (count `+0x60`,
+  0x10-byte records: start `(x,y)`, end `(x,y)`, byte `+8`, pointer `+0xC`). For records with
+  `+0xC == 0` and byte `+8 == 0` it steps from start toward end along the record's axis and, on every
+  cell lacking raw `0x100`, writes `0x400` with `0x800` cleared (NE-SW records) or ORs `0xC` into
+  `Cell+0x141` (NW-SE records) across the five transverse cells `-2..=2` through the shared-dummy
+  `GetCell` seam. This is destroyed-span restamping at load and belongs with BR-M10/BR-M17; it is not
+  modeled by slice B.
+- `MapClass::Resize @ 0x00567092/0x005670E2` -> `MapClass::InitZoneMap @ 0x00567110` ->
+  `InitCellAttributes(0)` runs on the freshly constructed pre-Fill cells at every Resize: no Anim,
+  ID, RNG, wall, or stored-total effect (`0x0087F91C` is written only by `Full_Init`'s own call at
+  `0x00687B9C`). Recorded so the two authored Resizes are not mistaken for missing sweeps.
 - Notes carried without action: `Land=9` is Railroad (retail `TRACKS01..16`) and the ordinary route
   yields identical bytes/Recalc/UnInit; `0xA7`/`0x7E` vein arms and `FUN_0074DE90` have zero retail
   content; germination's `% MaxDensity` is inert for `MaxDensity=12`; the transient
@@ -1290,7 +1356,7 @@ Every frozen question has a pre-implementation owner. A unit cannot become `CONT
 | OQ-34 complete native-ID prefix before the first generator/authored object: preview Set_Defaults/manual-storage branches plus fresh-Full_Init pre-map House/Type/Cell constructors, map-read transform, and Tube prefix | RESOLVED by `FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md`; transaction 3 implements the consumed-once prefix/preview lifetime, while positive Tube topology remains 5 |
 | OQ-35 `InitCellAttributes` raw `0x100000`/`0x200000` clear/restamp identity and consumers | RESOLVED as active generic AttachedTag event-`0x19`/`0x1A` row/column trigger acceleration, not bridge-zone topology; transaction 3 exposes the ordered ancillary seam and negative no-`BridgeFacts` assertion but does not implement or close the official-retail-reachable generic bits/consumer |
 | OQ-36 `InitCellAttributes` ordinary-cell LightConvert/ZAdjust recomputation | native ordinary/sentinel split and draw consumers are verified; transaction 3 executes and tests one cache invalidation at the recomputation-routing slot, while transaction 20 owns semantic rendered-cell-light equivalence and the final end-to-end stale-preview-cache test |
-| OQ-37 post-`Full_Init` OreTwinkle Scenario-RNG pass and the `FUN_00684C30` post-load order (third Recalc sweep, bridge-zone/zone-connectivity/zone-level rebuilds, particle-system ID, twinkle draws) | OPEN, non-deferrable; opened by PR #207's critic 3; transaction 3 continuation owns it in the post-map tail after the modeled credits loop |
+| OQ-37 post-`Full_Init` OreTwinkle Scenario-RNG pass and the `FUN_00684C30` post-load order (third Recalc sweep, bridge-zone/zone-connectivity/zone-level rebuilds, particle-system ID, twinkle draws) | IMPLEMENTED by transaction-3 slice B (particle-system ID, per-resource-cell Scenario draws, zero-roll Anim construction); `FUN_00586BF0` bridge-record restamp routed to transaction 4/13; FillSilos loop and the `+0x4E0` Building call recorded as non-bridge residuals |
 
 Two ancillary writes do not need new question numbers. Final wall-owner reconstruction is already a
 verified semantic match under GSI-04.07; transaction 3 must preserve its post-final-Recalc ordering
@@ -1835,6 +1901,11 @@ cleanup, `IsWallConnectableInDirection`, the cell iterator, `InitCellAttributes`
 with zero blocking findings, and opened OQ-37. The residual ledger above is the transaction-3
 continuation's contract input; the next slice starts from refreshed `main` with G10/G11, the
 `MapClass+0x134` aggregate, the ancillary seam, the `None`-plane gate, and OQ-37.
+Revision 22 records PR #211's landing (slice B: OQ-37 and the `MapClass+0x134` aggregate IMPLEMENTED).
+Its critic 1 returned NEEDS_FIX on the generated-launch particle-ID position, the missing `HideIfNoOre`
+consumer, and the unsigned chance bounds; critic 2 rechecked every correction against the live binary
+and returned PASS with one residual applied verbatim post-pass. The next slice starts from refreshed
+`main` with G10's generator-tail germination and queue order.
 These review passes close no bridge mechanism and waive none of transaction 3's implementation contract,
 builder/fresh-critic chain, focused validation, PR-readiness full suite, or merge gate.
 
