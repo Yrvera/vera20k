@@ -803,8 +803,11 @@ impl Simulation {
     }
 
     /// `CellClass::Get_Tiberium_Value @ 0x00485020` of the cell under a world
-    /// coordinate, resolved through the native GetCell seam: an unallocated
-    /// coordinate reads the shared dummy's overlay pair.
+    /// coordinate. Native resolves the raw Location through
+    /// `MapClass::Get_CellClass_At_Coord @ 0x00565730` and reads the shared
+    /// dummy on a miss; VERA reads the grid cell for any coordinate inside the
+    /// rectangular grid and the dummy's overlay pair outside it (the
+    /// in-rectangle/outside-diamond difference is unreachable for retail art).
     fn anim_cell_tiberium_value(
         &self,
         world_coord: AnimWorldCoord,
@@ -868,6 +871,22 @@ impl Simulation {
             return;
         };
 
+        // `AnimClass::AI @ 0x00423AC0`, before the MakeInfantry `vtable+0xF0`
+        // call, the bounce-landing block, and the trailer block: with
+        // `AnimType+0x359 HideIfNoOre`, `AnimClass+0x19D` is rewritten every
+        // tick from the anim coordinate's cell — hidden when the cell is
+        // missing or `CellClass::Get_Tiberium_Value @ 0x00485020` is zero,
+        // visible otherwise. Only drawing is suppressed; the AI keeps running.
+        // Registry-less callers (fixtures) keep the current flag.
+        if config.hide_if_no_ore
+            && let Some(overlay_registry) = overlay_registry
+        {
+            let hidden = self.anim_cell_tiberium_value(world_coord, rules, overlay_registry) == 0;
+            if let Some(anim) = self.anim_mut_by_id(id) {
+                anim.draw_runtime.hidden = hidden;
+            }
+        }
+
         // AnimClass::AI performs this before its first-AI, inactive, delay,
         // visibility, and frame-timer gates. Repeated visits OR the same raw
         // bit; there is deliberately no contributor count.
@@ -907,21 +926,6 @@ impl Simulation {
                 };
                 self.spawn_anim_at_world(rules, descriptor, world_coord)
                     .expect("validated trailer closure must remain spawnable");
-            }
-        }
-
-        // `AnimClass::AI @ 0x00423AC0`, after the trailer block and before the
-        // first-AI guard: with `AnimType+0x359 HideIfNoOre`, `AnimClass+0x19D`
-        // is rewritten every tick from the anim coordinate's cell — hidden when
-        // the cell is missing or `CellClass::Get_Tiberium_Value @ 0x00485020`
-        // is zero, visible otherwise. Only drawing is suppressed; the AI keeps
-        // running. Registry-less callers (fixtures) keep the current flag.
-        if config.hide_if_no_ore
-            && let Some(overlay_registry) = overlay_registry
-        {
-            let hidden = self.anim_cell_tiberium_value(world_coord, rules, overlay_registry) == 0;
-            if let Some(anim) = self.anim_mut_by_id(id) {
-                anim.draw_runtime.hidden = hidden;
             }
         }
 

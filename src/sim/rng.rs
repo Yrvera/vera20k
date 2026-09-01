@@ -228,7 +228,10 @@ impl SimRng {
     /// its two `int` bounds signed, swaps reversed bounds, and rejection-samples
     /// the masked span exactly like [`Self::next_range_u32_inclusive`]; a rules
     /// value can make `high` negative (`OreTwinkleChance - 1` with chance `<= 0`),
-    /// which the unsigned form would misread as a huge span.
+    /// which the unsigned form would misread as a huge span. Spans of
+    /// `0x80000000` or more never terminate natively (zero mask); the same
+    /// `lo + 0x80000000` guard as the unsigned form stands in for that
+    /// unreachable custom-data case.
     pub fn next_range_i32_inclusive(&mut self, low: i32, high: i32) -> i32 {
         let (lo, hi) = if low <= high {
             (low, high)

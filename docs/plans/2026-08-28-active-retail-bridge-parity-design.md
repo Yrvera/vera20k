@@ -1055,9 +1055,14 @@ Recorded open items, each with its native reading and owner. None is closed by P
   `Simulation::construct_post_load_particle_system_id` (generated arm of `load_map_from_initial`
   before the construction-trace replay; post-map pass otherwise) and the
   `post_load_particle_system_constructed` flag. `HideIfNoOre` (`AnimType+0x359`) now has its
-  `AnimClass::AI @ 0x00423AC0` consumer: after the trailer block and before the first-AI guard,
-  `AnimClass+0x19D` is rewritten every tick from the cell's `Get_Tiberium_Value`, so twinkles hide on
-  harvested cells and reappear on regrowth (`Simulation::visit_anim`, draw-only suppression).
+  `AnimClass::AI @ 0x00423AC0` consumer: before the MakeInfantry `vtable+0xF0` call, the
+  bounce-landing block, and the trailer block, `AnimClass+0x19D` is rewritten every tick from the
+  cell's `Get_Tiberium_Value`, so twinkles hide on harvested cells and reappear on regrowth
+  (`Simulation::visit_anim`, draw-only suppression; the `+0x373` and `Rules+0xB8` AI blocks that also
+  write `+0x19D` remain unmodeled, retail reachability UNCHECKED). Each live twinkle now also draws
+  the Scenario RNG at every loop end (`RandomLoopDelay=120,300`, native `0x004247DA`, Rust
+  `anim_class.rs` loop-end path) — consistent with gamemd, recorded because slice B activates that
+  stream on every retail skirmish.
   `RandomRanged` bounds for `OreTwinkleChance <= 0` follow the native signed compare/swap
   (`SimRng::next_range_i32_inclusive`): chance 0 draws once over `{-1, 0}`, chance 1 draws nothing
   and spawns on every resource cell. Recorded, not modeled: the ParticleSystem object itself (no sim
@@ -1067,7 +1072,8 @@ Recorded open items, each with its native reading and owner. None is closed by P
   the campaign view setup, `MapClass::ParanoidUnrevealAll(1,0)` (re-shrouds load-time reveals
   before tick 0; owner: the shroud system; magnitude UNCHECKED), the constructor's `ZAdjust`
   substitution (`AnimClass @ 0x00421EA0` stores `AnimType+0x348` when the argument is 0; Rust's
-  load-anim path stores 0; TWNK1 type default UNCHECKED), and a map-INI `OreTwinkle=` with an
+  load-anim path stores 0; `AnimTypeClass @ 0x00427530` defaults `+0x348` to 0 and `[TWNK1]` sets
+  no `ZAdjust`, so the two agree for retail), and a map-INI `OreTwinkle=` with an
   empty value (native keeps the rules pointer through the zero-length `ReadString` return; Rust reads
   the merged INI, so shadowing semantics are UNCHECKED; no retail map sets the key).
 - **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6) — IMPLEMENTED
@@ -1105,6 +1111,10 @@ Recorded open items, each with its native reading and owner. None is closed by P
   `Cell+0x141` (NW-SE records) across the five transverse cells `-2..=2` through the shared-dummy
   `GetCell` seam. This is destroyed-span restamping at load and belongs with BR-M10/BR-M17; it is not
   modeled by slice B.
+- `MapClass::Resize @ 0x00567092/0x005670E2` -> `MapClass::InitZoneMap @ 0x00567110` ->
+  `InitCellAttributes(0)` runs on the freshly constructed pre-Fill cells at every Resize: no Anim,
+  ID, RNG, wall, or stored-total effect (`0x0087F91C` is written only by `Full_Init`'s own call at
+  `0x00687B9C`). Recorded so the two authored Resizes are not mistaken for missing sweeps.
 - Notes carried without action: `Land=9` is Railroad (retail `TRACKS01..16`) and the ordinary route
   yields identical bytes/Recalc/UnInit; `0xA7`/`0x7E` vein arms and `FUN_0074DE90` have zero retail
   content; germination's `% MaxDensity` is inert for `MaxDensity=12`; the transient

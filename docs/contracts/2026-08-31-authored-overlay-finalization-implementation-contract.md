@@ -649,10 +649,10 @@ Required Rust (delivered on `feature/bridge-post-load-tail`):
   `Get_Tiberium_Value` is nonzero, and on a zero roll one `AnimClass` with a fresh native ID at the
   cell centre and ground height, `(delay 0, loop 1, flags 0x600, ZAdjust 0)`, registered before any
   `RandomRate` draw;
-- `AnimClass::AI @ 0x00423AC0` `HideIfNoOre` consumer in `Simulation::visit_anim`: after the
-  trailer block and before the first-AI guard, `AnimClass+0x19D` (`AnimDrawRuntime::hidden`) is
-  rewritten every tick from the cell's `Get_Tiberium_Value` (dummy overlay pair for an unallocated
-  coordinate);
+- `AnimClass::AI @ 0x00423AC0` `HideIfNoOre` consumer in `Simulation::visit_anim`: before the
+  MakeInfantry `vtable+0xF0` call, the bounce-landing block, and the trailer block,
+  `AnimClass+0x19D` (`AnimDrawRuntime::hidden`) is rewritten every tick from the cell's
+  `Get_Tiberium_Value` (dummy overlay pair for a coordinate outside the grid rectangle);
 - `Simulation::authored_tiberium_value_total` written by the authored final sweep from the exact
   `Get_Tiberium_Value` model with wrapping signed-32 accumulation.
 
