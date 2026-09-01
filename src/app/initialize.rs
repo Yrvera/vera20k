@@ -449,6 +449,35 @@ impl App {
             &startup_in_game_options,
         );
 
+        let music_player = startup_audio
+            .initialize_music_output
+            .then(MusicPlayer::new)
+            .flatten();
+        let sfx_player = startup_audio
+            .initialize_sfx_output
+            .then(SfxPlayer::new)
+            .flatten();
+        let launcher_audio_available =
+            crate::app::audio_runtime::derive_launcher_audio_available(
+                startup_options.audio_enabled,
+                music_player.is_some(),
+                sfx_player.is_some(),
+            );
+        let mut startup_audio_runtime = crate::app::audio_runtime::AppAudioRuntime {
+            theme: crate::audio::theme::ThemeRuntime::default(),
+            music_player,
+            sfx_player,
+            sound_registry: startup_sound_registry,
+            audio_indices: startup_audio_indices,
+            audio_indices_enabled: startup_audio.load_audio_indices,
+            launcher_audio_available,
+            theme_startup_suppressed: false,
+            eva_registry: startup_eva_registry,
+        };
+        if let Some(assets) = startup_asset_manager.as_ref() {
+            startup_audio_runtime.initialize_theme(assets);
+        }
+
         let mut state = AppState {
             platform: PlatformState::new(window, game_config, shell_client_size),
             match_state: crate::app::match_runtime::state::MatchState {
@@ -650,20 +679,7 @@ impl App {
                 startup_native_rules,
                 startup_rules_projection,
             ),
-            audio: crate::app::audio_runtime::AppAudioRuntime {
-                music_player: startup_audio
-                    .initialize_music_output
-                    .then(MusicPlayer::new)
-                    .flatten(),
-                sfx_player: startup_audio
-                    .initialize_sfx_output
-                    .then(SfxPlayer::new)
-                    .flatten(),
-                sound_registry: startup_sound_registry,
-                audio_indices: startup_audio_indices,
-                audio_indices_enabled: startup_audio.load_audio_indices,
-                eva_registry: startup_eva_registry,
-            },
+            audio: startup_audio_runtime,
             persistence: crate::app::persistence::PersistenceState::new(options_profile),
             diag: crate::app::diagnostics::state::DiagnosticsState {
                 debug_frame_step_requested: false,

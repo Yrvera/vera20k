@@ -416,9 +416,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // leaves the current shell stream in place while Theme owns its fade and
     // deferred QueueSong/automatic request.
     let music_now_ms = sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
-    if let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager()) {
-        let request = player.resolve_scenario_theme(state.match_state.map_basic.theme.as_deref(), assets);
-        player.request_scenario_theme(request, music_now_ms);
+    if let Some(assets) = state.process_assets.manager() {
+        state.audio.request_scenario_theme(
+            state.match_state.map_basic.theme.as_deref(),
+            assets,
+            music_now_ms,
+        );
     }
 
     if state.match_state.input.spawn_pick_pending {

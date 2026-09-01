@@ -21,6 +21,9 @@ pub struct TiberiumType {
     pub id: TiberiumTypeId,
     pub section: String,
     pub display_name: Option<String>,
+    /// `[TiberiumType] Color=` selector for the ConvertClass installed on a
+    /// CellAnim created over this resource.
+    pub color: Option<String>,
     /// `Image=` selector: 1 = TIB, 2 = GEM, 3 = TIB2, 4 = TIB3.
     pub image: u8,
     /// Credit value per harvested density unit.
@@ -98,6 +101,7 @@ impl TiberiumType {
             id,
             section: section_name.to_string(),
             display_name: section.get("Name").map(str::to_string),
+            color: section.get("Color").map(str::to_string),
             image,
             value: section.get_i32("Value").unwrap_or(0),
             growth: section
@@ -147,6 +151,7 @@ mod tests {
 
 [Riparius]
 Name=Tiberium Riparius
+Color=NeonGreen
 Image=1
 Value=25
 Growth=2200
@@ -186,6 +191,7 @@ SpreadPercentage=.06
         assert_eq!(registry.len(), 4);
         let riparius = registry.get(TiberiumTypeId(0)).expect("Riparius");
         assert_eq!(riparius.section, "Riparius");
+        assert_eq!(riparius.color.as_deref(), Some("NeonGreen"));
         assert_eq!(riparius.image, 1);
         assert_eq!(riparius.value, 25);
         assert_eq!(riparius.growth, 2200);

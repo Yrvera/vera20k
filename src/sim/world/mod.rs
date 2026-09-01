@@ -842,6 +842,9 @@ pub struct Simulation {
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
     pub overlay_grid: Option<crate::sim::overlay_grid::OverlayGrid>,
+    /// Persistent MapClass scenario-crate slots, including accepted ghosts and
+    /// their native timer words. This is authoritative save/hash state.
+    pub(crate) crate_authority: crate::sim::crates::CrateAuthority,
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
@@ -3075,6 +3078,31 @@ impl Simulation {
         }
     }
 
+    /// High-bridge anchor construction uses the same literal setter as bridge
+    /// damage/repair, but it additionally creates the family/anchor relations
+    /// from which Rust derives live bridge topology.
+    pub(crate) fn apply_runtime_bridge_mark_stamp(
+        &mut self,
+        stamp: crate::map::bridge_facts::BridgeFlagStamp,
+        family: crate::map::bridge_facts::BridgeStampFamily,
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        if !terrain.bridge_flag_authority_matches_shape(&self.real_cell_bridge_flags_0x1180) {
+            self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
+        }
+        let updates = self
+            .resolved_terrain
+            .as_mut()
+            .expect("terrain presence checked before runtime bridge Mark setter")
+            .apply_runtime_bridge_mark_stamp(stamp, family);
+        for (index, flags) in updates {
+            self.real_cell_bridge_flags_0x1180
+                .set_allocated_cell(index, flags);
+        }
+    }
+
     /// Commit the allocated real-cell half of a runtime setter that already
     /// executed synchronously through `CellClassBridgeFlagState`. Dummy
     /// coordinate/flag effects are live at the native call point and must not
@@ -3272,6 +3300,7 @@ impl Simulation {
             dynamic_terrain_cells: BTreeMap::new(),
             bridge_state: None,
             overlay_grid: None,
+            crate_authority: crate::sim::crates::CrateAuthority::default(),
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,

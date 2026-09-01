@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use crate::rules::crate_rules::{CrateRules, CrateRulesAccumulator};
 use crate::rules::error::RulesError;
 
 const READ_LINE_PAYLOAD: usize = 511;
@@ -623,16 +624,17 @@ impl RulesLayerStack {
         let mut processor = RulesPassProcessor::with_registry_state(registry_state);
         for (_, ini) in self.iter_passes() {
             if let Err(error) = processor.apply_pass(ini, fixed_art) {
-                let (_, partial_trace) = processor.finish();
+                let (_, partial_trace, _) = processor.finish();
                 return Err(NativeRulesProcessingFailure {
                     error,
                     partial_trace,
                 });
             }
         }
-        let (ini, native_type_construction_trace) = processor.finish();
+        let (ini, native_type_construction_trace, crate_rules) = processor.finish();
         Ok(ProcessedRulesLayers {
             ini,
+            crate_rules,
             content_hash: self.content_hash(),
             native_type_construction_trace,
         })
@@ -719,7 +721,7 @@ fn process_native_rules_cold_start_inner(
         fixed_art,
     );
     let after_building_bodies = processor.native_type_construction_events.len();
-    let (_, trace) = processor.finish();
+    let (_, trace, _) = processor.finish();
     Ok((
         trace,
         [
@@ -764,7 +766,7 @@ fn process_native_noncampaign_rules_prepass_inner(
     let after_general = processor.native_type_construction_events.len();
     processor.process_house_family(selected_rules_root);
     let after_house_bodies = processor.native_type_construction_events.len();
-    let (_, trace) = processor.finish();
+    let (_, trace, _) = processor.finish();
     (
         trace,
         [after_countries, after_general, after_house_bodies],
@@ -775,6 +777,7 @@ fn process_native_noncampaign_rules_prepass_inner(
 #[derive(Debug)]
 pub struct ProcessedRulesLayers {
     ini: IniFile,
+    crate_rules: CrateRules,
     content_hash: u64,
     native_type_construction_trace: NativeTypeConstructionTrace,
 }
@@ -795,6 +798,10 @@ impl ProcessedRulesLayers {
 
     pub fn content_hash(&self) -> u64 {
         self.content_hash
+    }
+
+    pub fn crate_rules(&self) -> &CrateRules {
+        &self.crate_rules
     }
 
     pub(crate) fn native_type_construction_trace(&self) -> &NativeTypeConstructionTrace {
@@ -1052,6 +1059,7 @@ impl ProcessedType {
 #[derive(Debug, Default)]
 struct RulesPassProcessor {
     ordinary: Option<IniFile>,
+    crate_rules: CrateRulesAccumulator,
     families: HashMap<RulesTypeFamily, Vec<ProcessedType>>,
     native_type_construction_events: Vec<NativeTypeConstructionEvent>,
     tiberiums: Vec<ProcessedType>,
@@ -1092,6 +1100,9 @@ impl RulesPassProcessor {
 
         // Difficulty readers contain no Type factories.
         self.allocate_crate_references(pass);
+        // ReadCrateRules @ 0x0066B8F0 reads the semantic crate values in the
+        // same Process pass; it allocates no Type and spends no ID.
+        self.crate_rules.apply_pass(pass);
         self.allocate_combat_references(pass);
         self.allocate_radiation_references(pass);
         // Elevation and Wall contain no Type factories.
@@ -1984,7 +1995,7 @@ impl RulesPassProcessor {
         Ok(())
     }
 
-    fn finish(mut self) -> (IniFile, NativeTypeConstructionTrace) {
+    fn finish(mut self) -> (IniFile, NativeTypeConstructionTrace, CrateRules) {
         let allocated_super_weapon_type_count = self
             .families
             .get(&RulesTypeFamily::SuperWeapon)
@@ -2056,11 +2067,12 @@ impl RulesPassProcessor {
                     tiberiums: self.tiberiums,
                 },
             },
+            self.crate_rules.finish(),
         )
     }
 }
 
-fn trim_ascii_controls(value: &str) -> &str {
+pub(crate) fn trim_ascii_controls(value: &str) -> &str {
     value.trim_matches(|character| u32::from(character) <= 0x20)
 }
 

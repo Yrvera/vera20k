@@ -11,3 +11,4 @@
 pub mod events;
 pub mod music;
 pub mod sfx;
+pub(crate) mod theme;

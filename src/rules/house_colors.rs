@@ -22,7 +22,9 @@ use crate::rules::color_scheme::{ColorSchemeEntry, hsv_to_rgb};
 /// Stored as u8 for cheap hashing in atlas keys (HashMap lookups every frame) and
 /// reused as the GPU ramp-texture row key (`row = index + 1`). Default (0) is the
 /// first `[Colors]` entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct HouseColorIndex(pub u8);
 
 /// Sentinel value meaning "do not apply house color remap — use raw palette."

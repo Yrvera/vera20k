@@ -533,6 +533,7 @@ pub(crate) fn load_neutral_tech_types(
 /// names take the same path without a WA/TUNTOP name table in Rust.
 pub(crate) fn scheduler_anim_roots(
     rules: &RuleSet,
+    overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
     tile_animations: &[TerrainTileAnimation],
 ) -> Vec<String> {
     let mut roots = BTreeSet::new();
@@ -550,7 +551,53 @@ pub(crate) fn scheduler_anim_roots(
             .map(|anim| anim.anim_name.trim().to_ascii_uppercase())
             .filter(|name| !name.is_empty()),
     );
+    roots.extend(
+        [
+            rules.crate_rules.wood_crate_img.as_deref(),
+            rules.crate_rules.crate_img.as_deref(),
+            rules.crate_rules.water_crate_img.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|name| overlay_registry.id_for_name(name))
+        .filter_map(|overlay_id| overlay_registry.flags(overlay_id))
+        .filter_map(|flags| flags.cell_anim.as_deref())
+        .map(|name| name.trim().to_ascii_uppercase())
+        .filter(|name| !name.is_empty()),
+    );
     roots.into_iter().collect()
+}
+
+/// Palette variants reachable from scenario-start crate CellAnim before the
+/// post-map placer has constructed those AnimObjects. Initial atlases are built
+/// earlier in the loading funnel, so live-object discovery alone is too late.
+pub(crate) fn startup_crate_anim_remap_keys(
+    rules: &RuleSet,
+    overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+) -> HashSet<(String, crate::rules::house_colors::HouseColorIndex)> {
+    [
+        rules.crate_rules.wood_crate_img.as_deref(),
+        rules.crate_rules.crate_img.as_deref(),
+        rules.crate_rules.water_crate_img.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|name| overlay_registry.id_for_name(name))
+    .filter_map(|overlay_id| {
+        let flags = overlay_registry.flags(overlay_id)?;
+        let anim = flags.cell_anim.as_deref()?;
+        let tiberium = overlay_registry
+            .tiberium_type_for_overlay(&rules.tiberium_types, overlay_id)
+            .and_then(|type_id| rules.tiberium_types.get(type_id))?;
+        let color = tiberium.color.as_deref()?;
+        let entry = crate::rules::color_scheme::scheme_entry_by_name(&rules.color_schemes, color)?;
+        let color = u8::try_from(entry)
+            .ok()
+            .map(crate::rules::house_colors::HouseColorIndex)?;
+        Some((anim.trim().to_ascii_uppercase(), color))
+    })
+    .filter(|(anim, _)| !anim.is_empty())
+    .collect()
 }
 
 /// The presentation-side atlas bundle the app builds AFTER GPU-free scenario
@@ -676,6 +723,7 @@ pub(crate) fn build_presentation_manifest(
     theater_name: &str,
     rules: Option<&RuleSet>,
     art: Option<&ArtRegistry>,
+    overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
     house_colors: &HouseColorMap,
     theater_unit_palette: Option<&Palette>,
     theater_iso_palette: Option<&Palette>,
@@ -690,6 +738,7 @@ pub(crate) fn build_presentation_manifest(
         theater_name,
         rules,
         art,
+        overlay_registry,
         house_colors,
         theater_unit_palette,
         theater_iso_palette,
@@ -711,6 +760,7 @@ pub(crate) fn build_entity_atlases(
     theater_name: &str,
     rules: Option<&RuleSet>,
     art: Option<&ArtRegistry>,
+    overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
     house_colors: &HouseColorMap,
     theater_unit_palette: Option<&Palette>,
     theater_iso_palette: Option<&Palette>,
@@ -751,6 +801,10 @@ pub(crate) fn build_entity_atlases(
     // Pre-load building types that can be spawned at runtime (e.g., ConYards from MCV deploy).
     let extra_buildings: Vec<&str> =
         deployable_building_types(sim.entities(), rules, Some(&sim.interner));
+    let mut anim_remap_keys = sprite_atlas::collect_anim_remap_base_keys(sim);
+    if let Some(rules) = rules {
+        anim_remap_keys.extend(startup_crate_anim_remap_keys(rules, overlay_registry));
+    }
     let cell_drawer_type_ids: HashSet<String> = sim
         .resolved_terrain
         .as_ref()
@@ -778,6 +832,7 @@ pub(crate) fn build_entity_atlases(
             art,
             house_colors,
             &extra_buildings,
+            &anim_remap_keys,
             &cell_drawer_type_ids,
             cell_palette,
             None, // initial build — no existing cache
@@ -808,11 +863,13 @@ mod retail_placement_oracle_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::path::PathBuf;
 
     use super::{
         LoadedRules, compose_rules_layers, load_rules_with_merged_ini,
         missing_active_team_ai_registry_sections, scheduler_anim_roots,
+        startup_crate_anim_remap_keys,
     };
     use crate::assets::asset_manager::AssetManager;
     use crate::map::entities::EntityCategory;
@@ -855,10 +912,14 @@ mod tests {
 
     #[test]
     fn gsi_13_04_scheduler_roots_include_generic_resolved_tile_names() {
-        let rules = RuleSet::from_ini(&IniFile::from_str(
-            "[General]\nDamageFireTypes=FIRE_A,FIRE_B\n",
-        ))
-        .expect("rules");
+        let ini = IniFile::from_str(
+            "[General]\nDamageFireTypes=FIRE_A,FIRE_B\n\
+             [Animations]\n0=crate_spark\n\
+             [OverlayTypes]\n0=STARTBOX\n[STARTBOX]\nCellAnim=crate_spark\n\
+             [CrateRules]\nCrateImg=STARTBOX\nWoodCrateImg=STARTBOX\nWaterCrateImg=STARTBOX\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let overlay_registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
         let tiles = vec![
             TerrainTileAnimation {
                 rx: 4,
@@ -881,8 +942,60 @@ mod tests {
         ];
 
         assert_eq!(
-            scheduler_anim_roots(&rules, &tiles),
-            vec!["CUSTOM_FALLS", "CUSTOM_MOUTH", "FIRE_A", "FIRE_B"]
+            scheduler_anim_roots(&rules, &overlay_registry, &tiles),
+            vec![
+                "CRATE_SPARK",
+                "CUSTOM_FALLS",
+                "CUSTOM_MOUTH",
+                "FIRE_A",
+                "FIRE_B"
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_crate_cell_anim_remap_is_rooted_before_post_map_construction() {
+        let ini = IniFile::from_str(
+            "[Colors]\nGold=43,239,255\nNeonGreen=104,241,195\n\
+             [Tiberiums]\n0=Riparius\n[Riparius]\nImage=1\nColor=NeonGreen\n\
+             [Animations]\n0=crate_spark\n\
+             [OverlayTypes]\n0=STARTBOX\n[STARTBOX]\nTiberium=yes\nCellAnim=crate_spark\n\
+             [CrateRules]\nCrateImg=STARTBOX\nWoodCrateImg=STARTBOX\nWaterCrateImg=STARTBOX\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let overlay_registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+
+        assert_eq!(
+            rules.crate_rules.crate_img.as_deref(),
+            Some("STARTBOX"),
+            "the processed CrateRules identity must drive pre-atlas discovery"
+        );
+        let overlay_id = overlay_registry
+            .id_for_name("STARTBOX")
+            .expect("startup crate overlay identity");
+        let flags = overlay_registry
+            .flags(overlay_id)
+            .expect("startup crate overlay flags");
+        assert_eq!(flags.cell_anim.as_deref(), Some("CRATE_SPARK"));
+        let tiberium = overlay_registry
+            .tiberium_type_for_overlay(&rules.tiberium_types, overlay_id)
+            .and_then(|type_id| rules.tiberium_types.get(type_id))
+            .expect("tiberium authority for startup crate CellAnim");
+        assert_eq!(tiberium.color.as_deref(), Some("NeonGreen"));
+        assert_eq!(
+            crate::rules::color_scheme::scheme_entry_by_name(
+                &rules.color_schemes,
+                tiberium.color.as_deref().unwrap(),
+            ),
+            Some(1)
+        );
+
+        assert_eq!(
+            startup_crate_anim_remap_keys(&rules, &overlay_registry),
+            HashSet::from([(
+                "CRATE_SPARK".to_string(),
+                crate::rules::house_colors::HouseColorIndex(1),
+            )])
         );
     }
 
@@ -1305,7 +1418,8 @@ mod tests {
     ///   One record per case-insensitive name, last definition wins
     ///   (Strength 200, not 100), and lookup is case-insensitive.
     /// - **Sectionless registry entry:** GHOST is listed in [VehicleTypes] but
-    ///   has no [GHOST] section — silently skipped, no record.
+    ///   has no [GHOST] section. The registry allocation pass still creates its
+    ///   constructor-default record before the later body-read pass.
     #[test]
     fn resolution_order_matches_engine() {
         let ini = IniFile::from_str(
@@ -1327,8 +1441,9 @@ mod tests {
         assert!(rules.object("htnk").is_some());
         assert_eq!(rules.object("HTNK").map(|o| o.strength), Some(100));
 
-        // Registry entry with no section produced no record.
-        assert!(rules.object("GHOST").is_none());
+        // Registry allocation precedes the body-read pass, so a sectionless
+        // entry retains its constructor-default record.
+        assert!(rules.object("GHOST").is_some());
     }
 
     /// AT-11 (RC-3): every ported scalar default that maps to a verified

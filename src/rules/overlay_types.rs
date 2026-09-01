@@ -235,6 +235,21 @@ impl OverlayTypeFlags {
     }
 }
 
+/// Cell overlay-data byte written by the successful ordinary Mark tail.
+///
+/// `OverlayClass__Mark @ 0x005FC570` writes zero at `0x005FD0CC`, replaces it
+/// with one for `Land=Road` at `0x005FD0E5`, then replaces either value with
+/// `0xFF` when `OverlayType+0x2AA` (`Crate=yes`) at `0x005FD0FB..0x005FD105`.
+pub(crate) fn native_mark_overlay_data(flags: &OverlayTypeFlags) -> u8 {
+    if flags.crate_type {
+        u8::MAX
+    } else if flags.land == LandType::Road {
+        1
+    } else {
+        0
+    }
+}
+
 /// Registry of overlay type names indexed by overlay ID.
 ///
 /// Built from the [OverlayTypes] section of rules.ini.

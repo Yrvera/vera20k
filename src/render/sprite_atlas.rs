@@ -353,6 +353,43 @@ pub fn collect_needed_base_keys(
     base_keys
 }
 
+/// Live AnimClass palette variants that must exist in the atlas. Producers
+/// install these after construction (notably OverlayClass CellAnim over a
+/// Tiberium cell), so entity ownership cannot supply the color key.
+pub fn collect_anim_remap_base_keys(
+    sim: &crate::sim::world::Simulation,
+) -> HashSet<(String, HouseColorIndex)> {
+    sim.anims()
+        .filter_map(|(_, anim)| {
+            Some((
+                sim.interner.resolve(anim.type_id).to_ascii_uppercase(),
+                anim.remap_color?,
+            ))
+        })
+        .collect()
+}
+
+fn insert_anim_remap_frame_keys(
+    needed: &mut HashSet<ShpSpriteKey>,
+    type_id: &str,
+    frame_count: u16,
+    anim_remap_keys: &HashSet<(String, HouseColorIndex)>,
+) {
+    for &(_, color) in anim_remap_keys
+        .iter()
+        .filter(|(anim_type, _)| anim_type.eq_ignore_ascii_case(type_id))
+    {
+        for frame in 0..frame_count {
+            needed.insert(ShpSpriteKey {
+                type_id: type_id.to_string(),
+                facing: 0,
+                frame,
+                house_color: color,
+            });
+        }
+    }
+}
+
 /// Check if an existing sprite atlas already covers all the given base keys.
 ///
 /// A base key (type_id, color) is "covered" if the atlas contains at least one
@@ -461,6 +498,7 @@ pub fn build_sprite_atlas(
     art: Option<&ArtRegistry>,
     house_colors: &HouseColorMap,
     extra_building_types: &[&str],
+    anim_remap_keys: &HashSet<(String, HouseColorIndex)>,
     cell_drawer_type_ids: &HashSet<String>,
     cell_palette: Option<&Palette>,
     existing: Option<SpriteAtlas>,
@@ -897,6 +935,7 @@ pub fn build_sprite_atlas(
                             scheduler_owned,
                             shadow,
                         );
+                        insert_anim_remap_frame_keys(&mut needed, name, count, anim_remap_keys);
                         effect_type_ids.insert(name.clone());
                         log::info!("WorldEffect SHP {}: {} frames loaded", name, count);
                     }

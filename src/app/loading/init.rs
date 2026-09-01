@@ -99,6 +99,127 @@ pub(crate) fn resolved_overlay_shp_ids(
     available
 }
 
+/// Append every visible real-cell write made by startup crate Mark to the
+/// initial presentation index. Ghost slots have no live overlay identity, while
+/// low-bridge Mark may write many cells for one timed slot.
+fn connect_startup_crate_overlays(
+    overlays: &mut Vec<OverlayEntry>,
+    simulation: &Simulation,
+) -> usize {
+    let Some(grid) = simulation.overlay_grid.as_ref() else {
+        return 0;
+    };
+    let mut seen = BTreeSet::new();
+    let candidates = grid
+        .pending_dirty_cells()
+        .iter()
+        .copied()
+        .filter(|cell| seen.insert(*cell))
+        .filter_map(|(rx, ry)| {
+            let cell = grid.cell(rx, ry);
+            Some(OverlayEntry {
+                rx,
+                ry,
+                overlay_id: cell.overlay_id?,
+                frame: cell.overlay_data,
+            })
+        })
+        .collect();
+    let mut index = crate::app::presentation::overlay_index::OverlayRenderIndex::default();
+    index.replace_from_source(std::mem::take(overlays));
+    let synced = index.upsert_occupied(candidates);
+    *overlays = index.as_slice().to_vec();
+    synced
+}
+
+#[cfg(test)]
+mod startup_crate_presentation_tests {
+    use super::*;
+    use crate::sim::crates::CrateSlot;
+    use crate::sim::overlay_grid::OverlayGrid;
+
+    #[test]
+    fn startup_crate_presentation_appends_visible_slots_and_excludes_ghosts() {
+        let mut simulation = Simulation::new();
+        simulation.overlay_grid = Some(OverlayGrid::new(16, 16));
+        *simulation.crate_authority.slot_mut(0) = CrateSlot {
+            start_frame: 0,
+            aux: 1,
+            duration: 2,
+            cell_x: 9,
+            cell_y: 4,
+        };
+        *simulation.crate_authority.slot_mut(1) = CrateSlot {
+            start_frame: 0,
+            aux: 3,
+            duration: 4,
+            cell_x: 7,
+            cell_y: 8,
+        };
+        simulation
+            .overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_overlay(9, 4, 33, u8::MAX);
+        let mut source = vec![OverlayEntry {
+            rx: 2,
+            ry: 3,
+            overlay_id: 5,
+            frame: 6,
+        }];
+
+        assert_eq!(connect_startup_crate_overlays(&mut source, &simulation), 1);
+        assert_eq!(
+            source
+                .iter()
+                .map(|entry| (entry.rx, entry.ry, entry.overlay_id, entry.frame))
+                .collect::<Vec<_>>(),
+            vec![(2, 3, 5, 6), (9, 4, 33, u8::MAX),]
+        );
+        assert!(
+            source.iter().all(|entry| (entry.rx, entry.ry) != (7, 8)),
+            "a timed ghost has no initial render entry"
+        );
+    }
+
+    #[test]
+    fn startup_crate_presentation_includes_low_bridge_extension_without_consuming_dirty_receipt() {
+        let mut simulation = Simulation::new();
+        simulation.overlay_grid = Some(OverlayGrid::new(32, 32));
+        *simulation.crate_authority.slot_mut(0) = CrateSlot {
+            start_frame: 10,
+            aux: 20,
+            duration: 30,
+            cell_x: 12,
+            cell_y: 12,
+        };
+        let grid = simulation.overlay_grid.as_mut().unwrap();
+        grid.place_overlay(12, 11, 0x5C, 0);
+        grid.place_overlay(12, 12, 0x4A, 1);
+        grid.place_overlay(12, 13, 0x4B, 2);
+        let dirty_before = grid.pending_dirty_cells().to_vec();
+        let mut source = Vec::new();
+
+        assert_eq!(connect_startup_crate_overlays(&mut source, &simulation), 3);
+        assert_eq!(
+            source
+                .iter()
+                .map(|entry| (entry.rx, entry.ry, entry.overlay_id, entry.frame))
+                .collect::<Vec<_>>(),
+            vec![(12, 11, 0x5C, 0), (12, 12, 0x4A, 1), (12, 13, 0x4B, 2)]
+        );
+        assert_eq!(
+            simulation
+                .overlay_grid
+                .as_ref()
+                .unwrap()
+                .pending_dirty_cells(),
+            dirty_before,
+            "initial presentation must not consume the sim/navigation receipt"
+        );
+    }
+}
+
 #[cfg(test)]
 mod native_overlay_shp_tests {
     use super::*;
@@ -992,6 +1113,24 @@ pub(crate) struct RandomMapProjection {
 
 #[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RandomMapStartupCrateProjection {
+    pub(crate) crates_enabled: bool,
+    pub(crate) minimum: i32,
+    pub(crate) maximum: i32,
+    pub(crate) regen_bits: u64,
+    pub(crate) wood_name: Option<String>,
+    pub(crate) common_name: Option<String>,
+    pub(crate) water_name: Option<String>,
+    pub(crate) wood_id: Option<u8>,
+    pub(crate) common_id: Option<u8>,
+    pub(crate) water_id: Option<u8>,
+    pub(crate) runtime_names: Vec<(u8, String)>,
+    pub(crate) presented: Vec<(u16, u16, u8, u8)>,
+    pub(crate) body_frame: u8,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RandomMapLaunchSnapshot {
     pub(crate) map: RandomMapProjection,
     pub(crate) trace: crate::map::rmg::RmgConstructionTrace,
@@ -1001,6 +1140,8 @@ pub(crate) struct RandomMapLaunchSnapshot {
     pub(crate) mapgen_continuation: crate::sim::rng::SimRngLogicalState,
     pub(crate) final_rng: crate::sim::world::SimulationRngState,
     pub(crate) post_map_output: crate::sim::scenario_post_map::ScenarioPostMapOutput,
+    pub(crate) startup_crate_slots: Vec<(usize, crate::sim::crates::CrateSlot, Option<(u8, u8)>)>,
+    pub(crate) startup_crate: RandomMapStartupCrateProjection,
 }
 
 #[cfg(test)]
@@ -1171,7 +1312,11 @@ impl MapLoadInitial {
             || theater_ext_for(&map_data.header.theater),
             |td| td.extension,
         );
-        let scheduler_roots = scheduler_anim_roots(&rules, resolved_terrain.tile_animations());
+        let scheduler_roots = scheduler_anim_roots(
+            &rules,
+            &overlay_registry,
+            resolved_terrain.tile_animations(),
+        );
         art.bind_scheduler_anim_assets(
             &scheduler_roots,
             asset_manager,
@@ -1360,6 +1505,63 @@ impl MapLoadInitial {
             Some(&match_launch_descriptor),
             false,
         );
+        let crate_name_id =
+            |name: Option<&str>| name.and_then(|name| overlay_registry.id_for_name(name));
+        let mut runtime_names = BTreeMap::new();
+        crate::app::frontend::skirmish::preregister_runtime_overlay_names(
+            &overlay_registry,
+            &rules.crate_rules,
+            &mut runtime_names,
+        );
+        let selected_ids = [
+            crate_name_id(rules.crate_rules.wood_crate_img.as_deref()),
+            crate_name_id(rules.crate_rules.crate_img.as_deref()),
+            crate_name_id(rules.crate_rules.water_crate_img.as_deref()),
+        ];
+        runtime_names.retain(|id, _| {
+            overlay_registry
+                .flags(*id)
+                .is_some_and(|flags| flags.crate_type)
+                || selected_ids.contains(&Some(*id))
+        });
+        let mut presented = Vec::new();
+        connect_startup_crate_overlays(&mut presented, &simulation);
+        let startup_crate = RandomMapStartupCrateProjection {
+            crates_enabled: simulation.session.game_options.crates,
+            minimum: rules.crate_rules.minimum,
+            maximum: rules.crate_rules.maximum,
+            regen_bits: rules.crate_rules.regen.bits(),
+            wood_id: crate_name_id(rules.crate_rules.wood_crate_img.as_deref()),
+            common_id: crate_name_id(rules.crate_rules.crate_img.as_deref()),
+            water_id: crate_name_id(rules.crate_rules.water_crate_img.as_deref()),
+            wood_name: rules.crate_rules.wood_crate_img.clone(),
+            common_name: rules.crate_rules.crate_img.clone(),
+            water_name: rules.crate_rules.water_crate_img.clone(),
+            runtime_names: runtime_names.into_iter().collect(),
+            presented: presented
+                .into_iter()
+                .map(|entry| (entry.rx, entry.ry, entry.overlay_id, entry.frame))
+                .collect(),
+            body_frame: crate::render::overlay_atlas::CRATE_BODY_FRAME,
+        };
+        let startup_crate_slots = simulation
+            .crate_authority
+            .slots()
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, slot)| !slot.is_empty())
+            .map(|(index, slot)| {
+                let live_overlay = u16::try_from(slot.cell_x)
+                    .ok()
+                    .zip(u16::try_from(slot.cell_y).ok())
+                    .and_then(|(rx, ry)| {
+                        let cell = simulation.overlay_grid.as_ref()?.cell(rx, ry);
+                        Some((cell.overlay_id?, cell.overlay_data))
+                    });
+                (index, slot, live_overlay)
+            })
+            .collect();
         let final_rng = simulation.rng_state();
         RandomMapLaunchSnapshot {
             map,
@@ -1370,6 +1572,8 @@ impl MapLoadInitial {
             mapgen_continuation,
             final_rng,
             post_map_output,
+            startup_crate_slots,
+            startup_crate,
         }
     }
 }
@@ -2087,6 +2291,7 @@ pub(crate) fn load_map_from_initial(
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
         let roots = scheduler_anim_roots(
             r,
+            &overlay_registry,
             resolved_terrain
                 .as_ref()
                 .map_or(&[], |terrain| terrain.tile_animations()),
@@ -2347,6 +2552,7 @@ pub(crate) fn load_map_from_initial(
         &map_data.header.theater,
         rules.as_ref(),
         art.as_ref(),
+        &overlay_registry,
         &house_color_map,
         unit_palette.as_ref(),
         overlay_iso_palette.as_ref(),
@@ -2419,6 +2625,7 @@ pub(crate) fn load_map_from_initial(
                     &map_data.header.theater,
                     rules.as_ref(),
                     art.as_ref(),
+                    &overlay_registry,
                     &house_color_map,
                     unit_palette.as_ref(),
                     overlay_iso_palette.as_ref(),
@@ -2522,6 +2729,10 @@ pub(crate) fn load_map_from_initial(
         batch,
         theater_ext,
         &rules_ini,
+        &rules
+            .as_ref()
+            .expect("merged rules were installed before atlas construction")
+            .crate_rules,
         art.as_ref().unwrap_or(&art_fallback),
         overlay_iso_palette.as_ref(),
         unit_palette.as_ref(),
@@ -2580,6 +2791,12 @@ pub(crate) fn load_map_from_initial(
         }
         if !output.navigation_published {
             log::error!("Initial navigation rebuild failed: resolved terrain is unavailable");
+        }
+        let connected_crates = connect_startup_crate_overlays(&mut overlays_connected, sim);
+        if connected_crates != 0 {
+            log::info!(
+                "Connected {connected_crates} visible startup crate cell(s) to initial overlay presentation"
+            );
         }
     }
 

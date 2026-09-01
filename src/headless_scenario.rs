@@ -333,7 +333,8 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     // Pending authored Fill has no eager Tile##Anim list. Bind damage-fire
     // roots now and let the authored host bind each actually reached map Anim
     // synchronously before its native constructor spends an ID.
-    let scheduler_roots = crate::app::loading::init_helpers::scheduler_anim_roots(&rules, &[]);
+    let scheduler_roots =
+        crate::app::loading::init_helpers::scheduler_anim_roots(&rules, &overlay_registry, &[]);
     art.bind_scheduler_anim_assets(
         &scheduler_roots,
         &assets,

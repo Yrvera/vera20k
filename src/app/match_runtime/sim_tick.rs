@@ -811,8 +811,8 @@ fn advance_in_game_runtime_mode(
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app::input::gadget_input::idle_tick(state);
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
-    if let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager()) {
-        player.update(assets, music_now_ms);
+    if let Some(assets) = state.process_assets.manager() {
+        state.audio.update_theme(assets, music_now_ms);
     }
     if decision.tactical_mutation {
         crate::app::input::camera::update_camera(state);
@@ -1693,12 +1693,14 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         bound_rules,
         Some(&sim.interner),
     );
-    let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
+    let mut sprite_base_keys = sprite_atlas::collect_needed_base_keys(
         sim.entities(),
         &state.match_state.match_presentation.house_color_map,
         &extra_buildings,
         Some(&sim.interner),
     );
+    let anim_remap_keys = sprite_atlas::collect_anim_remap_base_keys(sim);
+    sprite_base_keys.extend(anim_remap_keys.iter().cloned());
     let sprite_rebuild: bool = match &state.match_state.match_presentation.sprite_atlas {
         Some(atlas) => !sprite_atlas::atlas_covers_base_keys(atlas, &sprite_base_keys),
         None => !sprite_base_keys.is_empty(),
@@ -1757,6 +1759,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             bound_rules.map(|rules| &rules.art_registry),
             &state.match_state.match_presentation.house_color_map,
             &extra_buildings,
+            &anim_remap_keys,
             &cell_drawer_type_ids,
             cell_palette.as_ref(),
             existing,

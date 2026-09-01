@@ -38,9 +38,7 @@ impl App {
         Self::capture_returned_skirmish_rng(state);
         crate::app::loading::pump::clear_match_startup_state(state);
         state.match_state.scenario_elapsed_clock.reset();
-        if let Some(ref mut player) = state.audio.music_player {
-            player.stop();
-        }
+        state.audio.stop_theme();
         // F11: leaving a match silences match audio completely. Previously
         // only music stopped — live SFX, the voice player, and queued EVA
         // lines survived and played over the main menu, and the SFX output
@@ -598,8 +596,8 @@ impl App {
             }
         }
         if tick.stop_audio {
+            state.audio.stop_theme();
             if let Some(player) = state.audio.music_player.as_mut() {
-                player.stop();
                 player.set_output_scale(1.0);
             }
             if let Some(player) = state.audio.sfx_player.as_mut() {
@@ -612,9 +610,9 @@ impl App {
         // hard stop and output-scale restoration so ScoreX begins audible.
         if let Some(crate::app::match_runtime::scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
             tick.after_stop
-            && let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager())
+            && let Some(assets) = state.process_assets.manager()
         {
-            let _ = player.play_track(theme, assets);
+            let _ = state.audio.play_theme(theme, assets);
         }
         if !tick.finished {
             return;

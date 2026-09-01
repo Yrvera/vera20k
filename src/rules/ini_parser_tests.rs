@@ -1417,6 +1417,141 @@ fn negative_tiberium_slot_is_an_explicit_safe_load_error() {
 }
 
 #[test]
+fn crate_rules_constructor_and_stock_fields_keep_native_bits() {
+    let defaults = RulesLayerStack::new(IniFile::from_str(""))
+        .process()
+        .expect("crate rules process");
+    assert_eq!(defaults.crate_rules().minimum, 1);
+    assert_eq!(defaults.crate_rules().maximum, 255);
+    assert_eq!(defaults.crate_rules().regen.bits(), 10.0_f64.to_bits());
+    assert_eq!(defaults.crate_rules().wood_crate_img, None);
+    assert_eq!(defaults.crate_rules().crate_img, None);
+    assert_eq!(defaults.crate_rules().water_crate_img, None);
+
+    let stock = RulesLayerStack::new(IniFile::from_str(
+        "[CrateRules]\nCrateMinimum=1\nCrateMaximum=255\nCrateRegen=3\n\
+         WoodCrateImg=CRATE\nCrateImg=CRATE\nWaterCrateImg=WCRATE\n",
+    ))
+    .process()
+    .expect("crate rules process");
+    assert_eq!(stock.crate_rules().minimum, 1);
+    assert_eq!(stock.crate_rules().maximum, 255);
+    assert_eq!(stock.crate_rules().regen.bits(), 3.0_f64.to_bits());
+    assert_eq!(stock.crate_rules().wood_crate_img.as_deref(), Some("CRATE"));
+    assert_eq!(stock.crate_rules().crate_img.as_deref(), Some("CRATE"));
+    assert_eq!(
+        stock.crate_rules().water_crate_img.as_deref(),
+        Some("WCRATE")
+    );
+}
+
+#[test]
+fn crate_rules_retain_per_pass_and_preserve_signed_values() {
+    let processed = process_rules_passes(
+        "[CrateRules]\nCrateMinimum=-7\nCrateMaximum=-12\nCrateRegen=3\n\
+         WoodCrateImg=WOOD\nCrateImg=COMMON\nWaterCrateImg=WATER\n",
+        "[CrateRules]\nCrateMaximum=2\nWaterCrateImg=none\n",
+    );
+    let rules = processed.crate_rules();
+    assert_eq!(rules.minimum, -7, "missing later key retains signed value");
+    assert_eq!(rules.maximum, 2);
+    assert_eq!(rules.regen.bits(), 3.0_f64.to_bits());
+    assert_eq!(rules.wood_crate_img.as_deref(), Some("WOOD"));
+    assert_eq!(rules.crate_img.as_deref(), Some("COMMON"));
+    assert_eq!(rules.water_crate_img, None);
+
+    let absent = process_rules_passes(
+        "[CrateRules]\nCrateMinimum=9\nCrateMaximum=3\nCrateImg=FIRST\n",
+        "[General]\nBuildSpeed=.7\n",
+    );
+    assert_eq!(absent.crate_rules().minimum, 9);
+    assert_eq!(absent.crate_rules().maximum, 3);
+    assert_eq!(absent.crate_rules().crate_img.as_deref(), Some("FIRST"));
+}
+
+#[test]
+fn crate_rule_images_allocate_and_alias_by_overlay_identity() {
+    let processed = RulesLayerStack::new(IniFile::from_str(
+        "[CrateRules]\nWoodCrateImg=AliasCrate\nCrateImg=aliascrate\n\
+         WaterCrateImg=NewWater\n",
+    ))
+    .process()
+    .expect("crate rules process");
+    let overlays = processed
+        .ini()
+        .section("OverlayTypes")
+        .expect("crate references allocate overlays");
+    assert_eq!(overlays.get_values(), vec!["AliasCrate", "NewWater"]);
+
+    let registry =
+        crate::rules::overlay_types::OverlayTypeRegistry::from_ini(processed.ini(), None);
+    assert_eq!(
+        registry.id_for_name("AliasCrate"),
+        registry.id_for_name("aliascrate")
+    );
+    assert_ne!(
+        registry.id_for_name("AliasCrate"),
+        registry.id_for_name("NewWater")
+    );
+}
+
+#[test]
+fn crate_rule_image_readstring_capacity_owns_retention_and_allocation() {
+    let exact = "A".repeat(127);
+    let over = "B".repeat(128);
+    let processed = RulesLayerStack::new(IniFile::from_str(&format!(
+        "[CrateRules]\nWoodCrateImg={exact}\nCrateImg={over}\nWaterCrateImg={over}Z\n"
+    )))
+    .process()
+    .expect("crate rules process");
+
+    assert_eq!(
+        processed.crate_rules().wood_crate_img.as_deref(),
+        Some(exact.as_str())
+    );
+    let truncated = "B".repeat(127);
+    assert_eq!(
+        processed.crate_rules().crate_img.as_deref(),
+        Some(truncated.as_str())
+    );
+    assert_eq!(
+        processed.crate_rules().water_crate_img.as_deref(),
+        Some(truncated.as_str()),
+        "capacity includes the forced NUL, so only 127 ASCII bytes survive"
+    );
+    // The semantic CrateRules strings keep the 127-byte ReadString capacity,
+    // but every Type constructor stores only the native 24-byte ID and Find
+    // compares the full input against that stored prefix. A 127-byte name
+    // therefore misses every lookup and constructs a duplicate stored ID per
+    // reference (see `native_type_registry_compares_full_input_but_stores_and_emits_24_bytes`).
+    let stored_a = "A".repeat(0x18);
+    let stored_b = "B".repeat(0x18);
+    assert_eq!(
+        processed
+            .ini()
+            .section("OverlayTypes")
+            .expect("truncated references allocate")
+            .get_values(),
+        vec![stored_a.as_str(), stored_b.as_str(), stored_b.as_str()],
+        "late allocation stores 24-byte IDs while semantic crate strings keep 127 bytes"
+    );
+}
+
+#[test]
+fn crate_rules_direct_and_one_layer_entry_points_agree() {
+    let ini = IniFile::from_str(
+        "[CrateRules]\nCrateMinimum=-2\nCrateMaximum=6\nCrateRegen=3\n\
+         WoodCrateImg=WOOD\nCrateImg=COMMON\nWaterCrateImg=WATER\n",
+    );
+    let direct = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("direct rules");
+    let layered =
+        crate::rules::ruleset::RuleSet::from_rules_layers(&RulesLayerStack::new(ini.clone()))
+            .expect("layered rules");
+    assert_eq!(direct.crate_rules, layered.crate_rules);
+    assert_eq!(direct.source_ini_hash(), layered.source_ini_hash());
+}
+
+#[test]
 fn later_malformed_weapon_bool_preserves_current_field_default() {
     use crate::rules::weapon_type::WeaponType;
 

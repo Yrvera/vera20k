@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::rules::combat_damage::CombatDamageDefaults;
+use crate::rules::crate_rules::CrateRules;
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerStack};
 use crate::rules::mission_data::MissionControl;
@@ -522,6 +523,8 @@ pub struct GeneralRules {
     pub gui_move_in_sound: Option<String>,
     /// Generic shell click sound from [AudioVisual] GenericClick.
     pub generic_click_sound: Option<String>,
+    /// Launcher Options Sound/Voice preview cue from [AudioVisual] GenericBeep.
+    pub generic_beep_sound: Option<String>,
     /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
     pub gui_checkbox_sound: Option<String>,
     /// Sidebar tab click sound from [AudioVisual] GUITabSound (retail
@@ -1038,6 +1041,7 @@ impl Default for GeneralRules {
             gui_main_button_sound: None,
             gui_move_in_sound: None,
             generic_click_sound: None,
+            generic_beep_sound: None,
             gui_checkbox_sound: None,
             gui_tab_sound: None,
             incoming_message_sound: None,
@@ -1267,68 +1271,6 @@ impl BridgeRules {
             explosions,
             voxel_max,
             repair_sound,
-        }
-    }
-}
-
-/// Scenario-start crate counts and crate overlay images from `[CrateRules]`.
-///
-/// gamemd reads these into RulesClass and `Post_Map_Init` clamps the lobby
-/// player count between `CrateMinimum` and `CrateMaximum` to decide how many
-/// crates to scatter. Pickup effects (`SilverCrate`, `UnitCrateType`, the
-/// per-goodie weights) belong to the crate system and are deliberately not
-/// parsed here.
-#[derive(Debug, Clone)]
-pub struct CrateRules {
-    /// `CrateMinimum=` — floor on the scenario-start crate count (stock 1).
-    pub minimum: u32,
-    /// `CrateMaximum=` — ceiling on the scenario-start crate count (stock 255).
-    pub maximum: u32,
-    /// `CrateImg=` — overlay type used for the ordinary land crate (stock CRATE).
-    pub crate_img: String,
-    /// `WoodCrateImg=` — overlay type used for random land crates (stock CRATE).
-    pub wood_crate_img: String,
-    /// `WaterCrateImg=` — overlay type used over water (stock WCRATE).
-    pub water_crate_img: String,
-}
-
-impl Default for CrateRules {
-    fn default() -> Self {
-        Self {
-            minimum: 1,
-            maximum: 255,
-            crate_img: "CRATE".to_string(),
-            wood_crate_img: "CRATE".to_string(),
-            water_crate_img: "WCRATE".to_string(),
-        }
-    }
-}
-
-impl CrateRules {
-    fn from_ini(ini: &IniFile) -> Self {
-        let defaults = Self::default();
-        let Some(section) = ini.section("CrateRules") else {
-            return defaults;
-        };
-        let name = |key: &str, fallback: String| -> String {
-            section
-                .get(key)
-                .map(|value| value.trim().to_uppercase())
-                .filter(|value| !value.is_empty())
-                .unwrap_or(fallback)
-        };
-        Self {
-            minimum: section
-                .get_i32("CrateMinimum")
-                .unwrap_or(defaults.minimum as i32)
-                .max(0) as u32,
-            maximum: section
-                .get_i32("CrateMaximum")
-                .unwrap_or(defaults.maximum as i32)
-                .max(0) as u32,
-            crate_img: name("CrateImg", defaults.crate_img),
-            wood_crate_img: name("WoodCrateImg", defaults.wood_crate_img),
-            water_crate_img: name("WaterCrateImg", defaults.water_crate_img),
         }
     }
 }
@@ -1792,6 +1734,11 @@ impl GeneralRules {
                 .map(str::to_string),
             generic_click_sound: audio_visual
                 .and_then(|s| s.get("GenericClick"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            generic_beep_sound: audio_visual
+                .and_then(|s| s.get("GenericBeep"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
@@ -2546,8 +2493,10 @@ impl RuleSet {
     pub fn from_rules_layers(layers: &RulesLayerStack) -> Result<Self, RulesError> {
         let processed = layers.process()?;
         let content_hash = processed.content_hash();
+        let crate_rules = processed.crate_rules().clone();
         let ini = processed.into_projection_discarding_native_receipt();
-        let mut rules = Self::from_ini(&ini)?;
+        let mut rules = Self::from_projected_ini(&ini)?;
+        rules.crate_rules = crate_rules;
         rules.source_ini_hash = content_hash;
         Ok(rules)
     }
@@ -2555,7 +2504,8 @@ impl RuleSet {
     pub(crate) fn from_processed_rules(
         processed: &ProcessedRulesLayers,
     ) -> Result<Self, RulesError> {
-        let mut rules = Self::from_ini(processed.ini())?;
+        let mut rules = Self::from_projected_ini(processed.ini())?;
+        rules.crate_rules = processed.crate_rules().clone();
         rules.source_ini_hash = processed.content_hash();
         Ok(rules)
     }
@@ -2567,6 +2517,10 @@ impl RuleSet {
     /// are logged as warnings but don't cause errors — RA2's rules.ini
     /// sometimes references sections that don't exist.
     pub fn from_ini(ini: &IniFile) -> Result<Self, RulesError> {
+        Self::from_rules_layers(&RulesLayerStack::new(ini.clone()))
+    }
+
+    fn from_projected_ini(ini: &IniFile) -> Result<Self, RulesError> {
         let mut object_list: Vec<ObjectType> = Vec::new();
         let mut object_index: HashMap<String, TypeHandle> = HashMap::new();
         let mut object_category_index: HashMap<(ObjectCategory, String), TypeHandle> =
@@ -2653,7 +2607,7 @@ impl RuleSet {
         let terrain_rules: TerrainRules = TerrainRules::from_ini(ini);
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
-        let crate_rules: CrateRules = CrateRules::from_ini(ini);
+        let crate_rules = CrateRules::default();
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
@@ -4903,8 +4857,12 @@ MutateWarhead=MyMutate\n\
         assert!(!rules.harvester_can_dock_at("modharv", "GAREFN"));
     }
 
+    /// `BuildingTypeClass::ReadINI @ 0x0045FE50` reads `FreeUnit` through
+    /// `UnitTypeClass::Find_Or_Allocate`, so an unregistered name constructs an
+    /// empty UnitType instead of being dropped (see
+    /// `RULES_PROCESS_NATIVE_ID_CONSTRUCTOR_CHRONOLOGY_REINVESTIGATION_GHIDRA_REPORT.md`).
     #[test]
-    fn refinery_free_unit_ignores_missing_target() {
+    fn refinery_free_unit_allocates_missing_target_like_native() {
         let ini = IniFile::from_str(
             "[InfantryTypes]\n\
              [VehicleTypes]\n\
@@ -4918,7 +4876,11 @@ MutateWarhead=MyMutate\n\
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
 
         assert!(rules.is_refinery_type("MODPROC"));
-        assert_eq!(rules.refinery_free_unit("MODPROC"), None);
+        assert_eq!(rules.refinery_free_unit("MODPROC"), Some("UNKNOWN"));
+        assert!(
+            rules.type_handle("UNKNOWN").is_some(),
+            "native Find_Or_Allocate constructs the referenced UnitType"
+        );
     }
 
     #[test]
@@ -5250,6 +5212,7 @@ FlightLevel=500
 [AudioVisual]
 GUIMainButtonSound=MainButtonClick
 GenericClick=GenericPress
+GenericBeep=GenericBeep
 GUICheckboxSound=CheckboxTick
 GUIComboOpenSound=ComboOpen
 GUIComboCloseSound=ComboClose
@@ -5261,6 +5224,7 @@ GUIComboCloseSound=ComboClose
             Some("MainButtonClick")
         );
         assert_eq!(general.generic_click_sound.as_deref(), Some("GenericPress"));
+        assert_eq!(general.generic_beep_sound.as_deref(), Some("GenericBeep"));
         assert_eq!(general.gui_checkbox_sound.as_deref(), Some("CheckboxTick"));
         assert_eq!(general.gui_combo_open_sound.as_deref(), Some("ComboOpen"));
         assert_eq!(general.gui_combo_close_sound.as_deref(), Some("ComboClose"));
@@ -5273,6 +5237,7 @@ GUIComboCloseSound=ComboClose
             "[AudioVisual]\n",
             "ChuteSound=  ParachuteDrop  \n",
             "GenericClick=  MenuClick  \n",
+            "GenericBeep=   \n",
             "GUICheckboxSound=\n",
             "GUIComboOpenSound=   \n",
             "GUIComboCloseSound=MenuACBClose\n",
@@ -5281,6 +5246,7 @@ GUIComboCloseSound=ComboClose
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.chute_sound.as_deref(), Some("ParachuteDrop"));
         assert_eq!(general.generic_click_sound.as_deref(), Some("MenuClick"));
+        assert!(general.generic_beep_sound.is_none());
         assert!(general.gui_checkbox_sound.is_none());
         assert!(general.gui_combo_open_sound.is_none());
         assert_eq!(

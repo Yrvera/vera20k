@@ -16,14 +16,14 @@
 //! - rules/ does NOT depend on: sim/, render/, ui/, sidebar/, audio/, net/
 
 pub mod animation_sequence;
-pub mod overlay_types;
 pub mod art_data;
 pub mod bridge_warheads;
 pub mod color_add;
 pub mod color_scheme;
 pub mod combat_damage;
-pub mod error;
+pub mod crate_rules;
 pub mod effect_asset_catalog;
+pub mod error;
 pub mod flh;
 pub mod foundation;
 pub mod house_colors;
@@ -36,6 +36,7 @@ pub mod locomotor_type;
 pub mod missile_spawn;
 pub mod mission_data;
 pub mod object_type;
+pub mod overlay_types;
 pub mod particle_system_type;
 pub mod particle_type;
 pub(crate) mod process_owner;

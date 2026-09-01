@@ -12,7 +12,8 @@ pub use crate::rules::overlay_types::{
     OverlayTypeFlags, OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
 };
 pub(crate) use crate::rules::overlay_types::{
-    clears_tiberium_on_slope, retained_overlay_land, uses_early_recalc_land_branch,
+    clears_tiberium_on_slope, native_mark_overlay_data, retained_overlay_land,
+    uses_early_recalc_land_branch,
 };
 
 /// Check if an overlay index is one of the four high-bridge map-load anchors
