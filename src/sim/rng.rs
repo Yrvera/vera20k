@@ -224,6 +224,33 @@ impl SimRng {
         lo + scaled
     }
 
+    /// Signed form of `Random__RandomRanged @ 0x0065C7E0`. The native compares
+    /// its two `int` bounds signed, swaps reversed bounds, and rejection-samples
+    /// the masked span exactly like [`Self::next_range_u32_inclusive`]; a rules
+    /// value can make `high` negative (`OreTwinkleChance - 1` with chance `<= 0`),
+    /// which the unsigned form would misread as a huge span.
+    pub fn next_range_i32_inclusive(&mut self, low: i32, high: i32) -> i32 {
+        let (lo, hi) = if low <= high {
+            (low, high)
+        } else {
+            (high, low)
+        };
+        if lo == hi {
+            return lo;
+        }
+        let span = hi.wrapping_sub(lo) as u32;
+        if span >= 0x7FFF_FFFF {
+            return lo.wrapping_add(i32::MIN);
+        }
+        let mask = u32::MAX >> span.leading_zeros();
+        loop {
+            let sample = self.next_u32() & mask;
+            if sample <= span {
+                return lo.wrapping_add(sample as i32);
+            }
+        }
+    }
+
     /// Random integer in `[low, high]` inclusive on both ends.
     /// Sorts reversed bounds and consumes no draw when the bounds are equal.
     /// Mirrors binary `Random__RandomRanged(low, high)` for ordinary spans.
@@ -425,6 +452,33 @@ mod tests {
         assert_eq!(rng.next_raw_abs_modulo(0), 0);
         assert_eq!(rng.next_raw_modulo_signed(0), 0);
         assert_eq!(rng.state(), before);
+    }
+
+    #[test]
+    fn signed_random_ranged_matches_unsigned_form_and_swaps_negative_bounds() {
+        let mut signed = SimRng::new(0x5EED_0001);
+        let mut unsigned = SimRng::new(0x5EED_0001);
+        for _ in 0..64 {
+            assert_eq!(
+                signed.next_range_i32_inclusive(0, 29) as u32,
+                unsigned.next_range_u32_inclusive(0, 29)
+            );
+        }
+        assert_eq!(signed.state(), unsigned.state());
+
+        // `RandomRanged(0, -1)` swaps to `(-1, 0)`: one masked draw, result in {-1, 0}.
+        let mut swapped = SimRng::new(0x5EED_0002);
+        let mut reference = SimRng::new(0x5EED_0002);
+        let value = swapped.next_range_i32_inclusive(0, -1);
+        let expected = -1 + (reference.next_u32() & 1) as i32;
+        assert_eq!(value, expected);
+        assert_eq!(swapped.state(), reference.state());
+
+        // Equal bounds consume nothing.
+        let mut equal = SimRng::new(0x5EED_0003);
+        let before = equal.state();
+        assert_eq!(equal.next_range_i32_inclusive(0, 0), 0);
+        assert_eq!(equal.state(), before);
     }
 
     #[test]

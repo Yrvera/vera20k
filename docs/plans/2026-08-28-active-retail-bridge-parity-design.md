@@ -1043,19 +1043,41 @@ Recorded open items, each with its native reading and owner. None is closed by P
   `Rate=450`) draws nothing at construction. Slice B models the particle-system native-ID spend, the
   per-resource-cell Scenario draws in `CellIterator` order, and the zero-roll Anim construction with
   its native ID (`src/sim/ore_twinkle.rs`, `src/sim/scenario_post_map.rs`, rules
-  `GeneralRules::{ore_twinkle, ore_twinkle_chance}`); it runs at the end of
-  `finalize_scenario_post_map`, after the modeled Post_Map_Init credit/crate/alliance work, for both
-  skirmish and generic fresh loads. Recorded, not modeled: the ParticleSystem object itself
-  (no sim consumer proved), the FillSilos loop (scenario-flag-conditional, not modeled in Rust at
-  all), the `+0x4E0` per-Building call (player-owned prebuilt Buildings only; kind switch on
-  `BuildingType+0xEB8`, UNCHECKED), the tag-attach pass (trigger system), and the campaign view
-  setup.
+  `GeneralRules::{ore_twinkle, ore_twinkle_chance}`); the twinkle draws run at the end of
+  `finalize_scenario_post_map`, after the modeled Post_Map_Init credit/crate/alliance work, for
+  skirmish and generic fresh loads. The particle-system ID position differs by ingress: an authored
+  load runs `FUN_00684C30` once (`Read_Scenario_INI @ 0x00686730` -> `Full_Init` with `XOR DL,DL`
+  at `0x0068683A`), so the spend sits in the post-map pass; a generated launch first runs
+  `RandomMapGenerator::InitMapFromSyntheticINI @ 0x00599650` (launch branch `0x00599A3A..
+  0x00599A5B`: `Full_Init` with DL=1, whose `Clear_Scene` nulls `DAT_00A8ED78`, then `FUN_00684C30`),
+  which constructs the object before any generator constructor, and the post-`Post_Map_Init` call
+  finds it constructed and spends nothing. Rust mirrors both through
+  `Simulation::construct_post_load_particle_system_id` (generated arm of `load_map_from_initial`
+  before the construction-trace replay; post-map pass otherwise) and the
+  `post_load_particle_system_constructed` flag. `HideIfNoOre` (`AnimType+0x359`) now has its
+  `AnimClass::AI @ 0x00423AC0` consumer: after the trailer block and before the first-AI guard,
+  `AnimClass+0x19D` is rewritten every tick from the cell's `Get_Tiberium_Value`, so twinkles hide on
+  harvested cells and reappear on regrowth (`Simulation::visit_anim`, draw-only suppression).
+  `RandomRanged` bounds for `OreTwinkleChance <= 0` follow the native signed compare/swap
+  (`SimRng::next_range_i32_inclusive`): chance 0 draws once over `{-1, 0}`, chance 1 draws nothing
+  and spawns on every resource cell. Recorded, not modeled: the ParticleSystem object itself (no sim
+  consumer proved), the FillSilos loop (scenario-flag-conditional, not modeled in Rust at all), the
+  `+0x4E0` per-Building call (player-owned prebuilt Buildings only; kind switch on
+  `BuildingType+0xEB8`, inert for a skirmish player at load), the tag-attach pass (trigger system),
+  the campaign view setup, `MapClass::ParanoidUnrevealAll(1,0)` (re-shrouds load-time reveals
+  before tick 0; owner: the shroud system; magnitude UNCHECKED), the constructor's `ZAdjust`
+  substitution (`AnimClass @ 0x00421EA0` stores `AnimType+0x348` when the argument is 0; Rust's
+  load-anim path stores 0; TWNK1 type default UNCHECKED), and a map-INI `OreTwinkle=` with an
+  empty value (native keeps the rules pointer through the zero-length `ReadString` return; Rust reads
+  the merged INI, so shadowing semantics are UNCHECKED; no retail map sets the key).
 - **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6) — IMPLEMENTED
   by slice B.** The final authored sweep now calls the `Get_Tiberium_Value @ 0x00485020` model
   (`TiberiumClass.Value * (OverlayData + 1)`, signed wrapping) for every real cell before that cell's
   Recalc and stores the wrapping total in `Simulation::authored_tiberium_value_total`
-  (`MapClass+0x134` / `0x0087F91C` analogue, `serde(skip)`, `None` on a new Simulation and for
-  generated loads). No active reader is proved and none is invented.
+  (`MapClass+0x134` / `0x0087F91C` analogue, `serde(skip)`, `None` on a new Simulation). A
+  generated launch natively stores the synthetic `Full_Init`'s own `InitCellAttributes(0)` result
+  on the pre-generation map (zero), which Rust leaves `None`; the generator's later argument-1 call
+  is not stored. No active reader is proved and none is invented.
 - **Ancillary `InitCellAttributes` slot seam.** The raw `0x300000` clear pass, per-cell `+0x30 = 0`,
   `FUN_00483E30(0,0x10000,0,1000,1000,1000)` light routing, latch clear, and AttachedTag `0x19`/`0x1A`
   restamp are not exposed as ordered slots by the final sweep. Owners remain the generic trigger

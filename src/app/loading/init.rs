@@ -2322,6 +2322,15 @@ pub(crate) fn load_map_from_initial(
     staged_simulation
         .construct_native_map_tubes(&map_data.ini)
         .map_err(|error| anyhow::anyhow!("failed native [Tubes] construction: {error}"))?;
+    if materialization == FreshMapMaterialization::AcceptedGenerated {
+        // `RandomMapGenerator::InitMapFromSyntheticINI @ 0x00599650` (launch
+        // branch `0x00599A3A..0x00599A5B`) runs `Full_Init` with DL=1, whose
+        // `Clear_Scene` nulls `DAT_00A8ED78`, then calls the post-load setup
+        // `FUN_00684C30`, which constructs the GasCloudSys ParticleSystem before
+        // any generator constructor. The later post-`Post_Map_Init` setup finds
+        // it constructed and spends nothing.
+        staged_simulation.construct_post_load_particle_system_id();
+    }
     // Launch-time `.SED` generation already chose all geometry. Replay only
     // its Techno constructor effects now, after the Full-Init stock-offline
     // prefix and terrain Fill, on the one Scenario owner later moved into Simulation.

@@ -496,6 +496,130 @@ mod tests {
         assert_eq!(anims, expected_anims);
     }
 
+    /// A generated launch spends the particle-system ID from the synthetic
+    /// `Full_Init`'s setup call (`0x00599A5B`); the post-`Post_Map_Init` setup
+    /// then finds `DAT_00A8ED78` set and only draws twinkles.
+    #[test]
+    fn generated_launch_particle_id_precedes_constructors_and_post_map_skips_it() {
+        use crate::sim::native_identity::build_noncampaign_fresh_id_prefix;
+
+        let (rules, overlays) = twinkle_rules_and_overlays();
+        let mut sim = Simulation::with_seed(0x0037_7EA7);
+        sim.session.map_width = MAP_SIZE;
+        sim.session.map_height = MAP_SIZE;
+        sim.resolved_terrain = Some(flat_terrain());
+        let mut overlay_grid = OverlayGrid::new(MAP_SIZE, MAP_SIZE);
+        overlay_grid.place_overlay(7, 7, 0, 3);
+        sim.overlay_grid = Some(overlay_grid);
+        sim.native_unique_ids =
+            Some(build_noncampaign_fresh_id_prefix(0, 0, 0, 0, 0, 0, 1, 1).into_cursor());
+        let native_before = sim
+            .native_unique_ids
+            .as_ref()
+            .expect("native cursor")
+            .current_raw();
+
+        assert!(sim.construct_post_load_particle_system_id());
+        assert!(
+            !sim.construct_post_load_particle_system_id(),
+            "the object persists until the next Clear_Scene"
+        );
+        let after_synthetic_setup = sim
+            .native_unique_ids
+            .as_ref()
+            .expect("native cursor")
+            .current_raw();
+        assert_eq!(after_synthetic_setup, native_before.wrapping_add(1));
+        let generated_building_id = sim.next_native_load_id().expect("generator constructor");
+        assert_eq!(generated_building_id, native_before.wrapping_add(2) as i32);
+
+        let roster = HouseRoster::default();
+        let output =
+            sim.finalize_scenario_post_map(generic_post_map_input(&rules, &overlays, &roster));
+
+        assert!(!output.ore_twinkle.particle_system_id_consumed);
+        assert_eq!(output.ore_twinkle.resource_cells_rolled, 1);
+        let spawned_ids: Vec<i32> = sim
+            .substrate
+            .anims
+            .iter()
+            .map(|(_, anim)| anim.native_unique_id)
+            .collect();
+        assert_eq!(spawned_ids.len(), output.ore_twinkle.spawned as usize);
+        for (index, id) in spawned_ids.iter().enumerate() {
+            assert_eq!(*id, native_before.wrapping_add(3 + index as u32) as i32);
+        }
+    }
+
+    /// `AnimClass::AI @ 0x00423AC0` rewrites `AnimClass+0x19D` every tick for
+    /// `HideIfNoOre` types from the cell's `Get_Tiberium_Value`.
+    #[test]
+    fn ore_twinkle_hides_while_its_cell_has_no_ore_and_reappears_with_it() {
+        let (rules, overlays) = twinkle_rules_and_overlays();
+        let mut sim = Simulation::with_seed(0x0037_7EA8);
+        sim.session.map_width = MAP_SIZE;
+        sim.session.map_height = MAP_SIZE;
+        sim.resolved_terrain = Some(flat_terrain());
+        let mut overlay_grid = OverlayGrid::new(MAP_SIZE, MAP_SIZE);
+        overlay_grid.place_overlay(7, 7, 0, 3);
+        sim.overlay_grid = Some(overlay_grid);
+        let type_id = sim.interner.intern("TWNK1");
+        let descriptor = crate::sim::components::AnimClassSpawnDescriptor::new(
+            type_id,
+            7,
+            7,
+            crate::util::fixed_math::SimFixed::from_num(128),
+            crate::util::fixed_math::SimFixed::from_num(128),
+            0,
+        );
+        let id = sim
+            .spawn_load_anim_at_world(
+                &rules.art_registry,
+                descriptor,
+                crate::sim::anim_class::AnimWorldCoord {
+                    x: 7 * 256 + 128,
+                    y: 7 * 256 + 128,
+                    z: 0,
+                },
+                1,
+            )
+            .expect("TWNK1 spawns");
+        let hidden = |sim: &Simulation| {
+            sim.substrate
+                .anims
+                .get(id)
+                .expect("anim")
+                .draw_runtime
+                .hidden
+        };
+
+        assert!(!hidden(&sim));
+        sim.visit_anim(id, &rules, Some(&overlays));
+        assert!(!hidden(&sim), "ore under the twinkle keeps it visible");
+
+        *sim.overlay_grid.as_mut().unwrap().cell_mut(7, 7) = Default::default();
+        sim.visit_anim(id, &rules, Some(&overlays));
+        assert!(
+            hidden(&sim),
+            "harvested ore hides the twinkle within one AI visit"
+        );
+        assert!(
+            sim.substrate.anims.get(id).is_some(),
+            "HideIfNoOre suppresses drawing only; the anim keeps running"
+        );
+
+        sim.overlay_grid.as_mut().unwrap().place_overlay(7, 7, 0, 1);
+        sim.visit_anim(id, &rules, Some(&overlays));
+        assert!(!hidden(&sim), "regrown ore shows it again");
+
+        *sim.overlay_grid.as_mut().unwrap().cell_mut(7, 7) = Default::default();
+        sim.visit_anim(id, &rules, None);
+        assert!(
+            !hidden(&sim),
+            "registry-less fixture visits leave the flag alone"
+        );
+    }
+
     #[test]
     fn post_load_ore_twinkle_pass_is_inert_without_the_rules_anim() {
         let (rules, overlays) = post_map_rules_and_overlays();

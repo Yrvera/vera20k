@@ -62,12 +62,29 @@ pub(crate) struct OreTwinkleReceipt {
     /// Zero rolls whose Anim construction failed (missing art); native has no
     /// such failure, so production logs each one.
     pub(crate) spawn_failures: u32,
-    /// The GasCloudSys `ParticleSystemClass` native ID was consumed before
-    /// the pass (requires the fresh-load cursor).
+    /// This pass consumed the GasCloudSys `ParticleSystemClass` native ID
+    /// (false when a generated launch's synthetic setup already did, or when
+    /// no fresh-load cursor exists).
     pub(crate) particle_system_id_consumed: bool,
 }
 
 impl Simulation {
+    /// Spend the GasCloudSys `ParticleSystemClass @ 0x0062DC50` native ID the
+    /// first time a post-load setup runs after `Clear_Scene` nulled
+    /// `DAT_00A8ED78`. Returns whether this call spent it. The object itself
+    /// (leptons `(0xA80, 0xA80, 0)`, no RNG in its constructor) is not modeled.
+    pub(crate) fn construct_post_load_particle_system_id(&mut self) -> bool {
+        if self.post_load_particle_system_constructed {
+            return false;
+        }
+        let Some(cursor) = self.native_unique_ids.as_mut() else {
+            return false;
+        };
+        let _ = cursor.next_id();
+        self.post_load_particle_system_constructed = true;
+        true
+    }
+
     /// Tail of the native post-load setup `FUN_00684C30` (called from
     /// `ScenarioClass::Read_Scenario @ 0x00684620` after `Full_Init`).
     ///
@@ -92,8 +109,10 @@ impl Simulation {
     /// RandomRate draw and calls `Middle` immediately for delay 0.
     ///
     /// The ParticleSystem object itself is not modeled; only its counter
-    /// effect is. `FUN_0055AF40/50` after the pass write two globals with no
-    /// simulation consumer.
+    /// effect is, through `construct_post_load_particle_system_id` (a generated
+    /// launch spends it earlier, from the synthetic `Full_Init`'s own setup
+    /// call at `0x00599A5B`). `FUN_0055AF40/50` after the pass write two globals
+    /// with no simulation consumer.
     pub(crate) fn run_post_load_ore_twinkle_pass(
         &mut self,
         rules: &RuleSet,
@@ -102,10 +121,9 @@ impl Simulation {
         map_height: u16,
     ) -> OreTwinkleReceipt {
         let mut receipt = OreTwinkleReceipt::default();
-        if let Some(cursor) = self.native_unique_ids.as_mut() {
-            let _ = cursor.next_id();
-            receipt.particle_system_id_consumed = true;
-        }
+        // `DAT_00A8ED78 == 0` gate at `0x00684FF0`: a generated launch already
+        // constructed the object inside the synthetic `Full_Init`'s setup.
+        receipt.particle_system_id_consumed = self.construct_post_load_particle_system_id();
         let Some(anim_name) = rules.general.ore_twinkle.as_deref() else {
             return receipt;
         };
@@ -138,12 +156,12 @@ impl Simulation {
                 continue;
             }
             receipt.resource_cells_rolled += 1;
-            // `chance <= 0` is custom data whose native bounds handling is
-            // UNCHECKED; the shared helper's reversed-bounds rule is reused
-            // rather than inventing a gate.
+            // Native compares the int bounds signed and swaps reversed ones:
+            // chance 0 draws once over {-1, 0}; chance 1 has equal bounds,
+            // draws nothing, and spawns on every resource cell (retail is 30).
             let roll = self
                 .scenario_rng
-                .next_range_u32_inclusive(0, chance.wrapping_sub(1) as u32);
+                .next_range_i32_inclusive(0, chance.wrapping_sub(1));
             if roll != 0 {
                 continue;
             }

@@ -640,15 +640,26 @@ the `Full_Init` store at `0x0087F91C`.
 Required Rust (delivered on `feature/bridge-post-load-tail`):
 - `GeneralRules::ore_twinkle: Option<String>` and `ore_twinkle_chance: i32` with the verified
   reader sections and defaults;
-- `Simulation::run_post_load_ore_twinkle_pass` at the end of `finalize_scenario_post_map`: one
-  native ID for the GasCloudSys `ParticleSystemClass` on every fresh load, then per real cell in
-  `CellIterator` order one `RandomRanged(0, chance-1)` Scenario draw when `Get_Tiberium_Value` is
-  nonzero, and on a zero roll one `AnimClass` with a fresh native ID at the cell centre and ground
-  height, `(delay 0, loop 1, flags 0x600, ZAdjust 0)`, registered before any `RandomRate` draw;
+- `Simulation::run_post_load_ore_twinkle_pass` at the end of `finalize_scenario_post_map`: the
+  GasCloudSys `ParticleSystemClass` native ID when not yet constructed since `Clear_Scene`
+  (authored loads spend it here; a generated launch spends it earlier through
+  `construct_post_load_particle_system_id` in the generated arm before the construction-trace
+  replay, mirroring the synthetic `Full_Init` setup at `0x00599A5B`), then per real cell in
+  `CellIterator` order one signed `RandomRanged(0, chance-1)` Scenario draw when
+  `Get_Tiberium_Value` is nonzero, and on a zero roll one `AnimClass` with a fresh native ID at the
+  cell centre and ground height, `(delay 0, loop 1, flags 0x600, ZAdjust 0)`, registered before any
+  `RandomRate` draw;
+- `AnimClass::AI @ 0x00423AC0` `HideIfNoOre` consumer in `Simulation::visit_anim`: after the
+  trailer block and before the first-AI guard, `AnimClass+0x19D` (`AnimDrawRuntime::hidden`) is
+  rewritten every tick from the cell's `Get_Tiberium_Value` (dummy overlay pair for an unallocated
+  coordinate);
 - `Simulation::authored_tiberium_value_total` written by the authored final sweep from the exact
   `Get_Tiberium_Value` model with wrapping signed-32 accumulation.
 
 Acceptance: `rules::ruleset::tests::ore_twinkle_keys_follow_the_native_reader_sections`,
+`sim::rng::tests::signed_random_ranged_matches_unsigned_form_and_swaps_negative_bounds`,
+`sim::scenario_post_map::tests::generated_launch_particle_id_precedes_constructors_and_post_map_skips_it`,
+`sim::scenario_post_map::tests::ore_twinkle_hides_while_its_cell_has_no_ore_and_reappears_with_it`,
 `sim::ore_twinkle::tests::get_tiberium_value_is_zero_for_non_resources_and_wraps_signed_products`,
 `sim::scenario_post_map::tests::post_load_ore_twinkle_pass_rolls_each_resource_cell_in_native_order`
 (native order, Scenario cursor equality against an independent replay, unchanged Main RNG, native-ID
@@ -658,8 +669,10 @@ stored aggregate.
 
 Recorded residuals from this corridor: the ParticleSystem object itself, the `[Basic] FillSilos`
 credits-to-tiberium loop, the per-Building vtable `+0x4E0` call, the TagType attach pass, the
-campaign-only view setup, `FUN_004F42F0`/sidebar presentation, and `FUN_00586BF0` bridge-record gap
-restamping (routed to transaction 4/13).
+campaign-only view setup, `FUN_004F42F0`/sidebar presentation, `MapClass::ParanoidUnrevealAll`
+(shroud owner), the constructor `ZAdjust`/`AnimType+0x348` substitution on the load-anim path,
+map-INI empty-value `OreTwinkle=` shadowing, and `FUN_00586BF0` bridge-record gap restamping (routed
+to transaction 4/13).
 
 ## Known Non-Requirements
 
