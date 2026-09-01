@@ -1584,6 +1584,9 @@ fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
         Some(0x3fff),
         "computed east is 16,383 on the active-retail 65,534 scale"
     );
+    assert_eq!(drive.target_speed_fraction, SIM_ZERO);
+    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+    assert_eq!(drive.owner_current_speed, 0);
 }
 
 #[test]
@@ -1655,6 +1658,15 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
         drive.occupation_head_to.map(|head| (head.rx, head.ry)),
         Some((3, 3)),
     );
+    {
+        let drive = entities
+            .get_mut(1)
+            .and_then(|entity| entity.drive_locomotion.as_mut())
+            .expect("drive state");
+        drive.target_speed_fraction = SimFixed::lit("0.4");
+        drive.current_speed_fraction = SimFixed::lit("0.25");
+        drive.owner_current_speed = 7;
+    }
 
     // Re-order behind the body while the curve is in flight. Pre-fix this
     // cleared/replaced the curve; the curve must survive untouched and the new
@@ -1697,6 +1709,9 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
     );
     assert_eq!(drive.path.reference_cell, Some((3, 3)));
     assert_eq!(drive.path.cursor, 0);
+    assert_eq!(drive.target_speed_fraction, SimFixed::lit("0.4"));
+    assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.25"));
+    assert_eq!(drive.owner_current_speed, 7);
     assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 3)));
 }
 

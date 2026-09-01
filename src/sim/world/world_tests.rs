@@ -5552,6 +5552,109 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
     );
 }
 
+fn drive_fraction_writer_rules(accelerates: bool) -> RuleSet {
+    let ini = IniFile::from_str(&format!(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=DRIVE\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [DRIVE]\n\
+         Strength=300\n\
+         Speed=6\n\
+         Locomotor={{4A582741-9839-11d1-B709-00A024DDAFD1}}\n\
+         MovementZone=Normal\n\
+         Accelerates={}\n\
+         AccelerationFactor=0.03\n\
+         DeaccelerationFactor=0.002\n",
+        if accelerates { "yes" } else { "no" }
+    ));
+    RuleSet::from_ini(&ini).expect("Drive fraction writer rules")
+}
+
+#[test]
+fn phase14_drive_move_command_preserves_fractions_until_scheduled_visit() {
+    let heights = empty_heights();
+    let grid = PathGrid::new(16, 16);
+
+    for accelerates in [false, true] {
+        let rules = drive_fraction_writer_rules(accelerates);
+        let mut sim = Simulation::new();
+        let entity_id = sim
+            .spawn_object("DRIVE", "Americans", 2, 3, 64, &rules, &heights)
+            .expect("spawn Drive vehicle");
+        {
+            let entity = sim
+                .substrate
+                .entities
+                .get_mut(entity_id)
+                .expect("Drive vehicle remains live");
+            assert_eq!(
+                entity.locomotor.as_ref().map(|locomotor| locomotor.kind),
+                Some(LocomotorKind::Drive),
+            );
+            let drive = entity
+                .drive_locomotion
+                .get_or_insert_with(DriveLocomotionRuntime::default);
+            drive.target_speed_fraction = SimFixed::lit("0.4");
+            drive.current_speed_fraction = SimFixed::lit("0.25");
+            drive.owner_current_speed = 7;
+        }
+
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::Move {
+                entity_id,
+                target_rx: 7,
+                target_ry: 3,
+                queue: false,
+                group_id: None,
+            },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+
+        let movement_speed = {
+            let entity = sim
+                .substrate
+                .entities
+                .get(entity_id)
+                .expect("Drive vehicle remains live");
+            let drive = entity.drive_locomotion.as_ref().expect("drive state");
+            assert_eq!(drive.target_speed_fraction, SimFixed::lit("0.4"));
+            assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.25"));
+            assert_eq!(drive.owner_current_speed, 7);
+            let movement = entity
+                .movement_target
+                .as_ref()
+                .expect("Move command installs movement target");
+            assert_eq!(movement.slowdown_distance, SimFixed::from_num(500));
+            movement.speed
+        };
+
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+
+        let entity = sim
+            .substrate
+            .entities
+            .get(entity_id)
+            .expect("Drive vehicle remains live");
+        let drive = entity.drive_locomotion.as_ref().expect("drive state");
+        let expected_current = if accelerates {
+            SimFixed::lit("0.28")
+        } else {
+            SIM_ONE
+        };
+        assert_eq!(drive.target_speed_fraction, SIM_ONE);
+        assert_eq!(drive.current_speed_fraction, expected_current);
+        let raw_stage = (movement_speed / SimFixed::from_num(15)).to_num::<i32>();
+        let expected_owner =
+            (SimFixed::from_num(raw_stage) * expected_current).to_num::<i32>();
+        assert_eq!(drive.owner_current_speed, expected_owner);
+    }
+}
+
 #[test]
 fn test_execute_tick_delay_blocks_early_execution() {
     let mut sim: Simulation = Simulation::new();
