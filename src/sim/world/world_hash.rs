@@ -211,6 +211,33 @@ mod shared_dummy_bridge_hash_tests {
     }
 
     #[test]
+    fn gsi_04_07_hashes_live_dummy_overlay_identity_and_state() {
+        let sim = Simulation::new();
+        let dummy = sim.effective_shared_cell_dummy();
+        let clear_hash = sim.state_hash();
+        let v114_hash = sim.state_hash_without_wall_runtime_v115();
+
+        dummy.write_overlay_identity(0x02);
+        let identity_hash = sim.state_hash();
+        assert_ne!(
+            clear_hash, identity_hash,
+            "dummy OverlayType identity changes later wall lookup behavior"
+        );
+
+        dummy.write_overlay_state(0x2a);
+        assert_ne!(
+            identity_hash,
+            sim.state_hash(),
+            "dummy OverlayData damage/connectivity is independent hash authority"
+        );
+        assert_eq!(
+            v114_hash,
+            sim.state_hash_without_wall_runtime_v115(),
+            "the v114 provenance schema excludes both dummy overlay fields"
+        );
+    }
+
+    #[test]
     fn gsi_04_03_hashes_dummy_level_slope_without_retained_projectile() {
         let mut sim = Simulation::new();
         sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(
@@ -424,7 +451,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, true,
+            true, true, true, true, true, true, true,
         )
     }
 
@@ -436,7 +463,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -448,7 +475,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -458,7 +485,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
         )
     }
 
@@ -469,7 +496,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
         )
     }
 
@@ -480,7 +507,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false, false, false,
+            true, false, false, false, false, false, false,
         )
     }
 
@@ -489,7 +516,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false, false, false,
+            true, true, false, false, false, false, false,
         )
     }
 
@@ -498,7 +525,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false, false, false,
+            true, true, true, false, false, false, false,
         )
     }
 
@@ -508,7 +535,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false, false,
+            true, true, true, true, false, false, false,
         )
     }
 
@@ -517,7 +544,17 @@ impl Simulation {
     pub(crate) fn state_hash_without_crate_authority_v114(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true, false,
+            true, true, true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v115 retained wall-count and
+    /// shared-dummy overlay folds.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_wall_runtime_v115(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, false,
         )
     }
 
@@ -543,6 +580,7 @@ impl Simulation {
         include_house_deploy_latches_v112: bool,
         include_house_update_activation_v113: bool,
         include_crate_authority_v114: bool,
+        include_wall_runtime_v115: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -613,7 +651,7 @@ impl Simulation {
             b"dynamic-terrain-cells-v1".hash(&mut hasher);
             self.dynamic_terrain_cells.hash(&mut hasher);
         }
-        self.hash_overlay_grid(&mut hasher);
+        self.hash_overlay_grid(&mut hasher, include_wall_runtime_v115);
         if include_crate_authority_v114 {
             self.hash_crate_authority(&mut hasher);
         }
@@ -621,7 +659,9 @@ impl Simulation {
         self.hash_radiation(&mut hasher);
         if include_master_frame_v43 {
             self.hash_projectiles(&mut hasher);
-            let shared_dummy = self.effective_shared_cell_dummy().snapshot();
+            let shared_dummy_handle = self.effective_shared_cell_dummy();
+            let shared_dummy = shared_dummy_handle.snapshot();
+            let shared_dummy_overlay = shared_dummy_handle.overlay_identity_state();
             // Unlike the requested coordinate, native `+0x140 & 0x1180`
             // survives ordinary lookups and changes later bridge/FNPC/target
             // behavior even when no Bullet currently retains the dummy.
@@ -633,6 +673,14 @@ impl Simulation {
             } else {
                 b"shared-cell-dummy-bridge-v3".hash(&mut hasher);
                 shared_dummy.bridge_flags_0x1180.hash(&mut hasher);
+            }
+            // CellClass+0x44/+0x11E can be mutated through true-dummy wall
+            // cleanup and later changes lookup-dependent wall behavior. Native
+            // Resize reconstructs the process object, so this is synchronized
+            // live-state authority rather than Scenario payload authority.
+            if include_wall_runtime_v115 {
+                b"shared-cell-dummy-overlay-v1".hash(&mut hasher);
+                shared_dummy_overlay.hash(&mut hasher);
             }
             if self.projectiles.iter().any(|(_, projectile)| {
                 projectile.target == crate::sim::projectile::ProjectileTarget::DummyCell
@@ -1129,7 +1177,7 @@ impl Simulation {
         }
     }
 
-    fn hash_overlay_grid(&self, hasher: &mut impl Hasher) {
+    fn hash_overlay_grid(&self, hasher: &mut impl Hasher, include_wall_runtime_v115: bool) {
         let Some(overlay_grid) = &self.overlay_grid else {
             0u8.hash(hasher);
             return;
@@ -1145,6 +1193,19 @@ impl Simulation {
                 cell.overlay_id.hash(hasher);
                 cell.overlay_data.hash(hasher);
                 cell.wall_owner.hash(hasher);
+            }
+        }
+        if include_wall_runtime_v115 {
+            b"retained-wall-neighbor-counts-v1".hash(hasher);
+            match overlay_grid.retained_wall_neighbor_counts() {
+                None => 0u8.hash(hasher),
+                Some(counts) => {
+                    1u8.hash(hasher);
+                    counts.len().hash(hasher);
+                    for count in counts {
+                        count.hash(hasher);
+                    }
+                }
             }
         }
     }
@@ -2168,6 +2229,7 @@ mod raw_cell_occupation_hash_tests {
 #[cfg(test)]
 mod overlay_grid_hash_tests {
     use super::Simulation;
+    use crate::map::authored_overlay::FinalizedOverlayPayload;
     use crate::map::overlay::OverlayDataPack;
     use crate::sim::miner::{ResourceNode, ResourceType};
     use crate::sim::overlay_grid::OverlayGrid;
@@ -2198,6 +2260,64 @@ mod overlay_grid_hash_tests {
         assert!(a.iter_occupied().next().is_none());
         assert!(b.iter_occupied().next().is_none());
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn retained_wall_neighbor_plane_changes_hash_with_identical_final_cells() {
+        let cells = vec![(-1, 0), (1, 2), (-1, 0), (-1, 0)];
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        sim_a.overlay_grid = Some(OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(2, 2, cells.clone(), vec![0, 1, 0, 0]),
+        ));
+        sim_b.overlay_grid = Some(OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(2, 2, cells, vec![0, 2, 0, 0]),
+        ));
+
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(
+                    sim_a.overlay_grid.as_ref().expect("A").cell(x, y),
+                    sim_b.overlay_grid.as_ref().expect("B").cell(x, y)
+                );
+            }
+        }
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+        assert_eq!(
+            sim_a.state_hash_without_wall_runtime_v115(),
+            sim_b.state_hash_without_wall_runtime_v115(),
+            "the v114 provenance schema ended after final overlay-cell state"
+        );
+    }
+
+    #[test]
+    fn retained_wall_neighbor_authority_mode_changes_hash_even_when_zero() {
+        let mut legacy = Simulation::new();
+        legacy.overlay_grid = Some(OverlayGrid::new(2, 2));
+
+        let mut retained = Simulation::new();
+        retained.overlay_grid = Some(OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(2, 2, vec![(-1, 0); 4], vec![0; 4]),
+        ));
+
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(
+                    legacy.overlay_grid.as_ref().expect("legacy").cell(x, y),
+                    retained.overlay_grid.as_ref().expect("retained").cell(x, y)
+                );
+            }
+        }
+        assert_ne!(
+            legacy.state_hash(),
+            retained.state_hash(),
+            "None and Some(all-zero) select different future wall-count behavior"
+        );
+        assert_eq!(
+            legacy.state_hash_without_wall_runtime_v115(),
+            retained.state_hash_without_wall_runtime_v115(),
+            "retained authority mode begins with schema v115"
+        );
     }
 
     #[test]

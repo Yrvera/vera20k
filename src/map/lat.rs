@@ -252,14 +252,27 @@ fn apply_lat_cell(
 /// Runtime form of the LAT half for one CellClass. Native changes only the tile
 /// identity here; the owning caller decides whether/when RecalcAttributes runs.
 pub(crate) fn lat_fixed_tile(
-    mut tile: i32,
+    tile: i32,
     cardinal_tiles: [i32; 4],
     lat_config: &LatConfig,
+) -> i32 {
+    lat_fixed_tile_live(tile, lat_config, || cardinal_tiles)
+}
+
+/// Live-neighbor form of `CellClass__ApplyLAT_and_SlopeFixup @ 0x0047CA80`.
+/// Native checks each Rough/Sand/Green/Pave receiver guard before issuing that
+/// group's N/E/S/W `GetCell` calls, so the callback must not be evaluated for
+/// a group that does not own the current tile.
+pub(crate) fn lat_fixed_tile_live(
+    mut tile: i32,
+    lat_config: &LatConfig,
+    mut cardinal_tiles: impl FnMut() -> [i32; 4],
 ) -> i32 {
     for ground in &lat_config.grounds {
         if !ground.is_enabled() || !ground.contains(tile) {
             continue;
         }
+        let cardinal_tiles = cardinal_tiles();
         let mut mask = 0u8;
         for (bit, neighbor) in cardinal_tiles.into_iter().enumerate() {
             if !ground.contains(neighbor) && !ground.exempts(neighbor) {
@@ -288,6 +301,19 @@ pub(crate) fn slope_fixed_tile(
     cardinal_slopes: [u8; 4],
     config: SlopeFixupConfig,
 ) -> i32 {
+    slope_fixed_tile_live(tile, slope, config, |slot| cardinal_slopes[slot])
+}
+
+/// Live-neighbor slope half of
+/// `CellClass__ApplyLAT_and_SlopeFixup @ 0x0047CA80`.
+/// The ramp-range guard precedes every lookup, and slopes 1..=4 read only their
+/// verified ordered pair: W/E, N/S, E/W, or S/N respectively.
+pub(crate) fn slope_fixed_tile_live(
+    tile: i32,
+    slope: u8,
+    config: SlopeFixupConfig,
+    mut neighbor_slope: impl FnMut(usize) -> u8,
+) -> i32 {
     if !ramp_range_contains(tile, config.ramp_base, RAMP_BASE_LAST_OFFSET)
         && !ramp_range_contains(tile, config.ramp_smooth, RAMP_SMOOTH_LAST_OFFSET)
     {
@@ -302,7 +328,7 @@ pub(crate) fn slope_fixed_tile(
         _ => None,
     };
     let mask = neighbor_pair.map_or(0, |(first, second)| {
-        u8::from(cardinal_slopes[first] == 0) | (u8::from(cardinal_slopes[second] == 0) << 1)
+        u8::from(neighbor_slope(first) == 0) | (u8::from(neighbor_slope(second) == 0) << 1)
     });
 
     if mask != 0 {
@@ -813,5 +839,48 @@ RoughConnectTo=14
         );
         assert_eq!(two_sweeps[1].tile_index, 100);
         assert_eq!(slopes, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn live_lat_callback_runs_once_per_matching_group_and_never_for_a_nonmatch() {
+        let config = LatConfig {
+            grounds: vec![ground("First", 0, 10, &[]), ground("Second", 0, 30, &[])],
+        };
+        let mut calls = 0;
+        assert_eq!(
+            lat_fixed_tile_live(0, &config, || {
+                calls += 1;
+                [0; 4]
+            }),
+            0
+        );
+        assert_eq!(calls, 2);
+
+        assert_eq!(lat_fixed_tile_live(99, &config, || panic!("guarded lookup")), 99);
+    }
+
+    #[test]
+    fn live_slope_callback_uses_only_the_native_ordered_pair() {
+        let config = SlopeFixupConfig {
+            ramp_base: 100,
+            ramp_smooth: 500,
+        };
+        for (slope, expected) in [
+            (1, vec![3, 1]),
+            (2, vec![0, 2]),
+            (3, vec![1, 3]),
+            (4, vec![2, 0]),
+        ] {
+            let mut order = Vec::new();
+            slope_fixed_tile_live(100, slope, config, |slot| {
+                order.push(slot);
+                9
+            });
+            assert_eq!(order, expected, "slope {slope}");
+        }
+
+        for (tile, slope) in [(99, 1), (100, 0), (100, 5)] {
+            slope_fixed_tile_live(tile, slope, config, |_| panic!("guarded slope lookup"));
+        }
     }
 }

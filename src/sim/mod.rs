@@ -35,6 +35,7 @@ pub mod game_entity;
 pub mod intern;
 pub(crate) mod lifecycle_request;
 pub mod multiplayer_checksum;
+pub(crate) mod native_identity;
 pub mod rng;
 pub(crate) mod score;
 pub(crate) mod scenario_bootstrap;

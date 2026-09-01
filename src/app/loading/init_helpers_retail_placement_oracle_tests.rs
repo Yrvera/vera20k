@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
-use super::{load_art_ini, load_rules_with_merged_ini};
+use super::load_rules_with_merged_ini;
 use crate::assets::asset_manager::AssetManager;
 use crate::map::entities::EntityCategory;
 use crate::map::map_file::{self, MapFile};
@@ -270,10 +270,11 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
     let mut assets = AssetManager::new(&retail_dir).expect("open retail MIX archives");
     let theater =
         theater::load_theater(&mut assets, &map.header.theater).expect("load retail theater");
-    let (mut rules, rules_ini) = load_rules_with_merged_ini(&assets, None, Some(&map.ini))
-        .expect("load production merged rules")
-        .into_parts();
-    let (art, art_ini) = load_art_ini(&assets).expect("load production merged art");
+    let (mut rules, rules_ini, _native_type_construction_trace, art_ini) =
+        load_rules_with_merged_ini(&assets, None, Some(&map.ini))
+            .expect("load production merged rules")
+            .into_parts();
+    let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
     rules.merge_art_data(&art);
     let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
 

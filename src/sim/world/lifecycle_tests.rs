@@ -3679,7 +3679,7 @@ fn gsi_05_02_projectile(source_id: u64, fuse_frames: Option<u16>) -> ProjectileS
 }
 
 #[test]
-fn persistent_bullet_logic_slot_publishes_only_terminal_wall_dirty_visits() {
+fn persistent_bullet_logic_slot_publishes_native_wall_dirty_visits() {
     let ini = crate::rules::ini_parser::IniFile::from_str(
         "[InfantryTypes]\n\
          [VehicleTypes]\n\
@@ -3740,6 +3740,7 @@ fn persistent_bullet_logic_slot_publishes_only_terminal_wall_dirty_visits() {
     );
     assert!(partial.radar_terrain_dirty_cells.is_empty());
     assert_eq!(partial.radar_terrain_dirty_generation, 0);
+    assert_eq!(partial.tactical_dirty_cells, vec![(5, 5)]);
 
     let terminal = run(0x30);
     assert_eq!(
@@ -3759,17 +3760,44 @@ fn persistent_bullet_logic_slot_publishes_only_terminal_wall_dirty_visits() {
             (6, 4),
             (4, 4),
             (5, 4),
-            (7, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
             (6, 6),
+            (5, 7),
+            (5, 6),
+            (7, 5),
             (6, 5),
+        ],
+    );
+    assert_eq!(terminal.radar_terrain_dirty_generation, 13);
+    assert_eq!(
+        terminal.tactical_dirty_cells,
+        vec![
+            (5, 5),
+            (5, 3),
+            (6, 4),
+            (5, 5),
+            (4, 4),
+            (5, 4),
+            (4, 4),
+            (5, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
+            (5, 5),
+            (6, 6),
             (5, 7),
             (4, 6),
             (5, 6),
-            (3, 5),
-            (4, 5),
+            (6, 4),
+            (7, 5),
+            (6, 6),
+            (5, 5),
+            (6, 5),
         ],
+        "tactical dirties retain every native call, including repeated cleanup cells"
     );
-    assert_eq!(terminal.radar_terrain_dirty_generation, 1);
 }
 
 fn gsi_05_04_guided_projectile(
@@ -3821,6 +3849,7 @@ fn gsi_05_02_mixed_fixture() -> (Simulation, [u64; 6]) {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: sim.interner.intern("TREE01"),
             rx: 8,
@@ -4122,6 +4151,7 @@ fn gsi_05_02_lethal_terrain_unregisters_and_inactive_slot_cannot_roundtrip() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref,
             rx: 5,
@@ -4197,6 +4227,7 @@ fn gsi_05_03_terminal_non_entities_remain_resolvable_until_common_drain() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: terrain_type,
             rx: 5,
@@ -5653,6 +5684,7 @@ fn wave_walks_nonbuilding_terrain_building_order_and_terrain_owns_wood_gate() {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                native_unique_id: None,
                 in_logic_vector: false,
                 type_ref: sim.interner.intern("TREE01"),
                 rx: 4,
@@ -6154,6 +6186,7 @@ fn gsi_05_02_restore_rejects_each_live_modeled_family_missing_from_logic() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: terrain.interner.intern("TREE01"),
             rx: 1,
@@ -6343,9 +6376,9 @@ fn detach_sweep_clears_target_when_no_mission_was_suspended() {
     ));
 }
 
-/// A cell target is not an object pointer, so neither detach sweep can see it.
-/// This is the recorded hole behind the wall arm of the blocked-step Override:
-/// an object overridden onto a wall has no Restore route from here.
+/// A cell target is not the departing Techno pointer, so the live-object detach
+/// sweep does not match it. CellClass pointer expiry has its own forward,
+/// clear-before-Restore transaction and is tested with wall removal.
 #[test]
 fn detach_sweep_never_matches_a_cell_target() {
     let mut sim = Simulation::new();

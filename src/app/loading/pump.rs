@@ -6,6 +6,7 @@
 
 use crate::app::AppState;
 use crate::app::loading::init::{self, MapLoadInitial, MapLoadResult};
+use crate::app::loading::fresh_scenario::FreshScenarioLoadContextDescriptor;
 use crate::app::loading::composition::{
     LoadingCompositionSnapshot, LoadingParticipantId, LoadingStartAssignment, MmpbRegionRect,
     RANDOM_MAP_PREVIEW_FILE, build_loading_composition, build_random_map_loading_composition,
@@ -14,9 +15,7 @@ use crate::app::loading::composition::{
 use crate::app::loading::progress_row::{
     LoadingProgressRowLayout, LoadingProgressRowSnapshot, layout_standard_skirmish_progress_row,
 };
-use crate::sim::scenario_bootstrap::{
-    PreFillScenarioPrefixPlan, prepare_stock_offline_scenario_prefix_plan,
-};
+use crate::sim::scenario_bootstrap::StockOfflinePrefixProjection;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Color;
 use crate::assets::pcx_file::PcxFile;
@@ -214,17 +213,17 @@ impl LoadingProgressSink for NoopProgressSink {
     fn milestone(&mut self, _percent: u32) {}
 }
 
-enum ScenarioPrefixPlanState {
+enum FreshScenarioLoadState {
     Pending,
-    NotApplicable,
-    Ready(PreFillScenarioPrefixPlan),
+    Ready(FreshScenarioLoadContextDescriptor),
+    Transferred,
 }
 
 pub(crate) struct LoadingRequest {
     /// `None` is an internal terminal-transfer marker only. Every live request
     /// owns exactly one explicit startup variant.
     startup: Option<LoadingStartup>,
-    scenario_prefix_plan: ScenarioPrefixPlanState,
+    fresh_scenario_load: FreshScenarioLoadState,
     /// Accepted setup start staging is small, provenance-bearing gameplay
     /// input. It is never reconstructed from the presentation preview.
     accepted_rmg_start_staging: Option<crate::app::shell_random_map::AcceptedRmgStartStaging>,
@@ -242,7 +241,7 @@ impl LoadingRequest {
     ) -> Self {
         Self {
             startup: Some(LoadingStartup::Accepted(startup)),
-            scenario_prefix_plan: ScenarioPrefixPlanState::Pending,
+            fresh_scenario_load: FreshScenarioLoadState::Pending,
             accepted_rmg_start_staging: None,
             random_map_preview: None,
             presentation: LoadingPresentation::NativeSelectedSkirmish,
@@ -260,7 +259,7 @@ impl LoadingRequest {
                 session: skirmish_launch_session,
                 seed,
             }),
-            scenario_prefix_plan: ScenarioPrefixPlanState::Pending,
+            fresh_scenario_load: FreshScenarioLoadState::Pending,
             accepted_rmg_start_staging: None,
             random_map_preview: None,
             presentation: LoadingPresentation::NativeSelectedSkirmish,
@@ -276,7 +275,7 @@ impl LoadingRequest {
             startup: Some(LoadingStartup::Generic {
                 selected_map_file: selected_map_file.into(),
             }),
-            scenario_prefix_plan: ScenarioPrefixPlanState::Pending,
+            fresh_scenario_load: FreshScenarioLoadState::Pending,
             accepted_rmg_start_staging: None,
             random_map_preview: None,
             presentation: LoadingPresentation::GenericMapLoad,
@@ -349,92 +348,58 @@ impl LoadingRequest {
         self.random_map_preview.as_ref()
     }
 
-    pub(crate) fn prepare_scenario_prefix_plan(
+    pub(crate) fn prepare_fresh_scenario_load_context(
         &mut self,
         initial: &MapLoadInitial,
     ) -> anyhow::Result<()> {
-        if !matches!(&self.scenario_prefix_plan, ScenarioPrefixPlanState::Pending) {
-            return Ok(());
+        match &self.fresh_scenario_load {
+            FreshScenarioLoadState::Ready(_) => return Ok(()),
+            FreshScenarioLoadState::Transferred => {
+                anyhow::bail!("fresh scenario context was already transferred")
+            }
+            FreshScenarioLoadState::Pending => {}
         }
-        let Some(session) = self.skirmish_launch_session().cloned() else {
-            self.scenario_prefix_plan = ScenarioPrefixPlanState::NotApplicable;
-            return Ok(());
-        };
-        let seed = self
-            .startup()
-            .seed_or_else(|| unreachable!("a launch session always owns a launch seed"));
-        let descriptor =
-            crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(session.clone())
-                .expect("shell close transaction resolves every random choice before loading");
-        let map = initial.map_data();
-        let selected_map = session
-            .selected_map_file
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("stock offline launch has no selected map"))?;
-        let staged_waypoints = match initial.map_source() {
-            crate::app::frontend::list_maps::LoadedMapSource::Generated { seed_name } => {
-                if !seed_name.eq_ignore_ascii_case(selected_map) {
-                    anyhow::bail!(
-                        "generated source {seed_name:?} does not match selected record {selected_map:?}"
-                    );
-                }
-                if !session.mode.random_maps_allowed || !matches!(session.mode.id, 1 | 2) {
-                    anyhow::bail!(
-                        "accepted random-map staging is unsupported for stock mode id {}",
-                        session.mode.id
-                    );
-                }
-                Some(
-                    self.accepted_rmg_start_staging
-                        .take()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("generated launch has no accepted setup start staging")
-                        })?
-                        .to_waypoint_table(),
-                )
-            }
-            crate::app::frontend::list_maps::LoadedMapSource::Loose { .. }
-            | crate::app::frontend::list_maps::LoadedMapSource::Mix { .. } => {
-                if self.accepted_rmg_start_staging.is_some() {
-                    anyhow::bail!(
-                        "accepted random-map staging cannot attach to an authored map source"
-                    );
-                }
-                None
-            }
-            crate::app::frontend::list_maps::LoadedMapSource::LegacyFallback { .. } => {
-                anyhow::bail!(
-                    "stock offline Scenario prefix requires an exact authored or generated map source"
-                )
-            }
-        };
-        let start_waypoints = staged_waypoints.as_ref().unwrap_or(&map.waypoints);
-        let plan =
-            prepare_stock_offline_scenario_prefix_plan(&descriptor, map, start_waypoints, seed)?;
-        self.scenario_prefix_plan = ScenarioPrefixPlanState::Ready(plan);
+        self.fresh_scenario_load = FreshScenarioLoadState::Ready(
+            FreshScenarioLoadContextDescriptor::admit_stock_offline(
+                self.startup
+                    .as_ref()
+                    .expect("live loading request retains startup authority"),
+                initial.map_data(),
+                initial.map_source(),
+                &mut self.accepted_rmg_start_staging,
+            )?,
+        );
         Ok(())
     }
 
-    pub(crate) fn scenario_prefix_plan(&self) -> Option<&PreFillScenarioPrefixPlan> {
-        match &self.scenario_prefix_plan {
-            ScenarioPrefixPlanState::Ready(plan) => Some(plan),
-            ScenarioPrefixPlanState::Pending | ScenarioPrefixPlanState::NotApplicable => None,
+    pub(crate) fn fresh_scenario_load_context(
+        &self,
+    ) -> Option<&FreshScenarioLoadContextDescriptor> {
+        match &self.fresh_scenario_load {
+            FreshScenarioLoadState::Ready(context) => Some(context),
+            FreshScenarioLoadState::Pending | FreshScenarioLoadState::Transferred => None,
         }
     }
 
-    fn take_scenario_prefix_plan(&mut self) -> anyhow::Result<Option<PreFillScenarioPrefixPlan>> {
-        let owns_launch_session = self.skirmish_launch_session().is_some();
-        match std::mem::replace(
-            &mut self.scenario_prefix_plan,
-            ScenarioPrefixPlanState::NotApplicable,
-        ) {
-            ScenarioPrefixPlanState::Ready(plan) => Ok(Some(plan)),
-            ScenarioPrefixPlanState::NotApplicable if !owns_launch_session => Ok(None),
-            ScenarioPrefixPlanState::Pending => {
-                anyhow::bail!("loading transfer attempted before Scenario prefix preparation")
+    pub(crate) fn take_fresh_scenario_load_context(
+        &mut self,
+    ) -> anyhow::Result<FreshScenarioLoadContextDescriptor> {
+        match &self.fresh_scenario_load {
+            FreshScenarioLoadState::Pending => {
+                anyhow::bail!("loading transfer attempted before fresh scenario admission")
             }
-            ScenarioPrefixPlanState::NotApplicable => {
-                anyhow::bail!("stock offline launch cannot transfer without a Scenario prefix plan")
+            FreshScenarioLoadState::Transferred => {
+                anyhow::bail!("fresh scenario context transfers exactly once")
+            }
+            FreshScenarioLoadState::Ready(_) => {}
+        }
+        match std::mem::replace(
+            &mut self.fresh_scenario_load,
+            FreshScenarioLoadState::Transferred,
+        ) {
+            FreshScenarioLoadState::Ready(context) => Ok(context),
+            FreshScenarioLoadState::Pending | FreshScenarioLoadState::Transferred => {
+                unreachable!("state was checked before terminal move")
             }
         }
     }
@@ -761,7 +726,10 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 Err(err) => Err(err),
             };
             match initial {
-                Ok(initial) => match session.request.prepare_scenario_prefix_plan(&initial) {
+                Ok(initial) => match session
+                    .request
+                    .prepare_fresh_scenario_load_context(&initial)
+                {
                     Ok(()) => {
                         session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
                         LoadingPump::Pending
@@ -815,14 +783,23 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             }
             // `session.native` and `session.request` are disjoint fields, so the
             // launch-session/settings borrows below coexist with the native split.
-            let scenario_prefix_plan = match session.request.take_scenario_prefix_plan() {
-                Ok(plan) => plan,
+            let fresh_scenario_context = match session
+                .request
+                .take_fresh_scenario_load_context()
+            {
+                Ok(context) => context,
                 Err(err) => {
                     restore_job_asset_manager(state, &mut session);
                     return LoadingPump::Failed(err);
                 }
             };
             let startup = session.request.take_startup();
+            if !state.process_assets.has_native_rules() {
+                restore_job_asset_manager(state, &mut session);
+                return LoadingPump::Failed(anyhow::anyhow!(
+                    "loading requires the process-resident native Rules owner"
+                ));
+            }
             let Some(asset_manager) = session.job.asset_manager.as_mut() else {
                 restore_job_asset_manager(state, &mut session);
                 return LoadingPump::Failed(anyhow::anyhow!(
@@ -830,6 +807,10 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 ));
             };
             let shared_cell_dummy = state.process_assets.shared_cell_dummy.clone();
+            let (native_rules_owner, tile_variant_selector_cache) =
+                state.process_assets.native_rules_mut_with_tile_cache();
+            let native_rules_owner = native_rules_owner
+                .expect("native Rules availability checked before split borrow");
             let load_result = match session.native.as_mut() {
                 // Only repaint when the atlas is present; without it the bar
                 // cannot draw, so fall back to the gate-only sink.
@@ -861,13 +842,14 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         asset_manager,
                         initial,
                         startup,
-                        scenario_prefix_plan,
+                        fresh_scenario_context,
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
+                        native_rules_owner,
                         shared_cell_dummy.clone(),
-                        &mut state.process_assets.tile_variant_selector_cache,
+                        tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -884,13 +866,14 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         asset_manager,
                         initial,
                         startup,
-                        scenario_prefix_plan,
+                        fresh_scenario_context,
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
+                        native_rules_owner,
                         shared_cell_dummy.clone(),
-                        &mut state.process_assets.tile_variant_selector_cache,
+                        tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -900,13 +883,14 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     asset_manager,
                     initial,
                     startup,
-                    scenario_prefix_plan,
+                    fresh_scenario_context,
                     &session.request.fallback_skirmish_settings,
                     false,
                     0,
                     state.renderer.vxl_compute.as_mut(),
+                    native_rules_owner,
                     shared_cell_dummy,
-                    &mut state.process_assets.tile_variant_selector_cache,
+                    tile_variant_selector_cache,
                     &mut NoopProgressSink,
                 ),
             };
@@ -1047,7 +1031,10 @@ fn prepare_scenario_initial_before_first_frame(state: &mut AppState) -> anyhow::
     });
     match result {
         Ok(initial) => {
-            if let Err(err) = session.request.prepare_scenario_prefix_plan(&initial) {
+            if let Err(err) = session
+                .request
+                .prepare_fresh_scenario_load_context(&initial)
+            {
                 state.frontend.loading_session = Some(session);
                 return Err(err);
             }
@@ -1099,17 +1086,18 @@ fn decode_random_map_loading_preview(ra2_dir: &Path) -> Option<DecodedPreview> {
 /// Resolve the assigned start waypoints the marker layer draws for a selected map.
 pub(crate) fn selected_map_start_assignments(
     launch_session: &SkirmishLaunchSession,
-    plan: Option<&PreFillScenarioPrefixPlan>,
+    projection: Option<&StockOfflinePrefixProjection>,
 ) -> Vec<LoadingStartAssignment> {
-    let Some(plan) = plan else {
+    let Some(projection) = projection else {
         return Vec::new();
     };
-    plan.start_table()
+    projection
+        .start_table()
         .iter()
         .enumerate()
         .filter_map(|(start_index, participant_index)| {
             let participant_index = (*participant_index)?;
-            plan.final_gathered_starts().get(start_index)?;
+            projection.final_gathered_starts().get(start_index)?;
             let (participant, color_priority) = if participant_index == 0 {
                 (
                     LoadingParticipantId::Local,
@@ -1149,19 +1137,19 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
         if native.composition.is_some() {
             return;
         }
-        let Some(launch_session) = session.request.skirmish_launch_session() else {
+        let Some(context) = session.request.fresh_scenario_load_context() else {
             return;
         };
-        let Some(plan) = session.request.scenario_prefix_plan() else {
-            return;
-        };
+        let launch_session = context.stock_offline_launch().session();
+        let projection = context.stock_offline_projection();
         let render_size = [state.renderer.gpu.config.width, state.renderer.gpu.config.height];
         match native.progress_cadence {
             NativeLoadingProgressCadence::SelectedMap => {
                 let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
                     return;
                 };
-                let assignments = selected_map_start_assignments(launch_session, Some(plan));
+                let assignments =
+                    selected_map_start_assignments(launch_session, Some(projection));
                 build_loading_composition(
                     initial.map_data(),
                     launch_session,
@@ -1179,14 +1167,15 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                     .ra2_dir
                     .as_deref()
                     .and_then(decode_random_map_loading_preview);
-                let assignments = selected_map_start_assignments(launch_session, Some(plan));
+                let assignments =
+                    selected_map_start_assignments(launch_session, Some(projection));
                 build_random_map_loading_composition(
                     launch_session,
                     state.process_assets.csf.as_ref(),
                     render_size,
                     preview,
                     initial.map_data(),
-                    plan.active_scenario_waypoints(),
+                    projection.active_scenario_waypoints(),
                     &assignments,
                 )
             }
@@ -2495,8 +2484,7 @@ mod tests {
                 .start_waypoints,
             vec![(0, 10, 20), (1, 30, 40)]
         );
-        let assignments =
-            selected_map_start_assignments(&launch, request.scenario_prefix_plan());
+        let assignments = selected_map_start_assignments(&launch, None);
         assert!(
             assignments.is_empty(),
             "preview waypoints cannot resolve gameplay starts"
@@ -2555,12 +2543,14 @@ mod tests {
         )
         .with_accepted_random_map(Some(accepted));
 
-        request.prepare_scenario_prefix_plan(&initial).unwrap();
-        let plan = request
-            .scenario_prefix_plan()
-            .expect("generated launch prepares a required prefix")
-            .clone();
-        let final_starts = plan
+        request
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap();
+        let context = request
+            .fresh_scenario_load_context()
+            .expect("generated launch prepares a required typed context");
+        let projection = context.stock_offline_projection();
+        let final_starts = projection
             .final_gathered_starts()
             .iter()
             .map(|waypoint| (waypoint.index as u8, waypoint.rx, waypoint.ry))
@@ -2577,14 +2567,14 @@ mod tests {
         assert_ne!(final_starts, preview_waypoints);
         assert_ne!(final_starts, regenerated);
         let active_starts = crate::map::waypoints::multiplayer_start_waypoints(
-            plan.active_scenario_waypoints(),
+            projection.active_scenario_waypoints(),
         )
         .into_iter()
         .map(|waypoint| (waypoint.index as u8, waypoint.rx, waypoint.ry))
         .collect::<Vec<_>>();
         assert_eq!(active_starts, staged);
 
-        let assignments = selected_map_start_assignments(&launch, Some(&plan));
+        let assignments = selected_map_start_assignments(&launch, Some(projection));
         let composition = build_random_map_loading_composition(
             &launch,
             None,
@@ -2595,7 +2585,7 @@ mod tests {
                 rgba: vec![255; 300 * 100 * 4],
             }),
             initial.map_data(),
-            plan.active_scenario_waypoints(),
+            projection.active_scenario_waypoints(),
             &assignments,
         );
         assert_eq!(
@@ -2616,7 +2606,7 @@ mod tests {
 
         let staged_session = crate::app::loading::init::scenario_start_waypoints_for_load(
             initial.map_data(),
-            Some(&plan),
+            Some(projection),
         );
         let regenerated_session = crate::app::loading::init::scenario_start_waypoints_for_load(
             initial.map_data(),
@@ -2685,9 +2675,273 @@ mod tests {
             "presentation preview remains available to loading composition"
         );
         request
-            .prepare_scenario_prefix_plan(&initial)
+            .prepare_fresh_scenario_load_context(&initial)
             .expect("re-entry observes the already prepared plan without another transfer");
         assert!(request.accepted_rmg_start_staging.is_none());
+    }
+
+    #[test]
+    fn load_descriptor_source_family_format_matrix() {
+        use crate::app::loading::fresh_scenario::{
+            FreshMapMaterialization, FreshScenarioFamily, FreshStartupProvenance,
+        };
+
+        let starts = [(0, 20, 24), (1, 42, 46)];
+        let signed_formats = [
+            (None, 0, false),
+            (Some(1), 1, false),
+            (Some(2), 2, true),
+            (Some(4), 4, true),
+            (Some(-7), -7, false),
+        ];
+        for source in [
+            crate::app::frontend::list_maps::LoadedMapSource::Loose {
+                path: std::path::PathBuf::from("mp01t4.map"),
+                payload_len: 17,
+            },
+            crate::app::frontend::list_maps::LoadedMapSource::Mix {
+                logical_name: "mp01t4.map".to_string(),
+                source_archive: "mapsmd03.mix".to_string(),
+                entry_id: 0x1234,
+                payload_len: 19,
+            },
+        ] {
+            for (format, expected_signed, expected_pack_gate) in signed_formats {
+                let mut map = prefix_test_map(&starts);
+                map.basic.new_ini_format = format;
+                let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
+                    map,
+                    source.clone(),
+                );
+                let mut request = LoadingRequest::unverified_legacy_skirmish(
+                    test_launch_session(LaunchCountry::America),
+                    unverified_seed(0x1A2B_3C4D),
+                    SkirmishSettings::default(),
+                );
+                request
+                    .prepare_fresh_scenario_load_context(&initial)
+                    .expect("authored Loose/MIX stock context");
+                let context = request.fresh_scenario_load_context().unwrap();
+                assert_eq!(context.physical_source(), &source);
+                assert_eq!(context.materialization(), FreshMapMaterialization::Authored);
+                assert_eq!(context.family(), FreshScenarioFamily::StockOffline);
+                assert_eq!(
+                    context.startup_provenance(),
+                    FreshStartupProvenance::ResolvedLegacy
+                );
+                assert_eq!(context.match_seed(), 0x1A2B_3C4D);
+                assert_eq!(context.signed_new_ini_format(), expected_signed);
+                context
+                    .validate_terminal_transfer(request.startup(), &source, expected_signed)
+                    .expect("the independently moved terminal owners still agree");
+                assert_eq!(
+                    context.authored_pack_bodies_enabled(),
+                    expected_pack_gate,
+                    "only signed NewINIFormat > 1 gates authored pack bodies"
+                );
+            }
+        }
+
+        for mode_id in [1, 2] {
+            let selected = format!("Accepted{mode_id}.SED");
+            let mut launch = test_launch_session(LaunchCountry::America);
+            launch.selected_map_file = Some(selected.clone());
+            if mode_id == 2 {
+                launch.mode = SkirmishLaunchMode {
+                    id: 2,
+                    ui_name_key: "GUI:FreeForAll".to_string(),
+                    tooltip_key: "STT:ModeFreeForAll".to_string(),
+                    override_file: "MPFreeForAllMD.ini".to_string(),
+                    map_filter: "standard".to_string(),
+                    random_maps_allowed: true,
+                    allies_allowed: false,
+                    must_ally: false,
+                };
+            }
+            let accepted = accepted_random_map_with_starts(
+                &selected,
+                0x2345,
+                &starts,
+                &starts,
+            );
+            let mut map = prefix_test_map(&starts);
+            map.basic.new_ini_format = Some(4);
+            let source = crate::app::frontend::list_maps::LoadedMapSource::Generated {
+                seed_name: selected.to_ascii_lowercase(),
+            };
+            let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
+                map,
+                source.clone(),
+            );
+            let mut request = LoadingRequest::unverified_legacy_skirmish(
+                launch,
+                unverified_seed(0x2345),
+                SkirmishSettings::default(),
+            )
+            .with_accepted_random_map(Some(accepted));
+            request
+                .prepare_fresh_scenario_load_context(&initial)
+                .expect("accepted Battle/FFA generated context");
+            let context = request.fresh_scenario_load_context().unwrap();
+            assert_eq!(context.physical_source(), &source);
+            assert_eq!(
+                context.materialization(),
+                FreshMapMaterialization::AcceptedGenerated
+            );
+            assert_eq!(context.signed_new_ini_format(), 4);
+            context
+                .validate_terminal_transfer(request.startup(), &source, 4)
+                .expect("generated terminal owners still agree");
+            assert!(
+                !context.authored_pack_bodies_enabled(),
+                "serialized format cannot turn generated materialization into authored Mark"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_and_resolved_legacy_share_one_stock_cursor_shape() {
+        use crate::app::loading::fresh_scenario::{
+            FreshScenarioFamily, FreshStartupProvenance,
+        };
+
+        let starts = [(0, 20, 24), (1, 42, 46)];
+        let source = crate::app::frontend::list_maps::LoadedMapSource::Loose {
+            path: std::path::PathBuf::from("mp01t4.map"),
+            payload_len: 23,
+        };
+        let mut map = prefix_test_map(&starts);
+        map.basic.new_ini_format = Some(4);
+        let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
+            map,
+            source,
+        );
+        let seed = 0x3456_789A;
+        let mut next = 1;
+        let prepared = prepared_startup(&mut next, seed);
+        let legacy_session = prepared.session.launch_session().clone();
+        let mut accepted =
+            LoadingRequest::accepted_skirmish(prepared, SkirmishSettings::default());
+        let mut resolved_legacy = LoadingRequest::unverified_legacy_skirmish(
+            legacy_session,
+            unverified_seed(seed),
+            SkirmishSettings::default(),
+        );
+        accepted
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap();
+        resolved_legacy
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap();
+        let accepted_context = accepted.fresh_scenario_load_context().unwrap();
+        let legacy_context = resolved_legacy.fresh_scenario_load_context().unwrap();
+        assert_eq!(accepted_context.family(), FreshScenarioFamily::StockOffline);
+        assert_eq!(accepted_context.family(), legacy_context.family());
+        assert_eq!(accepted_context.match_seed(), legacy_context.match_seed());
+        assert_eq!(
+            accepted_context.stock_offline_projection().final_gathered_starts(),
+            legacy_context
+                .stock_offline_projection()
+                .final_gathered_starts()
+        );
+        assert_eq!(
+            accepted_context.stock_offline_projection().start_table(),
+            legacy_context.stock_offline_projection().start_table()
+        );
+        assert_eq!(
+            accepted_context.startup_provenance(),
+            FreshStartupProvenance::Accepted
+        );
+        assert_eq!(
+            legacy_context.startup_provenance(),
+            FreshStartupProvenance::ResolvedLegacy
+        );
+
+        let accepted_parts = accepted
+            .take_fresh_scenario_load_context()
+            .unwrap()
+            .into_stock_offline_parts();
+        let legacy_parts = resolved_legacy
+            .take_fresh_scenario_load_context()
+            .unwrap()
+            .into_stock_offline_parts();
+        let mut accepted_owner = crate::sim::scenario_bootstrap::ScenarioBootstrapRng::new(seed);
+        let mut legacy_owner = crate::sim::scenario_bootstrap::ScenarioBootstrapRng::new(seed);
+        let _ = accepted_owner
+            .install_pre_fill_scenario_prefix_plan(accepted_parts.scenario_prefix)
+            .unwrap();
+        let _ = legacy_owner
+            .install_pre_fill_scenario_prefix_plan(legacy_parts.scenario_prefix)
+            .unwrap();
+        assert_eq!(
+            accepted_owner.logical_states_for_test(),
+            legacy_owner.logical_states_for_test(),
+            "startup provenance cannot change the verified stock prefix cursor"
+        );
+    }
+
+    #[test]
+    fn generic_manual_and_unresolved_legacy_reject_before_receipt_or_staging() {
+        let selected = "Rejected.SED";
+        let starts = [(0, 20, 24), (1, 42, 46)];
+        let source = crate::app::frontend::list_maps::LoadedMapSource::Generated {
+            seed_name: selected.to_string(),
+        };
+        let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
+            prefix_test_map(&starts),
+            source,
+        );
+        let accepted = accepted_random_map_with_starts(selected, 0x4567, &starts, &starts);
+        let mut generic = LoadingRequest::generic_map_load(
+            selected,
+            SkirmishSettings::default(),
+        )
+        .with_accepted_random_map(Some(accepted));
+        let generic_err = generic
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
+        assert!(format!("{generic_err:#}").contains("Generic startup"));
+        assert!(generic.fresh_scenario_load_context().is_none());
+        assert!(generic.accepted_rmg_start_staging.is_some());
+
+        let accepted = accepted_random_map_with_starts(selected, 0x4567, &starts, &starts);
+        let mut unresolved_session = test_launch_session(LaunchCountry::America);
+        unresolved_session.selected_map_file = Some(selected.to_string());
+        unresolved_session.local.country_random = true;
+        let mut unresolved = LoadingRequest::unverified_legacy_skirmish(
+            unresolved_session,
+            unverified_seed(0x4567),
+            SkirmishSettings::default(),
+        )
+        .with_accepted_random_map(Some(accepted));
+        let unresolved_err = unresolved
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
+        assert!(
+            format!("{unresolved_err:#}").contains("local slot still has a random country")
+        );
+        assert!(unresolved.fresh_scenario_load_context().is_none());
+        assert!(unresolved.accepted_rmg_start_staging.is_some());
+
+        let authored = crate::app::loading::init::MapLoadInitial::from_test_map_source(
+            prefix_test_map(&starts),
+            crate::app::frontend::list_maps::LoadedMapSource::Loose {
+                path: std::path::PathBuf::from("manual.map"),
+                payload_len: 1,
+            },
+        );
+        let mut manual_session = test_launch_session(LaunchCountry::America);
+        manual_session.selected_map_file = Some(" auto ".to_string());
+        let mut manual = LoadingRequest::unverified_legacy_skirmish(
+            manual_session,
+            unverified_seed(0x4567),
+            SkirmishSettings::default(),
+        );
+        let manual_err = manual
+            .prepare_fresh_scenario_load_context(&authored)
+            .unwrap_err();
+        assert!(format!("{manual_err:#}").contains("no exact selected map record"));
+        assert!(manual.fresh_scenario_load_context().is_none());
     }
 
     #[test]
@@ -2714,7 +2968,7 @@ mod tests {
             launch.clone(),
         )
         .unwrap();
-        let plan = prepare_stock_offline_scenario_prefix_plan(
+        let plan = crate::sim::scenario_bootstrap::prepare_stock_offline_scenario_prefix_plan(
             &descriptor,
             &map,
             &map.waypoints,
@@ -2729,7 +2983,7 @@ mod tests {
             vec![0, 2, 2]
         );
 
-        let assignments = selected_map_start_assignments(&launch, Some(&plan));
+        let assignments = selected_map_start_assignments(&launch, Some(plan.projection()));
         assert_eq!(
             assignments
                 .iter()
@@ -2797,7 +3051,9 @@ mod tests {
         )
         .with_random_map_preview(Some(generated_preview_with_starts(0x1313, &starts)));
 
-        let err = request.prepare_scenario_prefix_plan(&initial).unwrap_err();
+        let err = request
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
         assert!(
             format!("{err:#}").contains("no accepted setup start staging"),
             "unexpected error: {err:#}"
@@ -2824,7 +3080,9 @@ mod tests {
         )
         .with_accepted_random_map(Some(accepted));
 
-        let err = request.prepare_scenario_prefix_plan(&initial).unwrap_err();
+        let err = request
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
         assert!(
             format!("{err:#}").contains("does not match selected record"),
             "unexpected error: {err:#}"
@@ -2856,11 +3114,46 @@ mod tests {
         )
         .with_accepted_random_map(Some(accepted));
 
-        let err = request.prepare_scenario_prefix_plan(&initial).unwrap_err();
+        let err = request
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
         assert!(
             format!("{err:#}").contains("unsupported for stock mode id 3"),
             "unexpected error: {err:#}"
         );
+        assert!(
+            request.accepted_rmg_start_staging.is_some(),
+            "unsupported family rejects before consuming accepted staging"
+        );
+    }
+
+    #[test]
+    fn generated_prefix_rejects_a_spoofed_stock_row_before_consuming_staging() {
+        let selected = "RandMap.SED";
+        let starts = [(0, 20, 24), (1, 42, 46)];
+        let mut launch = test_launch_session(LaunchCountry::America);
+        launch.selected_map_file = Some(selected.to_string());
+        launch.mode.tooltip_key = "STT:SpoofedBattle".to_string();
+        let accepted = accepted_random_map_with_starts(selected, 0x1516, &starts, &starts);
+        let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
+            prefix_test_map(&starts),
+            crate::app::frontend::list_maps::LoadedMapSource::Generated {
+                seed_name: selected.to_string(),
+            },
+        );
+        let mut request = LoadingRequest::unverified_legacy_skirmish(
+            launch,
+            unverified_seed(0x1516),
+            SkirmishSettings::default(),
+        )
+        .with_accepted_random_map(Some(accepted));
+
+        let err = request
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("not the validated active-retail stock row"));
+        assert!(request.accepted_rmg_start_staging.is_some());
+        assert!(request.fresh_scenario_load_context().is_none());
     }
 
     #[test]
@@ -2894,7 +3187,9 @@ mod tests {
             )
             .with_accepted_random_map(Some(accepted));
 
-            let err = request.prepare_scenario_prefix_plan(&initial).unwrap_err();
+            let err = request
+                .prepare_fresh_scenario_load_context(&initial)
+                .unwrap_err();
             assert!(
                 format!("{err:#}").contains("cannot attach to an authored map source"),
                 "unexpected error: {err:#}"
@@ -2918,10 +3213,26 @@ mod tests {
             SkirmishSettings::default(),
         );
 
-        let err = request.prepare_scenario_prefix_plan(&initial).unwrap_err();
+        let err = request
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
         assert!(
-            format!("{err:#}").contains("requires an exact authored or generated map source"),
+            format!("{err:#}").contains("requires an exact Loose, MIX, or accepted generated source"),
             "unexpected error: {err:#}"
+        );
+
+        let mut next = 1;
+        let mut accepted = LoadingRequest::accepted_skirmish(
+            prepared_startup(&mut next, 0x1717),
+            SkirmishSettings::default(),
+        );
+        let accepted_err = accepted
+            .prepare_fresh_scenario_load_context(&initial)
+            .unwrap_err();
+        assert!(
+            format!("{accepted_err:#}")
+                .contains("requires an exact Loose, MIX, or accepted generated source"),
+            "unexpected error: {accepted_err:#}"
         );
     }
 
@@ -2932,23 +3243,32 @@ mod tests {
             unverified_seed(0x1818),
             SkirmishSettings::default(),
         );
-        let pending_err = pending.take_scenario_prefix_plan().unwrap_err();
+        let pending_err = pending
+            .take_fresh_scenario_load_context()
+            .unwrap_err();
         assert!(
-            format!("{pending_err:#}").contains("before Scenario prefix preparation"),
+            format!("{pending_err:#}").contains("before fresh scenario admission"),
             "unexpected error: {pending_err:#}"
         );
-
-        let mut not_applicable = LoadingRequest::unverified_legacy_skirmish(
-            test_launch_session(LaunchCountry::America),
-            unverified_seed(0x1919),
-            SkirmishSettings::default(),
+        let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
+            prefix_test_map(&[(0, 20, 24), (1, 42, 46)]),
+            crate::app::frontend::list_maps::LoadedMapSource::Loose {
+                path: std::path::PathBuf::from("mp01t4.map"),
+                payload_len: 1,
+            },
         );
-        not_applicable.scenario_prefix_plan = ScenarioPrefixPlanState::NotApplicable;
-        let not_applicable_err = not_applicable.take_scenario_prefix_plan().unwrap_err();
+        pending
+            .prepare_fresh_scenario_load_context(&initial)
+            .expect("resolved authored stock launch admits once");
+        let _context = pending
+            .take_fresh_scenario_load_context()
+            .expect("ready context transfers once");
+        let transferred_err = pending
+            .take_fresh_scenario_load_context()
+            .unwrap_err();
         assert!(
-            format!("{not_applicable_err:#}")
-                .contains("cannot transfer without a Scenario prefix plan"),
-            "unexpected error: {not_applicable_err:#}"
+            format!("{transferred_err:#}").contains("transfers exactly once"),
+            "unexpected error: {transferred_err:#}"
         );
     }
 
@@ -3038,14 +3358,13 @@ mod tests {
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
         };
-        let request = LoadingRequest::unverified_legacy_skirmish(
+        let _request = LoadingRequest::unverified_legacy_skirmish(
             launch.clone(),
             unverified_seed(0x4567),
             SkirmishSettings::default(),
         )
         .with_random_map_preview(Some(generated));
-        let assignments =
-            selected_map_start_assignments(&launch, request.scenario_prefix_plan());
+        let assignments = selected_map_start_assignments(&launch, None);
         assert!(
             assignments.is_empty(),
             "only the launch-time `.SED` regeneration may resolve participants"

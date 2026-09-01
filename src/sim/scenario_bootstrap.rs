@@ -327,24 +327,42 @@ pub(crate) enum StockOfflineStartCallbackFamily {
 /// selected-mode Gather callbacks, the final chooser, the zero-draw reset, and
 /// the second House pass. Only the second Gather vector and its retained
 /// assignment are projected later; projection is deliberately draw-free.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PreFillScenarioPrefixPlan {
-    /// Raw active Scenario waypoint table after the authored read or accepted
-    /// RMG staging copy. Gather may derive fallback cells from this table, but
-    /// loading markers and the live Scenario/session owner retain these exact
-    /// entries rather than the Gather result or regenerated `.SED` table.
-    active_scenario_waypoints: HashMap<u32, Waypoint>,
+    projection: StockOfflinePrefixProjection,
     first_gathered_starts: Vec<Waypoint>,
-    final_gathered_starts: Vec<Waypoint>,
-    assignment: NativeStartAssignment,
     first_house_timers: Vec<u32>,
     second_house_timers: Vec<u32>,
     scenario_rng_before: SimRngLogicalState,
     scenario_rng_before_fingerprint: u64,
     scenario_rng_after: SimRngLogicalState,
     scenario_rng_after_cursor: SimRng,
+    native_resize_width: u32,
+    native_resize_height: u32,
     #[cfg(test)]
     rng_checkpoints: ScenarioPrefixRngCheckpoints,
+}
+
+/// Paired Scenario-RNG and native numeric-ID prefix for one supported fresh
+/// stock-offline Full_Init. Neither half can reach production independently.
+#[derive(Debug)]
+pub(crate) struct BoundStockOfflineFreshPrefixPlan {
+    scenario: PreFillScenarioPrefixPlan,
+    native_ids: crate::sim::native_identity::NativeFreshIdPrefixReceipt,
+}
+
+/// Draw-free stock-offline state retained after the prefix cursor receipt is
+/// consumed.  It can place the final Houses and expose loading markers, but it
+/// owns no RNG and cannot replay the prefix.
+#[derive(Debug)]
+pub(crate) struct StockOfflinePrefixProjection {
+    /// Raw active Scenario waypoint table after the authored read or accepted
+    /// RMG staging copy. Gather may derive fallback cells from this table, but
+    /// loading markers and the live Scenario/session owner retain these exact
+    /// entries rather than the Gather result or regenerated `.SED` table.
+    active_scenario_waypoints: HashMap<u32, Waypoint>,
+    final_gathered_starts: Vec<Waypoint>,
+    assignment: NativeStartAssignment,
 }
 
 #[cfg(test)]
@@ -377,8 +395,8 @@ pub(crate) enum PreFillScenarioPrefixPlanError {
 }
 
 impl PreFillScenarioPrefixPlan {
-    pub(crate) fn active_scenario_waypoints(&self) -> &HashMap<u32, Waypoint> {
-        &self.active_scenario_waypoints
+    pub(crate) fn projection(&self) -> &StockOfflinePrefixProjection {
+        &self.projection
     }
 
     #[cfg(test)]
@@ -387,15 +405,11 @@ impl PreFillScenarioPrefixPlan {
     }
 
     pub(crate) fn final_gathered_starts(&self) -> &[Waypoint] {
-        &self.final_gathered_starts
-    }
-
-    pub(crate) fn start_table(&self) -> &[Option<usize>] {
-        &self.assignment.start_table
+        self.projection.final_gathered_starts()
     }
 
     pub(crate) fn assignment(&self) -> &NativeStartAssignment {
-        &self.assignment
+        self.projection.assignment()
     }
 
     #[cfg(test)]
@@ -413,12 +427,39 @@ impl PreFillScenarioPrefixPlan {
         &self.rng_checkpoints
     }
 
+    /// Bind the move-only E/P Rules chronology to the already-validated House,
+    /// Resize, and Scenario prefix. Type/House/Cell constructors advance only
+    /// the independent native-ID cursor; Scenario RNG remains byte-for-byte
+    /// owned by this plan.
+    pub(crate) fn bind_native_rules_receipt(
+        self,
+        receipt: crate::rules::process_owner::NativeScenarioRulesReceipt,
+    ) -> BoundStockOfflineFreshPrefixPlan {
+        let (early, rebuilt) = receipt.into_parts();
+        let (early_events, first_super_weapon_type_count) = early.into_parts();
+        let (rebuilt_events, final_super_weapon_type_count) = rebuilt.into_parts();
+        let native_ids = crate::sim::native_identity::build_noncampaign_fresh_id_prefix(
+            early_events.len(),
+            first_super_weapon_type_count,
+            self.first_house_timers.len(),
+            rebuilt_events.len(),
+            final_super_weapon_type_count,
+            self.second_house_timers.len(),
+            self.native_resize_width,
+            self.native_resize_height,
+        );
+        BoundStockOfflineFreshPrefixPlan {
+            scenario: self,
+            native_ids,
+        }
+    }
+
     /// Validate and transfer the one pre-loading RNG prefix to the stream that
     /// later terrain Fill and Simulation construction will continue.
     fn install_before_terrain(
-        &self,
+        self,
         scenario_rng: &mut SimRng,
-    ) -> Result<(), PreFillScenarioPrefixPlanError> {
+    ) -> Result<StockOfflinePrefixProjection, PreFillScenarioPrefixPlanError> {
         if scenario_rng.logical_state() != self.scenario_rng_before {
             return Err(
                 PreFillScenarioPrefixPlanError::ScenarioRngPrestateMismatch {
@@ -427,10 +468,44 @@ impl PreFillScenarioPrefixPlan {
                 },
             );
         }
-        *scenario_rng = self.scenario_rng_after_cursor.clone();
+        *scenario_rng = self.scenario_rng_after_cursor;
         debug_assert_eq!(scenario_rng.logical_state(), self.scenario_rng_after);
-        Ok(())
+        Ok(self.projection)
     }
+}
+
+impl BoundStockOfflineFreshPrefixPlan {
+    pub(crate) fn projection(&self) -> &StockOfflinePrefixProjection {
+        self.scenario.projection()
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        PreFillScenarioPrefixPlan,
+        crate::sim::native_identity::NativeFreshIdPrefixReceipt,
+    ) {
+        (self.scenario, self.native_ids)
+    }
+}
+
+impl StockOfflinePrefixProjection {
+    pub(crate) fn active_scenario_waypoints(&self) -> &HashMap<u32, Waypoint> {
+        &self.active_scenario_waypoints
+    }
+
+    pub(crate) fn final_gathered_starts(&self) -> &[Waypoint] {
+        &self.final_gathered_starts
+    }
+
+    pub(crate) fn start_table(&self) -> &[Option<usize>] {
+        &self.assignment.start_table
+    }
+
+    pub(crate) fn assignment(&self) -> &NativeStartAssignment {
+        &self.assignment
+    }
+
 }
 
 /// Prepare the complete active-stock offline prefix exactly once.
@@ -521,16 +596,20 @@ pub(crate) fn prepare_stock_offline_scenario_prefix_plan(
     let after_second_house_pass = scenario_rng_after.clone();
 
     Ok(PreFillScenarioPrefixPlan {
-        active_scenario_waypoints: start_waypoints.clone(),
+        projection: StockOfflinePrefixProjection {
+            active_scenario_waypoints: start_waypoints.clone(),
+            final_gathered_starts,
+            assignment,
+        },
         first_gathered_starts,
-        final_gathered_starts,
-        assignment,
         first_house_timers,
         second_house_timers,
         scenario_rng_before,
         scenario_rng_before_fingerprint,
         scenario_rng_after,
         scenario_rng_after_cursor: scenario_rng,
+        native_resize_width: map_data.header.width,
+        native_resize_height: map_data.header.height,
         #[cfg(test)]
         rng_checkpoints: ScenarioPrefixRngCheckpoints {
             after_first_house_pass,
@@ -1086,7 +1165,7 @@ pub(crate) fn apply_pre_fill_scenario_prefix_launch_session(
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
     descriptor: &MatchLaunchDescriptor,
-    plan: &PreFillScenarioPrefixPlan,
+    plan: &StockOfflinePrefixProjection,
 ) -> SkirmishLaunchApplyResult {
     apply_resolved_skirmish_launch_session(
         sim,
@@ -1111,7 +1190,7 @@ pub(crate) fn apply_pre_fill_scenario_prefix_launch_session_with_overlay_registr
     resolved_terrain: &ResolvedTerrainGrid,
     descriptor: &MatchLaunchDescriptor,
     overlay_registry: &OverlayTypeRegistry,
-    plan: &PreFillScenarioPrefixPlan,
+    plan: &StockOfflinePrefixProjection,
 ) -> SkirmishLaunchApplyResult {
     apply_resolved_skirmish_launch_session(
         sim,
@@ -1127,7 +1206,7 @@ pub(crate) fn apply_pre_fill_scenario_prefix_launch_session_with_overlay_registr
 }
 
 enum LaunchStartResolution<'a> {
-    Prefix(&'a PreFillScenarioPrefixPlan),
+    Prefix(&'a StockOfflinePrefixProjection),
     #[cfg(test)]
     PostFillTestCompatibility,
 }
@@ -2118,11 +2197,26 @@ impl ScenarioBootstrapRng {
     }
 
     /// Install the already-resolved stock-offline pre-Fill prefix exactly once.
+    #[cfg(test)]
     pub(crate) fn install_pre_fill_scenario_prefix_plan(
         &mut self,
-        plan: &PreFillScenarioPrefixPlan,
-    ) -> Result<(), PreFillScenarioPrefixPlanError> {
+        plan: PreFillScenarioPrefixPlan,
+    ) -> Result<StockOfflinePrefixProjection, PreFillScenarioPrefixPlanError> {
         plan.install_before_terrain(&mut self.scenario)
+    }
+
+    /// Consume the paired stock-offline RNG/native-ID prefix into the one staged
+    /// Simulation before terrain Fill.
+    pub(crate) fn into_stock_offline_staged_simulation(
+        mut self,
+        descriptor: &ScenarioDescriptor,
+        bound_prefix: BoundStockOfflineFreshPrefixPlan,
+    ) -> Result<(Simulation, StockOfflinePrefixProjection), PreFillScenarioPrefixPlanError> {
+        let (scenario_prefix, native_id_prefix) = bound_prefix.into_parts();
+        let projection = scenario_prefix.install_before_terrain(&mut self.scenario)?;
+        let mut simulation = self.into_simulation(descriptor);
+        simulation.native_unique_ids = Some(native_id_prefix.into_cursor());
+        Ok((simulation, projection))
     }
 
     /// Borrow the two independent load-time consumers without exposing either
@@ -2153,31 +2247,7 @@ impl ScenarioBootstrapRng {
         crate::sim::world::GeneratedTechnoInitTable,
         crate::sim::world::GeneratedTechnoInitError,
     > {
-        let mut emitted = Vec::new();
-        for (expected_ordinal, event) in trace.events.iter().enumerate() {
-            if event.ordinal != expected_ordinal {
-                return Err(
-                    crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
-                        expected: expected_ordinal,
-                        found: event.ordinal,
-                    },
-                );
-            }
-            let techno_ctor_random_word = (self.scenario.next_u32() & 0xFFFF) as u16;
-            if let crate::map::construction_trace::RmgConstructionOutcome::Emitted {
-                entity_index,
-                cell,
-            } = &event.outcome
-            {
-                emitted.push(crate::sim::game_entity::GeneratedTechnoInit {
-                    entity_index: *entity_index,
-                    techno_type: event.techno_type.clone(),
-                    cell: *cell,
-                    techno_ctor_random_word,
-                });
-            }
-        }
-        crate::sim::world::GeneratedTechnoInitTable::try_new(emitted)
+        replay_generated_construction_trace_with_rng(&mut self.scenario, trace)
     }
 
     #[cfg(test)]
@@ -2207,7 +2277,66 @@ impl ScenarioBootstrapRng {
     }
 }
 
+fn replay_generated_construction_trace_with_rng(
+    scenario: &mut SimRng,
+    trace: &crate::map::construction_trace::RmgConstructionTrace,
+) -> Result<
+    crate::sim::world::GeneratedTechnoInitTable,
+    crate::sim::world::GeneratedTechnoInitError,
+> {
+    let mut emitted = Vec::new();
+    for (expected_ordinal, event) in trace.events.iter().enumerate() {
+        if event.ordinal != expected_ordinal {
+            return Err(
+                crate::sim::world::GeneratedTechnoInitError::TraceOrdinalMismatch {
+                    expected: expected_ordinal,
+                    found: event.ordinal,
+                },
+            );
+        }
+        let techno_ctor_random_word = (scenario.next_u32() & 0xFFFF) as u16;
+        if let crate::map::construction_trace::RmgConstructionOutcome::Emitted {
+            entity_index,
+            cell,
+        } = &event.outcome
+        {
+            emitted.push(crate::sim::game_entity::GeneratedTechnoInit {
+                entity_index: *entity_index,
+                techno_type: event.techno_type.clone(),
+                cell: *cell,
+                techno_ctor_random_word,
+            });
+        }
+    }
+    crate::sim::world::GeneratedTechnoInitTable::try_new(emitted)
+}
+
 impl Simulation {
+    /// Borrow the two load-time streams from the already-staged gameplay owner.
+    /// No second bootstrap owner can exist after `into_simulation` consumes it.
+    pub(crate) fn terrain_load_draws(&mut self) -> (ScenarioFillRng<'_>, VariantMainRng<'_>) {
+        (
+            ScenarioFillRng {
+                rng: &mut self.scenario_rng,
+            },
+            VariantMainRng {
+                rng: &mut self.main_rng,
+            },
+        )
+    }
+
+    /// Replay accepted launch-generation constructor effects on the staged
+    /// Scenario stream after Fill, before authored object-section projection.
+    pub(crate) fn replay_staged_generated_construction_trace(
+        &mut self,
+        trace: &crate::map::construction_trace::RmgConstructionTrace,
+    ) -> Result<
+        crate::sim::world::GeneratedTechnoInitTable,
+        crate::sim::world::GeneratedTechnoInitError,
+    > {
+        replay_generated_construction_trace_with_rng(&mut self.scenario_rng, trace)
+    }
+
     #[cfg(test)]
     pub(crate) fn gather_native_start_positions(
         &mut self,
@@ -2430,7 +2559,7 @@ mod tests {
             iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
             overlays: Vec::new(),
-            overlay_data: Default::default(),
+            authored_overlay_packs: crate::map::map_file::AuthoredOverlayPackSlot::empty(),
             smudges: Vec::new(),
             terrain_objects: Vec::new(),
             waypoints: starts
@@ -3000,6 +3129,66 @@ mod tests {
         let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
             .unwrap();
 
+        let native_plan =
+            prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed).unwrap();
+        let mut native_rules =
+            crate::rules::process_owner::NativeRulesProcessOwner::from_cold_start_sources(
+                IniFile::from_bytes(b"").unwrap(),
+                None,
+                IniFile::from_bytes(b"").unwrap(),
+            )
+            .unwrap();
+        let native_load = native_rules
+            .load_noncampaign_scenario(None, &map.ini)
+            .unwrap();
+        let (_, _, _, receipt) = native_load.into_parts();
+        let early_count = receipt.pre_reset().event_count() as u32;
+        let first_super_count = receipt.pre_reset().allocated_super_weapon_type_count() as u32;
+        let rebuilt_count = receipt.post_reset().event_count() as u32;
+        let final_super_count = receipt.post_reset().allocated_super_weapon_type_count() as u32;
+        let bound_native = native_plan.bind_native_rules_receipt(receipt);
+        let native_checkpoints = bound_native.native_ids.checkpoints();
+        let resize_count = map
+            .header
+            .height
+            .wrapping_mul(map.header.width.wrapping_mul(2).wrapping_sub(1))
+            .wrapping_add(1);
+        assert_eq!(
+            native_checkpoints.after_early_types,
+            1_000_000 + early_count
+        );
+        assert_eq!(
+            native_checkpoints.after_first_house_generation,
+            native_checkpoints
+                .after_early_types
+                .wrapping_add(6 * (1 + first_super_count)),
+            "observer, both valid AI rows, ordinary human, Neutral, and Special all construct"
+        );
+        assert_eq!(
+            native_checkpoints.after_first_resize,
+            native_checkpoints
+                .after_first_house_generation
+                .wrapping_add(resize_count),
+            "the first native Cell generation uses [Map] Size and includes the dummy"
+        );
+        assert_eq!(
+            native_checkpoints.after_rebuilt_types,
+            native_checkpoints.after_first_resize.wrapping_add(rebuilt_count)
+        );
+        assert_eq!(
+            native_checkpoints.after_final_house_generation,
+            native_checkpoints
+                .after_rebuilt_types
+                .wrapping_add(6 * (1 + final_super_count))
+        );
+        assert_eq!(
+            native_checkpoints.after_final_resize,
+            native_checkpoints
+                .after_final_house_generation
+                .wrapping_add(resize_count),
+            "the same live Cell identities reconstruct in the second Resize generation"
+        );
+
         let mut reference = SimRng::new(u64::from(seed));
         let first_timers: Vec<_> = (0..6)
             .map(|_| {
@@ -3037,7 +3226,7 @@ mod tests {
         );
 
         let mut owner = ScenarioBootstrapRng::new(seed);
-        owner.install_pre_fill_scenario_prefix_plan(&plan).unwrap();
+        owner.install_pre_fill_scenario_prefix_plan(plan).unwrap();
         let sim = owner.into_simulation(&descriptor(seed));
         assert!(
             sim.houses.is_empty(),
@@ -3242,9 +3431,15 @@ mod tests {
         let plan_b =
             prepare_stock_offline_scenario_prefix_plan(&launch, &map_b, &map_b.waypoints, 0x5400)
                 .unwrap();
-        assert_eq!(plan_a.first_gathered_starts, plan_b.first_gathered_starts);
-        assert_eq!(plan_a.final_gathered_starts, plan_b.final_gathered_starts);
-        assert_eq!(plan_a.assignment, plan_b.assignment);
+        assert_eq!(
+            plan_a.first_gathered_starts(),
+            plan_b.first_gathered_starts()
+        );
+        assert_eq!(
+            plan_a.final_gathered_starts(),
+            plan_b.final_gathered_starts()
+        );
+        assert_eq!(plan_a.assignment(), plan_b.assignment());
         assert_eq!(plan_a.scenario_rng_after, plan_b.scenario_rng_after);
     }
 
@@ -3263,13 +3458,15 @@ mod tests {
         let plan = prepare_stock_offline_scenario_prefix_plan(&launch, &map, &map.waypoints, seed)
             .unwrap();
         let mut owner = ScenarioBootstrapRng::new(seed);
-        owner.install_pre_fill_scenario_prefix_plan(&plan).unwrap();
+        let projection = owner
+            .install_pre_fill_scenario_prefix_plan(plan)
+            .unwrap();
         let mut sim = owner.into_simulation(&descriptor(seed));
         let rules = techno_constructor_start_rules();
         initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch);
         let before = sim.scenario_rng.logical_state();
         let slots = normalized_launch_slots(launch.session());
-        project_pre_fill_start_assignment(&mut sim, &slots, plan.assignment());
+        project_pre_fill_start_assignment(&mut sim, &slots, projection.assignment());
         assert_eq!(sim.scenario_rng.logical_state(), before);
         assert_eq!(
             sim.houses
@@ -3322,7 +3519,7 @@ mod tests {
         .unwrap();
 
         let mut owner = ScenarioBootstrapRng::new(seed);
-        owner.install_pre_fill_scenario_prefix_plan(&plan).unwrap();
+        owner.install_pre_fill_scenario_prefix_plan(plan).unwrap();
         let mut sim = owner.into_simulation(&descriptor(seed));
         let mut expected_rng = SimRng::new(u64::from(seed));
         for _ in 0..6 {
@@ -3376,16 +3573,87 @@ mod tests {
         let mut owner = ScenarioBootstrapRng::new(seed);
 
         owner
-            .install_pre_fill_scenario_prefix_plan(&plan)
+            .install_pre_fill_scenario_prefix_plan(plan)
             .expect("fresh bootstrap owner accepts the plan prefix");
-        assert!(
-            owner.install_pre_fill_scenario_prefix_plan(&plan).is_err(),
-            "the same stock-offline prefix cannot be installed twice"
-        );
         let actual = owner.into_simulation(&descriptor(seed)).rng_state();
 
         assert_eq!(actual.scenario, after.logical_state());
         assert_eq!(actual.main, before.logical_state());
+    }
+
+    #[test]
+    fn scenario_prefix_rejects_a_tampered_prestate_before_transfer() {
+        let seed = 0x51C0_1006;
+        let start = Waypoint {
+            index: 0,
+            rx: 40,
+            ry: 40,
+        };
+        let map = one_start_prefix_map(start);
+        let launch = one_player_battle_launch("mp01t4.map");
+        let plan = prepare_stock_offline_scenario_prefix_plan(
+            &launch,
+            &map,
+            &map.waypoints,
+            seed,
+        )
+        .expect("stock Battle prefix");
+        let mut owner = ScenarioBootstrapRng::new(seed);
+        {
+            let (mut scenario_fill, main) = owner.terrain_draws();
+            let _ = scenario_fill.next_range_u32_inclusive(1, 2);
+            drop(main);
+        }
+
+        assert!(matches!(
+            owner.install_pre_fill_scenario_prefix_plan(plan),
+            Err(PreFillScenarioPrefixPlanError::ScenarioRngPrestateMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn staged_simulation_owns_fill_and_generated_replay_without_reconstruction() {
+        use crate::map::construction_trace::{RmgConstructionPhase, RmgConstructionTrace};
+
+        let seed = 0x51C0_1005;
+        let mut reference = SimRng::new(u64::from(seed));
+        let owner = ScenarioBootstrapRng::new(seed);
+        let mut sim = owner.into_simulation(&descriptor(seed));
+        sim.session.binary_frame = 77;
+        let retained_handle = sim.allocate_stable_id();
+
+        {
+            let (mut scenario_fill, mut variant_main) = sim.terrain_load_draws();
+            assert_eq!(
+                scenario_fill.next_range_u32_inclusive(5, 17),
+                reference.next_range_u32_inclusive(5, 17),
+            );
+            let _ = variant_main.next_u32();
+        }
+
+        let mut trace = RmgConstructionTrace::default();
+        trace.push_emitted(
+            RmgConstructionPhase::BridgeRepairHut,
+            "CABHUT".to_string(),
+            0,
+            (10, 11),
+        );
+        let expected_word = (reference.next_u32() & 0xFFFF) as u16;
+        let bindings = sim
+            .replay_staged_generated_construction_trace(&trace)
+            .expect("staged owner replays the accepted constructor event");
+
+        assert_eq!(
+            bindings
+                .entry(0)
+                .expect("emitted constructor binding")
+                .techno_ctor_random_word,
+            expected_word,
+        );
+        assert_eq!(sim.rng_state().scenario, reference.logical_state());
+        assert_eq!(sim.session.binary_frame, 77);
+        assert_eq!(retained_handle, 1);
+        assert_eq!(sim.allocate_stable_id(), 2);
     }
 
     #[test]
@@ -3406,7 +3674,7 @@ mod tests {
         let mut reference = plan.scenario_rng_after_cursor.clone();
         let mut owner = ScenarioBootstrapRng::new(seed);
         owner
-            .install_pre_fill_scenario_prefix_plan(&plan)
+            .install_pre_fill_scenario_prefix_plan(plan)
             .expect("fresh launch owner accepts the Full-Init prefix");
         {
             let (mut scenario_fill, main) = owner.terrain_draws();
@@ -3562,8 +3830,8 @@ mod tests {
             .expect("accepted generated prefix");
         let mut reference = plan.scenario_rng_after_cursor.clone();
         let mut owner = ScenarioBootstrapRng::new(seed);
-        owner
-            .install_pre_fill_scenario_prefix_plan(&plan)
+        let projection = owner
+            .install_pre_fill_scenario_prefix_plan(plan)
             .expect("one authoritative Full-Init prefix");
         {
             let (mut scenario_fill, main) = owner.terrain_draws();
@@ -3664,7 +3932,7 @@ mod tests {
             &terrain,
             &launch,
             &overlays,
-            &plan,
+            &projection,
         );
         assert_eq!(launch_result.spawned_mcvs, 1);
         let starting_techno = sim
@@ -3703,6 +3971,7 @@ mod tests {
             overlay_registry: &overlays,
             house_roster: &house_roster,
             skirmish_session: Some(&launch),
+            tiberium_queues_preinitialized: false,
         });
         assert_eq!(
             output.crates,

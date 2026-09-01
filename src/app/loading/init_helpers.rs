@@ -22,7 +22,10 @@ use crate::render::sprite_atlas::{self, SpriteAtlas};
 use crate::render::tile_atlas::{self, TileAtlas};
 use crate::render::unit_atlas::{self, UnitAtlas};
 use crate::rules::art_data::ArtRegistry;
-use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
+use crate::rules::ini_parser::{
+    IniFile, NativeTypeConstructionTrace, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack,
+};
+use crate::rules::process_owner::NativeRulesProcessOwner;
 use crate::rules::ruleset::RuleSet;
 
 use crate::sim::world::Simulation;
@@ -246,23 +249,43 @@ pub(crate) fn theater_ext_for(theater_name: &str) -> &'static str {
 pub(crate) struct LoadedRules {
     rules: RuleSet,
     processed_ini: IniFile,
+    native_type_construction_trace: NativeTypeConstructionTrace,
+    fixed_art_ini: IniFile,
 }
 
 impl LoadedRules {
     fn from_processed(
         processed: ProcessedRulesLayers,
+        fixed_art_ini: IniFile,
     ) -> Result<Self, crate::rules::error::RulesError> {
         let rules = RuleSet::from_processed_rules(&processed)?;
         debug_assert_eq!(rules.source_ini_hash(), processed.content_hash());
+        let (processed_ini, native_type_construction_trace) =
+            processed.into_ini_and_native_type_construction_trace();
         Ok(Self {
             rules,
-            processed_ini: processed.into_ini(),
+            processed_ini,
+            native_type_construction_trace,
+            fixed_art_ini,
         })
     }
 
-    pub(crate) fn into_parts(self) -> (RuleSet, IniFile) {
-        (self.rules, self.processed_ini)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RuleSet,
+        IniFile,
+        NativeTypeConstructionTrace,
+        IniFile,
+    ) {
+        (
+            self.rules,
+            self.processed_ini,
+            self.native_type_construction_trace,
+            self.fixed_art_ini,
+        )
     }
+
 }
 
 /// Compose the active YR rules passes in retail order.
@@ -271,7 +294,8 @@ fn compose_rules_layers(
     langrule: Option<&IniFile>,
     mode: Option<&IniFile>,
     map: Option<&IniFile>,
-) -> ProcessedRulesLayers {
+    fixed_art: &IniFile,
+) -> Result<ProcessedRulesLayers, crate::rules::error::RulesError> {
     let mut layers = RulesLayerStack::new(rulesmd);
     if let Some(langrule) = langrule {
         layers.push(RulesLayerKind::LangRule, langrule.clone());
@@ -282,7 +306,7 @@ fn compose_rules_layers(
     if let Some(map) = map {
         layers.push(RulesLayerKind::Scenario, map.clone());
     }
-    layers.process()
+    layers.process_with_fixed_art(fixed_art)
 }
 
 fn load_retail_rules_root(asset_manager: &AssetManager) -> Option<(IniFile, Option<IniFile>)> {
@@ -302,9 +326,91 @@ fn load_retail_rules_root(asset_manager: &AssetManager) -> Option<(IniFile, Opti
     Some((rulesmd, langrule))
 }
 
-pub(crate) fn load_retail_rules_source(asset_manager: &AssetManager) -> Option<IniFile> {
+/// Cold-start native Rules authority plus the one shell compatibility
+/// projection derived from the same selected INI snapshots.
+pub(crate) struct StartupRulesLoad {
+    compatibility_rules: Option<RuleSet>,
+    compatibility_projection: Option<IniFile>,
+    native_owner: NativeRulesProcessOwner,
+}
+
+impl StartupRulesLoad {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Option<RuleSet>,
+        Option<IniFile>,
+        NativeRulesProcessOwner,
+    ) {
+        (
+            self.compatibility_rules,
+            self.compatibility_projection,
+            self.native_owner,
+        )
+    }
+}
+
+/// Select RULESMD/LANGRULE/ARTMD once and reproduce cold native construction.
+///
+/// The shell-facing projection is deliberately separate. If its typed Rust
+/// parse fails, native process ownership still survives instead of being
+/// reconstructed later from a `RuleSet`.
+pub(crate) fn load_startup_rules(asset_manager: &AssetManager) -> Option<StartupRulesLoad> {
     let (rulesmd, langrule) = load_retail_rules_root(asset_manager)?;
-    Some(compose_rules_layers(rulesmd, langrule.as_ref(), None, None).into_ini())
+    let fixed_art = load_retail_ini(asset_manager, "artmd.ini").or_else(|| {
+        log::warn!("artmd.ini not found or could not be parsed during native rules startup");
+        None
+    })?;
+    let native_owner = NativeRulesProcessOwner::from_cold_start_sources(
+        rulesmd,
+        langrule,
+        fixed_art,
+    )
+    .map_err(|error| log::warn!("Native rules cold startup failed: {error}"))
+    .ok()?;
+
+    let (compatibility_rules, compatibility_projection) =
+        match native_owner.startup_compatibility_projection() {
+            Ok(processed) => {
+                let compatibility_rules = RuleSet::from_processed_rules(&processed)
+                    .map_err(|error| {
+                        log::warn!("Failed to parse startup rules projection: {error}")
+                    })
+                    .ok();
+                let compatibility_projection =
+                    processed.into_projection_discarding_native_receipt();
+                (compatibility_rules, Some(compatibility_projection))
+            }
+            Err(error) => {
+                log::warn!("Failed to build startup rules projection: {error}");
+                (None, None)
+            }
+        };
+
+    Some(StartupRulesLoad {
+        compatibility_rules,
+        compatibility_projection,
+        native_owner,
+    })
+}
+
+fn load_retail_rules_source_with_fixed_art(
+    asset_manager: &AssetManager,
+) -> Option<(IniFile, IniFile)> {
+    let (rulesmd, langrule) = load_retail_rules_root(asset_manager)?;
+    let fixed_art = load_retail_ini(asset_manager, "artmd.ini")?;
+    let processed = compose_rules_layers(
+        rulesmd,
+        langrule.as_ref(),
+        None,
+        None,
+        &fixed_art,
+    )
+    .ok()?;
+    Some((
+        processed.into_projection_discarding_native_receipt(),
+        fixed_art,
+    ))
 }
 
 /// Load the distinct active-YR AI definition root.
@@ -350,13 +456,22 @@ pub(crate) fn load_rules_with_merged_ini(
     })?;
     let langrule_sections = langrule.as_ref().map(IniFile::section_count);
     let mode_sections = mode_rules_override.map(IniFile::section_count);
+    // `Load_Game_Rules @ 0x0052CD70` selects one standalone ARTMD.INI before
+    // the first Rules Process call. Keep that exact snapshot beside the trace
+    // so downstream ArtRegistry construction cannot observe a second read.
+    let fixed_art_ini = load_retail_ini(asset_manager, "artmd.ini").or_else(|| {
+        log::warn!("artmd.ini not found or could not be parsed before Rules processing");
+        None
+    })?;
 
     let processed = compose_rules_layers(
         ini,
         langrule.as_ref(),
         mode_rules_override,
         map_rules_overrides,
-    );
+        &fixed_art_ini,
+    )
+    .ok()?;
 
     if let Some(sections) = langrule_sections {
         log::info!("Processed {} langrule.ini section(s)", sections);
@@ -372,7 +487,7 @@ pub(crate) fn load_rules_with_merged_ini(
         );
     }
 
-    match LoadedRules::from_processed(processed) {
+    match LoadedRules::from_processed(processed, fixed_art_ini) {
         Ok(loaded) => {
             log::info!("RuleSet: {} objects loaded", loaded.rules.object_count());
             Some(loaded)
@@ -382,46 +497,6 @@ pub(crate) fn load_rules_with_merged_ini(
             None
         }
     }
-}
-
-/// Load the merged rules for callers that do not need the transient source.
-pub(crate) fn load_rules_ini(
-    asset_manager: &AssetManager,
-    mode_rules_override: Option<&IniFile>,
-    map_rules_overrides: Option<&IniFile>,
-) -> Option<RuleSet> {
-    load_rules_with_merged_ini(asset_manager, mode_rules_override, map_rules_overrides)
-        .map(|loaded| loaded.into_parts().0)
-}
-
-/// Seed dialog 0x102's Credits/Unit Count trackbar bounds from
-/// `[MultiplayerDialogSettings]`, mirroring gamemd reading MinMoney/MaxMoney/
-/// MoneyIncrement and MinUnitCount/MaxUnitCount from the live Rules instance when
-/// it builds the skirmish dialog. The startup RULESMD/LANGRULE passes are the
-/// authority. Falls back to stock constants only when retail data is unavailable.
-pub(crate) fn load_skirmish_trackbar_bounds(
-    asset_manager: &AssetManager,
-) -> crate::ui::skirmish_shell::SkirmishTrackbarBounds {
-    use crate::ui::skirmish_shell::SkirmishTrackbarBounds;
-
-    let Some(ini) = load_retail_rules_source(asset_manager) else {
-        return SkirmishTrackbarBounds::default();
-    };
-    SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini)
-}
-
-/// Seed the per-match option values from `[MultiplayerDialogSettings]`,
-/// mirroring the original reading this section once into the rules data that
-/// both the skirmish setup dialog and the launched match read from.
-pub(crate) fn load_skirmish_game_options(
-    asset_manager: &AssetManager,
-) -> crate::sim::game_options::GameOptions {
-    use crate::sim::game_options::GameOptions;
-
-    let Some(ini) = load_retail_rules_source(asset_manager) else {
-        return GameOptions::default();
-    };
-    GameOptions::from_multiplayer_dialog_settings(&ini)
 }
 
 fn load_retail_ini(asset_manager: &AssetManager, name: &str) -> Option<IniFile> {
@@ -439,10 +514,7 @@ fn load_retail_ini(asset_manager: &AssetManager, name: &str) -> Option<IniFile> 
 pub(crate) fn load_neutral_tech_types(
     asset_manager: &AssetManager,
 ) -> Vec<crate::map::rmg::phases::tech_buildings::TechType> {
-    let (Some(rules), Some(art)) = (
-        load_retail_rules_source(asset_manager),
-        load_retail_ini(asset_manager, "artmd.ini"),
-    ) else {
+    let Some((rules, art)) = load_retail_rules_source_with_fixed_art(asset_manager) else {
         log::warn!("random map: rules/art INI unavailable; placing no neutral tech buildings");
         return Vec::new();
     };
@@ -452,28 +524,6 @@ pub(crate) fn load_neutral_tech_types(
         types.len()
     );
     types
-}
-
-/// Load the fixed active-YR ARTMD.INI into the art registry.
-pub(crate) fn load_art_ini(asset_manager: &AssetManager) -> Option<(ArtRegistry, IniFile)> {
-    let ini = load_retail_ini(asset_manager, "artmd.ini").or_else(|| {
-        log::warn!("artmd.ini not found or could not be parsed");
-        None
-    })?;
-    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
-    log::info!("ArtRegistry: {} entries loaded", reg.len());
-    Some((reg, ini))
-}
-
-/// Preserve the pre-existing SystemTime mix for explicitly unverified legacy
-/// and generic loads. Accepted ordinary Windows startup never calls this path;
-/// it carries the one stored `GetTickCount` word from `match_bootstrap`.
-pub(crate) fn generate_unverified_legacy_match_seed() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    now.subsec_nanos() ^ (now.as_secs() as u32).rotate_left(16)
 }
 
 /// Scheduler asset roots required by this map's surviving runtime objects.
@@ -581,7 +631,9 @@ pub(crate) fn construct_app_scenario<F>(
 where
     F: FnOnce(&mut Simulation),
 {
-    let mut sim = crate::sim::runtime::construct_scenario_with_generated_inits(
+    let mut sim = bootstrap_rng.into_simulation(descriptor);
+    populate_staged_app_scenario(
+        &mut sim,
         map_data,
         resolved_terrain,
         theater_name,
@@ -592,10 +644,61 @@ where
         overlay_grid,
         bridge_destroyability_mode,
         descriptor,
-        bootstrap_rng,
         generated_inits,
         initialize_houses_before_objects,
     )?;
+    bind_staged_app_scenario_metadata(&mut sim, asset_manager, rules, art);
+    Ok(sim)
+}
+
+/// Populate the already-staged gameplay owner with map object sections.
+///
+/// The caller creates this exact Simulation before Fill and keeps it through
+/// authored overlay finalization.  This helper deliberately cannot construct a
+/// replacement owner.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn populate_staged_app_scenario<F>(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    resolved_terrain: &ResolvedTerrainGrid,
+    theater_name: &str,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    bridge_destroyability_mode: BridgeDestroyabilityMode,
+    descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    generated_inits: Option<&crate::sim::world::GeneratedTechnoInitTable>,
+    initialize_houses_before_objects: F,
+) -> Result<(), crate::sim::world::GeneratedTechnoInitError>
+where
+    F: FnOnce(&mut Simulation),
+{
+    crate::sim::runtime::populate_staged_scenario_with_generated_inits(
+        sim,
+        map_data,
+        resolved_terrain,
+        theater_name,
+        rules,
+        art,
+        height_map,
+        overlay_registry,
+        overlay_grid,
+        bridge_destroyability_mode,
+        descriptor,
+        generated_inits,
+        initialize_houses_before_objects,
+    )
+}
+
+/// Attach app-only, GPU-free metadata after staged gameplay construction.
+pub(crate) fn bind_staged_app_scenario_metadata(
+    sim: &mut Simulation,
+    asset_manager: &AssetManager,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+) {
     // F09: HVA frame counts are sim metadata — parse them through the GPU-free
     // catalog before any atlas exists, so the renderer never writes into the
     // simulation. Atlas seeding derives its own copy from the same functions.
@@ -607,7 +710,6 @@ where
         art,
     );
     sim.update_voxel_anim_frame_counts(&frame_catalog);
-    Ok(sim)
 }
 
 /// Build voxel + SHP sprite atlases for an already-constructed simulation.
@@ -774,7 +876,9 @@ mod tests {
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::TerrainTileAnimation;
     use crate::rules::art_data::ArtRegistry;
-    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ini_parser::{
+        IniFile, NativeTypeConstructorFamily, RulesLayerStack,
+    };
     use crate::rules::ruleset::RuleSet;
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
     use crate::sim::components::Health;
@@ -1097,7 +1201,9 @@ mod tests {
     fn langrule_overlays_standalone_rulesmd() {
         let rulesmd = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
         let langrule = IniFile::from_str("[General]\nBuildSpeed=.58\n");
-        let processed = compose_rules_layers(rulesmd, Some(&langrule), None, None);
+        let fixed_art = IniFile::from_str("");
+        let processed = compose_rules_layers(rulesmd, Some(&langrule), None, None, &fixed_art)
+            .expect("Rules layers process");
         let ini = processed.ini();
         assert_eq!(
             ini.section("General").unwrap().get("BuildSpeed"),
@@ -1117,7 +1223,15 @@ mod tests {
         let langrule = IniFile::from_str("[General]\nBuildSpeed=.58\n");
         let mode = IniFile::from_str("[General]\nBuildSpeed=1\nFlightLevel=1200\n");
         let map = IniFile::from_str("[General]\nFlightLevel=900\n");
-        let processed = compose_rules_layers(rulesmd, Some(&langrule), Some(&mode), Some(&map));
+        let fixed_art = IniFile::from_str("");
+        let processed = compose_rules_layers(
+            rulesmd,
+            Some(&langrule),
+            Some(&mode),
+            Some(&map),
+            &fixed_art,
+        )
+        .expect("Rules layers process");
         let ini = processed.ini();
 
         let general = ini.section("General").unwrap();
@@ -1142,10 +1256,19 @@ mod tests {
              [TIB01]\nTiberium=yes\n",
         );
 
-        let processed = compose_rules_layers(rulesmd, Some(&langrule), Some(&mode), Some(&map));
+        let fixed_art = IniFile::from_str("");
+        let processed = compose_rules_layers(
+            rulesmd,
+            Some(&langrule),
+            Some(&mode),
+            Some(&map),
+            &fixed_art,
+        )
+        .expect("Rules layers process");
         let expected_hash = processed.content_hash();
-        let loaded = LoadedRules::from_processed(processed).expect("paired rules");
-        let (rules, merged_ini) = loaded.into_parts();
+        let loaded = LoadedRules::from_processed(processed, fixed_art).expect("paired rules");
+        let (rules, merged_ini, _native_type_construction_trace, _fixed_art_ini) =
+            loaded.into_parts();
         let registry = OverlayTypeRegistry::from_ini(&merged_ini, None);
 
         assert_eq!(rules.tiberium_types.types()[0].section, "Riparius");
@@ -1156,6 +1279,59 @@ mod tests {
         assert_eq!(registry.name(1), Some("GASAND"));
         assert!(registry.flags(0).is_some_and(|flags| flags.tiberium));
         assert_eq!(rules.source_ini_hash(), expected_hash);
+    }
+
+    #[test]
+    fn loaded_rules_moves_one_native_receipt_and_the_same_fixed_art_snapshot() {
+        let fixed_art = IniFile::from_str("[ROOT]\nNext=TAIL\n");
+        let processed = RulesLayerStack::new(IniFile::from_str(
+            "[SuperWeaponTypes]\n0=SW\n\
+             [VehicleTypes]\n0=UNIT\n\
+             [Animations]\n0=ROOT\n\
+             [Tiberiums]\n0=TIB\n\
+             [TIB]\nDebris=DEBRIS\n\
+             [UNIT]\nPrimary=GUN\n\
+             [GUN]\nProjectile=SHELL\n",
+        ))
+        .process_with_fixed_art(&fixed_art)
+        .expect("paired Rules and fixed Art process");
+        let expected_rules_hash = processed.content_hash();
+        let expected_art_hash = fixed_art.content_hash();
+        let expected_events = processed
+            .native_type_construction_trace()
+            .events()
+            .iter()
+            .map(|event| (event.family(), event.native_stored_id().to_string()))
+            .collect::<Vec<_>>();
+
+        let loaded = LoadedRules::from_processed(processed, fixed_art)
+            .expect("LoadedRules owns the exact receipt");
+        let (rules, _processed_ini, trace, transported_art) = loaded.into_parts();
+
+        assert_eq!(rules.source_ini_hash(), expected_rules_hash);
+        assert_eq!(transported_art.content_hash(), expected_art_hash);
+        assert_eq!(
+            trace
+                .events()
+                .iter()
+                .map(|event| (event.family(), event.native_stored_id().to_string()))
+                .collect::<Vec<_>>(),
+            expected_events,
+        );
+        assert_eq!(trace.allocated_super_weapon_type_count(), 1);
+        assert_eq!(
+            trace
+                .registry_state()
+                .family_len(NativeTypeConstructorFamily::SuperWeaponType),
+            1,
+        );
+        assert_eq!(
+            trace
+                .registry_state()
+                .family_len(NativeTypeConstructorFamily::AnimType),
+            3,
+        );
+        assert_eq!(trace.registry_state().tiberium_slot_count(), 1);
     }
 
     #[test]
@@ -1174,7 +1350,8 @@ mod tests {
         let map = IniFile::from_str("[GASAND]\nTiberium=yes\n");
         let loaded = load_rules_with_merged_ini(&assets, None, Some(&map))
             .expect("retail merged rules pair");
-        let (rules, merged_ini) = loaded.into_parts();
+        let (rules, merged_ini, _native_type_construction_trace, _fixed_art_ini) =
+            loaded.into_parts();
         let merged_registry = OverlayTypeRegistry::from_ini(&merged_ini, None);
 
         assert_eq!(merged_registry.id_for_name("GASAND"), Some(0));
@@ -1202,8 +1379,14 @@ mod tests {
             load_rules_with_merged_ini(&assets, None, None).expect("retail no-map rules pair");
         let with_map = load_rules_with_merged_ini(&assets, None, Some(&map))
             .expect("retail MountMoras rules pair");
-        let (no_map_rules, no_map_ini) = no_map.into_parts();
-        let (map_rules, map_ini) = with_map.into_parts();
+        let (
+            no_map_rules,
+            no_map_ini,
+            _no_map_native_type_construction_trace,
+            _no_map_fixed_art_ini,
+        ) = no_map.into_parts();
+        let (map_rules, map_ini, _map_native_type_construction_trace, _map_fixed_art_ini) =
+            with_map.into_parts();
 
         assert_eq!(
             no_map_rules

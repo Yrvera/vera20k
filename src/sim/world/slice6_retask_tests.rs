@@ -326,9 +326,14 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
 // Re-baselined 2026-09-01 for v114's unconditional raw 256-slot crate authority.
 // The dedicated pre-v114 probe reproduces the prior current baseline exactly;
 // this fixture's behavior and record/replay equality remain unchanged.
+// Re-baselined 2026-09-01 for v115's retained wall-neighbor count authority mode and
+// shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
+// prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
+// current-schema composition moved.
 const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x214E_DE3E_7939_F143;
 const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x4397_FA88_D95E_5208;
-const SLICE6_BASELINE_HASH: u64 = 0xE61A_9D19_669A_1B9C;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE61A_9D19_669A_1B9C;
+const SLICE6_BASELINE_HASH: u64 = 0x7E57_DD5F_060A_C42E;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -407,9 +412,10 @@ fn replay_hash_stable_through_slice6() {
     let pre_mission_hash = sim.state_hash_without_mission_v29();
     let pre_base_plan_hash = sim.state_hash_without_base_plan_v110();
     let pre_crate_authority_hash = sim.state_hash_without_crate_authority_v114();
+    let pre_wall_runtime_hash = sim.state_hash_without_wall_runtime_v115();
     let hash = sim.state_hash();
     println!(
-        "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},current:{hash:016X}"
+        "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X},current:{hash:016X}"
     );
     assert_eq!(
         pre_lifecycle_hash, SLICE6_PRE_LIFECYCLE_V28_HASH,
@@ -426,6 +432,10 @@ fn replay_hash_stable_through_slice6() {
     assert_eq!(
         pre_crate_authority_hash, SLICE6_PRE_CRATE_AUTHORITY_V114_HASH,
         "the dedicated pre-v114 probe must reproduce the prior Slice 6 current baseline"
+    );
+    assert_eq!(
+        pre_wall_runtime_hash, SLICE6_PRE_WALL_RUNTIME_V115_HASH,
+        "the dedicated pre-v115 probe must reproduce the prior Slice 6 current baseline"
     );
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,

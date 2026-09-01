@@ -468,6 +468,7 @@ mod tests {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                native_unique_id: None,
                 in_logic_vector: false,
                 type_ref: InternedId::from_index(0),
                 rx: 7,

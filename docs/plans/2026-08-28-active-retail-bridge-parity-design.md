@@ -8,9 +8,9 @@ The result must preserve behavior that already matches, replace behavior that co
 
 ## Status and Scope Decision
 
-**Revision 15 is APPROVED by a fresh read-only design review on 2026-08-30 with no material findings. P0-R1 implementation is authorized; transaction 3 and every later transaction remain gated by P0-R1 merge and their own current evidence contracts.**
+**Revision 21 is TRANSACTION-3-SLICE-A-LANDED. PR #207 (`feature/bridge-authored-overlay-finalization`, merged with `main` @ `15a48e55`) carries the fresh authored load corridor: the one y-outer/x-inner OverlayPack/OverlayData transaction with the ephemeral Overlay object lifecycle, ordinary/high/low/wall Mark, Land-5 germination, the unconditional drain, the first anti-diagonal Recalc with per-Mark/first-sweep terrain Anims, the consumed-once finalized identity/state/authored-wall-count payload, Terrain/growth-then-spread-queue/Techno/Smudge native-ID ordering, scalar deletion and the final unlatch/Recalc sweep, the synchronous wall-mutation host, and both production ingresses (`load_map_from_initial` authored arm and `headless_scenario::load`). Its critic chain is wall critic 1 NEEDS_FIX on `95f77159`, wall critic 2 PASS on `da38da27`, and full-slice critic 3 PASS on the merged HEAD with zero blocking findings and six recorded residuals (below). Transaction 3 remains the active transaction: G10 (generated phase journal), G11 (preview lifetime), the value-only `MapClass+0x134` aggregate, the ancillary `InitCellAttributes` slot seam, the `None` retained-plane rejection gate, the CellAnim tiberium remap/ZAdjust child fields, and the newly found post-`Full_Init` OreTwinkle Scenario draws (OQ-37) stay open, so no `BR-M` row closes here.**
 
-`docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows and 31 explicit open questions; the tenth pass added nothing. The working inventory is nevertheless living: before every transaction it is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
+`docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows; the living inventory now has 37 explicit questions (OQ-37 was opened by PR #207's fresh critic). OQ-34 closed the complete pre-map native-ID prefix, while the same zero-add pass reopened and then routed the terminal raw `0x100000`/`0x200000` clear/restamp and ordinary-cell LightConvert recomputation as OQ-35/OQ-36. The tenth broad pass added nothing. Before every transaction the inventory is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
 
 The fourth review's random-map blocker and the Revision-4/Revision-5 critics' launch, projection,
 trace-schema and authored-constructor blockers are closed by
@@ -36,36 +36,46 @@ closure gates. A transaction may supply part of more than one mechanism, and a m
 more than one transaction; neither fact permits a mechanism to inherit another row's pass.
 
 Current implementation baseline is freshly fetched `origin/main` commit
-`33a91dae6108868ed8dd52640ca9ec0f387a8e7b` (2026-08-30), with PR #170 merge
-`f4baff6e` confirmed as an ancestor. PR #170 merged P0, transaction 1 (load inputs/raw facts), and
+`15a48e5528` (2026-09-01, PR #209 crate authority) plus PR #207's authored load corridor,
+with PR #170 merge `f4baff6e` confirmed as an ancestor. PR #170 merged P0, transaction 1 (load inputs/raw facts), and
 transaction 2 (RMG low-bridge launch construction), including their focused validation and critic
-corrections. Later merged work also changed ground-height ownership, Drive/Ship slope handling,
-radar-overlay projection, FNPC bridge projection, waypoint handling, final House `BasePlan`/AI state,
-snapshot schema v113, lifecycle/deploy seams, and bridge-harness hashes. No post-`a3e4ce9a` merge
-closed a remaining core bridge, Tube, RMG, pathfinding, combat, or render mechanism. Those changes are
-evidence to preserve, not proof that any remaining `BR-M` row is closed. Before each remaining
-transaction is contracted, its builder runs a fresh direct disparity scan against then-current
-`main`; stale Rust gap descriptions in the bounded coverage report are historical hypotheses only.
+corrections. PR #196 then merged P0-R1's universal stock-offline Scenario prefix, accepted-RMG
+active-waypoint ownership, one post-Fill cursor, and its fresh critic corrections. Later merged work
+also changed ground-height ownership, Drive/Ship slope handling, radar-overlay projection, FNPC
+bridge projection, final House `BasePlan`/AI state, snapshot schema v113, lifecycle/deploy seams, and
+bridge-harness hashes. PR #197 added only Team-AI INI tests and did not touch a transaction-3 owner.
+PR #207 landed transaction 3's authored OverlayPack, procedural low Mark, finalized-payload, and
+two-Recalc-boundary work for authored sources; main's later crate authority (PR #209) is merged
+underneath it with distinct snapshot/hash schema steps (v114 crate slots, v115 retained wall plane and
+shared-dummy overlay word). Those changes are evidence to preserve, not proof that any remaining
+`BR-M` row is closed. Before each remaining transaction is
+contracted, its builder runs a fresh direct disparity scan against then-current `main`; stale Rust
+gap descriptions in the bounded coverage report are historical hypotheses only.
 
-Living status at this baseline is explicit. P0 and transactions 1 and 2 are merged. BR-M02 and
-BR-M03 passed their bounded PR #170 gates but remain subject to the final reverse audit. BR-M01,
+Living status at this baseline is explicit. P0, P0-R1, and transactions 1 and 2 are merged. BR-M02
+and BR-M03 passed their bounded PR #170 gates but remain subject to the final reverse audit. BR-M01,
 BR-M06, and BR-M24 have landed contributions but remain open at their routed later consumer or
-reverse-audit gates. P0-R1 is the active transaction: its first fresh implementation critic reopened
-accepted-RMG active-waypoint ownership because the builder retained staging for Gather but let the
-regenerated table own loading markers and session/hash. The correction now routes the consumed-once
-active Scenario copy through both consumers; P0-R1 remains open until a subsequent fresh critic
-passes and its PR merges. Every other required contribution remains open, and GSI-04.12, GSI-04.13,
-GSI-04.14, and GSI-04.15 remain aggregate-open until all of their mechanisms and cross-system
-consumers pass. This ledger is replaced with current evidence after each merged transaction rather
-than appended as historical prose.
+reverse-audit gates. Transaction 3 is active: its nine completed 2026-08-31 native reports close the exact
+source/context gate, synchronous high/low/ordinary traversal, dummy field surface, ordinary
+tiberium germination, OverlayData overwrite, authored pre/post-object animation lifecycle, and
+generated staged Recalc/animation/resource finalization, including the active preview-native
+Building/Anim/ID/sound lifetime across replacement, Cancel, re-entry, and accepted launch, plus the
+real authored Overlay object/registry/deferred-drain/slope-survivor lifecycle. A later focused wall
+report additionally proves authored ScenarioInit success, active-retail wall reachability, and the
+retained blocker-neighbor count plane that final identities cannot reconstruct. They also
+reopen Revision 15's one-sweep and dummy-Land/zone/cache assumptions. PR #207 delivered the
+authored contributions of G1-G9, G12, and G13 through a passed fresh critic chain; the remaining
+transaction-3 work is the residual ledger below (G10, G11, `MapClass+0x134`, ancillary slots, the
+`None`-plane gate, CellAnim child fields, and OQ-37). GSI-04.12, GSI-04.13, GSI-04.14, and GSI-04.15 remain
+aggregate-open until all of their mechanisms and cross-system consumers pass. This ledger is
+replaced with current evidence after each merged transaction rather than appended as historical
+prose.
 
-The completed P0-R1 reinvestigation disproves Revision 9's eligible/ineligible split. Current `main`
-does not reproduce the active stock-offline prefix even when a `PreloadedBattleStartPlan` exists:
-native runs a first disposable House construction pass, both active mode Gather callbacks, a zero-draw
-House/type reset, and a second final House construction pass before terrain Fill. P0-R1 must replace
-the optional Battle-only plan with the universal stock-offline transaction below and pass an
-independent builder/critic cycle before transaction 3. The follow-up all-context audit now proves
-the remaining boundary: campaign uses a single `[Houses]`-driven pass; LAN and WOL retain both House
+The merged P0-R1 correction replaced Revision 9's eligible/ineligible split. Current `main` now
+reproduces the active stock-offline first disposable House pass, both active mode Gather callbacks,
+zero-draw House/type reset, second final House pass, and one exact cursor handoff before terrain Fill.
+The follow-up all-context audit proves the remaining transaction-3 boundary: campaign uses a single
+`[Houses]`-driven pass; LAN and WOL retain both House
 passes plus common `+0x80`, with LAN using selected `+0x84` and WOL state `2` using common
 `AssignStartingPoints` as the second Gather/chooser; replay inherits its recorded campaign/
 noncampaign family; stream restore and generated `.SED` do not run Mark; and shipped
@@ -109,8 +119,10 @@ The repository already has the correct broad dependency direction, but bridge au
 - `src/map/resolved_terrain.rs` projects TMP, overlay, level and bridge facts into resolved cells.
 - `src/map/tube_facts.rs` and `src/map/tubes.rs` own explicit tube data.
 - `src/map/rmg/` owns separately seeded MapGen decisions and emits an ordered
-  `RmgConstructionTrace` containing every CABHUT/neutral-Techno attempt, including discarded ones.
-  The shell-preview or gameplay-load caller applies that trace to its own Scenario RNG.
+  `RmgConstructionTrace` containing every actual constructed CABHUT and every Neutral-Techno
+  construction, including discarded Neutral-Tech placement failures. A failed CABHUT site search
+  occurs before construction and emits no trace event. The shell-preview or gameplay-load caller
+  applies that trace to its own Scenario RNG.
 
 These modules may feed simulation, but they must not depend on it. Low Road overlays, structural high-bridge flags, and TubeClass records remain separate inputs.
 
@@ -204,60 +216,181 @@ Where a consumer currently receives an impoverished Boolean, extend that consume
    RNG. Keep Randomize and derived-option draws on Main RNG. Neither path uses MapGen.
 2. Each Generate call begins with a fresh MapGen object seeded from `MapSeed+0x74`; it never starts
    from the prior preview continuation. The pure geometry job returns its map payload, MapGen
-   continuation and an `RmgConstructionTrace` whose stable ordinals record every native constructor
-   attempt in generator order. Each event contains phase (`BridgeRepairHut` or `NeutralTech`), type
-   identity, and `Discarded` or `Emitted { entity_index, cell }` outcome. A discarded event carries
-   no invented cell: active neutral-Technos are constructed before their placement loops and can
-   fail without a native final cell. Successful output rows alone are not a sufficient reconstruction.
-3. Preview replays the trace against `OfflineSkirmishRuntime`'s existing shell Scenario cursor.
-   Every event consumes one raw word. Discarded events drop the low word; emitted events create a
-   display-only binding for the stable entity index. The returned cursor replaces the shell cursor
-   even if the candidate is later cancelled.
-4. A second Generate replaces the candidate and resets MapGen from the current map seed while
-   continuing the already-advanced shell Scenario cursor. Use Map with a valid preview performs no
-   third generation. Common teardown writes `RandMap.img`; Cancel preserves the returned shell RNG
-   and commits neither `.SED` nor sentinel, while accepted result `1` writes `RandMap.Sed`, rebuilds
-   the chooser preview, and commits the ordinary sentinel selection.
-5. The accepted preview map and its MapGen continuation are UI/file artifacts, never gameplay map
-   authority. Successful Start has exactly one *logical* gameplay Scenario stream beginning at the
-   match seed. Before terrain Fill, every active stock offline noncampaign mode performs the complete
-   two-House-pass/two-Gather transaction defined below. Rust may partially evaluate that transaction
-   into one immutable `PreFillScenarioPrefixPlan`, including default-cell deficient-start retries,
-   only under the full-state equivalence proof below. `LoadingRequest` retains the consumed-once plan
-   and `MapLoadInitial` constructs the sole downstream `ScenarioBootstrapRng` from the same match
-   seed before adopting its validated continuation.
-6. `.SED` reader success runs a second complete generator call from the stored map seed. Native
-   launch enters `Full_Init` before the generator's bridge/CABHUT/neutral-Techno phases. Rust matches
-   this nesting by continuing the one logical Scenario stream through the complete pre-Fill prefix, terrain
-   Fill, and then the launch `RmgConstructionTrace`. `into_simulation` transfers that cursor so
-   Post-Map and gameplay consumers continue it. No independently seeded parallel authority,
-   unchecked cursor substitution, or second downstream continuation is permitted.
-7. Launch replay builds a `GeneratedTechnoInitTable` keyed by stable generated entity index. A
-   successful event stores the consumed low word as `techno_ctor_random_word`; a discarded event has
-   no binding. `MapLoadInitial` carries the completed table to projection.
+   continuation and a consumed-once phase-aware extension of `RmgConstructionTrace`. That transport
+   retains invocation-specific staged state, generator cell deltas, every native Recalc/
+   InitCellAttributes boundary, and stable-ordinal Building records, rather than only final cells or
+   a flat entity list. Launch includes the staged synthetic-Full_Init branch; preview does not.
+   Each Building record is an actual native constructor in generator order and
+   contains phase (`BridgeRepairHut` or
+   `NeutralTech`), type identity, and a phase-constrained outcome. Neutral-Tech construction may be
+   `Discarded` or `Emitted { entity_index, cell }`; a discarded event carries no invented cell
+   because construction precedes its placement loop. CABHUT site search precedes construction:
+   a failed search emits no event or constructor effect, while a constructed stock CABHUT is
+   `Emitted`. Successful output rows alone are not a sufficient reconstruction because they omit
+   discarded Neutral-Tech constructors.
+3. Preview consumes the complete phase-aware transport against a process/shell-owned
+   `PreviewNativeLifecycle` (or equivalent) that outlives the dialog presentation candidate. Preview
+   passes argument `1` and takes `ScenarioClass::Set_Defaults` plus manual map setup; it never takes
+   launch `Full_Init`, `Clear_Scene`, or the map-read `+10,000` reservation. Because
+   `g_GameActive == 1`, preview Buildings and tile Anims are ordinary active registered objects:
+   Unlimbo, Display/Logic/Anim registration, cell latches, and admitted sounds all run. On every
+   Generate, first free the prior spread queue and then the growth queue, then set the independent
+   native numeric-ID counter to `1,000,000` *before* replacement cleanup without rewinding the shell
+   Scenario RNG. An exact storage-key match performs no setup `AssignUniqueID`: its first new object
+   can receive `1,000,001` while retained Type, House, Super, real/dummy Cell, Anim, and other
+   untouched Abstract objects keep colliding numeric IDs on separate collision-free handles. A
+   missing/changed key consumes the exact wrapping prefix
+   `R(W,H) + |P_preview| + HB(H_preview,S_preview) + K_preview`, where
+   `R(W,H)=H*(2W-1)+1`, `HB(H,S)=H*(1+S)`, and active retail has `K_preview=0`
+   because all 176 theater rows/20 distinct TileAnim names already exist in `[Animations]`. From that
+   proved post-setup cursor, every actual Building constructor consumes
+   one raw Scenario word followed by one preincremented `native_unique_id`; each eligible Recalc Anim
+   consumes/registers its native ID before an optional custom RandomRate Scenario draw, while active
+   stock TileAnim still consumes an ID/registration/sound lifecycle with zero RandomRate. Failed
+   CABHUT pre-searches consume nothing; constructed-but-discarded Neutral-Tech objects consume both
+   effects but bind no generated entity. Collision-free Rust runtime handles remain separate from
+   native numeric IDs and may not reject or skip a duplicate native value.
+4. Replacement uses only the existing four-field normalized width/height/theater/player-count storage
+   key. A missing snapshot or changed key performs full old-object/Anim/sound cleanup after the ID
+   reset, then Resize constructs every real Size-diamond Cell in row-major order plus the shared dummy
+   Cell last, then replays the source-ordered first-new ID-bearing Type events, House/Super blocks, and
+   theater allocation arm before later preview objects. A matching key skips all four prefix families
+   and consumes zero new Cell IDs; it selectively deletes Unit/Infantry/Building/Terrain but retains
+   old final terrain Anims, latches, and sounds through intermediate generator
+   Recalcs; newly eligible unlatch cells may create new Anims, so reset numeric IDs can temporarily
+   duplicate IDs still held by old Anims. Terminal `InitCellAttributes(1)` scalar-deletes marked
+   old/new Anims in live registry order, releases their handles/latches, and recreates the final set
+   in the proved anti-diagonal order. Preview preserves CABHUT-before-first-Recalc, every later
+   generator Recalc, pre-final growth-then-spread queue initialization, and terminal argument-1
+   processing; those final queues persist across Cancel/no-Generate re-entry, and the next Generate
+   replaces them only through free-spread-then-growth followed by rebuild-growth-then-spread;
+   final cells cannot substitute for that journal. Each Generate still resets MapGen from the current
+   map seed while continuing the already-advanced shell Scenario cursor. The shell must choose and
+   apply the reset/full-or-selective cleanup branch *before* generation, then pass a consumed-once
+   `PreviewGenerationPrestate` containing the exact reused-or-rebuilt Cell/native-ID prefix, retained
+   latch state, live marked-Anim registry order, and
+   a lifecycle generation token into the Recalc producer. A worker may mutate a local staged latch
+   shadow and return an ordered journal only if apply validates that exact token/prestate; a clean-map
+   worker followed by post-hoc event suppression is invalid because old latches change intermediate
+   Anim eligibility.
+5. Use Map with a valid preview performs no third generation. Common teardown writes `RandMap.img`
+   and destroys only the preview surface and storage snapshot. Cancel commits neither `.SED` nor the
+   sentinel and preserves the registered preview Buildings/Anims, latches, admitted sounds, advanced
+   native-ID counter, final growth/spread queues, and returned shell Scenario cursor. Re-entry without Generate changes none of
+   that state; the first later Generate resets the counter, observes the missing snapshot, full-cleans
+   the old preview state, then generates. Accepted result `1` writes `RandMap.Sed`, rebuilds the
+   chooser presentation, commits the ordinary sentinel, and likewise leaves the accepted native
+   preview state live until a later real launch cleanup.
+6. The accepted preview map, its MapGen continuation, and its live shell-native objects are never
+   gameplay map authority. Accepted `.SED` launch first takes the generator-entry free-spread then
+   free-growth pair, then `Full_Init`/`Clear_Scene` frees spread then growth a second time while
+   destroying preview state, and the later Full_Init tail rebuilds growth then spread for gameplay.
+   Cancel takes none of these launch frees. Successful Start has exactly one *logical* gameplay Scenario stream
+   beginning at the match seed. Before terrain Fill, every active stock offline noncampaign mode
+   performs the complete two-House-pass/two-Gather transaction defined below. Rust may partially
+   evaluate that transaction into one immutable `PreFillScenarioPrefixPlan`, including default-cell
+   deficient-start retries, only under the full-state equivalence proof below. `LoadingRequest`
+   retains the consumed-once plan and `MapLoadInitial` constructs the sole downstream
+   `ScenarioBootstrapRng` from the same match seed before adopting its validated continuation. Before
+   the first fresh-Full_Init constructor or Fill draw, app consumes that bootstrap once into a staged
+   `SimulationLoad`/equivalent: the one real `Simulation` owner with an initially empty map/object
+   stage but the authoritative Scenario cursor, native-ID cursor, collision-free handle allocator,
+   registries, sound state, queues, and descriptor. It is completed in place as terrain and objects
+   arrive; no later `into_simulation` transfer may create a second or shadow live-registry owner.
+7. Every fresh native `Full_Init` owns one native-ID cursor spanning the whole load. `Clear_Scene`
+   seeds it at `1,000,000`. Let `R(W,H)=H*(2W-1)+1` be every real Size-diamond Cell plus the dummy,
+   `HB(H,S)=H*(1+S)` be one House followed by every current Super, and `P` be the complete post-reset
+   source-ordered first-new ID-bearing Type event stream including lazy Weapon/Bullet allocations but
+   excluding ParticleType. Cold active stock first builds and retains the exact 1,070-event startup
+   Type-registry state; its event vector predates the Scenario cursor reset and is drained, not added
+   to the fresh-load formula. `E_campaign` is the optional early campaign companion/sidecar Rules
+   first-new stream; `E_multi` is the early noncampaign Countries -> General -> live HouseType-body
+   first-new delta against the current pre-reset registries (51 events on stock startup state).
+   `P_preview` is the corresponding actual successful first-new Type
+   stream reached only by a missing/changed preview rebuild. All four symbols are ordered source- and
+   prestate-dependent constructor-event streams, never counts inferred from final registries. With
+   wrapping dword addition, campaign snapshots
+   `1_000_000 + |E_campaign| + |P| + HB(Hc,S1) + R2`; authored noncampaign and accepted `.SED`
+   snapshots `1_000_000 + |E_multi| + HB(H1,S0) + R1 + |P| + HB(H2,S1) + R2`.
+   The retail explicit-list subtotal is 1,699 actual constructors from 1,704 ID-bearing rows, not a
+   seed and not a substitute for `P`. Map read snapshots that exact `C_saved`; custom theater
+   allocations after the snapshot are real shadowed events, but active retail's 176 rows/20 names add
+   zero, and the later write installs wrapping `C_saved + 0x2710` **from the snapshot**, not by adding
+   to the then-current cursor. Every successfully allocated `[Tubes]` source row constructs/spends one
+   native ID before parsing; a malformed allocated row spends then hard-fails, and allocation failure
+   spends zero then hard-fails. Successful rows bind a consumed-once `TubeNativeInit`. Preview never
+   imports this prefix. `.SED` reader success then runs a second
+   complete generator call from the stored map seed. Rust continues the one logical Scenario stream
+   through the complete pre-Fill prefix and terrain Fill inside that already-live staged Simulation,
+   then consumes transaction 3's phase-aware launch transport there. Map remains the geometry/Recalc
+   owner and exposes narrow staged operations; the orchestrator invokes sim-owned Building/Anim
+   constructors, live registries, sound events, one independent native-ID counter, and one
+   collision-free runtime-handle allocator at the corresponding boundary. Actual Building events and
+   generated Recalc animations interleave on those shared load owners before final projection; no
+   precomputed parallel animation owner is permitted. Final stage completion installs the terrain/
+   overlay payload without moving or reconstructing those owners, so Post-Map and gameplay consumers
+   continue the same Scenario cursor and registries. No independently
+   seeded parallel authority, unchecked cursor substitution, duplicated ID/handle allocator, or
+   second downstream continuation is permitted. `Clear_Scene` leaves the shared deferred queue empty,
+   and no Type, House/Super, Cell, TagType, or Tube prefix constructor writes it; the pack reader starts
+   from `[]` while still using the shared—not Overlay-private—queue and drain.
+8. Launch replay builds a `GeneratedTechnoInitTable` keyed by stable generated entity index. A
+   successful event stores both the consumed low word as `techno_ctor_random_word` and the already
+   allocated Building `native_unique_id`; a discarded Neutral-Tech event consumes both effects but
+   has no binding. `MapLoadInitial` carries the consumed-once transport; the load orchestrator builds
+   the table during staged consumption and hands the completed table to projection.
    `spawn_from_map_with_resolved` validates entity index, type and cell identity, installs that word
-   on `GameEntity`, and performs no second draw. Fixed authored-map, Post-Map, and runtime Technos
-   use prerequisite P0's fresh constructor-draw path; snapshot restore reinstalls the serialized
-   word without drawing. The field participates in deterministic snapshots and hashes.
-8. Shell preview generation never creates runtime bridge records, zones, occupancy, or live
-   simulation effects. Launch generation feeds the ordinary load transaction only after the native
-   generation-time constructor sequence has been accounted for exactly.
-9. Preserve `BuildRiverBridge @ 0x0059E740` as waterfall terrain shaping and prove by a negative
+   and native ID on `GameEntity`, allocates/uses its collision-free runtime handle independently, and
+   performs no second Scenario draw or *native* ID allocation. Fixed authored-map, Post-Map, and
+   runtime Technos use prerequisite P0's fresh constructor-draw path plus their native ID/handle
+   owners; snapshot restore reinstalls serialized authoritative identity without constructor effects.
+   The constructor word and native identity participate in deterministic snapshots and hashes where
+   native persistence requires them.
+9. Shell preview generation creates no gameplay bridge records, zones, or entity/cell occupancy.
+   That negative boundary does not erase its proved live process-shell Building/Anim registrations,
+   terrain latches, native IDs, or sound effects. Launch generation feeds the ordinary gameplay load
+   transaction only after its independent native constructor sequence has been accounted for exactly.
+10. Preserve `BuildRiverBridge @ 0x0059E740` as waterfall terrain shaping and prove by a negative
    characterization that it writes no runtime bridge overlay/flag topology.
 
-The unit-2 implementation contract must preserve these interface roles (names may change only if
-the critic can map an equally explicit owner one-for-one):
+Transaction 3 must preserve the merged unit-2 construction records while extending their transport
+with these interface roles (names may change only if the critic can map an equally explicit owner
+one-for-one):
 
 ```rust
 struct RmgConstructionTrace {
-    events: Vec<RmgConstructionEvent>,
+    records: Vec<RmgPhaseRecord>,
+}
+
+struct RmgPhaseRecord {
+    ordinal: u32,
+    effect: RmgPhaseEffect,
+}
+
+enum RmgPhaseEffect {
+    ApplyCellDeltas(RmgCellDeltaBatch),
+    Building(RmgConstructionEvent),
+    DrainDeferredFinalizationQueue,
+    Recalc(RmgRecalcBoundary),
+    InitializeTiberiumQueues,
+    FinalInitCellAttributes { germinate_and_sum: bool },
 }
 
 struct RmgConstructionEvent {
-    ordinal: u32,
     phase: RmgConstructionPhase, // BridgeRepairHut | NeutralTech
     techno_type: TechnoTypeId,
+    // Discarded is valid only for a constructed NeutralTech placement failure.
+    // Constructed BridgeRepairHut events are Emitted; failed pre-searches are absent.
     outcome: RmgConstructionOutcome, // Discarded | Emitted { entity_index, cell }
+}
+
+enum RmgRecalcBoundary {
+    SyntheticFullInit,
+    PostBridgeCabHut,
+    PostTiberiumFirst,
+    PostTiberiumSecond,
+    LatHelper,
+    GeneratorFinal,
 }
 
 struct GeneratedTechnoInit {
@@ -265,8 +398,17 @@ struct GeneratedTechnoInit {
     techno_type: TechnoTypeId,
     cell: CellCoord,
     techno_ctor_random_word: u16,
+    building_native_unique_id: u32,
 }
 ```
+
+Every live Building/Anim record also carries an independently allocated collision-free runtime
+handle. `native_unique_id` is a reproduced Scenario-counter value, not a collection key: preview may
+temporarily hold Type, House, Super, real/dummy Cell, Anim, Building, and other live records with the
+same numeric native ID. A process-owned preview lifecycle record retains the native counter, retained
+cross-class numeric IDs, live registered Building/Anim records, terrain latches, sound-handle lifetime,
+and final growth/spread queues across dialog teardown; the presentation candidate and four-field
+storage snapshot remain separate owners and may be destroyed while that lifecycle remains live.
 
 `LoadingRequest` owns exactly one consumed-once `PreFillScenarioPrefixPlan` for every valid active
 stock offline noncampaign launch. There is no valid no-plan fallthrough and no Battle/FFA
@@ -341,13 +483,13 @@ and assignment installation is draw-free. After installation the bootstrap owner
 Fill, fixed-map low Mark or generated-construction replay as applicable, Post-Map, and simulation
 draws. This is the same transition as direct execution, not a second gameplay RNG.
 
-Focused tests must compare an independent reference stream across both H-sized House passes, both
+P0-R1's focused tests compare an independent reference stream across both H-sized House passes, both
 mode-family callbacks, zero/one/many deficient retries, the zero-draw reset, Fill, RMG emitted and
 discarded constructors, Post-Map, and simulation. They must include observers, AI/Neutral/Special,
 Cooperative, sparse input, duplicate-install rejection, tampered pre-state, and accepted generated
-staging provenance. The fresh design critic must recheck this universal transaction,
-single-installation, and downstream-owner model against current `main`; any failure keeps P0-R1 and
-transaction 3 blocked.
+staging provenance. PR #196's fresh critics rechecked this universal transaction,
+single-installation, and downstream-owner model; transaction 3 must preserve those merged tests and
+cursor contracts.
 
 `MapLoadInitial` also carries the generated-source identity, `RmgConstructionTrace`, and then the validated generated-init table.
 `GameEntity` owns the installed constructor word. Authored structure upgrades are distinct
@@ -380,47 +522,259 @@ exclusion rather than widening the trace for dormant RMG-shaped code.
      replay-only draw.
    Fill consumes from and returns the same cursor. A stream restore is a separate no-Full_Init/no-Mark
    transaction and retains native seed-zero Scenario restore behavior; it never enters this list.
-3. On the authored Full_Init arm, parse explicit `[Tubes]` after Fill and before overlays. Keep them
-   independent of low Road behavior; classify automatic same-cell shells from final theater land data
-   without synthesizing traversal.
-4. When native `NewINIFormat > 1` permits the pack reader, create one map-native
-   `FinalizedOverlayPayload` and execute one decoded OverlayPack traversal,
-   `y=0..511` outer then `x=0..511` inner. Each coordinate completes synchronously before the next:
-   ordinary overlays run ordinary Mark, the four high anchors run their high structural stamp, and
+3. A fresh Full_Init has one independent native-ID cursor beginning at Clear_Scene's `1,000,000` and
+   advancing through the exact campaign or two-pass noncampaign formula in the RMG transaction above:
+   actual first-new Type events, House-then-Super blocks, row-major real Cells, and dummy Cell last for
+   every reached Resize. Map read snapshots its resulting `C_saved`, retains any custom theater
+   `ShadowedAssign` events, then installs wrapping `C_saved + 0x2710` from the snapshot. It parses
+   explicit `[Tubes]` after Fill and before overlays; every successfully allocated source row constructs
+   and consumes one ID before token parsing and stores it in a consumed-once `TubeNativeInit` keyed to
+   that exact parsed Tube record. A malformed allocated row spends the ID and then hard-errors; an
+   allocation-null row spends none and hard-errors. Native has no reject-and-continue path. Transaction
+   5 must validate/install each successful binding without a second native-ID allocation.
+   `MapFile` already retains the full raw `IniFile`, whose `[Tubes]` values preserve first-insertion
+   source order, even though its convenience `explicit_tubes: Vec<TubeFact>` filters malformed rows.
+   Transaction 3 must consume that retained raw section exactly once through the constructor/
+   allocation/Assign/parse boundary and must not use `explicit_tubes` as native-ID-accounting input.
+   The validated fact plus `TubeNativeInit` binding is the downstream output.
+   Transaction 3 promotes only this exact pre-map/Tubes constructor-ID prefix needed by the first
+   Overlay/Anim ID oracle; positive Tube topology, hierarchy, traversal, and persistence stay in
+   transaction 5. Keep Tube rows independent of low Road behavior and classify automatic same-cell
+   shells from final theater land data without synthesizing traversal. On a successful load with `T`
+   constructed Tube source rows, the first reader-admitted, successfully allocated Overlay is exactly
+   `O1 = wrap32(C_saved + 10_000 + T + 1)`. Every synchronous CellAnim/terrain-Anim child advances the
+   same cursor before the next decoded Overlay; no post-hoc child allocation may preserve that oracle.
+4. On an authored source, native signed `NewINIFormat > 1` permits both pack bodies. Execute one
+   decoded OverlayPack traversal, `y=0..511` outer then `x=0..511` inner. Apply the native admission
+   sequence in order: a successfully read non-`0xFF` identity; type image or non-null CellAnim;
+   nonzero-game-mode crate rejection; exact radar-diamond admission; and `0xB0` allocation. A null
+   allocation consumes no handle, native ID, registry, Mark, or queue effect; the high-owner restore
+   check remains a no-op. For every allocated row, construct a lightweight load-owned Overlay object:
+   allocate its collision-free runtime handle; attempt the Object registry, pointer-expiration,
+   all-Abstract, and Tag-removal registry joins in that order; assign the preincremented native ID;
+   then join the Overlay registry. Rust hard-fails on a registry-growth or later queue-growth failure
+   instead of silently accepting native partial registration/dead-unqueued degradation. Direct-call
+   base `ObjectClass::Unlimbo`, which virtual-dispatches base-then-derived `Mark(1)`. A
+   malformed out-of-range type may become a safe typed Rust load error, but it is not documented as
+   a native rejection filter. Each coordinate completes synchronously before the next: ordinary
+   overlays run ordinary Mark, the four high anchors `0x18/0x19/0xED/0xEE` run their high structural stamp, and
    the eight low procedural triggers run the exact low Mark transaction on the same Scenario cursor
    continuation after prefix and Fill. Later packed coordinates can observe or overwrite earlier
-   procedural writes; there is no component post-pass and no high-before-low phase split.
-5. Only after the entire OverlayPack traversal, execute the complete OverlayDataPack traversal and
-   overwrite each allocated/in-bounds cell's state byte. Then run the whole-map `RecalcAttributes`
-   pass before Terrain and authored Unit/Aircraft/Infantry/Structure construction. Every procedural
-   write still recalculates immediately in step 4; the final Recalc projects the later data overwrite.
-6. The completed map pass retains the exact final identity/state vector inside
-   `ResolvedTerrainGrid` as its consumed-once `FinalizedOverlayPayload`; its Recalc-derived Land,
-   zone, cache and bridge facts are already the projection of those bytes. App orchestration moves
-   that payload into `sim::overlay_grid::OverlayGrid::from_finalized_map_payload` one-for-one. That
-   constructor accepts no OverlayPack, OverlayDataPack, registry or Scenario interface and performs
-   no Mark, filtering, Recalc or second decode. Thus runtime overlay authority begins from the same
-   procedural fixed/body identities and post-OverlayData state bytes that produced resolved terrain.
-   The existing production `OverlayGrid::from_native_overlay_packs` rebuild is removed from this
-   handoff; later native Terrain-object clearing and gameplay mutations continue through the ordinary
-   synchronized OverlayGrid/ResolvedTerrain mutation owners.
-7. On generated `.SED`, the early synthetic Full_Init defaults `NewINIFormat` to `0`, so steps 4/5
-   are inert. Later preserve the generator's complete direct three-wide overlay/data rectangle in the
-   same finalized-payload shape and skip authored high/low Mark entirely. The explicit successful
+   procedural writes; there is no component post-pass and no high-before-low phase split. Each
+   allocated Overlay object dirties tactical state once through base
+   `ObjectClass::Mark` before derived dispatch, including a later slope rejection. Its exact redraw
+   helper argument is `0`, so it does not take the optional bridge-counter increment. Generated
+   fixed/body cells do not repeat that object-level dirty. A row reaching the common tail completes
+   all cell writes, optional ordinary CellAnim construction, and Recalc/eligible terrain-Anim
+   construction before the next Overlay ID; then it sets `IsOnMap=0`, `InLimbo=1` and enters UnInit.
+   UnInit broadcasts pointer expiration #1 while all five registry memberships remain, virtual-calls
+   Limbo (a no-op because Mark already set `InLimbo`), clears alive, and appends the dead object to the
+   shared deferred queue. It never reaches Display or Logic. A slope-admitted authored wall cannot
+   predicate-fail here because successful Full_Init keeps ScenarioInit nonzero. It first completes the
+   wall stamp/cleanup/connectivity/count effects and then takes this same common UnInit/dead/queue
+   tail. The full-Limbo extra-broadcast wall rejection is retained only as a separate generic counter-
+   zero caller path. A steep-slope `>4` non-`0xB2` row returns before cell
+   writes/Recalc/UnInit after base Mark: it remains alive, `InLimbo=1`, `IsOnMap=1`, redraw-dirty,
+   registered, ID-bearing, and unqueued until later scene teardown. Keep that lightweight survivor
+   out of cell lists, `GameEntity`, occupancy, Display, Logic, current-object checksum, native save,
+   `OverlayGrid`, and rendering; its registry membership and nonrefunded ID remain real lifecycle
+   state. The constructor Terrain-blocker arm has the same alive/limbo/unqueued shape but is excluded
+   from ordinary fresh authored reachability because `[Terrain]` loads later.
+5. After the identity body finishes or is absent/empty, execute the independent positive-length
+   OverlayDataPack body inside the same format gate and overwrite every allocated/in-radar real
+   cell's state byte, even when identity was empty or rejected. The four high owners save and restore
+   only their anchor state byte: their setter
+   structural/neighbor writes persist, their common Recalc sees temporary `0/9`, then the owner
+   restores the saved anchor byte. Ordinary non-high rows write identity and state `0`. A Land-code-5
+   row then writes state `1` and synchronously executes the map-owned
+   `SpreadCellGerminate(0)` algorithm. A Land-5 identity without `Tiberium=yes` returns immediately,
+   performs no neighbor lookup, and retains the caller-written `1`; a flagged custom identity outside
+   every configured image range maps to class `0` (its native diagnostic is non-sim observability).
+   Otherwise make exactly eight ordered `N,NE,E,SE,S,SW,W,NW` neighbor lookups through the same fixed
+   real-or-persistent-dummy seam; count neighbors with that same derived class (not exact overlay id,
+   and without reading neighbor state); and rewrite only the receiver state from
+   density table `[0,1,3,4,6,7,8,10,11]` for counts `0..8`. The zero argument consumes no RNG and the
+   ignored return creates no Recalc, dirty, queue, bitmap, or heap mutation. True misses stamp and
+   re-read the persistent dummy, so one dummy tiberium identity may count repeatedly. A crate row
+   writes state `0xFF` last. Later OverlayData overwrites germinated density when present; without a
+   data body, that source-order density survives into the later tiberium-queue rebuild. Every
+   procedural write still recalculates immediately. After both bodies and temporary pixel-buffer
+   cleanup, invoke the shared live deferred-finalization drain exactly once outside the format/body
+   gate. It skips alive entries without stopping later dead entries; for each selected dead pointer it
+   stable-erases every duplicate, invokes Release, processes the shifted successor at the same index,
+   and rechecks live count so newly appended entries can be visited. Scalar finalization broadcasts
+   pointer expiration again while memberships still exist (#2 for common/authored-wall success, #3
+   only for generic counter-zero wall rejection), removes the Overlay registry, calls game-active
+   base Limbo (already-limbo no-op), clears
+   the type pointer, then base destruction removes deferred queue, Object registry, pointer-expiration,
+   all-Abstract, and Tag listener memberships in that order before freeing the allocation; IDs are
+   never refunded. Successful Overlay rows
+   therefore stay dead/queued/registered through all later identity rows and the entire data body,
+   then disappear before the first whole-map sweep; slope survivors remain. Generated/default-format
+   reading constructs no authored Overlay objects but still runs this shared, non-Overlay-only drain
+   over any preexisting queued-dead objects.
+6. After the reader returns, always run the first whole-real-map `RecalcAttributes(-1)` sweep,
+   independent of `NewINIFormat` and pack presence. It visits exactly `H*(2W-1)` cells from `(1,W)`
+   in native anti-diagonal order and repeats live-neighbor LAT/slope, retail CliffBack, zone/cache,
+   identity validation, and conditional terrain-animation latching. OverlayData is the final state-
+   byte write, but Recalc does not read that byte; it preserves it unless identity validation clears
+   identity and state. Capture the post-validation real identity/state vector plus the ordered
+   authored real-cell blocker-neighbor plane in a separate non-Clone, consumed-once map-native
+   `FinalizedOverlayPayload`; it must not be a field duplicated by
+   `ResolvedTerrainGrid::clone`. An eligible authored cell may already have constructed its first
+   terrain-attached AnimClass synchronously during an earlier per-Mark Recalc in decoded source
+   order; its cell latch suppresses a duplicate, and this sweep constructs the remaining eligible
+   cells in anti-diagonal order before authored Terrain/Technos. Each construction performs base
+   Object registration, assigns a fresh native numeric ID independently of its collision-free runtime
+   handle, initializes sound handles, and enters the live
+   Anim registry before any valid `RandomRate` draw from the Scenario RNG. It then performs
+   Reveal/Unlimbo and Logic/live registration without entity/cell occupation, and delay zero runs
+   `Middle` synchronously. `Middle` may start the configured StartSound; it calls `Start` only when
+   raw SHP frame-count/2 at AnimType `+0x298` is zero. Only after constructor/Middle returns does the
+   producer write its terrain marker, Z adjustment, deletion marker, and cell latch. The Main RNG is
+   absent from this corridor; all 20 active stock TileAnim rows also have zero RandomRate, while
+   valid custom rows may draw. These transient identity, registry, Logic, RNG, and sound effects are
+   not descriptors that may be postponed. If an otherwise eligible tile references a missing
+   AnimType or its Anim allocation/registration cannot complete, return an explicit hard load error
+   (or invariant panic in an infallible internal fixture); silently omitting the generation is not an
+   accepted approximation of native's null-relative crash/degraded path. Keep Land, zone, LAT, compact caches, and bridge facts
+   only in `ResolvedTerrainGrid` as derived projection.
+7. Move that payload into `sim::overlay_grid::OverlayGrid::from_finalized_map_payload` one-for-one
+   before native-equivalent Terrain/object mutation needs live overlay authority. Moving the payload
+   invalidates the only production receipt; neither app nor sim retains a second copy. The constructor
+   accepts no OverlayPack, OverlayDataPack, registry, Scenario, Mark, filter, or Recalc interface and
+   performs no second decode. Terrain construction clears its source-cell tiberium and commits
+   occupation to the same live terrain/overlay authority before the first Techno; later object
+   sections must not be preprojected into the first sweep. Immediately after `[Terrain]` and before
+   Unit, Aircraft, Infantry, Structure, or Smudge loading, initialize the growth queues and then the
+   spread queues from the then-current live real-cell identity/state through a temporary read-only
+   view owned by the sole sim ore-queue owner. This authored queue boundary observes post-Terrain
+   resource clears but no later object occupancy. Retain that exact queue state through all later
+   object-section loads and the final argument-0 cell pass; neither boundary may rebuild it. After
+   Unit, Aircraft, Infantry, Structure, and Smudge loading, scan the live Anim registry in current
+   order and remove every
+   terrain-marked animation immediately through the native scalar-deleting-destructor path—not the
+   ordinary Destroy/UnInit/pending-delete path. Each removal compacts the registry synchronously,
+   releases and detaches its current sound handles without playing configured StopSound or creating
+   ExpireAnim, and performs conditional owner cleanup; Recalc-created terrain animations are
+   owner-null, so that branch makes no owner mutation. Do not invent entity/cell occupation for
+   them. After all marked animations are gone, `InitCellAttributes` first visits every real cell and
+   clears raw `Cell+0x140` bits `0x100000|0x200000`. Its next equal-count, equal-order anti-diagonal
+   sweep zeros the opaque persisted/swizzled pointer slot at `Cell+0x30`, crosses
+   `FUN_00483E30(0,0x10000,0,1000,1000,1000)`'s cell-light recomputation slot, and clears latch
+   `0x20000`. The literals are only defaults: every ordinary cell recomputes current Scenario profile,
+   admitted point-light, height, normalized RGB-key, and three brightness outputs through
+   `FUN_00484180`; only sentinel ids `(0,0)` and `(-1,-1)` keep the neutral bundle. An AttachedTag whose
+   event chain contains kind `0x19` then stamps raw `0x100000` across the complete rectangular map-
+   bounds row through shared-dummy lookup; otherwise kind `0x1A` stamps raw `0x200000` across the
+   complete bounds column. The `0x19` arm has precedence when both exist. Sparse misses accumulate
+   both bits on the one dummy, which the first real-cell clear pass does not clear. The active reader is
+   `FootClass::PerCellProcess @ 0x004D85D0`: entry into a marked cell offers every matching tag in
+   row/column order. If its horizontal scan runs, the vertical gate reads the final row lookup—possibly
+   the shared dummy—rather than the mover cell, while an admitted vertical scan still uses the mover's
+   original X. Official `all01umd.map` contains reachable event `0x1A`. The stale
+   `BridgeZone_NS/EW` labels are wrong, and these bits must not enter bridge topology, pathing, or
+   `BridgeFacts`. Their exact generic-trigger behavior is an evidence-backed non-bridge exclusion.
+   These three ancillary writes define ordered integration
+   slots, not three new transaction-3 state owners. Transaction 3 must expose their native positions in
+   its finalization trace/seam, invalidate any finalized/load-preview light cache exactly once at the
+   cell-light recomputation-routing slot, and prove that none can enter `BridgeFacts`, topology, zones,
+   or a newly invented cell field.
+   The generic trigger subsystem owns the actual raw tag-line clear/restamp and `FootClass`-equivalent
+   consumer behavior; transaction 20 owns semantic LightConvert/ZAdjust output and its cache test; and
+   transaction 21/OQ-19 owns any decision to retain/restore the opaque `+0x30` pointer slot. Until those owners
+   land, transaction 3 claims only exact sequencing/invalidation and negative non-ownership, not
+   semantic parity for those foreign systems.
+
+   The same main sweep then performs the argument-specific value/germination operation and the cell's
+   Recalc. If the resulting current overlay is a wall, native reconstructs its owner from the nearest
+   eligible Building **after that Recalc**. Rust already has the semantic wall-owner reconstruction;
+   transaction 3 must preserve its final-current-identity ordering and reuse the existing owner rather
+   than introducing a second algorithm. One global owner pass after all final-current Recalcs is
+   output-equivalent because the helper reads no other cell's Recalc result. The Recalc creates the
+   surviving animation set with new native IDs and the complete constructor/Middle/sound effects,
+   preserves unrelated live-Anim order, and refreshes object-derived attributes.
+   Terrain/object overlay clears and any second-sweep identity clear must use the ordinary
+   synchronized OverlayGrid/ResolvedTerrain owners; they do not recapture or reconstruct raw packs.
+   Publish app/presentation authority only from that post-object sim-owned state: the terrain template,
+   occupied overlay render index, atlas/name dependency closure, minimap/radar inputs, and bridge
+   presentation must include procedural identities absent from `MapFile::overlays` and exclude every
+   identity cleared by admission or Recalc. Registry-level preloading may retain all runtime low
+   variants, but raw pack membership is never final occupancy authority.
+8. On generated `.SED`, synthetic Full_Init still executes its ungated Recalc and
+   InitCellAttributes boundaries on the actual staged pre-materialization map. Omitted
+   `NewINIFormat` defaults to `0`, so only the two encoded pack bodies are inert; an empty animation
+   generation must not be inferred from that format gate. Capture/preserve any eligible synthetic
+   Full_Init generation or prove zero for the exact staged state. The later generator directly
+   materializes its complete three-wide overlay/data rectangle and must retain its own native phase
+   boundaries: water/region/river/bridge work including CABHUT attempts; first whole-map Recalc at
+   `0x00598E48` and its eligible animations; start-point work and AddTechBuildings/Neutral-Techno
+   constructors; Tiberium and Recalcs at `0x00598FE7` and `0x00599153`; hills/LAT/trees/rocks with
+   the direct LAT-helper Recalc at `0x005A4259`; final generator Recalc at `0x0059937D`; then
+   initialize the tiberium growth/spread queues from that then-current state and free generator
+   scratch; then call `InitCellAttributes(1)`. At the queue boundary the sole sim ore-queue owner
+   reads the current map state through a temporary read-only view; it does not retain a second
+   overlay grid or decode the packs. The final payload must not trigger another queue rebuild.
+    `InitCellAttributes(1)` performs the same live-order immediate scalar deletion and crosses the same
+    routed ancillary clear/opaque-zero/light/tag-line slots around the transaction-3-owned latch,
+    post-value Recalc, and post-Recalc wall-owner ordering described above; at the argument-specific
+    value-operation slot it calls the exact
+    `SpreadCellGerminate(0)` helper from step 5. An absent or unrecognized resource identity contributes signed `0`; a recognized resource
+   rewrites density and returns signed 32-bit `(state + 1) * TiberiumClass.Value`. Add each return to
+   the native signed 32-bit local total with wrapping machine arithmetic before that cell's
+   Recalc/recreation. No persistent owner or consumer of that total is proved, and this call does not
+   rebuild the already initialized queues. Authored Full_Init's `InitCellAttributes(0)` is not
+    animation-only either: inside that same common finalization sequence, it calls the value-only
+   `Get_Tiberium_Value` for every real cell, contributes zero for non-resource cells or signed 32-bit
+   `(existing_state + 1) * TiberiumClass.Value` for recognized resource cells to the same kind of
+   wrapping total, and then Recalcs. `ScenarioClass::Full_Init` stores that argument-0 return in the
+   persistent MapClass field at `+0x134` (`0x0087F91C`); cell-array teardown resets the field to zero.
+   No active read of that field is proved, so retain the exact stored/reset state without inventing a
+   gameplay, save, hash, or presentation consumer. It performs no germination and leaves the pre-
+   object queue snapshot intact. This authored persistent write is deliberately asymmetric with the
+   generated argument-1 call, whose return remains caller-local/ignored with no proved persistent owner.
+   Extend `RmgConstructionTrace` or replace it with an equivalent consumed-once staged transport so
+   CABHUT construction effects precede first-generator animation IDs/draws/sounds, which in turn
+   precede Neutral-Techno effects, and later paint generations remain observable. Replay every
+   actual Building constructor as Techno Scenario word, Building native unique ID, then placement outcome:
+   every emitted or discarded Neutral-Tech construction consumes both but only emitted construction
+   binds an entity; failed CABHUT site searches occur before construction and consume neither, while
+   constructed stock CABHUTs consume both and emit. Preserve PR #170's bound constructor RNG words.
+   Final cells cannot reconstruct this history. Preserve directly materialized identity/state
+   through the same live owner and capture its final post-germination state in the same payload shape.
+   Skip authored high/low Mark entirely: generated-native resource germination/Recalcs are mandatory,
+   but the authored pack transaction and its post-pack replay are not. Explicit successful
    `.SED`/generated provenance, not overlay ids or construction-trace presence, selects this arm.
-8. Rebuild records, zones and hierarchy only at the verified load boundary established by units 1,
+9. Rebuild records, zones and hierarchy only at the verified load boundary established by units 1,
    3, 4 and 5.
 
 The app layer owns one explicit `FreshScenarioLoadContextDescriptor`, orthogonal to physical map
 source. `LoadingRequest` creates it only for a fresh scenario from proven startup/session/replay
 provenance, and `MapLoadInitial` carries it through that fresh-map load. Its normalized prefix kind
 is one of stock offline, campaign, LAN, WOL-state-2, or replay-with-recorded-family; it contains only
-the roster/mode/House/start inputs the simulation prefix needs. Stream restore is deliberately not a
-variant. Network transport, replay I/O and UI session types remain in `app`;
+  the roster/mode/House/start inputs the simulation prefix needs plus the closed OQ-34 consumed-once
+`FreshFullInitNativeIdPrefixReceipt`/equivalent ordered constructor receipt. Stream restore is
+deliberately not a variant. Network transport, replay I/O and UI session types remain in `app`;
 `sim::scenario_bootstrap` receives the normalized fresh kind and inputs, not app or networking
-dependencies. A seedless/generic current Rust entry may not guess stock offline: a fresh-load surface
-without proved context provenance returns an explicit unsupported-load-context result and cannot
-enter authored Mark. Tests and headless callers must supply a typed fresh context.
+dependencies. A seedless/generic current Rust entry may not guess stock offline. Every fresh
+gameplay-equivalent Full_Init path requires the typed family and native-ID prefix receipt even when
+signed `new_ini_format.unwrap_or(0) <= 1`, because House/Type/Cell construction, wrapping map-read
+reservation, successful Tube construction, ungated Recalc Anims, and later objects remain active.
+The format gate controls only the two pack bodies and Mark draws. Missing provenance returns an
+explicit unsupported-load-context result before any native-ID/draw effect. A named pure-map
+diagnostic may omit the receipt only if it constructs no live Object/Anim, spends no native ID, and
+is explicitly excluded from gameplay/load-parity certification.
+
+Production, `build_headless_terrain_bootstrap`, and every selector-free/auxiliary resolved-terrain
+constructor receive the same explicit `MapLoadAdmissionDescriptor`/equivalent containing physical
+source, mandatory typed fresh family/native-ID receipt for every fresh gameplay-equivalent path, and
+signed `NewINIFormat` value. No auxiliary constructor may
+default to Authored, infer Generated from trace presence, or guess stock offline. All routes invoke
+one admission function and therefore return the same unsupported-context/missing-phase-transport
+errors before any native-ID/Mark/draw, or the same finalized state, Scenario cursor, native-ID cursor,
+and ordered identity trace when admitted. Convenience test builders may expose a named non-parity
+pure-map fixture, but may not silently weaken the production contract or use it to certify an
+authored format-inactive gameplay load.
 
 The actual app source enum is `LoadedMapSource::{Loose, Mix, Generated, LegacyFallback}`. App loading
 derives the map-layer `OverlayLoadSource` exactly once and carries it explicitly:
@@ -432,8 +786,9 @@ LegacyFallback -> unsupported for exact OverlayPack Mark until explicit provenan
 ```
 
 This mapping is independent of `generated_construction_trace`: a `Generated` load with a missing or
-empty trace still skips authored Mark, while Loose/Mix remain authored. Load context is a second,
-orthogonal gate. A stock-offline `Generated` path is accepted only for the proved chooser boundary,
+empty trace still selects the no-authored-Mark arm, while Loose/Mix remain authored; it must then
+return an explicit missing-phase-transport error rather than reconstruct lifecycle history or fall
+back to authored Mark. Load context is a second, orthogonal gate. A stock-offline `Generated` path is accepted only for the proved chooser boundary,
 Battle id `1` or FFA id `2`, with explicit accepted-preview start staging; arbitrary generated/mode
 combinations and fresh external `.SED` injection are rejected. An authored campaign/LAN/WOL/replay
 source can run Mark when `NewINIFormat > 1`; stream restore never runs Full_Init or Mark.
@@ -445,9 +800,11 @@ reinstalls serialized authoritative overlay/runtime state and rebuilds only veri
 There is no conversion from restore context to fresh-load descriptor. A regression fixture must fail
 if restore invokes any Full_Init, Fill, OverlayPack Mark or fresh constructor-prefix entry.
 
-`ScenarioBootstrapRng` remains the sole cursor owner. After Fill returns, app orchestration retains a
-non-clonable borrowed raw-only adapter from `sim::scenario_bootstrap`, but **no sim type crosses into
-`map`**. The app invokes the map-owned inline OverlayPack routine with a map-native
+`ScenarioBootstrapRng` is the sole pre-staging cursor owner and is consumed exactly once, before Fill,
+into the staged Simulation load owner described above. From then on that Simulation is the sole
+cursor/ID/registry/queue owner. During Fill and the later inline Mark transaction, app orchestration
+lends a non-clonable raw-only adapter from that owner, but **no sim type crosses into `map`**. The app
+invokes the map-owned inline OverlayPack routine with a map-native
 `&mut dyn FnMut() -> u32`/equivalent raw-call interface backed by that borrow. `map` cannot range-wrap,
 clone, reseed or import `sim`; it can only request the next raw word at the exact low-body write.
 Inline processing applies `raw & 3` exactly `3*L` times on successful procedural body writes and
@@ -457,13 +814,110 @@ loop; `src/map/resolved_terrain.rs` owns the map-native finalized payload, overl
 Recalc projection, not Scenario. `sim::overlay_grid` may depend on and consume the map payload;
 `map` never depends on `sim`.
 
-Every invalid coordinate returned by the native lookup aliases one persistent shared dummy across
+The monolithic resolved-terrain build first splits at a pure pre-effect stage. After Fill materializes
+the live cells and before OverlayPack/first Recalc, a map-owned eligibility/root-discovery surface
+returns the scheduler Anim roots required by every reachable tile-animation constructor. App binds/
+preloads that asset closure in production and headless paths. Discovery may inspect map, theater,
+rules, and Fill-stage cells, but it cannot allocate a native ID or runtime handle, draw RNG, register
+an Anim, start sound, set a latch, mutate OverlayPack state, or stand in for construction. It replaces
+the current dependency on already-precomputed `tile_animations()` descriptors. Missing required
+assets may hard-error before the first OverlayPack/Recalc Anim-construction effect; the already-spent
+prefix native IDs and Fill RNG state are retained, not rolled back. Safe preload is not
+live-construction authority.
+
+The same already-existing staged Simulation then bridges map-owned Recalc timing to sim-owned
+animation effects without reversing that dependency. `map` defines a narrow synchronous
+`MapLoadEffectSink`/equivalent closure contract; the staged sim loader implements it with one
+collision-free runtime-handle allocator, the independent native-ID counter initialized by the common
+fresh-map prefix, Anim/Logic registries, sound owner, and Scenario borrow. Each per-Mark/full-sweep
+construction or scalar-deletion effect is handled before the map routine returns to the next native
+row/cell, so this is not a buffered descriptor/event vector. Map retains terrain eligibility, the
+cell latch, and the sequencing point for post-constructor writes; sim retains live Anim identity,
+registration, producer marker/Z/deletion fields, RNG, Middle, sound handles, owner-null state, and
+immediate destructor semantics. The first generation remains live while the orchestrator constructs
+Terrain. At the exact authored boundary after Terrain and before
+Unit/Aircraft/Infantry/Structure/Smudge, the sole sim ore-queue owner initializes growth and then
+spread queues from a temporary borrowed view of the current live map. The orchestrator retains those
+queues unchanged while it constructs the later object sections and uses the same sink for the final
+delete/unlatch/value-only/Recalc generation. The authored return is written to the map-load state's
+exact `MapClass+0x134` analogue and reset only at the proved cell-array teardown boundary; it performs
+no second queue initialization after occupancy changes. Generated phase-aware transport is consumed
+through this identical owner; its separate queue-boundary effect likewise lets the sole sim ore-queue
+owner inspect a borrowed pre-final map view before final germination, and later payload installation
+is forbidden from rebuilding either authored or generated queues. A cloneable final render
+descriptor may be derived only afterward and cannot authorize construction, deletion, an ID/draw, or
+replay. The separate non-Clone
+`FinalizedOverlayPayload` remains the only identity/state/authored-blocker-count transfer into live
+`OverlayGrid` and the global pathfinding count owner; the live Anim/native-ID/registry owner itself is
+never transferred from a temporary finalizer. The payload is the ordered authored counter result, not
+a license to scan final `Wall=yes` identities.
+
+The closed OQ-34 prefix extends that same orchestrator seam backward without moving a sim type into `map`. The app/load
+orchestrator creates the sole fresh-Full_Init `NativeUniqueIdCursor` (or neutral equivalent) at
+Clear_Scene; House/Type owners advance it directly, while Cell resize, map-read wrapping `+0x2710`,
+successful Tube/Overlay allocation, and Anim construction synchronously request/record their effects
+through a map-defined callback/sink. `FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md`
+fixes the exhaustive source-ordinal event families, campaign/noncampaign formulas, shadowed theater
+window, and empty pre-reader shared-queue contribution. Allocation rejection/failure emits no ID where
+native emits none; allocated Tube parse failure is the proved spend-then-error exception. A post-hoc count,
+separate map/sim counters, or final-state reconstruction cannot preserve constructor/failure order.
+The preview worker may return an ordered branch-specific lifecycle journal for atomic shell-side
+application, but it must include every proved manual-storage Cell/dummy, Type, House/Super, and custom-
+theater prefix effect before generator objects, use the preview owner's separate reset cursor, and
+preserve retained cross-class numeric IDs plus final growth/spread queues on the exact-match/Cancel path.
+
+The staged Simulation load runtime also owns a narrow shared `LoadObjectLifecycle`/equivalent rather
+than putting authored Overlay constructors into `OverlayGrid` or `GameEntity`. This is not a stack-
+local finalizer: the same non-render/non-save/non-hash lifecycle registry remains attached to the
+process-scenario/Simulation owner after load and retains steep-slope survivors until scene teardown.
+Load completion cannot transfer, reconstruct, or discard it from final cells. It keys lightweight Object
+records by collision-free handles, tracks the four ordered base registry/listener memberships, the
+post-ID Overlay registry, alive/limbo/on-map/redraw flags, and one shared duplicate-permitting
+deferred queue. Common-success Overlay records, including every slope-admitted authored wall, stay
+registry-resolvable through the entire data body. Successful Full_Init keeps ScenarioInit nonzero
+while Overlay Mark runs, so the wall predicate short-circuits true: the wall completes its stamp/
+cleanup/connectivity/count effects, reaches the common anchor Recalc, then records common UnInit
+broadcast #1 -> already-limbo no-op -> death/enqueue. The separate counter-zero generic wall
+predicate-failure path retains broadcast #1 -> full Limbo/Destroy/Mark-remove broadcast #2 -> death/
+enqueue, but authored finalization must not select it. Steep-slope survivors
+stay alive/unqueued until scene teardown but never acquire cell, Display, Logic, current-checksum,
+save, or render authority. The reader epilogue invokes a shared live drain on this owner even when no
+Overlay body ran. Fresh Full_Init seeds it with the proved empty prefix `[]`; it remains a shared queue,
+not an Overlay-only type. It uses the existing preserve-
+alive/remove-all-selected-duplicates/Release/process-shifted-successor semantics. Scalar destruction
+broadcasts pointer expiration while memberships still exist (#2 common/authored wall, #3 only for the
+generic counter-zero reject), then removes the
+Overlay registry -> game-active Limbo no-op -> type pointer -> deferred queue -> Object registry ->
+pointer-expiration listener -> all-Abstract listener -> Tag listener -> allocation, and never refunds
+IDs.
+Injected registry/queue growth failure aborts loading explicitly; allocation-null retains native's
+no-construction/no-ID row outcome.
+
+Every true fixed-table miss returned by the native lookup aliases one persistent shared dummy across
 the whole pass. Transaction 3 therefore extends the existing `SharedCellDummy` owner with the
-overlay ID/state, Land/zone and cache fields actually read or written by low Mark/Recalc; it must not
-allocate a fresh default per lookup. Occupied-body writes, missing lookups and edge rows still consume
-their exact raw words and mutate that dummy in longitudinal/j order, while dummy Recalc remains a
-no-op. Full-state tests bracket prefix, Fill, Mark and the first authored constructor so a hidden
-second cursor, ranged helper, reordered batch or lost dummy alias cannot pass.
+signed-dword overlay identity (`-1` on construction/Resize) and byte state (`0` on construction/
+Resize) only; Land, zone, LAT, and compact caches remain real-cell derived state. Native lookup first
+sign-extends the packed i16 coordinates and resolves signed `y*512+x`, so a negative component can
+alias a real slot; no per-axis clamp may precede that lookup. A true miss stamps the same dummy
+coordinate and preserves its prior overlay/state until another writer or Resize. Occupied-body
+writes, missing lookups and edge rows still consume their exact raw words and mutate that dummy in
+longitudinal/j order, while dummy Recalc jumps directly to its epilogue and changes nothing. Full-
+state tests bracket prefix, Fill, Mark and the first authored constructor so a hidden second cursor,
+ranged helper, reordered batch or lost dummy alias cannot pass. Constructor/Resize also retains the
+dummy's native tile sentinel `0xFFFF` and flat slope for real-cell edge-LAT neighbor reads; those are
+stable lookup inputs, not dummy Recalc outputs or finalized-payload fields.
+
+Authored `Wall=yes` Mark adds one further live plane that cannot be derived from final cells. After
+the universal slope gate, ScenarioInit forces wall acceptance. Native stamps identity/state, visits
+N/E/S/W/self cleanup in order, computes same-compact-ID cardinal connectivity while Buildings do not
+yet exist, keeps owner `-1`, then increments the N/NE/E/SE/S/SW/W/NW `CellClass+0x122` bytes with
+wrapping `u8` before the common anchor Recalc/UnInit tail. Signed fixed-map lookups can alias a real
+slot even when an axis looks out of range; such aliases update the real counter. A true dummy count
+write has no fresh-game consumer and is not exported. OverlayData changes only state, and a later low
+body can overwrite the wall identity without reversing its increment. Transaction 3 therefore retains
+the real-cell authored count plane through `FinalizedOverlayPayload`, then composes runtime terrain,
+building, foot, and wall lifecycle updates on the same global owner. Scanning final wall identities or
+rectangular-clipping the authored neighbor pass is forbidden.
 
 #### Path-planning transaction
 
@@ -488,6 +942,119 @@ Selected-layer scatter/crusher dispatch and stopped-blocked safety are distinct 
 3. Let the unit-11 and unit-12 implementation contracts establish the still-open internal ordering among tolerance, ordinary damage, Rocker admission/dispatch and bridge state-machine admission; this design does not guess that order.
 4. Once a bridge destroy primitive is entered, execute its BlowUpBridge fallout synchronously before the next destroyed cell.
 5. Apply exact edge re-stamp, zones, events, radar/audio intents and DBRIS Anim/Bounce work in the contract-proved order.
+
+##### Active wall-mutation host repair (transaction 3 critic loop)
+
+Commit `95f77159` correctly moved wall identity, connectivity, Recalc, zone repair, retained
+neighbor counts, fixed-grid aliases, and the shared dummy into one recursive overlay transaction.
+It did not close the mechanism. Its `WallDamageResult::radar_dirty_cells` is an after-return
+diagnostic ledger, while active production callers replay that ledger only after native Recalc and
+zone work; it publishes no tactical dirty for damage. Runtime placement calls the same cleanup core
+without a host, writes the owner before cleanup, and batches navigation after autofill. Those are
+ordering defects, not presentation-only bookkeeping differences.
+
+The correction generalizes the existing `WallDamageTransactionHost` into one narrow synchronous
+wall-mutation host. The host receives ordered `Tactical` and `Radar` dirty steps using the packed
+coordinate captured at the native call site, the already modeled navigation step, and pointer expiry
+for either a represented real cell or the persistent shared dummy. It owns no overlay decisions and
+draws no RNG. `OverlayGrid` remains the identity/connectivity/count owner; the world adapters remain
+the tactical, radar, navigation, and entity-reference owners. The returned radar list may remain as
+a diagnostic trace, but no production caller may use it as mutation authority.
+
+For `DestroyOverlay`, an accepted hit emits tactical dirty before the `+0x10` state write. A retained
+partial hit then returns with no radar step. A terminal hit completes the state write and any nested
+cardinal transactions, clears the target, Recalcs it, publishes `AssignOrphaned`/graph repair, then
+emits the target radar dirty. Its N/W/S/E cleanup receivers each visit N/E/S/W/self; every visit,
+including non-walls and the shared dummy, captures one coordinate and emits tactical then radar before
+the wall gate. A cleanup-cleared wall dispatches pointer expiry before Recalc, publishes Assign plus
+graph only when its zone changed, and reverses eight retained counts only on that same changed-zone
+branch. The direct target dispatches pointer expiry after the complete cleanup fan-out and then
+reverses its eight counts. Signed fixed-grid aliases take the real-cell path. Shared-dummy dirty and
+pointer callbacks remain ordered even when later probes restamp the dummy coordinate; production may
+have no represented entity target to clear for that callback, but the native dispatch boundary is not
+erased. The wider native pointer-listener roster remains an explicit residual outside the represented
+cell-target references.
+
+For one runtime `OverlayClass::Mark` wall cell, the transaction is indivisible and completes before
+the next autofill cell: stamp data `0` and identity with no owner; run hosted cleanup in literal
+N/E/S/W/self order; when not in editor/ScenarioInit, perform the anchor Merge plus graph step; then
+write the owner; increment the wrapping eight-neighbor retained counts in N/NE/E/SE/S/SW/W/NW order;
+then run the common anchor Recalc tail. Cleanup always Recalcs a visited wall, but publishes its own
+zone repair/graph only when the zone changes. Authored identity finalization cannot itself seed a
+damaged cleanup removal because Mark writes data `0` and OverlayData is applied later without another
+cleanup. The removal branch is nevertheless active retail code/data-conditional for a pre-existing
+isolated damaged GASAND, GAWALL, or NAWALL; no shipped-map witness or ordinary invariant-preserving
+placement reachability is claimed. CYCL, BARB, and FENC stay dormant under retail rules.
+
+The smallest borrow-safe production adaptation threads this host through the existing AoE prelude,
+combat-inline hook, direct wall host, Lightning, sale, movement-crush, persistent-projectile, ambient,
+and placement seams. A placement adapter borrows only the already separate entity-reference, dirty,
+navigation, bridge, overlay, and terrain owners and commits each anchor/filler transaction before
+continuing the scan. Load-time materialization retains its non-live wrapper and must not invent
+runtime observer publication. Genetic Mutator remains excluded because the active retail
+`[MutateExplosion]` path has no Wall/Wood/WallAbsoluteDestroyer capability.
+
+Rejected alternatives are: passing raw world vectors through every overlay function, which couples
+the map owner to Simulation storage and worsens borrow boundaries; returning a generic effect vector
+for later replay, which recreates the exact deferred-order defect and loses nested transaction order;
+and moving wall mutation wholesale onto `Simulation`, which duplicates OverlayGrid authority and
+creates architecture drift. The callback host is the existing architecture seam extended only with
+effects that native executes inside the same call.
+
+Focused acceptance requires an exact ordered host spy for rejected, retained, terminal, nested,
+cleanup-removal, signed-alias, and true-dummy cases; five-visit placement traces including non-walls;
+owner visibility and second-anchor-Recalc ordering; one complete filler transaction before the next;
+and production witnesses for ordinary combat, persistent projectile, Lightning, movement/crush,
+sale, and the active-data-conditional placement cleanup. Tests must prove that no deferred production
+radar replay remains. Existing exact connectivity/count/snapshot/hash tests remain preservation gates.
+
+##### Transaction 3 residual ledger after PR #207 (critic 3, 2026-09-01)
+
+Recorded open items, each with its native reading and owner. None is closed by PR #207.
+
+- **OQ-37 post-`Full_Init` OreTwinkle Scenario draws (non-deferrable).** `FUN_00684C30` (called
+  by `ScenarioClass::Read_Scenario @ 0x00684620` after `Full_Init`) runs, in order: a third full
+  `RecalcAttributes` sweep (`0x00684FAB..0x00684FC0`), `ComputeBridgeZones @ 0x0056D6E0`,
+  `RebuildZoneConnectivity @ 0x0056C510`, `RebuildAllZoneLevels @ 0x00581F50`, `FUN_00586BF0`, one
+  `ParticleSystemClass @ 0x0062DC50` construction (native ID), then, when `Rules+0x1870`
+  (`OreTwinkle=TWNK1`) is non-null, an anti-diagonal pass over every real cell that calls
+  `Random::RandomRanged @ 0x0065C7E0` on the Scenario RNG (`ECX = Scenario+0x218`,
+  `0x00685095`) with range `(0, OreTwinkleChance-1)` for every cell whose
+  `CellClass::Get_Tiberium_Value @ 0x00485020` is nonzero and constructs `AnimClass @ 0x00421EA0` on a
+  zero roll. Rust's `finalize_scenario_post_map` has no twinkle step, so every fresh load with ore
+  advances the Scenario cursor differently from gamemd before the first tick and the start-of-match
+  twinkle animations are absent. Frequency: every map with resource overlays. Owner: the post-map
+  tail (transaction 3 continuation), inserted after the modeled AiOpeningCredits loop
+  (`HouseClass::Add_Tiberium_Credits` at `0x00684F45..0x00684F69` precedes all of the above).
+- **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6).** The final
+  authored sweep (`src/sim/runtime.rs` `finalize_and_populate_staged_authored_scenario`) performs
+  unlatch -> Recalc -> wall owner but not the arg-0 value call, the wrapping signed-32 sum, or the
+  `Full_Init` store to `0x0087F91C` with cell-array teardown reset. No active reader is proved; owner:
+  transaction 3 continuation.
+- **Ancillary `InitCellAttributes` slot seam.** The raw `0x300000` clear pass, per-cell `+0x30 = 0`,
+  `FUN_00483E30(0,0x10000,0,1000,1000,1000)` light routing, latch clear, and AttachedTag `0x19`/`0x1A`
+  restamp are not exposed as ordered slots by the final sweep. Owners remain the generic trigger
+  subsystem, transaction 20, and transaction 21/OQ-19; transaction 3 continuation owes the ordered
+  seam and the negative no-`BridgeFacts` assertion.
+- **Retained wall plane `None` acceptance (contract G7).** Snapshot v115 rejects only a length
+  mismatch; the generated production arm still builds `OverlayGrid::from_native_overlay_packs` with
+  `retained_wall_neighbor_counts: None` and the global count owner falls back to the legacy scan.
+  The current-version `None` rejection lands with G10.
+- **CellAnim child fields.** `OverlayClass::Mark`'s ordinary tail constructs the CellAnim at
+  `Location+0x180` per axis with `GetGroundHeight`, then, when the cell has a tiberium type, writes
+  `Anim+0xD4 = ColorScheme[Tiberium+0xC0]+0x30C` and `Anim+0xFC = cell.nZAdjust_Ground`. The
+  production host passes no remap and `z_adjust 0`, and its `+0x80` centre versus the native
+  `+0x180` object-Location offset is UNCHECKED. Frequency zero on retail (every `CellAnim=` in
+  `rulesmd.ini` is commented out); custom-content residual.
+- **Startup-crate wall image uses the hostless placement wrapper** (`src/sim/crates.rs`, main-side
+  phase14 code): `PostDestructionWallCleanup` publishes tactical and radar dirty per visit; the
+  hostless wrapper does not. Frequency zero on retail (no `Wall=yes` crate image); recorded, not owned
+  by the bridge program.
+- Notes carried without action: `Land=9` is Railroad (retail `TRACKS01..16`) and the ordinary route
+  yields identical bytes/Recalc/UnInit; `0xA7`/`0x7E` vein arms and `FUN_0074DE90` have zero retail
+  content; germination's `% MaxDensity` is inert for `MaxDensity=12`; the transient
+  `OverlayGrid`/terrain clone round-trip between the two finalize calls creates no divergent
+  authority today; `FUN_00452D40` building wall extension after the second drain is UNCHECKED.
 
 #### Repair and CABHUT transaction
 
@@ -526,15 +1093,13 @@ FROZEN-COVERAGE -> CONTRACTED -> BUILT+FOCUSED-VALIDATION
 
 Any new active caller reopens coverage. Any unresolved native term keeps the contract blocked. Any critic finding keeps the mechanism open. Passing a subset of tests never changes the owning GSI row to closed while another required mechanism is open.
 
-### P0 — shared Techno-constructor RNG prerequisite and P0-R1 prefix correction
+### P0 — merged shared Techno-constructor RNG prerequisite and P0-R1 prefix correction
 
-Before fixed-low-load transaction 3 begins, one builder closes the smallest shared Scenario-prefix
-correction needed to keep its first Mark draw exact. The original constructor P0 and transaction 2
-are merged on current `main`, but P0-R1 is reopened because the merged optional plan omits the first
-House pass, the second Gather in Cooperative, and every valid no-plan stock-offline path. P0-R1 must
-generalize that substrate to the universal transaction above and pass a fresh critic. The completed
-all-context audit supplies transaction 3's campaign/LAN/WOL/replay/save/generated/editor matrix; its
-typed preservation fixtures remain mandatory and cannot be waived by a correct offline fixture. The
+The original constructor P0, transaction 2, and P0-R1 are merged on current `main`; PR #196 closes
+the smallest shared Scenario-prefix prerequisite needed to keep transaction 3's first Mark draw
+exact. The completed all-context audit supplies transaction 3's campaign/LAN/WOL/replay/save/
+generated/editor matrix; its typed preservation fixtures remain mandatory and cannot be waived by a
+correct offline fixture. The
 original constructor prerequisite is not a new bridge mechanism or a general Techno rewrite. It
 models the one unconditional raw Scenario draw at
 `TechnoClass__Constructor @ 0x006F3254`, stores the low word as
@@ -597,7 +1162,7 @@ Its required fixtures assert:
 - exact Post-Map starting-MCV and extra-unit word/cursor order, including a later placement failure;
 - one ordinary placed runtime spawn and one limbo runtime spawn, each consuming and retaining its
   own word;
-- a generated projection with validated bindings consuming zero additional draws;
+- a generated Techno projection with validated bindings consuming zero additional constructor draws;
 - a snapshot round trip retaining every word and upgrade link without a constructor draw.
 
 P0 remains open if any active fresh-construction ingress, section/entry order, upgrade event,
@@ -611,8 +1176,8 @@ architecture layers and not mechanism pass gates.
 | Order | Closure unit | Primary coverage | Dependency / ordinary-play oracle |
 |---|---|---|---|
 | 1 | Theater/rules/assets, raw flags, automatic-shell theater classification, TIBTRE mask preservation | BR-M01, BR-M06, BR-M24 | exact ten piece keys; raw-mask fixtures; automatic-shell corpus verdict; TIBTRE rejects `0x500`; retain raw SpecialFlags/session inputs for unit 10 |
-| 2 | Active RMG preview/accept/`.SED` launch lifecycle, low deck/end/CABHUT production, and waterfall-topology exclusion | BR-M02, BR-M03 | P0 and unit 1; `7fee6929`, `4a63fa15`, `f1e6054b`, `a776f270`; fresh MapGen per run; first-entry/re-entry and no-preview gates; location-free discarded trace events; one launch `ScenarioBootstrapRng`; validated `GeneratedTechnoInitTable`; active-phase-only trace; complete stamped output; no generated Mark replay; `BuildRiverBridge` negative characterization |
-| 3 | Shared authored OverlayPack/OverlayData/global-Recalc pass, fixed-map low procedural load and Road mutation | BR-M04 (shared high-load contribution only), BR-M05, BR-M11 | P0/P0-R1 and unit 1; complete active load-context cursor audit; exact y/x high/low interleaving and finalized-payload handoff; Lost Lake/Killer plus destroyed low fixture; exact `NewINIFormat` activation; generated-source bypass preserving its full direct deck payload and zero Mark draws |
+| 2 | Active RMG preview/accept/`.SED` launch lifecycle, low deck/end/CABHUT production, and waterfall-topology exclusion | BR-M02, BR-M03 | P0 and unit 1; `7fee6929`, `4a63fa15`, `f1e6054b`, `a776f270`; fresh MapGen per run; first-entry/re-entry and no-preview gates; location-free discarded Neutral-Tech constructor events, with failed CABHUT pre-search absent; one launch `ScenarioBootstrapRng`; validated `GeneratedTechnoInitTable`; active-phase-only trace; complete stamped output; no generated Mark replay; `BuildRiverBridge` negative characterization |
+| 3 | Shared authored OverlayPack/OverlayData and both load-time Recalc boundaries, fixed-map low procedural load and Road mutation | BR-M04 (shared high-load contribution only), BR-M05, BR-M11 | merged P0/P0-R1 and unit 1; complete active load-context cursor audit; exact y/x high/low/ordinary interleaving, pre-object payload handoff, authored per-Mark/first-sweep Anim construction and post-object scalar-delete/unlatch/recreation; Lost Lake/Killer plus destroyed low fixture; exact `NewINIFormat` activation; separate collision-free handles/native IDs with OQ-34's exact campaign/noncampaign fresh-Full_Init prefix, set-from-snapshot wrapping `+0x2710`, empty shared-queue prestate, and minimal Tube constructor-ID binding; final post-Recalc wall-owner reuse plus generic tag-line-bit exclusion and routed lighting/opaque-field side effects; generated-source no-Mark/direct-deck arm with actual synthetic-Full_Init state, phase-aware CABHUT/Neutral-Tech constructor and native-ID interleaving, every generator Recalc/Anim generation, final arg-1 unlatch/germination-value/Recalc lifecycle, and exact preview-native reset/replacement/Cancel/re-entry/queue lifetime |
 | 4 | High topology, records, zones, hierarchy and edge restamp | BR-M04, BR-M10, BR-M17 | unit 1; Bay of Pigs/Hills and Deadman's Ridge |
 | 5 | Explicit TubeClass load/hierarchy/direction-8/persistence and automatic-shell non-traversal | BR-M12, part of BR-M22 | units 1/4; sealed valid custom tube fixture; zero-length shell negative case |
 | 6 | Dual occupancy, entry, A*, peer markers and locomotor transitions | BR-M07, BR-M09, BR-M13 | units 4/5; deck, under-span, ramp, gap |
@@ -647,7 +1212,7 @@ preservation evidence. No earlier transaction or different row's critic result c
 | BR-M01 | 1 and 10 |
 | BR-M02 | 2 |
 | BR-M03 | 2 (negative characterization) |
-| BR-M04 | 3 (shared high OverlayPack/OverlayData/global-Recalc contribution) and 4 |
+| BR-M04 | 3 (shared high OverlayPack/OverlayData/two-Recalc-boundary contribution) and 4 |
 | BR-M05 | 3 |
 | BR-M06 | 1 |
 | BR-M07 | 6 |
@@ -680,7 +1245,7 @@ that transaction; a shared commit never grants a shared pass.
 
 Transaction 3 begins BR-M04's shared high-load contribution but cannot close BR-M04. Its
 evidence/output bundle must nevertheless include the native interleaving,
-OverlayData/global-Recalc order, finalized-payload handoff and high-anchor retail preservation
+OverlayData/two-Recalc-boundary order, finalized-payload handoff and high-anchor retail preservation
 fixtures; transaction 3's fresh critic checks that contribution for escaped high-load regressions.
 After transaction 3 merges, transaction 4 uses a new short-lived branch and may use a different
 builder. Its fresh critic receives BR-M04's complete transactions-3-and-4 requirement, native
@@ -720,6 +1285,18 @@ Every frozen question has a pre-implementation owner. A unit cannot become `CONT
 | OQ-29 post-A* smoothing | 7 |
 | OQ-30 Rocker secondary effect | 12 |
 | OQ-31 CellSpread tolerance | 11 |
+| OQ-32 RMG preview unique-ID continuation and terminal Anim/sound cleanup | RESOLVED by `RMG_PREVIEW_ANIM_BUILDING_IDENTITY_LIFECYCLE_REINVESTIGATION_GHIDRA_REPORT.md`; transaction 3 implements and validates it |
+| OQ-33 authored OverlayPack ephemeral OverlayClass ID/registry/deferred-drain lifecycle | RESOLVED by `AUTHORED_OVERLAY_EPHEMERAL_OBJECT_FINALIZATION_REINVESTIGATION_GHIDRA_REPORT.md`; transaction 3 implements and validates it |
+| OQ-34 complete native-ID prefix before the first generator/authored object: preview Set_Defaults/manual-storage branches plus fresh-Full_Init pre-map House/Type/Cell constructors, map-read transform, and Tube prefix | RESOLVED by `FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md`; transaction 3 implements the consumed-once prefix/preview lifetime, while positive Tube topology remains 5 |
+| OQ-35 `InitCellAttributes` raw `0x100000`/`0x200000` clear/restamp identity and consumers | RESOLVED as active generic AttachedTag event-`0x19`/`0x1A` row/column trigger acceleration, not bridge-zone topology; transaction 3 exposes the ordered ancillary seam and negative no-`BridgeFacts` assertion but does not implement or close the official-retail-reachable generic bits/consumer |
+| OQ-36 `InitCellAttributes` ordinary-cell LightConvert/ZAdjust recomputation | native ordinary/sentinel split and draw consumers are verified; transaction 3 executes and tests one cache invalidation at the recomputation-routing slot, while transaction 20 owns semantic rendered-cell-light equivalence and the final end-to-end stale-preview-cache test |
+| OQ-37 post-`Full_Init` OreTwinkle Scenario-RNG pass and the `FUN_00684C30` post-load order (third Recalc sweep, bridge-zone/zone-connectivity/zone-level rebuilds, particle-system ID, twinkle draws) | OPEN, non-deferrable; opened by PR #207's critic 3; transaction 3 continuation owns it in the post-map tail after the modeled credits loop |
+
+Two ancillary writes do not need new question numbers. Final wall-owner reconstruction is already a
+verified semantic match under GSI-04.07; transaction 3 must preserve its post-final-Recalc ordering
+when refactoring finalization. `Cell+0x30=0` is a persisted/swizzled pointer-shaped lifecycle slot but
+has no proved live gameplay producer/consumer in this corridor; its meaning stays under OQ-19/
+transaction 21 and must not be invented as bridge state or numeric scratch.
 
 The destruction-authority matrix has an additional mandatory deferred evidence term already present
 in the frozen source set: the complete UI/session writer chain into `DAT_00A8B260` and the true
@@ -758,9 +1335,9 @@ Negative facts are closure requirements, not prose-only cautions. Each routed un
 | map-editor fallout suppression is not an ordinary gameplay branch | 14 |
 | malformed sentinel-less tube crashes may be rejected safely; editor-only tube/placement writing UI remains excluded while runtime placement stays active | 5 and 19 |
 | no per-layer shroud model; cold BSS zero never proves a runtime constant dormant | every affected contract, with units 6, 14, 19 and 20 as the known consumers |
-| accepted RMG preview data/continuation is never gameplay authority; preview Scenario state is never carried through Start; successful output objects cannot stand in for failed constructor events; generated low-deck cells never receive a fixed-map Mark replay | 2, 3 and 21 |
+| accepted RMG preview data/MapGen continuation and its live shell-native objects are never gameplay authority; preview Scenario state is never carried through Start, but Cancel/re-entry must not prematurely destroy the proved shell Buildings/Anims/latches/sounds or counter; successful output objects cannot stand in for discarded Neutral-Tech constructor events, while failed CABHUT pre-search is not an event; generated low-deck cells never receive a fixed-map Mark replay | 2, 3 and 21 |
 | no-xref RMG-shaped `0x005A6510`/`0x005A82E0`/`0x005A91E0` are not active generator phases; discarded neutral-Techno events do not invent a final cell | 2 |
-| fixed authored, Post-Map and runtime Techno construction are not RNG-free; generated projection and snapshot restore are not allowed to draw a constructor word again | P0 and 2 |
+| fixed authored, Post-Map and runtime Techno construction are not RNG-free; generated Techno-binding projection and snapshot restore are not allowed to draw a constructor word again, while staged generated Anim RandomRate remains native | P0, 2 and 3 |
 
 ## Builder, Critic, and Publication Protocol
 
@@ -787,8 +1364,11 @@ suite unless it discovers a correction requiring a new transaction and PR.
 - `MILESTONE-BLOCKING` — low bridges must remain flat Road overlays and mutate exactly through intact/damaged/destroyed/repair states. Trigger: every low crossing and bridge damage. Player effect: wrong movement class, impassable water or invented tunnel behavior. Frequency: common on stock low-bridge maps. [BR-M05, M11, M17, M19]
 - `MILESTONE-BLOCKING` — collapse and repair must preserve native per-cell transaction/RNG order. Trigger: bridge weapon damage, CABHUT C4, attached bombs or engineer repair. Player effect: different survivors, debris damage, bridge shape, zones and events. Frequency: common whenever bridges are contested. [BR-M16..M19, M26, M27]
 - `MILESTONE-BLOCKING` — bridge destruction authority must follow the active mode/source matrix: scenario `[SpecialFlags]` where authoritative, skirmish/multiplayer session `BridgeDestruction` where authoritative, never `[CombatDamage] DestroyableBridges`; CABHUT C4/attached bombs bypass the weapon gate. Trigger: every attempted weapon or hut-driven collapse when sources disagree. Player effect: bridges become wrongly indestructible/destructible or hut sabotage stops working. Frequency: every configured disagreement and every CABHUT collapse. [BR-M01, BR-M16, BR-M19]
-- `MILESTONE-BLOCKING` — every fresh Techno construction must consume and retain its one Scenario word, while generated projection and restore must not double-draw it. Trigger: valid authored base/upgrade objects, Post-Map starting forces, and ordinary runtime production/spawn, including a later failed Unlimbo. Player effect: later bridge damage/debris/repair randomness and constructor-word-driven report choices diverge; fixed-map low-Mark variants do not, because native Mark runs before authored Technos. Frequency: essentially every match, with authored-map impact on most stock maps and runtime impact whenever units are created. [P0 prerequisite]
+- `MILESTONE-BLOCKING` — active wall damage and placement must publish tactical, radar, pointer-expiry, Recalc, zone, graph, owner, and retained-count effects inside each native wall transaction. Trigger: every accepted wall hit and every runtime wall placement; the cleanup-removal sub-branch additionally requires a pre-existing isolated damaged active-retail wall. Player effect: stale tactical/minimap cells, retained targets, delayed or wrong path authority, and owner/count visibility in the wrong transaction. Frequency: wall hits and placement are ordinary; cleanup auto-removal is active-data-conditional with no established shipped-map witness. [transaction 3 critic repair / BR-M04 preservation]
+- `MILESTONE-BLOCKING` — every fresh Techno construction must consume and retain its one Scenario word, while generated Techno-binding projection and restore must not double-draw it. Trigger: valid authored base/upgrade objects, Post-Map starting forces, and ordinary runtime production/spawn, including a later failed Unlimbo. Player effect: later bridge damage/debris/repair randomness and constructor-word-driven report choices diverge; fixed-map low-Mark variants do not, because native Mark runs before authored Technos. Frequency: essentially every match, with authored-map impact on most stock maps and runtime impact whenever units are created. [P0 prerequisite]
+- `COMPOUNDING` — authored Overlay rows must construct/defer/drain real load objects on the shared native-ID and registry timeline, while steep-slope survivors remain lifecycle-only. Trigger: every admitted format-active authored row; the shared drain itself runs on every fresh reader. Player effect: CellAnim/tile-Anim order and later native identities diverge, or a rejected row wrongly renders/saves; slope registry persistence alone is ordinarily invisible. Frequency: common on authored stock maps, with slope/wall/child-Anim branches content-conditional. [transaction 3 / BR-M04, M05]
 - `MILESTONE-BLOCKING` — active RMG must emit traversable low decks and CABHUTs while preserving the two-run lifecycle and all three RNG owners. Trigger: every preview and every launch of a retail random map; deck production itself is active on types 3/4. Player effect: generated water regions lack intended connections, fixed-map Mark corrupts already-stamped generated decks, accepted maps differ from fresh `.SED` launches, or split/double constructor draws shift all later Scenario randomness. Frequency: every random-map session, with bridge placement on every qualifying generated map. [BR-M02]
+- `COMPOUNDING` — RMG preview must keep its active native Building/Anim/latch/sound lifetime and numeric-ID reset separate from the UI candidate and from collision-free Rust handles. Trigger: every Generate, same-key or changed-key replacement, Cancel/re-entry, and accepted launch. Player effect: waterfall loops or preview generations start/stop at the wrong boundary, later constructor identities/order drift, or a same-key regeneration is changed by premature cleanup. Frequency: every random-map preview; audible impact occurs on candidates with admitted waterfall heads. [BR-M02 preservation, transaction 3]
 - `COMPOUNDING` — exact topology/zone/hierarchy rebuild feeds all later path decisions. Trigger: load, collapse, repair and restore. Player effect: long-lived or post-load path divergence. Frequency: every topology mutation. [BR-M04, M10, M22]
 - `MILESTONE-BLOCKING` — spawn, Unlimbo, factory exit, paradrop, landing and teleport must initialize the correct object plane, list, occupation bytes and height. Trigger: every bridge-adjacent creation or relayer. Player effect: a unit appears under the intended deck, occupies both planes, blocks the wrong route or renders at the wrong Z. Frequency: intermittent on bridge maps and common for factories/air insertion placed nearby. [BR-M08]
 - `MILESTONE-BLOCKING` — direct target acquisition and weapon-specific gates must distinguish deck from under-span objects. Trigger: ordinary scans and attacks near high bridges. Player effect: units acquire or fire at invalid cross-plane targets. Frequency: common in combat near high bridges. [BR-M14, M16, M21]
@@ -807,6 +1387,27 @@ suite unless it discovers a correction requiring a new transaction and PR.
 - Every RMG call reconstructs MapGen from the stored map seed. Preview consumes and returns the
   process shell Scenario cursor; successful Start discards that cursor by constructing the gameplay
   Scenario/Main streams from the match seed before `.SED` regeneration.
+- Native numeric IDs are a fourth independent deterministic stream, not collision-free Rust handles
+  and not Scenario RNG. Every preview Generate resets that counter to `1,000,000` before its cleanup
+  decision without rewinding Scenario; same-key replacement emits zero prefix Assign events and may
+  immediately reuse `1,000,001` while retained Types/Houses/Supers/real-or-dummy Cells/Anims keep that
+  numeric value on distinct runtime handles. Missing/changed storage advances through
+  `R+P_preview+HB+K_preview` before the first generator object. Fresh `Full_Init` instead carries one
+  cursor through the exact campaign/noncampaign constructor formula, snapshots `C_saved`, retains any
+  shadowed theater events, installs wrapping `C_saved+0x2710` from the snapshot, then spends every
+  allocated Tube source-row ID before parse and Overlay.
+- Preview-native Buildings/Anims, retained cross-class native IDs, latches, sounds, counter, final
+  growth/spread queues, and Scenario advancement survive Cancel
+  and no-Generate re-entry even though presentation/storage owners do not. They are process-shell
+  state, not gameplay snapshot authority; the next changed/missing-key full cleanup or gameplay
+  `Full_Init` is their native destruction boundary.
+- Authored load-object registries and the shared duplicate-permitting deferred queue preserve native
+  insertion/live-drain order through the reader. Successful/wall Overlay records are destroyed before
+  the first sweep; steep-slope survivors remain lifecycle-only until scene teardown. Matching native,
+  those survivors are excluded from gameplay presentation/current-object checksum and snapshot
+  reconstruction. Their spent native-ID cursor effect remains authoritative for later constructors;
+  transaction 3 must preserve deterministic Rust continuation, while transaction 21/OQ-19 separately
+  verifies the exact native save/restore transform rather than inferring it from survivor absence.
 - Every valid active stock offline noncampaign launch owns one immutable
   `PreFillScenarioPrefixPlan`. It evaluates both H-sized House passes, both mode-family Gather calls,
   default-cell deficient retries and the zero-draw reset from the match-seeded `S0`; load validates
@@ -816,17 +1417,23 @@ suite unless it discovers a correction requiring a new transaction and PR.
   campaign single House pass; LAN House1/`+0x80`/selected-`+0x84`/reset/House2; WOL
   House1/`+0x80`/common-assignment/reset/House2; replay inheritance; and save/generated no-Mark
   boundaries. None may substitute the offline prefix.
-- Generation-time constructor events are authoritative even when the attempted object is later
-  deleted. `RmgConstructionTrace` records all attempts. `GeneratedTechnoInitTable` binds the one
-  consumed low word for each emitted entity, and validated projection installs
-  `GameEntity::techno_ctor_random_word` without spending the same Scenario draw twice.
+- Generation-time actual constructor events are authoritative even when a Neutral-Tech object is
+  later discarded after failed placement. `RmgConstructionTrace` records every actual Building
+  construction; a failed CABHUT site search precedes construction and is absent. A discarded
+  Neutral-Tech event consumes its constructor word and native ID but has no binding.
+  `GeneratedTechnoInitTable` binds the consumed low word and native ID for each emitted entity, and
+  validated projection installs both without spending a second Scenario draw or native ID; its
+  collision-free runtime handle remains an independent identity.
 - P0 gives fixed authored-map, Post-Map and runtime constructors the same field from a direct draw
   in native order. It consumes before Unlimbo and therefore retains the cursor advance when
   placement later fails. Authored upgrades are distinct stable entities linked to their base and
   slot, so their constructor words persist for later Techno consumers, snapshots and hashes.
-- Generated projection and snapshot restore install an existing constructor word and consume zero.
-- Generated low-deck overlay/data rectangles are final load payloads. Only fixed authored low
-  endpoints run `OverlayClass::Mark` and its Scenario draws.
+- Generated Techno-binding projection and snapshot restore install an existing constructor word and
+  consume zero additional constructor draws. This does not suppress native generated tile-animation
+  RandomRate draws at their staged Recalc boundaries.
+- Generated low-deck overlay/data rectangles are direct materialization input, then generator-native
+  Recalcs and final argument-1 germination/value finalization may mutate them. Only fixed authored
+  low endpoints run `OverlayClass::Mark` and its Scenario draws.
 - Fixed-range draws still advance the verified RNG stream.
 - Linked-list/vector traversal order is retained where it controls outcomes: collapse fallout, scatter snapshots, repair selection and observer delivery.
 - Presentation consumes no gameplay RNG and cannot mutate bridge state.
@@ -845,7 +1452,8 @@ Required fixture families:
 - P0 constructor fixture family: fixed-map Unit/Aircraft/Infantry/Structure order, a
   constructed-then-failed placement, a pre-construction rejection, and a distinct linked structure
   upgrade; Post-Map starting MCV/extra-unit order including failure; ordinary placed and limbo
-  runtime spawns; generated projection spending zero additional draws; and snapshot round trip
+  runtime spawns; generated Techno-binding projection spending zero additional constructor draws;
+  and snapshot round trip
   retaining words/upgrade links without a constructor draw;
 - P0-R1 stock-offline prefix fixtures for all ids `1..9`, two identical native-roster House passes
   including observer and invalid-AI-slot cases, two independent Battle/Cooperative Gathers, sparse and
@@ -858,45 +1466,214 @@ Required fixture families:
 - typed non-offline fresh-load-context fixtures: campaign single House pass and no Gather; LAN full
   House1/`+0x80`/selected-`+0x84`/reset/House2 sequence; WOL full House1/`+0x80`/common-assignment/
   reset/House2 sequence with both gated chooser arms; replay adds zero before its recorded family;
-  a generic unsupported fresh context cannot guess stock offline; and generated `.SED` retains the
-  stock-offline prefix while its source provenance suppresses Mark; a separate persistence fixture
+  an untyped generic fresh context at either missing/1 or format-active 4 cannot guess stock offline
+  or a native-ID prefix; a typed authored missing/0/1-format fixture executes the full identity prefix
+  and ungated sweeps but no pack Mark; and generated
+  `.SED` retains the stock-offline prefix while its source provenance suppresses Mark; a separate persistence fixture
   proves restore has no fresh descriptor, Full_Init, Fill, prefix or Mark call and ends Scenario at
   seed zero;
+- staged-owner fixtures prove `ScenarioBootstrapRng` is consumed before Fill into one real Simulation
+  load runtime whose Scenario/native-ID/handle/registry/queue identities remain unchanged through
+  Fill, authored pack, both Recalc boundaries, object sections, final payload installation, Post-Map,
+  and gameplay. No map callback can target a not-yet-created sim, and no shadow lifecycle registry or
+  end-of-load owner transfer/reconstruction is accepted;
+- pure scheduler-root fixtures run after Fill but before OverlayPack/first Recalc in both production
+  and headless paths. They discover every required terrain-Anim asset root yet consume zero native IDs,
+  handles, Scenario/Main draws, registrations, sounds, latches, or overlay mutations. Missing assets
+  fail before the first OverlayPack/Recalc Anim-construction effect while preserving already-spent
+  prefix native IDs and Fill RNG state; after binding, every actual Anim is still constructed only by
+  the synchronous sim-backed sink at its native Recalc boundary;
 - authored low-Mark raw-seam fixtures bracketing full cursor states after prefix, after Fill, after
   exact `3*L` `raw & 3` writes, and before the first authored Techno; fixed/search/no-op/failure arms
   draw zero, and no ranged helper or cloned cursor is accepted;
-- source mapping fixtures: Loose and Mix map to authored Mark; Generated maps to materialized/no-Mark
-  even with missing or empty construction trace; LegacyFallback and untyped Generic reject rather
-  than guessing; accepted generated start staging is distinct from both map source and trace,
+- source mapping fixtures: Loose and Mix map to authored, with every fresh gameplay path requiring a
+  typed family/native-ID receipt; missing/0/1 format skips only pack Mark while 2/4 enters Mark. Generated selects materialized/no-Mark
+  even with missing or empty construction trace, then rejects missing phase transport instead of
+  reconstructing history or falling back to authored; LegacyFallback rejects and untyped Generic
+  rejects every fresh gameplay-equivalent load before identity/Mark effects rather than guessing. A
+  separately named pure-map/no-live-effects diagnostic is non-parity; accepted generated start staging is distinct from both map source and trace,
   consumed once, retained as the active Scenario start table for loading markers and session/hash,
   and cannot be inferred from a cancelled/replaced preview, authored map, external `.SED`,
   regenerated waypoints, or generated construction events;
+- production/headless/auxiliary equivalence fixtures pass the identical admission descriptor through
+  each route and assert equal output, full Scenario cursor, native-ID cursor/event trace, and typed
+  failure point for typed authored format 4, typed authored absent/1 with full identity prefix and no
+  Mark draws, and generated materialized staged output with its required phase transport. Untyped
+  Generic rejects before any native-ID/Mark/draw at every format; no selector-free constructor may
+  certify a path production rejects;
 - one interleaved authored OverlayPack fixture where an earlier low trigger writes cells and a later
   packed coordinate observes/overwrites them, including a high anchor in the same y/x traversal;
-  then a conflicting OverlayData byte must win before the final global Recalc produces the exact Road,
-  LAT/CliffBack, zone and compact-cache result with no per-cell radar dirty or Tube creation; assert
-  exact identity/data through `ResolvedTerrainGrid`'s finalized payload before transfer and through
-  runtime `OverlayGrid` after consumed-once direct installation, while an instrumented production
-  handoff proves zero second pack decode, Mark or Recalc;
+  assert the exact high save/setter-Recalc/anchor-restore window and ordinary `0 -> Land5:1 ->
+  eight-neighbor germinated density -> Crate:FF` state order. Germination tests pin the exact
+  `[0,1,3,4,6,7,8,10,11]` table, exact `N..NW` order, same-TiberiumClass rather than exact-id/state
+  matching, Land-5/non-Tiberium early return at state `1`, flagged range-miss class-0 fallback,
+  source-order packed overwrites, and a no-data `2x2` y/x fixture whose final rows are exactly
+  `[0,1;3,4]`. Edge instrumentation proves every true miss reuses the shared dummy, its final stamped
+  coordinate is the last true miss in N..NW order, later real hits do not clear that stamp, and the
+  helper never writes dummy identity/state. Assert zero RNG, zero dirty/Recalc, and zero direct
+  queue/bitmap/heap mutation; the no-OverlayData `2x2` retains density into queue initialization, all
+  four cells pass the held-constant growth threshold, state `0` fails the spread-density gate, and
+  states `1/3/4` pass it without recomputation. Instrument authored queue setup to prove growth then
+  spread initialization occurs immediately after `[Terrain]`, observes any Terrain resource clear,
+  and precedes every Unit/Aircraft/Infantry/Structure/Smudge. An adversarial flat resource cell that
+  is spread-eligible at that boundary and receives a later ground occupier must remain in the seeded
+  queue state: delaying initialization until after object occupancy or rebuilding after the final
+  pass must fail. Instrument authored `InitCellAttributes(0)` to prove it calls zero germination
+  helpers but invokes value-only `Get_Tiberium_Value` across the real-cell pass, contributes signed
+  zero for non-resource cells and wrapping signed 32-bit `(existing_state + 1) * Value` for each
+  recognized resource to its return total, then Recalcs without changing the held queue snapshot.
+  Assert `Full_Init` stores that exact wrapping result to the MapClass `+0x134` analogue, it persists
+  across the remaining load steps, and cell-array teardown resets it to zero; generated argument 1
+  must not write it. Assert no invented gameplay/save/hash/presentation consumer. Then a
+  conflicting OverlayData byte must win before the first anti-diagonal
+  sweep validates identity and derives exact Road, LAT/CliffBack, zone and compact-cache state without
+  reading the data byte. Assert exact identity/data through the map finalizer's separate payload
+  and runtime `OverlayGrid`; the separate receipt is non-Clone, cannot be consumed twice, and poisoning
+  or clearing the raw packs after finalization cannot affect sim or presentation. Then construct
+  Terrain/authored objects and prove the post-object boundary scans current live Anim order and
+  immediately scalar-deletes/unregisters the transient terrain animations, compacting survivors and
+  releasing current sound handles without configured StopSound, ExpireAnim, or pending delete. Every
+  producer owner remains null and no terrain Anim enters entity/cell occupancy. Then assert the
+  transaction-3-owned `InitCellAttributes` sequence in exact order: one pre-loop ancillary raw-bit-
+  clear slot; per-cell opaque-zero slot; cell-light cache invalidation/recompute-routing; latch clear; generic tag-line-
+  restamp slot carrying `0x19`-before-`0x1A` precedence; argument-specific value work; Recalc; and post-
+  Recalc wall-owner reconstruction for a current wall. Transaction 3 does not materialize the raw tag
+  bits, their `FootClass`-equivalent consumer, semantic LightConvert/ZAdjust values, or a `+0x30` field.
+  Instead, its fixture asserts exact slot/event order, one cache invalidation at the light slot, and
+  negatives proving no `BridgeFacts`, bridge-zone, pathing, or invented opaque-field authority. The
+  generic trigger owner later consumes the preserved clear/restamp/dual-event-precedence contract;
+  transaction 20 separately proves the ordinary-versus-sentinel recomputation, semantic cell-light
+  output, and no retained-preview cache leak;
+  transaction 21 retains the `+0x30` raw-state question. The existing wall-owner implementation must reuse the final
+  current identity rather than run before Recalc or through a duplicate owner. The Recalc recreates
+  the surviving terrain-Anim set. An
+  authored pair must distinguish an animation first created in per-Mark source order from one first
+  created in the remaining anti-diagonal sweep and pin base registration, unique-ID and Anim-registry
+  insertion before optional Scenario RandomRate; Reveal/Unlimbo and Logic with no occupancy;
+  delay-zero Middle/StartSound before producer marker/ZAdjust/latch; conditional `Start` only when raw
+  SHP frame-count/2 is zero; and unchanged Main RNG. A custom RandomRate tile pins the cursor path,
+  all active stock TileAnim types pin the zero-RandomRate control while still consuming IDs and
+  registration, a mixed-registry fixture pins unrelated survivor order, and a waterfall fixture pins
+  `WA01X` StartSound/live-handle-release/final-restart while a non-`01` waterfall control emits no
+  StartSound, with an explicit configured-StopSound negative. Mutate one first-generation-eligible
+  tile/overlay through Terrain/object loading so it is deleted but not recreated, while an unchanged
+  eligible peer recreates; final state must come from the live second Recalc, not cached descriptors. Poison
+  otherwise eligible authored and generated cells with a missing referenced AnimType and forced Anim
+  allocation/registration failure; both must abort explicitly before gameplay rather than silently
+  dropping the generation. The
+  final sim-owned grid must
+  be the sole source for the app terrain template, occupied overlay render index, atlas/name closure,
+  minimap/radar, and bridge presentation; a procedural body absent from raw entries must render, and
+  a rejected/cleared raw row must not. Instrumentation must prove one
+  object-level tactical dirty per accepted ephemeral row before derived dispatch (including slope
+  rejection), helper argument `0` and no optional bridge-counter increment, zero repeated dirty for
+  generated low cells, and zero second pack decode/Mark/filter. Separate admission controls cover
+  missing/negative/0/1 format, non-`0xFF` decode, SHP-or-CellAnim, multiplayer crate rejection,
+  radar-diamond edges, allocation failure, steep slope after base Mark, and positive OverlayData
+  with empty/rejected identity;
+- authored Overlay load-object lifecycle fixtures seed explicit `C_saved` and two successful Tube
+  bindings, then assert four ordered base registry/listener joins -> native Overlay ID -> Overlay
+  registry join -> direct base Unlimbo. A success with ordinary CellAnim plus an unlatch eligible
+  terrain Anim must order `Overlay ID -> CellAnim ID -> terrain Anim ID -> next Overlay ID` while the
+  prior success remains dead/queued/registered. Observe all successful dead objects in every joined
+  registry through later identity rows and the entire OverlayData pass, then only the common epilogue
+  removes them. Common success must order UnInit pointer-expiration #1 -> already-limbo no-op -> death/
+  enqueue -> drain Release -> scalar-destructor pointer-expiration #2 while memberships still exist.
+   A slope-admitted authored wall must instead complete its wall effects and use that same common two-
+   broadcast tail because ScenarioInit is nonzero. A separate counter-zero non-authored control retains
+   UnInit pointer-expiration #1 -> full Limbo/Destroy/Mark-remove pointer-expiration #2 -> death/enqueue
+   -> drain Release -> scalar-destructor pointer-expiration #3. Slope failure remains alive/limbo/on-
+   map/redraw/registered/unqueued and has
+  no cell/Grid/GameEntity/Display/Logic/current-checksum/native-save/render membership. It remains in
+  the same sim-backed load-lifecycle registry after load completion and is released only by scene
+  teardown; no final-cell reconstruction or transient finalizer drop may pass. A shared-queue
+  seed `[alive A, dead B, B, alive C, dead D]` preserves A/C, removes both B entries before one
+  destructor, finalizes D, and processes shifted/live-appended successors without skipping. Format 1
+  and format 4 absent/empty bodies still drain a seeded shared dead object before the first sweep;
+  generated format 0 creates no authored Overlay/Mark/dirty/ID but runs the same drain. Every fresh
+  Full_Init reader entry first asserts the shared queue is exactly `[]`; the synthetic nonempty seed is
+  an isolated shared-drain mutation fixture, not a claimed pre-reader state. Reader rejects
+  and allocation-null spend no handle/ID/registry effects and high allocation-null only no-op restores;
+  injected base/Overlay registry or queue-growth failure hard-errors rather than completing normally.
+  After the scalar broadcast, destruction orders Overlay registry -> game-active Limbo no-op -> type
+  clear -> queue -> Object registry -> the three pointer-expiration/all-Abstract/Tag listener
+  registries -> free, and never refunds IDs. A fresh two-common-success row fixture must evolve the
+  reader-owned drain input from `[]` to exactly `[overlay0, overlay1]` in source order and assert that
+  no House/Super/Type/Cell/Tube prefix handle appears in that shared queue and the consumed prefix
+  receipt allocates no Overlay-lifecycle runtime handle before `overlay0`.
+  OQ-34's integrated absolute fixture derives `C_saved` from the complete prefix before asserting
+  Tube/Overlay/child-Anim identities;
 - low-Mark adversarial geometry fixtures for adjacent endpoints, first of two exact opposites, wrong
   ID/state pass-through, occupied fixed-row successful no-op, missing opposite partial fixed end,
   occupied/missing body overwrite, and edge lookups aliasing one persistent extended dummy in exact
-  row/j order while preserving draw count and return/tail behavior;
+  row/j order while preserving draw count and return/tail behavior; dedicated dummy checks prove a
+  negative-i16 component can resolve a real fixed-stride slot before fallback, true misses retain
+  identity/state, Resize resets `-1/0` without replacing identity, OverlayData never writes the
+  dummy, and real edge LAT reads its `0xFFFF` tile sentinel with flat slope;
 - Lost Lake and Killer: intact low crossings;
 - Bay of Pigs and Hills: high deck, under-span, dual-plane and AttackMove;
 - Deadman's Ridge: high collapse gap;
 - Shrapnel Mountain: destroyed low bridge;
 - deterministic RMG type 3/4 preview/cancel/accept/launch sequence asserting fresh MapGen state on
-  each run; first setup entry with seed `-1` taking one shell seed draw and re-entry taking none;
-  continuing shell Scenario cursor across repeated previews and Cancel; no third Generate on Use Map
-  with a preview and exactly one generation on Use Map without one; `.img` versus `.SED` commit gates;
-  successful-Start Scenario/Main reseed; unconditional `.SED` regeneration; one launch cursor through
-  the complete stock-offline pre-Fill prefix, Fill, ordered construction replay, projection, Post-Map
-  and Simulation; complete
-  constructor-event order including failures; failed-event consume/no-binding and emitted-event
-  consume-once/bind/no-double-draw rules; stored `Techno+0x3C8` value per CABHUT; final
-  MapGen/gameplay-Scenario continuations; and generated low-deck projection preserving every direct
-  overlay/data cell with no fixed-map Mark call or Scenario draw;
+  each run; first setup entry with seed `-1` taking one shell seed draw and re-entry taking none; and
+  continuing shell Scenario RNG cursor across repeated previews and Cancel. Preview fixtures must pin
+  all thirteen native lifecycle cases, using OQ-34's branch-specific post-manual-setup cursor:
+  argument-1 `Set_Defaults`/manual setup with no `Full_Init`, `Clear_Scene`, or `+0x2710` map-read
+  transform; per-Generate native-ID reset to `1,000,000` before cleanup with no Scenario rewind;
+  matching-key zero setup constructors and first-new-object `1,000,001` while retained Type/House/
+  Super/real-and-dummy-Cell/Anim IDs may collide; changed/missing row-major one-ID-per-real-Size-diamond-
+  Cell plus dummy-Cell-last, source-ordered Type, House/Super, and custom-theater prefix before the first
+  generator object, with `R+P_preview+HB+K_preview` and retail `K_preview=0`;
+  constructed-then-discarded Neutral Building word then ID/no refund; failed CABHUT
+  pre-search spending neither; stock TileAnim ID/no-RandomRate and only four `*01X` WaterfallLoop
+  attempts; custom RandomRate after native ID/registration with an independent collision-free handle;
+  transient terminal Anim churn spending fresh IDs; same-key old Anim/latch/sound retention through
+  intermediate Recalcs and legal temporary duplicate numeric IDs; changed-key old sound/Anim cleanup
+  before the first new constructor but after reset; every Generate freeing spread then growth before
+  reset and rebuilding growth then spread after generation; Cancel plus no-Generate re-entry retaining
+  native objects/sounds/counter/queues/Scenario state after UI/snapshot destruction; first later Generate taking
+  reset -> missing-snapshot full cleanup -> new construction; and acceptance alone retaining preview
+  state until the gameplay `Full_Init` cleanup. Use Map with a preview performs no third Generate and
+  Use Map without one performs exactly one; `.img` versus `.SED` commit gates remain exact;
+- a preview-prestate poison fixture starts with one retained old latch, proves it suppresses the
+  corresponding intermediate Recalc Anim, then proves terminal deletion/unlatch recreates it; applying
+  a journal against a changed lifecycle generation token/prestate fails rather than guessing;
+- fresh authored and accepted-`.SED` controls begin at Clear_Scene's `1,000,000`, replay OQ-34's
+  exact campaign or `E_multi -> House/Super pass 1 -> Resize 1 -> P -> House/Super pass 2 -> Resize 2`
+  constructor trace to derive `C_saved`, retain a custom shadowed theater Assign, then set wrapping
+  `C_saved + 0x2710` from the snapshot. Assert the 1,704-row/1,699-explicit-constructor retail subtotal
+  is not used as `P`. Each allocated successful Tube row spends before parse and gets a source-record-
+  keyed `TubeNativeInit`; an allocated malformed row spends then hard-errors, while allocation-null
+  spends zero then hard-errors. Neither continues to Overlay. Transaction-5
+  installation reuses each binding with zero second native-ID allocation; preview proves this map-read
+  prefix absent. Pin the absolute first-Overlay oracle as
+  `O1 = wrap32(C_saved + 10_000 + T + 1)` for `T=0`, `T=2`, and a signed-32-bit wrap boundary, while
+  preserving every synchronous child-Anim allocation before the next Overlay. Pin the report's
+  concrete numeric oracles: `C_saved=1,000,018` installs map-read cursor `1,010,018`;
+  `C_saved=1,000,037,T=0` makes `O1=1,010,038`; preview setup cursor `1,000,018` makes its first new
+  object `1,000,019`; and cursor bit pattern `0xFFFFFFF0` installs `0x00002700` rather than adding to
+  a changed current cursor. Successful Start
+  reseeds Scenario/Main, unconditionally regenerates `.SED`, and carries one
+  launch cursor through the complete stock-offline pre-Fill prefix, Fill, ordered construction replay,
+  projection, Post-Map, and Simulation. The generated fixture records complete constructor-event
+  order including failures; discarded Neutral-Tech consumes word then native ID with no binding,
+  emitted projection reuses word/native ID with no double draw or native-ID allocation, and the
+  collision-free runtime handle remains independent. It pins stored `Techno+0x3C8` per CABHUT,
+  final MapGen/gameplay-Scenario continuations, direct generated low-deck identity/data with no
+  authored Mark/low-Mark draw, and generated animation staging in exact order: any actual launch-only
+  synthetic-Full_Init generation, actual CABHUT constructor effects, first generator Recalc
+  animations, every emitted/discarded Neutral-Tech constructor, later Recalc/paint animations, final
+  scalar deletion, then anti-diagonal per-real-cell latch clear, `SpreadCellGerminate(0)` returned-
+  value aggregation, and Recalc/recreation. A generated resource-state fixture pins helper early-zero
+  behavior, same-class/dummy density, each signed 32-bit `(new_state + 1) * Value` return, wrapping
+  signed 32-bit local-sum arithmetic, and final payload state while proving queues retain
+  their earlier initialization with no rebuild and no persistent aggregate. It also pins native-ID
+  and runtime-handle order, custom RandomRate Scenario cursor, unchanged Main RNG, live-registry/
+  sound order, and the stock-waterfall zero-RandomRate control; final cells or a flat complete
+  Building trace cannot reconstruct earlier generations. The accepted-`.SED` boundary separately
+  asserts two consecutive free-spread-then-growth pairs—generator entry, then
+  `Full_Init`/`Clear_Scene`—followed by `Full_Init`'s single rebuild-growth-then-spread, with no preview
+  payload promoted into gameplay;
 - `BuildRiverBridge` negative fixture proving waterfall shaping emits no structural/low-overlay bridge topology;
 - sealed valid custom `[Tubes]` map;
 - automatic same-cell TubeClass shell classification and zero-length non-traversal case;
@@ -922,7 +1699,7 @@ After P0 and all bridge-mechanism passes:
 1. Start from each active native writer/consumer and prove a Rust owner, exact test or evidence-backed exclusion.
 2. Start from every Rust bridge field, helper, ignored test, approximation marker and branch and prove current active-retail authority or remove/correct it.
 3. Re-run the OpenTS correspondence ledger as leads and confirm no active YR mechanism disappeared between unit boundaries.
-4. Recheck all 27 mechanism rows, all 31 open questions, and every entry in the complete frozen negative-fact ledger; every open item must be resolved and every exclusion preserved, not deferred.
+4. Recheck all 27 mechanism rows, all 37 living questions, and every entry in the complete frozen negative-fact ledger; every open item must be resolved and every exclusion preserved, not deferred.
 5. Re-run named retail fixture traces for load, move, target, damage, collapse, repair, render and restore.
 6. Reconcile every merged transaction's full-suite certification and current `main` ancestry, update only verified System Map connections, and produce the final handoff. If the audit discovers any code correction, route it through a new dependency-coherent transaction, fresh critic chain, one PR-readiness full-suite run, and merge before repeating the affected audit rows.
 
@@ -955,10 +1732,12 @@ Yes. A builder may promote only the smallest missing prerequisite necessary for 
 The preferred approach is distributed exact-delta closure in current owners. It is approved only after a separate design-review pass verifies:
 
 - every behavior claim is cited to the frozen native/retail coverage report, the closed dual-RNG
-  lifecycle/follow-up report at `7fee6929`, `4a63fa15`, `f1e6054b`, and `a776f270`, the P0-R1 and
-  three low-Mark follow-up reports in Sources, or explicitly open;
+  lifecycle/follow-up report at `7fee6929`, `4a63fa15`, `f1e6054b`, and `a776f270`, P0-R1, the three
+  settled low-Mark reports, the nine original 2026-08-31 transaction-3 reports, and the 2026-09-01
+  authored-wall report in Sources, or explicitly
+  open;
 - all 27 mechanisms map to explicit mechanism gates and contributing implementation transactions;
-- all 31 open questions route to a pre-implementation owner and final audit;
+- all 37 living questions route to a pre-implementation owner, evidence-backed exclusion, or final audit;
 - no chosen interface collapses distinct native facts;
 - the player-experience ledger covers ordinary high/low traversal, combat, collapse/repair, RMG, presentation, content-conditional tubes/triggers and restore;
 - the critic protocol cannot close a mechanism with unresolved evidence;
@@ -972,11 +1751,53 @@ The preferred approach is distributed exact-delta closure in current owners. It 
 - the app-owned fresh-load-context descriptor is orthogonal to physical `LoadedMapSource` and has no
   restore variant; persistence owns a separate no-Mark restore context with no conversion into the
   fresh pipeline; Loose/Mix map
-  to authored, Generated maps to materialized even without a trace, LegacyFallback/Generic reject,
-  and normalized prefix inputs enter `sim` without app/network dependencies;
-- one y/x OverlayPack traversal interleaves high/low Mark, followed by the complete OverlayData pass
-  and global Recalc before Terrain/Technos; its map-native finalized identity/data payload transfers
-  consumed-once into runtime `OverlayGrid` without a second pack decode, Mark, filter or Recalc;
+  to authored, Generated maps to materialized even without a trace, LegacyFallback rejects,
+  and untyped Generic rejects every fresh gameplay-equivalent format before native-ID/Mark/draw
+  effects. A named no-live-effects pure-map diagnostic is explicitly non-parity. Normalized prefix
+  inputs enter `sim` without app/network dependencies; production, headless, and auxiliary
+  constructors share that exact admission descriptor/function and output/Scenario/native-ID cursor/
+  event-trace/error contract rather than defaulting to authored;
+- one y/x OverlayPack traversal interleaves high/low/ordinary Mark, followed by the complete
+  OverlayData pass and an ungated anti-diagonal Recalc before Terrain/Technos; its map-native
+  post-validation identity/data/authored-blocker-count payload transfers consumed-once into runtime
+  `OverlayGrid` and global count state without a second pack decode, Mark, filter, or final-wall scan.
+  Every allocated row retains exact four-base-registry -> native-
+  ID -> Overlay-registry -> direct-base-Unlimbo order; success/dead objects and child Anim ID effects
+  remain registry-visible through later rows and data; slope-admitted authored walls complete their
+  effects and queue through the common tail; slope failures survive only in non-presentation lifecycle
+  registries. Generic counter-zero wall failure is separately preserved. The shared live duplicate-
+  aware drain runs once after
+  data/temp cleanup and outside format/body gates, including generated format 0, before the first
+  sweep; hard errors replace partial registry/queue-growth degradation. Authored terrain animations retain per-Mark versus first-sweep
+  construction order, ID/registry-before-RandomRate, delay-zero Middle-before-producer writes, no
+  Main RNG or entity occupancy. Authored growth-then-spread queue initialization occurs from the
+  post-Terrain/pre-object live map and remains unchanged through later occupancy and post-object
+  InitCellAttributes's immediate scalar-delete/live-handle-release/no-StopSound/no-pending-delete;
+  routed ancillary raw-clear/opaque-zero/light-invalidation/tag-line slots around the owned unlatch,
+  value-only wrapping signed-32-bit total, Recalc, and current-wall owner reconstruction;
+  `MapClass+0x134` persistent write; and Anim recreate lifecycle. The raw tag bits are explicitly not
+  bridge-zone topology, lighting remains transaction-20 presentation authority, teardown resets the
+  opaque total field, raw tag semantics and `+0x30` remain externally routed, and no unproved
+  consumer or field is invented. Generated
+  source skips authored Mark but preserves synthetic Full_Init state-dependent lifecycle plus every
+  native generator Recalc boundary interleaved with constructed CABHUTs and all Neutral-Tech
+  constructors. Generated queues initialize before final argument-1 InitCellAttributes, which clears
+  each latch, performs the exact helper's early-zero or wrapping signed-32-bit
+  `(new_state + 1) * Value` return and local aggregation, then Recalcs without a
+  queue rebuild; a flat trace plus final cells is insufficient. Only final sim-owned terrain and OverlayGrid may seed the app
+  template and presentation occupancy/assets, including procedural rows missing from the raw pack;
+- native numeric IDs and collision-free runtime handles remain independent. Preview uses argument-1
+  Set_Defaults/manual setup, resets its ID counter to `1,000,000` before each cleanup decision, keeps
+  Scenario RNG continuous, preserves active shell objects/Anims/latches/sounds across Cancel, and
+  implements both exact storage-key replacement branches and free-spread/growth then rebuild-growth/
+  spread lifetime. Matching storage skips every setup constructor and may give the first new object
+  `1,000,001` while a retained Cell owns the same value; changed/missing storage consumes
+  `R+P_preview+HB+K_preview`, with row-major real Cells plus dummy last and retail `K_preview=0`.
+  Every fresh `Full_Init` carries the same independent native-ID cursor from Clear_Scene through its
+  exact campaign or noncampaign constructor formula, shadowable theater window, set-from-snapshot
+  wrapping `C_saved + 0x2710`, allocated Tube rows, empty shared-queue prefix, and later authored/
+  generated construction;
+  accepted preview state is cleaned only by that launch boundary and never becomes gameplay authority;
 - app retains the one Scenario borrow after Fill and backs a map-native raw-call interface, so `map`
   imports no `sim` type; the same cursor returns before authored Technos with no ranged substitute,
   clone or reseed, and edge writes alias one extended persistent shared dummy;
@@ -986,26 +1807,65 @@ The preferred approach is distributed exact-delta closure in current owners. It 
   one final full `--lib` PR-readiness run, and merge before dependent work; split mechanism rows
   remain open until their cumulative final-contributor review;
 - P0 has a bounded all-ingress constructor requirement and its merged builder/fresh-critic evidence;
-  P0-R1's universal stock-offline prefix correction and fresh critic pass before transaction 3 uses
-  that shared Scenario cursor; and transaction 3 preserves the completed campaign/LAN/WOL/replay/
+  P0-R1's merged universal stock-offline prefix correction and fresh critic pass before transaction 3
+  uses that shared Scenario cursor; and transaction 3 preserves the completed campaign/LAN/WOL/replay/
   save/generated/editor context matrix without an untyped offline fallback; BR-M04's persistent
   builder and eventual full critic bundle cover both its transaction-3 shared high-load contribution
   and transaction 4 rather than inheriting BR-M05's pass.
 
-The fresh Revision-15 review passed. P0-R1 may proceed on its transaction branch; this approval does
-not close any bridge mechanism or waive a later transaction's evidence, critic, validation, PR, or
-merge gate.
+Revision 18 passed a fresh read-only whole-document review after every prior correction; critic 4
+returned PASS with zero material blockers on `origin/main@50e4b7ba`.
+Revision 19 reopens only the authored-wall portion on newer native evidence. The focused wall report
+passed its fourth serial read-only critic after compact-ID and active-winner census corrections; this
+amendment replaces authored wall rejection with ScenarioInit-forced success and adds the retained
+real-cell blocker-neighbor plane. It does not waive a fresh implementation critic.
+Revision 20 follows the first fresh implementation critic's `NEEDS_FIX` verdict on `95f77159`.
+Autonomous adversarial review approves the synchronous host repair because the three live-decompiled
+transactions establish every material order boundary, the host extends an existing ownership seam,
+and it changes no overlay predicate, RNG, snapshot, or hash authority. The highest remaining ways an
+ordinary match could still feel wrong are one missed adapter, a retained hit without its pre-write
+tactical dirty, or placement cleanup finishing after the next filler; each has an explicit production
+fixture. Choosing deferred effect replay or a Simulation-owned wall service would cause the most
+expensive rework, so both are forbidden. This self-approval satisfies the autonomous design gate but
+does not waive the required new fresh read-only critic, who must recheck the original findings and the
+complete correction.
+Revision 21 records PR #207's landing. Its full-slice critic 3 decompiled the reader, Mark, wall
+cleanup, `IsWallConnectableInDirection`, the cell iterator, `InitCellAttributes`, the
+`AssignUniqueID` constructor roster, and the merge's two rules-processing claims live, returned PASS
+with zero blocking findings, and opened OQ-37. The residual ledger above is the transaction-3
+continuation's contract input; the next slice starts from refreshed `main` with G10/G11, the
+`MapClass+0x134` aggregate, the ancillary seam, the `None`-plane gate, and OQ-37.
+These review passes close no bridge mechanism and waive none of transaction 3's implementation contract,
+builder/fresh-critic chain, focused validation, PR-readiness full suite, or merge gate.
 
 ## Sources
 
 - `docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/research/bridges/00-system-models/RMG_BRIDGE_DUAL_RNG_LIFECYCLE_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/00-system-models/RMG_PREVIEW_ANIM_BUILDING_IDENTITY_LIFECYCLE_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/research/bridges/00-system-models/SCENARIO_PREFIX_PLAN_INELIGIBLE_FALLBACK_REINVESTIGATION_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_FIXED_MAP_STAMP_RNG_TRANSACTION_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_SCENARIO_LOAD_ACTIVATION_BOUNDARY_GHIDRA_REPORT.md`
 - `docs/research/bridges/01-assets-map-load-overlay/LOW_OVERLAY_MARK_ALL_LOAD_CONTEXT_SCENARIO_RNG_LIFECYCLE_GHIDRA_REPORT.md`
-- active `gamemd.exe` addresses and retail inputs enumerated by that report
+- `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAYPACK_INLINE_TRANSACTION_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAY_EPHEMERAL_OBJECT_FINALIZATION_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_OVERLAY_WALL_SCENARIOINIT_ACCEPTANCE_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/CELL_0X122_DYNAMIC_BLOCKER_LIFECYCLE_RUST_MAPPING_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_TIBERIUM_GERMINATE_SIDE_EFFECT_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/TERRAIN_ATTACHED_ANIM_LOAD_LIFECYCLE_SIDE_EFFECTS_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/OVERLAYPACK_SHARED_DUMMY_FINAL_RECALC_FIELDS_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/AUTHORED_MARK_LOAD_CONTEXT_SOURCE_PROVENANCE_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/bridges/01-assets-map-load-overlay/INITCELLATTRIBUTES_TAG_LINE_LIGHTING_TAIL_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/CELLCLASS_STRUCT_GHIDRA_REPORT.md` (`CellClass::Get_Tiberium_Value @ 0x00485020`)
+- `docs/research/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md` (2026-07-24 live retail
+  `Get_Tiberium_Value @ 0x00485020` zero/formula recheck)
+- `docs/research/LOADING_FULL_INIT_PROGRESS_SEQUENCE_AFTER_00552D60_GHIDRA_REPORT.md`
+- `docs/research/MAPCLASS_GHIDRA_REPORT_REVISIT_2026_04_24.md` (`MapClass+0x134` write/reset xrefs)
+- `docs/research/skirmish-ui/RMG_TERRAIN_SHAPING_CORE_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
+- active `gamemd.exe` addresses and retail inputs enumerated by those reports
 - current Rust owners at freshly fetched `origin/main` snapshot
-  `5062bceaf15fe5139218d7f3375d34cc8e1d6139`
+  `50e4b7ba4732fd3fb48e5b819e1abc55327ec557`
 - `docs/system-map/topology.v2.json` `bridge-helpers` service boundary
 - `C:\Users\enok\Documents\OpenTS` correspondence ledger, as navigation leads only

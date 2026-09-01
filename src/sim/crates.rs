@@ -560,6 +560,7 @@ fn validate_and_stamp_candidate_inner(
             crate::sim::overlay_grid::refresh_wall_connectivity_after_placement(
                 grid,
                 overlay_registry,
+                sim.resolved_terrain.as_mut(),
                 cell.0,
                 cell.1,
             );

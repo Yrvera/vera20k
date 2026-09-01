@@ -601,6 +601,130 @@ impl Simulation {
         Ok(stable_id)
     }
 
+    /// Fresh-authored-load Anim constructor with an already-assigned native
+    /// identity. The object is present in the Anim registry before the optional
+    /// Scenario `RandomRate` draw, matching `AnimClass::Constructor`.
+    pub(crate) fn spawn_load_anim_at_world(
+        &mut self,
+        art: &crate::rules::art_data::ArtRegistry,
+        descriptor: AnimClassSpawnDescriptor,
+        world_coord: AnimWorldCoord,
+        native_unique_id: i32,
+    ) -> Result<AnimId, AnimSpawnError> {
+        let type_name = self
+            .interner
+            .resolve(descriptor.type_name)
+            .to_ascii_uppercase();
+        let config = art
+            .anim_runtime_config(&type_name)
+            .cloned()
+            .ok_or(AnimSpawnError::MissingType(descriptor.type_name))?;
+        let (effective_end, effective_loop_end) = effective_bounds(&type_name, &config)?;
+        let reverse = descriptor.reverse || config.reverse;
+        let stop_sound_id = config
+            .stop_sound
+            .as_deref()
+            .map(|sound| self.interner.intern(sound));
+        let stable_id = self.allocate_stable_id();
+        if self.substrate.anims.contains_key(stable_id)
+            || self.substrate.entities.contains(stable_id)
+        {
+            return Err(AnimSpawnError::DuplicateId(stable_id));
+        }
+        let object = AnimObject {
+            stable_id,
+            native_unique_id,
+            type_id: descriptor.type_name,
+            remap_color: None,
+            world_coord,
+            draw_flags: descriptor.draw_flags,
+            z_adjust: descriptor.z_adjust,
+            effective_end,
+            effective_loop_end,
+            runtime: AnimRuntime {
+                current_frame: if reverse {
+                    effective_loop_end.wrapping_sub(1)
+                } else {
+                    0
+                },
+                frame_step: if reverse { -1 } else { 1 },
+                delay_remaining: descriptor.delay,
+                rate_reload: 0,
+                frame_timer: CdTimer::default(),
+                loop_remaining: native_loop_remaining(config.loop_count, descriptor.loop_count),
+                first_ai_guard: true,
+                constructor_reverse: descriptor.reverse,
+                inactive: false,
+            },
+            draw_runtime: descriptor.draw_runtime,
+            use_cell_drawer: descriptor.use_cell_drawer,
+            terrain_attached: descriptor.terrain_attached,
+            in_logic_vector: false,
+            owner_entity: None,
+            start_sound_active: false,
+            stop_sound_id,
+        };
+        debug_assert!(self.substrate.anims.insert(object).is_none());
+
+        let rate_reload = self.choose_anim_rate(&config);
+        let frame_timer =
+            CdTimer::started(self.session.binary_frame as i32, i32::from(rate_reload));
+        let registered = self
+            .substrate
+            .anims
+            .get_mut(stable_id)
+            .expect("load Anim remains registered across RandomRate");
+        registered.runtime.rate_reload = rate_reload;
+        registered.runtime.frame_timer = frame_timer;
+
+        self.reveal_anim(stable_id);
+        if descriptor.delay == 0 {
+            self.anim_middle(stable_id, &config);
+        }
+        Ok(stable_id)
+    }
+
+    /// Exact final-Init scalar deletion selector for first-sweep tile Anims.
+    /// Removal rechecks the compacted registry slot and never enters the
+    /// ordinary Destroy/UnInit pending-delete path.
+    pub(crate) fn scalar_delete_load_terrain_anims(&mut self) -> usize {
+        let mut index = 0;
+        let mut removed = 0;
+        while let Some(id) = self.substrate.anims.key_at(index) {
+            let terrain_attached = self
+                .substrate
+                .anims
+                .get(id)
+                .is_some_and(|anim| anim.terrain_attached);
+            if !terrain_attached {
+                index += 1;
+                continue;
+            }
+            let world = self.anim_absolute_coord(id);
+            let start_sound_active = self
+                .substrate
+                .anims
+                .get(id)
+                .is_some_and(|anim| anim.start_sound_active);
+            self.detach_anim_from_owner(id);
+            if start_sound_active && let Some(world) = world {
+                // `MapClass::InitCellAttributes @ 0x00568BB0` reaches the
+                // scalar-deleting Anim destructor with StopSound forced null.
+                self.sound_events.push(SimSoundEvent::AnimationStopped {
+                    anim_id: id,
+                    stop_sound_id: None,
+                    world,
+                });
+            }
+            self.conceal_anim(id);
+            self.substrate.pending_delete.retain(|queued| *queued != id);
+            let removed_anim = self.substrate.anims.remove(id);
+            debug_assert!(removed_anim.is_some());
+            removed += 1;
+        }
+        removed
+    }
+
     // The move-feedback producer is not wired yet; keep the verified
     // sync-exempt allocation path available for that activation slice.
     #[allow(dead_code)]
@@ -1742,6 +1866,61 @@ mod tests {
         let before = sim.state_hash();
         sim.anim_mut_by_id(id).unwrap().terrain_attached = false;
         assert_ne!(sim.state_hash(), before);
+    }
+
+    #[test]
+    fn authored_load_anim_retains_native_id_and_final_scalar_delete_rechecks_compaction() {
+        let rules = runtime_rules(
+            "[LOADTILE]\nRate=900\nEnd=2\nLoopCount=-1\nStartSound=TileStart\nStopSound=TileStop\n\n\
+             [KEEP]\nRate=900\nEnd=2\nLoopCount=-1\n",
+            &[("LOADTILE", 2), ("KEEP", 2)],
+        );
+        let mut sim = Simulation::new();
+        let load_type = sim.interner.intern("LOADTILE");
+        let keep_type = sim.interner.intern("KEEP");
+        let world = AnimWorldCoord {
+            x: 384,
+            y: 640,
+            z: 208,
+        };
+        let mut first = runtime_descriptor(load_type, 0);
+        first.terrain_attached = true;
+        first.use_cell_drawer = true;
+        let first_id = sim
+            .spawn_load_anim_at_world(&rules.art_registry, first, world, 1_010_001)
+            .expect("first authored load Anim");
+        let keep_id = sim
+            .spawn_anim_object(&rules, runtime_descriptor(keep_type, 0))
+            .expect("ordinary retained Anim");
+        let mut second = runtime_descriptor(load_type, 0);
+        second.terrain_attached = true;
+        second.use_cell_drawer = true;
+        let second_id = sim
+            .spawn_load_anim_at_world(&rules.art_registry, second, world, 1_010_002)
+            .expect("second authored load Anim");
+
+        assert_eq!(sim.anim(first_id).unwrap().native_unique_id, 1_010_001);
+        assert_eq!(sim.anim(second_id).unwrap().native_unique_id, 1_010_002);
+        assert!(sim.anim(first_id).unwrap().start_sound_active);
+
+        assert_eq!(sim.scalar_delete_load_terrain_anims(), 2);
+        assert!(sim.anim(first_id).is_none());
+        assert!(sim.anim(second_id).is_none());
+        assert!(sim.anim(keep_id).is_some());
+        assert_eq!(
+            sim.sound_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    SimSoundEvent::AnimationStopped {
+                        stop_sound_id: None,
+                        ..
+                    }
+                ))
+                .count(),
+            2,
+            "final Init scalar deletion suppresses configured StopSound identity"
+        );
     }
 
     #[test]

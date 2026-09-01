@@ -190,7 +190,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
         iso_map_pack_lookups: Vec::new(),
         entities: Vec::new(),
         overlays: Vec::new(),
-        overlay_data: crate::map::overlay::OverlayDataPack::default(),
+        authored_overlay_packs: crate::map::map_file::AuthoredOverlayPackSlot::empty(),
         smudges: Vec::new(),
         terrain_objects: Vec::new(),
         waypoints: state.match_state.match_presentation.waypoints.clone(),

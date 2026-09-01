@@ -735,7 +735,13 @@ mod tests {
             let mut map = emit::empty_map_file(&RmgOptions::default(), 34, 42);
             emit::populate(&mut map, &grid, &[], &structures, &[]);
             assert!(map.overlays.is_empty(), "no emitted OverlayPack entries");
-            assert!(!map.overlay_data.is_present(), "no emitted OverlayDataPack");
+            assert!(
+                !map
+                    .overlay_data_pack()
+                    .expect("new RMG map retains raw overlay data")
+                    .is_present(),
+                "no emitted OverlayDataPack"
+            );
             assert!(map.entities.is_empty(), "no emitted structures");
             assert!(map.explicit_tubes.is_empty(), "no explicit Tube topology");
 

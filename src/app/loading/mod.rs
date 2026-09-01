@@ -3,6 +3,7 @@
 //! transition into InGame.
 
 pub(crate) mod composition;
+pub(crate) mod fresh_scenario;
 pub(crate) mod init;
 pub(crate) mod init_helpers;
 pub(crate) mod progress_row;

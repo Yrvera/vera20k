@@ -34,13 +34,60 @@ impl TubeId {
     }
 }
 
+/// Raw `CellClass+0x116` Tube-array index.
+///
+/// Active YR stores this field as a signed 16-bit value.  A negative value or
+/// a nonnegative value outside the current Tube registry admits automatic
+/// construction; only an in-range nonnegative value is a gameplay `TubeId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeTubeCellIndex(i16);
+
+impl Default for NativeTubeCellIndex {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl NativeTubeCellIndex {
+    pub const NONE: Self = Self(-1);
+
+    pub const fn from_raw(raw: i16) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> i16 {
+        self.0
+    }
+
+    /// Native publication truncates the registry ordinal to the low word.
+    pub const fn from_registry_ordinal(ordinal: usize) -> Self {
+        Self(ordinal as u16 as i16)
+    }
+
+    pub fn validated_id(self, registry_len: usize) -> Option<TubeId> {
+        let ordinal = usize::try_from(self.0).ok()?;
+        (ordinal < registry_len).then_some(TubeId(ordinal as u16))
+    }
+
+    pub fn admits_automatic_construction(self, registry_len: usize) -> bool {
+        self.0 < 0 || usize::from(self.0 as u16) >= registry_len
+    }
+}
+
 /// Why this tube exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TubeSource {
-    /// Auto-created by CellClass::RecalcAttributes for a tunnel/low-bridge cell.
-    AutoLowBridge,
+    /// Auto-created inline by `CellClass::RecalcAttributes` for Tunnel land.
+    AutomaticRecalcShell,
     /// Explicit map tube data with a real TubeClass path buffer.
     ExplicitMap,
+}
+
+impl TubeSource {
+    /// Compatibility spelling for generated/synthetic callers. Active authored
+    /// ownership is the automatic Recalc shell named above.
+    #[allow(non_upper_case_globals)]
+    pub const AutoLowBridge: Self = Self::AutomaticRecalcShell;
 }
 
 /// TubeClass fields that affect pathing and movement.
@@ -58,14 +105,18 @@ pub struct TubeFact {
 }
 
 impl TubeFact {
-    pub fn auto_low_bridge(cell: (u16, u16), direction: u8) -> Self {
+    pub fn automatic_recalc_shell(cell: (u16, u16), direction: u8) -> Self {
         Self {
             entry: cell,
             exit: cell,
             direction: i32::from(direction),
             path_steps: Vec::new(),
-            source: TubeSource::AutoLowBridge,
+            source: TubeSource::AutomaticRecalcShell,
         }
+    }
+
+    pub fn auto_low_bridge(cell: (u16, u16), direction: u8) -> Self {
+        Self::automatic_recalc_shell(cell, direction)
     }
 
     pub fn explicit(
@@ -97,14 +148,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_low_bridge_tube_is_same_cell_zero_step_shell() {
-        let tube = TubeFact::auto_low_bridge((12, 34), 2);
+    fn automatic_recalc_tube_is_same_cell_zero_step_shell() {
+        let tube = TubeFact::automatic_recalc_shell((12, 34), 2);
 
         assert_eq!(tube.entry, (12, 34));
         assert_eq!(tube.exit, (12, 34));
         assert_eq!(tube.direction, 2);
         assert_eq!(tube.path_len(), 0);
-        assert_eq!(tube.source, TubeSource::AutoLowBridge);
+        assert_eq!(tube.source, TubeSource::AutomaticRecalcShell);
+    }
+
+    #[test]
+    fn native_cell_index_preserves_signed_and_out_of_range_admission() {
+        assert!(NativeTubeCellIndex::NONE.admits_automatic_construction(2));
+        assert_eq!(NativeTubeCellIndex::NONE.validated_id(2), None);
+
+        let valid = NativeTubeCellIndex::from_raw(1);
+        assert!(!valid.admits_automatic_construction(2));
+        assert_eq!(valid.validated_id(2), Some(TubeId(1)));
+
+        let stale = NativeTubeCellIndex::from_raw(2);
+        assert!(stale.admits_automatic_construction(2));
+        assert_eq!(stale.validated_id(2), None);
+
+        let truncated_negative = NativeTubeCellIndex::from_registry_ordinal(0x8000);
+        assert_eq!(truncated_negative.raw(), i16::MIN);
+        assert!(truncated_negative.admits_automatic_construction(0x8001));
     }
 
     #[test]

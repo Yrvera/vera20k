@@ -909,6 +909,9 @@ impl OreGrowthState {
         let zero_priority = 0.0f32.to_bits();
         let mut stats = NativeTiberiumRebuildStats::default();
 
+        // `MapClass::InitCellAttributes` seeds the complete native growth
+        // plane first. Spread is a distinct second complete scan; interleaving
+        // both queues per occupied cell changes heap insertion chronology.
         for (rx, ry, cell) in overlay_grid.iter_occupied() {
             let Some(overlay_id) = cell.overlay_id else {
                 continue;
@@ -940,7 +943,26 @@ impl OreGrowthState {
                 class.growth_bitmap.insert((rx, ry));
                 stats.growth_entries += 1;
             }
+        }
 
+        for (rx, ry, cell) in overlay_grid.iter_occupied() {
+            let Some(overlay_id) = cell.overlay_id else {
+                continue;
+            };
+            let Some(type_id) =
+                overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)
+            else {
+                continue;
+            };
+            let Some(ty) = tiberium_types.get(type_id) else {
+                continue;
+            };
+            let Some(class) = self.native_tiberium.classes.get_mut(type_id.0 as usize) else {
+                continue;
+            };
+            if !cell_is_flat(resolved_terrain, rx, ry) {
+                continue;
+            }
             if tiberium_spreads_enabled
                 && ty.spread_percentage_ppm >= 0
                 && cell.overlay_data > type_id.0 / 2

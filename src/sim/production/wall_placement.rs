@@ -9,10 +9,11 @@ use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
 use crate::sim::overlay_grid::{
-    recalc_overlay_passability, refresh_wall_connectivity_after_placement,
+    WallDamageTransactionHost, WallZoneRepairKind, recalc_overlay_passability,
+    refresh_wall_connectivity_after_placement_with_host,
 };
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::world::Simulation;
+use crate::sim::world::{Simulation, SimulationWallRuntimeHost};
 
 use super::production_placement::can_this_exist_here;
 
@@ -129,31 +130,73 @@ pub(super) fn stamp_wall(
     overlay_id: u8,
     owner: InternedId,
 ) -> bool {
-    let Some(grid) = sim.overlay_grid.as_mut() else {
+    let Some(grid) = sim.overlay_grid.as_ref() else {
         return false;
     };
     if rx >= grid.width() || ry >= grid.height() {
         return false;
     }
-    grid.place_owned_wall(rx, ry, overlay_id, 0, owner);
-    refresh_wall_connectivity_after_placement(grid, registry, rx, ry);
-    if let Some(terrain) = sim.resolved_terrain.as_mut() {
-        const PLACEMENT_CROSS: [(i32, i32); 5] =
-            [(0, 0), (0, -1), (1, 0), (0, 1), (-1, 0)];
-        for (dx, dy) in PLACEMENT_CROSS {
-            let nx = i32::from(rx) + dx;
-            let ny = i32::from(ry) + dy;
-            if nx < 0
-                || ny < 0
-                || nx >= i32::from(grid.width())
-                || ny >= i32::from(grid.height())
-            {
-                continue;
-            }
-            let (nx, ny) = (nx as u16, ny as u16);
-            let changed = recalc_overlay_passability(grid, terrain, registry, nx, ny);
-            grid.record_synchronous_passability_change_at(nx, ny, changed);
-        }
-    }
+
+    let mut detach_trace = Vec::new();
+    let mut host = SimulationWallRuntimeHost {
+        entities: &mut sim.substrate.entities,
+        detach_trace: &mut detach_trace,
+        radar_dirty_cells: &mut sim.radar_terrain_dirty_cells,
+        radar_dirty_generation: &mut sim.radar_terrain_dirty_generation,
+        tactical_dirty_cells: &mut sim.tactical_dirty_cells,
+        terrain_costs: &mut sim.terrain_costs,
+        zone_grid: &mut sim.zone_grid,
+        path_grid: &mut sim.path_grid,
+        bridge_state: sim.bridge_state.as_ref(),
+    };
+    let grid = sim.overlay_grid.as_mut().expect("validated wall grid");
+    stamp_wall_transaction(
+        grid,
+        registry,
+        sim.resolved_terrain.as_mut(),
+        rx,
+        ry,
+        overlay_id,
+        owner,
+        &mut host,
+    );
     true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stamp_wall_transaction(
+    grid: &mut crate::sim::overlay_grid::OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+    overlay_id: u8,
+    owner: InternedId,
+    host: &mut dyn WallDamageTransactionHost,
+) {
+    // OverlayClass::Mark @ 0x005FC570 makes the pending owner visible only
+    // after hosted cleanup and its explicit runtime Merge/graph step.
+    grid.stamp_wall_identity(rx, ry, overlay_id, 0);
+    refresh_wall_connectivity_after_placement_with_host(
+        grid,
+        registry,
+        terrain.as_deref_mut(),
+        rx,
+        ry,
+        Some(&mut *host),
+    );
+    if let Some(terrain) = terrain.as_deref() {
+        host.navigation_step(
+            terrain,
+            (rx, ry),
+            false,
+            WallZoneRepairKind::MergeAdjacent,
+        );
+    }
+    grid.set_wall_owner(rx, ry, owner);
+    grid.add_retained_wall_neighbor_source(terrain.as_deref(), rx, ry);
+    if let Some(terrain) = terrain.as_deref_mut() {
+        let changed = recalc_overlay_passability(grid, terrain, registry, rx, ry);
+        grid.record_synchronous_passability_change(changed);
+    }
 }

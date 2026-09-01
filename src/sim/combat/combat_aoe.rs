@@ -24,14 +24,15 @@ use crate::rules::warhead_type::WarheadType;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::StringInterner;
 use crate::sim::map::bridge_topology::{BRIDGE_DECK_HEIGHT_LEVELS, CellBridgeView, ListLayer};
-use crate::sim::mission::authority::restore_entity_on_target_detach;
+use crate::sim::mission::authority::restore_entity_after_target_expiry;
 use crate::sim::mission::concrete_effects::represented_assign_target;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{
     OccupancyGrid, air_spatial_query_bucket_order, air_spatial_tracks_entity,
 };
 use crate::sim::overlay_grid::{
-    OverlayGrid, WallMutation, damage_wall_overlay, recalc_overlay_passability,
+    OverlayGrid, WallDamageTransactionHost, WallDirtyStep, WallMutation, WallPointerTarget,
+    WallZoneRepairKind, damage_wall_overlay_with_runtime_host,
 };
 use crate::sim::rng::SimRng;
 use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
@@ -85,6 +86,49 @@ pub(crate) trait AoECellPrelude {
         terrain: Option<&mut ResolvedTerrainGrid>,
         scenario_rng: Option<&mut SimRng>,
     );
+
+    fn wall_navigation_step(
+        &mut self,
+        _terrain: &ResolvedTerrainGrid,
+        _cell: (u16, u16),
+        _navigation_changed: bool,
+        _repair: WallZoneRepairKind,
+    ) {
+    }
+
+    fn wall_dirty_step(&mut self, _step: WallDirtyStep, _packed_coord: (u16, u16)) {}
+}
+
+struct AoEWallDamageHost<'borrow, 'prelude> {
+    entities: &'borrow mut EntityStore,
+    trace: &'borrow mut Vec<CellTargetDetach>,
+    prelude: &'borrow mut Option<&'prelude mut dyn AoECellPrelude>,
+}
+
+impl WallDamageTransactionHost for AoEWallDamageHost<'_, '_> {
+    fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+        if let Some(prelude) = self.prelude.as_deref_mut() {
+            prelude.wall_dirty_step(step, packed_coord);
+        }
+    }
+
+    fn navigation_step(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
+    ) {
+        if let Some(prelude) = self.prelude.as_deref_mut() {
+            prelude.wall_navigation_step(terrain, cell, navigation_changed, repair);
+        }
+    }
+
+    fn pointer_expired(&mut self, target: WallPointerTarget) {
+        if let WallPointerTarget::Real(rx, ry) = target {
+            expire_cell_target_references(self.entities, rx, ry, self.trace);
+        }
+    }
 }
 
 pub(crate) fn tiberium_reduction_cell_admitted(
@@ -212,6 +256,8 @@ pub(crate) struct AoEDamageResult {
     #[cfg(test)]
     pub hits: Vec<EntityDamageEvent>,
     pub wall_mutations: Vec<WallMutation>,
+    /// Diagnostic trace only; a production prelude publishes radar inline.
+    pub wall_radar_dirty_cells: Vec<(u16, u16)>,
     pub cell_target_detaches: Vec<CellTargetDetach>,
 }
 
@@ -498,6 +544,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
                 base_damage,
                 warhead,
                 &mut layer_context,
+                &mut cell_prelude,
                 &mut result,
             );
             let mut terrain_inserted = selected_layer != MovementLayer::Ground;
@@ -591,6 +638,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
             base_damage,
             warhead,
             &mut layer_context,
+            &mut cell_prelude,
             &mut result,
         );
     }
@@ -636,6 +684,7 @@ fn route_wall_before_cell_objects(
     raw_damage: i32,
     warhead: &WarheadType,
     context: &mut AoELayerContext<'_>,
+    cell_prelude: &mut Option<&mut dyn AoECellPrelude>,
     result: &mut AoEDamageResult,
 ) {
     let (Some(grid), Some(registry), Some(rng)) = (
@@ -665,58 +714,59 @@ fn route_wall_before_cell_objects(
         return;
     };
 
-    let wall_result = damage_wall_overlay(grid, registry, rx, ry, routed_damage, rng);
-    if let Some(terrain) = context.terrain.as_deref_mut() {
-        for mutation in &wall_result.mutations {
-            let changed =
-                recalc_overlay_passability(grid, terrain, registry, mutation.rx, mutation.ry);
-            grid.record_synchronous_passability_change_at(mutation.rx, mutation.ry, changed);
-        }
-    }
+    let wall_result = {
+        let mut host = AoEWallDamageHost {
+            entities,
+            trace: &mut result.cell_target_detaches,
+            prelude: cell_prelude,
+        };
+        damage_wall_overlay_with_runtime_host(
+            grid,
+            registry,
+            context.terrain.as_deref_mut(),
+            rx,
+            ry,
+            routed_damage,
+            rng,
+            Some(&mut host),
+        )
+    };
     result.wall_mutations.extend(wall_result.mutations);
+    result
+        .wall_radar_dirty_cells
+        .extend(wall_result.radar_dirty_cells);
 
-    // Apply_area_damage invalidates only the scanned cell that was routed and
-    // is now empty. Chain/cleanup-only coordinates deliberately do not enter
-    // this sweep without evidence for a native callsite.
-    if grid.cell(rx, ry).overlay_id.is_none() {
-        detach_cell_target_references(entities, rx, ry, &mut result.cell_target_detaches);
-    }
 }
 
-pub(crate) fn detach_cell_target_references(
+/// Broadcast one CellClass pointer-expiry notification to represented Techno
+/// listeners. Native walks the listener roster forward, clears the live Target
+/// first, and only then runs Restore when a mission was suspended.
+pub(crate) fn expire_cell_target_references(
     entities: &mut EntityStore,
     rx: u16,
     ry: u16,
     trace: &mut Vec<CellTargetDetach>,
 ) {
-    let mut listener_ids = entities.keys_sorted();
-    listener_ids.reverse();
+    let listener_ids = entities.keys_sorted();
     for listener_id in listener_ids {
-        let matches = entities.get(listener_id).is_some_and(|entity| {
-            matches!(
-                entity.attack_target.as_ref().map(|target| target.target),
-                Some(super::TargetKind::Cell(tx, ty)) if (tx, ty) == (rx, ry)
-            )
-        });
-        if !matches {
+        let Some(entity) = entities.get_mut(listener_id) else {
+            continue;
+        };
+        if !matches!(
+            entity.attack_target.as_ref().map(|target| target.target),
+            Some(super::TargetKind::Cell(tx, ty)) if (tx, ty) == (rx, ry)
+        ) {
             continue;
         }
 
-        let entity = entities
-            .get_mut(listener_id)
-            .expect("listener resolved immediately before cell-target Restore");
-        let restored = restore_entity_on_target_detach(entity);
-        let still_matches = matches!(
-            entity.attack_target.as_ref().map(|target| target.target),
-            Some(super::TargetKind::Cell(tx, ty)) if (tx, ty) == (rx, ry)
-        );
-        if still_matches {
-            represented_assign_target(entity, None);
-        }
+        let mission_was_suspended =
+            entity.mission.suspended() != crate::sim::mission::MissionId::NONE;
+        represented_assign_target(entity, None);
+        let restored = mission_was_suspended && restore_entity_after_target_expiry(entity);
         trace.push(CellTargetDetach {
             listener_id,
             restored,
-            cleared: still_matches,
+            cleared: true,
         });
     }
 }
@@ -2379,7 +2429,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_07_damage_scanned_target_restore_is_descending_and_chain_only_stays() {
+    fn gsi_04_07_damage_pointer_expiry_is_cleanup_then_direct_forward_clear_first() {
         let (rules, warhead, registry) =
             wall_aoe_fixture("0", "WallAbsoluteDestroyer=yes\nWall=yes");
         let mut entities = EntityStore::new();
@@ -2395,11 +2445,12 @@ mod tests {
             ai_counter: 0,
             dispatch_timer: MissionDispatchTimer::at_frame(0),
         });
-        restored.suspended_attack_target = Some(TargetKind::Entity(99));
+        restored.suspended_attack_target = Some(TargetKind::Cell(8, 8));
         entities.insert(restored);
 
         let mut cleared = GameEntity::test_default(30, "MTNK", "Americans", 3, 2);
         cleared.attack_target = Some(AttackTarget::for_cell(8, 8));
+        cleared.passively_acquired_target = true;
         entities.insert(cleared);
 
         let mut chain_only = GameEntity::test_default(40, "MTNK", "Americans", 4, 2);
@@ -2442,19 +2493,25 @@ mod tests {
             result.cell_target_detaches,
             vec![
                 CellTargetDetach {
-                    listener_id: 30,
+                    listener_id: 40,
                     restored: false,
                     cleared: true,
                 },
                 CellTargetDetach {
                     listener_id: 20,
                     restored: true,
-                    cleared: false,
+                    cleared: true,
+                },
+                CellTargetDetach {
+                    listener_id: 30,
+                    restored: false,
+                    cleared: true,
                 },
             ],
-            "direct scanned-cell sweep is descending and restores before recheck"
+            "cleanup expiry precedes the direct callback; each roster walk is forward and clears before Restore"
         );
         assert!(entities.get(30).unwrap().attack_target.is_none());
+        assert!(!entities.get(30).unwrap().passively_acquired_target);
         assert!(matches!(
             entities
                 .get(20)
@@ -2462,17 +2519,9 @@ mod tests {
                 .attack_target
                 .as_ref()
                 .map(|target| target.target),
-            Some(TargetKind::Entity(99))
+            Some(TargetKind::Cell(8, 8))
         ));
-        assert!(matches!(
-            entities
-                .get(40)
-                .unwrap()
-                .attack_target
-                .as_ref()
-                .map(|target| target.target),
-            Some(TargetKind::Cell(8, 7))
-        ));
+        assert!(entities.get(40).unwrap().attack_target.is_none());
     }
 
     #[test]
@@ -3690,6 +3739,7 @@ mod tests {
                 stable_id,
                 TerrainObjectState {
                     stable_id,
+                    native_unique_id: None,
                     in_logic_vector: false,
                     type_ref: tree_ref,
                     rx,
@@ -3835,6 +3885,7 @@ mod tests {
         let terrain_ref = sim.interner.intern("TIBTREE");
         let terrain_state = TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: terrain_ref,
             rx: 5,
@@ -3985,6 +4036,7 @@ mod tests {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                native_unique_id: None,
                 in_logic_vector: false,
                 type_ref: terrain_ref,
                 rx: 5,

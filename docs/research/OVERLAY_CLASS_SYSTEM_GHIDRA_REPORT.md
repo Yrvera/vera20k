@@ -439,11 +439,12 @@ Produces the 4-bit connectivity frame (0-15) stored in the lower nibble of Overl
 
 ### 5.6.1 Post-Destruction Wall Cleanup — `CellClass::PostDestructionWallCleanup` (0x00480630) **[resolved Open Q #4]**
 
-**Hardcoded destruction rules verified against rulesmd.ini [OverlayTypes]:** array indexes
-map to `0=GASAND`, `1=CYCL`, `2=GAWALL`, `3=BARB`, `22=FENC` — all five are wall/fence-type
-overlays. GASAND (DamageLevels=2) auto-destroys at isolated data 0x10 or 0x20; GAWALL
-(DamageLevels=3) at isolated 0x20 or 0x30; BARB (DamageLevels=1) at isolated 0x10; CYCL/FENC
-similarly. All patterns represent "fully damaged AND fully isolated."
+**Hardcoded destruction rows and retail activation are separate facts.** Compact indexes map to
+`0=GASAND`, `1=CYCL`, `2=GAWALL`, `3=BARB`, `22=FENC`, and `0x1A=NAWALL`.
+The binary contains threshold rows for all six, but active retail sets `Wall=yes` only on GASAND,
+GAWALL, and NAWALL. CYCL, BARB, and FENC have no retail rules/art section; constructor default
+`Wall=false` makes the outer wall gate reject them. Their rows are dormant/mod-conditional, not
+active YR behavior. YR does not merge the base TS INIs.
 
 
 Called by `CellClass::DestroyOverlay` on each of 4 cardinal neighbors after a wall is destroyed. Despite taking `CellClass*` as param_1, the function iterates a driver array of **5 direction entries** at `DAT_0081CC70..DAT_0081CC84` (first entry `0xFFFFFFFF` = "this cell", next four = cardinal directions). For each visited cell:
@@ -462,6 +463,7 @@ Called by `CellClass::DestroyOverlay` on each of 4 cardinal neighbors after a wa
         OverlayTypeIndex==2 (GAWALL)  and OverlayData in {0x20, 0x30}  → destroy
         OverlayTypeIndex==3 (BARB)    and OverlayData == 0x10          → destroy
         OverlayTypeIndex==0x16 (22)   and OverlayData in {0x10, 0x20}  → destroy
+        OverlayTypeIndex==0x1A (26)   and OverlayData in {0x20, 0x30}  → destroy
       These combine max-damage (upper nibble == DamageLevels) with
       lower-nibble=0 (no neighbors) → wall with no remaining connections
       dies automatically
@@ -1034,11 +1036,10 @@ Overlays don't have their own tick in `World::advance_tick`. They are affected b
 
 8. ~~Post-destruction overlay-index 0x16~~ **[RESOLVED]** — Array index 22 (= 0x16) in YR
    is **FENC** (the `FENC` fence overlay, [OverlayTypes] key 23). Confirmed by dumping the
-   rulesmd.ini [OverlayTypes] list. So all five hardcoded destruction rules target
-   consistent wall/fence-type overlays: GASAND (0), CYCL (1), GAWALL (2), BARB (3), FENC (22).
-   (`FENC` has no section body in stock YR rulesmd.ini but is still allocated an array slot
-   because its name appears in [OverlayTypes]; the destruction rule exists but is effectively
-   dormant unless a mod activates FENC.)
+   rulesmd.ini [OverlayTypes] list. The full hardcoded set is GASAND (0), CYCL (1), GAWALL (2),
+   BARB (3), FENC (22), and NAWALL (0x1A). Only GASAND, GAWALL, and NAWALL have active-retail
+   `Wall=yes` sections. CYCL, BARB, and FENC remain allocated names but have no retail section,
+   retain constructor-default `Wall=false`, and are dormant unless a mod activates them.
 
 ## 13a. Clarifying note — `ScenarioClass+0x34A6` is `TiberiumGrowthEnabled` (map-level)
 

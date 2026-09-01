@@ -117,7 +117,7 @@ pub(crate) struct RandomMapGenerationJob {
 
 /// Provenance-bearing copy of the eight Scenario start-staging cells written
 /// by the accepted random-map setup run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AcceptedRmgStartStaging {
     starts: Vec<crate::map::waypoints::Waypoint>,
 }
@@ -139,7 +139,18 @@ impl AcceptedRmgStartStaging {
         }
     }
 
-    pub(crate) fn to_waypoint_table(
+    pub(crate) fn into_waypoint_table(
+        self,
+    ) -> std::collections::HashMap<u32, crate::map::waypoints::Waypoint> {
+        self.starts
+            .into_iter()
+            .map(|waypoint| (waypoint.index, waypoint))
+            .collect()
+    }
+
+    /// Borrow-only fact projection used to validate the complete prefix before
+    /// surrendering the unique accepted-staging token.
+    pub(crate) fn waypoint_table_for_admission(
         &self,
     ) -> std::collections::HashMap<u32, crate::map::waypoints::Waypoint> {
         self.starts
@@ -1402,6 +1413,7 @@ mod tests {
         let mut runtime =
             crate::app::frontend::skirmish_session::OfflineSkirmishRuntime::initialize(
                 0x0412_959B,
+                None,
                 None,
                 None,
                 crate::app::frontend::skirmish_session::skirmish_global_defaults(

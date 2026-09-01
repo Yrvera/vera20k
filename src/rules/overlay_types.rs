@@ -164,6 +164,10 @@ pub struct OverlayTypeFlags {
     /// re-derived from that stored LandType. VERA caches the derivation, so the
     /// cache has to move with the LandType that produced it.
     pub land_ground_blocked: bool,
+    /// Whether the final `Land=` rules row rejects building placement.
+    /// This is cached beside movement semantics for the same reason: native
+    /// stores one LandType and derives both consumers from that live value.
+    pub land_build_blocked: bool,
     /// Strength= from rules.ini — hit points for destructible overlays.
     /// Only meaningful when wall=true. Default 1.
     pub strength: u16,
@@ -195,6 +199,7 @@ impl Default for OverlayTypeFlags {
             no_use_tile_land_type: true,
             land_speed_costs: None,
             land_ground_blocked: false,
+            land_build_blocked: false,
             radar_color: None,
             strength: 1,
             damage_levels: 1,
@@ -296,6 +301,8 @@ impl OverlayTypeRegistry {
         let clear_speed_costs = clear_semantics.map(|semantics| semantics.speed_costs);
         let clear_ground_blocked =
             clear_semantics.is_some_and(|semantics| semantics.ground_blocked);
+        let clear_build_blocked =
+            clear_semantics.is_some_and(|semantics| !semantics.buildable);
         // `OverlayTypeClass::ReadINI @ 0x005FE770` uses
         // `AnimTypeClass::FindByName`: an unknown CellAnim name leaves +0x29C
         // null rather than becoming an unresolved filename.
@@ -331,6 +338,8 @@ impl OverlayTypeRegistry {
                 let land_speed_costs = land_semantics.map(|semantics| semantics.speed_costs);
                 let land_ground_blocked =
                     land_semantics.is_some_and(|semantics| semantics.ground_blocked);
+                let land_build_blocked =
+                    land_semantics.is_some_and(|semantics| !semantics.buildable);
                 let land_wheel_speed_zero =
                     land_speed_costs.is_some_and(|speed_costs| speed_costs.wheel == Some(0));
                 // Strength from rules section (e.g., [GAWALL] Strength=300).
@@ -377,6 +386,7 @@ impl OverlayTypeRegistry {
                         .unwrap_or(true),
                     land_speed_costs,
                     land_ground_blocked,
+                    land_build_blocked,
                     radar_color,
                     strength,
                     damage_levels,
@@ -387,6 +397,7 @@ impl OverlayTypeRegistry {
                     track,
                     land_speed_costs: clear_speed_costs,
                     land_ground_blocked: clear_ground_blocked,
+                    land_build_blocked: clear_build_blocked,
                     land_wheel_speed_zero: clear_speed_costs
                         .is_some_and(|speed_costs| speed_costs.wheel == Some(0)),
                     ..OverlayTypeFlags::default()

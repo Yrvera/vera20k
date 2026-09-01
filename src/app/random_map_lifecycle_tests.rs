@@ -157,6 +157,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         0x0412_0003,
         None,
         None,
+        None,
         skirmish_global_defaults(&SkirmishShellState::default()),
     );
     let shared_cell_dummy = crate::map::resolved_terrain::SharedCellDummy::fresh();
@@ -400,7 +401,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         map_file: poison_map,
         mapgen_continuation: RmgRng::new(poison_options.seed_u16()).into_continuation(),
         construction_trace: poison_trace,
-        start_waypoints: accepted_start_waypoints,
+        start_waypoints: accepted_start_waypoints.clone(),
         stages_run: Vec::new(),
         unfilled_start_slots: 0,
     };
@@ -425,31 +426,48 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
     let ui_initial = ui_request
         .load_initial_with_assets(seed_dir.clone(), &mut assets, &mut SilentProgress)
         .expect("accepted UI .SED launch regeneration");
-    let descriptor =
-        crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(launch.clone())
-            .expect("resolved random-map launch descriptor");
     ui_request
-        .prepare_scenario_prefix_plan(&ui_initial)
+        .prepare_fresh_scenario_load_context(&ui_initial)
         .expect("accepted generated source prepares its mandatory prefix");
-    let ui_plan = ui_request
-        .scenario_prefix_plan()
-        .expect("accepted generated prefix")
-        .clone();
-    let ui_launch =
-        ui_initial.into_random_map_launch_snapshot(&mut assets, MATCH_SEED, &descriptor, &ui_plan);
-    let direct_plan = crate::sim::scenario_bootstrap::prepare_stock_offline_scenario_prefix_plan(
-        &descriptor,
-        direct_initial.map_data(),
-        &direct_initial.map_data().waypoints,
-        MATCH_SEED,
+    let ui_context = ui_request
+        .take_fresh_scenario_load_context()
+        .expect("accepted generated context transfers once");
+    let ui_launch = ui_initial.into_random_map_launch_snapshot(&mut assets, ui_context);
+
+    // The reference arm must cross the same accepted-staging admission seam;
+    // an arbitrary direct `.SED` is intentionally not a parity builder.
+    let direct_preview = crate::map::rmg::GeneratedMap {
+        map_file: crate::map::rmg::emit::empty_map_file(&options, 32, 32),
+        mapgen_continuation: RmgRng::new(options.seed_u16()).into_continuation(),
+        construction_trace: RmgConstructionTrace::default(),
+        start_waypoints: accepted_start_waypoints.clone(),
+        stages_run: Vec::new(),
+        unfilled_start_slots: 0,
+    };
+    let mut direct_retention = RandomMapGenerationRetention::default();
+    direct_retention.finish_generation(direct_preview);
+    direct_retention.accept_setup(seed_name);
+    let direct_accepted = direct_retention
+        .take_acceptance_for_loading(Some(seed_name))
+        .expect("reference setup supplies accepted staging");
+    let mut direct_request = LoadingRequest::unverified_legacy_skirmish(
+        launch,
+        crate::match_bootstrap::MatchSeed {
+            value: MATCH_SEED,
+            source: crate::match_bootstrap::MatchSeedSource::Controlled,
+            seed_authority_certifying: false,
+        },
+        crate::ui::main_menu::SkirmishSettings::default(),
     )
-    .expect("direct generated fixture supplies the same staged start table");
-    let direct_launch = direct_initial.into_random_map_launch_snapshot(
-        &mut assets,
-        MATCH_SEED,
-        &descriptor,
-        &direct_plan,
-    );
+    .with_accepted_random_map(Some(direct_accepted));
+    direct_request
+        .prepare_fresh_scenario_load_context(&direct_initial)
+        .expect("reference generated source crosses accepted admission");
+    let direct_context = direct_request
+        .take_fresh_scenario_load_context()
+        .expect("reference generated context transfers once");
+    let direct_launch =
+        direct_initial.into_random_map_launch_snapshot(&mut assets, direct_context);
     assert_eq!(ui_launch, direct_launch);
     assert_ne!(ui_launch.map.header.0, "POISON_PREVIEW");
     assert_ne!(ui_launch.trace, poison_trace_reference);

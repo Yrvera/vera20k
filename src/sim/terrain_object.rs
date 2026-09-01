@@ -29,6 +29,11 @@ pub enum TerrainObjectLifecycle {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TerrainObjectState {
     pub stable_id: u64,
+    /// Load-only numeric `AbstractClass` identity. Stable Rust storage remains
+    /// the runtime owner, but retaining this value prevents later constructor
+    /// chronology from becoming an unobservable counter approximation.
+    #[serde(default)]
+    pub native_unique_id: Option<i32>,
     /// LogicClass membership is reconstructed from the serialized mixed order.
     #[serde(skip)]
     pub in_logic_vector: bool,
@@ -65,6 +70,7 @@ impl TerrainObjectState {
     ) -> Self {
         Self {
             stable_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref,
             rx,

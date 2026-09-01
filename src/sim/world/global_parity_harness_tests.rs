@@ -521,9 +521,14 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE2B3_9FAA_432F_4A75;
 // Re-baselined 2026-09-01 for v114's unconditional raw 256-slot crate authority.
 // The dedicated pre-v114 probe reproduces the prior current baseline exactly;
 // the RNG tuple and tick-for-tick replay remain exact, proving composition-only drift.
+// Re-baselined 2026-09-01 for v115's retained wall-neighbor count authority mode and
+// shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
+// prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
+// current-schema composition moved.
 const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x254E_775C_65A2_B50A;
 const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x0E44_D6C4_D418_D99A;
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x08C7_02E3_A11C_9F70;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x08C7_02E3_A11C_9F70;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2961_F44A_E0EC_C364;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -819,8 +824,9 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     let pre_mission_hash = rep.state_hash_without_mission_v29();
     let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
     let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
+    let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
     println!(
-        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X}"
+        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},pre-v110:{pre_base_plan_hash:016X},pre-v114:{pre_crate_authority_hash:016X},pre-v115:{pre_wall_runtime_hash:016X}"
     );
     assert_eq!(
         pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
@@ -837,6 +843,10 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_crate_authority_hash, GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH,
         "the dedicated pre-v114 probe must reproduce the prior global-harness current baseline"
+    );
+    assert_eq!(
+        pre_wall_runtime_hash, GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH,
+        "the dedicated pre-v115 probe must reproduce the prior global-harness current baseline"
     );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,

@@ -10,10 +10,12 @@
 //! - `world_spawn.rs` — entity spawning from map data and production
 //! - `world_orders.rs` — order-intent tick systems (attack-move, guard, area-guard)
 
+pub(crate) mod authored_load_host;
 pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
 pub mod edge_cell;
 mod lifecycle;
+mod load_object_lifecycle;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
@@ -37,6 +39,7 @@ pub(crate) use lifecycle::{
     ConcealOutcome, LifecycleOutput, NULL_TARGET_CELL_SENTINEL, PlacementEvidence, RevealOutcome,
     RevealPosition, RevealRequest, UninitContext,
 };
+pub(crate) use load_object_lifecycle::LoadObjectLifecycle;
 #[cfg(test)]
 pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
 pub(crate) use logic_vector::LogicVector;
@@ -88,11 +91,17 @@ use crate::sim::movement::tunnel_movement::{self, TunnelProcessContext};
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
-use crate::sim::overlay_grid::{WallDamageEvent, damage_wall_overlay, recalc_overlay_passability};
+use crate::sim::overlay_grid::{
+    WallDamageEvent, WallDamageTransactionHost, WallDirtyStep, WallPointerTarget,
+    WallZoneRepairKind, damage_wall_overlay_with_runtime_host, recalc_overlay_passability,
+};
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::{TerrainCostGrid, build_canonical_terrain_cost_grids};
 use crate::sim::pathfinding::terrain_speed;
+use crate::sim::pathfinding::zone_incremental::{
+    PackedZoneCoord, ZoneRepairKind, repair_zone_cell,
+};
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
@@ -674,6 +683,20 @@ pub struct Simulation {
     /// retention remains UNCHECKED.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) mapgen_rng: SimRng,
+    /// Independent wrapping `AbstractClass+0x10` identity during fresh load.
+    /// Native numeric IDs may duplicate and are neither stable handles nor RNG.
+    /// They are load-transient until persistence behavior is separately proved.
+    #[serde(skip, default)]
+    pub(crate) native_unique_ids: Option<crate::sim::native_identity::NativeUniqueIdCursor>,
+    /// Successful raw `[Tubes]` constructor bindings from this fresh map read.
+    /// Kept separate from resolved topology so its later owning transaction
+    /// can consume the already-assigned IDs without recounting filtered facts.
+    #[serde(skip, default)]
+    pub(crate) native_map_tubes: crate::map::tubes::NativeMapTubesState,
+    /// Fresh-map-only OverlayClass registry/deferred-delete owner. These
+    /// ephemeral objects are neither gameplay objects nor snapshot/hash state.
+    #[serde(skip, default)]
+    pub(crate) load_objects: LoadObjectLifecycle,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
     /// Static alliance graph derived from map house data.
@@ -795,7 +818,7 @@ pub struct Simulation {
     /// Canonical dynamic navigation projection. Arc snapshots let one master
     /// frame pin its entry view while the sim publishes the next projection.
     #[serde(skip)]
-    path_grid: Option<Arc<PathGrid>>,
+    pub(crate) path_grid: Option<Arc<PathGrid>>,
     #[serde(skip)]
     pub resolved_terrain: Option<ResolvedTerrainGrid>,
     /// Process-global MapClass fallback CellClass identity. Native owns this at
@@ -932,6 +955,17 @@ impl Default for Simulation {
     }
 }
 
+pub(crate) fn mark_wall_radar_dirty_cell(
+    cells: &mut Vec<(u16, u16)>,
+    generation: &mut u64,
+    cell: (u16, u16),
+) {
+    if !cells.contains(&cell) {
+        cells.push(cell);
+        *generation = (*generation).wrapping_add(1);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_tiberium_reduction_inline(
     request: &crate::sim::combat::TiberiumReductionRequest,
@@ -971,13 +1005,13 @@ fn dispatch_tiberium_reduction_inline(
     );
 }
 
-/// World-owned half of Apply_area_damage's per-cell tiberium prelude for
-/// non-combat producers. Overlay/terrain/RNG are lent by AoELayerContext at
-/// each spread entry; this value owns only the disjoint Simulation fields the
-/// reducer also needs.
-pub(crate) struct SimulationTiberiumCellPrelude<'a> {
+/// World-owned half of Apply_area_damage's per-cell transaction for non-combat
+/// producers. Overlay/terrain/RNG are lent by AoELayerContext at each spread
+/// entry; this value owns the disjoint Simulation fields needed by the optional
+/// tiberium prelude and synchronous wall-navigation callbacks.
+pub(crate) struct SimulationAreaDamageCellPrelude<'a> {
     rules: &'a RuleSet,
-    amount: i32,
+    tiberium_amount: Option<i32>,
     resource_nodes: &'a mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
     ore_growth_state: &'a mut crate::sim::ore_growth::OreGrowthState,
     source_object_cells: &'a BTreeSet<(u16, u16)>,
@@ -986,9 +1020,13 @@ pub(crate) struct SimulationTiberiumCellPrelude<'a> {
     radar_dirty_cells: &'a mut Vec<(u16, u16)>,
     radar_dirty_generation: &'a mut u64,
     tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
+    terrain_costs: &'a mut BTreeMap<SpeedType, TerrainCostGrid>,
+    zone_grid: &'a mut Option<ZoneGrid>,
+    path_grid: &'a mut Option<Arc<PathGrid>>,
+    bridge_state: Option<&'a BridgeRuntimeState>,
 }
 
-impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationTiberiumCellPrelude<'_> {
+impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationAreaDamageCellPrelude<'_> {
     #[allow(clippy::too_many_arguments)]
     fn before_cell(
         &mut self,
@@ -999,6 +1037,9 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationTiberiumCellPr
         terrain: Option<&mut ResolvedTerrainGrid>,
         scenario_rng: Option<&mut SimRng>,
     ) {
+        let Some(amount) = self.tiberium_amount else {
+            return;
+        };
         if !crate::sim::combat::combat_aoe::tiberium_reduction_cell_admitted(
             overlay_grid.as_deref(),
             overlay_registry,
@@ -1013,7 +1054,7 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationTiberiumCellPr
             &crate::sim::combat::TiberiumReductionRequest {
                 rx,
                 ry,
-                amount: self.amount,
+                amount,
             },
             self.rules,
             overlay_registry,
@@ -1030,10 +1071,40 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationTiberiumCellPr
             self.tactical_dirty_cells,
         );
     }
+
+    fn wall_dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+        match step {
+            WallDirtyStep::Tactical => self.tactical_dirty_cells.push(packed_coord),
+            WallDirtyStep::Radar => mark_wall_radar_dirty_cell(
+                self.radar_dirty_cells,
+                self.radar_dirty_generation,
+                packed_coord,
+            ),
+        }
+    }
+
+    fn wall_navigation_step(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
+    ) {
+        repair_wall_damage_navigation_authorities(
+            self.terrain_costs,
+            self.zone_grid,
+            self.path_grid,
+            terrain,
+            self.bridge_state,
+            cell,
+            navigation_changed,
+            repair,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn simulation_tiberium_cell_prelude<'a>(
+pub(crate) fn simulation_area_damage_cell_prelude<'a>(
     rules: &'a RuleSet,
     warhead: &crate::rules::warhead_type::WarheadType,
     base_damage: i32,
@@ -1047,14 +1118,20 @@ pub(crate) fn simulation_tiberium_cell_prelude<'a>(
     radar_dirty_cells: &'a mut Vec<(u16, u16)>,
     radar_dirty_generation: &'a mut u64,
     tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
-) -> Option<SimulationTiberiumCellPrelude<'a>> {
+    terrain_costs: &'a mut BTreeMap<SpeedType, TerrainCostGrid>,
+    zone_grid: &'a mut Option<ZoneGrid>,
+    path_grid: &'a mut Option<Arc<PathGrid>>,
+    bridge_state: Option<&'a BridgeRuntimeState>,
+) -> SimulationAreaDamageCellPrelude<'a> {
     let amount = base_damage / 10;
-    if scenario_no_damage || !affect_resource || !warhead.tiberium || amount <= 0 {
-        return None;
-    }
-    Some(SimulationTiberiumCellPrelude {
+    let tiberium_amount = (!scenario_no_damage
+        && affect_resource
+        && warhead.tiberium
+        && amount > 0)
+        .then_some(amount);
+    SimulationAreaDamageCellPrelude {
         rules,
-        amount,
+        tiberium_amount,
         resource_nodes,
         ore_growth_state,
         source_object_cells,
@@ -1063,7 +1140,129 @@ pub(crate) fn simulation_tiberium_cell_prelude<'a>(
         radar_dirty_cells,
         radar_dirty_generation,
         tactical_dirty_cells,
-    })
+        terrain_costs,
+        zone_grid,
+        path_grid,
+        bridge_state,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn repair_wall_damage_navigation_authorities(
+    terrain_costs: &mut BTreeMap<SpeedType, TerrainCostGrid>,
+    zone_grid: &mut Option<ZoneGrid>,
+    path_grid: &mut Option<Arc<PathGrid>>,
+    terrain: &ResolvedTerrainGrid,
+    bridge_state: Option<&BridgeRuntimeState>,
+    cell: (u16, u16),
+    navigation_changed: bool,
+    repair: WallZoneRepairKind,
+) {
+    let resolved_path_grid = PathGrid::from_resolved_terrain_with_bridges(terrain, bridge_state);
+    let mut tail_path_grid = path_grid
+        .as_deref()
+        .filter(|grid| {
+            grid.width() == resolved_path_grid.width()
+                && grid.height() == resolved_path_grid.height()
+        })
+        .cloned()
+        .unwrap_or_else(|| resolved_path_grid.clone());
+    if navigation_changed {
+        let replaced = tail_path_grid.replace_cell_from(&resolved_path_grid, cell.0, cell.1);
+        debug_assert!(replaced, "wall Recalc cell must be inside the map");
+    }
+
+    *terrain_costs = build_canonical_terrain_cost_grids(terrain);
+    if let Some(zone_grid) = zone_grid.as_mut() {
+        let _ = zone_grid.refresh_base_movement_class_at(terrain, cell.0, cell.1);
+        let bridge_records = bridge_state
+            .map(BridgeRuntimeState::endpoint_records)
+            .unwrap_or(&[]);
+        let repair = match repair {
+            WallZoneRepairKind::AssignOrphaned => ZoneRepairKind::AssignOrphaned,
+            WallZoneRepairKind::MergeAdjacent => ZoneRepairKind::MergeAdjacent,
+        };
+        let _ = repair_zone_cell(
+            zone_grid,
+            PackedZoneCoord::new(cell.0 as i16, cell.1 as i16),
+            repair,
+            &tail_path_grid,
+            terrain_costs,
+            terrain,
+            bridge_records,
+        );
+    } else {
+        *zone_grid = Some(ZoneGrid::build_with_terrain(
+            &tail_path_grid,
+            terrain_costs,
+            Some(terrain),
+            bridge_state
+                .map(BridgeRuntimeState::endpoint_records)
+                .unwrap_or(&[]),
+            terrain.width(),
+            terrain.height(),
+        ));
+    }
+    *path_grid = Some(Arc::new(tail_path_grid));
+}
+
+/// Borrow-split wall observer used by runtime placement and sale, where the
+/// overlay/terrain transaction remains in its owning module but the live
+/// presentation, navigation, and represented Cell-target authorities are
+/// already available as disjoint Simulation fields.
+pub(crate) struct SimulationWallRuntimeHost<'a> {
+    pub(crate) entities: &'a mut EntityStore,
+    pub(crate) detach_trace: &'a mut Vec<crate::sim::combat::combat_aoe::CellTargetDetach>,
+    pub(crate) radar_dirty_cells: &'a mut Vec<(u16, u16)>,
+    pub(crate) radar_dirty_generation: &'a mut u64,
+    pub(crate) tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
+    pub(crate) terrain_costs: &'a mut BTreeMap<SpeedType, TerrainCostGrid>,
+    pub(crate) zone_grid: &'a mut Option<ZoneGrid>,
+    pub(crate) path_grid: &'a mut Option<Arc<PathGrid>>,
+    pub(crate) bridge_state: Option<&'a BridgeRuntimeState>,
+}
+
+impl WallDamageTransactionHost for SimulationWallRuntimeHost<'_> {
+    fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+        match step {
+            WallDirtyStep::Tactical => self.tactical_dirty_cells.push(packed_coord),
+            WallDirtyStep::Radar => mark_wall_radar_dirty_cell(
+                self.radar_dirty_cells,
+                self.radar_dirty_generation,
+                packed_coord,
+            ),
+        }
+    }
+
+    fn navigation_step(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
+    ) {
+        repair_wall_damage_navigation_authorities(
+            self.terrain_costs,
+            self.zone_grid,
+            self.path_grid,
+            terrain,
+            self.bridge_state,
+            cell,
+            navigation_changed,
+            repair,
+        );
+    }
+
+    fn pointer_expired(&mut self, target: WallPointerTarget) {
+        if let WallPointerTarget::Real(rx, ry) = target {
+            crate::sim::combat::combat_aoe::expire_cell_target_references(
+                self.entities,
+                rx,
+                ry,
+                self.detach_trace,
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1122,11 +1321,49 @@ fn dispatch_smudge_inline(
 /// Single mutable bridge back into Simulation while combat owns the moved-out
 /// receiver transaction. It deliberately implements both lifecycle and smudge
 /// callbacks so no pair of closures can alias `&mut Simulation`.
-struct SimulationCombatInlineHooks<'a> {
-    sim: &'a mut Simulation,
+struct SimulationCombatInlineHooks<'sim, 'bridge> {
+    sim: &'sim mut Simulation,
+    bridge_state: Option<&'bridge BridgeRuntimeState>,
 }
 
-impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
+struct SimulationWallDamageHost<'borrow, 'hook> {
+    entities: &'borrow mut EntityStore,
+    trace: &'borrow mut Vec<crate::sim::combat::combat_aoe::CellTargetDetach>,
+    inline_hooks: &'borrow mut Option<&'hook mut dyn crate::sim::combat::CombatInlineHooks>,
+}
+
+impl WallDamageTransactionHost for SimulationWallDamageHost<'_, '_> {
+    fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+        if let Some(hooks) = self.inline_hooks.as_deref_mut() {
+            hooks.wall_dirty_step(step, packed_coord);
+        }
+    }
+
+    fn navigation_step(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
+    ) {
+        if let Some(hooks) = self.inline_hooks.as_deref_mut() {
+            hooks.wall_navigation_step(terrain, cell, navigation_changed, repair);
+        }
+    }
+
+    fn pointer_expired(&mut self, target: WallPointerTarget) {
+        if let WallPointerTarget::Real(rx, ry) = target {
+            crate::sim::combat::combat_aoe::expire_cell_target_references(
+                self.entities,
+                rx,
+                ry,
+                self.trace,
+            );
+        }
+    }
+}
+
+impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '_> {
     #[cfg(test)]
     fn trace_wave_receiver(&mut self, wave_id: u64, target_id: u64, scenario_rng_state: u64) {
         self.sim
@@ -1276,6 +1513,29 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
                 self.sim.tactical_dirty_cells.push(cell);
             }
         }
+    }
+
+    fn wall_dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+        match step {
+            WallDirtyStep::Tactical => self.sim.tactical_dirty_cells.push(packed_coord),
+            WallDirtyStep::Radar => self.sim.mark_radar_terrain_dirty_cells([packed_coord]),
+        }
+    }
+
+    fn wall_navigation_step(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
+    ) {
+        self.sim.repair_wall_damage_navigation_step(
+            terrain,
+            self.bridge_state,
+            cell,
+            navigation_changed,
+            repair,
+        );
     }
 
     fn spawn_cliff_anims(
@@ -1667,7 +1927,10 @@ impl Simulation {
         let require_playfield_membership = self.playfield_bounds.is_some();
 
         let combat_result = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                bridge_state: bridge_state.as_ref(),
+            };
             combat::tick_combat_with_fog_and_main_rng_with_terrain_area(
                 &mut entities,
                 &mut occupancy,
@@ -1728,7 +1991,6 @@ impl Simulation {
         self.merge_receiver_house_state(&houses);
         let mut combat_result = combat_result;
         combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
-        self.mark_wall_mutations_radar_dirty(&combat_result.wall_mutations);
         combat_result
     }
 
@@ -1769,7 +2031,10 @@ impl Simulation {
         let scenario_no_damage = self.session.no_damage;
 
         let commit = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                bridge_state: bridge_state.as_ref(),
+            };
             combat::commit_logic_projectile_detonations(
                 detonations,
                 &mut entities,
@@ -2014,6 +2279,7 @@ impl Simulation {
         let mut overlay_grid = self.overlay_grid.take();
         let mut smudge_grid = self.smudge_grid.take();
         let mut resolved_terrain = self.resolved_terrain.take();
+        let bridge_state = self.bridge_state.take();
         let mut sound_events = std::mem::take(&mut self.sound_events);
         let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
             &mut self.production,
@@ -2030,7 +2296,10 @@ impl Simulation {
         let mut collapsed_terrain_cells = BTreeMap::new();
 
         {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                bridge_state: bridge_state.as_ref(),
+            };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
             let mut sound_sink = Some(&mut sound_events);
@@ -2228,39 +2497,27 @@ impl Simulation {
                 {
                     let _chain_reaction_no_op = flags.chain_reaction;
                     if flags.wall {
-                        let wall = crate::sim::overlay_grid::damage_wall_overlay(
-                            grid,
-                            registry,
-                            rx,
-                            ry,
-                            raw_ambient_damage,
-                            &mut scenario_rng,
-                        );
-                        if let Some(terrain) = resolved_terrain.as_mut() {
-                            for mutation in &wall.mutations {
-                                let changed = crate::sim::overlay_grid::recalc_overlay_passability(
-                                    grid,
-                                    terrain,
-                                    registry,
-                                    mutation.rx,
-                                    mutation.ry,
-                                );
-                                grid.record_synchronous_passability_change_at(
-                                    mutation.rx,
-                                    mutation.ry,
-                                    changed,
-                                );
-                            }
-                        }
-                        if grid.cell(rx, ry).overlay_id.is_none() {
-                            crate::sim::combat::combat_aoe::detach_cell_target_references(
-                                &mut entities,
+                        let wall = {
+                            let mut host = SimulationWallDamageHost {
+                                entities: &mut entities,
+                                trace: &mut effects.cell_target_detaches,
+                                inline_hooks: &mut inline_hooks,
+                            };
+                            crate::sim::overlay_grid::damage_wall_overlay_with_runtime_host(
+                                grid,
+                                registry,
+                                resolved_terrain.as_mut(),
                                 rx,
                                 ry,
-                                &mut effects.cell_target_detaches,
-                            );
-                        }
+                                raw_ambient_damage,
+                                &mut scenario_rng,
+                                Some(&mut host),
+                            )
+                        };
                         effects.wall_mutations.extend(wall.mutations);
+                        effects
+                            .wall_radar_dirty_cells
+                            .extend(wall.radar_dirty_cells);
                     }
                 }
 
@@ -2306,7 +2563,7 @@ impl Simulation {
                         // strictly interleaved: detach this CellClass target,
                         // then dirty this radar cell, in old-TMP row order.
                         for &coord in &mutation.original_footprint {
-                            crate::sim::combat::combat_aoe::detach_cell_target_references(
+                            crate::sim::combat::combat_aoe::expire_cell_target_references(
                                 &mut entities,
                                 coord.0,
                                 coord.1,
@@ -2427,6 +2684,7 @@ impl Simulation {
         self.overlay_grid = overlay_grid;
         self.smudge_grid = smudge_grid;
         self.resolved_terrain = resolved_terrain;
+        self.bridge_state = bridge_state;
         self.dynamic_terrain_cells.extend(collapsed_terrain_cells);
         if let Some(terrain) = self.resolved_terrain.as_ref() {
             self.real_cell_bridge_flags_0x1180 = terrain.capture_real_cell_bridge_flags_0x1180();
@@ -2478,6 +2736,7 @@ impl Simulation {
         let mut resource_nodes = std::mem::take(&mut self.production.resource_nodes);
         let mut overlay_grid = self.overlay_grid.take();
         let mut resolved_terrain = self.resolved_terrain.take();
+        let bridge_state = self.bridge_state.take();
         let mut sound_events = std::mem::take(&mut self.sound_events);
         let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
             &mut self.production,
@@ -2490,7 +2749,10 @@ impl Simulation {
         let scenario_no_damage = self.session.no_damage;
         let mut handled_deaths = Vec::new();
         let (effects, under_attack_events) = {
-            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                bridge_state: bridge_state.as_ref(),
+            };
             let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
                 Some(&mut inline_hooks);
             let mut sound_sink = Some(&mut sound_events);
@@ -2535,6 +2797,7 @@ impl Simulation {
         self.production.resource_nodes = resource_nodes;
         self.overlay_grid = overlay_grid;
         self.resolved_terrain = resolved_terrain;
+        self.bridge_state = bridge_state;
         self.sound_events = sound_events;
         self.merge_receiver_house_state(&houses);
         self.absorb_noncombat_damage_effects(
@@ -2558,14 +2821,9 @@ impl Simulation {
         under_attack_events: Vec<crate::sim::combat::UnderAttackEvent>,
         terrain_navigation_changed_cells: Vec<(u16, u16)>,
     ) {
-        // gamemd-derived: `BulletClass::AI @ 0x004666E0` reaches
-        // `CellClass::DestroyOverlay @ 0x00480CB0` inside the Bullet's Logic
-        // slot, where terminal removal calls `MarkTerrainDirty @ 0x004807C2`
-        // synchronously. Combat owns the detached overlay mutation; this is the
-        // first restored-world consumer of `DeathEffects`. The caller's earlier
-        // shrapnel admission preserves Detonate's shrapnel-before-DamageArea
-        // ordering; publish the trace before consuming later death effects.
-        self.mark_wall_mutations_radar_dirty(&effects.wall_mutations);
+        // Wall tactical/radar state was published inside DestroyOverlay before
+        // combat restored these moved-out authorities. The retained result
+        // list is diagnostic only and must never be replayed here.
 
         let dead_infos: Vec<(InternedId, EntityCategory)> = effects
             .despawned_ids
@@ -2998,6 +3256,9 @@ impl Simulation {
             scenario_rng: SimRng::new(seed),
             main_rng: SimRng::new(seed),
             mapgen_rng: SimRng::new(0),
+            native_unique_ids: None,
+            native_map_tubes: crate::map::tubes::NativeMapTubesState::default(),
+            load_objects: LoadObjectLifecycle::default(),
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
@@ -3833,21 +4094,6 @@ impl Simulation {
         }
         self.radar_terrain_dirty_cells.clear();
         true
-    }
-
-    fn mark_wall_mutations_radar_dirty(
-        &mut self,
-        mutations: &[crate::sim::overlay_grid::WallMutation],
-    ) {
-        let Some(grid) = self.overlay_grid.as_ref() else {
-            return;
-        };
-        let dirty = crate::sim::overlay_grid::wall_radar_dirty_cells(
-            grid.width(),
-            grid.height(),
-            mutations,
-        );
-        self.mark_radar_terrain_dirty_cells(dirty);
     }
 
     /// Ordinary per-cell movement writer (`0x006F511A..0x006F5139`): only
@@ -5056,43 +5302,26 @@ impl Simulation {
         Some(tail_path_grid)
     }
 
-    /// Publish wall-placement passability before a later command executes and
-    /// before the frame hash is latched.
-    pub(crate) fn finalize_wall_placement_navigation(
+    /// Publish one native wall Recalc/zone-graph step before DestroyOverlay
+    /// advances to its next cleanup visit or pointer-expiry callback.
+    fn repair_wall_damage_navigation_step(
         &mut self,
-        input_path_grid: Option<&PathGrid>,
+        terrain: &ResolvedTerrainGrid,
+        bridge_state: Option<&BridgeRuntimeState>,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
     ) {
-        let input_path_grid = input_path_grid
-            .cloned()
-            .or_else(|| self.path_grid.as_deref().cloned());
-        let Some(input_path_grid) = input_path_grid else {
-            return;
-        };
-        let Some(terrain) = self.resolved_terrain.as_ref() else {
-            return;
-        };
-        let resolved_path_grid =
-            PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref());
-        if input_path_grid.width() != resolved_path_grid.width()
-            || input_path_grid.height() != resolved_path_grid.height()
-        {
-            return;
-        }
-        let changed_cells = self
-            .overlay_grid
-            .as_mut()
-            .map(|grid| grid.take_synchronous_navigation_cells())
-            .unwrap_or_default();
-        if changed_cells.is_empty() {
-            return;
-        }
-        self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
-        let mut tail_path_grid = input_path_grid;
-        for (rx, ry) in changed_cells {
-            let replaced = tail_path_grid.replace_cell_from(&resolved_path_grid, rx, ry);
-            debug_assert!(replaced, "changed wall cell must be inside the map");
-        }
-        self.rebuild_zone_grid(&tail_path_grid);
+        repair_wall_damage_navigation_authorities(
+            &mut self.terrain_costs,
+            &mut self.zone_grid,
+            &mut self.path_grid,
+            terrain,
+            bridge_state,
+            cell,
+            navigation_changed,
+            repair,
+        );
     }
 
     pub(crate) fn effective_build_blocked(&self, rx: u16, ry: u16) -> Option<bool> {
@@ -5133,42 +5362,44 @@ impl Simulation {
         if events.is_empty() {
             return;
         }
-        let Some(grid) = self.overlay_grid.as_mut() else {
+        let Some(mut grid) = self.overlay_grid.take() else {
             return;
         };
-        let mut wall_mutations = Vec::new();
-
-        for event in events {
-            let result = damage_wall_overlay(
-                grid,
-                overlay_registry,
-                event.rx,
-                event.ry,
-                event.damage,
-                // wall/overlay damage — scenario stream. Direct field (not
-                // wall_damage_rng()): `grid` holds a live &mut self.overlay_grid borrow.
-                &mut self.scenario_rng,
-            );
-
-            if let Some(terrain) = self.resolved_terrain.as_mut() {
-                for mutation in &result.mutations {
-                    let changed = recalc_overlay_passability(
-                        grid,
-                        terrain,
-                        overlay_registry,
-                        mutation.rx,
-                        mutation.ry,
-                    );
-                    grid.record_synchronous_passability_change_at(
-                        mutation.rx,
-                        mutation.ry,
-                        changed,
-                    );
-                }
+        let mut terrain = self.resolved_terrain.take();
+        let bridge_state = self.bridge_state.take();
+        let mut scenario_rng = std::mem::replace(&mut self.scenario_rng, SimRng::new(0));
+        let mut entities = std::mem::take(&mut self.substrate.entities);
+        let mut cell_target_detaches = Vec::new();
+        {
+            let mut simulation_hooks = SimulationCombatInlineHooks {
+                sim: self,
+                bridge_state: bridge_state.as_ref(),
+            };
+            let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
+                Some(&mut simulation_hooks);
+            let mut host = SimulationWallDamageHost {
+                entities: &mut entities,
+                trace: &mut cell_target_detaches,
+                inline_hooks: &mut inline_hooks,
+            };
+            for event in events {
+                let _ = damage_wall_overlay_with_runtime_host(
+                    &mut grid,
+                    overlay_registry,
+                    terrain.as_mut(),
+                    event.rx,
+                    event.ry,
+                    event.damage,
+                    &mut scenario_rng,
+                    Some(&mut host),
+                );
             }
-            wall_mutations.extend(result.mutations);
         }
-        self.mark_wall_mutations_radar_dirty(&wall_mutations);
+        self.substrate.entities = entities;
+        self.scenario_rng = scenario_rng;
+        self.overlay_grid = Some(grid);
+        self.resolved_terrain = terrain;
+        self.bridge_state = bridge_state;
     }
 
     /// Movement-side wall crush: a `Crusher=yes` drive vehicle that finishes the
@@ -6820,6 +7051,8 @@ impl Simulation {
         // separate from the weapon-damage wall path. No-op when no crusher sits
         // on a wall, so it is hash-neutral for every non-crush scenario.
         self.apply_wall_crush_on_driveover(rules, overlay_registry);
+        let post_crush_path_grid = self.path_grid_snapshot();
+        let active_path_grid = post_crush_path_grid.as_deref().or(path_grid);
         // --- Phase 2.5: body rocking ---
         // Drive/Ship slope sampling now belongs to locomotor Process entry,
         // before movement. Body rocking keeps its established post-movement
@@ -6833,7 +7066,7 @@ impl Simulation {
         // Aircraft mission state machines — between movement and combat.
         // Reads updated positions, controls firing and RTB decisions.
         if let Some(rules) = rules {
-            crate::sim::aircraft::tick_aircraft_missions(self, rules, path_grid);
+            crate::sim::aircraft::tick_aircraft_missions(self, rules, active_path_grid);
         }
 
         // Spawn wake effects behind moving ships on water (every 8 native frames).
@@ -6988,7 +7221,7 @@ impl Simulation {
             // sees the up-to-date movement_target this tick.
             self.tick_attack_pursuit_with_overlay_registry(
                 rules,
-                path_grid,
+                active_path_grid,
                 overlay_registry,
                 &tube_turn_owned_ids,
             );
@@ -7028,6 +7261,9 @@ impl Simulation {
                 self.admit_projectile(stable_id, projectile);
             }
             self.visit_combat_appended_wave_tail(&preexisting_wave_ids, rules, overlay_registry);
+            let post_combat_path_grid = self.path_grid_snapshot();
+            let active_post_combat_path_grid =
+                post_combat_path_grid.as_deref().or(active_path_grid);
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,
@@ -7138,10 +7374,14 @@ impl Simulation {
                 }
             }
             if !navigation_changed_cells.is_empty() {
-                tail_path_grid = self
-                    .refresh_navigation_after_terrain_changes(path_grid, &navigation_changed_cells);
+                tail_path_grid = self.refresh_navigation_after_terrain_changes(
+                    active_post_combat_path_grid,
+                    &navigation_changed_cells,
+                );
             }
-            let post_terrain_path_grid = tail_path_grid.as_ref().or(path_grid);
+            let post_terrain_path_grid = tail_path_grid
+                .as_ref()
+                .or(active_post_combat_path_grid);
             // Apply RevealOnFire events from combat.
             for ev in &combat_result.reveal_events {
                 vision::reveal_radius(&mut self.fog, ev.owner, ev.rx, ev.ry, ev.radius);

@@ -459,6 +459,15 @@ impl Simulation {
                     )
                 }),
             )?;
+            if generated_inits.is_none() && self.native_unique_ids.is_some() {
+                // Authored map readers construct each Techno after consuming
+                // its unconditional Scenario word. The class-specific
+                // constructor then assigns the shared native identity before
+                // Unlimbo can succeed or fail.
+                let _ = self
+                    .next_native_load_id()
+                    .expect("authored Techno native cursor was checked above");
+            }
 
             // Build the GameEntity with all required fields.
             let mut ge = GameEntity::new_at_frame_from_constructor_word(
@@ -646,6 +655,7 @@ impl Simulation {
                             z,
                             map_ent.facing,
                             ruleset,
+                            generated_inits.is_none(),
                         )
                         .is_some()
                     {
@@ -698,9 +708,15 @@ impl Simulation {
         z: u8,
         facing: u8,
         rules: &RuleSet,
+        consume_native_load_id: bool,
     ) -> Option<u64> {
         let stable_id =
             self.construct_object_limbo_at_height(type_id, owner, rx, ry, facing, z, rules)?;
+        if consume_native_load_id && self.native_unique_ids.is_some() {
+            let _ = self
+                .next_native_load_id()
+                .expect("authored upgrade native cursor was checked above");
+        }
         {
             let upgrade = self.substrate.entities.get_mut(stable_id)?;
             upgrade.structure_upgrade_link = Some(StructureUpgradeLink {
@@ -2457,8 +2473,7 @@ mod techno_constructor_tests {
             bridge.bridge_deck_level = 7;
             bridge.has_bridge_deck = true;
             bridge.bridge_walkable = true;
-            bridge.bridge_facts.raw_flags =
-                crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
             bridge.bridge_facts.overlay_id = Some(0);
         }
         sim.bridge_state = Some(
@@ -2514,7 +2529,13 @@ mod techno_constructor_tests {
                 &registry,
             )
             .expect("non-wall overlay must not veto runtime Unit Unlimbo");
-        assert_eq!((sim.substrate.entities.get(runtime).unwrap().position.rx, sim.substrate.entities.get(runtime).unwrap().position.ry), ore_runtime);
+        assert_eq!(
+            (
+                sim.substrate.entities.get(runtime).unwrap().position.rx,
+                sim.substrate.entities.get(runtime).unwrap().position.ry
+            ),
+            ore_runtime
+        );
 
         let mut expected = SimRng::new(seed);
         for _ in 0..3 {
@@ -2567,10 +2588,21 @@ mod techno_constructor_tests {
             .is_none()
         );
         let rejected = sim.substrate.entities.get(parent_id).unwrap();
-        assert_eq!((rejected.position.rx, rejected.position.ry, rejected.position.z), (2, 2, 0));
+        assert_eq!(
+            (
+                rejected.position.rx,
+                rejected.position.ry,
+                rejected.position.z
+            ),
+            (2, 2, 0)
+        );
         assert_eq!(rejected.facing, 9);
         assert!(rejected.lifecycle.in_limbo && !rejected.lifecycle.cell_marked);
-        assert!(child_ids.iter().all(|id| sim.substrate.entities.contains(*id)));
+        assert!(
+            child_ids
+                .iter()
+                .all(|id| sim.substrate.entities.contains(*id))
+        );
 
         let mut expected = SimRng::new(seed);
         for _ in 0..4 {
@@ -3118,10 +3150,19 @@ mod techno_constructor_tests {
     }
 
     #[test]
-    fn techno_constructor_authored_upgrades_are_distinct_attached_live_entities() {
+    fn techno_constructor_authored_upgrades_are_distinct_attached_live_entities_with_native_ids() {
         let seed = 0xC701_0005;
         let rules = constructor_rules();
         let mut sim = Simulation::with_seed(seed);
+        sim.native_unique_ids = Some(
+            crate::sim::native_identity::build_noncampaign_fresh_id_prefix(0, 0, 0, 0, 0, 0, 1, 1)
+                .into_cursor(),
+        );
+        let native_before = sim
+            .native_unique_ids
+            .as_ref()
+            .expect("native cursor")
+            .current_raw();
         let mut expected = SimRng::new(seed);
         let mut base = map_entity("BASE", EntityCategory::Structure, (10, 12));
         base.structure_upgrades = [Some("UP1".to_string()), Some("UP2".to_string()), None];
@@ -3154,6 +3195,11 @@ mod techno_constructor_tests {
             assert_eq!((upgrade.position.rx, upgrade.position.ry), (10, 12));
         }
         assert_eq!(sim.scenario_rng.logical_state(), expected.logical_state());
+        assert_eq!(
+            sim.native_unique_ids.as_ref().unwrap().current_raw(),
+            native_before.wrapping_add(3),
+            "the parent and both accepted upgrade constructors consume one shared native ID each"
+        );
     }
 
     #[test]

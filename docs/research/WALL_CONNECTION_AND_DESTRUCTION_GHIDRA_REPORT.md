@@ -134,17 +134,23 @@ def is_wall_connectable(this_cell, target_overlay_idx, dir):
     return False
 ```
 
-### 3.1 Known overlay indices (vanilla YR)
+### 3.1 Compact overlay indices and active-retail status
 
-| Idx | Name | INI | Stages | Notes |
-|-----|------|-----|--------|-------|
-| `0` | GASAND | Sandbag Wall | 0x00, 0x10, 0x20 | Allied sandbags |
-| `1` | CYCL | Cyclone Fence (Chainlink) | 0x00, 0x20 | 2 stages only |
-| `2` | GAWALL | Allied Wall (concrete) | 0x00, 0x10, 0x20, 0x30 | 4-stage, connects via Rules+0x86C/0x870/0x87C |
-| `3` | BARB | Barbed Wire | 0x00, 0x10 | 2 stages |
-| `0x16` | — | (unknown — possibly Prism wall or Brick?) | 0x00, 0x10, 0x20 | |
-| `0x1A` | NAWALL | Soviet Wall (concrete) | 0x00, 0x10, 0x20, 0x30 | 4-stage, connects via Rules+0x874/0x878 |
-| `0xF3` | — | Wildcard wall-like | — | Acts as any-wall when target=-1 |
+| Idx | Name | Retail status | artmd DamageLevels | Notes |
+|-----|------|---------------|--------------------|-------|
+| `0` | GASAND | Active, `Wall=yes` | 2 | Allied sandbags |
+| `1` | CYCL | Dormant/mod-conditional | no section | Hardcoded cleanup row exists, but retail constructor default `Wall=false` remains |
+| `2` | GAWALL | Active, `Wall=yes` | 3 | Allied concrete wall; connects via Rules+0x86C/0x870/0x87C |
+| `3` | BARB | Dormant/mod-conditional | no section | Hardcoded cleanup row exists, but no retail type section activates it |
+| `0x16` | FENC | Dormant/mod-conditional | no section | Compact slot exists; no retail type section activates it |
+| `0x1A` | NAWALL | Active, `Wall=yes` | 3 | Soviet concrete wall; connects via Rules+0x874/0x878 |
+| `0xF3` | — | Connection sentinel, not a retail wall type row | — | Acts as any-wall when target=-1 |
+
+Retail proof: `rulesmd.ini` sets `Wall=yes` only for GASAND, GAWALL, and NAWALL.
+CYCL, BARB, and FENC have no section anywhere under retail `ini/`;
+`OverlayTypeClass::Constructor @ 0x005FE250` initializes `Wall=false` at `0x005FE296`, and
+`ReadINI @ 0x005FE770` retains that value when the key is absent. YR does not merge the base TS
+INI set, so the three hardcoded rows are code-present but inactive in active retail.
 
 ### 3.2 RulesClass wall-building references
 
@@ -170,11 +176,16 @@ similar). If not set, the fallback is `-1` and no cross-system linking occurs.
 
 | Caller | Purpose |
 |--------|---------|
-| `Apply_area_damage` @ `0x004896AD` | Area-damage weapons (shells, bullets, explosions touching walls) |
+| `Apply_area_damage` @ `0x004896AD` | Area-damage weapons, including active-retail Lightning Storm: `[IonWH]` has `Wall=yes` and `Wood=yes` |
 | `BuildingClass::OnDestroyed` @ `0x00445B69` | Building demolition — destroys overlays on vacated cells |
 | `UnitClass::Mission_Enter` @ `0x0073B056` | Unit entering cell (engineers, hover units clearing paths) |
 | `FUN_0075F330` @ `0x0075F477` | Unidentified unit-activity path |
 | `CellClass::DestroyOverlay` itself (self-recursion) @ `0x00480EAF` | Concrete-wall chain reaction |
+
+Retail-data exclusion: Genetic Mutator also reaches the generic area-damage
+plumbing, but active-retail `[MutateExplosion]` has no `Wall=`, `Wood=`, or
+`WallAbsoluteDestroyer=` flag. Its wall callback is therefore dormant; this is
+not authority to omit the generic callback from a future mod-support owner.
 
 ### 4.1 Algorithm — per-tick damage accumulation
 
@@ -189,7 +200,7 @@ def DestroyOverlay(cell, damage):
     # 1. Probabilistic damage gate (damage==-1 bypasses → "forced destroy")
     if damage != -1:
         if damage < overlay_type.Strength and not map_editor_mode:    # +0x2A4
-            if Random.RandomRanged(0, overlay_type.Strength) > damage:
+            if Random.RandomRanged(0, overlay_type.Strength) >= damage:
                 return 0     # this tick no damage — roll failed
 
     # 2. Dirty screen rect (combines GetOccupyList + GetOverlapList)
@@ -229,14 +240,19 @@ def DestroyOverlay(cell, damage):
     FUN_00584550(cell)
     RadarClass.mark_terrain_dirty(cell)
 
-    # 8. Update 4 cardinal neighbors' wall connectivity
-    for dir_offset in [g_DirectionOffsets, DAT_0089F6A0, DAT_0089F698, DAT_0089F690]:
+    # 8. Update 4 cardinal receivers in literal N,W,S,E order. Each receiver
+    #    performs its own N,E,S,W,self cleanup walk before the next receiver.
+    for dir_offset in [N, W, S, E]:
         neighbor = map.get_cell(cell.coord + dir_offset)
         CellClass.PostDestructionWallCleanup(neighbor, flag=0)
 
     FUN_007258D0()    # internal cleanup
 
-    # 9. Decrement OreNeighborCount on all 8 neighbors
+    # 9. Broadcast expiry for this exact CellClass pointer after the complete
+    #    cleanup fan-out and before the retained-count tail.
+    PointerExpired(cell)
+
+    # 10. Decrement OreNeighborCount on all 8 neighbors
     for dir in range(8):
         neighbor = map.get_cell(cell.coord + g_DirectionOffsets[dir])
         neighbor.field_0x122 -= 1
@@ -246,11 +262,10 @@ def DestroyOverlay(cell, damage):
 
 ### 4.2 Two key behaviors that emerge
 
-1. **Walls are not torn down by a single shot.** Every damage tick rolls
-   `RandomRanged(0, Strength) > damage`. Only when the roll fails does the damage
-   stage increment. So a wall with `Strength=400` hit by a `damage=100` attack has
-   a **25% chance per tick** of taking a damage step. A stage is destroyed after an
-   average of 4 ticks at that damage level.
+1. **Walls are not torn down by a single shot.** When `damage < Strength`, every
+   damage tick rolls the inclusive range `RandomRanged(0, Strength)` and advances
+   only when `roll < damage`; equality is a no-op. A wall with `Strength=400` hit
+   by `damage=100` therefore advances on 100 of 401 possible results.
 
 2. **Walls stay visible while connected even at max damage.** The §5 destruction
    gate requires the connectivity nibble == 0. A mid-segment wall at max damage
@@ -258,8 +273,8 @@ def DestroyOverlay(cell, damage):
    isolated does it vanish. This is the observed in-game behavior — damaged walls
    appearing "cracked" mid-segment, collapsing only when the segment breaks.
 
-3. **Concrete walls (GAWALL/NAWALL) chain-react.** When a concrete wall reaches
-   its final damage stage (`DamageLevels=4` → stage 3 = 0x30), it deals 200 damage
+3. **Concrete walls (GAWALL/NAWALL) chain-react.** With retail artmd
+   `DamageLevels=3`, reaching stage 2 (`0x20`) enters the chain branch and deals 200 damage
    to 4 pristine concrete neighbors, which usually destroys them outright given
    typical wall Strength values. This is why concrete walls often collapse in
    cascading chains rather than segment-by-segment.
@@ -268,11 +283,15 @@ def DestroyOverlay(cell, damage):
 
 ## 5. Post-destruction Cleanup — `CellClass::PostDestructionWallCleanup` @ `0x00480630`
 
-Called **by** `DestroyOverlay` (§4 step 8) on each of the 4 cardinal neighbors of a
-destroyed cell. Rebuilds their connectivity nibble against the new neighborhood.
+Called **by** `DestroyOverlay` (§4 step 8) on each of the 4 cardinal receivers in
+literal `N,W,S,E` order. Each call completes before the next receiver and rebuilds
+connectivity against the live state left by prior calls.
 
-Walks a 5-entry table (`DAT_0081CC70 = [0, 2, 4, 6, -1]`) covering 4 cardinal
-neighbors + self. For each visited cell:
+Walks a 5-entry table (`DAT_0081CC70 = [0, 2, 4, 6, -1]`) covering
+`N,E,S,W,self`. Every lookup uses the signed fixed-map `Get_CellClass` seam. A
+true miss stamps and returns the persistent shared dummy; it is not skipped.
+For each visited CellClass, including the dummy, tactical and radar dirty work
+runs before the wall gate:
 
 ### 4.1 Per-cell steps
 
@@ -323,30 +342,33 @@ for dir_entry in [0, 2, 4, 6, -1]:
         cell.field_0x50 = 0xFFFFFFFF   # clear owner?
         FUN_007258d0()                 # internal cleanup
 
+    old_zone = cell.nZoneType
+
     # 5. Re-run RecalcAttributes → triggers ApplyLAT_and_SlopeFixup
     CellClass.RecalcAttributes(cell)
 
-    # 6. Zone recomputation
-    if destroyed:
-        MapClass.AssignOrphanedCellZone(cell)
-        # Decrement OreNeighborCount on 8 neighbors
-        for dir in range(8):
-            neighbor = map.get_cell(cell.coord + dir_offset(dir))
-            neighbor.field_0x122 -= 1   # OreNeighborCount
-    else:
-        MapClass.MergeAdjacentCellZone(cell)
+    # 6. Zone recomputation runs only when Recalc changed nZoneType
+    if old_zone != cell.nZoneType:
+        if destroyed:
+            MapClass.AssignOrphanedCellZone(cell)
+            # Only this changed-zone auto-removal decrements the 8 neighbors.
+            for dir in range(8):
+                neighbor = map.get_cell(cell.coord + dir_offset(dir))
+                neighbor.field_0x122 -= 1   # OreNeighborCount
+        else:
+            MapClass.MergeAdjacentCellZone(cell)
 ```
 
 ### 5.2 Destruction thresholds summary (cleanup safety-net path)
 
-| Overlay | Full byte → destroy in cleanup |
-|---------|-------------------------------|
-| GASAND (0) | `0x10` or `0x20` (connectivity=0 + damage stage 1 or 2) |
-| CYCL (1) | `0x20` |
-| GAWALL (2) | `0x20` or `0x30` |
-| BARB (3) | `0x10` |
-| `0x16` | `0x10` or `0x20` |
-| NAWALL (0x1A) | `0x20` or `0x30` |
+| Overlay | Full byte → destroy in cleanup | Active-retail status |
+|---------|-------------------------------|----------------------|
+| GASAND (0) | `0x10` or `0x20` | Active |
+| CYCL (1) | `0x20` | Dormant/mod-conditional |
+| GAWALL (2) | `0x20` or `0x30` | Active |
+| BARB (3) | `0x10` | Dormant/mod-conditional |
+| FENC (`0x16`) | `0x10` or `0x20` | Dormant/mod-conditional |
+| NAWALL (`0x1A`) | `0x20` or `0x30` | Active |
 
 Note: these are the **cleanup safety-net** destruction checks, not the primary
 destruction gate. The primary path is in `CellClass::DestroyOverlay` (§4 step 5),
@@ -355,14 +377,10 @@ which requires damage-stage == `DamageLevels - 1` AND connectivity nibble == 0.
 a neighbor's damage stage moved past max without triggering the primary destroy
 (e.g., for walls damaged by area-damage on non-center cells).
 
-**DamageLevels (verified from OverlayTypeClass::ReadINI @ 0x005FE770, field +0x2A0):**
-
-| Overlay | DamageLevels | Stages | Max byte |
-|---------|-------------|--------|----------|
-| GASAND / `0x16` | 3 | 0, 1, 2 | `0x20` |
-| CYCL | 3 | 0, 1, 2 | `0x20` |
-| BARB | 2 | 0, 1 | `0x10` |
-| GAWALL / NAWALL | 4 | 0, 1, 2, 3 | `0x30` |
+**Active-retail DamageLevels (verified from artmd.ini and
+OverlayTypeClass::ReadINI @ 0x005FE770, field +0x2A0):** GASAND is 2; GAWALL and
+NAWALL are 3. CYCL, BARB, and FENC have no retail art section, so their hardcoded
+threshold rows remain dormant unless a mod supplies both an active wall type and art data.
 
 DamageLevels is read by `OverlayTypeClass::ReadINI` from the **art.ini** section
 named by the overlay's `Image=` key, not from rules.ini. Defaults to 1 if not set
@@ -435,37 +453,44 @@ cells to match their current neighborhood.
 
 ## 7. Current Rust Implementation Status
 
-Mapping to [src/map/overlay.rs](src/map/overlay.rs):
+The live runtime owner is now `src/sim/overlay_grid.rs`; the older
+`src/map/overlay.rs::compute_wall_connectivity` remains a map-side helper and is not the mutation
+authority.
 
 | System | Rust coverage | Gap |
 |--------|---------------|-----|
-| 4-bit connectivity bitmask | ✓ `compute_wall_connectivity` @ [src/map/overlay.rs:181-275](src/map/overlay.rs#L181-L275) | None — bit assignment N=0/E=1/S=2/W=3 matches binary. |
-| Same-type-only matching | ✓ lines 204, 215 | None — matches binary's primary branch. |
-| Damage-stage upper nibble | ✗ Missing | Wall frame is `bitmask` only (line 251); should be `(damage << 4) \| connectivity` with a per-cell damage state. |
-| Auto-destruct on isolated + max-damage | ✗ Missing | No cleanup; walls never vanish when damaged. |
-| Runtime re-computation on destroy | ✗ Missing | Called once at map load only; no `PostDestructionWallCleanup` equivalent. |
-| `OverlayTypeClass.IsWall` flag | ✓ `overlay_registry.flags(...).wall` | Verify this maps to binary's `OverlayTypeClass + 0x2A8`. |
-| Wildcard `0xF3` overlay matching | ✗ Missing | `target == -1` wildcard path for connection-check absent. |
-| Cross-system connect via RulesClass+0x86C..0x87C | ✗ Missing | Fence-post BuildingTypes can anchor to walls; not modeled. |
-| Firestorm Wall / Laser Fence `BuildingClass` | ✗ Missing | No BuildingClass wall connect/extend logic. |
-| Frame re-trigger via RecalcAttributes | ✗ Missing | Current Rust doesn't have a RecalcAttributes equivalent; wall destroy won't retrigger ground LAT. |
+| Full damage/connectivity byte | Implemented in `OverlayCell::overlay_data` | N/E/S/W are bits 0/1/2/3 and damage remains in the upper nibble. |
+| Same-ID runtime connection | Implemented by `recompute_wall_connectivity_at_with_terrain` | Runtime probes use the signed fixed-grid CellClass lookup, including real aliases such as west of `(0,1)` selecting `(511,0)`. |
+| Damage gate, penultimate chain, and direct removal | Implemented by `damage_wall_overlay_with_runtime_host` | The inclusive roll uses `roll < damage`; chain recursion is N/E/S/W. Each terminal recursive removal Recalcs and repairs navigation before its cleanup fan-out, expires the represented Cell pointer after that fan-out, and decrements its retained source last. |
+| Post-destruction cleanup | Implemented in N/W/S/E outer order and N/E/S/W/self inner order | Every visit dirties tactical/radar before the wall gate; every live wall recomputes and Recalcs synchronously. GASAND/GAWALL/NAWALL thresholds are active retail code/data, but no shipped-map or ordinary invariant-preserving placement witness for the pre-existing isolated-damaged input is established. Dormant CYCL/BARB/FENC rows are deliberately excluded. |
+| Conditional cleanup count reversal | Implemented through `recalc_wall_mutation_passability` | A cleanup-removed source reverses its eight wrapping count writes only when Recalc changed reduced zone type. House sale intentionally leaves the sold source stale. |
+| Fixed-grid alias and shared-dummy runtime | Implemented | Chain, cleanup, sale, and all eight retained-count probes use the stamping lookup. Real aliases mutate real cells; a true dummy retains live overlay identity/state and emits its captured packed coordinate to tactical/radar callbacks while remaining absent from the exported real count plane. Dummy identity/state joins the v114 current hash but remains process-global rather than Scenario-serialized. |
+| Runtime dirty, navigation, and pointer-expiry publication | Critic-1 correction implemented; fresh criticism pending | The first fresh critic rejected `95f77159` because production replayed terminal radar after return, omitted damage tactical dirty, and left placement/sale observers outside native order. The correction publishes tactical/radar through the synchronous wall host for standard combat, persistent projectile/death paths, ambient Wave, movement crush/world events, sale, placement, and active-retail Lightning Storm. Pointer expiry covers represented Techno Cell targets in native forward clear-first order. The broader native non-entity listener roster is not represented and remains an explicit residual. |
+| Authored-load wall effects | Infrastructure only | `LiveOverlayCells` and `FinalizedOverlayPayload` retain the ordered authored count plane, but no production authored-row reader calls the helper or consumes the payload yet. |
+| Wildcard `0xF3` and building-anchor matching | Missing | The direction-aware `IsWallConnectableInDirection` building branches are outside this retained-plane slice and keep the wider wall mechanism open. |
+| Firestorm/Laser Fence building behavior | Missing | No active-retail Rust owner implements the BuildingClass connect/extend system. Do not infer it from plain overlay matching. |
+| Full RecalcAttributes/LAT equivalence | Partial | Runtime wall paths synchronously update represented overlay land/passability/zone facts; the broader live LAT/Recalc transaction remains owned by authored-overlay finalization. |
 
 ### 7.1 Priority fixes
 
-1. **Promote `entry.frame` to full byte** with a separate `damage_stage: u8` field on
-   `OverlayEntry`. Drawing uses `(damage_stage << 4) | connectivity_bits`.
-2. **Add destroy-on-max-damage logic** — when an overlay's HP drops to 0, apply the
-   per-type threshold table from §4.2; if connectivity-nibble is 0 at that threshold,
-   remove the overlay and recompute neighbors.
-3. **Add `recalc_wall_connectivity_at(cell)`** that rebuilds the nibble for that cell
-   + 4 cardinals only, instead of the full-map pass. Call on: overlay place, overlay
-   destroy, damage event that crosses a stage threshold.
-4. **Add `OverlayTypeClass::IsWall` audit** — confirm all 7 wall overlay indices
-   (0, 1, 2, 3, 0x16, 0x1A, 0xF3) are flagged correctly in the registry.
+1. Complete focused validation and obtain a new fresh read-only critic verdict on the corrected
+   runtime count/dummy/dirty/navigation/pointer/placement slice. The new critic must recheck every
+   finding from the `95f77159` rejection; keep the slice open on any unresolved ordering, callsite,
+   reachability, or represented-listener finding.
+2. Wire the verified authored wall helper into the one production authored-row transaction and move
+   its finalized identity/state/count payload into every production/headless runtime builder.
+3. Close the current-version persistence gate: production state must never save or restore legacy
+   `None` retained authority after migration (or the snapshot version must advance if such a save
+   escapes).
+4. Investigate and implement the separate direction-aware building-anchor branches before claiming
+   the complete wall-connection mechanism closed. Their absence does not invalidate the active
+   overlay-to-overlay runtime/count transaction, but it keeps this broader document open.
 
-The RulesClass-linked fence-post system (cross-connection to Firestorm/Laser fence
-BuildingTypes) can be deferred — low visibility impact unless/until Firestorm Wall
-or Laser Fence are implemented.
+Correction-focused validation on 2026-09-01 passed: the 107-test `wall` filter, 59 overlay-grid
+tests, 12 Lightning Storm tests, exact host-order, placement, autofill, persistent-projectile, sale,
+radar-rearm, ordinary-warhead, and crusher fixtures, the shared-dummy v114 hash test, and all three
+live-object detach-sweep tests. A new fresh critic must still recheck every critic-1 finding.
+The full `--lib` suite remains reserved for the final PR gate.
 
 ---
 

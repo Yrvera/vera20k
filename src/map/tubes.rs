@@ -14,6 +14,139 @@ const MIN_TUBE_FIELDS: usize = 5;
 const NATIVE_PATH_LOOP_ITERATIONS: usize = 100;
 const TUBE_PATH_SENTINEL: i32 = -1;
 
+#[derive(Debug)]
+pub(crate) struct RawTubeRecord {
+    source_entry_ordinal: usize,
+    value: String,
+}
+
+/// Move-only raw section receipt. Gameplay obtains this directly from the INI
+/// instead of using `MapFile::explicit_tubes`, whose safe convenience parser
+/// deliberately filters malformed rows.
+#[derive(Debug, Default)]
+pub(crate) struct RawTubeSection {
+    records: Vec<RawTubeRecord>,
+}
+
+impl RawTubeSection {
+    pub(crate) fn from_ini(ini: &IniFile) -> Self {
+        let Some(section) = ini.section("Tubes") else {
+            return Self::default();
+        };
+        let records = section
+            .get_values()
+            .into_iter()
+            .enumerate()
+            .map(|(source_entry_ordinal, value)| RawTubeRecord {
+                source_entry_ordinal,
+                value: value.to_string(),
+            })
+            .collect();
+        Self { records }
+    }
+}
+
+/// Native constructor identity retained beside the successful Tube fact.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TubeNativeInit {
+    pub(crate) source_entry_ordinal: usize,
+    pub(crate) native_unique_id: i32,
+}
+
+/// One successfully allocated, assigned, and parsed authored Tube record.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ConstructedMapTube {
+    pub(crate) fact: TubeFact,
+    pub(crate) native_init: TubeNativeInit,
+}
+
+/// Consumed-once successful/partial receipt for the raw Tube boundary. `Some`
+/// with zero entries distinguishes an empty section whose reservation ran from
+/// a load that never reached the boundary.
+#[derive(Debug, Default)]
+pub(crate) struct NativeMapTubeReceipt {
+    pub(crate) entries: Vec<ConstructedMapTube>,
+}
+
+/// Consumed-once ownership state for the raw `[Tubes]` boundary.
+#[derive(Debug, Default)]
+pub(crate) enum NativeMapTubesState {
+    #[default]
+    Unconstructed,
+    Pending(NativeMapTubeReceipt),
+    Bound,
+}
+
+impl NativeMapTubesState {
+    #[cfg(test)]
+    pub(crate) fn as_ref(&self) -> Option<&NativeMapTubeReceipt> {
+        match self {
+            Self::Pending(receipt) => Some(receipt),
+            Self::Unconstructed | Self::Bound => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum AllocatedTubeParseError {
+    #[error("row has {actual} fields; at least {minimum} are required before the path")]
+    MissingFixedFields { actual: usize, minimum: usize },
+    #[error("path runs out of fields before -1 or the native 100-iteration bound")]
+    PathRunsOutBeforeNativeStop,
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum TubeConstructionError {
+    #[error("[Tubes] source row {ordinal} allocation returned null before native ID assignment")]
+    AllocationNull { ordinal: usize },
+    #[error("[Tubes] source row {ordinal} failed after native ID {native_unique_id}: {error}")]
+    AllocatedRowMalformed {
+        ordinal: usize,
+        native_unique_id: i32,
+        error: AllocatedTubeParseError,
+    },
+}
+
+/// Execute the proved constructor boundary over raw source records.
+///
+/// Allocation is checked first, `AssignUniqueID` is invoked second, and only
+/// then is the row tokenized. Returning an error stops the section immediately;
+/// there is no reject-and-continue arm in active-retail `gamemd.exe`.
+pub(crate) fn construct_raw_tube_section(
+    section: RawTubeSection,
+    receipt: &mut NativeMapTubeReceipt,
+    allocate: &mut dyn FnMut(usize) -> bool,
+    assign_native_id: &mut dyn FnMut() -> i32,
+) -> Result<(), TubeConstructionError> {
+    for record in section.records {
+        let RawTubeRecord {
+            source_entry_ordinal,
+            value,
+        } = record;
+        if !allocate(source_entry_ordinal) {
+            return Err(TubeConstructionError::AllocationNull {
+                ordinal: source_entry_ordinal,
+            });
+        }
+        let native_unique_id = assign_native_id();
+        let fact = parse_allocated_tube_entry(&value).map_err(|error| {
+            TubeConstructionError::AllocatedRowMalformed {
+                ordinal: source_entry_ordinal,
+                native_unique_id,
+                error,
+            }
+        })?;
+        receipt.entries.push(ConstructedMapTube {
+            fact,
+            native_init: TubeNativeInit {
+                source_entry_ordinal,
+                native_unique_id,
+            },
+        });
+    }
+    Ok(())
+}
+
 pub fn parse_tubes(ini: &IniFile) -> Vec<TubeFact> {
     let Some(section) = ini.section("Tubes") else {
         return Vec::new();
@@ -24,10 +157,10 @@ pub fn parse_tubes(ini: &IniFile) -> Vec<TubeFact> {
 fn parse_tubes_section(section: &IniSection) -> Vec<TubeFact> {
     let mut tubes = Vec::new();
     for value in section.get_values() {
-        let Some(tube) = parse_tube_entry(value) else {
-            continue;
-        };
-        tubes.push(tube);
+        match parse_allocated_tube_entry(value) {
+            Ok(tube) => tubes.push(tube),
+            Err(error) => log::warn!("dropping malformed [Tubes] convenience fact: {error}"),
+        }
     }
     if !tubes.is_empty() {
         log::info!("Parsed {} explicit map tubes from [Tubes]", tubes.len());
@@ -35,14 +168,13 @@ fn parse_tubes_section(section: &IniSection) -> Vec<TubeFact> {
     tubes
 }
 
-fn parse_tube_entry(value: &str) -> Option<TubeFact> {
+fn parse_allocated_tube_entry(value: &str) -> Result<TubeFact, AllocatedTubeParseError> {
     let fields: Vec<&str> = value.split(',').map(str::trim).collect();
     if fields.len() < MIN_TUBE_FIELDS {
-        log::warn!(
-            "[Tubes] entry has {} fields; expected at least 5",
-            fields.len()
-        );
-        return None;
+        return Err(AllocatedTubeParseError::MissingFixedFields {
+            actual: fields.len(),
+            minimum: MIN_TUBE_FIELDS,
+        });
     }
 
     let entry = (crt_atoi(fields[0]) as u16, crt_atoi(fields[1]) as u16);
@@ -72,17 +204,14 @@ fn parse_tube_entry(value: &str) -> Option<TubeFact> {
         path_steps.push(step);
     }
     if !terminated {
-        // VERA-internal. gamemd has no check here: `CRT__strtok` 0x007C9CC2
-        // returns NULL once the row runs out of fields and `CRT__atoi`
-        // 0x007C9B72 dereferences its argument without a null test, so a row
-        // with no `-1` inside 100 fields faults the process. Dropping the row
-        // is a deliberate divergence from an access violation, not from a
-        // behavior. gamemd equivalent UNCHECKED against a live run.
-        log::warn!("[Tubes] path buffer is missing its -1 sentinel");
-        return None;
+        // Active-retail faults after construction/ID assignment when strtok
+        // returns NULL before either stop condition. Rust surfaces that same
+        // boundary as a hard load error in the gameplay constructor. The
+        // legacy convenience parser logs and drops it instead.
+        return Err(AllocatedTubeParseError::PathRunsOutBeforeNativeStop);
     }
 
-    Some(TubeFact::explicit(entry, exit, direction, path_steps))
+    Ok(TubeFact::explicit(entry, exit, direction, path_steps))
 }
 
 /// The supported, deterministic part of CRT `atoi`: leading ASCII whitespace,
@@ -211,9 +340,9 @@ mod tests {
         assert_eq!(tubes[0].path_steps, vec![10, -2, 15]);
     }
 
-    /// VERA-internal. See the comment on the `!terminated` arm: gamemd walks
-    /// off the end of the row and faults inside `CRT__atoi` 0x007C9B72, so
-    /// there is no native behavior to be faithful to here.
+    /// Safe convenience parsing drops the row. The gameplay constructor is
+    /// stricter: it assigns first, then returns a hard load error at this
+    /// boundary so later rows and Overlay construction never run.
     #[test]
     fn gsi_04_15_missing_path_sentinel_is_rejected_safely() {
         let ini = IniFile::from_str("[Tubes]\n0=1,2,2,4,2,2,2\n");
@@ -231,18 +360,17 @@ mod tests {
     /// Effect: gamemd calls `CRT__strtok` 0x007C9CC2 past the end of the row,
     /// gets NULL, and passes it straight to `CRT__atoi` 0x007C9B72, which
     /// dereferences it with no null test — an access violation during map
-    /// load. VERA drops the row and keeps loading. Every other tube on the map
-    /// therefore exists in VERA and does not exist in gamemd, because gamemd
-    /// never finishes the map.
+    /// load. VERA spends the same constructor ID and aborts the load with a
+    /// typed error rather than terminating the process.
     ///
     /// Frequency: never in a retail map — the YR map editor always emits the
     /// sentinel. Reachable only through a hand-edited or third-party map.
     ///
-    /// Left divergent deliberately: matching gamemd means crashing. Recorded
-    /// so the difference is not silent.
+    /// Left divergent deliberately only in host failure form: matching gamemd
+    /// means crashing. Constructor cost and no-continuation behavior match.
     #[test]
-    #[ignore = "gamemd 0x007283C0 faults on a sentinel-less [Tubes] row; VERA drops the row"]
+    #[ignore = "gamemd faults the process; VERA returns a hard load error after the same ID spend"]
     fn gsi_04_15_sentinel_less_row_diverges_from_a_native_crash() {
-        panic!("intentional divergence: gamemd access-faults where VERA drops the row");
+        panic!("intentional divergence: gamemd access-faults where VERA hard-errors the load");
     }
 }

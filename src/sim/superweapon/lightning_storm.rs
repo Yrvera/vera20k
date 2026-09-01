@@ -358,7 +358,7 @@ fn spawn_bolt(
         let scenario_no_damage = sim.session.no_damage;
         let binary_frame = sim.session.binary_frame;
         let spread_enabled = sim.production.ore_growth_config.spreads;
-        let mut ore_prelude = crate::sim::world::simulation_tiberium_cell_prelude(
+        let mut cell_prelude = crate::sim::world::simulation_area_damage_cell_prelude(
             rules,
             warhead,
             rules.general.lightning_damage,
@@ -372,6 +372,10 @@ fn spawn_bolt(
             &mut sim.radar_terrain_dirty_cells,
             &mut sim.radar_terrain_dirty_generation,
             &mut sim.tactical_dirty_cells,
+            &mut sim.terrain_costs,
+            &mut sim.zone_grid,
+            &mut sim.path_grid,
+            sim.bridge_state.as_ref(),
         );
         let terrain_objects = TerrainCollectionView {
             objects: &sim.production.terrain_objects,
@@ -402,16 +406,22 @@ fn spawn_bolt(
             },
             Some(terrain_objects),
             scenario_no_damage,
-            ore_prelude
-                .as_mut()
-                .map(|prelude| prelude as &mut dyn crate::sim::combat::combat_aoe::AoECellPrelude),
+            Some(
+                &mut cell_prelude
+                    as &mut dyn crate::sim::combat::combat_aoe::AoECellPrelude,
+            ),
         );
+        let receivers = aoe.receivers;
+        drop(cell_prelude);
+
+        // IonWH has Wall=yes in active retail. The borrowed cell prelude has
+        // already published every native tactical/radar callback inline.
 
         // GroundStrike enters the ordinary ReceiveDamage transaction for each
         // hit before returning. In particular, a fatal carrier detonates its
         // DeathWeapon (and mutates walls/RNG/targets) before the next bolt or
         // LogicClass visit.
-        sim.commit_noncombat_aoe_receivers(rules, overlay_registry, &aoe.receivers);
+        sim.commit_noncombat_aoe_receivers(rules, overlay_registry, &receivers);
     } else {
         log::warn!("Lightning warhead '{}' not found in rules", warhead_id);
     }
@@ -732,6 +742,130 @@ mod tests {
         let mut expected_rng = SimRng::new(1);
         let _ = expected_rng.next_range_u32(BOLT_ANIMS.len() as u32);
         assert_eq!(sim.scenario_rng.state(), expected_rng.state());
+    }
+
+    #[test]
+    fn active_retail_lightning_wall_removal_publishes_navigation_and_radar_inline() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [Warheads]\n0=IonWH\n\
+             [OverlayTypes]\n0=TESTWALL\n\
+             [General]\nLightningDamage=100\nLightningWarhead=IonWH\n\
+             [IonWH]\nCellSpread=0\nWall=yes\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+             [TESTWALL]\nWall=yes\nArmor=concrete\nStrength=1\n",
+        );
+        let art = IniFile::from_str("[TESTWALL]\nDamageLevels=2\n");
+        let rules = RuleSet::from_ini(&ini).expect("active-retail lightning wall rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, Some(&art));
+        let wall_id = registry
+            .id_for_name("TESTWALL")
+            .expect("test wall overlay id");
+
+        let mut cells = Vec::new();
+        for ry in 0..12 {
+            for rx in 0..12 {
+                cells.push(test_terrain_cell(rx, ry));
+            }
+        }
+        let mut terrain = ResolvedTerrainGrid::from_cells(12, 12, cells);
+        let mut overlays = OverlayGrid::new(12, 12);
+        overlays.place_overlay(5, 5, wall_id, 0);
+        assert!(crate::sim::overlay_grid::recalc_overlay_passability(
+            &mut overlays,
+            &mut terrain,
+            &registry,
+            5,
+            5,
+        ));
+        let _ = overlays.take_dirty_cells();
+
+        let mut sim = Simulation::with_seed(1);
+        sim.overlay_grid = Some(overlays);
+        sim.resolved_terrain = Some(terrain);
+        assert!(sim.rebuild_dynamic_navigation(&rules));
+        assert!(!sim.path_grid().unwrap().is_walkable(5, 5));
+        let ground_zone_before = sim
+            .zone_grid
+            .as_ref()
+            .and_then(|zones| {
+                zones.map_for(crate::rules::locomotor_type::MovementZone::Normal)
+            })
+            .expect("normal zone map")
+            .zone_at(5, 5, MovementLayer::Ground);
+        assert_eq!(
+            ground_zone_before,
+            crate::sim::pathfinding::zone_map::ZONE_INVALID
+        );
+
+        let owner = sim.interner.intern("Americans");
+        spawn_bolt(&mut sim, &rules, 5, 5, owner, Some(&registry));
+
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(5, 5).overlay_id,
+            None
+        );
+        assert!(sim.path_grid().unwrap().is_walkable(5, 5));
+        let ground_zone_after = sim
+            .zone_grid
+            .as_ref()
+            .and_then(|zones| {
+                zones.map_for(crate::rules::locomotor_type::MovementZone::Normal)
+            })
+            .expect("normal zone map")
+            .zone_at(5, 5, MovementLayer::Ground);
+        assert_ne!(
+            ground_zone_after,
+            crate::sim::pathfinding::zone_map::ZONE_INVALID
+        );
+        assert_eq!(
+            sim.radar_terrain_dirty_cells,
+            vec![
+                (5, 5),
+                (5, 3),
+                (6, 4),
+                (4, 4),
+                (5, 4),
+                (4, 6),
+                (3, 5),
+                (4, 5),
+                (6, 6),
+                (5, 7),
+                (5, 6),
+                (7, 5),
+                (6, 5),
+            ]
+        );
+        assert_eq!(sim.radar_terrain_dirty_generation, 13);
+        assert_eq!(
+            sim.tactical_dirty_cells,
+            vec![
+                (5, 5),
+                (5, 3),
+                (6, 4),
+                (5, 5),
+                (4, 4),
+                (5, 4),
+                (4, 4),
+                (5, 5),
+                (4, 6),
+                (3, 5),
+                (4, 5),
+                (5, 5),
+                (6, 6),
+                (5, 7),
+                (4, 6),
+                (5, 6),
+                (6, 4),
+                (7, 5),
+                (6, 6),
+                (5, 5),
+                (6, 5),
+            ]
+        );
     }
 
     #[test]

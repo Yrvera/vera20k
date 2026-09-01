@@ -22,7 +22,9 @@ use crate::map::briefing::{self, BriefingSection};
 use crate::map::cell_tags::{self, CellTagMap};
 use crate::map::entities::{self, MapEntity};
 use crate::map::events::{self, EventMap};
-use crate::map::overlay::{self, OverlayDataPack, OverlayEntry, TerrainObject};
+use crate::map::overlay::{
+    self, OverlayDataPack, OverlayEntry, OverlayIdentityPack, TerrainObject,
+};
 use crate::map::preview::{self, PreviewSection};
 use crate::map::tags::{self, TagMap};
 use crate::map::trigger_graph::{self, TriggerGraph};
@@ -195,6 +197,68 @@ struct ParsedIsoMapPack {
     lookups: Vec<IsoMapPackLookup>,
 }
 
+/// The only capability accepted by the authored pack finalizer. Production
+/// code can obtain it only by moving the one slot out of `MapFile`.
+#[derive(Debug)]
+pub(crate) struct AuthoredOverlayPackReceipt {
+    identity: OverlayIdentityPack,
+    data: OverlayDataPack,
+}
+
+impl AuthoredOverlayPackReceipt {
+    pub(crate) fn into_parts(self) -> (OverlayIdentityPack, OverlayDataPack) {
+        (self.identity, self.data)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        identity: OverlayIdentityPack,
+        data: OverlayDataPack,
+    ) -> Self {
+        Self { identity, data }
+    }
+}
+
+/// Non-Clone single owner for the two independently gated raw pack bodies.
+/// The public(crate) empty constructor exists only so synthetic `MapFile`
+/// literals can represent a map with no bodies; it cannot mint or duplicate a
+/// parsed receipt.
+#[derive(Debug)]
+pub(crate) struct AuthoredOverlayPackSlot {
+    receipt: Option<AuthoredOverlayPackReceipt>,
+}
+
+impl AuthoredOverlayPackSlot {
+    pub(crate) fn empty() -> Self {
+        Self {
+            receipt: Some(AuthoredOverlayPackReceipt {
+                identity: OverlayIdentityPack::default(),
+                data: OverlayDataPack::default(),
+            }),
+        }
+    }
+
+    fn from_parts(identity: OverlayIdentityPack, data: OverlayDataPack) -> Self {
+        Self {
+            receipt: Some(AuthoredOverlayPackReceipt { identity, data }),
+        }
+    }
+
+    fn receipt(&self) -> Result<&AuthoredOverlayPackReceipt, OverlayPacksAlreadyConsumed> {
+        self.receipt.as_ref().ok_or(OverlayPacksAlreadyConsumed)
+    }
+
+    fn receipt_mut(
+        &mut self,
+    ) -> Result<&mut AuthoredOverlayPackReceipt, OverlayPacksAlreadyConsumed> {
+        self.receipt.as_mut().ok_or(OverlayPacksAlreadyConsumed)
+    }
+
+    fn take(&mut self) -> Result<AuthoredOverlayPackReceipt, OverlayPacksAlreadyConsumed> {
+        self.receipt.take().ok_or(OverlayPacksAlreadyConsumed)
+    }
+}
+
 /// A parsed RA2 map file.
 #[derive(Debug)]
 pub struct MapFile {
@@ -213,9 +277,9 @@ pub struct MapFile {
     pub entities: Vec<MapEntity>,
     /// Overlay objects from [OverlayPack] + [OverlayDataPack] (ore, walls, fences, etc.).
     pub overlays: Vec<OverlayEntry>,
-    /// Full `[OverlayDataPack]` bytes. Presence is tracked because missing packs
-    /// do not overwrite bridge state bytes in `gamemd.exe`.
-    pub overlay_data: OverlayDataPack,
+    /// Single raw `[OverlayPack]` / `[OverlayDataPack]` authority. Deliberately
+    /// non-Clone and moved exactly once into the authored finalizer.
+    pub(crate) authored_overlay_packs: AuthoredOverlayPackSlot,
     /// Pre-placed smudges from the map's `[Smudge]` section.
     /// `IsBaked != 0` entries are filtered at parse time.
     pub smudges: Vec<MapSmudgeEntry>,
@@ -267,7 +331,11 @@ impl MapFile {
         }
         let iso_map_pack = parse_iso_map_pack(&ini)?;
         let entities: Vec<MapEntity> = entities::parse_map_entities(&ini);
-        let overlay_packs = overlay::parse_overlay_packs(&ini);
+        let overlay::ParsedOverlayPacks {
+            identity: overlay_identity,
+            entries: overlays,
+            data: overlay_data,
+        } = overlay::parse_overlay_packs(&ini);
         let terrain_objects: Vec<TerrainObject> = overlay::parse_terrain_objects(&ini);
         let smudges: Vec<MapSmudgeEntry> = parse_map_smudges(&ini);
         let waypoints: HashMap<u32, Waypoint> = waypoints::parse_waypoints(&ini);
@@ -288,8 +356,11 @@ impl MapFile {
             cells: iso_map_pack.cells,
             iso_map_pack_lookups: iso_map_pack.lookups,
             entities,
-            overlays: overlay_packs.entries,
-            overlay_data: overlay_packs.data,
+            overlays,
+            authored_overlay_packs: AuthoredOverlayPackSlot::from_parts(
+                overlay_identity,
+                overlay_data,
+            ),
             smudges,
             terrain_objects,
             waypoints,
@@ -306,14 +377,32 @@ impl MapFile {
         })
     }
 
-    pub fn overlay_data_at(&self, rx: u16, ry: u16) -> u8 {
-        self.overlay_data.byte_at(rx, ry)
+    pub(crate) fn overlay_data_pack(
+        &self,
+    ) -> Result<&OverlayDataPack, OverlayPacksAlreadyConsumed> {
+        self.authored_overlay_packs
+            .receipt()
+            .map(|packs| &packs.data)
     }
 
-    pub fn has_overlay_data_pack(&self) -> bool {
-        self.overlay_data.is_present()
+    pub(crate) fn replace_unconsumed_overlay_data(
+        &mut self,
+        data: OverlayDataPack,
+    ) -> Result<(), OverlayPacksAlreadyConsumed> {
+        self.authored_overlay_packs.receipt_mut()?.data = data;
+        Ok(())
+    }
+
+    pub(crate) fn take_authored_overlay_packs(
+        &mut self,
+    ) -> Result<AuthoredOverlayPackReceipt, OverlayPacksAlreadyConsumed> {
+        self.authored_overlay_packs.take()
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("authored OverlayPack/OverlayDataPack receipt was already consumed")]
+pub(crate) struct OverlayPacksAlreadyConsumed;
 
 /// Load a map file from disk, auto-detecting MIX-wrapped vs raw INI.
 ///
@@ -731,6 +820,26 @@ LocalSize=2,4,96,92
         assert_eq!(header.local_top, 4);
         assert_eq!(header.local_width, 96);
         assert_eq!(header.local_height, 92);
+    }
+
+    #[test]
+    fn authored_overlay_pack_receipt_can_be_taken_only_once() {
+        let mut map = MapFile::from_bytes(&full_map_with_preview(""))
+            .expect("minimal parsed map");
+        let first = map
+            .take_authored_overlay_packs()
+            .expect("first authored receipt");
+        let (identity, data) = first.into_parts();
+        assert!(!identity.has_positive_length());
+        assert!(!data.has_positive_length());
+        assert!(matches!(
+            map.take_authored_overlay_packs(),
+            Err(OverlayPacksAlreadyConsumed)
+        ));
+        assert!(matches!(
+            map.overlay_data_pack(),
+            Err(OverlayPacksAlreadyConsumed)
+        ));
     }
 
     #[test]

@@ -255,10 +255,13 @@ impl App {
         // presented swapchain frame stays composited while this thread blocks,
         // and the hold armed above is measured from that present, so a slow
         // load is spent inside the five seconds instead of before them.
-        let startup_rules = startup_asset_manager
-            .as_ref()
-            // Startup shell: no mode or map selected yet, so no overrides.
-            .and_then(|am| crate::app::loading::init_helpers::load_rules_ini(am, None, None));
+        let (startup_rules, startup_rules_projection, startup_native_rules) =
+            startup_asset_manager
+                .as_ref()
+                .and_then(crate::app::loading::init_helpers::load_startup_rules)
+                .map(crate::app::loading::init_helpers::StartupRulesLoad::into_parts)
+                .map(|(rules, projection, owner)| (rules, projection, Some(owner)))
+                .unwrap_or((None, None, None));
         let startup_sound_registry = startup_asset_manager
             .as_ref()
             .map(crate::app::loading::transitions::load_sound_registry)
@@ -362,15 +365,20 @@ impl App {
         // [MultiplayerDialogSettings] so a mod that changes the money/unit bounds
         // shifts the slider extents like gamemd does (it reads them from Rules at
         // dialog-build time); without assets we keep the stock-default ranges.
-        if let Some(assets) = startup_asset_manager.as_ref() {
+        if let Some(rules_projection) = startup_rules_projection.as_ref() {
             skirmish_shell_state.trackbar_bounds =
-                crate::app::loading::init_helpers::load_skirmish_trackbar_bounds(assets);
+                crate::ui::skirmish_shell::SkirmishTrackbarBounds::from_multiplayer_dialog_settings(
+                    rules_projection,
+                );
             // Seed the per-match option values (Money/UnitCount/TechLevel/
             // GameSpeed and the checkbox toggles) from the merged rules
             // [MultiplayerDialogSettings], so a mod that changes a default opens
             // the dialog on — and launches the match with — its value. Without
             // assets we keep the stock-default values.
-            let dialog_options = crate::app::loading::init_helpers::load_skirmish_game_options(assets);
+            let dialog_options =
+                crate::sim::game_options::GameOptions::from_multiplayer_dialog_settings(
+                    rules_projection,
+                );
             skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
         }
         let skirmish_defaults =
@@ -382,6 +390,7 @@ impl App {
                     .as_ref()
                     .map(|config| config.paths.ra2_dir.as_path()),
                 startup_asset_manager.as_ref(),
+                startup_rules_projection.as_ref(),
                 skirmish_defaults,
             );
         offline_skirmish_runtime.hydrate_shell(
@@ -667,6 +676,8 @@ impl App {
             process_assets: crate::app::process_assets::ProcessAssets::from_startup(
                 startup_asset_manager,
                 startup_csf,
+                startup_native_rules,
+                startup_rules_projection,
             ),
             audio: startup_audio_runtime,
             persistence: crate::app::persistence::PersistenceState::new(options_profile),

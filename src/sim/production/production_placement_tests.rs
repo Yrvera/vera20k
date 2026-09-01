@@ -23,6 +23,7 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
 use crate::sim::command::{Command, CommandEnvelope};
+use crate::sim::combat::AttackTarget;
 use crate::sim::components::{BuildingUp, Health};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::MissionType;
@@ -2018,6 +2019,10 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
     assert!(preview.valid, "primary wall cell should be legal");
     assert_eq!(preview.wall_autofill_cells, expected);
 
+    sim.tactical_dirty_cells.clear();
+    sim.radar_terrain_dirty_cells.clear();
+    sim.radar_terrain_dirty_generation = 0;
+
     assert!(place_ready_building_with_overlays(
         &mut sim,
         &rules,
@@ -2073,6 +2078,20 @@ fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once
     assert!(
         sim.zone_grid.is_some(),
         "wall placement must publish navigation"
+    );
+    let mut expected_tactical = Vec::new();
+    for (rx, ry) in std::iter::once(origin).chain(expected.iter().copied()) {
+        expected_tactical.extend([
+            (rx, ry - 1),
+            (rx + 1, ry),
+            (rx, ry + 1),
+            (rx - 1, ry),
+            (rx, ry),
+        ]);
+    }
+    assert_eq!(
+        sim.tactical_dirty_cells, expected_tactical,
+        "each clicked/filler Mark must finish its N/E/S/W/self tactical sequence before the next stamp"
     );
     for (rx, ry) in std::iter::once(origin).chain(expected.iter().copied()) {
         assert!(
@@ -2278,6 +2297,14 @@ fn gsi_04_07_wall_placement_publishes_connectivity_neighbor_auto_destruction() {
         13,
         10,
     ));
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .expect("construction yard listener")
+        .attack_target = Some(AttackTarget::for_cell(13, 10));
+    sim.tactical_dirty_cells.clear();
+    sim.radar_terrain_dirty_cells.clear();
+    sim.radar_terrain_dirty_generation = 0;
 
     assert!(place_ready_building_with_overlays(
         &mut sim,
@@ -2309,6 +2336,31 @@ fn gsi_04_07_wall_placement_publishes_connectivity_neighbor_auto_destruction() {
     assert!(
         sim.zone_grid.is_some(),
         "neighbor removal must publish zones"
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .expect("construction yard listener")
+            .attack_target
+            .is_none(),
+        "cleanup removal must broadcast CellClass pointer expiry before returning"
+    );
+    let expected_dirty = vec![(12, 9), (13, 10), (12, 11), (11, 10), (12, 10)];
+    assert_eq!(sim.tactical_dirty_cells, expected_dirty);
+    assert_eq!(sim.radar_terrain_dirty_cells, expected_dirty);
+    assert_eq!(
+        sim.radar_terrain_dirty_generation, 5,
+        "each first-unique native radar callback is published at its inline visit"
+    );
+    let live_path = sim.path_grid_snapshot().expect("hosted placement path authority");
+    assert!(
+        live_path.is_walkable(13, 10),
+        "removed neighbor must be passable before placement returns"
+    );
+    assert!(
+        !live_path.is_walkable(12, 10),
+        "new anchor must block before placement returns"
     );
 }
 

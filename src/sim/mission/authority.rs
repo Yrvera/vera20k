@@ -45,12 +45,14 @@ mod ready_private {
     pub trait Sealed {}
 }
 
-/// Entity-local Restore transaction used by detach sweeps that already own a
-/// bare `EntityStore` (notably area-damage cell-target invalidation).
+/// Entity-local Restore transaction used after a represented pointer-expiry
+/// callback has already cleared the expired target through Assign_Target.
 ///
-/// It is the same represented write set as `mission_restore_on_target_detach`:
-/// Restore selector first, then archived Target, then mode-one destination.
-pub(crate) fn restore_entity_on_target_detach(
+/// The write set matches native Restore: selector first, then archived Target,
+/// then mode-one destination. Callers must preserve the distinct expiry order
+/// (clear first, then conditionally Restore); live-object detach uses a separate
+/// wrapper and order.
+pub(crate) fn restore_entity_after_target_expiry(
     entity: &mut crate::sim::game_entity::GameEntity,
 ) -> bool {
     if entity.mission.suspended() == MissionId::NONE {

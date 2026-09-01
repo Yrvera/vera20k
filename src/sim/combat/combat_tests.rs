@@ -1783,7 +1783,7 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
             .iter()
             .map(|event| (event.listener_id, event.restored, event.cleared))
             .collect::<Vec<_>>(),
-        vec![(20, true, false), (10, false, true)]
+        vec![(10, false, true), (20, true, true)]
     );
 }
 
@@ -1917,7 +1917,7 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
         fatal
             .cell_target_detaches
             .iter()
-            .any(|detach| { detach.listener_id == 20 && detach.restored && !detach.cleared })
+            .any(|detach| { detach.listener_id == 20 && detach.restored && detach.cleared })
     );
     assert_eq!(
         fatal_entities
@@ -5384,16 +5384,43 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
             (6, 4),
             (4, 4),
             (5, 4),
-            (7, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
             (6, 6),
+            (5, 7),
+            (5, 6),
+            (7, 5),
             (6, 5),
+        ],
+        "direct wall damage uses the terminal DestroyOverlay visit stencil",
+    );
+    assert_eq!(sim.radar_terrain_dirty_generation, 13);
+    assert_eq!(
+        sim.tactical_dirty_cells,
+        vec![
+            (5, 5),
+            (5, 3),
+            (6, 4),
+            (5, 5),
+            (4, 4),
+            (5, 4),
+            (4, 4),
+            (5, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
+            (5, 5),
+            (6, 6),
             (5, 7),
             (4, 6),
             (5, 6),
-            (3, 5),
-            (4, 5),
-        ],
-        "direct wall damage uses the terminal DestroyOverlay visit stencil",
+            (6, 4),
+            (7, 5),
+            (6, 6),
+            (5, 5),
+            (6, 5),
+        ]
     );
 
     // No persistent wall entity is created or removed.
@@ -5481,6 +5508,8 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
         "crusher uses the terminal DestroyOverlay radar-dirty stencil",
     );
     assert_eq!(sim.radar_terrain_dirty_cells[0], (5, 5));
+    assert_eq!(sim.radar_terrain_dirty_generation, 13);
+    assert_eq!(sim.tactical_dirty_cells.len(), 21);
     assert!(
         sim.substrate
             .entities
@@ -7447,6 +7476,7 @@ fn gsi_04_10_near_center_iron_curtain_isolates_earlier_terrain_receiver() {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                native_unique_id: None,
                 in_logic_vector: false,
                 type_ref: terrain_ref,
                 rx: 5,
@@ -7535,6 +7565,7 @@ fn gsi_04_10_entity_fatal_hook_and_later_terrain_share_raw_occupation() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: terrain_ref,
             rx: 5,

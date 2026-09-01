@@ -111,9 +111,14 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// Re-baselined 2026-09-01 for v114's unconditional raw 256-slot crate authority.
 /// The dedicated pre-v114 probe reproduces the prior current baseline exactly;
 /// the same crossing, tripwires, streams, and replay equality remain exact.
+/// Re-baselined 2026-09-01 for v115's retained wall-neighbor count authority mode and
+/// shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
+/// prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
+/// current-schema composition moved.
 const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x5B44_6C68_9BC2_F0AF;
 const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x6AFB_F54C_7397_0202;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x874E_6F7E_7BF1_F8D6;
+const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x874E_6F7E_7BF1_F8D6;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xD381_C11A_FC88_4CE0;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -508,8 +513,9 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     let final_hash = *replayed.last().expect("at least one tick replayed");
     let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
     let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
+    let pre_wall_runtime_hash = rep.state_hash_without_wall_runtime_v115();
     println!(
-        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} pre-v114:{pre_crate_authority_hash:016X} streams={:016X},{:016X},{:016X}",
+        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} pre-v114:{pre_crate_authority_hash:016X} pre-v115:{pre_wall_runtime_hash:016X} streams={:016X},{:016X},{:016X}",
         rep.scenario_rng.state(),
         rep.main_rng.state(),
         rep.mapgen_rng.state(),
@@ -521,6 +527,10 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_crate_authority_hash, BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH,
         "the dedicated pre-v114 probe must reproduce the prior bridge current baseline"
+    );
+    assert_eq!(
+        pre_wall_runtime_hash, BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH,
+        "the dedicated pre-v115 probe must reproduce the prior bridge current baseline"
     );
     assert_eq!(
         final_hash, BRIDGE_HARNESS_FINAL_HASH,

@@ -331,7 +331,12 @@ use crate::sim::world::Simulation;
 // Bumped 113 -> 114: persist the raw 256-entry MapClass crate-slot table,
 // including accepted ghosts and all native timer words, plus the per-Anim
 // Convert palette selector installed by startup crate CellAnim.
-const SNAPSHOT_VERSION: u32 = 114;
+// Bumped 114 -> 115: OverlayGrid persists and hashes the retained real-cell
+// authored/runtime wall-neighbor count plane. Final overlay identities cannot
+// reconstruct counts left behind by a later authored low-body overwrite. The
+// v115 hash schema also folds the live shared-dummy overlay identity/state;
+// that process-global pair is intentionally not Scenario-serialized.
+const SNAPSHOT_VERSION: u32 = 115;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -517,6 +522,10 @@ pub enum SnapshotRestoreError {
         "snapshot overlay grid storage has {found} cells, but its dimensions require {expected}"
     )]
     MapAuthorityCellStorageMismatch { expected: usize, found: usize },
+    #[error(
+        "snapshot retained wall-neighbor storage has {found} cells, but its dimensions require {expected}"
+    )]
+    RetainedWallNeighborStorageMismatch { expected: usize, found: usize },
     #[error("snapshot real-cell bridge flags do not match restored CellClass allocation")]
     RealCellBridgeFlagAuthorityMismatch,
     #[error(
@@ -1595,10 +1604,17 @@ impl Simulation {
         rules: &crate::rules::ruleset::RuleSet,
         overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
     ) -> Result<SnapshotMapRestoreOutput, SnapshotRestoreError> {
-        let (overlay_width, overlay_height, overlay_cell_count) = self
+        let (overlay_width, overlay_height, overlay_cell_count, retained_wall_count) = self
             .overlay_grid
             .as_ref()
-            .map(|grid| (grid.width(), grid.height(), grid.cell_storage_len()))
+            .map(|grid| {
+                (
+                    grid.width(),
+                    grid.height(),
+                    grid.cell_storage_len(),
+                    grid.retained_wall_neighbor_count_storage_len(),
+                )
+            })
             .ok_or(SnapshotRestoreError::MissingMapAuthorityComponent {
                 component: "OverlayGrid",
             })?;
@@ -1607,6 +1623,14 @@ impl Simulation {
             return Err(SnapshotRestoreError::MapAuthorityCellStorageMismatch {
                 expected: expected_overlay_cell_count,
                 found: overlay_cell_count,
+            });
+        }
+        if let Some(found) = retained_wall_count
+            && found != expected_overlay_cell_count
+        {
+            return Err(SnapshotRestoreError::RetainedWallNeighborStorageMismatch {
+                expected: expected_overlay_cell_count,
+                found,
             });
         }
         let (terrain_width, terrain_height) = self
@@ -1963,6 +1987,7 @@ mod tests {
                 stable_id,
                 TerrainObjectState {
                     stable_id,
+                    native_unique_id: None,
                     in_logic_vector: true,
                     type_ref,
                     rx: cell.0,
@@ -2376,12 +2401,14 @@ mod tests {
             width: u16,
             height: u16,
             cells: Vec<OverlayCell>,
+            retained_wall_neighbor_counts: Option<Vec<u8>>,
         }
 
         let malformed_bytes = bincode::serialize(&OverlayGridWire {
             width: 2,
             height: 1,
             cells: vec![OverlayCell::default()],
+            retained_wall_neighbor_counts: None,
         })
         .expect("malformed overlay wire fixture");
         let malformed: OverlayGrid =
@@ -2399,6 +2426,48 @@ mod tests {
         assert!(matches!(
             sim.restore_map_authority_after_snapshot_load(&rules, &registry),
             Err(SnapshotRestoreError::MapAuthorityCellStorageMismatch {
+                expected: 2,
+                found: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn snapshot_restore_rejects_truncated_retained_wall_neighbor_storage() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::overlay_grid::{OverlayCell, OverlayGrid};
+
+        #[derive(serde::Serialize)]
+        struct OverlayGridWire {
+            width: u16,
+            height: u16,
+            cells: Vec<OverlayCell>,
+            retained_wall_neighbor_counts: Option<Vec<u8>>,
+        }
+
+        let malformed_bytes = bincode::serialize(&OverlayGridWire {
+            width: 2,
+            height: 1,
+            cells: vec![OverlayCell::default(); 2],
+            retained_wall_neighbor_counts: Some(vec![7]),
+        })
+        .expect("malformed retained wall-neighbor wire fixture");
+        let malformed: OverlayGrid =
+            bincode::deserialize(&malformed_bytes).expect("wire-compatible OverlayGrid");
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [OverlayTypes]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("truncated-retained-grid rules");
+        let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+        let mut sim = Simulation::new();
+        sim.overlay_grid = Some(malformed);
+        sim.resolved_terrain = Some(flat_terrain(2, 1));
+
+        assert!(matches!(
+            sim.restore_map_authority_after_snapshot_load(&rules, &registry),
+            Err(SnapshotRestoreError::RetainedWallNeighborStorageMismatch {
                 expected: 2,
                 found: 1,
             })
@@ -2746,10 +2815,40 @@ mod tests {
     /// adds the distinct BaseClass plan center; 111 -> 112 adds the three House
     /// AI activation latches; 112 -> 113 adds House AutocreateAllowed;
     /// 113 -> 114 adds the raw 256-entry scenario-crate slot table and the
-    /// per-Anim Convert palette selector used by startup crate CellAnim.
+    /// per-Anim Convert palette selector used by startup crate CellAnim;
+    /// 114 -> 115 adds retained wall-neighbor count authority and begins the
+    /// live shared-dummy overlay pair in the current hash schema.
     #[test]
-    fn phase14_crate_authority_snapshot_version_is_114() {
-        assert_eq!(super::SNAPSHOT_VERSION, 114);
+    fn authored_wall_neighbor_authority_snapshot_version_is_115() {
+        assert_eq!(super::SNAPSHOT_VERSION, 115);
+    }
+
+    #[test]
+    fn authored_wall_neighbor_authority_roundtrips_v115() {
+        let mut sim = Simulation::new();
+        sim.overlay_grid = Some(
+            crate::sim::overlay_grid::OverlayGrid::from_finalized_map_payload(
+                crate::map::authored_overlay::FinalizedOverlayPayload::from_cells_for_test(
+                    2,
+                    2,
+                    vec![(-1, 0), (2, 3), (-1, 0), (-1, 0)],
+                    vec![0, 7, 255, 4],
+                ),
+            ),
+        );
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "authored-wall-counts", 0);
+        let restored = GameSnapshot::load(&bytes)
+            .expect("current v115 snapshot")
+            .sim;
+        assert_eq!(
+            restored
+                .overlay_grid
+                .as_ref()
+                .expect("overlay authority")
+                .retained_wall_neighbor_counts(),
+            Some(&[0, 7, 255, 4][..])
+        );
     }
 
     #[test]
@@ -2912,13 +3011,8 @@ mod tests {
     #[test]
     fn techno_constructor_word_and_upgrade_link_roundtrip_without_a_draw_and_hash() {
         let mut sim = Simulation::new();
-        let mut entity = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "UP1",
-            "Americans",
-            4,
-            5,
-        );
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(1, "UP1", "Americans", 4, 5);
         entity.techno_ctor_random_word = 0xA55A;
         entity.structure_upgrade_link = Some(crate::sim::game_entity::StructureUpgradeLink {
             parent_stable_id: 77,
@@ -2970,13 +3064,8 @@ mod tests {
     #[test]
     fn techno_constructor_manager_owned_slave_pool_roundtrips_and_hashes_identity_order() {
         let mut sim = Simulation::new();
-        let mut parent = crate::sim::game_entity::GameEntity::test_default(
-            1,
-            "SMIN",
-            "Americans",
-            4,
-            5,
-        );
+        let mut parent =
+            crate::sim::game_entity::GameEntity::test_default(1, "SMIN", "Americans", 4, 5);
         parent.techno_ctor_random_word = 0x1111;
         sim.substrate.entities.insert(parent);
         for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
@@ -2999,7 +3088,10 @@ mod tests {
         let bytes = GameSnapshot::save(&sim, 0, 0, "techno-constructor-manager-pool", 0);
         let restored = GameSnapshot::load(&bytes).unwrap().sim;
         assert_eq!(restored.scenario_rng.logical_state(), source_rng);
-        assert_eq!(restored.production.slave_bindings.get(&1), Some(&vec![2, 3]));
+        assert_eq!(
+            restored.production.slave_bindings.get(&1),
+            Some(&vec![2, 3])
+        );
         for (stable_id, word) in [(2, 0x2222), (3, 0x3333)] {
             let slave = restored.substrate.entities.get(stable_id).unwrap();
             assert_eq!(slave.techno_ctor_random_word, word);
@@ -3033,7 +3125,7 @@ mod tests {
     }
 
     #[test]
-    fn house_ai_activation_all_combinations_roundtrip_v113() {
+    fn house_ai_activation_all_combinations_roundtrip_v115() {
         use crate::sim::house_state::{HouseAiActivationLatches, HouseState};
 
         for bits in 0u8..16 {
@@ -3057,7 +3149,7 @@ mod tests {
                 super::SNAPSHOT_VERSION
             );
             let restored = GameSnapshot::load(&bytes)
-                .expect("current v113 snapshot")
+                .expect("current v115 snapshot")
                 .sim;
             assert_eq!(restored.houses[&owner].ai_activation, latches);
         }
@@ -3097,8 +3189,7 @@ mod tests {
         let owner = sim.interner.intern("AMERICANS");
         let country = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("GACNST");
-        let house =
-            crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
+        let house = crate::sim::house_state::HouseState::new(owner, 0, Some(country), false, 0, 10);
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
@@ -6333,6 +6424,7 @@ mod tests {
         let spawner_type = sim.interner.intern("TIBTRE01");
         let damaged = TerrainObjectState {
             stable_id: damaged_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: tree_type,
             rx: damaged_cell.0,
@@ -6344,6 +6436,7 @@ mod tests {
         };
         let destroyed = TerrainObjectState {
             stable_id: destroyed_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: sim.interner.intern("TREE01"),
             rx: destroyed_cell.0,
@@ -6355,6 +6448,7 @@ mod tests {
         };
         let spawner = TerrainObjectState {
             stable_id: spawner_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: spawner_type,
             rx: spawner_cell.0,

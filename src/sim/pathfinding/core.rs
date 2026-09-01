@@ -256,6 +256,19 @@ impl BlockerNeighborCounts {
         }
     }
 
+    pub(crate) fn from_retained_wall_plane(width: u16, height: u16, counts: &[u8]) -> Self {
+        assert_eq!(
+            counts.len(),
+            usize::from(width) * usize::from(height),
+            "retained wall-neighbor plane must match pathfinding dimensions"
+        );
+        Self {
+            width,
+            height,
+            counts: counts.to_vec(),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn set_count(&mut self, x: u16, y: u16, count: u8) {
         if x < self.width && y < self.height {

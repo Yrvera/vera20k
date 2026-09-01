@@ -240,7 +240,19 @@ pub(crate) fn build_blocker_neighbor_counts_with_overlays(
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
 ) -> BlockerNeighborCounts {
-    let mut counts = BlockerNeighborCounts::new(width, height);
+    let retained_wall_counts = overlay_grid.and_then(|grid| {
+        if grid.retained_wall_neighbor_counts().is_some() {
+            assert_eq!(
+                (grid.width(), grid.height()),
+                (width, height),
+                "retained wall-neighbor authority must match pathfinding grid"
+            );
+        }
+        grid.retained_wall_neighbor_counts()
+    });
+    let mut counts = retained_wall_counts
+        .map(|plane| BlockerNeighborCounts::from_retained_wall_plane(width, height, plane))
+        .unwrap_or_else(|| BlockerNeighborCounts::new(width, height));
 
     if let Some(terrain) = resolved_terrain {
         for y in 0..height {
@@ -255,7 +267,13 @@ pub(crate) fn build_blocker_neighbor_counts_with_overlays(
         }
     }
 
-    if let (Some(grid), Some(registry)) = (overlay_grid, overlay_registry) {
+    // Legacy constructors have not yet crossed the consumed-once finalized
+    // payload boundary. Only they may reconstruct current walls. A retained
+    // plane, including an all-zero one, is the sole authored/runtime wall
+    // authority and must never be supplemented from final identities.
+    if retained_wall_counts.is_none()
+        && let (Some(grid), Some(registry)) = (overlay_grid, overlay_registry)
+    {
         for y in 0..height {
             for x in 0..width {
                 if grid
@@ -1612,6 +1630,93 @@ mod tests {
                 .flat_map(|y| (0..5).map(move |x| counts_ref.count_at(x, y) as u32))
                 .sum::<u32>(),
             0
+        );
+    }
+
+    #[test]
+    fn finalized_wall_plane_is_sole_baseline_without_identity_double_count() {
+        use crate::map::authored_overlay::FinalizedOverlayPayload;
+        use crate::map::overlay_types::OverlayTypeRegistry;
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::overlay_grid::OverlayGrid;
+
+        let ini = IniFile::from_str(
+            "[OverlayTypes]\n0=WALL\n1=BODY\n\
+             [WALL]\nWall=yes\n",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let entities = EntityStore::new();
+        let interner = crate::sim::intern::StringInterner::new();
+        let mut wall_plane = vec![0u8; 25];
+        for index in [6usize, 7, 8, 11, 13, 16, 17, 18] {
+            wall_plane[index] = 1;
+        }
+
+        let mut surviving_cells = vec![(-1, 0); 25];
+        surviving_cells[12] = (0, 0);
+        let surviving = OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(5, 5, surviving_cells, wall_plane.clone()),
+        );
+        let surviving_counts = build_blocker_neighbor_counts_with_overlays(
+            &entities,
+            5,
+            5,
+            None,
+            Some(&surviving),
+            Some(&registry),
+            &interner,
+            None,
+        );
+        for y in 1..=3 {
+            for x in 1..=3 {
+                assert_eq!(
+                    surviving_counts.count_at(x, y),
+                    u8::from((x, y) != (2, 2)),
+                    "surviving final wall must not be scanned a second time"
+                );
+            }
+        }
+
+        let mut overwritten_cells = vec![(-1, 0); 25];
+        overwritten_cells[12] = (1, 2);
+        let overwritten = OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(5, 5, overwritten_cells, wall_plane),
+        );
+        let overwritten_counts = build_blocker_neighbor_counts_with_overlays(
+            &entities,
+            5,
+            5,
+            None,
+            Some(&overwritten),
+            Some(&registry),
+            &interner,
+            None,
+        );
+        assert_eq!(overwritten_counts.count_at(2, 1), 1);
+        assert_eq!(overwritten_counts.count_at(2, 2), 0);
+
+        let mut poisoned_cells = vec![(-1, 0); 25];
+        poisoned_cells[12] = (0, 0);
+        let authoritative_zero = OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(5, 5, poisoned_cells, vec![0; 25]),
+        );
+        let zero_counts = build_blocker_neighbor_counts_with_overlays(
+            &entities,
+            5,
+            5,
+            None,
+            Some(&authoritative_zero),
+            Some(&registry),
+            &interner,
+            None,
+        );
+        let zero_counts_ref = &zero_counts;
+        assert_eq!(
+            (0..5)
+                .flat_map(|y| (0..5).map(move |x| u32::from(zero_counts_ref.count_at(x, y))))
+                .sum::<u32>(),
+            0,
+            "Some(all-zero) is authority, not permission to reconstruct walls"
         );
     }
 

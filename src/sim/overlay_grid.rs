@@ -8,6 +8,7 @@
 //! Never depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::overlay::{OverlayDataPack, OverlayEntry};
+use crate::map::authored_overlay::{FinalizedOverlayCell, FinalizedOverlayPayload};
 use crate::map::overlay_types::{
     OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index,
     retained_overlay_land,
@@ -121,6 +122,12 @@ pub struct OverlayGrid {
     width: u16,
     height: u16,
     cells: Vec<OverlayCell>,
+    /// Authoritative wall-only contribution to CellClass+0x122. `Some`, even
+    /// when all zero, means the finalized authored plane was retained and final
+    /// wall identities must never be scanned as a substitute. `None` is the
+    /// temporary legacy-constructor compatibility mode.
+    #[serde(default)]
+    retained_wall_neighbor_counts: Option<Vec<u8>>,
     /// Cells mutated this tick — drained by Simulation's end-of-frame finalizer
     /// before the authoritative hash. Not part of game state; never serialized.
     #[serde(skip, default)]
@@ -144,10 +151,74 @@ impl OverlayGrid {
             width,
             height,
             cells: vec![OverlayCell::default(); count],
+            retained_wall_neighbor_counts: None,
             dirty_cells: Vec::new(),
             synchronous_passability_changed: false,
             synchronous_navigation_cells: Vec::new(),
         }
+    }
+
+    /// Consume the one finalized map payload. This boundary has no raw-pack,
+    /// rules, source-filter, RNG, Mark, or Recalc capability.
+    pub(crate) fn from_finalized_map_payload(payload: FinalizedOverlayPayload) -> Self {
+        let (width, height, finalized, retained_wall_neighbor_counts) = payload.into_parts();
+        let expected = usize::from(width) * usize::from(height);
+        assert_eq!(finalized.len(), expected, "finalized overlay cell shape");
+        assert_eq!(
+            retained_wall_neighbor_counts.len(),
+            expected,
+            "finalized wall-neighbor plane shape"
+        );
+        let cells = finalized
+            .into_iter()
+            .map(|cell| OverlayCell {
+                overlay_id: cell.overlay_id(),
+                overlay_data: cell.state(),
+                wall_owner: None,
+            })
+            .collect();
+        Self {
+            width,
+            height,
+            cells,
+            retained_wall_neighbor_counts: Some(retained_wall_neighbor_counts),
+            dirty_cells: Vec::new(),
+            synchronous_passability_changed: false,
+            synchronous_navigation_cells: Vec::new(),
+        }
+    }
+
+    /// Borrow the exact live CellClass identity/state pair for one load-time
+    /// Recalc. Runtime-only owner metadata is deliberately excluded.
+    pub(crate) fn finalized_map_cell(
+        &self,
+        rx: u16,
+        ry: u16,
+    ) -> Option<FinalizedOverlayCell> {
+        index_of(self.width, self.height, rx, ry).map(|index| {
+            let cell = &self.cells[index];
+            FinalizedOverlayCell::from_parts(
+                cell.overlay_id.map_or(-1, i32::from),
+                cell.overlay_data,
+            )
+        })
+    }
+
+    /// Commit the one identity/state pair returned by the final authored-load
+    /// Recalc without disturbing retained wall counts or later wall ownership.
+    pub(crate) fn write_finalized_map_cell(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        finalized: FinalizedOverlayCell,
+    ) -> bool {
+        let Some(index) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        let cell = &mut self.cells[index];
+        cell.overlay_id = finalized.overlay_id();
+        cell.overlay_data = finalized.state();
+        true
     }
 
     /// Seed from parsed map overlay entries.
@@ -296,6 +367,127 @@ impl OverlayGrid {
         true
     }
 
+    /// Read the retained wall contribution plane. `Some(all-zero)` is
+    /// authoritative and must not fall back to a final-identity scan.
+    pub(crate) fn retained_wall_neighbor_counts(&self) -> Option<&[u8]> {
+        self.retained_wall_neighbor_counts.as_deref()
+    }
+
+    pub(crate) fn retained_wall_neighbor_count_storage_len(&self) -> Option<usize> {
+        self.retained_wall_neighbor_counts.as_ref().map(Vec::len)
+    }
+
+    fn adjust_retained_wall_neighbor_source(
+        &mut self,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        rx: u16,
+        ry: u16,
+        add: bool,
+    ) {
+        self.adjust_retained_wall_neighbor_source_target(
+            resolved_terrain,
+            NativeRuntimeOverlayCell::Real(rx, ry),
+            add,
+        );
+    }
+
+    fn adjust_retained_wall_neighbor_source_target(
+        &mut self,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        source: NativeRuntimeOverlayCell,
+        add: bool,
+    ) {
+        // Native wall lifecycle evidence: OverlayClass::Mark increments at
+        // 0x005FC762..0x005FC775; DestroyOverlay decrements at
+        // 0x00481070..0x00481082; cleanup auto-removal's conditional decrement
+        // is finalized by recalc_wall_mutation_passability below.
+        let (width, height) = (self.width, self.height);
+        let Some(counts) = self.retained_wall_neighbor_counts.as_mut() else {
+            return;
+        };
+        let terrain = resolved_terrain
+            .expect("retained wall-neighbor authority requires resolved CellClass lookup state");
+        assert_eq!(
+            (width, height),
+            (terrain.width(), terrain.height()),
+            "retained wall-neighbor authority must match resolved terrain"
+        );
+        assert_eq!(
+            counts.len(),
+            usize::from(width) * usize::from(height),
+            "retained wall-neighbor authority must match overlay shape"
+        );
+
+        const ADJACENT_8: [(i32, i32); 8] = [
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ];
+        for (dx, dy) in ADJACENT_8 {
+            // Adjacent_Cell rereads the receiver's packed coordinate for each
+            // probe. This matters when the receiver itself is the shared
+            // dummy: a miss restamps +0x24 before the next direction.
+            let Some((base_x, base_y)) =
+                native_runtime_overlay_target_coord(Some(terrain), source)
+            else {
+                continue;
+            };
+            let Some(NativeRuntimeOverlayCell::Real(nx, ny)) =
+                native_runtime_overlay_cell_lookup(
+                    width,
+                    height,
+                    Some(terrain),
+                    base_x + dx,
+                    base_y + dy,
+                )
+            else {
+                // Native still performed the lookup and stamped the process
+                // dummy. The retained Rust count plane intentionally exports
+                // only allocated real CellClass storage.
+                continue;
+            };
+            let Some(index) = index_of(width, height, nx, ny) else {
+                continue;
+            };
+            counts[index] = if add {
+                counts[index].wrapping_add(1)
+            } else {
+                counts[index].wrapping_sub(1)
+            };
+        }
+    }
+
+    pub(crate) fn add_retained_wall_neighbor_source(
+        &mut self,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        rx: u16,
+        ry: u16,
+    ) {
+        self.adjust_retained_wall_neighbor_source(resolved_terrain, rx, ry, true);
+    }
+
+    pub(crate) fn remove_retained_wall_neighbor_source(
+        &mut self,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        rx: u16,
+        ry: u16,
+    ) {
+        self.adjust_retained_wall_neighbor_source(resolved_terrain, rx, ry, false);
+    }
+
+    fn remove_retained_wall_neighbor_source_target(
+        &mut self,
+        resolved_terrain: Option<&ResolvedTerrainGrid>,
+        source: NativeRuntimeOverlayCell,
+    ) {
+        self.adjust_retained_wall_neighbor_source_target(resolved_terrain, source, false);
+    }
+
     /// Remove overlay from cell entirely. Returns previous overlay_id if any.
     pub fn clear_overlay(&mut self, rx: u16, ry: u16) -> Option<u8> {
         let idx = index_of(self.width, self.height, rx, ry)?;
@@ -362,6 +554,16 @@ impl OverlayGrid {
             wall_owner: None,
         };
         self.dirty_cells.push((rx, ry));
+        if new_flags.wall {
+            refresh_wall_connectivity_after_placement(
+                self,
+                registry,
+                Some(&mut *resolved_terrain),
+                rx,
+                ry,
+            );
+            self.add_retained_wall_neighbor_source(Some(resolved_terrain), rx, ry);
+        }
         recalc_overlay_passability(self, resolved_terrain, registry, rx, ry);
         NativeOverlayPlacementResult::Placed
     }
@@ -491,13 +693,27 @@ impl OverlayGrid {
         data: u8,
         owner: InternedId,
     ) {
+        self.stamp_wall_identity(rx, ry, overlay_id, data);
+        self.set_wall_owner(rx, ry, owner);
+    }
+
+    /// Stamp runtime wall identity/data before native cleanup. OverlayClass::Mark
+    /// does not make its pending House visible until cleanup and the explicit
+    /// anchor Merge/graph step have completed.
+    pub(crate) fn stamp_wall_identity(&mut self, rx: u16, ry: u16, overlay_id: u8, data: u8) {
         if let Some(idx) = index_of(self.width, self.height, rx, ry) {
             self.cells[idx] = OverlayCell {
                 overlay_id: Some(overlay_id),
                 overlay_data: data,
-                wall_owner: Some(owner),
+                wall_owner: None,
             };
             self.dirty_cells.push((rx, ry));
+        }
+    }
+
+    pub(crate) fn set_wall_owner(&mut self, rx: u16, ry: u16, owner: InternedId) {
+        if let Some(idx) = index_of(self.width, self.height, rx, ry) {
+            self.cells[idx].wall_owner = Some(owner);
         }
     }
 
@@ -732,6 +948,49 @@ pub fn recalc_overlay_passability(
         || old != new
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WallRecalcOutcome {
+    pub navigation_changed: bool,
+    pub zone_changed: bool,
+}
+
+/// Finish one ordered wall mutation's Recalc projection. The owning native
+/// transaction must perform any required graph repair before a cleanup-removal
+/// counter tail.
+///
+/// Native evidence: CellClass::PostDestructionWallCleanup @ 0x00480630
+/// clears the wall, runs Recalc at 0x00480969, compares the old/new zone at
+/// 0x0048096E..0x00480977, repairs the changed zone, and only then decrements
+/// the eight CellClass+0x122 neighbors at 0x004809DD..0x004809EF.
+pub(crate) fn recalc_wall_mutation_passability(
+    overlay_grid: &mut OverlayGrid,
+    resolved_terrain: &mut ResolvedTerrainGrid,
+    registry: &OverlayTypeRegistry,
+    mutation: &WallMutation,
+) -> WallRecalcOutcome {
+    let old_zone = resolved_terrain
+        .cell(mutation.rx, mutation.ry)
+        .map(|cell| cell.zone_type);
+    let navigation_changed = recalc_overlay_passability(
+        overlay_grid,
+        resolved_terrain,
+        registry,
+        mutation.rx,
+        mutation.ry,
+    );
+    let zone_changed = old_zone
+        .zip(
+            resolved_terrain
+                .cell(mutation.rx, mutation.ry)
+                .map(|cell| cell.zone_type),
+        )
+        .is_some_and(|(old, new)| old != new);
+    WallRecalcOutcome {
+        navigation_changed,
+        zone_changed,
+    }
+}
+
 fn restore_pristine_land(cell: &mut crate::map::resolved_terrain::ResolvedTerrainCell) {
     cell.land_type = cell.base_land_type;
     cell.yr_cell_land_type = cell.base_yr_cell_land_type;
@@ -788,47 +1047,139 @@ pub struct WallMutation {
     pub kind: WallMutationKind,
 }
 
-/// Project one ordered `DestroyOverlay` mutation trace into native radar dirtiness.
-///
-/// `CellClass::DestroyOverlay @ 0x00480CB0` does not mark partial
-/// `DirectUpdated` damage. Each terminal `DirectRemoved` first dirties its own
-/// cell, then invokes four cardinal `PostDestructionWallCleanup` visits. Every
-/// cleanup visit calls `MarkTerrainDirty @ 0x004807C2` for N/E/S/W/self before
-/// checking whether a wall exists. Cleanup mutations therefore do not expand a
-/// second time: their cells were already covered by the owning direct removal.
-pub(crate) fn wall_radar_dirty_cells(
-    width: u16,
-    height: u16,
-    mutations: &[WallMutation],
-) -> Vec<(u16, u16)> {
-    const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-    const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
-    let mut dirty = Vec::new();
-    let mut push = |rx: i32, ry: i32| {
-        if rx >= 0 && ry >= 0 && rx < i32::from(width) && ry < i32::from(height) {
-            let cell = (rx as u16, ry as u16);
-            if !dirty.contains(&cell) {
-                dirty.push(cell);
-            }
-        }
-    };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WallZoneRepairKind {
+    AssignOrphaned,
+    MergeAdjacent,
+}
 
-    for mutation in mutations {
-        if mutation.kind != WallMutationKind::DirectRemoved {
-            continue;
-        }
-        let rx = i32::from(mutation.rx);
-        let ry = i32::from(mutation.ry);
-        push(rx, ry);
-        for (outer_dx, outer_dy) in CARDINAL {
-            let cx = rx + outer_dx;
-            let cy = ry + outer_dy;
-            for (dx, dy) in CROSS {
-                push(cx + dx, cy + dy);
-            }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WallDirtyStep {
+    Tactical,
+    Radar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WallPointerTarget {
+    Real(u16, u16),
+    SharedDummy,
+}
+
+/// World-owned synchronous effects inside one native DestroyOverlay call.
+/// Implementations publish dirty state, update live navigation authority, and
+/// broadcast the distinct cell-pointer expiry callback. None can be
+/// reconstructed from an after-return mutation list without losing native
+/// recursive and cleanup-visit order.
+pub(crate) trait WallDamageTransactionHost {
+    fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16));
+
+    fn navigation_step(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        cell: (u16, u16),
+        navigation_changed: bool,
+        repair: WallZoneRepairKind,
+    );
+
+    fn pointer_expired(&mut self, target: WallPointerTarget);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeRuntimeOverlayCell {
+    Real(u16, u16),
+    Dummy,
+}
+
+impl From<NativeRuntimeOverlayCell> for WallPointerTarget {
+    fn from(target: NativeRuntimeOverlayCell) -> Self {
+        match target {
+            NativeRuntimeOverlayCell::Real(rx, ry) => Self::Real(rx, ry),
+            NativeRuntimeOverlayCell::Dummy => Self::SharedDummy,
         }
     }
-    dirty
+}
+
+/// Resolve one runtime CellClass lookup, retaining the shared-dummy result.
+///
+/// Native `Adjacent_Cell @ 0x00481810` narrows each coordinate to a signed
+/// word, then `MapClass::Get_CellClass @ 0x005657A0` selects `y*512+x` without
+/// rejecting either axis independently. Consequently a request such as west
+/// of `(0,1)` aliases real cell `(511,0)`. A true miss stamps CellClass+0x24 on
+/// the shared dummy and returns that same live object. `None` terrain retains
+/// rectangular behavior only for legacy focused helpers with no CellClass
+/// authority.
+fn native_runtime_overlay_cell_lookup(
+    width: u16,
+    height: u16,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+) -> Option<NativeRuntimeOverlayCell> {
+    let Some(terrain) = resolved_terrain else {
+        return (x >= 0 && y >= 0 && x < i32::from(width) && y < i32::from(height))
+            .then_some(NativeRuntimeOverlayCell::Real(x as u16, y as u16));
+    };
+    assert_eq!(
+        (width, height),
+        (terrain.width(), terrain.height()),
+        "runtime overlay lookup must match resolved terrain"
+    );
+    let narrowed_x = i32::from(x as i16);
+    let narrowed_y = i32::from(y as i16);
+    if let Some(index) = terrain.native_fixed_cell_index(x as i16, y as i16)
+        && let Some(cell) = terrain.cells.get(index)
+        && cell.rx < width
+        && cell.ry < height
+    {
+        return Some(NativeRuntimeOverlayCell::Real(cell.rx, cell.ry));
+    }
+    terrain.stamp_dummy_cell_requested_coord(narrowed_x, narrowed_y);
+    Some(NativeRuntimeOverlayCell::Dummy)
+}
+
+/// Resolve one inner N/E/S/W/self cleanup-table entry from a retained outer
+/// receiver pointer. A real receiver keeps its own coordinate throughout. A
+/// dummy receiver rereads shared CellClass+0x24 before every directional entry,
+/// so successive misses can walk the dummy and a later request can alias a real
+/// fixed-grid cell. The self entry reuses the receiver pointer and therefore has
+/// no represented real coordinate when that receiver is the dummy.
+fn native_runtime_overlay_target_coord(
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    target: NativeRuntimeOverlayCell,
+) -> Option<(i32, i32)> {
+    match target {
+        NativeRuntimeOverlayCell::Real(rx, ry) => Some((i32::from(rx), i32::from(ry))),
+        NativeRuntimeOverlayCell::Dummy => Some(resolved_terrain?.dummy_cell_requested_coord()),
+    }
+}
+
+fn native_runtime_overlay_target_packed_coord(
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    target: NativeRuntimeOverlayCell,
+) -> Option<(u16, u16)> {
+    let (x, y) = native_runtime_overlay_target_coord(resolved_terrain, target)?;
+    Some((x as i16 as u16, y as i16 as u16))
+}
+
+fn native_cleanup_visit_target(
+    width: u16,
+    height: u16,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    receiver: NativeRuntimeOverlayCell,
+    dx: i32,
+    dy: i32,
+) -> Option<NativeRuntimeOverlayCell> {
+    if (dx, dy) == (0, 0) {
+        return Some(receiver);
+    }
+    let (base_x, base_y) = native_runtime_overlay_target_coord(resolved_terrain, receiver)?;
+    native_runtime_overlay_cell_lookup(
+        width,
+        height,
+        resolved_terrain,
+        base_x + dx,
+        base_y + dy,
+    )
 }
 
 /// Result of a wall damage attempt.
@@ -841,6 +1192,41 @@ pub struct WallDamageResult {
     /// Exact mutation order. This is deliberately a wall-local trace, not a
     /// generalized gameplay event system.
     pub mutations: Vec<WallMutation>,
+    /// Diagnostic trace of packed CellStruct values submitted to
+    /// MarkTerrainDirty, deduplicated in first-call order. Production mutation
+    /// authority is the synchronous host callback, never replay of this list.
+    /// True-dummy coordinates retain their raw signed-word bit patterns.
+    pub radar_dirty_cells: Vec<(u16, u16)>,
+}
+
+fn push_wall_radar_dirty(result: &mut WallDamageResult, coord: (u16, u16)) {
+    if !result.radar_dirty_cells.contains(&coord) {
+        result.radar_dirty_cells.push(coord);
+    }
+}
+
+fn publish_wall_dirty_step(
+    host: &mut Option<&mut dyn WallDamageTransactionHost>,
+    result: &mut WallDamageResult,
+    step: WallDirtyStep,
+    packed_coord: (u16, u16),
+) {
+    if let Some(host) = host.as_deref_mut() {
+        host.dirty_step(step, packed_coord);
+    }
+    if step == WallDirtyStep::Radar {
+        push_wall_radar_dirty(result, packed_coord);
+    }
+}
+
+fn publish_wall_dirty_step_without_result(
+    host: &mut Option<&mut dyn WallDamageTransactionHost>,
+    step: WallDirtyStep,
+    packed_coord: (u16, u16),
+) {
+    if let Some(host) = host.as_deref_mut() {
+        host.dirty_step(step, packed_coord);
+    }
 }
 
 /// Damage a wall overlay, matching gamemd.exe CellClass::DestroyOverlay (0x00480CB0).
@@ -859,22 +1245,75 @@ pub fn damage_wall_overlay(
     damage: i32,
     rng: &mut crate::sim::rng::SimRng,
 ) -> WallDamageResult {
+    damage_wall_overlay_with_terrain(overlay_grid, registry, None, rx, ry, damage, rng)
+}
+
+/// Runtime-authoritative wall damage. Finalized grids require the resolved
+/// CellClass lookup state so each terminal removal reverses exactly one
+/// wrapping eight-neighbor wall contribution, including fixed-stride aliases.
+pub(crate) fn damage_wall_overlay_with_terrain(
+    overlay_grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    resolved_terrain: Option<&mut ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+    damage: i32,
+    rng: &mut crate::sim::rng::SimRng,
+) -> WallDamageResult {
+    damage_wall_overlay_with_runtime_host(
+        overlay_grid,
+        registry,
+        resolved_terrain,
+        rx,
+        ry,
+        damage,
+        rng,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn damage_wall_overlay_with_runtime_host(
+    overlay_grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    mut resolved_terrain: Option<&mut ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+    damage: i32,
+    rng: &mut crate::sim::rng::SimRng,
+    mut host: Option<&mut dyn WallDamageTransactionHost>,
+) -> WallDamageResult {
+    assert!(
+        overlay_grid.retained_wall_neighbor_counts().is_none() || resolved_terrain.is_some(),
+        "retained wall-neighbor authority requires resolved terrain for wall damage"
+    );
     let mut result = WallDamageResult::default();
-    damage_wall_recursive(overlay_grid, registry, rx, ry, damage, rng, &mut result);
+    damage_wall_recursive(
+        overlay_grid,
+        registry,
+        &mut resolved_terrain,
+        &mut host,
+        NativeRuntimeOverlayCell::Real(rx, ry),
+        damage,
+        rng,
+        &mut result,
+    );
     result
 }
 
 fn damage_wall_recursive(
     grid: &mut OverlayGrid,
     registry: &OverlayTypeRegistry,
-    rx: u16,
-    ry: u16,
+    resolved_terrain: &mut Option<&mut ResolvedTerrainGrid>,
+    host: &mut Option<&mut dyn WallDamageTransactionHost>,
+    target: NativeRuntimeOverlayCell,
     damage: i32,
     rng: &mut crate::sim::rng::SimRng,
     result: &mut WallDamageResult,
 ) {
-    let cell = *grid.cell(rx, ry);
-    let Some(overlay_id) = cell.overlay_id else {
+    let (overlay_identity, overlay_data) =
+        native_runtime_overlay_target_state(grid, resolved_terrain.as_deref(), target);
+    let Some(overlay_id) = overlay_identity else {
         return;
     };
     let Some(flags) = registry.flags(overlay_id) else {
@@ -896,57 +1335,144 @@ fn damage_wall_recursive(
         }
     }
 
+    // CellClass::DestroyOverlay dirties the tactical footprint for every
+    // accepted wall hit before writing the upper damage nibble. A rejected RNG
+    // attempt emits nothing; a retained partial hit emits no radar step.
+    if let Some(coord) =
+        native_runtime_overlay_target_packed_coord(resolved_terrain.as_deref(), target)
+    {
+        publish_wall_dirty_step(host, result, WallDirtyStep::Tactical, coord);
+    }
+
     // Increment damage level (upper nibble).
-    let new_data = cell.overlay_data.wrapping_add(0x10);
+    let new_data = overlay_data.wrapping_add(0x10);
+    // Native writes CellClass+0x11E before entering the recursive cardinal
+    // chain. Besides making the increment visible to each nested call, this
+    // prevents a stateful shared-dummy receiver from recursively selecting
+    // itself as a pristine wall.
+    write_native_runtime_overlay_target_state_untracked(
+        grid,
+        resolved_terrain.as_deref(),
+        target,
+        new_data,
+    );
     let damage_level = new_data >> 4;
 
     // At penultimate damage level: chain-damage cardinal neighbors.
     if flags.damage_levels > 2 && u16::from(damage_level) == flags.damage_levels.saturating_sub(1) {
         const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
         for (dx, dy) in CARDINAL {
-            let nx = rx as i32 + dx;
-            let ny = ry as i32 + dy;
-            if nx < 0 || ny < 0 {
+            let Some((base_x, base_y)) =
+                native_runtime_overlay_target_coord(resolved_terrain.as_deref(), target)
+            else {
                 continue;
-            }
-            let (nx, ny) = (nx as u16, ny as u16);
-            let neighbor = *grid.cell(nx, ny);
-            if neighbor.overlay_id == Some(overlay_id) && (neighbor.overlay_data >> 4) == 0 {
-                damage_wall_recursive(grid, registry, nx, ny, 200, rng, result);
+            };
+            let Some(neighbor_target) = native_runtime_overlay_cell_lookup(
+                grid.width(),
+                grid.height(),
+                resolved_terrain.as_deref(),
+                base_x + dx,
+                base_y + dy,
+            ) else {
+                continue;
+            };
+            let (neighbor_id, neighbor_data) = native_runtime_overlay_target_state(
+                grid,
+                resolved_terrain.as_deref(),
+                neighbor_target,
+            );
+            if neighbor_id == Some(overlay_id) && (neighbor_data >> 4) == 0 {
+                damage_wall_recursive(
+                    grid,
+                    registry,
+                    resolved_terrain,
+                    host,
+                    neighbor_target,
+                    200,
+                    rng,
+                    result,
+                );
             }
         }
     }
 
     // Check if fully destroyed.
+    let post_chain_data =
+        native_runtime_overlay_target_state(grid, resolved_terrain.as_deref(), target).1;
+    let post_chain_level = post_chain_data >> 4;
     let penultimate = flags.damage_levels.saturating_sub(1);
-    let connected = new_data & 0x0F != 0;
-    let retain = u16::from(damage_level) < penultimate
-        || (u16::from(damage_level) == penultimate && connected);
+    let connected = post_chain_data & 0x0F != 0;
+    let retain = u16::from(post_chain_level) < penultimate
+        || (u16::from(post_chain_level) == penultimate && connected);
     if damage != -1 && retain {
-        // Not fully destroyed — just update damage level.
-        grid.set_overlay_data(rx, ry, new_data);
-        result.changed_cells.push((rx, ry));
-        result.mutations.push(WallMutation {
-            rx,
-            ry,
-            kind: WallMutationKind::DirectUpdated,
-        });
+        // The native state write preceded the chain. Export a real-cell render
+        // mutation only; the shared dummy's pair stays live through its handle.
+        if let NativeRuntimeOverlayCell::Real(rx, ry) = target {
+            grid.dirty_cells.push((rx, ry));
+            result.changed_cells.push((rx, ry));
+            result.mutations.push(WallMutation {
+                rx,
+                ry,
+                kind: WallMutationKind::DirectUpdated,
+            });
+        }
         return;
     }
 
     // Full destruction.
-    grid.clear_overlay(rx, ry);
-    result.destroyed_cells.push((rx, ry));
-    result.mutations.push(WallMutation {
-        rx,
-        ry,
-        kind: WallMutationKind::DirectRemoved,
-    });
+    clear_native_runtime_overlay_target(grid, resolved_terrain.as_deref(), target, false);
+    if let NativeRuntimeOverlayCell::Real(rx, ry) = target {
+        result.destroyed_cells.push((rx, ry));
+        result.mutations.push(WallMutation {
+            rx,
+            ry,
+            kind: WallMutationKind::DirectRemoved,
+        });
+    }
+
+    // Native clears the direct cell and runs its RecalcAttributes before any
+    // cardinal PostDestructionWallCleanup call. Keep the modeled terrain and
+    // navigation publication signal inside that same recursive transaction.
+    if let NativeRuntimeOverlayCell::Real(rx, ry) = target
+        && let Some(terrain) = resolved_terrain.as_deref_mut()
+    {
+        let changed = recalc_overlay_passability(grid, terrain, registry, rx, ry);
+        if host.is_some() {
+            grid.record_synchronous_passability_change(changed);
+        } else {
+            grid.record_synchronous_passability_change_at(rx, ry, changed);
+        }
+        if let Some(host) = host.as_deref_mut() {
+            host.navigation_step(
+                terrain,
+                (rx, ry),
+                changed,
+                WallZoneRepairKind::AssignOrphaned,
+            );
+        }
+    }
+
+    // Native publishes the direct target's radar terrain dirty only after its
+    // Recalc + AssignOrphaned/graph tail, before cardinal cleanup begins. A
+    // shared dummy is read here, after any recursive chain may have restamped
+    // its packed coordinate.
+    if let Some(coord) =
+        native_runtime_overlay_target_packed_coord(resolved_terrain.as_deref(), target)
+    {
+        publish_wall_dirty_step(host, result, WallDirtyStep::Radar, coord);
+    }
 
     // Native cleanup is part of this direct-destruction call. A recursive
     // cardinal therefore completes its own direct clear + fixed cleanup before
     // the parent advances to the next cardinal.
-    cleanup_wall_neighbors_into(grid, registry, rx, ry, result);
+    cleanup_wall_neighbors_into(grid, registry, resolved_terrain, host, target, result);
+    if let Some(host) = host.as_deref_mut() {
+        host.pointer_expired(target.into());
+    }
+    // CellClass::DestroyOverlay @ 0x00480CB0 reverses this wall's
+    // CellClass+0x122 contribution at 0x00481070..0x00481082 only after its
+    // complete cardinal cleanup fan-out.
+    grid.remove_retained_wall_neighbor_source_target(resolved_terrain.as_deref(), target);
 }
 
 /// Outcome of `recompute_wall_connectivity_at`.
@@ -960,8 +1486,20 @@ pub enum RecomputeResult {
     Destroyed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeWallCleanupVisit {
+    pub packed_coord: (u16, u16),
+    pub real_cell: Option<(u16, u16)>,
+    pub was_wall: bool,
+    pub recomputed: RecomputeResult,
+}
+
 /// Per-overlay-type byte-value thresholds at which neighbor cleanup destroys an
 /// already-damaged isolated wall.
+///
+/// PostDestructionWallCleanup @ 0x00480630 also hardcodes CYCL/BARB/FENC rows,
+/// but retail never sets those types Wall=yes; the outer wall gate keeps those
+/// TS/mod-only rows dormant. Only the three active-retail rows belong here.
 fn auto_destruct_threshold(overlay_id: u8, full_byte: u8) -> bool {
     match overlay_id {
         0x00 => matches!(full_byte, 0x10 | 0x20), // GASAND
@@ -981,8 +1519,121 @@ pub fn recompute_wall_connectivity_at(
     rx: u16,
     ry: u16,
 ) -> RecomputeResult {
-    let cell = *grid.cell(rx, ry);
-    let Some(overlay_id) = cell.overlay_id else {
+    recompute_wall_connectivity_at_with_terrain(grid, registry, None, rx, ry)
+}
+
+/// Runtime form of [`recompute_wall_connectivity_at`] using native fixed-grid
+/// cardinal lookup. The coordinate being recomputed is already a real cell;
+/// only its neighbor probes pass through Get_CellClass semantics.
+pub(crate) fn recompute_wall_connectivity_at_with_terrain(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+) -> RecomputeResult {
+    recompute_wall_connectivity_target(
+        grid,
+        registry,
+        resolved_terrain,
+        NativeRuntimeOverlayCell::Real(rx, ry),
+    )
+}
+
+fn native_runtime_overlay_target_state(
+    grid: &OverlayGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    target: NativeRuntimeOverlayCell,
+) -> (Option<u8>, u8) {
+    match target {
+        NativeRuntimeOverlayCell::Real(rx, ry) => {
+            let cell = grid.cell(rx, ry);
+            (cell.overlay_id, cell.overlay_data)
+        }
+        NativeRuntimeOverlayCell::Dummy => {
+            let Some(terrain) = resolved_terrain else {
+                return (None, 0);
+            };
+            let (identity, state) = terrain.shared_cell_dummy().overlay_identity_state();
+            (u8::try_from(identity).ok(), state)
+        }
+    }
+}
+
+fn write_native_runtime_overlay_target_state(
+    grid: &mut OverlayGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    target: NativeRuntimeOverlayCell,
+    state: u8,
+) {
+    match target {
+        NativeRuntimeOverlayCell::Real(rx, ry) => grid.set_overlay_data(rx, ry, state),
+        NativeRuntimeOverlayCell::Dummy => {
+            if let Some(terrain) = resolved_terrain {
+                terrain.shared_cell_dummy().write_overlay_state(state);
+            }
+        }
+    }
+}
+
+fn write_native_runtime_overlay_target_state_untracked(
+    grid: &mut OverlayGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    target: NativeRuntimeOverlayCell,
+    state: u8,
+) {
+    match target {
+        NativeRuntimeOverlayCell::Real(rx, ry) => {
+            if let Some(index) = index_of(grid.width, grid.height, rx, ry)
+                && grid.cells[index].overlay_id.is_some()
+            {
+                grid.cells[index].overlay_data = state;
+            }
+        }
+        NativeRuntimeOverlayCell::Dummy => {
+            if let Some(terrain) = resolved_terrain {
+                terrain.shared_cell_dummy().write_overlay_state(state);
+            }
+        }
+    }
+}
+
+fn clear_native_runtime_overlay_target(
+    grid: &mut OverlayGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    target: NativeRuntimeOverlayCell,
+    preserve_owner: bool,
+) {
+    match target {
+        NativeRuntimeOverlayCell::Real(rx, ry) => {
+            if preserve_owner {
+                grid.clear_overlay_preserving_owner(rx, ry);
+            } else {
+                grid.clear_overlay(rx, ry);
+            }
+        }
+        NativeRuntimeOverlayCell::Dummy => {
+            if let Some(terrain) = resolved_terrain {
+                // The shared dummy's owner field is independent and is not part
+                // of this overlay identity/state authority. Both native clear
+                // branches zero +0x11E and write +0x44=-1.
+                terrain
+                    .shared_cell_dummy()
+                    .write_overlay_identity_state(-1, 0);
+            }
+        }
+    }
+}
+
+fn recompute_wall_connectivity_target(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    target: NativeRuntimeOverlayCell,
+) -> RecomputeResult {
+    let (overlay_id, overlay_data) =
+        native_runtime_overlay_target_state(grid, resolved_terrain, target);
+    let Some(overlay_id) = overlay_id else {
         return RecomputeResult::NoChange;
     };
     let Some(flags) = registry.flags(overlay_id) else {
@@ -997,62 +1648,218 @@ pub fn recompute_wall_connectivity_at(
     const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
     let mut connectivity: u8 = 0;
     for (bit, (dx, dy)) in CARDINAL.iter().enumerate() {
-        let nx = rx as i32 + dx;
-        let ny = ry as i32 + dy;
-        if nx < 0 || ny < 0 {
+        // A real target retains its canonical coordinate. A dummy target is
+        // the same shared pointer that each miss restamps, so reread +0x24
+        // before every Adjacent_Cell call.
+        let Some((base_x, base_y)) =
+            native_runtime_overlay_target_coord(resolved_terrain, target)
+        else {
             continue;
-        }
-        let neighbor = grid.cell(nx as u16, ny as u16);
-        if neighbor.overlay_id == Some(overlay_id) {
+        };
+        let Some(neighbor) = native_runtime_overlay_cell_lookup(
+            grid.width(),
+            grid.height(),
+            resolved_terrain,
+            base_x + dx,
+            base_y + dy,
+        ) else {
+            continue;
+        };
+        if native_runtime_overlay_target_state(grid, resolved_terrain, neighbor).0
+            == Some(overlay_id)
+        {
             connectivity |= 1 << bit;
         }
     }
 
-    let damage_nibble = cell.overlay_data & 0xF0;
+    let damage_nibble = overlay_data & 0xF0;
     let new_byte = damage_nibble | connectivity;
 
     // Auto-destruct threshold fires whenever cleanup runs over an already-
     // damaged isolated wall, even if the connectivity nibble itself is
     // unchanged. Mirrors PostDestructionWallCleanup §5.2.
     if auto_destruct_threshold(overlay_id, new_byte) {
-        if matches!(overlay_id, 0x02 | 0x1A) {
-            grid.clear_overlay_preserving_owner(rx, ry);
-        } else {
-            grid.clear_overlay(rx, ry);
-        }
+        clear_native_runtime_overlay_target(
+            grid,
+            resolved_terrain,
+            target,
+            matches!(overlay_id, 0x02 | 0x1A),
+        );
         return RecomputeResult::Destroyed;
     }
 
-    if new_byte == cell.overlay_data {
+    if new_byte == overlay_data {
         return RecomputeResult::NoChange;
     }
 
-    grid.set_overlay_data(rx, ry, new_byte);
+    write_native_runtime_overlay_target_state(grid, resolved_terrain, target, new_byte);
     RecomputeResult::Updated
+}
+
+/// Execute the overlay-identity/connectivity half of one native
+/// PostDestructionWallCleanup visit selected by Get_CellClass. The returned
+/// packed coordinate is captured before wall logic and therefore includes a
+/// true shared-dummy receiver exactly as MarkTerrainDirty sees it. Real-cell
+/// Recalc/zone/count consequences remain with the world transaction owner.
+pub(crate) fn runtime_wall_cleanup_visit_at(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+    mut host: Option<&mut dyn WallDamageTransactionHost>,
+) -> Option<RuntimeWallCleanupVisit> {
+    let target = native_runtime_overlay_cell_lookup(
+        grid.width(),
+        grid.height(),
+        resolved_terrain,
+        x,
+        y,
+    )?;
+    let packed_coord = native_runtime_overlay_target_packed_coord(resolved_terrain, target)?;
+    publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Tactical, packed_coord);
+    publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Radar, packed_coord);
+    let was_wall = native_runtime_overlay_target_state(grid, resolved_terrain, target)
+        .0
+        .and_then(|overlay_id| registry.flags(overlay_id))
+        .is_some_and(|flags| flags.wall);
+    let recomputed = if was_wall {
+        recompute_wall_connectivity_target(grid, registry, resolved_terrain, target)
+    } else {
+        RecomputeResult::NoChange
+    };
+    if recomputed == RecomputeResult::Destroyed
+        && let Some(host) = host.as_deref_mut()
+    {
+        host.pointer_expired(target.into());
+    }
+    let real_cell = match target {
+        NativeRuntimeOverlayCell::Real(rx, ry) => Some((rx, ry)),
+        NativeRuntimeOverlayCell::Dummy => None,
+    };
+    Some(RuntimeWallCleanupVisit {
+        packed_coord,
+        real_cell,
+        was_wall,
+        recomputed,
+    })
 }
 
 /// Refresh a newly stamped wall and its four cardinal neighbors only.
 pub fn refresh_wall_connectivity_after_placement(
     grid: &mut OverlayGrid,
     registry: &OverlayTypeRegistry,
+    resolved_terrain: Option<&mut ResolvedTerrainGrid>,
     rx: u16,
     ry: u16,
 ) {
-    const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-    let _ = recompute_wall_connectivity_at(grid, registry, rx, ry);
-    for (dx, dy) in CARDINAL {
-        let nx = i32::from(rx) + dx;
-        let ny = i32::from(ry) + dy;
-        if nx < 0 || ny < 0 {
+    refresh_wall_connectivity_after_placement_with_host(
+        grid,
+        registry,
+        resolved_terrain,
+        rx,
+        ry,
+        None,
+    );
+}
+
+/// Runtime-hosted `PostDestructionWallCleanup(anchor, 1)` used by one wall
+/// Mark transaction. Load-time materialization uses the hostless wrapper
+/// above because no live tactical/radar/entity/navigation observers exist.
+pub(crate) fn refresh_wall_connectivity_after_placement_with_host(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    mut resolved_terrain: Option<&mut ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+    mut host: Option<&mut dyn WallDamageTransactionHost>,
+) {
+    assert!(
+        grid.retained_wall_neighbor_counts().is_none() || resolved_terrain.is_some(),
+        "retained wall-neighbor authority requires resolved terrain for placement cleanup"
+    );
+    const CLEANUP_CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
+    for (dx, dy) in CLEANUP_CROSS {
+        let Some(target) = native_runtime_overlay_cell_lookup(
+            grid.width(),
+            grid.height(),
+            resolved_terrain.as_deref(),
+            i32::from(rx) + dx,
+            i32::from(ry) + dy,
+        ) else {
             continue;
+        };
+        if let Some(coord) =
+            native_runtime_overlay_target_packed_coord(resolved_terrain.as_deref(), target)
+        {
+            publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Tactical, coord);
+            publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Radar, coord);
         }
-        let _ = recompute_wall_connectivity_at(grid, registry, nx as u16, ny as u16);
+        let was_wall = native_runtime_overlay_target_state(
+            grid,
+            resolved_terrain.as_deref(),
+            target,
+        )
+            .0
+            .and_then(|overlay_id| registry.flags(overlay_id))
+            .is_some_and(|flags| flags.wall);
+        let result = recompute_wall_connectivity_target(
+            grid,
+            registry,
+            resolved_terrain.as_deref(),
+            target,
+        );
+        if result == RecomputeResult::Destroyed
+            && let Some(host) = host.as_deref_mut()
+        {
+            host.pointer_expired(target.into());
+        }
+        let NativeRuntimeOverlayCell::Real(nx, ny) = target else {
+            continue;
+        };
+        if was_wall && let Some(terrain) = resolved_terrain.as_deref_mut() {
+            let kind = if result == RecomputeResult::Destroyed {
+                WallMutationKind::CleanupRemoved
+            } else {
+                WallMutationKind::CleanupUpdated
+            };
+            let recalc = recalc_wall_mutation_passability(
+                grid,
+                terrain,
+                registry,
+                &WallMutation {
+                    rx: nx,
+                    ry: ny,
+                    kind,
+                },
+            );
+            if host.is_some() {
+                grid.record_synchronous_passability_change(recalc.navigation_changed);
+            } else {
+                grid.record_synchronous_passability_change_at(nx, ny, recalc.navigation_changed);
+            }
+            if recalc.zone_changed && let Some(host) = host.as_deref_mut() {
+                host.navigation_step(
+                    terrain,
+                    (nx, ny),
+                    recalc.navigation_changed,
+                    if result == RecomputeResult::Destroyed {
+                        WallZoneRepairKind::AssignOrphaned
+                    } else {
+                        WallZoneRepairKind::MergeAdjacent
+                    },
+                );
+            }
+            if result == RecomputeResult::Destroyed && recalc.zone_changed {
+                grid.remove_retained_wall_neighbor_source(Some(terrain), nx, ny);
+            }
+        }
     }
 }
 
 /// Reproduce the fixed cleanup fan-out after direct destruction.
 ///
-/// Each cardinal neighbor receives a N/E/S/W/self cross update in table order.
+/// N/W/S/E receivers each receive a N/E/S/W/self cross update in table order.
 /// Cleanup removals do not recursively expand this fixed scope.
 pub fn cleanup_wall_neighbors(
     grid: &mut OverlayGrid,
@@ -1061,35 +1868,102 @@ pub fn cleanup_wall_neighbors(
     ry: u16,
 ) -> Vec<(u16, u16)> {
     let mut result = WallDamageResult::default();
-    cleanup_wall_neighbors_into(grid, registry, rx, ry, &mut result);
+    let mut resolved_terrain = None;
+    let mut host = None;
+    cleanup_wall_neighbors_into(
+        grid,
+        registry,
+        &mut resolved_terrain,
+        &mut host,
+        NativeRuntimeOverlayCell::Real(rx, ry),
+        &mut result,
+    );
     result.destroyed_cells
 }
 
 fn cleanup_wall_neighbors_into(
     grid: &mut OverlayGrid,
     registry: &OverlayTypeRegistry,
-    rx: u16,
-    ry: u16,
+    resolved_terrain: &mut Option<&mut ResolvedTerrainGrid>,
+    host: &mut Option<&mut dyn WallDamageTransactionHost>,
+    center: NativeRuntimeOverlayCell,
     result: &mut WallDamageResult,
 ) {
-    const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    const CLEANUP_RECEIVERS: [(i32, i32); 4] = [(0, -1), (-1, 0), (0, 1), (1, 0)];
     const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
 
-    for (outer_dx, outer_dy) in CARDINAL {
-        let cx = i32::from(rx) + outer_dx;
-        let cy = i32::from(ry) + outer_dy;
+    for (outer_dx, outer_dy) in CLEANUP_RECEIVERS {
+        let Some((center_x, center_y)) =
+            native_runtime_overlay_target_coord(resolved_terrain.as_deref(), center)
+        else {
+            continue;
+        };
+        let Some(receiver) = native_runtime_overlay_cell_lookup(
+            grid.width(),
+            grid.height(),
+            resolved_terrain.as_deref(),
+            center_x + outer_dx,
+            center_y + outer_dy,
+        ) else {
+            continue;
+        };
         for (dx, dy) in CROSS {
-            let nx = cx + dx;
-            let ny = cy + dy;
-            if nx < 0 || ny < 0 {
+            let Some(target) = native_cleanup_visit_target(
+                grid.width(),
+                grid.height(),
+                resolved_terrain.as_deref(),
+                receiver,
+                dx,
+                dy,
+            ) else {
+                continue;
+            };
+            if let Some(coord) = native_runtime_overlay_target_packed_coord(
+                resolved_terrain.as_deref(),
+                target,
+            ) {
+                // PostDestructionWallCleanup submits both calls before it
+                // checks overlay identity or Wall=. Capture once so later
+                // shared-dummy probes cannot split the pair across coords.
+                publish_wall_dirty_step(host, result, WallDirtyStep::Tactical, coord);
+                publish_wall_dirty_step(host, result, WallDirtyStep::Radar, coord);
+            }
+            let was_wall = native_runtime_overlay_target_state(
+                grid,
+                resolved_terrain.as_deref(),
+                target,
+            )
+            .0
+            .and_then(|overlay_id| registry.flags(overlay_id))
+            .is_some_and(|flags| flags.wall);
+            if !was_wall {
                 continue;
             }
-            let nx = nx as u16;
-            let ny = ny as u16;
-            if nx >= grid.width() || ny >= grid.height() {
-                continue;
+            let recomputed = recompute_wall_connectivity_target(
+                grid,
+                registry,
+                resolved_terrain.as_deref(),
+                target,
+            );
+            if recomputed == RecomputeResult::Destroyed
+                && let Some(host) = host.as_deref_mut()
+            {
+                host.pointer_expired(target.into());
             }
-            match recompute_wall_connectivity_at(grid, registry, nx, ny) {
+            let NativeRuntimeOverlayCell::Real(nx, ny) = target else {
+                // RecalcAttributes' first identity check suppresses the shared
+                // dummy. Its overlay state and coordinate walk above remain
+                // live, including pointer expiry when cleanup cleared it, but
+                // no real-cell mutation or zone/count output exists.
+                continue;
+            };
+            let recalc_kind = match recomputed {
+                RecomputeResult::Destroyed => WallMutationKind::CleanupRemoved,
+                RecomputeResult::NoChange | RecomputeResult::Updated => {
+                    WallMutationKind::CleanupUpdated
+                }
+            };
+            match recomputed {
                 RecomputeResult::NoChange => {}
                 RecomputeResult::Updated => {
                     result.changed_cells.push((nx, ny));
@@ -1106,6 +1980,46 @@ fn cleanup_wall_neighbors_into(
                         ry: ny,
                         kind: WallMutationKind::CleanupRemoved,
                     });
+                }
+            }
+            // PostDestructionWallCleanup Recalcs every visited wall, including
+            // a wall whose connectivity byte was already current. A cleanup
+            // removal's retained-count reversal is completed here only after
+            // that Recalc proves the reduced zone changed.
+            if let Some(terrain) = resolved_terrain.as_deref_mut() {
+                let recalc = recalc_wall_mutation_passability(
+                    grid,
+                    terrain,
+                    registry,
+                    &WallMutation {
+                        rx: nx,
+                        ry: ny,
+                        kind: recalc_kind,
+                    },
+                );
+                if host.is_some() {
+                    grid.record_synchronous_passability_change(recalc.navigation_changed);
+                } else {
+                    grid.record_synchronous_passability_change_at(
+                        nx,
+                        ny,
+                        recalc.navigation_changed,
+                    );
+                }
+                if recalc.zone_changed && let Some(host) = host.as_deref_mut() {
+                    host.navigation_step(
+                        terrain,
+                        (nx, ny),
+                        recalc.navigation_changed,
+                        if recomputed == RecomputeResult::Destroyed {
+                            WallZoneRepairKind::AssignOrphaned
+                        } else {
+                            WallZoneRepairKind::MergeAdjacent
+                        },
+                    );
+                }
+                if recomputed == RecomputeResult::Destroyed && recalc.zone_changed {
+                    grid.remove_retained_wall_neighbor_source(Some(terrain), nx, ny);
                 }
             }
         }
@@ -1138,6 +2052,68 @@ fn index_of(width: u16, height: u16, rx: u16, ry: u16) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    pub(super) fn retained_wall_plane_for_sources(
+        terrain: &ResolvedTerrainGrid,
+        sources: &[(u16, u16)],
+    ) -> Vec<u8> {
+        let mut counts = vec![0u8; terrain.cells.len()];
+        for &(rx, ry) in sources {
+            let anchor = (rx as i16, ry as i16);
+            for (dx, dy) in ADJACENT_8 {
+                let Some(index) = terrain.native_fixed_cell_index(
+                    anchor.0.wrapping_add(dx as i16),
+                    anchor.1.wrapping_add(dy as i16),
+                ) else {
+                    continue;
+                };
+                counts[index] = counts[index].wrapping_add(1);
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn finalized_payload_is_the_only_input_and_preserves_data_only_cells() {
+        let payload = FinalizedOverlayPayload::from_cells_for_test(
+            2,
+            1,
+            vec![(-1, 37), (0x18, 9)],
+            vec![5, 8],
+        );
+        let grid = OverlayGrid::from_finalized_map_payload(payload);
+
+        assert_eq!(
+            (grid.cell(0, 0).overlay_id, grid.cell(0, 0).overlay_data),
+            (None, 37)
+        );
+        assert_eq!(
+            (grid.cell(1, 0).overlay_id, grid.cell(1, 0).overlay_data),
+            (Some(0x18), 9)
+        );
+        assert!(grid.dirty_cells.is_empty());
+        assert_eq!(grid.retained_wall_neighbor_counts(), Some(&[5, 8][..]));
+    }
+
+    #[test]
+    fn retained_wall_neighbor_plane_roundtrips_with_overlay_authority() {
+        let grid =
+            OverlayGrid::from_finalized_map_payload(FinalizedOverlayPayload::from_cells_for_test(
+                2,
+                2,
+                vec![(-1, 0), (1, 2), (-1, 0), (-1, 0)],
+                vec![0, 7, 255, 3],
+            ));
+        let bytes = bincode::serialize(&grid).expect("serialize overlay authority");
+        let restored: OverlayGrid =
+            bincode::deserialize(&bytes).expect("deserialize overlay authority");
+
+        assert_eq!(
+            restored.retained_wall_neighbor_counts(),
+            Some(&[0, 7, 255, 3][..])
+        );
+        assert_eq!(restored.cell(1, 0), grid.cell(1, 0));
+    }
 
     #[test]
     fn new_grid_is_empty() {
@@ -1428,7 +2404,7 @@ mod tests {
         )
     }
 
-    fn clear_terrain_grid(width: u16, height: u16) -> ResolvedTerrainGrid {
+    pub(super) fn clear_terrain_grid(width: u16, height: u16) -> ResolvedTerrainGrid {
         use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
 
         let mut single = single_cell_terrain(
@@ -1805,6 +2781,264 @@ mod tests {
                 wall_owner: None,
             },
         );
+    }
+
+    #[test]
+    fn retained_wall_plane_runtime_placement_and_damage_update_once() {
+        use crate::rules::ini_parser::IniFile;
+
+        let ini = IniFile::from_str(
+            "[OverlayTypes]\n0=WALL\n\
+             [WALL]\nWall=yes\nStrength=100\n",
+        );
+        let art = IniFile::from_str("[WALL]\nDamageLevels=3\n");
+        let registry = OverlayTypeRegistry::from_ini(&ini, Some(&art));
+        let mut terrain = clear_terrain_grid(5, 5);
+        let payload =
+            FinalizedOverlayPayload::from_cells_for_test(5, 5, vec![(-1, 0); 25], vec![0; 25]);
+        let mut grid = OverlayGrid::from_finalized_map_payload(payload);
+
+        assert_eq!(
+            grid.place_overlay_native_runtime(
+                &mut terrain,
+                &registry,
+                NativeOverlayMarkContext::default(),
+                2,
+                2,
+                0,
+            ),
+            NativeOverlayPlacementResult::Placed
+        );
+        let placed = grid
+            .retained_wall_neighbor_counts()
+            .expect("retained authority");
+        for index in [6usize, 7, 8, 11, 13, 16, 17, 18] {
+            assert_eq!(placed[index], 1);
+        }
+        assert_eq!(placed[12], 0);
+
+        let mut rng = crate::sim::rng::SimRng::new(1);
+        let before_partial = grid
+            .retained_wall_neighbor_counts()
+            .expect("retained authority")
+            .to_vec();
+        let _ = grid.take_synchronous_navigation_cells();
+        let partial = damage_wall_overlay_with_terrain(
+            &mut grid,
+            &registry,
+            Some(&mut terrain),
+            2,
+            2,
+            100,
+            &mut rng,
+        );
+        assert!(partial.destroyed_cells.is_empty());
+        assert_eq!(partial.changed_cells, vec![(2, 2)]);
+        assert_eq!(grid.cell(2, 2).overlay_data, 0x10);
+        assert!(
+            grid.take_synchronous_navigation_cells().is_empty(),
+            "partial damage returns before native's direct-removal Recalc"
+        );
+        assert_eq!(
+            grid.retained_wall_neighbor_counts(),
+            Some(before_partial.as_slice()),
+            "nonterminal damage must not change retained counts"
+        );
+
+        let result = damage_wall_overlay_with_terrain(
+            &mut grid,
+            &registry,
+            Some(&mut terrain),
+            2,
+            2,
+            -1,
+            &mut rng,
+        );
+        assert_eq!(result.destroyed_cells, vec![(2, 2)]);
+        assert_eq!(
+            grid.take_synchronous_navigation_cells(),
+            vec![(2, 2)],
+            "direct removal publishes its Recalc before cleanup completes"
+        );
+        assert!(
+            grid.retained_wall_neighbor_counts()
+                .expect("retained authority")
+                .iter()
+                .all(|&count| count == 0)
+        );
+    }
+
+    #[test]
+    fn retained_wall_plane_tracks_cleanup_removal_and_fixed_aliases() {
+        use crate::rules::ini_parser::IniFile;
+
+        let ini = IniFile::from_str(
+            "[OverlayTypes]\n0=GASAND\n\
+             [GASAND]\nWall=yes\nStrength=100\n",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let mut terrain = clear_terrain_grid(5, 5);
+        let plane = retained_wall_plane_for_sources(&terrain, &[(2, 2), (2, 1)]);
+        let mut grid = OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(5, 5, vec![(-1, 0); 25], plane),
+        );
+        grid.place_overlay(2, 2, 0, 0x01);
+        grid.place_overlay(2, 1, 0, 0x24);
+        for (rx, ry) in [(2, 2), (2, 1)] {
+            let _ = recalc_overlay_passability(&mut grid, &mut terrain, &registry, rx, ry);
+        }
+
+        let mut rng = crate::sim::rng::SimRng::new(7);
+        let result = damage_wall_overlay_with_terrain(
+            &mut grid,
+            &registry,
+            Some(&mut terrain),
+            2,
+            2,
+            -1,
+            &mut rng,
+        );
+        assert_eq!(result.destroyed_cells, vec![(2, 2), (2, 1)]);
+        assert_eq!(
+            grid.take_synchronous_navigation_cells(),
+            vec![(2, 2), (2, 1)],
+            "direct Recalc precedes the cleanup-removal Recalc"
+        );
+        assert!(
+            grid.retained_wall_neighbor_counts()
+                .expect("retained authority")
+                .iter()
+                .all(|&count| count == 0),
+            "direct and cleanup removals each reverse one retained source"
+        );
+
+        let mut unchanged_zone_terrain = clear_terrain_grid(5, 5);
+        let cleanup_cell = unchanged_zone_terrain.cell_mut(2, 1).expect("cleanup cell");
+        cleanup_cell.outside_playfield = true;
+        cleanup_cell.zone_type = crate::map::resolved_terrain::zone_class::OUTSIDE;
+        let full_plane =
+            retained_wall_plane_for_sources(&unchanged_zone_terrain, &[(2, 2), (2, 1)]);
+        let retained_cleanup_plane =
+            retained_wall_plane_for_sources(&unchanged_zone_terrain, &[(2, 1)]);
+        let mut unchanged_zone_grid = OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(5, 5, vec![(-1, 0); 25], full_plane),
+        );
+        unchanged_zone_grid.place_overlay(2, 2, 0, 0x01);
+        unchanged_zone_grid.place_overlay(2, 1, 0, 0x24);
+        for (rx, ry) in [(2, 2), (2, 1)] {
+            let _ = recalc_overlay_passability(
+                &mut unchanged_zone_grid,
+                &mut unchanged_zone_terrain,
+                &registry,
+                rx,
+                ry,
+            );
+        }
+        let result = damage_wall_overlay_with_terrain(
+            &mut unchanged_zone_grid,
+            &registry,
+            Some(&mut unchanged_zone_terrain),
+            2,
+            2,
+            -1,
+            &mut rng,
+        );
+        assert_eq!(result.destroyed_cells, vec![(2, 2), (2, 1)]);
+        assert_eq!(
+            unchanged_zone_grid.retained_wall_neighbor_counts(),
+            Some(retained_cleanup_plane.as_slice()),
+            "cleanup removal retains its source when Recalc leaves zone type unchanged"
+        );
+
+        let mut alias_terrain = clear_terrain_grid(512, 2);
+        let mut alias_grid =
+            OverlayGrid::from_finalized_map_payload(FinalizedOverlayPayload::from_cells_for_test(
+                512,
+                2,
+                vec![(-1, 0); 1024],
+                vec![0; 1024],
+            ));
+        alias_grid.place_overlay(511, 0, 0, 0);
+        assert_eq!(
+            alias_grid.place_overlay_native_runtime(
+                &mut alias_terrain,
+                &registry,
+                NativeOverlayMarkContext::default(),
+                0,
+                1,
+                0,
+            ),
+            NativeOverlayPlacementResult::Placed
+        );
+        assert_eq!(
+            alias_grid.cell(0, 1).overlay_data & 0x0F,
+            0x08,
+            "anchor connects west through fixed-stride alias"
+        );
+        assert_eq!(
+            alias_grid.cell(511, 0).overlay_data & 0x0F,
+            0x02,
+            "aliased real wall connects east back to anchor"
+        );
+        assert_eq!(
+            alias_grid
+                .retained_wall_neighbor_counts()
+                .expect("retained authority")[511],
+            1,
+            "west fixed-stride alias resolves to real slot 511"
+        );
+        assert_eq!(
+            alias_grid
+                .retained_wall_neighbor_counts()
+                .expect("retained authority")
+                .iter()
+                .map(|&count| u32::from(count))
+                .sum::<u32>(),
+            5,
+            "three true-dummy neighbors produce no retained output"
+        );
+    }
+
+    #[test]
+    fn generic_overlay_mutation_is_retained_count_neutral() {
+        let mut grid =
+            OverlayGrid::from_finalized_map_payload(FinalizedOverlayPayload::from_cells_for_test(
+                2,
+                2,
+                vec![(0, 0), (-1, 0), (-1, 0), (-1, 0)],
+                vec![7, 8, 9, 10],
+            ));
+        let retained = grid
+            .retained_wall_neighbor_counts()
+            .expect("retained authority")
+            .to_vec();
+
+        assert_eq!(grid.clear_overlay(0, 0), Some(0));
+        grid.place_overlay(1, 1, 3, 4);
+        assert_eq!(
+            grid.retained_wall_neighbor_counts(),
+            Some(retained.as_slice()),
+            "generic identity writers cannot infer or reverse historical wall sources"
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "retained wall-neighbor authority requires resolved terrain for wall damage"
+    )]
+    fn finalized_wall_damage_rejects_missing_resolved_terrain() {
+        use crate::rules::ini_parser::IniFile;
+
+        let ini = IniFile::from_str(
+            "[OverlayTypes]\n0=WALL\n\
+             [WALL]\nWall=yes\nStrength=100\n",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let mut grid = OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(1, 1, vec![(0, 0)], vec![0]),
+        );
+        let mut rng = crate::sim::rng::SimRng::new(1);
+        let _ = damage_wall_overlay(&mut grid, &registry, 0, 0, -1, &mut rng);
     }
 
     #[test]
@@ -2709,6 +3943,46 @@ mod recompute_tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WallHostEvent {
+        Dirty(WallDirtyStep, (u16, u16)),
+        Navigation {
+            cell: (u16, u16),
+            navigation_changed: bool,
+            repair: WallZoneRepairKind,
+        },
+        Pointer(WallPointerTarget),
+    }
+
+    #[derive(Default)]
+    struct WallHostSpy {
+        events: Vec<WallHostEvent>,
+    }
+
+    impl WallDamageTransactionHost for WallHostSpy {
+        fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+            self.events.push(WallHostEvent::Dirty(step, packed_coord));
+        }
+
+        fn navigation_step(
+            &mut self,
+            _terrain: &ResolvedTerrainGrid,
+            cell: (u16, u16),
+            navigation_changed: bool,
+            repair: WallZoneRepairKind,
+        ) {
+            self.events.push(WallHostEvent::Navigation {
+                cell,
+                navigation_changed,
+                repair,
+            });
+        }
+
+        fn pointer_expired(&mut self, target: WallPointerTarget) {
+            self.events.push(WallHostEvent::Pointer(target));
+        }
+    }
+
     /// Build a registry whose overlay_id=2 maps to GAWALL (for auto-destruct
     /// threshold matching). Filler entries at id 0 and 1 get Wall=yes too so
     /// tests can exercise other ids if needed.
@@ -2789,104 +4063,296 @@ Strength=400
     }
 
     #[test]
-    fn wall_radar_dirty_only_terminal_direct_removals_expand_native_visits() {
-        let ignored = [
-            WallMutation {
-                rx: 5,
-                ry: 5,
-                kind: WallMutationKind::DirectUpdated,
-            },
-            WallMutation {
-                rx: 5,
-                ry: 4,
-                kind: WallMutationKind::CleanupUpdated,
-            },
-            WallMutation {
-                rx: 6,
-                ry: 5,
-                kind: WallMutationKind::CleanupRemoved,
-            },
-        ];
-        assert!(wall_radar_dirty_cells(12, 12, &ignored).is_empty());
+    fn runtime_wall_damage_chain_and_cleanup_follow_fixed_aliases() {
+        let registry = make_retail_stage_registry();
+        let mut terrain = super::tests::clear_terrain_grid(512, 2);
+        let mut rng = crate::sim::rng::SimRng::new(19);
 
-        let direct = [WallMutation {
-            rx: 5,
-            ry: 5,
-            kind: WallMutationKind::DirectRemoved,
-        }];
+        let mut chain = OverlayGrid::new(512, 2);
+        chain.place_overlay(0, 1, 2, 0x18);
+        chain.place_overlay(511, 0, 2, 0x02);
+        let result = damage_wall_overlay_with_terrain(
+            &mut chain,
+            &registry,
+            Some(&mut terrain),
+            0,
+            1,
+            100,
+            &mut rng,
+        );
         assert_eq!(
-            wall_radar_dirty_cells(12, 12, &direct),
+            result.mutations.first(),
+            Some(&WallMutation {
+                rx: 511,
+                ry: 0,
+                kind: WallMutationKind::DirectUpdated,
+            }),
+            "penultimate chain reaches west's aliased real CellClass first"
+        );
+        assert_eq!(chain.cell(511, 0).overlay_data & 0xF0, 0x10);
+
+        let mut cleanup_terrain = super::tests::clear_terrain_grid(512, 2);
+        let cleanup_plane = super::tests::retained_wall_plane_for_sources(
+            &cleanup_terrain,
+            &[(0, 1), (511, 0)],
+        );
+        let mut cleanup = OverlayGrid::from_finalized_map_payload(
+            FinalizedOverlayPayload::from_cells_for_test(
+                512,
+                2,
+                vec![(-1, 0); 1024],
+                cleanup_plane,
+            ),
+        );
+        cleanup.place_overlay(0, 1, 0, 0);
+        cleanup.place_overlay(511, 0, 0, 0x12);
+        for (rx, ry) in [(0, 1), (511, 0)] {
+            let _ = recalc_overlay_passability(
+                &mut cleanup,
+                &mut cleanup_terrain,
+                &registry,
+                rx,
+                ry,
+            );
+        }
+        let result = damage_wall_overlay_with_terrain(
+            &mut cleanup,
+            &registry,
+            Some(&mut cleanup_terrain),
+            0,
+            1,
+            -1,
+            &mut rng,
+        );
+        assert_eq!(result.destroyed_cells, vec![(0, 1), (511, 0)]);
+        assert_eq!(cleanup.cell(511, 0).overlay_id, None);
+        assert!(
+            cleanup
+                .retained_wall_neighbor_counts()
+                .expect("retained authority")
+                .iter()
+                .all(|&count| count == 0),
+            "direct and cleanup removals reverse both fixed-alias count sources"
+        );
+        assert!(result.mutations.contains(&WallMutation {
+            rx: 511,
+            ry: 0,
+            kind: WallMutationKind::CleanupRemoved,
+        }));
+    }
+
+    #[test]
+    fn wall_radar_dirty_is_captured_inline_in_native_visit_order() {
+        let registry = make_retail_stage_registry();
+        let mut rng = crate::sim::rng::SimRng::new(0x407);
+
+        let mut partial = OverlayGrid::new(12, 12);
+        partial.place_overlay(5, 5, 0, 0x02);
+        let partial_result =
+            damage_wall_overlay(&mut partial, &registry, 5, 5, 100, &mut rng);
+        assert!(partial_result.radar_dirty_cells.is_empty());
+
+        let mut direct = OverlayGrid::new(12, 12);
+        direct.place_overlay(5, 5, 0, 0);
+        let direct_result = damage_wall_overlay(&mut direct, &registry, 5, 5, -1, &mut rng);
+        assert_eq!(
+            direct_result.radar_dirty_cells,
             vec![
                 (5, 5),
                 (5, 3),
                 (6, 4),
                 (4, 4),
                 (5, 4),
-                (7, 5),
-                (6, 6),
-                (6, 5),
-                (5, 7),
                 (4, 6),
-                (5, 6),
                 (3, 5),
                 (4, 5),
+                (6, 6),
+                (5, 7),
+                (5, 6),
+                (7, 5),
+                (6, 5),
             ],
-            "removed cell precedes the four N/E/S/W/self cleanup visits",
+            "direct cell precedes N/W/S/E receivers, each with N/E/S/W/self visits",
         );
     }
 
     #[test]
-    fn wall_radar_dirty_clips_edges_and_expands_each_recursive_direct_remove() {
-        let edge = [WallMutation {
-            rx: 0,
-            ry: 0,
-            kind: WallMutationKind::DirectRemoved,
-        }];
-        assert_eq!(
-            wall_radar_dirty_cells(3, 3, &edge),
-            vec![(0, 0), (2, 0), (1, 1), (1, 0), (0, 2), (0, 1)],
+    fn wall_damage_host_publishes_native_dirty_navigation_and_pointer_order() {
+        let registry = make_retail_stage_registry();
+
+        let mut rejected = OverlayGrid::new(12, 12);
+        rejected.place_overlay(5, 5, 0, 0);
+        let mut rejected_terrain = super::tests::clear_terrain_grid(12, 12);
+        let mut rejected_rng = crate::sim::rng::SimRng::new(0x407);
+        let mut rejected_host = WallHostSpy::default();
+        let _ = damage_wall_overlay_with_runtime_host(
+            &mut rejected,
+            &registry,
+            Some(&mut rejected_terrain),
+            5,
+            5,
+            0,
+            &mut rejected_rng,
+            Some(&mut rejected_host),
+        );
+        assert!(
+            rejected_host.events.is_empty(),
+            "a failed Strength roll emits no native dirty callback"
         );
 
-        let recursive = [
-            WallMutation {
-                rx: 5,
-                ry: 5,
-                kind: WallMutationKind::DirectRemoved,
-            },
-            WallMutation {
-                rx: 5,
-                ry: 4,
-                kind: WallMutationKind::CleanupRemoved,
-            },
-            WallMutation {
-                rx: 6,
-                ry: 5,
-                kind: WallMutationKind::DirectRemoved,
-            },
-        ];
+        let mut retained = OverlayGrid::new(12, 12);
+        retained.place_overlay(5, 5, 0, 0x02);
+        let mut retained_terrain = super::tests::clear_terrain_grid(12, 12);
+        let mut retained_rng = crate::sim::rng::SimRng::new(0x408);
+        let mut retained_host = WallHostSpy::default();
+        let _ = damage_wall_overlay_with_runtime_host(
+            &mut retained,
+            &registry,
+            Some(&mut retained_terrain),
+            5,
+            5,
+            100,
+            &mut retained_rng,
+            Some(&mut retained_host),
+        );
         assert_eq!(
-            wall_radar_dirty_cells(12, 12, &recursive),
+            retained_host.events,
+            vec![WallHostEvent::Dirty(WallDirtyStep::Tactical, (5, 5))],
+            "accepted retained damage dirties tactical before its state write and emits no radar"
+        );
+
+        let mut terminal = OverlayGrid::new(12, 12);
+        terminal.place_overlay(5, 5, 0, 0);
+        let mut terminal_terrain = super::tests::clear_terrain_grid(12, 12);
+        let mut terminal_rng = crate::sim::rng::SimRng::new(0x409);
+        let mut terminal_host = WallHostSpy::default();
+        let _ = damage_wall_overlay_with_runtime_host(
+            &mut terminal,
+            &registry,
+            Some(&mut terminal_terrain),
+            5,
+            5,
+            -1,
+            &mut terminal_rng,
+            Some(&mut terminal_host),
+        );
+
+        let mut expected = vec![
+            WallHostEvent::Dirty(WallDirtyStep::Tactical, (5, 5)),
+            WallHostEvent::Navigation {
+                cell: (5, 5),
+                navigation_changed: false,
+                repair: WallZoneRepairKind::AssignOrphaned,
+            },
+            WallHostEvent::Dirty(WallDirtyStep::Radar, (5, 5)),
+        ];
+        for coord in [
+            (5, 3),
+            (6, 4),
+            (5, 5),
+            (4, 4),
+            (5, 4),
+            (4, 4),
+            (5, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
+            (5, 5),
+            (6, 6),
+            (5, 7),
+            (4, 6),
+            (5, 6),
+            (6, 4),
+            (7, 5),
+            (6, 6),
+            (5, 5),
+            (6, 5),
+        ] {
+            expected.push(WallHostEvent::Dirty(WallDirtyStep::Tactical, coord));
+            expected.push(WallHostEvent::Dirty(WallDirtyStep::Radar, coord));
+        }
+        expected.push(WallHostEvent::Pointer(WallPointerTarget::Real(5, 5)));
+        assert_eq!(terminal_host.events, expected);
+
+        let mut dummy_grid = OverlayGrid::new(3, 3);
+        let mut dummy_terrain = super::tests::clear_terrain_grid(3, 3);
+        let dummy = dummy_terrain.shared_cell_dummy();
+        dummy.stamp_coord(-1, -1);
+        dummy.write_overlay_identity_state(0, 0);
+        let mut dummy_rng = crate::sim::rng::SimRng::new(0x40A);
+        let mut dummy_host = WallHostSpy::default();
+        let mut dummy_result = WallDamageResult::default();
+        let mut terrain_authority = Some(&mut dummy_terrain);
+        let mut host_authority: Option<&mut dyn WallDamageTransactionHost> =
+            Some(&mut dummy_host);
+        damage_wall_recursive(
+            &mut dummy_grid,
+            &registry,
+            &mut terrain_authority,
+            &mut host_authority,
+            NativeRuntimeOverlayCell::Dummy,
+            -1,
+            &mut dummy_rng,
+            &mut dummy_result,
+        );
+        assert_eq!(
+            dummy_host.events.first(),
+            Some(&WallHostEvent::Dirty(
+                WallDirtyStep::Tactical,
+                (u16::MAX, u16::MAX),
+            ))
+        );
+        assert_eq!(
+            dummy_host.events.last(),
+            Some(&WallHostEvent::Pointer(WallPointerTarget::SharedDummy)),
+            "the shared CellClass pointer-expiry dispatch remains ordered even though Rust has no represented dummy target"
+        );
+    }
+
+    #[test]
+    fn wall_radar_dirty_retains_legacy_edges_fixed_aliases_and_dummy_words() {
+        let registry = make_retail_stage_registry();
+        let mut rng = crate::sim::rng::SimRng::new(0x407_512);
+
+        let mut edge = OverlayGrid::new(3, 3);
+        edge.place_overlay(0, 0, 0, 0);
+        let edge_result = damage_wall_overlay(&mut edge, &registry, 0, 0, -1, &mut rng);
+        assert_eq!(
+            edge_result.radar_dirty_cells,
+            vec![(0, 0), (1, 1), (0, 2), (0, 1), (2, 0), (1, 0)],
+        );
+
+        let mut alias_terrain = super::tests::clear_terrain_grid(512, 2);
+        let mut aliased_edge = OverlayGrid::new(512, 2);
+        aliased_edge.place_overlay(0, 1, 0, 0);
+        let alias_result = damage_wall_overlay_with_terrain(
+            &mut aliased_edge,
+            &registry,
+            Some(&mut alias_terrain),
+            0,
+            1,
+            -1,
+            &mut rng,
+        );
+        assert_eq!(
+            alias_result.radar_dirty_cells,
             vec![
-                (5, 5),
-                (5, 3),
-                (6, 4),
-                (4, 4),
-                (5, 4),
-                (7, 5),
-                (6, 6),
-                (6, 5),
-                (5, 7),
-                (4, 6),
-                (5, 6),
-                (3, 5),
-                (4, 5),
-                (6, 3),
-                (7, 4),
-                (8, 5),
-                (7, 6),
-                (6, 7),
+                (0, 1),
+                (0, u16::MAX),
+                (1, 0),
+                (u16::MAX, 0),
+                (0, 0),
+                (511, u16::MAX),
+                (511, 1),
+                (510, 0),
+                (511, 0),
+                (1, 2),
+                (1, 3),
+                (0, 3),
+                (2, 1),
+                (1, 1),
             ],
-            "each recursive DirectRemoved expands once; cleanup removals do not",
+            "fixed-grid output preserves real aliases and raw signed dummy coordinates",
         );
     }
 
@@ -2995,9 +4461,9 @@ Strength=400
                 ((4, 5), WallMutationKind::DirectUpdated),
                 ((5, 5), WallMutationKind::DirectRemoved),
                 ((5, 4), WallMutationKind::CleanupUpdated),
-                ((6, 5), WallMutationKind::CleanupUpdated),
-                ((5, 6), WallMutationKind::CleanupUpdated),
                 ((4, 5), WallMutationKind::CleanupUpdated),
+                ((5, 6), WallMutationKind::CleanupUpdated),
+                ((6, 5), WallMutationKind::CleanupUpdated),
             ],
             "each recursive cardinal completes before the parent clear, then fixed cleanup runs"
         );
@@ -3106,6 +4572,36 @@ Strength=400
         let r = recompute_wall_connectivity_at(&mut grid, &reg, 5, 5);
         assert_eq!(r, RecomputeResult::Destroyed);
         assert_eq!(grid.cell(5, 5).overlay_id, None);
+    }
+
+    #[test]
+    fn cleanup_auto_destruct_thresholds_cover_active_retail_wall_ids_only() {
+        for (overlay_id, accepted) in [
+            (0x00, &[0x10, 0x20][..]),
+            (0x02, &[0x20, 0x30][..]),
+            (0x1A, &[0x20, 0x30][..]),
+        ] {
+            for full_byte in [0x00, 0x10, 0x20, 0x30] {
+                assert_eq!(
+                    auto_destruct_threshold(overlay_id, full_byte),
+                    accepted.contains(&full_byte),
+                    "overlay {overlay_id:#04x}, byte {full_byte:#04x}"
+                );
+            }
+        }
+        for (dormant, hardcoded_bytes) in [
+            (0x01, &[0x20][..]),
+            (0x03, &[0x10][..]),
+            (0x16, &[0x10, 0x20][..]),
+        ] {
+            for &full_byte in hardcoded_bytes {
+                assert!(
+                    !auto_destruct_threshold(dormant, full_byte),
+                    "TS/mod-only hardcoded rows stay excluded from active-retail behavior"
+                );
+            }
+        }
+        assert!(!auto_destruct_threshold(0x04, 0x20));
     }
 
     #[test]

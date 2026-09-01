@@ -39,6 +39,7 @@ pub mod object_type;
 pub mod overlay_types;
 pub mod particle_system_type;
 pub mod particle_type;
+pub(crate) mod process_owner;
 pub mod projectile_type;
 pub mod radar_event_config;
 pub mod ruleset;

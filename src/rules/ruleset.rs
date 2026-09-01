@@ -2491,8 +2491,14 @@ fn native_atoi_bytes(value: &[u8]) -> i32 {
 impl RuleSet {
     /// Build from the active ordered rules sources.
     pub fn from_rules_layers(layers: &RulesLayerStack) -> Result<Self, RulesError> {
-        let processed = layers.process();
-        Self::from_processed_rules(&processed)
+        let processed = layers.process()?;
+        let content_hash = processed.content_hash();
+        let crate_rules = processed.crate_rules().clone();
+        let ini = processed.into_projection_discarding_native_receipt();
+        let mut rules = Self::from_projected_ini(&ini)?;
+        rules.crate_rules = crate_rules;
+        rules.source_ini_hash = content_hash;
+        Ok(rules)
     }
 
     pub(crate) fn from_processed_rules(
@@ -4851,8 +4857,12 @@ MutateWarhead=MyMutate\n\
         assert!(!rules.harvester_can_dock_at("modharv", "GAREFN"));
     }
 
+    /// `BuildingTypeClass::ReadINI @ 0x0045FE50` reads `FreeUnit` through
+    /// `UnitTypeClass::Find_Or_Allocate`, so an unregistered name constructs an
+    /// empty UnitType instead of being dropped (see
+    /// `RULES_PROCESS_NATIVE_ID_CONSTRUCTOR_CHRONOLOGY_REINVESTIGATION_GHIDRA_REPORT.md`).
     #[test]
-    fn refinery_free_unit_ignores_missing_target() {
+    fn refinery_free_unit_allocates_missing_target_like_native() {
         let ini = IniFile::from_str(
             "[InfantryTypes]\n\
              [VehicleTypes]\n\
@@ -4866,7 +4876,11 @@ MutateWarhead=MyMutate\n\
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
 
         assert!(rules.is_refinery_type("MODPROC"));
-        assert_eq!(rules.refinery_free_unit("MODPROC"), None);
+        assert_eq!(rules.refinery_free_unit("MODPROC"), Some("UNKNOWN"));
+        assert!(
+            rules.type_handle("UNKNOWN").is_some(),
+            "native Find_Or_Allocate constructs the referenced UnitType"
+        );
     }
 
     #[test]
