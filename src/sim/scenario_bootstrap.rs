@@ -3707,7 +3707,8 @@ mod tests {
             output.crates,
             Some(crate::sim::crates::CratePlacement {
                 requested: 1,
-                placed: 1,
+                accepted: 1,
+                visible: 1,
             })
         );
         let wood = overlays.id_for_name("WOOD").expect("WOOD crate overlay");

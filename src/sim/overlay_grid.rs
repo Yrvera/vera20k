@@ -365,6 +365,33 @@ impl OverlayGrid {
         NativeOverlayPlacementResult::Placed
     }
 
+    /// Commit a crate overlay after `CrateSlot__ValidateCellAndCreateOverlay`
+    /// has accepted its native Mark predicates.
+    ///
+    /// This is deliberately narrower than [`Self::place_overlay_native_runtime`]:
+    /// the crate validator owns terrain, slope, occupation, speed, and identity
+    /// checks, while this writer only reproduces the successful CellClass
+    /// mutation (`identity`, then data `0xFF`). A cleared wall's inert owner is
+    /// unrelated Cell authority and therefore survives the write.
+    pub(crate) fn place_crate_overlay(
+        &mut self,
+        resolved_terrain: &mut ResolvedTerrainGrid,
+        registry: &OverlayTypeRegistry,
+        rx: u16,
+        ry: u16,
+        overlay_id: u8,
+    ) -> bool {
+        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        self.cells[idx].overlay_id = Some(overlay_id);
+        self.cells[idx].overlay_data = u8::MAX;
+        self.dirty_cells.push((rx, ry));
+        let changed = recalc_overlay_passability(self, resolved_terrain, registry, rx, ry);
+        self.record_synchronous_passability_change_at(rx, ry, changed);
+        true
+    }
+
     /// Reconstruct owners for map-loaded wall overlays after buildings exist.
     /// Strict distance improvement preserves the first candidate on ties.
     pub fn reconstruct_map_wall_owners(

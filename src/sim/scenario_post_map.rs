@@ -303,12 +303,13 @@ mod tests {
         // post-map command. Model that prerequisite instead of relying on the
         // now-removed permissive headless fallback.
         sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
-            base: 0,
+            base: 4,
             off_fc: -32,
             off_100: -32,
             off_104: 64,
             off_108: 64,
         });
+        sim.playfield_size_height = Some(4);
         sim.session.game_options.crates = true;
         sim.resolved_terrain = Some(flat_terrain());
         sim.overlay_grid = Some(OverlayGrid::new(MAP_SIZE, MAP_SIZE));
@@ -372,7 +373,8 @@ mod tests {
             output.crates,
             Some(CratePlacement {
                 requested: 1,
-                placed: 1,
+                accepted: 1,
+                visible: 1,
             })
         );
         let wood = overlays.id_for_name("WOOD").expect("WOOD overlay");
