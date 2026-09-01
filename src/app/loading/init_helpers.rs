@@ -1235,7 +1235,8 @@ mod tests {
     ///   One record per case-insensitive name, last definition wins
     ///   (Strength 200, not 100), and lookup is case-insensitive.
     /// - **Sectionless registry entry:** GHOST is listed in [VehicleTypes] but
-    ///   has no [GHOST] section — silently skipped, no record.
+    ///   has no [GHOST] section. The registry allocation pass still creates its
+    ///   constructor-default record before the later body-read pass.
     #[test]
     fn resolution_order_matches_engine() {
         let ini = IniFile::from_str(
@@ -1257,8 +1258,9 @@ mod tests {
         assert!(rules.object("htnk").is_some());
         assert_eq!(rules.object("HTNK").map(|o| o.strength), Some(100));
 
-        // Registry entry with no section produced no record.
-        assert!(rules.object("GHOST").is_none());
+        // Registry allocation precedes the body-read pass, so a sectionless
+        // entry retains its constructor-default record.
+        assert!(rules.object("GHOST").is_some());
     }
 
     /// AT-11 (RC-3): every ported scalar default that maps to a verified

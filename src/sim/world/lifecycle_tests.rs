@@ -4480,7 +4480,7 @@ fn gsi_05_04_intact_bridge_cell_target_reaches_shrapnel_consumer() {
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              [Warheads]\n0=WH\n\
-             [MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\n\
+             [MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\nSecondary=CHILD\n\
              [PARENT]\nDamage=0\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\
              [PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=-2\n\
              [CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\

@@ -3774,7 +3774,7 @@ fn gsi_04_07_damage_postmortem_fresh_null_expiry_does_not_recredit_initial_kille
 fn gsi_04_07_damage_death_weapon_gate_selection_and_native_damage() {
     let ini = IniFile::from_str(
         "[InfantryTypes]\n\
-         [VehicleTypes]\n0=FV\n1=NANRCT\n2=SLOTGATE\n3=DEFAULTED\n4=CURRENT\n\
+         [VehicleTypes]\n0=FV\n1=NANRCT\n2=SLOTGATE\n3=DEFAULTED\n4=CURRENT\n5=EARLYDEFAULT\n\
          [AircraftTypes]\n\
          [BuildingTypes]\n\
          [FV]\nStrength=200\nArmor=light\nPrimary=HoverMissile\nDeathWeapon=CRNuke\n\
@@ -3782,6 +3782,7 @@ fn gsi_04_07_damage_death_weapon_gate_selection_and_native_damage() {
          [SLOTGATE]\nStrength=100\nArmor=light\nPrimary=Ordinary\nSecondary=SuicideGun\nDeathWeapon=SlotBoom\n\
          [DEFAULTED]\nStrength=601\nArmor=light\nExplodes=yes\n\
          [CURRENT]\nStrength=100\nArmor=light\nExplodes=yes\nPrimary=Ordinary\nDeathWeaponDamageModifier=.5\n\
+         [EARLYDEFAULT]\nStrength=1\nSecondary=DefaultDeath\n\
          [HoverMissile]\nDamage=25\nWarhead=OrdinaryWH\n\
          [CRNuke]\nDamage=999\nWarhead=NukeWH\n\
          [NukePayload]\nDamage=600\nWarhead=NukeWH\n\
@@ -7189,7 +7190,7 @@ fn score_award_is_zero_without_a_cost_or_a_resolvable_type() {
 #[test]
 fn projectile_shrapnel_targets_hostile_head_before_random_cell_child() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
-        "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\n\n[PARENT]\nDamage=20\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\n[PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=2\n\n[CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\n[CHILDPROJ]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\nSecondary=CHILD\n\n[PARENT]\nDamage=20\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\n[PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=2\n\n[CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\n[CHILDPROJ]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
     ))
     .expect("shrapnel rules");
     let mut entities = EntityStore::new();
@@ -7275,7 +7276,7 @@ fn gsi_04_01_projectile_shrapnel_captures_each_shared_dummy_lookup() {
     use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, ground_height_leptons};
 
     let rules = RuleSet::from_ini(&IniFile::from_str(
-        "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\n\n[PARENT]\nDamage=20\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\n[PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=3\n\n[CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\n[CHILDPROJ]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\nSecondary=CHILD\n\n[PARENT]\nDamage=20\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\n[PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=3\n\n[CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\n[CHILDPROJ]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
     ))
     .expect("shrapnel rules");
     let mut entities = EntityStore::new();
