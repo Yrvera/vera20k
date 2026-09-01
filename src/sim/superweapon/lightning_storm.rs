@@ -411,14 +411,11 @@ fn spawn_bolt(
                     as &mut dyn crate::sim::combat::combat_aoe::AoECellPrelude,
             ),
         );
-        let wall_radar_dirty_cells = aoe.wall_radar_dirty_cells;
         let receivers = aoe.receivers;
         drop(cell_prelude);
 
-        // gamemd-derived: IonWH has Wall=yes in active retail. Each native
-        // DestroyOverlay visit dirties radar inline before GroundStrike returns
-        // and before the corresponding ReceiveDamage receiver is committed.
-        sim.mark_radar_terrain_dirty_cells(wall_radar_dirty_cells);
+        // IonWH has Wall=yes in active retail. The borrowed cell prelude has
+        // already published every native tactical/radar callback inline.
 
         // GroundStrike enters the ordinary ReceiveDamage transaction for each
         // hit before returning. In particular, a fatal carrier detonates its
@@ -842,7 +839,33 @@ mod tests {
                 (6, 5),
             ]
         );
-        assert_eq!(sim.radar_terrain_dirty_generation, 1);
+        assert_eq!(sim.radar_terrain_dirty_generation, 13);
+        assert_eq!(
+            sim.tactical_dirty_cells,
+            vec![
+                (5, 5),
+                (5, 3),
+                (6, 4),
+                (5, 5),
+                (4, 4),
+                (5, 4),
+                (4, 4),
+                (5, 5),
+                (4, 6),
+                (3, 5),
+                (4, 5),
+                (5, 5),
+                (6, 6),
+                (5, 7),
+                (4, 6),
+                (5, 6),
+                (6, 4),
+                (7, 5),
+                (6, 6),
+                (5, 5),
+                (6, 5),
+            ]
+        );
     }
 
     #[test]

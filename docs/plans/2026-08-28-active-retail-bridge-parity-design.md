@@ -8,7 +8,7 @@ The result must preserve behavior that already matches, replace behavior that co
 
 ## Status and Scope Decision
 
-**Revision 19 is TRANSACTION-3-DESIGN-APPROVED. Fresh authored-wall research and four serial read-only critics reopened and corrected Revision 18's wall-predicate assumption: successful Full_Init keeps ScenarioInit nonzero, so slope-admitted authored walls take native wall effects plus common finalization and emit a retained real-cell blocker-neighbor plane. The corrected living inventory/contract add G13 and forbid reconstruction from final wall identities. P0-R1 remains merged through PR #196; transaction 3 is the active transaction.**
+**Revision 20 is TRANSACTION-3-CRITIC-REPAIR-DESIGN-APPROVED. Revision 19's authored-wall work remains required, but the first implementation critic rejected commit `95f77159`: live wall damage and placement still deferred or omitted native tactical/radar publication and placement still reordered cleanup, owner, navigation, pointer expiry, and the common Recalc tail. Fresh live checks of `CellClass::DestroyOverlay @ 0x00480CB0`, `CellClass::PostDestructionWallCleanup @ 0x00480630`, and `OverlayClass::Mark @ 0x005FC570` define the synchronous host repair below. P0-R1 remains merged through PR #196; transaction 3 remains the active transaction and no wall mechanism is closed.**
 
 `docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows; the living inventory now has 36 explicit questions. OQ-34 closed the complete pre-map native-ID prefix, while the same zero-add pass reopened and then routed the terminal raw `0x100000`/`0x200000` clear/restamp and ordinary-cell LightConvert recomputation as OQ-35/OQ-36. The tenth broad pass added nothing. Before every transaction the inventory is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
 
@@ -940,6 +940,71 @@ Selected-layer scatter/crusher dispatch and stopped-blocked safety are distinct 
 4. Once a bridge destroy primitive is entered, execute its BlowUpBridge fallout synchronously before the next destroyed cell.
 5. Apply exact edge re-stamp, zones, events, radar/audio intents and DBRIS Anim/Bounce work in the contract-proved order.
 
+##### Active wall-mutation host repair (transaction 3 critic loop)
+
+Commit `95f77159` correctly moved wall identity, connectivity, Recalc, zone repair, retained
+neighbor counts, fixed-grid aliases, and the shared dummy into one recursive overlay transaction.
+It did not close the mechanism. Its `WallDamageResult::radar_dirty_cells` is an after-return
+diagnostic ledger, while active production callers replay that ledger only after native Recalc and
+zone work; it publishes no tactical dirty for damage. Runtime placement calls the same cleanup core
+without a host, writes the owner before cleanup, and batches navigation after autofill. Those are
+ordering defects, not presentation-only bookkeeping differences.
+
+The correction generalizes the existing `WallDamageTransactionHost` into one narrow synchronous
+wall-mutation host. The host receives ordered `Tactical` and `Radar` dirty steps using the packed
+coordinate captured at the native call site, the already modeled navigation step, and pointer expiry
+for either a represented real cell or the persistent shared dummy. It owns no overlay decisions and
+draws no RNG. `OverlayGrid` remains the identity/connectivity/count owner; the world adapters remain
+the tactical, radar, navigation, and entity-reference owners. The returned radar list may remain as
+a diagnostic trace, but no production caller may use it as mutation authority.
+
+For `DestroyOverlay`, an accepted hit emits tactical dirty before the `+0x10` state write. A retained
+partial hit then returns with no radar step. A terminal hit completes the state write and any nested
+cardinal transactions, clears the target, Recalcs it, publishes `AssignOrphaned`/graph repair, then
+emits the target radar dirty. Its N/W/S/E cleanup receivers each visit N/E/S/W/self; every visit,
+including non-walls and the shared dummy, captures one coordinate and emits tactical then radar before
+the wall gate. A cleanup-cleared wall dispatches pointer expiry before Recalc, publishes Assign plus
+graph only when its zone changed, and reverses eight retained counts only on that same changed-zone
+branch. The direct target dispatches pointer expiry after the complete cleanup fan-out and then
+reverses its eight counts. Signed fixed-grid aliases take the real-cell path. Shared-dummy dirty and
+pointer callbacks remain ordered even when later probes restamp the dummy coordinate; production may
+have no represented entity target to clear for that callback, but the native dispatch boundary is not
+erased. The wider native pointer-listener roster remains an explicit residual outside the represented
+cell-target references.
+
+For one runtime `OverlayClass::Mark` wall cell, the transaction is indivisible and completes before
+the next autofill cell: stamp data `0` and identity with no owner; run hosted cleanup in literal
+N/E/S/W/self order; when not in editor/ScenarioInit, perform the anchor Merge plus graph step; then
+write the owner; increment the wrapping eight-neighbor retained counts in N/NE/E/SE/S/SW/W/NW order;
+then run the common anchor Recalc tail. Cleanup always Recalcs a visited wall, but publishes its own
+zone repair/graph only when the zone changes. Authored identity finalization cannot itself seed a
+damaged cleanup removal because Mark writes data `0` and OverlayData is applied later without another
+cleanup. The removal branch is nevertheless active retail code/data-conditional for a pre-existing
+isolated damaged GASAND, GAWALL, or NAWALL; no shipped-map witness or ordinary invariant-preserving
+placement reachability is claimed. CYCL, BARB, and FENC stay dormant under retail rules.
+
+The smallest borrow-safe production adaptation threads this host through the existing AoE prelude,
+combat-inline hook, direct wall host, Lightning, sale, movement-crush, persistent-projectile, ambient,
+and placement seams. A placement adapter borrows only the already separate entity-reference, dirty,
+navigation, bridge, overlay, and terrain owners and commits each anchor/filler transaction before
+continuing the scan. Load-time materialization retains its non-live wrapper and must not invent
+runtime observer publication. Genetic Mutator remains excluded because the active retail
+`[MutateExplosion]` path has no Wall/Wood/WallAbsoluteDestroyer capability.
+
+Rejected alternatives are: passing raw world vectors through every overlay function, which couples
+the map owner to Simulation storage and worsens borrow boundaries; returning a generic effect vector
+for later replay, which recreates the exact deferred-order defect and loses nested transaction order;
+and moving wall mutation wholesale onto `Simulation`, which duplicates OverlayGrid authority and
+creates architecture drift. The callback host is the existing architecture seam extended only with
+effects that native executes inside the same call.
+
+Focused acceptance requires an exact ordered host spy for rejected, retained, terminal, nested,
+cleanup-removal, signed-alias, and true-dummy cases; five-visit placement traces including non-walls;
+owner visibility and second-anchor-Recalc ordering; one complete filler transaction before the next;
+and production witnesses for ordinary combat, persistent projectile, Lightning, movement/crush,
+sale, and the active-data-conditional placement cleanup. Tests must prove that no deferred production
+radar replay remains. Existing exact connectivity/count/snapshot/hash tests remain preservation gates.
+
 #### Repair and CABHUT transaction
 
 1. Preserve the outer Y-major discriminator and inner X-major first-hit scan distinction.
@@ -1247,6 +1312,7 @@ suite unless it discovers a correction requiring a new transaction and PR.
 - `MILESTONE-BLOCKING` — low bridges must remain flat Road overlays and mutate exactly through intact/damaged/destroyed/repair states. Trigger: every low crossing and bridge damage. Player effect: wrong movement class, impassable water or invented tunnel behavior. Frequency: common on stock low-bridge maps. [BR-M05, M11, M17, M19]
 - `MILESTONE-BLOCKING` — collapse and repair must preserve native per-cell transaction/RNG order. Trigger: bridge weapon damage, CABHUT C4, attached bombs or engineer repair. Player effect: different survivors, debris damage, bridge shape, zones and events. Frequency: common whenever bridges are contested. [BR-M16..M19, M26, M27]
 - `MILESTONE-BLOCKING` — bridge destruction authority must follow the active mode/source matrix: scenario `[SpecialFlags]` where authoritative, skirmish/multiplayer session `BridgeDestruction` where authoritative, never `[CombatDamage] DestroyableBridges`; CABHUT C4/attached bombs bypass the weapon gate. Trigger: every attempted weapon or hut-driven collapse when sources disagree. Player effect: bridges become wrongly indestructible/destructible or hut sabotage stops working. Frequency: every configured disagreement and every CABHUT collapse. [BR-M01, BR-M16, BR-M19]
+- `MILESTONE-BLOCKING` — active wall damage and placement must publish tactical, radar, pointer-expiry, Recalc, zone, graph, owner, and retained-count effects inside each native wall transaction. Trigger: every accepted wall hit and every runtime wall placement; the cleanup-removal sub-branch additionally requires a pre-existing isolated damaged active-retail wall. Player effect: stale tactical/minimap cells, retained targets, delayed or wrong path authority, and owner/count visibility in the wrong transaction. Frequency: wall hits and placement are ordinary; cleanup auto-removal is active-data-conditional with no established shipped-map witness. [transaction 3 critic repair / BR-M04 preservation]
 - `MILESTONE-BLOCKING` — every fresh Techno construction must consume and retain its one Scenario word, while generated Techno-binding projection and restore must not double-draw it. Trigger: valid authored base/upgrade objects, Post-Map starting forces, and ordinary runtime production/spawn, including a later failed Unlimbo. Player effect: later bridge damage/debris/repair randomness and constructor-word-driven report choices diverge; fixed-map low-Mark variants do not, because native Mark runs before authored Technos. Frequency: essentially every match, with authored-map impact on most stock maps and runtime impact whenever units are created. [P0 prerequisite]
 - `COMPOUNDING` — authored Overlay rows must construct/defer/drain real load objects on the shared native-ID and registry timeline, while steep-slope survivors remain lifecycle-only. Trigger: every admitted format-active authored row; the shared drain itself runs on every fresh reader. Player effect: CellAnim/tile-Anim order and later native identities diverge, or a rejected row wrongly renders/saves; slope registry persistence alone is ordinarily invisible. Frequency: common on authored stock maps, with slope/wall/child-Anim branches content-conditional. [transaction 3 / BR-M04, M05]
 - `MILESTONE-BLOCKING` — active RMG must emit traversable low decks and CABHUTs while preserving the two-run lifecycle and all three RNG owners. Trigger: every preview and every launch of a retail random map; deck production itself is active on types 3/4. Player effect: generated water regions lack intended connections, fixed-map Mark corrupts already-stamped generated decks, accepted maps differ from fresh `.SED` launches, or split/double constructor draws shift all later Scenario randomness. Frequency: every random-map session, with bridge placement on every qualifying generated map. [BR-M02]
@@ -1701,6 +1767,16 @@ Revision 19 reopens only the authored-wall portion on newer native evidence. The
 passed its fourth serial read-only critic after compact-ID and active-winner census corrections; this
 amendment replaces authored wall rejection with ScenarioInit-forced success and adds the retained
 real-cell blocker-neighbor plane. It does not waive a fresh implementation critic.
+Revision 20 follows the first fresh implementation critic's `NEEDS_FIX` verdict on `95f77159`.
+Autonomous adversarial review approves the synchronous host repair because the three live-decompiled
+transactions establish every material order boundary, the host extends an existing ownership seam,
+and it changes no overlay predicate, RNG, snapshot, or hash authority. The highest remaining ways an
+ordinary match could still feel wrong are one missed adapter, a retained hit without its pre-write
+tactical dirty, or placement cleanup finishing after the next filler; each has an explicit production
+fixture. Choosing deferred effect replay or a Simulation-owned wall service would cause the most
+expensive rework, so both are forbidden. This self-approval satisfies the autonomous design gate but
+does not waive the required new fresh read-only critic, who must recheck the original findings and the
+complete correction.
 These review passes close no bridge mechanism and waive none of transaction 3's implementation contract,
 builder/fresh-critic chain, focused validation, PR-readiness full suite, or merge gate.
 

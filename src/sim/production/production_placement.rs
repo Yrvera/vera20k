@@ -309,7 +309,6 @@ pub fn place_ready_building_with_overlays(
                 debug_assert!(stamped, "scanned wall filler must remain stampable");
             }
         }
-        sim.finalize_wall_placement_navigation(path_grid);
         // Wall placement consumes the factory-created BuildingClass into
         // overlay state; the constructor identity is destroyed, never
         // reconstructed at placement.

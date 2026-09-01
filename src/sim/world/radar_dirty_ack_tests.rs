@@ -109,7 +109,7 @@ fn radar_dirty_ack_rearms_same_wall_removal() {
     let mut sim = Simulation::new();
     sim.overlay_grid = Some(OverlayGrid::new(16, 16));
 
-    for expected_generation in 1..=2 {
+    for expected_generation in [13, 26] {
         sim.overlay_grid
             .as_mut()
             .unwrap()
@@ -173,6 +173,7 @@ fn radar_dirty_wall_partial_damage_marks_nothing() {
     assert_eq!(sim.overlay_grid.as_ref().unwrap().cell(4, 5).overlay_data, 0x10);
     assert!(sim.radar_terrain_dirty_cells.is_empty());
     assert_eq!(sim.radar_terrain_dirty_generation, 0);
+    assert_eq!(sim.tactical_dirty_cells, vec![(4, 5)]);
 }
 
 #[test]

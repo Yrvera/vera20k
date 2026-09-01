@@ -1090,6 +1090,10 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
         vec![(4, 3), (5, 4), (4, 5), (3, 4), (4, 4)]
     );
     assert_eq!(sim.radar_terrain_dirty_cells, sim.tactical_dirty_cells);
+    assert_eq!(
+        sim.radar_terrain_dirty_generation, 5,
+        "sale publishes each first-unique cleanup radar call before recompute; the sold-cell tail is a duplicate"
+    );
     assert!(
         sim.substrate
             .entities

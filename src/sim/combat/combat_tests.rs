@@ -5394,6 +5394,33 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
         ],
         "direct wall damage uses the terminal DestroyOverlay visit stencil",
     );
+    assert_eq!(sim.radar_terrain_dirty_generation, 13);
+    assert_eq!(
+        sim.tactical_dirty_cells,
+        vec![
+            (5, 5),
+            (5, 3),
+            (6, 4),
+            (5, 5),
+            (4, 4),
+            (5, 4),
+            (4, 4),
+            (5, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
+            (5, 5),
+            (6, 6),
+            (5, 7),
+            (4, 6),
+            (5, 6),
+            (6, 4),
+            (7, 5),
+            (6, 6),
+            (5, 5),
+            (6, 5),
+        ]
+    );
 
     // No persistent wall entity is created or removed.
     let remaining = sim
@@ -5480,6 +5507,8 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
         "crusher uses the terminal DestroyOverlay radar-dirty stencil",
     );
     assert_eq!(sim.radar_terrain_dirty_cells[0], (5, 5));
+    assert_eq!(sim.radar_terrain_dirty_generation, 13);
+    assert_eq!(sim.tactical_dirty_cells.len(), 21);
     assert!(
         sim.substrate
             .entities

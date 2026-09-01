@@ -91,7 +91,7 @@ Intervening PR #197 added only Team-AI INI tests and did not touch a transaction
 | Ordinary/high identity-state writes and high anchor restore | Verified | Replace split late high-only projection |
 | Base-object tactical dirty before derived dispatch | Verified | Implement one intent per accepted object; no generated-body repeats |
 | Authored OverlayClass allocation/registries/Mark/UnInit/shared-drain and slope-survivor lifecycle | Verified, including direct base Unlimbo, child Anim interleaving, authored-wall common-success reachability, generic counter-zero rejection exclusion, unconditional generated/body-absent drain, non-presentation slope survival, and absolute prefix-relative IDs | Implement one lightweight load-object registry/queue owner from the closed OQ-33/OQ-34 evidence; authored walls use the common queued tail |
-| Authored `Wall=yes` ScenarioInit success, cardinal connectivity, owner `-1`, and blocker-neighbor count plane | Verified, including native order, signed fixed-map real aliases, wrapping `u8`, later low-body overwrite retention, active retail census, runtime removal conditions, shared-dummy traversal, pointer-expiry ordering, and sale exclusion | Plane/persistence/pathfinding and runtime count/dummy/navigation/radar owners are implemented and focused-validated on the transaction branch; fresh criticism remains open, as do production authored-row dispatch/consumed-once installation and the unrepresented native non-entity pointer-listener roster |
+| Authored `Wall=yes` ScenarioInit success, cardinal connectivity, owner `-1`, and blocker-neighbor count plane | Verified, including native order, signed fixed-map real aliases, wrapping `u8`, later low-body overwrite retention, active retail census, runtime removal conditions, shared-dummy traversal, pointer-expiry ordering, and sale exclusion | Plane/persistence/pathfinding and runtime count/dummy/navigation core are implemented. Fresh critic 1 rejected `95f77159`'s deferred/omitted dirty publication and placement/sale order; the synchronous-host correction passed its focused validation matrix, but a new fresh critic remains mandatory. Production authored-row dispatch/consumed-once installation and the unrepresented native non-entity pointer-listener roster also remain open |
 | Low fixed/search/body algorithm and exact `3*L` raw RNG | Verified by settled reports and cold checks | Implement without reordering or ranged substitution |
 | Persistent dummy, signed `i16 y*512+x` lookup, overlay/state fields | Verified | Extend existing shared identity; do not add derived fields |
 | Independent OverlayData traversal | Verified | Execute after the one Mark transaction; real cells only |
@@ -701,12 +701,14 @@ later owning transactions/reverse audit are complete.
   sale has no sold-anchor `+0x122` access and deliberately leaves that contribution stale. The binary
   also contains CYCL/BARB/FENC threshold rows, but retail never sets those types `Wall=yes`; only
   GASAND/GAWALL/NAWALL are active and the TS/mod-only rows remain excluded. Runtime cardinal and
+  GASAND/GAWALL/NAWALL are active code/data rows, but no shipped-map or ordinary invariant-preserving
+  placement witness establishes the required pre-existing isolated-damaged input. Runtime cardinal and
   cleanup probes use the same signed fixed-grid lookup as their count tails: a real alias is visited,
   connected, dirtied, Recalced, and conditionally removed; it is not rectangle-clipped. Direct
   terminal cleanup receivers run `N,W,S,E`, while the penultimate chain remains `N,E,S,W`; each
   cleanup receiver completes its `N,E,S,W,self` walk. A true miss returns the persistent dummy,
-  whose overlay identity/state can affect later visits and whose packed coordinate is a real radar
-  dirty output even though no dummy count enters the exported real plane. Direct cell-pointer expiry
+  whose overlay identity/state can affect later visits and whose packed coordinate is a real tactical/
+  radar dirty output even though no dummy count enters the exported real plane. Direct cell-pointer expiry
   follows the complete cleanup fan-out and precedes the direct count decrement; cleanup-removal
   expiry precedes its Recalc. Active retail `[IonWH]` has `Wall=yes`, so Lightning Storm is a live
   caller; `[MutateExplosion]` has no wall flags and is a dormant Genetic Mutator exclusion.
@@ -717,12 +719,16 @@ later owning transactions/reverse audit are complete.
   deltas. Direct removal now executes its represented Recalc before cleanup; every visited live wall
   Recalcs in cleanup order; cleanup count reversal follows its changed-zone Recalc; and the direct
   decrement remains after the full fan-out. All eight count probes now use the stamping lookup;
-  chain/cleanup/sale preserve shared-dummy state and exact packed radar coordinates. Standard combat,
-  ambient Wave, crush, world-event, sale, and Lightning paths have synchronous navigation/radar
-  ownership, and represented Techno Cell targets use the native forward clear-first expiry order.
-  Focused validation now passes the 106-test `wall` filter, 58 overlay-grid tests, 11 Lightning
-  tests, the pointer-expiry order test, the shared-dummy hash test, and three distinct live-object
-  detach-sweep controls; fresh criticism remains pending. The broader native non-entity
+  chain/cleanup/sale preserve shared-dummy state and exact packed dirty coordinates. Fresh critic 1
+  rejected `95f77159`: damage omitted tactical dirty, terminal radar was replayed after return, sale
+  dirtied after recompute, and placement assigned owner/batched navigation outside the Mark transaction.
+  The correction extends one synchronous host through standard combat, persistent projectile/death,
+  ambient Wave, crush, world events, sale, placement, and Lightning; represented Techno Cell targets
+  use the native forward clear-first expiry order. The complete correction-focused matrix passes:
+  107 wall-filter tests, 59 overlay-grid tests, 12 Lightning Storm tests, the exact affected entry-path
+  fixtures, the shared-dummy hash test, and all three detach-sweep tests. A new fresh critic remains open.
+  Pre-critic validation of the earlier core is retained as preservation evidence, not as approval of
+  the correction. The broader native non-entity
   expiry-listener roster is not represented and remains open. The authored wall helper itself
   remains test-only: no
   production authored-row reader calls it or consumes the finalized payload, so live maps still enter
@@ -731,8 +737,8 @@ later owning transactions/reverse audit are complete.
 - **Required delta:** wire the proved wall helper into the one synchronous authored row transaction,
   apply its cleanup/count/common effects through the real load-effect and common lifecycle owners, and
   consume the finalized payload in production/headless construction. Preserve real fixed-stride aliases,
-  suppress only dummy count-plane output while retaining runtime dummy state/radar output, and keep
-  OverlayData/later low writes count-neutral. Complete fresh criticism of the runtime slice, then
+  suppress only dummy count-plane output while retaining runtime dummy state/dirty output, and keep
+  OverlayData/later low writes count-neutral. Obtain fresh criticism of the runtime slice, then
   remove production's legacy
   constructor path so authored authority can never fall back to final-wall reconstruction, then reject
   current-version `None` saves/restores (or bump beyond v114 if such a save has escaped).
@@ -740,8 +746,9 @@ later owning transactions/reverse audit are complete.
   N/E/S/W/self cleanup and N/E/S/W connectivity; owner `-1`; eight-neighbor wrapping increments;
   overlap wrapping; later low-body identity overwrite with retained counts; fixed-stride real alias
   update; runtime fixed-alias connectivity/chain/cleanup/sale; authored true-dummy count-output
-  absence plus runtime dummy state/radar presence; exact direct/cleanup pointer-expiry order; active
-  Lightning navigation/radar publication; OverlayData
+  absence plus runtime dummy state/tactical/radar presence; exact direct/cleanup pointer-expiry order;
+  active Lightning navigation/tactical/radar publication; exact runtime placement owner/count/common-
+  tail order and complete-filler transaction boundaries; OverlayData
   state-only behavior; common two-broadcast authored-
   wall finalization; separate generic counter-zero rejection; and a finalized-payload consumer that
   receives the count plane without scanning final walls.

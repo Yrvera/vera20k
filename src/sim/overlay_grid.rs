@@ -596,13 +596,27 @@ impl OverlayGrid {
         data: u8,
         owner: InternedId,
     ) {
+        self.stamp_wall_identity(rx, ry, overlay_id, data);
+        self.set_wall_owner(rx, ry, owner);
+    }
+
+    /// Stamp runtime wall identity/data before native cleanup. OverlayClass::Mark
+    /// does not make its pending House visible until cleanup and the explicit
+    /// anchor Merge/graph step have completed.
+    pub(crate) fn stamp_wall_identity(&mut self, rx: u16, ry: u16, overlay_id: u8, data: u8) {
         if let Some(idx) = index_of(self.width, self.height, rx, ry) {
             self.cells[idx] = OverlayCell {
                 overlay_id: Some(overlay_id),
                 overlay_data: data,
-                wall_owner: Some(owner),
+                wall_owner: None,
             };
             self.dirty_cells.push((rx, ry));
+        }
+    }
+
+    pub(crate) fn set_wall_owner(&mut self, rx: u16, ry: u16, owner: InternedId) {
+        if let Some(idx) = index_of(self.width, self.height, rx, ry) {
+            self.cells[idx].wall_owner = Some(owner);
         }
     }
 
@@ -942,11 +956,26 @@ pub(crate) enum WallZoneRepairKind {
     MergeAdjacent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WallDirtyStep {
+    Tactical,
+    Radar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WallPointerTarget {
+    Real(u16, u16),
+    SharedDummy,
+}
+
 /// World-owned synchronous effects inside one native DestroyOverlay call.
-/// Implementations update live navigation authority and broadcast the distinct
-/// cell-pointer expiry callback; neither can be reconstructed from an
-/// after-return mutation list without losing visit order.
+/// Implementations publish dirty state, update live navigation authority, and
+/// broadcast the distinct cell-pointer expiry callback. None can be
+/// reconstructed from an after-return mutation list without losing native
+/// recursive and cleanup-visit order.
 pub(crate) trait WallDamageTransactionHost {
+    fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16));
+
     fn navigation_step(
         &mut self,
         terrain: &ResolvedTerrainGrid,
@@ -955,13 +984,22 @@ pub(crate) trait WallDamageTransactionHost {
         repair: WallZoneRepairKind,
     );
 
-    fn pointer_expired(&mut self, cell: (u16, u16));
+    fn pointer_expired(&mut self, target: WallPointerTarget);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeRuntimeOverlayCell {
     Real(u16, u16),
     Dummy,
+}
+
+impl From<NativeRuntimeOverlayCell> for WallPointerTarget {
+    fn from(target: NativeRuntimeOverlayCell) -> Self {
+        match target {
+            NativeRuntimeOverlayCell::Real(rx, ry) => Self::Real(rx, ry),
+            NativeRuntimeOverlayCell::Dummy => Self::SharedDummy,
+        }
+    }
 }
 
 /// Resolve one runtime CellClass lookup, retaining the shared-dummy result.
@@ -1057,15 +1095,40 @@ pub struct WallDamageResult {
     /// Exact mutation order. This is deliberately a wall-local trace, not a
     /// generalized gameplay event system.
     pub mutations: Vec<WallMutation>,
-    /// Exact packed CellStruct values submitted to MarkTerrainDirty by this
-    /// transaction, deduplicated in first-call order. True-dummy coordinates
-    /// retain their raw signed-word bit patterns.
+    /// Diagnostic trace of packed CellStruct values submitted to
+    /// MarkTerrainDirty, deduplicated in first-call order. Production mutation
+    /// authority is the synchronous host callback, never replay of this list.
+    /// True-dummy coordinates retain their raw signed-word bit patterns.
     pub radar_dirty_cells: Vec<(u16, u16)>,
 }
 
 fn push_wall_radar_dirty(result: &mut WallDamageResult, coord: (u16, u16)) {
     if !result.radar_dirty_cells.contains(&coord) {
         result.radar_dirty_cells.push(coord);
+    }
+}
+
+fn publish_wall_dirty_step(
+    host: &mut Option<&mut dyn WallDamageTransactionHost>,
+    result: &mut WallDamageResult,
+    step: WallDirtyStep,
+    packed_coord: (u16, u16),
+) {
+    if let Some(host) = host.as_deref_mut() {
+        host.dirty_step(step, packed_coord);
+    }
+    if step == WallDirtyStep::Radar {
+        push_wall_radar_dirty(result, packed_coord);
+    }
+}
+
+fn publish_wall_dirty_step_without_result(
+    host: &mut Option<&mut dyn WallDamageTransactionHost>,
+    step: WallDirtyStep,
+    packed_coord: (u16, u16),
+) {
+    if let Some(host) = host.as_deref_mut() {
+        host.dirty_step(step, packed_coord);
     }
 }
 
@@ -1175,6 +1238,15 @@ fn damage_wall_recursive(
         }
     }
 
+    // CellClass::DestroyOverlay dirties the tactical footprint for every
+    // accepted wall hit before writing the upper damage nibble. A rejected RNG
+    // attempt emits nothing; a retained partial hit emits no radar step.
+    if let Some(coord) =
+        native_runtime_overlay_target_packed_coord(resolved_terrain.as_deref(), target)
+    {
+        publish_wall_dirty_step(host, result, WallDirtyStep::Tactical, coord);
+    }
+
     // Increment damage level (upper nibble).
     let new_data = overlay_data.wrapping_add(0x10);
     // Native writes CellClass+0x11E before entering the recursive cardinal
@@ -1252,11 +1324,6 @@ fn damage_wall_recursive(
 
     // Full destruction.
     clear_native_runtime_overlay_target(grid, resolved_terrain.as_deref(), target, false);
-    if let Some(coord) =
-        native_runtime_overlay_target_packed_coord(resolved_terrain.as_deref(), target)
-    {
-        push_wall_radar_dirty(result, coord);
-    }
     if let NativeRuntimeOverlayCell::Real(rx, ry) = target {
         result.destroyed_cells.push((rx, ry));
         result.mutations.push(WallMutation {
@@ -1288,14 +1355,22 @@ fn damage_wall_recursive(
         }
     }
 
+    // Native publishes the direct target's radar terrain dirty only after its
+    // Recalc + AssignOrphaned/graph tail, before cardinal cleanup begins. A
+    // shared dummy is read here, after any recursive chain may have restamped
+    // its packed coordinate.
+    if let Some(coord) =
+        native_runtime_overlay_target_packed_coord(resolved_terrain.as_deref(), target)
+    {
+        publish_wall_dirty_step(host, result, WallDirtyStep::Radar, coord);
+    }
+
     // Native cleanup is part of this direct-destruction call. A recursive
     // cardinal therefore completes its own direct clear + fixed cleanup before
     // the parent advances to the next cardinal.
     cleanup_wall_neighbors_into(grid, registry, resolved_terrain, host, target, result);
-    if let NativeRuntimeOverlayCell::Real(rx, ry) = target
-        && let Some(host) = host.as_deref_mut()
-    {
-        host.pointer_expired((rx, ry));
+    if let Some(host) = host.as_deref_mut() {
+        host.pointer_expired(target.into());
     }
     // CellClass::DestroyOverlay @ 0x00480CB0 reverses this wall's
     // CellClass+0x122 contribution at 0x00481070..0x00481082 only after its
@@ -1535,6 +1610,7 @@ pub(crate) fn runtime_wall_cleanup_visit_at(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     x: i32,
     y: i32,
+    mut host: Option<&mut dyn WallDamageTransactionHost>,
 ) -> Option<RuntimeWallCleanupVisit> {
     let target = native_runtime_overlay_cell_lookup(
         grid.width(),
@@ -1544,6 +1620,8 @@ pub(crate) fn runtime_wall_cleanup_visit_at(
         y,
     )?;
     let packed_coord = native_runtime_overlay_target_packed_coord(resolved_terrain, target)?;
+    publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Tactical, packed_coord);
+    publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Radar, packed_coord);
     let was_wall = native_runtime_overlay_target_state(grid, resolved_terrain, target)
         .0
         .and_then(|overlay_id| registry.flags(overlay_id))
@@ -1553,6 +1631,11 @@ pub(crate) fn runtime_wall_cleanup_visit_at(
     } else {
         RecomputeResult::NoChange
     };
+    if recomputed == RecomputeResult::Destroyed
+        && let Some(host) = host.as_deref_mut()
+    {
+        host.pointer_expired(target.into());
+    }
     let real_cell = match target {
         NativeRuntimeOverlayCell::Real(rx, ry) => Some((rx, ry)),
         NativeRuntimeOverlayCell::Dummy => None,
@@ -1569,9 +1652,30 @@ pub(crate) fn runtime_wall_cleanup_visit_at(
 pub fn refresh_wall_connectivity_after_placement(
     grid: &mut OverlayGrid,
     registry: &OverlayTypeRegistry,
+    resolved_terrain: Option<&mut ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+) {
+    refresh_wall_connectivity_after_placement_with_host(
+        grid,
+        registry,
+        resolved_terrain,
+        rx,
+        ry,
+        None,
+    );
+}
+
+/// Runtime-hosted `PostDestructionWallCleanup(anchor, 1)` used by one wall
+/// Mark transaction. Load-time materialization uses the hostless wrapper
+/// above because no live tactical/radar/entity/navigation observers exist.
+pub(crate) fn refresh_wall_connectivity_after_placement_with_host(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
     mut resolved_terrain: Option<&mut ResolvedTerrainGrid>,
     rx: u16,
     ry: u16,
+    mut host: Option<&mut dyn WallDamageTransactionHost>,
 ) {
     assert!(
         grid.retained_wall_neighbor_counts().is_none() || resolved_terrain.is_some(),
@@ -1588,6 +1692,12 @@ pub fn refresh_wall_connectivity_after_placement(
         ) else {
             continue;
         };
+        if let Some(coord) =
+            native_runtime_overlay_target_packed_coord(resolved_terrain.as_deref(), target)
+        {
+            publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Tactical, coord);
+            publish_wall_dirty_step_without_result(&mut host, WallDirtyStep::Radar, coord);
+        }
         let was_wall = native_runtime_overlay_target_state(
             grid,
             resolved_terrain.as_deref(),
@@ -1602,6 +1712,11 @@ pub fn refresh_wall_connectivity_after_placement(
             resolved_terrain.as_deref(),
             target,
         );
+        if result == RecomputeResult::Destroyed
+            && let Some(host) = host.as_deref_mut()
+        {
+            host.pointer_expired(target.into());
+        }
         let NativeRuntimeOverlayCell::Real(nx, ny) = target else {
             continue;
         };
@@ -1621,7 +1736,23 @@ pub fn refresh_wall_connectivity_after_placement(
                     kind,
                 },
             );
-            grid.record_synchronous_passability_change_at(nx, ny, recalc.navigation_changed);
+            if host.is_some() {
+                grid.record_synchronous_passability_change(recalc.navigation_changed);
+            } else {
+                grid.record_synchronous_passability_change_at(nx, ny, recalc.navigation_changed);
+            }
+            if recalc.zone_changed && let Some(host) = host.as_deref_mut() {
+                host.navigation_step(
+                    terrain,
+                    (nx, ny),
+                    recalc.navigation_changed,
+                    if result == RecomputeResult::Destroyed {
+                        WallZoneRepairKind::AssignOrphaned
+                    } else {
+                        WallZoneRepairKind::MergeAdjacent
+                    },
+                );
+            }
             if result == RecomputeResult::Destroyed && recalc.zone_changed {
                 grid.remove_retained_wall_neighbor_source(Some(terrain), nx, ny);
             }
@@ -1694,7 +1825,11 @@ fn cleanup_wall_neighbors_into(
                 resolved_terrain.as_deref(),
                 target,
             ) {
-                push_wall_radar_dirty(result, coord);
+                // PostDestructionWallCleanup submits both calls before it
+                // checks overlay identity or Wall=. Capture once so later
+                // shared-dummy probes cannot split the pair across coords.
+                publish_wall_dirty_step(host, result, WallDirtyStep::Tactical, coord);
+                publish_wall_dirty_step(host, result, WallDirtyStep::Radar, coord);
             }
             let was_wall = native_runtime_overlay_target_state(
                 grid,
@@ -1713,17 +1848,18 @@ fn cleanup_wall_neighbors_into(
                 resolved_terrain.as_deref(),
                 target,
             );
-            let NativeRuntimeOverlayCell::Real(nx, ny) = target else {
-                // RecalcAttributes' first identity check suppresses the shared
-                // dummy. Its overlay state and coordinate walk above remain
-                // live, but no real-cell mutation or zone/count output exists.
-                continue;
-            };
             if recomputed == RecomputeResult::Destroyed
                 && let Some(host) = host.as_deref_mut()
             {
-                host.pointer_expired((nx, ny));
+                host.pointer_expired(target.into());
             }
+            let NativeRuntimeOverlayCell::Real(nx, ny) = target else {
+                // RecalcAttributes' first identity check suppresses the shared
+                // dummy. Its overlay state and coordinate walk above remain
+                // live, including pointer expiry when cleanup cleared it, but
+                // no real-cell mutation or zone/count output exists.
+                continue;
+            };
             let recalc_kind = match recomputed {
                 RecomputeResult::Destroyed => WallMutationKind::CleanupRemoved,
                 RecomputeResult::NoChange | RecomputeResult::Updated => {
@@ -3710,6 +3846,46 @@ mod recompute_tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WallHostEvent {
+        Dirty(WallDirtyStep, (u16, u16)),
+        Navigation {
+            cell: (u16, u16),
+            navigation_changed: bool,
+            repair: WallZoneRepairKind,
+        },
+        Pointer(WallPointerTarget),
+    }
+
+    #[derive(Default)]
+    struct WallHostSpy {
+        events: Vec<WallHostEvent>,
+    }
+
+    impl WallDamageTransactionHost for WallHostSpy {
+        fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+            self.events.push(WallHostEvent::Dirty(step, packed_coord));
+        }
+
+        fn navigation_step(
+            &mut self,
+            _terrain: &ResolvedTerrainGrid,
+            cell: (u16, u16),
+            navigation_changed: bool,
+            repair: WallZoneRepairKind,
+        ) {
+            self.events.push(WallHostEvent::Navigation {
+                cell,
+                navigation_changed,
+                repair,
+            });
+        }
+
+        fn pointer_expired(&mut self, target: WallPointerTarget) {
+            self.events.push(WallHostEvent::Pointer(target));
+        }
+    }
+
     /// Build a registry whose overlay_id=2 maps to GAWALL (for auto-destruct
     /// threshold matching). Filler entries at id 0 and 1 get Wall=yes too so
     /// tests can exercise other ids if needed.
@@ -3900,6 +4076,139 @@ Strength=400
                 (6, 5),
             ],
             "direct cell precedes N/W/S/E receivers, each with N/E/S/W/self visits",
+        );
+    }
+
+    #[test]
+    fn wall_damage_host_publishes_native_dirty_navigation_and_pointer_order() {
+        let registry = make_retail_stage_registry();
+
+        let mut rejected = OverlayGrid::new(12, 12);
+        rejected.place_overlay(5, 5, 0, 0);
+        let mut rejected_terrain = super::tests::clear_terrain_grid(12, 12);
+        let mut rejected_rng = crate::sim::rng::SimRng::new(0x407);
+        let mut rejected_host = WallHostSpy::default();
+        let _ = damage_wall_overlay_with_runtime_host(
+            &mut rejected,
+            &registry,
+            Some(&mut rejected_terrain),
+            5,
+            5,
+            0,
+            &mut rejected_rng,
+            Some(&mut rejected_host),
+        );
+        assert!(
+            rejected_host.events.is_empty(),
+            "a failed Strength roll emits no native dirty callback"
+        );
+
+        let mut retained = OverlayGrid::new(12, 12);
+        retained.place_overlay(5, 5, 0, 0x02);
+        let mut retained_terrain = super::tests::clear_terrain_grid(12, 12);
+        let mut retained_rng = crate::sim::rng::SimRng::new(0x408);
+        let mut retained_host = WallHostSpy::default();
+        let _ = damage_wall_overlay_with_runtime_host(
+            &mut retained,
+            &registry,
+            Some(&mut retained_terrain),
+            5,
+            5,
+            100,
+            &mut retained_rng,
+            Some(&mut retained_host),
+        );
+        assert_eq!(
+            retained_host.events,
+            vec![WallHostEvent::Dirty(WallDirtyStep::Tactical, (5, 5))],
+            "accepted retained damage dirties tactical before its state write and emits no radar"
+        );
+
+        let mut terminal = OverlayGrid::new(12, 12);
+        terminal.place_overlay(5, 5, 0, 0);
+        let mut terminal_terrain = super::tests::clear_terrain_grid(12, 12);
+        let mut terminal_rng = crate::sim::rng::SimRng::new(0x409);
+        let mut terminal_host = WallHostSpy::default();
+        let _ = damage_wall_overlay_with_runtime_host(
+            &mut terminal,
+            &registry,
+            Some(&mut terminal_terrain),
+            5,
+            5,
+            -1,
+            &mut terminal_rng,
+            Some(&mut terminal_host),
+        );
+
+        let mut expected = vec![
+            WallHostEvent::Dirty(WallDirtyStep::Tactical, (5, 5)),
+            WallHostEvent::Navigation {
+                cell: (5, 5),
+                navigation_changed: false,
+                repair: WallZoneRepairKind::AssignOrphaned,
+            },
+            WallHostEvent::Dirty(WallDirtyStep::Radar, (5, 5)),
+        ];
+        for coord in [
+            (5, 3),
+            (6, 4),
+            (5, 5),
+            (4, 4),
+            (5, 4),
+            (4, 4),
+            (5, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
+            (5, 5),
+            (6, 6),
+            (5, 7),
+            (4, 6),
+            (5, 6),
+            (6, 4),
+            (7, 5),
+            (6, 6),
+            (5, 5),
+            (6, 5),
+        ] {
+            expected.push(WallHostEvent::Dirty(WallDirtyStep::Tactical, coord));
+            expected.push(WallHostEvent::Dirty(WallDirtyStep::Radar, coord));
+        }
+        expected.push(WallHostEvent::Pointer(WallPointerTarget::Real(5, 5)));
+        assert_eq!(terminal_host.events, expected);
+
+        let mut dummy_grid = OverlayGrid::new(3, 3);
+        let mut dummy_terrain = super::tests::clear_terrain_grid(3, 3);
+        let dummy = dummy_terrain.shared_cell_dummy();
+        dummy.stamp_coord(-1, -1);
+        dummy.write_overlay_identity_state(0, 0);
+        let mut dummy_rng = crate::sim::rng::SimRng::new(0x40A);
+        let mut dummy_host = WallHostSpy::default();
+        let mut dummy_result = WallDamageResult::default();
+        let mut terrain_authority = Some(&mut dummy_terrain);
+        let mut host_authority: Option<&mut dyn WallDamageTransactionHost> =
+            Some(&mut dummy_host);
+        damage_wall_recursive(
+            &mut dummy_grid,
+            &registry,
+            &mut terrain_authority,
+            &mut host_authority,
+            NativeRuntimeOverlayCell::Dummy,
+            -1,
+            &mut dummy_rng,
+            &mut dummy_result,
+        );
+        assert_eq!(
+            dummy_host.events.first(),
+            Some(&WallHostEvent::Dirty(
+                WallDirtyStep::Tactical,
+                (u16::MAX, u16::MAX),
+            ))
+        );
+        assert_eq!(
+            dummy_host.events.last(),
+            Some(&WallHostEvent::Pointer(WallPointerTarget::SharedDummy)),
+            "the shared CellClass pointer-expiry dispatch remains ordered even though Rust has no represented dummy target"
         );
     }
 

@@ -462,10 +462,10 @@ authority.
 | Full damage/connectivity byte | Implemented in `OverlayCell::overlay_data` | N/E/S/W are bits 0/1/2/3 and damage remains in the upper nibble. |
 | Same-ID runtime connection | Implemented by `recompute_wall_connectivity_at_with_terrain` | Runtime probes use the signed fixed-grid CellClass lookup, including real aliases such as west of `(0,1)` selecting `(511,0)`. |
 | Damage gate, penultimate chain, and direct removal | Implemented by `damage_wall_overlay_with_runtime_host` | The inclusive roll uses `roll < damage`; chain recursion is N/E/S/W. Each terminal recursive removal Recalcs and repairs navigation before its cleanup fan-out, expires the represented Cell pointer after that fan-out, and decrements its retained source last. |
-| Post-destruction cleanup | Implemented in N/W/S/E outer order and N/E/S/W/self inner order | Every visit dirties tactical/radar before the wall gate; every live wall recomputes and Recalcs synchronously. GASAND/GAWALL/NAWALL active-retail thresholds are modeled; dormant CYCL/BARB/FENC rows are deliberately excluded. |
+| Post-destruction cleanup | Implemented in N/W/S/E outer order and N/E/S/W/self inner order | Every visit dirties tactical/radar before the wall gate; every live wall recomputes and Recalcs synchronously. GASAND/GAWALL/NAWALL thresholds are active retail code/data, but no shipped-map or ordinary invariant-preserving placement witness for the pre-existing isolated-damaged input is established. Dormant CYCL/BARB/FENC rows are deliberately excluded. |
 | Conditional cleanup count reversal | Implemented through `recalc_wall_mutation_passability` | A cleanup-removed source reverses its eight wrapping count writes only when Recalc changed reduced zone type. House sale intentionally leaves the sold source stale. |
-| Fixed-grid alias and shared-dummy runtime | Implemented | Chain, cleanup, sale, and all eight retained-count probes use the stamping lookup. Real aliases mutate real cells; a true dummy retains live overlay identity/state and emits its packed coordinate to radar while remaining absent from the exported real count plane. Dummy identity/state joins the v114 current hash but remains process-global rather than Scenario-serialized. |
-| Runtime navigation, pointer expiry, and radar publication | Implemented and focused-validated on the transaction branch; fresh criticism remains pending | Standard combat, ambient Wave, movement crush, world event, wall sale, and active-retail Lightning Storm routes publish navigation and radar inside/at the owning transaction boundary. Pointer expiry covers represented Techno Cell targets in native forward clear-first order. The broader native non-entity listener roster is not represented and remains an explicit residual. |
+| Fixed-grid alias and shared-dummy runtime | Implemented | Chain, cleanup, sale, and all eight retained-count probes use the stamping lookup. Real aliases mutate real cells; a true dummy retains live overlay identity/state and emits its captured packed coordinate to tactical/radar callbacks while remaining absent from the exported real count plane. Dummy identity/state joins the v114 current hash but remains process-global rather than Scenario-serialized. |
+| Runtime dirty, navigation, and pointer-expiry publication | Critic-1 correction implemented; fresh criticism pending | The first fresh critic rejected `95f77159` because production replayed terminal radar after return, omitted damage tactical dirty, and left placement/sale observers outside native order. The correction publishes tactical/radar through the synchronous wall host for standard combat, persistent projectile/death paths, ambient Wave, movement crush/world events, sale, placement, and active-retail Lightning Storm. Pointer expiry covers represented Techno Cell targets in native forward clear-first order. The broader native non-entity listener roster is not represented and remains an explicit residual. |
 | Authored-load wall effects | Infrastructure only | `LiveOverlayCells` and `FinalizedOverlayPayload` retain the ordered authored count plane, but no production authored-row reader calls the helper or consumes the payload yet. |
 | Wildcard `0xF3` and building-anchor matching | Missing | The direction-aware `IsWallConnectableInDirection` building branches are outside this retained-plane slice and keep the wider wall mechanism open. |
 | Firestorm/Laser Fence building behavior | Missing | No active-retail Rust owner implements the BuildingClass connect/extend system. Do not infer it from plain overlay matching. |
@@ -473,8 +473,10 @@ authority.
 
 ### 7.1 Priority fixes
 
-1. Obtain a fresh read-only critic verdict on the runtime count/dummy/navigation/radar slice; keep it
-   open on any unresolved ordering, callsite, or represented-listener finding.
+1. Complete focused validation and obtain a new fresh read-only critic verdict on the corrected
+   runtime count/dummy/dirty/navigation/pointer/placement slice. The new critic must recheck every
+   finding from the `95f77159` rejection; keep the slice open on any unresolved ordering, callsite,
+   reachability, or represented-listener finding.
 2. Wire the verified authored wall helper into the one production authored-row transaction and move
    its finalized identity/state/count payload into every production/headless runtime builder.
 3. Close the current-version persistence gate: production state must never save or restore legacy
@@ -484,10 +486,11 @@ authority.
    the complete wall-connection mechanism closed. Their absence does not invalidate the active
    overlay-to-overlay runtime/count transaction, but it keeps this broader document open.
 
-Focused validation on 2026-09-01 passed: the 106-test `wall` filter, 58 overlay-grid tests,
-11 Lightning Storm tests, the pointer-expiry order test, the shared-dummy v114 hash test, and the
-three distinct live-object detach-sweep tests. The full `--lib` suite remains reserved for the final
-PR gate.
+Correction-focused validation on 2026-09-01 passed: the 107-test `wall` filter, 59 overlay-grid
+tests, 12 Lightning Storm tests, exact host-order, placement, autofill, persistent-projectile, sale,
+radar-rearm, ordinary-warhead, and crusher fixtures, the shared-dummy v114 hash test, and all three
+live-object detach-sweep tests. A new fresh critic must still recheck every critic-1 finding.
+The full `--lib` suite remains reserved for the final PR gate.
 
 ---
 

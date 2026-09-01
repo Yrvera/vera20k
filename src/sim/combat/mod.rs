@@ -81,7 +81,9 @@ use crate::sim::mission::authority::{
 };
 use crate::sim::mission::concrete_effects::represented_assign_target;
 use crate::sim::mission::{MissionId, MissionType};
-use crate::sim::overlay_grid::{OverlayGrid, WallMutation, WallZoneRepairKind};
+use crate::sim::overlay_grid::{
+    OverlayGrid, WallDirtyStep, WallMutation, WallZoneRepairKind,
+};
 use crate::sim::power_system::PowerState;
 use crate::sim::projectile::{
     ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectileGuidance,
@@ -1323,7 +1325,8 @@ pub struct CombatTickResult {
     pub bridge_damage_events: Vec<BridgeDamageEvent>,
     /// Wall writes committed inline in exact cell/recursive cleanup order.
     pub wall_mutations: Vec<WallMutation>,
-    /// Packed radar terrain coordinates emitted inline by wall destruction.
+    /// Diagnostic first-unique trace of packed wall radar coordinates. Live
+    /// production publication already occurred through `CombatInlineHooks`.
     pub wall_radar_dirty_cells: Vec<(u16, u16)>,
     /// Scanned-cell pointer-expiry visits committed inline in forward stable-ID
     /// order, clearing before conditional Restore.
@@ -1759,6 +1762,8 @@ pub(crate) trait CombatInlineHooks {
 
     fn mark_cliff_tactical_dirty(&mut self, _cells: &[(u16, u16)]) {}
 
+    fn wall_dirty_step(&mut self, _step: WallDirtyStep, _packed_coord: (u16, u16)) {}
+
     fn wall_navigation_step(
         &mut self,
         _terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
@@ -1908,6 +1913,12 @@ impl self::combat_aoe::AoECellPrelude for CombatTiberiumCellPrelude<'_, '_> {
             );
         } else {
             self.deferred.push(request);
+        }
+    }
+
+    fn wall_dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+        if let Some(hooks) = self.inline_hooks.as_deref_mut() {
+            hooks.wall_dirty_step(step, packed_coord);
         }
     }
 

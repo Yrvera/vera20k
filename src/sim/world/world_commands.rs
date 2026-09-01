@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{SimSoundEvent, Simulation};
+use super::{SimSoundEvent, Simulation, SimulationWallRuntimeHost};
 use crate::map::houses::are_houses_friendly;
 #[cfg(test)]
 use crate::rules::locomotor_type::MovementZone;
@@ -428,20 +428,33 @@ impl Simulation {
         const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
         let mut detach_trace: Vec<CellTargetDetach> = Vec::new();
         for (dx, dy) in CROSS {
-            let Some(visit) = self.overlay_grid.as_mut().and_then(|grid| {
-                runtime_wall_cleanup_visit_at(
-                    grid,
-                    overlays,
-                    self.resolved_terrain.as_ref(),
-                    i32::from(rx) + dx,
-                    i32::from(ry) + dy,
-                )
-            }) else {
+            let visit = {
+                let mut host = SimulationWallRuntimeHost {
+                    entities: &mut self.substrate.entities,
+                    detach_trace: &mut detach_trace,
+                    radar_dirty_cells: &mut self.radar_terrain_dirty_cells,
+                    radar_dirty_generation: &mut self.radar_terrain_dirty_generation,
+                    tactical_dirty_cells: &mut self.tactical_dirty_cells,
+                    terrain_costs: &mut self.terrain_costs,
+                    zone_grid: &mut self.zone_grid,
+                    path_grid: &mut self.path_grid,
+                    bridge_state: self.bridge_state.as_ref(),
+                };
+                self.overlay_grid.as_mut().and_then(|grid| {
+                    runtime_wall_cleanup_visit_at(
+                        grid,
+                        overlays,
+                        self.resolved_terrain.as_ref(),
+                        i32::from(rx) + dx,
+                        i32::from(ry) + dy,
+                        Some(&mut host),
+                    )
+                })
+            };
+            let Some(visit) = visit else {
                 continue;
             };
 
-            self.tactical_dirty_cells.push(visit.packed_coord);
-            self.mark_radar_terrain_dirty_cells([visit.packed_coord]);
             if !visit.was_wall {
                 continue;
             }
@@ -452,14 +465,6 @@ impl Simulation {
                 continue;
             };
             let result = visit.recomputed;
-            if result == RecomputeResult::Destroyed {
-                expire_cell_target_references(
-                    &mut self.substrate.entities,
-                    nx,
-                    ny,
-                    &mut detach_trace,
-                );
-            }
             let mut navigation_changed = false;
             let old_zone = self
                 .resolved_terrain

@@ -3678,7 +3678,7 @@ fn gsi_05_02_projectile(source_id: u64, fuse_frames: Option<u16>) -> ProjectileS
 }
 
 #[test]
-fn persistent_bullet_logic_slot_publishes_only_terminal_wall_dirty_visits() {
+fn persistent_bullet_logic_slot_publishes_native_wall_dirty_visits() {
     let ini = crate::rules::ini_parser::IniFile::from_str(
         "[InfantryTypes]\n\
          [VehicleTypes]\n\
@@ -3739,6 +3739,7 @@ fn persistent_bullet_logic_slot_publishes_only_terminal_wall_dirty_visits() {
     );
     assert!(partial.radar_terrain_dirty_cells.is_empty());
     assert_eq!(partial.radar_terrain_dirty_generation, 0);
+    assert_eq!(partial.tactical_dirty_cells, vec![(5, 5)]);
 
     let terminal = run(0x30);
     assert_eq!(
@@ -3768,7 +3769,34 @@ fn persistent_bullet_logic_slot_publishes_only_terminal_wall_dirty_visits() {
             (6, 5),
         ],
     );
-    assert_eq!(terminal.radar_terrain_dirty_generation, 1);
+    assert_eq!(terminal.radar_terrain_dirty_generation, 13);
+    assert_eq!(
+        terminal.tactical_dirty_cells,
+        vec![
+            (5, 5),
+            (5, 3),
+            (6, 4),
+            (5, 5),
+            (4, 4),
+            (5, 4),
+            (4, 4),
+            (5, 5),
+            (4, 6),
+            (3, 5),
+            (4, 5),
+            (5, 5),
+            (6, 6),
+            (5, 7),
+            (4, 6),
+            (5, 6),
+            (6, 4),
+            (7, 5),
+            (6, 6),
+            (5, 5),
+            (6, 5),
+        ],
+        "tactical dirties retain every native call, including repeated cleanup cells"
+    );
 }
 
 fn gsi_05_04_guided_projectile(

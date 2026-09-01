@@ -31,8 +31,8 @@ use crate::sim::occupancy::{
     OccupancyGrid, air_spatial_query_bucket_order, air_spatial_tracks_entity,
 };
 use crate::sim::overlay_grid::{
-    OverlayGrid, WallDamageTransactionHost, WallMutation, WallZoneRepairKind,
-    damage_wall_overlay_with_runtime_host,
+    OverlayGrid, WallDamageTransactionHost, WallDirtyStep, WallMutation, WallPointerTarget,
+    WallZoneRepairKind, damage_wall_overlay_with_runtime_host,
 };
 use crate::sim::rng::SimRng;
 use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
@@ -95,6 +95,8 @@ pub(crate) trait AoECellPrelude {
         _repair: WallZoneRepairKind,
     ) {
     }
+
+    fn wall_dirty_step(&mut self, _step: WallDirtyStep, _packed_coord: (u16, u16)) {}
 }
 
 struct AoEWallDamageHost<'borrow, 'prelude> {
@@ -104,6 +106,12 @@ struct AoEWallDamageHost<'borrow, 'prelude> {
 }
 
 impl WallDamageTransactionHost for AoEWallDamageHost<'_, '_> {
+    fn dirty_step(&mut self, step: WallDirtyStep, packed_coord: (u16, u16)) {
+        if let Some(prelude) = self.prelude.as_deref_mut() {
+            prelude.wall_dirty_step(step, packed_coord);
+        }
+    }
+
     fn navigation_step(
         &mut self,
         terrain: &ResolvedTerrainGrid,
@@ -116,8 +124,10 @@ impl WallDamageTransactionHost for AoEWallDamageHost<'_, '_> {
         }
     }
 
-    fn pointer_expired(&mut self, cell: (u16, u16)) {
-        expire_cell_target_references(self.entities, cell.0, cell.1, self.trace);
+    fn pointer_expired(&mut self, target: WallPointerTarget) {
+        if let WallPointerTarget::Real(rx, ry) = target {
+            expire_cell_target_references(self.entities, rx, ry, self.trace);
+        }
     }
 }
 
@@ -246,6 +256,7 @@ pub(crate) struct AoEDamageResult {
     #[cfg(test)]
     pub hits: Vec<EntityDamageEvent>,
     pub wall_mutations: Vec<WallMutation>,
+    /// Diagnostic trace only; a production prelude publishes radar inline.
     pub wall_radar_dirty_cells: Vec<(u16, u16)>,
     pub cell_target_detaches: Vec<CellTargetDetach>,
 }
