@@ -226,27 +226,17 @@ fn place_one_random_crate(
         return OneCrateResult::HardRejected;
     };
     for _ in 0..MAX_PLACEMENT_ATTEMPTS {
-        let x_offset = sim
-            .scenario_rng
-            .next_range_u32_inclusive(0, (frame.width - 1) as u32);
-        let y_offset = sim
-            .scenario_rng
-            .next_range_u32_inclusive(0, (frame.height - 1) as u32);
-        let drawn_x = frame.left.wrapping_add(x_offset as i32);
-        let drawn_y = frame.top.wrapping_add(y_offset as i32);
-        let (Ok(x), Ok(y)) = (u16::try_from(drawn_x), u16::try_from(drawn_y)) else {
-            continue;
-        };
+        let drawn = draw_crate_candidate(&mut sim.scenario_rng, frame);
 
         // The drawn cell's own land type selects the snap, before any snapping
         // happens. A draw outside the grid takes the land branch, matching the
         // native fallback cell.
-        let movement_surface = crate_surface_at(sim, (x, y));
+        let movement_surface = crate_surface_at_packed(sim, drawn);
 
         let Some(cell) = snap_to_passable_with_radius(
             sim,
             path_grid,
-            (x, y),
+            drawn,
             movement_surface,
             frame.radius_cap,
         ) else {
@@ -304,16 +294,53 @@ fn crate_random_frame(sim: &Simulation) -> Option<CrateRandomFrame> {
     let size_height = sim.playfield_size_height?;
     let size_sum = size_width.wrapping_add(size_height);
     let width = size_sum.wrapping_sub(1);
-    if width <= 0 || size_sum <= 0 {
-        return None;
-    }
     Some(CrateRandomFrame {
         left: 1,
         top: 1,
         width,
         height: width,
-        radius_cap: u16::try_from(size_sum.min(i32::from(CRATE_SNAP_RADIUS_CAP))).ok()?,
+        // Native forwards min(SizeW + SizeH, 32) as a signed loop cap. A
+        // nonpositive cap scans no FNPC rings, but the X/Y draws above still
+        // occur. Zero is the Rust-native representation of that empty scan.
+        radius_cap: size_sum.clamp(0, i32::from(CRATE_SNAP_RADIUS_CAP)) as u16,
     })
+}
+
+/// Signed `Random__RandomRanged` projection used by the crate rectangle.
+/// Reversed endpoints are compared and swapped as signed dwords before the
+/// shared native mask/rejection sampler sees their nonnegative span.
+fn crate_random_ranged_i32(
+    rng: &mut crate::sim::rng::SimRng,
+    low: i32,
+    high: i32,
+) -> i32 {
+    let (lo, hi) = if low <= high {
+        (low, high)
+    } else {
+        (high, low)
+    };
+    let span = (i64::from(hi) - i64::from(lo)) as u32;
+    lo.wrapping_add(rng.next_range_u32_inclusive(0, span) as i32)
+}
+
+/// `MapClass__PlaceCrateAtRandomCell @ 0x0056BD8B..0x0056BDD3` always draws
+/// X then Y, adds the signed rectangle origin with dword wrapping, and stores
+/// each result through a 16-bit word before the later MOVSX reads it back.
+fn draw_crate_candidate(
+    rng: &mut crate::sim::rng::SimRng,
+    frame: CrateRandomFrame,
+) -> (i32, i32) {
+    let x = frame.left.wrapping_add(crate_random_ranged_i32(
+        rng,
+        0,
+        frame.width.wrapping_sub(1),
+    ));
+    let y = frame.top.wrapping_add(crate_random_ranged_i32(
+        rng,
+        0,
+        frame.height.wrapping_sub(1),
+    ));
+    (x as i16 as i32, y as i16 as i32)
 }
 
 fn validate_and_stamp_candidate(
@@ -416,11 +443,18 @@ fn crate_surface_at(sim: &Simulation, cell: (u16, u16)) -> CrateSurface {
     }
 }
 
+fn crate_surface_at_packed(sim: &Simulation, cell: (i32, i32)) -> CrateSurface {
+    let Some((rx, ry)) = crate::map::cell_index::canonical_cell_coord(cell.0, cell.1) else {
+        return CrateSurface::Land;
+    };
+    crate_surface_at(sim, (rx, ry))
+}
+
 /// Snap a drawn cell onto a nearby passable cell of the matching surface.
 fn snap_to_passable(
     sim: &Simulation,
     path_grid: Option<&PathGrid>,
-    drawn: (u16, u16),
+    drawn: (i32, i32),
     surface: CrateSurface,
 ) -> Option<(u16, u16)> {
     let radius_cap = crate_random_frame(sim)?.radius_cap;
@@ -430,7 +464,7 @@ fn snap_to_passable(
 fn snap_to_passable_with_radius(
     sim: &Simulation,
     path_grid: Option<&PathGrid>,
-    drawn: (u16, u16),
+    drawn: (i32, i32),
     surface: CrateSurface,
     radius_cap: u16,
 ) -> Option<(u16, u16)> {
@@ -468,7 +502,7 @@ fn snap_to_passable_with_radius(
         playfield_bounds: sim.playfield_bounds,
     };
     find_nearby_passable_cell(
-        (i32::from(drawn.0), i32::from(drawn.1)),
+        drawn,
         &query,
         sim.session.binary_frame,
     )
@@ -1296,6 +1330,132 @@ mod tests {
         assert_eq!(written.overlay_data, u8::MAX);
         assert_eq!(written.wall_owner, Some(owner));
         assert_eq!(grid.take_dirty_cells(), vec![cell]);
+    }
+
+    #[test]
+    fn configured_noncrate_images_keep_native_mark_zero_and_road_data() {
+        let registry = OverlayTypeRegistry::from_ini(
+            &IniFile::from_str(
+                "[OverlayTypes]\n0=PLAIN\n1=ROADBOX\n[PLAIN]\n[ROADBOX]\nLand=Road\n",
+            ),
+            None,
+        );
+        for (name, expected_data) in [("PLAIN", 0), ("ROADBOX", 1)] {
+            let rules = CrateRules {
+                wood_crate_img: Some(name.to_owned()),
+                crate_img: Some(name.to_owned()),
+                water_crate_img: Some(name.to_owned()),
+                ..CrateRules::default()
+            };
+            let mut sim = sim_with_grid(0xDA7A_0000 + u64::from(expected_data));
+            let cell = (6, 13);
+
+            assert_eq!(
+                validate_and_stamp_candidate(
+                    &mut sim,
+                    &rules,
+                    &registry,
+                    cell,
+                    ForcedPostPrecheckFailure::None,
+                ),
+                AcceptedCellResult::Visible
+            );
+            let written = sim.overlay_grid.as_ref().unwrap().cell(cell.0, cell.1);
+            assert_eq!(written.overlay_id, registry.id_for_name(name));
+            assert_eq!(written.overlay_data, expected_data, "configured {name}");
+        }
+    }
+
+    #[test]
+    fn crate_random_rectangle_draws_signed_reversed_ranges_then_narrows_to_i16() {
+        let mut sum_one = crate::sim::rng::SimRng::new(0x1401);
+        let mut sum_one_expected = sum_one.clone();
+        let sum_one_frame = CrateRandomFrame {
+            left: 1,
+            top: 1,
+            width: 0,
+            height: 0,
+            radius_cap: 1,
+        };
+        let sum_one_cell = draw_crate_candidate(&mut sum_one, sum_one_frame);
+        let expected_sum_one = (
+            sum_one_expected.next_range_u32_inclusive(0, 1) as i32,
+            sum_one_expected.next_range_u32_inclusive(0, 1) as i32,
+        );
+        assert_eq!(sum_one_cell, expected_sum_one);
+        assert_eq!(sum_one.state(), sum_one_expected.state());
+
+        let mut negative = crate::sim::rng::SimRng::new(0x1402);
+        let mut negative_expected = negative.clone();
+        let negative_frame = CrateRandomFrame {
+            left: i32::MAX,
+            top: i32::MIN,
+            width: -2,
+            height: -2,
+            radius_cap: 0,
+        };
+        let negative_cell = draw_crate_candidate(&mut negative, negative_frame);
+        let expected_negative = (
+            i32::MAX
+                .wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
+                as i16 as i32,
+            i32::MIN
+                .wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
+                as i16 as i32,
+        );
+        assert_eq!(negative_cell, expected_negative);
+        assert_eq!(negative.state(), negative_expected.state());
+
+        let mut wide = crate::sim::rng::SimRng::new(0x1403);
+        let mut wide_expected = wide.clone();
+        let wide_frame = CrateRandomFrame {
+            left: 30_000,
+            top: -30_000,
+            width: 70_000,
+            height: 70_000,
+            radius_cap: CRATE_SNAP_RADIUS_CAP,
+        };
+        let wide_cell = draw_crate_candidate(&mut wide, wide_frame);
+        let expected_wide = (
+            30_000i32
+                .wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32)
+                as i16 as i32,
+            (-30_000i32)
+                .wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32)
+                as i16 as i32,
+        );
+        assert_eq!(wide_cell, expected_wide);
+        assert_eq!(wide.state(), wide_expected.state());
+    }
+
+    #[test]
+    fn crate_random_frame_retains_nonpositive_signed_size_for_rng_before_empty_snap() {
+        let mut sim = sim_with_grid(1);
+        sim.playfield_bounds.as_mut().unwrap().base = 1;
+        sim.playfield_size_height = Some(0);
+        assert_eq!(
+            crate_random_frame(&sim),
+            Some(CrateRandomFrame {
+                left: 1,
+                top: 1,
+                width: 0,
+                height: 0,
+                radius_cap: 1,
+            })
+        );
+
+        sim.playfield_bounds.as_mut().unwrap().base = -3;
+        sim.playfield_size_height = Some(-2);
+        assert_eq!(
+            crate_random_frame(&sim),
+            Some(CrateRandomFrame {
+                left: 1,
+                top: 1,
+                width: -6,
+                height: -6,
+                radius_cap: 0,
+            })
+        );
     }
 
     /// With a uniform surface, destination image selection still follows the

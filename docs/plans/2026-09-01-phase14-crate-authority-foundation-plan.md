@@ -133,7 +133,8 @@ retail order, and the app consumes live overlay state through the existing
 | Modify | `src/sim/snapshot.rs` | Version 114 and raw-table round trip |
 | Modify | `src/sim/world/world_hash.rs` | Version-gated ordered slot fold |
 | Modify | `src/app/loading/init.rs` | First-frame occupied entry delivery and RMG regression |
-| Modify | `src/app/frontend/skirmish.rs` | Preregister `Crate=yes` overlay names |
+| Modify | `src/app/frontend/skirmish.rs` | Preregister flagged and resolved crate overlay names |
+| Modify | `src/render/overlay_atlas.rs` | Preload all resolved startup image frames |
 | Modify | `src/app/presentation/overlay_index.rs` | Focused first-frame append/order regression if needed |
 
 ## Interface Changes
@@ -287,9 +288,9 @@ impl CrateRulesAccumulator {
             ("CrateImg", &mut self.0.crate_img),
             ("WaterCrateImg", &mut self.0.water_crate_img),
         ] {
-            if let Some(raw) = section.get(key) {
-                let value = raw.trim();
-                *target = (!is_native_none_type_name(value))
+            if section.get(key).is_some() {
+                let value = section.read_string(key, "", 0x80);
+                *target = (!is_native_none_type_name(&value))
                     .then(|| value.to_ascii_uppercase());
             }
         }
@@ -299,8 +300,9 @@ impl CrateRulesAccumulator {
 }
 ```
 
-Use the existing native string trimming helper rather than Unicode-only
-`trim()` if tests expose control bytes; keep the public shape above.
+Use the exact `ReadString` capacity `0x80` for both semantic retention and late
+OverlayType allocation, so 127-byte and 128-byte image-name boundaries resolve
+to one identity.
 
 **Step 2: Attach the accumulator to native pass processing**
 
@@ -490,8 +492,7 @@ pub(crate) fn crate_timer_words(
         X87Chop53::mul(fraction, X87Chop53::sub(upper, lower)),
     );
     let stored_upper = X87Chop53::store_f64(upper).expect("finite CrateRegen upper");
-    let duration = X87Chop53::ftol_i64(value)
-        .expect("validated crate duration fits i64") as i32;
+    let duration = X87Chop53::ftol_i64(value).unwrap_or(i64::MIN) as i32;
     (current_frame, (stored_upper.bits() >> 32) as u32, duration)
 }
 ```
@@ -499,6 +500,9 @@ pub(crate) fn crate_timer_words(
 If the existing x87 API requires a differently named conversion for unsigned
 draw, preserve the exact nonnegative integer value before division; do not
 replace the expression with host float.
+
+The fallback is native masked `FISTP qword` integer-indefinite. The slot stores
+only its low dword, which is zero for both positive and negative overflow.
 
 **Step 3: Persist and hash**
 
@@ -604,6 +608,9 @@ It never tops up visible/accepted count.
 - Draw X then Y as
   `left + RandomRanged(0,width-1)` and
   `top + RandomRanged(0,height-1)`.
+- Compare/swap the range endpoints as signed dwords, perform both draws even
+  for zero/negative widths, use wrapping dword addition, and narrow each result
+  through signed `i16` before FNPC.
 - Preserve the existing zero-target FNPC tuple and
   `min(SizeW+SizeH,32)` cap.
 - Origin water selects FNPC Float; every other origin selects Track.
@@ -646,8 +653,11 @@ pub(crate) fn place_crate_overlay(
     let Some(index) = index_of(self.width, self.height, rx, ry) else {
         return false;
     };
+    let Some(flags) = registry.flags(overlay_id) else {
+        return false;
+    };
     self.cells[index].overlay_id = Some(overlay_id);
-    self.cells[index].overlay_data = u8::MAX;
+    self.cells[index].overlay_data = native_mark_overlay_data(flags);
     // Preserve wall_owner/unrelated fields rather than replacing OverlayCell.
     self.dirty_cells.push((rx, ry));
     recalc_overlay_passability(self, resolved_terrain, registry, rx, ry);
@@ -672,7 +682,8 @@ pub(crate) fn place_crate_overlay(
 Cover:
 
 - signed/inverted/negative/>256 requested counts;
-- exact nonzero-left/top inclusive rectangle and X/Y draw order;
+- exact nonzero-left/top inclusive rectangle, signed reversed endpoints, low-i16
+  narrowing, and X/Y draw order;
 - failed attempts spend X/Y; full table spends no RNG;
 - origin water/land FNPC classification independent of destination image;
 - destination water/land image;
@@ -684,7 +695,8 @@ Cover:
 - structural bridge selects deck, checks whole byte, and bypasses underlying
   speed zero;
 - occupied overlay/outside playfield retry and do not install timer;
-- visible stamp writes `0xFF`, preserves wall owner, and dirties once;
+- visible stamp writes zero ordinarily, one for Road, and `0xFF` for
+  `Crate=yes`, preserves wall owner, and dirties once;
 - ghost preserves the cell;
 - both visible and ghost slots store coordinate then timer words;
 - 1,000 hard rejections return with empty slot.
@@ -768,8 +780,10 @@ the same index contract without constructing `AppState`.
 **Step 4: Preregister crate art names**
 
 Extend `preregister_runtime_overlay_names` to accept registry entries whose
-flags have `crate_type`, in addition to walls and low bridges. Keep counters
-separate or return a small struct so crate additions are not misreported as
+flags have `crate_type` plus all three resolved `CrateRules` identities, in
+addition to walls and low bridges. Preload frame zero for flagged crates and
+the native Mark data frame (zero or Road one) for configured `Crate=false`
+types. Keep counters separate so crate additions are not misreported as
 bridges.
 
 **Step 5: Add focused production tests**
@@ -782,7 +796,8 @@ bridges.
 - visible startup slots append after source overlays in slot order;
 - ghosts do not enter the index;
 - existing-coordinate upsert retains its source slot;
-- CRATE and WCRATE are preregistered when `Crate=yes`;
+- CRATE/WCRATE and a late-allocated configured `Crate=false` identity are
+  preregistered/preloaded before scatter;
 - renderer constant remains crate frame zero.
 
 **Step 6: Verify and commit**

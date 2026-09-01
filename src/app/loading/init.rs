@@ -1357,12 +1357,19 @@ impl MapLoadInitial {
         let mut runtime_names = BTreeMap::new();
         crate::app::frontend::skirmish::preregister_runtime_overlay_names(
             &overlay_registry,
+            &rules.crate_rules,
             &mut runtime_names,
         );
+        let selected_ids = [
+            crate_name_id(rules.crate_rules.wood_crate_img.as_deref()),
+            crate_name_id(rules.crate_rules.crate_img.as_deref()),
+            crate_name_id(rules.crate_rules.water_crate_img.as_deref()),
+        ];
         runtime_names.retain(|id, _| {
             overlay_registry
                 .flags(*id)
                 .is_some_and(|flags| flags.crate_type)
+                || selected_ids.contains(&Some(*id))
         });
         let mut presented = Vec::new();
         connect_startup_crate_overlays(&mut presented, &simulation);
@@ -2499,6 +2506,10 @@ pub(crate) fn load_map_from_initial(
         batch,
         theater_ext,
         &rules_ini,
+        &rules
+            .as_ref()
+            .expect("merged rules were installed before atlas construction")
+            .crate_rules,
         art.as_ref().unwrap_or(&art_fallback),
         overlay_iso_palette.as_ref(),
         unit_palette.as_ref(),

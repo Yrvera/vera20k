@@ -2442,7 +2442,11 @@ mod tests {
         let mut names = BTreeMap::new();
 
         let (wall_count, low_bridge_count, crate_count) =
-            preregister_runtime_overlay_names(&registry, &mut names);
+            preregister_runtime_overlay_names(
+                &registry,
+                &crate::rules::crate_rules::CrateRules::default(),
+                &mut names,
+            );
 
         assert_eq!(wall_count, 0);
         assert_eq!(low_bridge_count, 64);
@@ -2467,12 +2471,22 @@ mod tests {
         );
         let mut names = BTreeMap::new();
 
-        let counts = preregister_runtime_overlay_names(&registry, &mut names);
+        let crate_rules = crate::rules::crate_rules::CrateRules {
+            wood_crate_img: Some("CRATE".to_owned()),
+            crate_img: Some("PLAIN".to_owned()),
+            water_crate_img: Some("WCRATE".to_owned()),
+            ..crate::rules::crate_rules::CrateRules::default()
+        };
+        let counts = preregister_runtime_overlay_names(&registry, &crate_rules, &mut names);
 
-        assert_eq!(counts, (0, 0, 2));
+        assert_eq!(counts, (0, 0, 3));
         assert_eq!(names.get(&0).map(String::as_str), Some("CRATE"));
         assert_eq!(names.get(&1).map(String::as_str), Some("WCRATE"));
-        assert!(!names.contains_key(&2));
+        assert_eq!(
+            names.get(&2).map(String::as_str),
+            Some("PLAIN"),
+            "late-allocated configured identity registers even with Crate=false"
+        );
     }
 }
 
@@ -2627,15 +2641,31 @@ pub fn deployable_building_types<'a>(
 
 pub(crate) fn preregister_runtime_overlay_names(
     overlay_registry: &OverlayTypeRegistry,
+    crate_rules: &crate::rules::crate_rules::CrateRules,
     overlay_names: &mut BTreeMap<u8, String>,
 ) -> (u32, u32, u32) {
+    let selected_crate_ids = [
+        crate_rules
+            .wood_crate_img
+            .as_deref()
+            .and_then(|name| overlay_registry.id_for_name(name)),
+        crate_rules
+            .crate_img
+            .as_deref()
+            .and_then(|name| overlay_registry.id_for_name(name)),
+        crate_rules
+            .water_crate_img
+            .as_deref()
+            .and_then(|name| overlay_registry.id_for_name(name)),
+    ];
     let mut wall_ids_added: u32 = 0;
     let mut low_bridge_ids_added: u32 = 0;
     let mut crate_ids_added: u32 = 0;
     for overlay_id in 0u8..=u8::MAX {
         let flags = overlay_registry.flags(overlay_id);
         let is_wall = flags.is_some_and(|flags| flags.wall);
-        let is_crate = flags.is_some_and(|flags| flags.crate_type);
+        let is_crate = flags.is_some_and(|flags| flags.crate_type)
+            || selected_crate_ids.contains(&Some(overlay_id));
         let is_low_bridge =
             is_bridge_overlay_index(overlay_id) && !is_high_bridge_index(overlay_id);
         if !is_wall && !is_low_bridge && !is_crate {
@@ -2668,6 +2698,7 @@ pub(crate) fn build_overlay_atlas_from_map(
     batch: &BatchRenderer,
     theater_ext: &str,
     rules_ini: &IniFile,
+    crate_rules: &crate::rules::crate_rules::CrateRules,
     art_registry: &ArtRegistry,
     theater_iso_palette: Option<&Palette>,
     theater_unit_palette: Option<&Palette>,
@@ -2763,7 +2794,7 @@ pub(crate) fn build_overlay_atlas_from_map(
     // be placed by production; low bridges replace their CellClass identity as
     // damage/collapse/repair advances while the map-pack entry stays fixed.
     let (wall_ids_added, low_bridge_ids_added, crate_ids_added) =
-        preregister_runtime_overlay_names(&overlay_registry, &mut overlay_names);
+        preregister_runtime_overlay_names(&overlay_registry, crate_rules, &mut overlay_names);
     if wall_ids_added > 0 {
         log::info!(
             "Pre-registered {} wall overlay type(s) in overlay_names for player placement",
@@ -2845,6 +2876,7 @@ pub(crate) fn build_overlay_atlas_from_map(
             &map_data.header.theater,
             &overlay_registry,
             &tiberium_types,
+            crate_rules,
             rules_ini,
             art_registry,
             smudge_types,

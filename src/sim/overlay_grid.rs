@@ -9,7 +9,8 @@
 
 use crate::map::overlay::{OverlayDataPack, OverlayEntry};
 use crate::map::overlay_types::{
-    OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index, retained_overlay_land,
+    OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index,
+    native_mark_overlay_data, retained_overlay_land,
 };
 use crate::map::resolved_terrain::{
     ResolvedTerrainGrid, overlay_reduced_zone_type, recalc_zone_type,
@@ -371,8 +372,9 @@ impl OverlayGrid {
     /// This is deliberately narrower than [`Self::place_overlay_native_runtime`]:
     /// the crate validator owns terrain, slope, occupation, speed, and identity
     /// checks, while this writer only reproduces the successful CellClass
-    /// mutation (`identity`, then data `0xFF`). A cleared wall's inert owner is
-    /// unrelated Cell authority and therefore survives the write.
+    /// mutation: identity, then ordinary data zero / Road data one / Crate data
+    /// `0xFF`. A cleared wall's inert owner is unrelated Cell authority and
+    /// therefore survives the write.
     pub(crate) fn place_crate_overlay(
         &mut self,
         resolved_terrain: &mut ResolvedTerrainGrid,
@@ -384,8 +386,11 @@ impl OverlayGrid {
         let Some(idx) = index_of(self.width, self.height, rx, ry) else {
             return false;
         };
+        let Some(flags) = registry.flags(overlay_id) else {
+            return false;
+        };
         self.cells[idx].overlay_id = Some(overlay_id);
-        self.cells[idx].overlay_data = u8::MAX;
+        self.cells[idx].overlay_data = native_mark_overlay_data(flags);
         self.dirty_cells.push((rx, ry));
         let changed = recalc_overlay_passability(self, resolved_terrain, registry, rx, ry);
         self.record_synchronous_passability_change_at(rx, ry, changed);

@@ -229,7 +229,11 @@ left + RandomRanged(0, width - 1)
 top  + RandomRanged(0, height - 1)
 ```
 
-It never substitutes the canonical iso-array `session.map_width`.
+`RandomRanged` compares/swaps those endpoints as signed dwords even when the
+derived width is zero or negative. Each wrapping origin addition is then stored
+through a signed 16-bit coordinate before FNPC reads it. It never substitutes
+the canonical iso-array `session.map_width`, rejects a nonpositive rectangle
+before the draws, or retains high coordinate bits that native discards.
 
 Each random-placement call consumes X then Y from `scenario_rng`, up to 1000
 search attempts. The drawn cell chooses Float versus Track for the existing
@@ -256,8 +260,9 @@ The transaction order is explicit:
    Unlimbo failure, or Mark failure is an accepted ghost.
 7. Structural bridge `raw_flags & 0x100` selects deck occupation and bypasses
    the non-bridge terrain-speed-zero rejection.
-8. Visible success stamps overlay identity and data `0xFF`; a ghost leaves the
-   cell unchanged. Both stop retries.
+8. Visible success stamps overlay identity, then Mark data: zero ordinarily,
+   one for `Land=Road`, and finally `0xFF` only when the selected type declares
+   `Crate=yes`. A ghost leaves the cell unchanged. Both stop retries.
 9. Record the slot coordinate, draw/install the timer, and report the outcome.
 
 Only the outside-playfield and occupied-overlay checks in step 3 are retryable
@@ -296,7 +301,9 @@ aux = high dword of stored upper double
 
 Retail `regen=3` must produce 1350 at draw zero, 5400 at the inclusive maximum,
 and aux `0x40B51800`. A narrow pure helper exposes golden vectors independent
-of placement search.
+of placement search. Masked out-of-range `FISTP qword` stores native integer
+indefinite (`i64::MIN`); because the slot writer keeps only EAX, either-sign
+duration overflow stores zero rather than aborting scenario load.
 
 ### 6. Crate-specific overlay writes
 
@@ -304,7 +311,8 @@ Do not route crate placement through generic
 `place_overlay_native_runtime`, whose wall/protection gates differ. Add the
 smallest crate-specific `OverlayGrid` primitive:
 
-- install the chosen identity and data `0xFF`;
+- install the chosen identity and Mark data zero, Road one, or `0xFF` only for
+  `Crate=yes`;
 - preserve wall-owner and unrelated cell authority;
 - run existing synchronous passability invalidation/publication;
 - enqueue the existing dirty-cell fact once for a visible result.
@@ -353,8 +361,11 @@ accepted crate coordinates from simulation authority, materialize occupied
 identity and do not appear.
 
 `preregister_runtime_overlay_names` will include every registry entry with
-`Crate=yes`, alongside existing wall and low-bridge registration. Existing
-atlas resolution and `CRATE_BODY_FRAME = 0` remain unchanged.
+`Crate=yes` and all three resolved `CrateRules` identities, even when a
+late-allocated custom type retains constructor-default `Crate=false`, alongside
+existing wall and low-bridge registration. Atlas preload follows the selected
+type's actual draw path: frame zero for `Crate=yes`, otherwise ordinary Mark
+data zero or Road frame one.
 
 ```text
 active rules layers

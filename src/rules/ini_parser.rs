@@ -1151,8 +1151,11 @@ impl RulesPassProcessor {
                 self.find_or_allocate(RulesTypeFamily::Vehicle, value);
             }
             for key in ["WoodCrateImg", "CrateImg", "WaterCrateImg"] {
-                if let Some(value) = section.get(key) {
-                    self.find_or_allocate(RulesTypeFamily::Overlay, value);
+                if section.get(key).is_some() {
+                    // Same caller capacity as the semantic CrateRules pass:
+                    // ReadCrateRules @ 0x0066B956/0x0066B989/0x0066B9C7.
+                    let value = section.read_string(key, "", 0x80);
+                    self.find_or_allocate(RulesTypeFamily::Overlay, &value);
                 }
             }
         }

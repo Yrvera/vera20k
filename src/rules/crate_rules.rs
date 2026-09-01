@@ -4,7 +4,7 @@
 //! after late global references have been allocated. Missing sections and keys
 //! retain the already-live fields; native no-type sentinels resolve to null.
 
-use crate::rules::ini_parser::{IniFile, is_native_none_type_name, trim_ascii_controls};
+use crate::rules::ini_parser::{IniFile, is_native_none_type_name};
 use crate::util::native_x87::NativeF64Bits;
 
 /// The six `[CrateRules]` fields consumed by scenario-start scatter.
@@ -62,11 +62,14 @@ impl CrateRulesAccumulator {
             ("CrateImg", &mut self.0.crate_img),
             ("WaterCrateImg", &mut self.0.water_crate_img),
         ] {
-            let Some(raw) = section.get(key) else {
+            if section.get(key).is_none() {
                 continue;
-            };
-            let value = trim_ascii_controls(raw);
-            *target = (!is_native_none_type_name(value)).then(|| value.to_ascii_uppercase());
+            }
+            // `RulesClass__ReadCrateRules @ 0x0066B900` supplies capacity
+            // 0x80 to all three ReadString calls. Truncation therefore owns
+            // both the retained identity and the earlier late allocation.
+            let value = section.read_string(key, "", 0x80);
+            *target = (!is_native_none_type_name(&value)).then(|| value.to_ascii_uppercase());
         }
     }
 

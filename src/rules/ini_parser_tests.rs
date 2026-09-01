@@ -444,6 +444,40 @@ fn crate_rule_images_allocate_and_alias_by_overlay_identity() {
 }
 
 #[test]
+fn crate_rule_image_readstring_capacity_owns_retention_and_allocation() {
+    let exact = "A".repeat(127);
+    let over = "B".repeat(128);
+    let processed = RulesLayerStack::new(IniFile::from_str(&format!(
+        "[CrateRules]\nWoodCrateImg={exact}\nCrateImg={over}\nWaterCrateImg={over}Z\n"
+    )))
+    .process();
+
+    assert_eq!(
+        processed.crate_rules().wood_crate_img.as_deref(),
+        Some(exact.as_str())
+    );
+    let truncated = "B".repeat(127);
+    assert_eq!(
+        processed.crate_rules().crate_img.as_deref(),
+        Some(truncated.as_str())
+    );
+    assert_eq!(
+        processed.crate_rules().water_crate_img.as_deref(),
+        Some(truncated.as_str()),
+        "capacity includes the forced NUL, so only 127 ASCII bytes survive"
+    );
+    assert_eq!(
+        processed
+            .ini()
+            .section("OverlayTypes")
+            .expect("truncated references allocate")
+            .get_values(),
+        vec![exact.as_str(), truncated.as_str()],
+        "late allocation and retained semantic identity must truncate identically"
+    );
+}
+
+#[test]
 fn crate_rules_direct_and_one_layer_entry_points_agree() {
     let ini = IniFile::from_str(
         "[CrateRules]\nCrateMinimum=-2\nCrateMaximum=6\nCrateRegen=3\n\

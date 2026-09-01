@@ -19,11 +19,13 @@ use crate::assets::shp_file::ShpFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::{
     OverlayTypeFlags, OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
+    native_mark_overlay_data,
 };
 use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::rules::art_data::{self, ArtRegistry};
+use crate::rules::crate_rules::CrateRules;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::tiberium_type::TiberiumTypeRegistry;
 
@@ -215,6 +217,43 @@ fn runtime_flat_tiberium_sprite_keys(
     keys
 }
 
+/// Sprite keys reachable when scenario-start placement selects one of the
+/// three resolved `[CrateRules]` identities. The selected type need not itself
+/// declare `Crate=yes`: native allocates the name first, then Mark uses that
+/// type's ordinary data rule and the draw path follows its actual flags.
+fn runtime_crate_sprite_keys(
+    overlay_registry: &OverlayTypeRegistry,
+    crate_rules: &CrateRules,
+) -> HashSet<OverlaySpriteKey> {
+    let selected_ids: HashSet<u8> = [
+        crate_rules.wood_crate_img.as_deref(),
+        crate_rules.crate_img.as_deref(),
+        crate_rules.water_crate_img.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|name| overlay_registry.id_for_name(name))
+    .collect();
+
+    (0u8..=u8::MAX)
+        .filter_map(|overlay_id| {
+            let flags = overlay_registry.flags(overlay_id)?;
+            if !flags.crate_type && !selected_ids.contains(&overlay_id) {
+                return None;
+            }
+            let name = resolve_overlay_name_for_render(overlay_registry, overlay_id)?;
+            Some(OverlaySpriteKey {
+                name,
+                frame: if flags.crate_type {
+                    CRATE_BODY_FRAME
+                } else {
+                    native_mark_overlay_data(flags)
+                },
+            })
+        })
+        .collect()
+}
+
 /// UV and offset data for one overlay sprite within the atlas.
 #[derive(Debug, Clone, Copy)]
 pub struct OverlaySpriteEntry {
@@ -286,6 +325,7 @@ pub fn build_overlay_atlas(
     theater_name: &str,
     overlay_registry: &OverlayTypeRegistry,
     tiberium_types: &TiberiumTypeRegistry,
+    crate_rules: &CrateRules,
     rules_ini: &IniFile,
     art_registry: &ArtRegistry,
     smudge_types: Option<&crate::rules::smudge_type::SmudgeTypeRegistry>,
@@ -338,37 +378,33 @@ pub fn build_overlay_atlas(
     //   overlay grid well after map load, so no crate ever appears in the map
     //   pack. The native crate branch always draws frame 0.
     let mut wall_names_loaded: HashSet<String> = HashSet::new();
-    let mut crate_names_loaded: HashSet<String> = HashSet::new();
     let mut wall_frames_loaded: u32 = 0;
     for overlay_id in 0u8..=u8::MAX {
         let Some(flags) = overlay_registry.flags(overlay_id) else {
             continue;
         };
-        if !flags.wall && !flags.crate_type {
+        if !flags.wall {
             continue;
         }
         let Some(mapped_name) = resolve_overlay_name_for_render(overlay_registry, overlay_id)
         else {
             continue;
         };
-        if flags.wall {
-            if wall_names_loaded.insert(mapped_name.clone()) {
-                let frame_count: u32 = wall_body_frame_count(flags.damage_levels);
-                wall_frames_loaded += frame_count;
-                for frame in 0..frame_count {
-                    needed.insert(OverlaySpriteKey {
-                        name: mapped_name.clone(),
-                        frame: frame as u8,
-                    });
-                }
+        if wall_names_loaded.insert(mapped_name.clone()) {
+            let frame_count: u32 = wall_body_frame_count(flags.damage_levels);
+            wall_frames_loaded += frame_count;
+            for frame in 0..frame_count {
+                needed.insert(OverlaySpriteKey {
+                    name: mapped_name.clone(),
+                    frame: frame as u8,
+                });
             }
-        } else if crate_names_loaded.insert(mapped_name.clone()) {
-            needed.insert(OverlaySpriteKey {
-                name: mapped_name,
-                frame: CRATE_BODY_FRAME,
-            });
         }
     }
+    let crate_keys = runtime_crate_sprite_keys(overlay_registry, crate_rules);
+    let crate_names_loaded: HashSet<String> =
+        crate_keys.iter().map(|key| key.name.clone()).collect();
+    needed.extend(crate_keys);
     if !wall_names_loaded.is_empty() {
         log::info!(
             "Pre-loaded {} damage/connectivity frames for {} wall type(s): {:?}",
@@ -981,11 +1017,12 @@ mod tests {
     use super::{
         MAX_OVERLAY_FRAME_COUNT, OverlaySpriteKey, OverlayTypeFlags, body_frame_count,
         decrement_numeric_suffix, resolve_body_frame, runtime_flat_tiberium_sprite_keys,
-        runtime_low_bridge_sprite_keys, wall_body_frame_count,
+        runtime_crate_sprite_keys, runtime_low_bridge_sprite_keys, wall_body_frame_count,
     };
     use crate::map::overlay::OverlayEntry;
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::crate_rules::CrateRules;
     use crate::rules::tiberium_type::TiberiumTypeRegistry;
 
     #[test]
@@ -1006,6 +1043,36 @@ mod tests {
     /// same shape.
     const LOW_BRIDGE_FRAME_SIZES: [(u16, u16); 6] =
         [(0, 0), (120, 70), (0, 0), (0, 0), (0, 0), (0, 0)];
+
+    #[test]
+    fn startup_crate_preload_follows_resolved_identity_and_native_mark_data() {
+        let ini = IniFile::from_str(
+            "[OverlayTypes]\n0=FLAGGED\n1=PLAIN\n2=ROADBOX\n\
+             [FLAGGED]\nCrate=yes\n[PLAIN]\n[ROADBOX]\nLand=Road\n",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let rules = CrateRules {
+            wood_crate_img: Some("PLAIN".to_owned()),
+            crate_img: Some("FLAGGED".to_owned()),
+            water_crate_img: Some("ROADBOX".to_owned()),
+            ..CrateRules::default()
+        };
+
+        let keys = runtime_crate_sprite_keys(&registry, &rules);
+        assert!(keys.contains(&OverlaySpriteKey {
+            name: "FLAGGED".to_owned(),
+            frame: 0,
+        }));
+        assert!(keys.contains(&OverlaySpriteKey {
+            name: "PLAIN".to_owned(),
+            frame: 0,
+        }));
+        assert!(keys.contains(&OverlaySpriteKey {
+            name: "ROADBOX".to_owned(),
+            frame: 1,
+        }));
+        assert_eq!(keys.len(), 3);
+    }
 
     #[test]
     fn low_bridge_flank_columns_draw_nothing() {
