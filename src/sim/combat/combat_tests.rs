@@ -7475,6 +7475,7 @@ fn gsi_04_10_near_center_iron_curtain_isolates_earlier_terrain_receiver() {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                native_unique_id: None,
                 in_logic_vector: false,
                 type_ref: terrain_ref,
                 rx: 5,
@@ -7563,6 +7564,7 @@ fn gsi_04_10_entity_fatal_hook_and_later_terrain_share_raw_occupation() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: terrain_ref,
             rx: 5,

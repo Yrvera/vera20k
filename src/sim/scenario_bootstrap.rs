@@ -3970,6 +3970,7 @@ mod tests {
             overlay_registry: &overlays,
             house_roster: &house_roster,
             skirmish_session: Some(&launch),
+            tiberium_queues_preinitialized: false,
         });
         assert_eq!(
             output.crates,

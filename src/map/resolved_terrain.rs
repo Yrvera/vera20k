@@ -28,16 +28,17 @@ use crate::map::bridge_facts::{
 };
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
-use crate::map::playfield::PlayfieldBounds;
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{
     OverlayTypeFlags, OverlayTypeRegistry, clears_tiberium_on_slope, retained_overlay_land,
     uses_early_recalc_land_branch,
 };
+use crate::map::playfield::PlayfieldBounds;
 use crate::map::rmg::preview::Playfield;
 use crate::map::theater::{self, TheaterData, TileKey, TilesetLookup};
 use crate::map::tile_variant_selector::TileVariantSelectionContext;
-use crate::map::tube_facts::{TubeFact, TubeId};
+use crate::map::tube_facts::{NativeTubeCellIndex, TubeFact, TubeId};
+use crate::map::tubes::NativeMapTubeReceipt;
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -295,7 +296,9 @@ pub struct ResolvedTerrainCell {
     pub bridge_deck_level: u8,
     pub bridge_layer: Option<BridgeLayer>,
     pub bridge_facts: BridgeCellFacts,
-    /// CellClass+0x116 equivalent: index into `ResolvedTerrainGrid::tube_facts`.
+    /// Compatibility projection of an in-range nonnegative
+    /// `CellClass+0x116` value. The exact signed authority is retained by the
+    /// owning `ResolvedTerrainGrid`.
     pub tube_index: Option<TubeId>,
     /// Selected tactical owner's radar color for the diamond's left half.
     pub radar_left: [u8; 3],
@@ -472,10 +475,7 @@ impl<'a> LoadCellRecalcState<'a> {
     /// authored loading must use `for_authored_load` so missing theater/TMP
     /// authority cannot silently become heuristic metadata.
     #[cfg(test)]
-    pub(crate) fn synthetic(
-        overlay_types: &'a OverlayTypeRegistry,
-        cell_count: usize,
-    ) -> Self {
+    pub(crate) fn synthetic(overlay_types: &'a OverlayTypeRegistry, cell_count: usize) -> Self {
         Self {
             theater_data: None,
             asset_manager: None,
@@ -579,8 +579,34 @@ impl<'a> LoadCellRecalcState<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AutomaticTubeRequest {
+    pub(crate) cell: (u16, u16),
+    pub(crate) direction: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutomaticTubeAllocation {
+    AllocationNull,
+    Allocated {
+        native_unique_id: i32,
+        /// Deterministic test seam for the post-ID vector-growth failure. The
+        /// production host returns true and the map owner still uses
+        /// `try_reserve` before publishing the registry entry.
+        registry_append_allowed: bool,
+    },
+}
+
 pub(crate) trait LoadCellRecalcEffects {
     type Error;
+
+    /// Model the outer allocation and shared native-ID assignment. Registry
+    /// append and cell-index publication remain map-owned and occur before the
+    /// later terrain Anim callback.
+    fn allocate_automatic_tube(
+        &mut self,
+        request: AutomaticTubeRequest,
+    ) -> Result<AutomaticTubeAllocation, Self::Error>;
 
     /// Complete the terrain-attached Anim constructor/Middle side effects
     /// synchronously. The map owner sets its cell latch only after this call
@@ -786,7 +812,8 @@ impl CellClassBridgeFlagState {
                 self.flags[index] = flags as u16;
             } else {
                 self.shared_cell_dummy.stamp_coord(x, y);
-                self.shared_cell_dummy.apply_bridge_flag_slot(slot, stamp.set);
+                self.shared_cell_dummy
+                    .apply_bridge_flag_slot(slot, stamp.set);
             }
         }
     }
@@ -842,8 +869,7 @@ pub(crate) struct DynamicTerrainCellState {
     pub radar_left: [u8; 3],
     pub radar_right: [u8; 3],
     pub has_damaged_data: bool,
-    pub bridgehead_anchor_class_at_load:
-        Option<crate::map::bridge_facts::BridgeheadAnchorClass>,
+    pub bridgehead_anchor_class_at_load: Option<crate::map::bridge_facts::BridgeheadAnchorClass>,
 }
 
 impl DynamicTerrainCellState {
@@ -1056,11 +1082,12 @@ impl SharedCellDummy {
     /// Stamp only CellClass+0x24, preserving the live level and slope bytes.
     pub fn stamp_coord(&self, x: i32, y: i32) {
         let coord = u64::from(x as i16 as u16) | (u64::from(y as i16 as u16) << 16);
-        let _ = self.state.cell.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some((current & !0xffff_ffff) | coord),
-        );
+        let _ = self
+            .state
+            .cell
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some((current & !0xffff_ffff) | coord)
+            });
     }
 
     pub fn same_identity(&self, other: &Self) -> bool {
@@ -1075,21 +1102,23 @@ impl SharedCellDummy {
 
     pub(crate) fn write_overlay_identity(&self, identity: i32) {
         let identity = u64::from(identity as u32);
-        let _ = self.state.overlay.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some((current & !u64::from(u32::MAX)) | identity),
-        );
+        let _ = self
+            .state
+            .overlay
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some((current & !u64::from(u32::MAX)) | identity)
+            });
     }
 
     pub(crate) fn write_overlay_state(&self, state: u8) {
         const STATE_MASK: u64 = 0xff << 32;
         let state = u64::from(state) << 32;
-        let _ = self.state.overlay.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some((current & !STATE_MASK) | state),
-        );
+        let _ = self
+            .state
+            .overlay
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some((current & !STATE_MASK) | state)
+            });
     }
 
     pub(crate) fn write_overlay_identity_state(&self, identity: i32, state: u8) {
@@ -1135,11 +1164,12 @@ impl SharedCellDummy {
     pub(crate) fn set_level_slope(&self, level: i8, slope_type: u8) {
         const LEVEL_SLOPE_MASK: u64 = 0xffff << 32;
         let value = (u64::from(level as u8) << 32) | (u64::from(slope_type) << 40);
-        let _ = self.state.cell.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some((current & !LEVEL_SLOPE_MASK) | value),
-        );
+        let _ = self
+            .state
+            .cell
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some((current & !LEVEL_SLOPE_MASK) | value)
+            });
     }
 
     #[cfg(test)]
@@ -1291,6 +1321,11 @@ pub struct ResolvedTerrainGrid {
     /// the pristine chain head instead of inventing a damaged color.
     damaged_radar_metadata: Vec<Option<RadarColorMetadata>>,
     tube_facts: Vec<TubeFact>,
+    /// Exact signed `CellClass+0x116` authority aligned with `cells`.
+    native_tube_indices: Vec<NativeTubeCellIndex>,
+    /// Load-only native identities aligned with `tube_facts`. Explicit rows and
+    /// automatic Recalc shells share this one registry order.
+    tube_native_ids: Vec<Option<i32>>,
     /// Theater `[General] ClearTile` resolved to a flat tile id.
     ///
     /// Presentation consumers use this for `NO_TILE` cells while
@@ -1316,13 +1351,25 @@ pub struct ResolvedTerrainGrid {
 /// grid must first be consumed by the native Tube/overlay/Recalc transaction.
 pub(crate) struct AuthoredTerrainFill(ResolvedTerrainGrid);
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NativeTubeRegistryBindError {
+    #[error("pending authored terrain Tube registry is already populated")]
+    RegistryAlreadyPopulated,
+    #[error("pending authored terrain Tube registry could not reserve {entries} entries")]
+    RegistryCapacity { entries: usize },
+}
+
 impl AuthoredTerrainFill {
     pub(crate) fn into_pending_grid(self) -> ResolvedTerrainGrid {
         self.0
     }
 
+    pub(crate) fn dimensions(&self) -> (u16, u16) {
+        (self.0.width(), self.0.height())
+    }
+
     #[cfg(test)]
-    fn pending_grid(&self) -> &ResolvedTerrainGrid {
+    pub(crate) fn pending_grid(&self) -> &ResolvedTerrainGrid {
         &self.0
     }
 }
@@ -1338,6 +1385,16 @@ impl ResolvedTerrainGrid {
         cells: Vec<ResolvedTerrainCell>,
         tube_facts: Vec<TubeFact>,
     ) -> Self {
+        let tube_native_ids = vec![None; tube_facts.len()];
+        let native_tube_indices = cells
+            .iter()
+            .map(|cell| {
+                cell.tube_index
+                    .map_or(NativeTubeCellIndex::NONE, |tube_id| {
+                        NativeTubeCellIndex::from_registry_ordinal(tube_id.as_usize())
+                    })
+            })
+            .collect();
         let radar_color_valid = cells
             .iter()
             .map(|cell| cell.radar_left != [0, 0, 0] || cell.radar_right != [0, 0, 0])
@@ -1352,6 +1409,8 @@ impl ResolvedTerrainGrid {
             radar_color_valid,
             damaged_radar_metadata,
             tube_facts,
+            native_tube_indices,
+            tube_native_ids,
             clear_tile_id: 0,
             tile_registry_len: None,
             bridge_set_start: None,
@@ -1461,10 +1520,12 @@ impl ResolvedTerrainGrid {
         let mut finalized = overlay;
         let mut current_land_ground_blocked;
         let mut current_land_build_blocked;
-        let current_cliff_eligible;
+        let mut current_cliff_eligible;
         let mut base_cliff_eligible = cliff_back_normal_reclass_applies(snapshot.base_land_type);
-        let mut run_lat = false;
+        let run_lat;
         let mut anim_request = None;
+        let mut animation_tile_id = None;
+        let mut animation_sub_tile = 0;
 
         if early_overlay_branch {
             let flags = source_flags.expect("early branch has OverlayType flags");
@@ -1501,8 +1562,8 @@ impl ResolvedTerrainGrid {
             if state.cliff_back_impassability != 0 {
                 let behind_cliff = self.authored_load_cell_is_behind_cliff(index);
                 if behind_cliff && state.cliff_back_impassability == 2 {
-                    if let Some((ground_blocked, build_blocked)) =
-                        self.apply_authored_load_cliff_back_rock(
+                    if let Some((ground_blocked, build_blocked)) = self
+                        .apply_authored_load_cliff_back_rock(
                             state,
                             index,
                             base_cliff_eligible,
@@ -1518,11 +1579,8 @@ impl ResolvedTerrainGrid {
         } else {
             let current_tile = snapshot.final_tile_index;
             let current_sub_tile = snapshot.final_sub_tile;
-            let registered = state.registered_tile_metadata(
-                current_tile,
-                current_sub_tile,
-                &snapshot,
-            );
+            let registered =
+                state.registered_tile_metadata(current_tile, current_sub_tile, &snapshot);
             let sparse_entry = registered
                 .as_ref()
                 .is_some_and(|metadata| metadata.subtile_entry_valid == Some(false));
@@ -1533,6 +1591,13 @@ impl ResolvedTerrainGrid {
                 state.clear_land_metadata()
             };
             let tile_id = u16::try_from(current_tile).ok();
+            if valid_entry {
+                // `RecalcAttributes @ 0x0047D2B0` retains the registered
+                // pristine tile receiver for the later AnimType/AttachesTo
+                // checks even though LAT may replace Cell+0x38 in between.
+                animation_tile_id = tile_id;
+                animation_sub_tile = current_sub_tile;
+            }
             let accepts_smudge = valid_entry
                 && tile_id.is_some_and(|tile_id| {
                     state
@@ -1551,12 +1616,67 @@ impl ResolvedTerrainGrid {
                     cell.final_tile_index = 0xFFFF;
                     cell.final_sub_tile = 0;
                 }
-                apply_pristine_load_metadata(
-                    cell,
-                    &metadata,
-                    accepts_smudge,
-                    allows_tiberium,
-                );
+                apply_pristine_load_metadata(cell, &metadata, accepts_smudge, allows_tiberium);
+                restore_load_base_land(cell);
+            }
+            base_cliff_eligible = if sparse_entry {
+                self.cells[index].base_land_type == LandType::Clear.as_index()
+            } else {
+                cliff_back_normal_reclass_applies(self.cells[index].base_land_type)
+            };
+            current_cliff_eligible = if sparse_entry {
+                self.cells[index].land_type == LandType::Clear.as_index()
+            } else {
+                cliff_back_normal_reclass_applies(self.cells[index].land_type)
+            };
+            current_land_ground_blocked = self.cells[index].base_ground_walk_blocked;
+            current_land_build_blocked = self.cells[index].base_build_blocked;
+            run_lat = valid_entry;
+        }
+
+        if run_lat {
+            self.apply_authored_load_lat_slope(state, index);
+        }
+
+        if !early_overlay_branch {
+            // LAT/slope fixup mutates the cell's tile before the automatic Tube
+            // region. Re-resolve the selected final TMP for land/Tube; the
+            // later terrain-Anim predicate deliberately retains the pristine
+            // receiver cached above, as native Recalc does.
+            let post_lat_snapshot = self.cells[index].clone();
+            let final_tile = post_lat_snapshot.final_tile_index;
+            let final_sub_tile = post_lat_snapshot.final_sub_tile;
+            let registered =
+                state.registered_tile_metadata(final_tile, final_sub_tile, &post_lat_snapshot);
+            let sparse_entry = registered
+                .as_ref()
+                .is_some_and(|metadata| metadata.subtile_entry_valid == Some(false));
+            let valid_entry = registered.is_some() && !sparse_entry;
+            let metadata = if valid_entry {
+                registered.expect("valid final registered tile metadata")
+            } else {
+                state.clear_land_metadata()
+            };
+            let final_tile_id = u16::try_from(final_tile).ok();
+            let accepts_smudge = valid_entry
+                && final_tile_id.is_some_and(|tile_id| {
+                    state
+                        .theater_data
+                        .is_some_and(|theater| theater.lookup.is_morphable(tile_id))
+                });
+            let allows_tiberium = valid_entry
+                && final_tile_id.is_some_and(|tile_id| {
+                    state
+                        .theater_data
+                        .is_some_and(|theater| theater.lookup.allows_tiberium(tile_id))
+                });
+            {
+                let cell = &mut self.cells[index];
+                if !valid_entry {
+                    cell.final_tile_index = 0xFFFF;
+                    cell.final_sub_tile = 0;
+                }
+                apply_pristine_load_metadata(cell, &metadata, accepts_smudge, allows_tiberium);
                 restore_load_base_land(cell);
             }
 
@@ -1584,7 +1704,6 @@ impl ResolvedTerrainGrid {
                 current_land_ground_blocked = self.cells[index].base_ground_walk_blocked;
                 current_land_build_blocked = self.cells[index].base_build_blocked;
             }
-
             base_cliff_eligible = if sparse_entry {
                 self.cells[index].base_land_type == LandType::Clear.as_index()
             } else {
@@ -1597,12 +1716,55 @@ impl ResolvedTerrainGrid {
             };
 
             if valid_entry {
-                run_lat = true;
+                let cell = &self.cells[index];
+                if cell.yr_cell_land_type == YR_CELL_LAND_TUNNEL
+                    && self.native_tube_indices[index]
+                        .admits_automatic_construction(self.tube_facts.len())
+                    && let Some(direction) =
+                        auto_tube_direction_for_tile(cell.final_tile_index, state.theater_data)
+                {
+                    let request = AutomaticTubeRequest {
+                        cell: (cell.rx, cell.ry),
+                        direction,
+                    };
+                    match effects
+                        .allocate_automatic_tube(request)
+                        .map_err(LoadCellRecalcError::Effect)?
+                    {
+                        AutomaticTubeAllocation::AllocationNull => {}
+                        AutomaticTubeAllocation::Allocated {
+                            native_unique_id,
+                            registry_append_allowed,
+                        } => {
+                            let appended = registry_append_allowed
+                                && self.tube_facts.try_reserve(1).is_ok()
+                                && self.tube_native_ids.try_reserve(1).is_ok();
+                            if appended {
+                                let ordinal = self.tube_facts.len();
+                                self.tube_facts.push(TubeFact::automatic_recalc_shell(
+                                    request.cell,
+                                    request.direction,
+                                ));
+                                self.tube_native_ids.push(Some(native_unique_id));
+                                if request.cell != (0, 0) {
+                                    let raw = NativeTubeCellIndex::from_registry_ordinal(ordinal);
+                                    self.native_tube_indices[index] = raw;
+                                    self.cells[index].tube_index =
+                                        raw.validated_id(self.tube_facts.len());
+                                }
+                            } else if request.cell != (0, 0) {
+                                self.native_tube_indices[index] = NativeTubeCellIndex::NONE;
+                                self.cells[index].tube_index = None;
+                            }
+                        }
+                    }
+                }
+
                 if !state.terrain_anim_is_latched(index)
                     && live_flags.is_none_or(|flags| !uses_early_recalc_land_branch(flags))
-                    && let (Some(theater), Some(tile_id)) = (state.theater_data, tile_id)
+                    && let (Some(theater), Some(tile_id)) = (state.theater_data, animation_tile_id)
                     && let Some(anim) = theater.lookup.tile_anim(tile_id)
-                    && anim.attaches_to == i32::from(current_sub_tile)
+                    && anim.attaches_to == i32::from(animation_sub_tile)
                 {
                     let (offset_x, offset_y) =
                         tile_anim_pixel_offset_to_leptons(anim.x_offset, anim.y_offset);
@@ -1625,10 +1787,6 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        if run_lat {
-            self.apply_authored_load_lat_slope(state, index);
-        }
-
         if let Some(request) = anim_request.as_ref() {
             effects
                 .construct_terrain_attached_anim(request)
@@ -1639,8 +1797,8 @@ impl ResolvedTerrainGrid {
         if !early_overlay_branch && state.cliff_back_impassability != 0 {
             let behind_cliff = self.authored_load_cell_is_behind_cliff(index);
             if behind_cliff && state.cliff_back_impassability == 2 {
-                if let Some((ground_blocked, build_blocked)) =
-                    self.apply_authored_load_cliff_back_rock(
+                if let Some((ground_blocked, build_blocked)) = self
+                    .apply_authored_load_cliff_back_rock(
                         state,
                         index,
                         base_cliff_eligible,
@@ -1670,11 +1828,7 @@ impl ResolvedTerrainGrid {
         })
     }
 
-    fn apply_authored_load_lat_slope(
-        &mut self,
-        state: &LoadCellRecalcState<'_>,
-        index: usize,
-    ) {
+    fn apply_authored_load_lat_slope(&mut self, state: &LoadCellRecalcState<'_>, index: usize) {
         let Some(cell) = self.cells.get(index) else {
             return;
         };
@@ -1723,8 +1877,7 @@ impl ResolvedTerrainGrid {
     }
 
     fn authored_load_cell_is_behind_cliff(&self, index: usize) -> bool {
-        const OFFSETS: [(i16, i16); 6] =
-            [(0, -1), (-1, 0), (2, 2), (1, 1), (-1, 1), (1, -1)];
+        const OFFSETS: [(i16, i16); 6] = [(0, -1), (-1, 0), (2, 2), (1, 1), (-1, 1), (1, -1)];
         let cell = &self.cells[index];
         let x = cell.rx as i16;
         let y = cell.ry as i16;
@@ -1844,13 +1997,11 @@ impl ResolvedTerrainGrid {
         } else {
             cell.level
         };
-        cell.bridge_walkable = structural_bridge
-            && !cell.terrain_object_blocks
-            && !cell.overlay_blocks;
+        cell.bridge_walkable =
+            structural_bridge && !cell.terrain_object_blocks && !cell.overlay_blocks;
         cell.bridge_transition = cell.bridge_facts.has_transition_flag();
-        cell.ground_walk_blocked = land_ground_blocked
-            || cell.terrain_object_blocks
-            || cell.overlay_blocks;
+        cell.ground_walk_blocked =
+            land_ground_blocked || cell.terrain_object_blocks || cell.overlay_blocks;
         cell.build_blocked = land_build_blocked
             || cell.terrain_object_blocks
             || cell.overlay_blocks
@@ -1937,7 +2088,8 @@ impl ResolvedTerrainGrid {
             Some(index)
         } else {
             self.shared_cell_dummy.stamp_coord(x, y);
-            self.shared_cell_dummy.apply_bridge_flag_slot(slot, stamp.set);
+            self.shared_cell_dummy
+                .apply_bridge_flag_slot(slot, stamp.set);
             None
         }
     }
@@ -2263,9 +2415,7 @@ impl ResolvedTerrainGrid {
         let selected = self.cell(rx, ry)?;
         let family = match selected.final_tile_index {
             tile if tile == i32::from(catalog.destroyable_start) => DestroyableCliffFamily::A,
-            tile if tile == i32::from(catalog.destroyable_start) + 1 => {
-                DestroyableCliffFamily::B
-            }
+            tile if tile == i32::from(catalog.destroyable_start) + 1 => DestroyableCliffFamily::B,
             _ => return None,
         };
         let old = &catalog.old[match family {
@@ -2339,10 +2489,7 @@ impl ResolvedTerrainGrid {
                     let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                         continue;
                     };
-                    if !self
-                        .cell(x, y)
-                        .is_some_and(|cell| !cell.outside_playfield)
-                    {
+                    if !self.cell(x, y).is_some_and(|cell| !cell.outside_playfield) {
                         continue;
                     }
                     let cell_index = self.index(x, y).expect("validated real cell");
@@ -2410,9 +2557,11 @@ impl ResolvedTerrainGrid {
                 .stamp_coord(i32::from(x), i32::from(y));
             return;
         };
-        if self.native_allocated.as_ref().is_some_and(|allocated| {
-            !allocated.get(index).copied().unwrap_or(false)
-        }) || self.cells[index].outside_playfield
+        if self
+            .native_allocated
+            .as_ref()
+            .is_some_and(|allocated| !allocated.get(index).copied().unwrap_or(false))
+            || self.cells[index].outside_playfield
         {
             self.shared_cell_dummy
                 .stamp_coord(i32::from(x), i32::from(y));
@@ -2552,12 +2701,63 @@ impl ResolvedTerrainGrid {
         &self.tube_facts
     }
 
+    /// Consume the successful raw `[Tubes]` constructor receipt into the one
+    /// live registry before authored OverlayClass Mark/Recalc begins.
+    pub(crate) fn bind_native_map_tubes(
+        &mut self,
+        receipt: NativeMapTubeReceipt,
+    ) -> Result<usize, NativeTubeRegistryBindError> {
+        if !self.tube_facts.is_empty() || !self.tube_native_ids.is_empty() {
+            return Err(NativeTubeRegistryBindError::RegistryAlreadyPopulated);
+        }
+        let entries = receipt.entries.len();
+        self.tube_facts
+            .try_reserve(entries)
+            .map_err(|_| NativeTubeRegistryBindError::RegistryCapacity { entries })?;
+        self.tube_native_ids
+            .try_reserve(entries)
+            .map_err(|_| NativeTubeRegistryBindError::RegistryCapacity { entries })?;
+
+        for constructed in receipt.entries {
+            let source_ordinal = constructed.native_init.source_entry_ordinal;
+            let native_unique_id = constructed.native_init.native_unique_id;
+            let entry = constructed.fact.entry;
+            self.tube_facts.push(constructed.fact);
+            self.tube_native_ids.push(Some(native_unique_id));
+
+            let x = entry.0 as i16;
+            let y = entry.1 as i16;
+            if let Some(index) = self.native_fixed_cell_index(x, y) {
+                let raw = NativeTubeCellIndex::from_registry_ordinal(source_ordinal);
+                self.native_tube_indices[index] = raw;
+                self.cells[index].tube_index = raw.validated_id(self.tube_facts.len());
+            } else {
+                self.shared_cell_dummy
+                    .stamp_coord(i32::from(x), i32::from(y));
+            }
+        }
+        Ok(entries)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tube_native_id(&self, tube_id: TubeId) -> Option<i32> {
+        self.tube_native_ids
+            .get(tube_id.as_usize())
+            .copied()
+            .flatten()
+    }
+
     pub fn tube(&self, tube_id: TubeId) -> Option<&TubeFact> {
         self.tube_facts.get(tube_id.as_usize())
     }
 
     pub fn tube_at_cell(&self, rx: u16, ry: u16) -> Option<&TubeFact> {
-        let tube_id = self.cell(rx, ry)?.tube_index?;
+        let index = self.index(rx, ry)?;
+        let tube_id = self
+            .native_tube_indices
+            .get(index)
+            .copied()?
+            .validated_id(self.tube_facts.len())?;
         self.tube(tube_id)
     }
 
@@ -2799,6 +2999,8 @@ impl ResolvedTerrainGrid {
                 radar_color_valid: Vec::new(),
                 damaged_radar_metadata: Vec::new(),
                 tube_facts: Vec::new(),
+                native_tube_indices: Vec::new(),
+                tube_native_ids: Vec::new(),
                 clear_tile_id,
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
                 bridge_set_start: theater_data.and_then(|td| {
@@ -3555,6 +3757,16 @@ impl ResolvedTerrainGrid {
             tube_facts = seed_explicit_map_tubes(&mut cells, width, height, &map.explicit_tubes);
             build_auto_low_bridge_tubes(&mut cells, width, height, theater_data, &mut tube_facts);
         }
+        let tube_native_ids = vec![None; tube_facts.len()];
+        let native_tube_indices = cells
+            .iter()
+            .map(|cell| {
+                cell.tube_index
+                    .map_or(NativeTubeCellIndex::NONE, |tube_id| {
+                        NativeTubeCellIndex::from_registry_ordinal(tube_id.as_usize())
+                    })
+            })
+            .collect();
 
         let mut grid = Self {
             width,
@@ -3565,6 +3777,8 @@ impl ResolvedTerrainGrid {
             radar_color_valid,
             damaged_radar_metadata,
             tube_facts,
+            native_tube_indices,
+            tube_native_ids,
             clear_tile_id,
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
             bridge_set_start: theater_data.and_then(|td| {
@@ -3934,7 +4148,16 @@ fn apply_pristine_load_metadata(
 
 fn load_navigation_signature(
     cell: &ResolvedTerrainCell,
-) -> (bool, Option<u8>, u8, u8, TerrainClass, SpeedCostProfile, bool, bool) {
+) -> (
+    bool,
+    Option<u8>,
+    u8,
+    u8,
+    TerrainClass,
+    SpeedCostProfile,
+    bool,
+    bool,
+) {
     (
         cell.overlay_blocks,
         cell.overlay_zone_type,
@@ -4012,7 +4235,10 @@ fn build_auto_low_bridge_tubes(
             continue;
         };
         let tube_id = TubeId(raw_id);
-        tubes.push(TubeFact::auto_low_bridge((cell.rx, cell.ry), direction));
+        tubes.push(TubeFact::automatic_recalc_shell(
+            (cell.rx, cell.ry),
+            direction,
+        ));
         cell.tube_index = Some(tube_id);
     }
 }
@@ -4054,25 +4280,15 @@ fn auto_tube_direction_for_tile(
     final_tile_index: i32,
     theater_data: Option<&TheaterData>,
 ) -> Option<u8> {
-    let tile_id = normalize_tile_id(final_tile_index);
     let td = theater_data?;
-    for tileset_index in [
-        td.tunnels,
-        td.track_tunnels,
-        td.dirt_tunnels,
-        td.dirt_track_tunnels,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let Some(bounds) = td.lookup.bounds().get(tileset_index as usize) else {
-            continue;
-        };
-        let Some(offset) = tile_id.checked_sub(bounds.start) else {
-            continue;
-        };
-        if offset < 4 {
-            return AUTO_TUBE_DIRECTIONS.get(offset as usize).copied();
+    for base in td.automatic_tube_bases {
+        if final_tile_index >= base && final_tile_index <= base.wrapping_add(3) {
+            let ordinal = final_tile_index.wrapping_sub(base);
+            if ordinal != -1 {
+                return usize::try_from(ordinal)
+                    .ok()
+                    .and_then(|ordinal| AUTO_TUBE_DIRECTIONS.get(ordinal).copied());
+            }
         }
     }
     None
@@ -4129,9 +4345,8 @@ fn damaged_variant_radar_metadata(
     warned_unknown_land_types: &mut HashSet<u8>,
 ) -> Option<RadarColorMetadata> {
     if !pristine.has_damaged_data
-        || !theater_data.is_some_and(|theater| {
-            theater.lookup.total_file_count(pristine_key.tile_id) >= 2
-        })
+        || !theater_data
+            .is_some_and(|theater| theater.lookup.total_file_count(pristine_key.tile_id) >= 2)
     {
         return None;
     }
@@ -4156,7 +4371,8 @@ fn retained_damaged_radar_metadata(
     pristine: &TileMetadata,
     damaged: Option<&TileMetadata>,
 ) -> Option<RadarColorMetadata> {
-    let damaged = damaged.filter(|metadata| pristine.has_damaged_data && metadata.tmp_file_valid)?;
+    let damaged =
+        damaged.filter(|metadata| pristine.has_damaged_data && metadata.tmp_file_valid)?;
     Some(RadarColorMetadata {
         left: damaged.radar_left,
         right: damaged.radar_right,
@@ -4244,8 +4460,7 @@ fn stamp_dynamic_tile_identity(
     cell.final_sub_tile = sub_tile;
     cell.is_wood_bridge_repair_tile = false;
     cell.slope_type = prototype.metadata.slope_type;
-    cell.level = (cell.level as i8)
-        .wrapping_add(prototype.metadata.template_height as i8) as u8;
+    cell.level = (cell.level as i8).wrapping_add(prototype.metadata.template_height as i8) as u8;
     cell.overlay_blocks = false;
     cell.overlay_zone_type = None;
 }
@@ -5096,10 +5311,7 @@ mod tests {
             assert!(!expected_slots[slot], "duplicate sum-513 slot ({x}, {y})");
             expected_slots[slot] = true;
         }
-        assert_eq!(
-            expected_slots.iter().filter(|&&slot| slot).count(),
-            1_021
-        );
+        assert_eq!(expected_slots.iter().filter(|&&slot| slot).count(), 1_021);
         for y in 0u32..512 {
             for x in 0u32..512 {
                 let slot = fixed_slot(x, y);
@@ -5176,12 +5388,8 @@ mod tests {
         let process_dummy = SharedCellDummy::fresh();
 
         process_dummy.reconstruct_for_map_resize();
-        let (mut current, larger_stats) = build_production_grid(
-            &larger,
-            Some(&theater),
-            &mut cache,
-            &mut main_draw,
-        );
+        let (mut current, larger_stats) =
+            build_production_grid(&larger, Some(&theater), &mut cache, &mut main_draw);
         current.bind_shared_cell_dummy(process_dummy.clone());
         assert_eq!(current.iter().count(), 4 * (2 * 5 - 1));
         assert_eq!(larger_stats.fill_calls, 36);
@@ -5266,6 +5474,7 @@ mod tests {
             track_tunnels: None,
             dirt_tunnels: None,
             dirt_track_tunnels: None,
+            automatic_tube_bases: [-1; 4],
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
             rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
@@ -5300,6 +5509,7 @@ mod tests {
             track_tunnels: None,
             dirt_tunnels: None,
             dirt_track_tunnels: None,
+            automatic_tube_bases: [-1; 4],
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
             rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
@@ -5316,6 +5526,7 @@ mod tests {
         theater.track_tunnels = Some(1);
         theater.dirt_tunnels = Some(2);
         theater.dirt_track_tunnels = Some(3);
+        theater.automatic_tube_bases = [0, 5, 10, 15];
         theater
     }
 
@@ -5379,12 +5590,24 @@ mod tests {
 
     #[derive(Default)]
     struct LoadRecalcTestEffects {
+        tube_requests: Vec<AutomaticTubeRequest>,
+        tube_allocation: Option<AutomaticTubeAllocation>,
         requests: Vec<TerrainTileAnimation>,
         fail: bool,
     }
 
     impl LoadCellRecalcEffects for LoadRecalcTestEffects {
         type Error = &'static str;
+
+        fn allocate_automatic_tube(
+            &mut self,
+            request: AutomaticTubeRequest,
+        ) -> Result<AutomaticTubeAllocation, Self::Error> {
+            self.tube_requests.push(request);
+            Ok(self
+                .tube_allocation
+                .unwrap_or(AutomaticTubeAllocation::AllocationNull))
+        }
 
         fn construct_terrain_attached_anim(
             &mut self,
@@ -5404,8 +5627,7 @@ mod tests {
         let mut theater = gsi_04_02_last_tiles_theater();
         let raw_legacy = gsi_04_02_last_tiles_tmp_bytes(6, [11, 12, 13], [14, 15, 16]);
         let rough = gsi_04_02_last_tiles_tmp_bytes(3, [1, 2, 3], [4, 5, 6]);
-        let rough_suffix =
-            gsi_04_02_last_tiles_tmp_bytes(9, [31, 32, 33], [34, 35, 36]);
+        let rough_suffix = gsi_04_02_last_tiles_tmp_bytes(9, [31, 32, 33], [34, 35, 36]);
         let lat = gsi_04_02_last_tiles_tmp_bytes(7, [21, 22, 23], [24, 25, 26]);
         let (_directory, assets) = gsi_04_02_asset_manager_with_loose_tmps(&[
             ("old03.tem", &raw_legacy),
@@ -6439,8 +6661,7 @@ mod tests {
             assert_eq!(grid.iter().count(), 10);
             assert!(grid.cell(0, 0).is_none());
             assert_eq!(
-                crate::sim::cell_rect::get_cellclass_fallback(Some(&grid), 0, 0)
-                    .dummy_snapshot(),
+                crate::sim::cell_rect::get_cellclass_fallback(Some(&grid), 0, 0).dummy_snapshot(),
                 Some(SharedCellDummySnapshot {
                     coord: (0, 0),
                     level: 0,
@@ -6566,13 +6787,19 @@ mod tests {
         no_families.track_tunnels = None;
         no_families.dirt_tunnels = None;
         no_families.dirt_track_tunnels = None;
-        assert_eq!(auto_tube_direction_for_tile(0, Some(&no_families)), None);
+        no_families.automatic_tube_bases = [-1; 4];
+        assert_eq!(
+            auto_tube_direction_for_tile(0, Some(&no_families)),
+            Some(4),
+            "missing native bases remain signed -1 and admit tile zero as ordinal one"
+        );
 
         let mut zero_length = synthetic_theater_from_ini(
             b"[TileSet0000]\nTilesInSet=0\nFileName=empty\nSetName=Empty Tunnel\n\n\
               [TileSet0001]\nTilesInSet=5\nFileName=next\nSetName=Following Set\n",
         );
         zero_length.tunnels = Some(0);
+        zero_length.automatic_tube_bases[0] = 0;
         for (tile_id, direction) in AUTO_TUBE_DIRECTIONS.into_iter().enumerate() {
             assert_eq!(
                 auto_tube_direction_for_tile(tile_id as i32, Some(&zero_length)),
@@ -6580,10 +6807,7 @@ mod tests {
                 "native compares the zero-length set's cumulative base without its count"
             );
         }
-        assert_eq!(
-            auto_tube_direction_for_tile(4, Some(&zero_length)),
-            None
-        );
+        assert_eq!(auto_tube_direction_for_tile(4, Some(&zero_length)), None);
 
         let mut wrong_land = make_test_cell(0, 0);
         wrong_land.final_tile_index = 0;
@@ -6604,6 +6828,97 @@ mod tests {
         assert_eq!(cells[0].tube_index, None);
         assert_eq!(cells[1].tube_index, Some(TubeId(0)));
         assert_eq!(cells[2].tube_index, None);
+    }
+
+    #[test]
+    fn authored_recalc_constructs_and_retains_one_automatic_tube_inline() {
+        let mut theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=1\nFileName=tunnel\nSetName=Tunnel\n",
+        );
+        theater.automatic_tube_bases = [0, -1, -1, -1];
+        let tmp = gsi_04_02_last_tiles_tmp_bytes(5, [1, 2, 3], [4, 5, 6]);
+        let (_directory, assets) = gsi_04_04_asset_manager_with_loose_tmp("tunnel01.tem", &tmp);
+        let terrain_rules = TerrainRules::from_ini(&IniFile::from_str(""));
+        let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(""), None);
+        let map = make_map(Vec::new(), Vec::new(), Vec::new());
+        let mut grid =
+            ResolvedTerrainGrid::from_cells(2, 1, vec![make_test_cell(0, 0), make_test_cell(1, 0)]);
+        let mut state = LoadCellRecalcState::for_authored_load(
+            &map,
+            &theater,
+            &assets,
+            &terrain_rules,
+            &registry,
+            false,
+            0,
+            grid.cells.len(),
+        );
+        let mut effects = LoadRecalcTestEffects {
+            tube_allocation: Some(AutomaticTubeAllocation::Allocated {
+                native_unique_id: 1_010_001,
+                registry_append_allowed: true,
+            }),
+            ..LoadRecalcTestEffects::default()
+        };
+
+        grid.recalc_authored_load_cell(
+            &mut state,
+            1,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        )
+        .expect("first authored tunnel Recalc");
+
+        assert_eq!(
+            effects.tube_requests,
+            vec![AutomaticTubeRequest {
+                cell: (1, 0),
+                direction: 2,
+            }]
+        );
+        assert_eq!(grid.cells[1].tube_index, Some(TubeId(0)));
+        assert_eq!(grid.tube_native_id(TubeId(0)), Some(1_010_001));
+        assert_eq!(
+            grid.tube_at_cell(1, 0).unwrap().source,
+            TubeSource::AutomaticRecalcShell
+        );
+
+        grid.recalc_authored_load_cell(
+            &mut state,
+            1,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        )
+        .expect("later authored tunnel Recalc");
+        assert_eq!(
+            effects.tube_requests.len(),
+            1,
+            "the published in-range signed index suppresses duplicate construction"
+        );
+    }
+
+    #[test]
+    fn binding_explicit_native_tubes_publishes_identity_and_suppresses_rebind() {
+        let mut grid =
+            ResolvedTerrainGrid::from_cells(2, 1, vec![make_test_cell(0, 0), make_test_cell(1, 0)]);
+        let receipt = crate::map::tubes::NativeMapTubeReceipt {
+            entries: vec![crate::map::tubes::ConstructedMapTube {
+                fact: TubeFact::explicit((1, 0), (0, 0), 6, vec![2, 4]),
+                native_init: crate::map::tubes::TubeNativeInit {
+                    source_entry_ordinal: 0,
+                    native_unique_id: 1_010_000,
+                },
+            }],
+        };
+
+        assert_eq!(grid.bind_native_map_tubes(receipt).unwrap(), 1);
+        assert_eq!(grid.cells[1].tube_index, Some(TubeId(0)));
+        assert_eq!(grid.tube_native_id(TubeId(0)), Some(1_010_000));
+        assert_eq!(grid.tube_at_cell(1, 0).unwrap().path_steps, vec![2, 4]);
+        assert!(matches!(
+            grid.bind_native_map_tubes(crate::map::tubes::NativeMapTubeReceipt::default()),
+            Err(NativeTubeRegistryBindError::RegistryAlreadyPopulated)
+        ));
     }
 
     #[test]
@@ -8240,10 +8555,7 @@ NoUseTileLandType=no
         guarded.cells[0].final_tile_index = 99;
         guarded.stamp_dummy_cell_requested_coord(7, 8);
         let mut state = LoadCellRecalcState::synthetic(&registry, 1);
-        state.lat_config = Some(lat::parse_lat_config(
-            &theater.ini_data,
-            &theater.lookup,
-        ));
+        state.lat_config = Some(lat::parse_lat_config(&theater.ini_data, &theater.lookup));
         state.slope_config = Some(lat::SlopeFixupConfig {
             ramp_base: 100,
             ramp_smooth: 500,
@@ -8279,8 +8591,7 @@ NoUseTileLandType=no
 
     #[test]
     fn authored_load_cliff_back_uses_exact_six_probes_and_signed_levels() {
-        const OFFSETS: [(i16, i16); 6] =
-            [(0, -1), (-1, 0), (2, 2), (1, 1), (-1, 1), (1, -1)];
+        const OFFSETS: [(i16, i16); 6] = [(0, -1), (-1, 0), (2, 2), (1, 1), (-1, 1), (1, -1)];
         let center = (3i16, 3i16);
         let center_index = 3 * 7 + 3;
 
@@ -8325,8 +8636,7 @@ NoUseTileLandType=no
         let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(""), None);
 
         for mode in [0u8, 1, 3, u8::MAX] {
-            let mut grid =
-                ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+            let mut grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
             grid.stamp_dummy_cell_requested_coord(7, 8);
             if mode != 0 {
                 grid.test_set_dummy_cell_level_slope(4, 0);
@@ -8375,8 +8685,7 @@ NoUseTileLandType=no
         );
         let mut tmp = gsi_04_02_last_tiles_tmp_bytes(0, [1, 2, 3], [4, 5, 6]);
         tmp[62] = 1;
-        let (_directory, assets) =
-            gsi_04_04_asset_manager_with_loose_tmp("early01.tem", &tmp);
+        let (_directory, assets) = gsi_04_04_asset_manager_with_loose_tmp("early01.tem", &tmp);
         let terrain_rules = TerrainRules::from_ini(&IniFile::from_str(""));
         let registry = OverlayTypeRegistry::from_ini(
             &IniFile::from_str(
@@ -8387,7 +8696,10 @@ NoUseTileLandType=no
         );
         let map = make_map(Vec::new(), Vec::new(), Vec::new());
         let mut grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
-        assert_eq!(grid.cells[0].slope_type, 0, "fixture starts with stale flat cache");
+        assert_eq!(
+            grid.cells[0].slope_type, 0,
+            "fixture starts with stale flat cache"
+        );
         let mut state = LoadCellRecalcState::for_authored_load(
             &map,
             &theater,
@@ -8418,8 +8730,7 @@ NoUseTileLandType=no
             "the early branch copies overlay Land before clearing its pair"
         );
 
-        let mut unregistered =
-            ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        let mut unregistered = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
         unregistered.cells[0].final_tile_index = 99;
         unregistered.cells[0].slope_type = 1;
         let outcome = unregistered
@@ -9022,6 +9333,7 @@ Tile03ZAdjust=-10
             track_tunnels: None,
             dirt_tunnels: None,
             dirt_track_tunnels: None,
+            automatic_tube_bases: [-1; 4],
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
             rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
@@ -9041,16 +9353,12 @@ Tile03ZAdjust=-10
     fn authored_load_recalc_latches_tile_anim_only_after_synchronous_success() {
         let theater = theater_with_tile_anims();
         let tmp = gsi_04_02_last_tiles_tmp_bytes(0, [1, 2, 3], [4, 5, 6]);
-        let (_directory, assets) =
-            gsi_04_04_asset_manager_with_loose_tmp("wf01.tem", &tmp);
+        let (_directory, assets) = gsi_04_04_asset_manager_with_loose_tmp("wf01.tem", &tmp);
         let terrain_rules = TerrainRules::from_ini(&IniFile::from_str(""));
         let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(""), None);
         let map = make_map(Vec::new(), Vec::new(), Vec::new());
-        let mut grid = ResolvedTerrainGrid::from_cells(
-            2,
-            1,
-            vec![make_test_cell(0, 0), make_test_cell(1, 0)],
-        );
+        let mut grid =
+            ResolvedTerrainGrid::from_cells(2, 1, vec![make_test_cell(0, 0), make_test_cell(1, 0)]);
         let mut state = LoadCellRecalcState::for_authored_load(
             &map,
             &theater,
@@ -9323,8 +9631,20 @@ Tile03ZAdjust=-10
     #[test]
     fn destroyable_cliff_origin_recovery_accepts_every_present_a_and_b_subtile() {
         for (family, tile, width, height, holes) in [
-            (DestroyableCliffFamily::A, 100, 6u16, 4u16, &[0usize, 5, 18, 23][..]),
-            (DestroyableCliffFamily::B, 101, 4u16, 6u16, &[0usize, 3, 20, 23][..]),
+            (
+                DestroyableCliffFamily::A,
+                100,
+                6u16,
+                4u16,
+                &[0usize, 5, 18, 23][..],
+            ),
+            (
+                DestroyableCliffFamily::B,
+                101,
+                4u16,
+                6u16,
+                &[0usize, 3, 20, 23][..],
+            ),
         ] {
             for selected_subtile in 0..usize::from(width * height) {
                 if holes.contains(&selected_subtile) {
@@ -9370,15 +9690,11 @@ Tile03ZAdjust=-10
                             DestroyableCliffFamily::A if rx < 3 => {
                                 (200, usize::from(ry * 3 + rx), 1)
                             }
-                            DestroyableCliffFamily::A => {
-                                (201, usize::from(ry * 3 + (rx - 3)), 2)
-                            }
+                            DestroyableCliffFamily::A => (201, usize::from(ry * 3 + (rx - 3)), 2),
                             DestroyableCliffFamily::B if ry < 3 => {
                                 (203, usize::from(ry * 4 + rx), 4)
                             }
-                            DestroyableCliffFamily::B => {
-                                (202, usize::from((ry - 3) * 4 + rx), 3)
-                            }
+                            DestroyableCliffFamily::B => (202, usize::from((ry - 3) * 4 + rx), 3),
                         };
                         assert_eq!(cell.final_tile_index, expected_tile);
                         assert_eq!(usize::from(cell.final_sub_tile), expected_subtile);

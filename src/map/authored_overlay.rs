@@ -12,8 +12,9 @@ use crate::map::bridge_facts::{
 use crate::map::map_file::AuthoredOverlayPackReceipt;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::{
-    LoadCellRecalcEffects, LoadCellRecalcError, LoadCellRecalcOutcome, LoadCellRecalcState,
-    ResolvedTerrainGrid, SharedCellDummy, TerrainTileAnimation,
+    AutomaticTubeAllocation, AutomaticTubeRequest, LoadCellRecalcEffects, LoadCellRecalcError,
+    LoadCellRecalcOutcome, LoadCellRecalcState, ResolvedTerrainGrid, SharedCellDummy,
+    TerrainTileAnimation,
 };
 use crate::rules::terrain_rules::LandType;
 use crate::rules::tiberium_type::TiberiumTypeRegistry;
@@ -229,6 +230,11 @@ pub(crate) trait AuthoredOverlayLoadHost {
 
     fn next_scenario_raw(&mut self) -> u32;
 
+    fn allocate_automatic_tube(
+        &mut self,
+        request: AutomaticTubeRequest,
+    ) -> Result<AutomaticTubeAllocation, Self::Error>;
+
     fn publish_dirty(
         &mut self,
         kind: MapLoadDirtyKind,
@@ -264,6 +270,7 @@ pub(crate) trait AuthoredOverlayLoadHost {
         handle: Self::Handle,
         anim_name: &str,
         cell: AuthoredOverlayCellRef,
+        world_z: i32,
     ) -> Result<(), Self::Error>;
 
     fn finish_common(&mut self, handle: Self::Handle) -> Result<(), Self::Error>;
@@ -286,6 +293,49 @@ pub(crate) enum AuthoredOverlayFinalizeError<E> {
     RecalcMissingOverlayType { overlay_id: u8 },
     RecalcCellIndexOutOfBounds { index: usize },
     Host(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for AuthoredOverlayFinalizeError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidMapShape { width, height } => {
+                write!(f, "invalid authored overlay map shape {width}x{height}")
+            }
+            Self::MalformedOverlayType { overlay_id } => {
+                write!(f, "authored overlay type {overlay_id} is unresolved")
+            }
+            Self::ConstructedUnallocatedAnchor { overlay_id, cell } => write!(
+                f,
+                "authored overlay {overlay_id} constructed at unallocated cell ({},{})",
+                cell.0, cell.1
+            ),
+            Self::WallInvariant(result) => {
+                write!(f, "authored wall Mark invariant failed: {result:?}")
+            }
+            Self::RecalcMalformedOverlayIdentity { identity } => {
+                write!(f, "authored Recalc observed malformed overlay identity {identity}")
+            }
+            Self::RecalcMissingOverlayType { overlay_id } => {
+                write!(f, "authored Recalc cannot resolve overlay type {overlay_id}")
+            }
+            Self::RecalcCellIndexOutOfBounds { index } => {
+                write!(f, "authored Recalc cell index {index} is out of bounds")
+            }
+            Self::Host(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl<E> std::error::Error for AuthoredOverlayFinalizeError<E>
+where
+    E: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Host(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 struct FinalizerLowHost<'a, 'resources, H> {
@@ -318,11 +368,52 @@ struct TerrainAnimHostAdapter<'a, H>(&'a mut H);
 impl<H: AuthoredOverlayLoadHost> LoadCellRecalcEffects for TerrainAnimHostAdapter<'_, H> {
     type Error = H::Error;
 
+    fn allocate_automatic_tube(
+        &mut self,
+        request: AutomaticTubeRequest,
+    ) -> Result<AutomaticTubeAllocation, Self::Error> {
+        self.0.allocate_automatic_tube(request)
+    }
+
     fn construct_terrain_attached_anim(
         &mut self,
         request: &TerrainTileAnimation,
     ) -> Result<(), Self::Error> {
         self.0.construct_terrain_attached_anim(request)
+    }
+}
+
+/// Execute one cell of the final authored `InitCellAttributes(0)` sweep
+/// through the same Simulation-owned effect host used by the first sweep.
+/// The caller owns anti-diagonal traversal, the immediately preceding latch
+/// clear, and committing the returned identity/state into its live grid.
+pub(crate) fn recalc_final_authored_overlay_cell<H: AuthoredOverlayLoadHost>(
+    terrain: &mut ResolvedTerrainGrid,
+    recalc: &mut LoadCellRecalcState<'_>,
+    index: usize,
+    current: FinalizedOverlayCell,
+    host: &mut H,
+) -> Result<FinalizedOverlayCell, AuthoredOverlayFinalizeError<H::Error>> {
+    let outcome = {
+        let mut effects = TerrainAnimHostAdapter(host);
+        terrain.recalc_authored_load_cell(recalc, index, current, &mut effects)
+    }
+    .map_err(map_recalc_error)?;
+    Ok(outcome.finalized)
+}
+
+fn map_recalc_error<E>(error: LoadCellRecalcError<E>) -> AuthoredOverlayFinalizeError<E> {
+    match error {
+        LoadCellRecalcError::MalformedOverlayIdentity { identity } => {
+            AuthoredOverlayFinalizeError::RecalcMalformedOverlayIdentity { identity }
+        }
+        LoadCellRecalcError::MissingOverlayType { overlay_id } => {
+            AuthoredOverlayFinalizeError::RecalcMissingOverlayType { overlay_id }
+        }
+        LoadCellRecalcError::CellIndexOutOfBounds { index } => {
+            AuthoredOverlayFinalizeError::RecalcCellIndexOutOfBounds { index }
+        }
+        LoadCellRecalcError::Effect(error) => AuthoredOverlayFinalizeError::Host(error),
     }
 }
 
@@ -341,18 +432,7 @@ fn recalc_target<H: AuthoredOverlayLoadHost>(
         let mut effects = TerrainAnimHostAdapter(host);
         terrain.recalc_authored_load_cell(recalc, index, current, &mut effects)
     }
-    .map_err(|error| match error {
-        LoadCellRecalcError::MalformedOverlayIdentity { identity } => {
-            AuthoredOverlayFinalizeError::RecalcMalformedOverlayIdentity { identity }
-        }
-        LoadCellRecalcError::MissingOverlayType { overlay_id } => {
-            AuthoredOverlayFinalizeError::RecalcMissingOverlayType { overlay_id }
-        }
-        LoadCellRecalcError::CellIndexOutOfBounds { index } => {
-            AuthoredOverlayFinalizeError::RecalcCellIndexOutOfBounds { index }
-        }
-        LoadCellRecalcError::Effect(error) => AuthoredOverlayFinalizeError::Host(error),
-    })?;
+    .map_err(map_recalc_error)?;
     cells.write(
         cell.target,
         outcome.finalized.identity(),
@@ -686,8 +766,15 @@ impl<'load, 'resources, H: AuthoredOverlayLoadHost>
         }
         if let Some(anim_name) = flags.cell_anim.as_deref() {
             mirror_real_overlay_pair(self.terrain, &self.cells, anchor);
+            let world_z = match anchor.target {
+                NativeOverlayCellTarget::Real(index) => i32::from(
+                    self.terrain.cells[index].level as i8,
+                )
+                .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS),
+                NativeOverlayCellTarget::Dummy => 0,
+            };
             self.host
-                .spawn_cell_anim(handle, anim_name, anchor)
+                .spawn_cell_anim(handle, anim_name, anchor, world_z)
                 .map_err(AuthoredOverlayFinalizeError::Host)?;
         }
         self.recalc_cell(anchor)?;
@@ -1487,6 +1574,13 @@ mod tests {
             raw
         }
 
+        fn allocate_automatic_tube(
+            &mut self,
+            _request: AutomaticTubeRequest,
+        ) -> Result<AutomaticTubeAllocation, Self::Error> {
+            Ok(AutomaticTubeAllocation::AllocationNull)
+        }
+
         fn publish_dirty(
             &mut self,
             kind: MapLoadDirtyKind,
@@ -1532,6 +1626,7 @@ mod tests {
             handle: Self::Handle,
             anim_name: &str,
             cell: AuthoredOverlayCellRef,
+            _world_z: i32,
         ) -> Result<(), Self::Error> {
             self.events
                 .push(LoadEvent::CellAnim(handle, anim_name.to_string(), cell));

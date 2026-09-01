@@ -5,7 +5,8 @@
 //! preincrement it; they neither search for nor prevent duplicate values.
 
 use crate::map::tubes::{
-    NativeMapTubeReceipt, RawTubeSection, TubeConstructionError, construct_raw_tube_section,
+    NativeMapTubeReceipt, NativeMapTubesState, RawTubeSection, TubeConstructionError,
+    construct_raw_tube_section,
 };
 use crate::rules::ini_parser::IniFile;
 use crate::sim::world::Simulation;
@@ -80,6 +81,10 @@ pub(crate) enum NativeMapTubeConstructionError {
     MissingFreshCursor,
     #[error("fresh Simulation already owns a raw [Tubes] receipt")]
     ReceiptAlreadyInstalled,
+    #[error("fresh Simulation has not constructed its raw [Tubes] receipt")]
+    ReceiptNotConstructed,
+    #[error("fresh Simulation raw [Tubes] receipt was already bound")]
+    ReceiptAlreadyBound,
     #[error(transparent)]
     Identity(#[from] NativeIdentityError),
     #[error(transparent)]
@@ -87,6 +92,18 @@ pub(crate) enum NativeMapTubeConstructionError {
 }
 
 impl Simulation {
+    /// Assign one native numeric identity for an actual fresh-map constructor.
+    /// Stable Rust handles remain independent; callers must invoke this only
+    /// after the native-equivalent allocation/type gate has succeeded.
+    pub(crate) fn next_native_load_id(
+        &mut self,
+    ) -> Result<i32, NativeMapTubeConstructionError> {
+        self.native_unique_ids
+            .as_mut()
+            .map(NativeUniqueIdCursor::next_id)
+            .ok_or(NativeMapTubeConstructionError::MissingFreshCursor)
+    }
+
     /// Apply the one gameplay map-read reservation and construct every raw
     /// `[Tubes]` row in source order. This runs only after fallible asset-root
     /// discovery, so an earlier asset error leaves the saved prefix untouched.
@@ -102,7 +119,7 @@ impl Simulation {
         map_ini: &IniFile,
         mut allocate: impl FnMut(usize) -> bool,
     ) -> Result<(), NativeMapTubeConstructionError> {
-        if self.native_map_tubes.is_some() {
+        if !matches!(self.native_map_tubes, NativeMapTubesState::Unconstructed) {
             return Err(NativeMapTubeConstructionError::ReceiptAlreadyInstalled);
         }
         let cursor = self
@@ -112,9 +129,11 @@ impl Simulation {
         cursor.reserve_map_read_from_saved()?;
 
         let raw_section = RawTubeSection::from_ini(map_ini);
-        let receipt = self
-            .native_map_tubes
-            .insert(NativeMapTubeReceipt::default());
+        self.native_map_tubes =
+            NativeMapTubesState::Pending(NativeMapTubeReceipt::default());
+        let NativeMapTubesState::Pending(receipt) = &mut self.native_map_tubes else {
+            unreachable!("fresh Tube receipt was installed immediately above")
+        };
         let mut assign_native_id = || cursor.next_id();
         construct_raw_tube_section(
             raw_section,
@@ -123,6 +142,22 @@ impl Simulation {
             &mut assign_native_id,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn take_native_map_tubes_receipt(
+        &mut self,
+    ) -> Result<NativeMapTubeReceipt, NativeMapTubeConstructionError> {
+        match std::mem::replace(&mut self.native_map_tubes, NativeMapTubesState::Bound) {
+            NativeMapTubesState::Pending(receipt) => Ok(receipt),
+            NativeMapTubesState::Unconstructed => {
+                self.native_map_tubes = NativeMapTubesState::Unconstructed;
+                Err(NativeMapTubeConstructionError::ReceiptNotConstructed)
+            }
+            NativeMapTubesState::Bound => {
+                self.native_map_tubes = NativeMapTubesState::Bound;
+                Err(NativeMapTubeConstructionError::ReceiptAlreadyBound)
+            }
+        }
     }
 }
 

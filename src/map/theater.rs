@@ -14,10 +14,10 @@ use std::collections::{HashMap, HashSet};
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::{Color, Palette};
 use crate::assets::tmp_file::TmpFile;
+use crate::map::bridge_facts::{Axis, BridgeheadAnchorClass};
 use crate::map::bridge_facts::{BridgeRampKind, BridgeRampTile};
 use crate::map::map_file::MapError;
 use crate::rules::ini_parser::{IniFile, IniSection};
-use crate::map::bridge_facts::{Axis, BridgeheadAnchorClass};
 
 /// Marker for "no tile" after raw Pack5 compatibility translation.
 ///
@@ -763,6 +763,10 @@ pub struct TheaterData {
     pub dirt_tunnels: Option<u16>,
     /// `[General] DirtTrackTunnels=N` - dirt track tunnel tile set.
     pub dirt_track_tunnels: Option<u16>,
+    /// Exact signed cumulative bases published for the four automatic Tube
+    /// families in native comparison order. Missing or unresolved keys retain
+    /// `-1`; zero-count TileSets retain their aliased cumulative base.
+    pub automatic_tube_bases: [i32; 4],
     /// Numeric cliff/ramp/waterfall classifiers derived from theater `[General]`.
     pub cliff_ranges: TheaterCliffRanges,
     /// Tile-identity `[General]` keys consumed by the random-map generator.
@@ -1064,6 +1068,12 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let track_tunnels = parse_general_int(&ini_text, "TrackTunnels");
     let dirt_tunnels = parse_general_int(&ini_text, "DirtTunnels");
     let dirt_track_tunnels = parse_general_int(&ini_text, "DirtTrackTunnels");
+    let automatic_tube_bases =
+        [tunnels, track_tunnels, dirt_tunnels, dirt_track_tunnels].map(|ordinal| {
+            ordinal
+                .and_then(|ordinal| lookup.bounds().get(ordinal as usize))
+                .map_or(-1, |bounds| i32::from(bounds.start))
+        });
     let mut cliff_ranges = resolve_cliff_ranges(&lookup, &ini_text, bridge_set, wood_bridge_set);
     let mut rmg_tiles = resolve_rmg_tile_keys(&lookup, &ini_text);
     apply_lunar_global_zeroing(
@@ -1136,6 +1146,7 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         track_tunnels,
         dirt_tunnels,
         dirt_track_tunnels,
+        automatic_tube_bases,
         cliff_ranges,
         rmg_tiles,
     })

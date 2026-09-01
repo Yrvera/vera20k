@@ -1984,6 +1984,7 @@ mod tests {
                 stable_id,
                 TerrainObjectState {
                     stable_id,
+                    native_unique_id: None,
                     in_logic_vector: true,
                     type_ref,
                     rx: cell.0,
@@ -6394,6 +6395,7 @@ mod tests {
         let spawner_type = sim.interner.intern("TIBTRE01");
         let damaged = TerrainObjectState {
             stable_id: damaged_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: tree_type,
             rx: damaged_cell.0,
@@ -6405,6 +6407,7 @@ mod tests {
         };
         let destroyed = TerrainObjectState {
             stable_id: destroyed_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: sim.interner.intern("TREE01"),
             rx: destroyed_cell.0,
@@ -6416,6 +6419,7 @@ mod tests {
         };
         let spawner = TerrainObjectState {
             stable_id: spawner_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: spawner_type,
             rx: spawner_cell.0,

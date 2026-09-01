@@ -28,6 +28,9 @@ pub(crate) struct ScenarioPostMapInput<'a> {
     pub(crate) overlay_registry: &'a OverlayTypeRegistry,
     pub(crate) house_roster: &'a HouseRoster,
     pub(crate) skirmish_session: Option<&'a crate::sim::scenario_bootstrap::MatchLaunchDescriptor>,
+    /// Authored Full_Init has already completed the native growth-all then
+    /// spread-all queue scans between Terrain and Techno sections.
+    pub(crate) tiberium_queues_preinitialized: bool,
 }
 
 /// Presentation/logging facts returned after authoritative initialization.
@@ -48,15 +51,16 @@ impl Simulation {
         &mut self,
         input: ScenarioPostMapInput<'_>,
     ) -> ScenarioPostMapOutput {
-        self.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
-            &input.rules.general,
-            input.basic,
-            input.special_flags,
-        );
-        self.production.ore_growth_state =
-            crate::sim::ore_growth::OreGrowthState::new(input.map_width, input.map_height);
-
-        let tiberium_queues = if let Some(overlay_grid) = self.overlay_grid.as_ref() {
+        let tiberium_queues = if input.tiberium_queues_preinitialized {
+            None
+        } else if let Some(overlay_grid) = self.overlay_grid.as_ref() {
+            self.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
+                &input.rules.general,
+                input.basic,
+                input.special_flags,
+            );
+            self.production.ore_growth_state =
+                crate::sim::ore_growth::OreGrowthState::new(input.map_width, input.map_height);
             let source_object_cells: BTreeSet<(u16, u16)> = self
                 .production
                 .terrain_object_cells
@@ -79,6 +83,13 @@ impl Simulation {
                     ),
             )
         } else {
+            self.production.ore_growth_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
+                &input.rules.general,
+                input.basic,
+                input.special_flags,
+            );
+            self.production.ore_growth_state =
+                crate::sim::ore_growth::OreGrowthState::new(input.map_width, input.map_height);
             self.production
                 .ore_growth_state
                 .reset_native_tiberium_classes(0, self.session.binary_frame);
@@ -351,6 +362,7 @@ mod tests {
             overlay_registry: &overlays,
             house_roster: &roster,
             skirmish_session: Some(&descriptor),
+            tiberium_queues_preinitialized: false,
         });
 
         assert_eq!(
@@ -395,6 +407,55 @@ mod tests {
                 .get("COMPUTER1")
                 .is_some_and(|allies| allies.contains("PLAYER"))
         );
+    }
+
+    #[test]
+    fn authored_post_map_preserves_preinitialized_tiberium_queues() {
+        let (rules, overlays) = post_map_rules_and_overlays();
+        let mut sim = Simulation::with_seed(0x51C0_0403);
+        sim.session.map_width = MAP_SIZE;
+        sim.session.map_height = MAP_SIZE;
+        sim.resolved_terrain = Some(flat_terrain());
+        sim.overlay_grid = Some(OverlayGrid::new(MAP_SIZE, MAP_SIZE));
+        let tiberium = overlays.id_for_name("TIBCELL").expect("TIBCELL overlay");
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_overlay(0, 0, tiberium, 10);
+        sim.production.ore_growth_state =
+            crate::sim::ore_growth::OreGrowthState::new(MAP_SIZE, MAP_SIZE);
+        let seeded = sim
+            .production
+            .ore_growth_state
+            .rebuild_native_tiberium_queues_from_overlays(
+                sim.overlay_grid.as_ref().unwrap(),
+                &overlays,
+                &rules.tiberium_types,
+                sim.resolved_terrain.as_ref(),
+                &BTreeSet::new(),
+                true,
+                true,
+                sim.session.binary_frame,
+            );
+        assert_eq!(seeded.growth_entries, 1);
+        assert_eq!(seeded.spread_entries, 1);
+
+        let output = sim.finalize_scenario_post_map(ScenarioPostMapInput {
+            map_width: MAP_SIZE,
+            map_height: MAP_SIZE,
+            basic: &BasicSection::default(),
+            special_flags: &SpecialFlagsSection::default(),
+            rules: &rules,
+            overlay_registry: &overlays,
+            house_roster: &HouseRoster::default(),
+            skirmish_session: None,
+            tiberium_queues_preinitialized: true,
+        });
+
+        assert_eq!(output.tiberium_queues, None);
+        let native = sim.production.ore_growth_state.native_tiberium_state();
+        assert_eq!(native.classes[0].growth_bitmap, BTreeSet::from([(0, 0)]));
+        assert_eq!(native.classes[0].spread_bitmap, BTreeSet::from([(0, 0)]));
     }
 
     #[test]
@@ -444,6 +505,7 @@ mod tests {
             overlay_registry: &overlays,
             house_roster: &roster,
             skirmish_session: None,
+            tiberium_queues_preinitialized: false,
         });
 
         assert_eq!(output.tiberium_queues, None);

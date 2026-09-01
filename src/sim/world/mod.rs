@@ -10,6 +10,7 @@
 //! - `world_spawn.rs` — entity spawning from map data and production
 //! - `world_orders.rs` — order-intent tick systems (attack-move, guard, area-guard)
 
+pub(crate) mod authored_load_host;
 pub(crate) mod bridge_orchestrator;
 pub(crate) mod building_anim;
 pub mod edge_cell;
@@ -691,7 +692,7 @@ pub struct Simulation {
     /// Kept separate from resolved topology so its later owning transaction
     /// can consume the already-assigned IDs without recounting filtered facts.
     #[serde(skip, default)]
-    pub(crate) native_map_tubes: Option<crate::map::tubes::NativeMapTubeReceipt>,
+    pub(crate) native_map_tubes: crate::map::tubes::NativeMapTubesState,
     /// Fresh-map-only OverlayClass registry/deferred-delete owner. These
     /// ephemeral objects are neither gameplay objects nor snapshot/hash state.
     #[serde(skip, default)]
@@ -3228,7 +3229,7 @@ impl Simulation {
             main_rng: SimRng::new(seed),
             mapgen_rng: SimRng::new(0),
             native_unique_ids: None,
-            native_map_tubes: None,
+            native_map_tubes: crate::map::tubes::NativeMapTubesState::default(),
             load_objects: LoadObjectLifecycle::default(),
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),

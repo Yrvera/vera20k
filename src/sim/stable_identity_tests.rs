@@ -21,6 +21,7 @@ use crate::sim::world::Simulation;
 fn terrain(stable_id: u64) -> TerrainObjectState {
     TerrainObjectState {
         stable_id,
+        native_unique_id: None,
         in_logic_vector: false,
         type_ref: InternedId::from_index(0),
         rx: 3,

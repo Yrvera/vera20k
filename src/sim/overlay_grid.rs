@@ -8,7 +8,7 @@
 //! Never depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::overlay::{OverlayDataPack, OverlayEntry};
-use crate::map::authored_overlay::FinalizedOverlayPayload;
+use crate::map::authored_overlay::{FinalizedOverlayCell, FinalizedOverlayPayload};
 use crate::map::overlay_types::{
     OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index, retained_overlay_land,
 };
@@ -185,6 +185,39 @@ impl OverlayGrid {
             synchronous_passability_changed: false,
             synchronous_navigation_cells: Vec::new(),
         }
+    }
+
+    /// Borrow the exact live CellClass identity/state pair for one load-time
+    /// Recalc. Runtime-only owner metadata is deliberately excluded.
+    pub(crate) fn finalized_map_cell(
+        &self,
+        rx: u16,
+        ry: u16,
+    ) -> Option<FinalizedOverlayCell> {
+        index_of(self.width, self.height, rx, ry).map(|index| {
+            let cell = &self.cells[index];
+            FinalizedOverlayCell::from_parts(
+                cell.overlay_id.map_or(-1, i32::from),
+                cell.overlay_data,
+            )
+        })
+    }
+
+    /// Commit the one identity/state pair returned by the final authored-load
+    /// Recalc without disturbing retained wall counts or later wall ownership.
+    pub(crate) fn write_finalized_map_cell(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        finalized: FinalizedOverlayCell,
+    ) -> bool {
+        let Some(index) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        let cell = &mut self.cells[index];
+        cell.overlay_id = finalized.overlay_id();
+        cell.overlay_data = finalized.state();
+        true
     }
 
     /// Seed from parsed map overlay entries.

@@ -791,6 +791,38 @@ pub fn construct_terrain_objects(
     rules: &crate::rules::ruleset::RuleSet,
     snow_theater: bool,
 ) -> usize {
+    construct_terrain_objects_inner(sim, terrain_objects, rules, snow_theater, None)
+        .expect("compatibility Terrain construction does not require a native-ID cursor")
+}
+
+/// Fresh-authored variant. Each successful Terrain constructor spends and
+/// retains its native ID, projects its exact occupation into the same live
+/// CellClass grid, completes that immediate Recalc result, and only then clears
+/// a same-cell resource overlay without a second Recalc. The final authored
+/// Init sweep repairs the post-clear attributes.
+pub(crate) fn construct_authored_terrain_objects(
+    sim: &mut crate::sim::world::Simulation,
+    terrain_objects: &[crate::map::overlay::TerrainObject],
+    rules: &crate::rules::ruleset::RuleSet,
+    snow_theater: bool,
+    overlay_registry: &OverlayTypeRegistry,
+) -> Result<usize, crate::sim::native_identity::NativeMapTubeConstructionError> {
+    construct_terrain_objects_inner(
+        sim,
+        terrain_objects,
+        rules,
+        snow_theater,
+        Some(overlay_registry),
+    )
+}
+
+fn construct_terrain_objects_inner(
+    sim: &mut crate::sim::world::Simulation,
+    terrain_objects: &[crate::map::overlay::TerrainObject],
+    rules: &crate::rules::ruleset::RuleSet,
+    snow_theater: bool,
+    authored_overlay_registry: Option<&OverlayTypeRegistry>,
+) -> Result<usize, crate::sim::native_identity::NativeMapTubeConstructionError> {
     let old_terrain_ids = sim
         .production
         .terrain_objects
@@ -816,8 +848,12 @@ pub fn construct_terrain_objects(
         // @ 0x00410230, which draws from ScenarioClass::NextUniqueID
         // @ 0x0068BCB0 just like every other modeled runtime object.
         let stable_id = sim.allocate_stable_id();
-        let terrain_state =
+        let native_unique_id = authored_overlay_registry
+            .map(|_| sim.next_native_load_id())
+            .transpose()?;
+        let mut terrain_state =
             TerrainObjectState::new(stable_id, type_ref, obj.rx, obj.ry, t, snow_theater);
+        terrain_state.native_unique_id = native_unique_id;
         let occupation_bits = terrain_state.occupation_bits;
         if occupation_bits != 0 {
             sim.production
@@ -837,6 +873,31 @@ pub fn construct_terrain_objects(
             (obj.rx, obj.ry),
             occupation_bits,
         );
+        if let Some(overlay_registry) = authored_overlay_registry {
+            let terrain_snapshot = sim
+                .production
+                .terrain_objects
+                .get(&stable_id)
+                .expect("new Terrain remains registered")
+                .clone();
+            crate::sim::terrain_object::mark_terrain_occupation(
+                &mut sim.production,
+                &terrain_snapshot,
+                sim.resolved_terrain.as_mut(),
+            );
+            let clears_resource = sim
+                .overlay_grid
+                .as_ref()
+                .and_then(|grid| grid.cell(obj.rx, obj.ry).overlay_id)
+                .and_then(|overlay_id| overlay_registry.flags(overlay_id))
+                .is_some_and(|flags| flags.tiberium);
+            if clears_resource {
+                *sim.overlay_grid
+                    .as_mut()
+                    .expect("authored overlay grid was checked above")
+                    .cell_mut(obj.rx, obj.ry) = Default::default();
+            }
+        }
         if t.spawns_tiberium {
             sim.production
                 .tiberium_spawning_terrain_cells
@@ -844,7 +905,7 @@ pub fn construct_terrain_objects(
         }
         constructed += 1;
     }
-    constructed
+    Ok(constructed)
 }
 
 /// Attach the ore-spawner animation index to already-constructed terrain objects.
@@ -2115,6 +2176,77 @@ SpreadPercentage=.06
                 );
             }
         }
+    }
+
+    #[test]
+    fn authored_terrain_retains_native_id_projects_zero_occupation_then_clears_resource() {
+        use crate::map::overlay::{OverlayEntry, TerrainObject};
+        use crate::sim::world::Simulation;
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [TerrainTypes]\n0=TERR0\n\
+             [TERR0]\nTemperateOccupationBits=0\nSnowOccupationBits=7\n\
+             [OverlayTypes]\n0=ORE\n[ORE]\nTiberium=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("authored Terrain rules");
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let mut sim = Simulation::new();
+        sim.resolved_terrain = Some(resolved_grid(4, 4));
+        sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::from_overlay_entries(
+            &[OverlayEntry {
+                rx: 2,
+                ry: 2,
+                overlay_id: 0,
+                frame: 7,
+            }],
+            4,
+            4,
+        ));
+        sim.native_unique_ids = Some(
+            crate::sim::native_identity::build_noncampaign_fresh_id_prefix(0, 0, 0, 0, 0, 0, 1, 1)
+                .into_cursor(),
+        );
+        let before = sim
+            .native_unique_ids
+            .as_ref()
+            .expect("native cursor")
+            .current_raw();
+
+        let constructed = construct_authored_terrain_objects(
+            &mut sim,
+            &[TerrainObject {
+                rx: 2,
+                ry: 2,
+                name: "TERR0".to_string(),
+            }],
+            &rules,
+            false,
+            &overlays,
+        )
+        .expect("authored Terrain construction");
+
+        assert_eq!(constructed, 1);
+        let stable_id = sim.production.terrain_object_cells[&(2, 2)];
+        assert_eq!(
+            sim.production.terrain_objects[&stable_id].native_unique_id,
+            Some(before.wrapping_add(1) as i32)
+        );
+        assert_eq!(
+            sim.resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(2, 2)
+                .unwrap()
+                .terrain_object_occupation,
+            Some(0),
+            "zero remains a present Terrain receiver for native zone classification"
+        );
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(2, 2).overlay_id,
+            None,
+            "same-cell resource clearing occurs after the immediate Terrain Recalc"
+        );
     }
 
     fn shp_header(frame_count: u16) -> Vec<u8> {

@@ -1009,6 +1009,7 @@ fn bridge_railing_slope_starts_use_tileset_bounds() {
         track_tunnels: None,
         dirt_tunnels: None,
         dirt_track_tunnels: None,
+        automatic_tube_bases: [-1; 4],
         cliff_ranges: TheaterCliffRanges::default(),
         rmg_tiles: super::RmgTileKeys::default(),
     };
@@ -1052,6 +1053,7 @@ fn synthetic_theater_with_bridge_keys(
         track_tunnels: None,
         dirt_tunnels: None,
         dirt_track_tunnels: None,
+        automatic_tube_bases: [-1; 4],
         cliff_ranges: TheaterCliffRanges::default(),
         rmg_tiles: super::RmgTileKeys::default(),
     }

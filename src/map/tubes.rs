@@ -68,6 +68,25 @@ pub(crate) struct NativeMapTubeReceipt {
     pub(crate) entries: Vec<ConstructedMapTube>,
 }
 
+/// Consumed-once ownership state for the raw `[Tubes]` boundary.
+#[derive(Debug, Default)]
+pub(crate) enum NativeMapTubesState {
+    #[default]
+    Unconstructed,
+    Pending(NativeMapTubeReceipt),
+    Bound,
+}
+
+impl NativeMapTubesState {
+    #[cfg(test)]
+    pub(crate) fn as_ref(&self) -> Option<&NativeMapTubeReceipt> {
+        match self {
+            Self::Pending(receipt) => Some(receipt),
+            Self::Unconstructed | Self::Bound => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum AllocatedTubeParseError {
     #[error("row has {actual} fields; at least {minimum} are required before the path")]
@@ -78,13 +97,9 @@ pub(crate) enum AllocatedTubeParseError {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TubeConstructionError {
-    #[error(
-        "[Tubes] source row {ordinal} allocation returned null before native ID assignment"
-    )]
+    #[error("[Tubes] source row {ordinal} allocation returned null before native ID assignment")]
     AllocationNull { ordinal: usize },
-    #[error(
-        "[Tubes] source row {ordinal} failed after native ID {native_unique_id}: {error}"
-    )]
+    #[error("[Tubes] source row {ordinal} failed after native ID {native_unique_id}: {error}")]
     AllocatedRowMalformed {
         ordinal: usize,
         native_unique_id: i32,

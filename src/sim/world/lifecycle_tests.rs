@@ -3848,6 +3848,7 @@ fn gsi_05_02_mixed_fixture() -> (Simulation, [u64; 6]) {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: sim.interner.intern("TREE01"),
             rx: 8,
@@ -4149,6 +4150,7 @@ fn gsi_05_02_lethal_terrain_unregisters_and_inactive_slot_cannot_roundtrip() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref,
             rx: 5,
@@ -4224,6 +4226,7 @@ fn gsi_05_03_terminal_non_entities_remain_resolvable_until_common_drain() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: terrain_type,
             rx: 5,
@@ -5680,6 +5683,7 @@ fn wave_walks_nonbuilding_terrain_building_order_and_terrain_owns_wood_gate() {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                native_unique_id: None,
                 in_logic_vector: false,
                 type_ref: sim.interner.intern("TREE01"),
                 rx: 4,
@@ -6181,6 +6185,7 @@ fn gsi_05_02_restore_rejects_each_live_modeled_family_missing_from_logic() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            native_unique_id: None,
             in_logic_vector: false,
             type_ref: terrain.interner.intern("TREE01"),
             rx: 1,

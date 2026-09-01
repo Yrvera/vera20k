@@ -2349,6 +2349,7 @@ fn gsi_04_10_terrain_object(
 ) -> crate::sim::terrain_object::TerrainObjectState {
     crate::sim::terrain_object::TerrainObjectState {
         stable_id,
+        native_unique_id: None,
         in_logic_vector: false,
         type_ref: sim.interner.intern("TREE01"),
         rx: cell.0,

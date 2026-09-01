@@ -400,7 +400,8 @@ impl MapFile {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("authored OverlayPack/OverlayDataPack receipt was already consumed")]
 pub(crate) struct OverlayPacksAlreadyConsumed;
 
 /// Load a map file from disk, auto-detecting MIX-wrapped vs raw INI.
