@@ -20,6 +20,7 @@ pub mod zone_class {
 }
 
 use crate::assets::tmp_file::{TmpFile, TmpTile};
+use crate::map::authored_overlay::{FinalizedOverlayCell, NO_OVERLAY_IDENTITY};
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL,
     BRIDGE_FLAG_TRANSITION, BridgeAnchorRelation, BridgeCellFacts, BridgeFlagStamp,
@@ -395,6 +396,202 @@ pub struct TerrainTileAnimation {
     pub world_z: i32,
     /// `Tile%02dZAdjust`, forwarded to the spawned animation's sort bias.
     pub z_adjust: i32,
+}
+
+/// Non-Clone, map-owned state for the live `CellClass::RecalcAttributes`
+/// calls made while a fresh authored map is still loading.
+///
+/// The metadata/cache inputs are retained across calls so every Mark write and
+/// both whole-cell sweeps observe the mutations made by earlier calls. The
+/// animation latch is the load-local analogue of `CellClass+0x140 & 0x20000`;
+/// it is deliberately not stored in the cloneable final terrain projection.
+pub(crate) struct LoadCellRecalcState<'a> {
+    theater_data: Option<&'a TheaterData>,
+    asset_manager: Option<&'a crate::assets::asset_manager::AssetManager>,
+    terrain_rules: Option<&'a TerrainRules>,
+    overlay_types: &'a OverlayTypeRegistry,
+    playfield: Option<Playfield>,
+    lat_config: Option<lat::LatConfig>,
+    slope_config: Option<lat::SlopeFixupConfig>,
+    cliff_back_impassability: u8,
+    metadata_cache: HashMap<TileKey, TileMetadata>,
+    warned_unknown_land_types: HashSet<u8>,
+    terrain_anim_latched: Vec<bool>,
+}
+
+impl<'a> LoadCellRecalcState<'a> {
+    pub(crate) fn for_authored_load(
+        map: &MapFile,
+        theater_data: &'a TheaterData,
+        asset_manager: &'a crate::assets::asset_manager::AssetManager,
+        terrain_rules: &'a TerrainRules,
+        overlay_types: &'a OverlayTypeRegistry,
+        lat_enabled: bool,
+        cliff_back_impassability: u8,
+        cell_count: usize,
+    ) -> Self {
+        let lat_config = lat_enabled
+            .then(|| lat::parse_lat_config(&theater_data.ini_data, &theater_data.lookup));
+        let slope_config = lat_enabled.then_some(lat::SlopeFixupConfig {
+            ramp_base: theater_data.rmg_tiles.ramp_base.map_or(-1, i32::from),
+            ramp_smooth: theater_data.rmg_tiles.ramp_smooth.map_or(-1, i32::from),
+        });
+        Self {
+            theater_data: Some(theater_data),
+            asset_manager: Some(asset_manager),
+            terrain_rules: Some(terrain_rules),
+            overlay_types,
+            playfield: Some(Playfield::from_header(&map.header)),
+            lat_config,
+            slope_config,
+            cliff_back_impassability,
+            metadata_cache: HashMap::new(),
+            warned_unknown_land_types: HashSet::new(),
+            terrain_anim_latched: vec![false; cell_count],
+        }
+    }
+
+    /// Explicitly synthetic fallback for focused map-owner tests. Production
+    /// authored loading must use `for_authored_load` so missing theater/TMP
+    /// authority cannot silently become heuristic metadata.
+    #[cfg(test)]
+    pub(crate) fn synthetic(
+        overlay_types: &'a OverlayTypeRegistry,
+        cell_count: usize,
+    ) -> Self {
+        Self {
+            theater_data: None,
+            asset_manager: None,
+            terrain_rules: None,
+            overlay_types,
+            playfield: None,
+            lat_config: None,
+            slope_config: None,
+            cliff_back_impassability: 0,
+            metadata_cache: HashMap::new(),
+            warned_unknown_land_types: HashSet::new(),
+            terrain_anim_latched: vec![false; cell_count],
+        }
+    }
+
+    /// Clear exactly the receiver latch immediately before that cell's final
+    /// load Recalc. Native `InitCellAttributes(0)` interleaves this write with
+    /// the anti-diagonal sweep; clearing the whole vector ahead of the sweep
+    /// would expose future cells too early.
+    pub(crate) fn clear_terrain_anim_latch(&mut self, index: usize) -> bool {
+        let latched = self
+            .terrain_anim_latched
+            .get_mut(index)
+            .expect("load Recalc latch shape must match the real terrain grid");
+        let was_latched = *latched;
+        *latched = false;
+        was_latched
+    }
+
+    fn terrain_anim_is_latched(&self, index: usize) -> bool {
+        *self
+            .terrain_anim_latched
+            .get(index)
+            .expect("load Recalc latch shape must match the real terrain grid")
+    }
+
+    fn latch_terrain_anim(&mut self, index: usize) {
+        *self
+            .terrain_anim_latched
+            .get_mut(index)
+            .expect("load Recalc latch shape must match the real terrain grid") = true;
+    }
+
+    fn registered_tile_metadata(
+        &mut self,
+        tile_index: i32,
+        sub_tile: u8,
+        synthetic_cell: &ResolvedTerrainCell,
+    ) -> Option<TileMetadata> {
+        if tile_index < 0 || tile_index == 0xFFFF {
+            return None;
+        }
+        if let Some(theater) = self.theater_data {
+            let tile_id = u16::try_from(tile_index).ok()?;
+            if usize::from(tile_id) >= theater.lookup.len() {
+                return None;
+            }
+            return Some(cached_tile_metadata(
+                &mut self.metadata_cache,
+                self.theater_data,
+                self.asset_manager,
+                self.terrain_rules,
+                TileKey {
+                    tile_id,
+                    sub_tile,
+                    variant: 0,
+                },
+                &mut self.warned_unknown_land_types,
+            ));
+        }
+
+        #[cfg(test)]
+        {
+            Some(TileMetadata::from_resolved_cell(synthetic_cell))
+        }
+        #[cfg(not(test))]
+        {
+            let _ = synthetic_cell;
+            unreachable!("production load Recalc requires theater/TMP authority")
+        }
+    }
+
+    fn clear_land_metadata(&self) -> TileMetadata {
+        let mut metadata = TileMetadata::default();
+        if let Some(semantics) = self
+            .terrain_rules
+            .and_then(|rules| rules.semantics_for_land_type(LandType::Clear.as_index()))
+        {
+            metadata.land_type = LandType::Clear.as_index();
+            metadata.yr_cell_land_type = LandType::Clear.as_index();
+            metadata.terrain_class = semantics.terrain_class;
+            metadata.speed_costs = semantics.speed_costs;
+            metadata.is_water = semantics.water;
+            metadata.is_cliff_like = semantics.cliff_like;
+            metadata.is_rough = semantics.rough;
+            metadata.is_road = semantics.road;
+            metadata.ground_blocked = semantics.ground_blocked;
+            metadata.build_blocked = !semantics.buildable;
+        }
+        metadata
+    }
+}
+
+pub(crate) trait LoadCellRecalcEffects {
+    type Error;
+
+    /// Complete the terrain-attached Anim constructor/Middle side effects
+    /// synchronously. The map owner sets its cell latch only after this call
+    /// succeeds.
+    fn construct_terrain_attached_anim(
+        &mut self,
+        request: &TerrainTileAnimation,
+    ) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum LoadCellRecalcError<E> {
+    #[error("load Recalc received non-native overlay identity {identity}")]
+    MalformedOverlayIdentity { identity: i32 },
+    #[error("load Recalc could not resolve OverlayType index {overlay_id}")]
+    MissingOverlayType { overlay_id: u8 },
+    #[error("load Recalc cell index {index} is outside the live terrain grid")]
+    CellIndexOutOfBounds { index: usize },
+    #[error("terrain-attached animation construction failed during load Recalc")]
+    Effect(E),
+}
+
+#[derive(Debug)]
+pub(crate) struct LoadCellRecalcOutcome {
+    pub(crate) finalized: FinalizedOverlayCell,
+    pub(crate) zone_before: u8,
+    pub(crate) zone_after: u8,
+    pub(crate) navigation_changed: bool,
 }
 
 /// Leptons per cell along one map axis.
@@ -1193,6 +1390,461 @@ impl ResolvedTerrainGrid {
         )
     }
 
+    /// Execute one live authored-load `CellClass::RecalcAttributes(-1)`.
+    ///
+    /// gamemd-derived: `CellClass::RecalcAttributes @ 0x0047D2B0`. The shared
+    /// dummy is filtered by the caller before this method; every real call
+    /// consumes the current identity, mutates the one live terrain cell, sees
+    /// earlier neighbor mutations, and may synchronously construct exactly one
+    /// terrain-attached Anim before latching the cell.
+    pub(crate) fn recalc_authored_load_cell<E: LoadCellRecalcEffects>(
+        &mut self,
+        state: &mut LoadCellRecalcState<'_>,
+        index: usize,
+        overlay: FinalizedOverlayCell,
+        effects: &mut E,
+    ) -> Result<LoadCellRecalcOutcome, LoadCellRecalcError<E::Error>> {
+        let Some(snapshot) = self.cells.get(index).cloned() else {
+            return Err(LoadCellRecalcError::CellIndexOutOfBounds { index });
+        };
+        let zone_before = snapshot.zone_type;
+        let navigation_before = load_navigation_signature(&snapshot);
+        let source_overlay_id = match overlay.identity() {
+            NO_OVERLAY_IDENTITY => None,
+            identity @ 0..=254 => Some(identity as u8),
+            identity => {
+                return Err(LoadCellRecalcError::MalformedOverlayIdentity { identity });
+            }
+        };
+        let source_flags = source_overlay_id
+            .map(|overlay_id| {
+                state
+                    .overlay_types
+                    .flags(overlay_id)
+                    .ok_or(LoadCellRecalcError::MissingOverlayType { overlay_id })
+            })
+            .transpose()?;
+        let early_overlay_branch = source_flags.is_some_and(uses_early_recalc_land_branch);
+        let mut finalized = overlay;
+        let mut current_land_ground_blocked;
+        let mut current_land_build_blocked;
+        let current_cliff_eligible;
+        let mut base_cliff_eligible = cliff_back_normal_reclass_applies(snapshot.base_land_type);
+        let mut run_lat = false;
+        let mut anim_request = None;
+
+        if early_overlay_branch {
+            let flags = source_flags.expect("early branch has OverlayType flags");
+            apply_load_land_to_cell(
+                &mut self.cells[index],
+                flags.land,
+                flags.land_speed_costs,
+                flags.land_ground_blocked,
+            );
+            current_land_ground_blocked = flags.land_ground_blocked;
+            current_land_build_blocked = flags.land_build_blocked;
+            // `CellClass::RecalcAttributes @ 0x0047D2B0` re-reads the current
+            // pristine TMP slope before the early overlay branch validates a
+            // sloped resource. A registered sparse/missing TMP yields flat 0;
+            // an unregistered tile has no proved replacement and retains the
+            // cached receiver byte.
+            let refreshed_slope = state
+                .registered_tile_metadata(
+                    snapshot.final_tile_index,
+                    snapshot.final_sub_tile,
+                    &snapshot,
+                )
+                .map_or(snapshot.slope_type, |metadata| metadata.slope_type);
+            {
+                let cell = &mut self.cells[index];
+                cell.slope_type = refreshed_slope;
+                cell.has_ramp = refreshed_slope != 0;
+                cell.canonical_ramp = canonical_ramp_from_slope_type(refreshed_slope);
+            }
+            if clears_tiberium_on_slope(flags, refreshed_slope) {
+                finalized = FinalizedOverlayCell::default();
+            }
+            current_cliff_eligible = true;
+            if state.cliff_back_impassability != 0 {
+                let behind_cliff = self.authored_load_cell_is_behind_cliff(index);
+                if behind_cliff && state.cliff_back_impassability == 2 {
+                    if let Some((ground_blocked, build_blocked)) =
+                        self.apply_authored_load_cliff_back_rock(
+                            state,
+                            index,
+                            base_cliff_eligible,
+                            current_cliff_eligible,
+                        )
+                    {
+                        current_land_ground_blocked = ground_blocked;
+                        current_land_build_blocked = build_blocked;
+                    }
+                }
+            }
+            run_lat = true;
+        } else {
+            let current_tile = snapshot.final_tile_index;
+            let current_sub_tile = snapshot.final_sub_tile;
+            let registered = state.registered_tile_metadata(
+                current_tile,
+                current_sub_tile,
+                &snapshot,
+            );
+            let sparse_entry = registered
+                .as_ref()
+                .is_some_and(|metadata| metadata.subtile_entry_valid == Some(false));
+            let valid_entry = registered.is_some() && !sparse_entry;
+            let metadata = if valid_entry {
+                registered.expect("valid registered tile metadata")
+            } else {
+                state.clear_land_metadata()
+            };
+            let tile_id = u16::try_from(current_tile).ok();
+            let accepts_smudge = valid_entry
+                && tile_id.is_some_and(|tile_id| {
+                    state
+                        .theater_data
+                        .is_some_and(|theater| theater.lookup.is_morphable(tile_id))
+                });
+            let allows_tiberium = valid_entry
+                && tile_id.is_some_and(|tile_id| {
+                    state
+                        .theater_data
+                        .is_some_and(|theater| theater.lookup.allows_tiberium(tile_id))
+                });
+            {
+                let cell = &mut self.cells[index];
+                if !valid_entry {
+                    cell.final_tile_index = 0xFFFF;
+                    cell.final_sub_tile = 0;
+                }
+                apply_pristine_load_metadata(
+                    cell,
+                    &metadata,
+                    accepts_smudge,
+                    allows_tiberium,
+                );
+                restore_load_base_land(cell);
+            }
+
+            let refreshed_slope = self.cells[index].slope_type;
+            if let Some(flags) = source_flags
+                && clears_tiberium_on_slope(flags, refreshed_slope)
+            {
+                finalized = FinalizedOverlayCell::default();
+            }
+            let live_flags = finalized
+                .overlay_id()
+                .and_then(|overlay_id| state.overlay_types.flags(overlay_id));
+            if let Some(flags) = live_flags
+                && let Some(land) = retained_overlay_land(flags, refreshed_slope)
+            {
+                apply_load_land_to_cell(
+                    &mut self.cells[index],
+                    land,
+                    flags.land_speed_costs,
+                    flags.land_ground_blocked,
+                );
+                current_land_ground_blocked = flags.land_ground_blocked;
+                current_land_build_blocked = flags.land_build_blocked;
+            } else {
+                current_land_ground_blocked = self.cells[index].base_ground_walk_blocked;
+                current_land_build_blocked = self.cells[index].base_build_blocked;
+            }
+
+            base_cliff_eligible = if sparse_entry {
+                self.cells[index].base_land_type == LandType::Clear.as_index()
+            } else {
+                cliff_back_normal_reclass_applies(self.cells[index].base_land_type)
+            };
+            current_cliff_eligible = if sparse_entry {
+                self.cells[index].land_type == LandType::Clear.as_index()
+            } else {
+                cliff_back_normal_reclass_applies(self.cells[index].land_type)
+            };
+
+            if valid_entry {
+                run_lat = true;
+                if !state.terrain_anim_is_latched(index)
+                    && live_flags.is_none_or(|flags| !uses_early_recalc_land_branch(flags))
+                    && let (Some(theater), Some(tile_id)) = (state.theater_data, tile_id)
+                    && let Some(anim) = theater.lookup.tile_anim(tile_id)
+                    && anim.attaches_to == i32::from(current_sub_tile)
+                {
+                    let (offset_x, offset_y) =
+                        tile_anim_pixel_offset_to_leptons(anim.x_offset, anim.y_offset);
+                    let cell = &self.cells[index];
+                    anim_request = Some(TerrainTileAnimation {
+                        rx: cell.rx,
+                        ry: cell.ry,
+                        anim_name: anim.anim_name.clone(),
+                        world_x: offset_x
+                            .wrapping_add(i32::from(cell.rx).wrapping_mul(LEPTONS_PER_CELL))
+                            .wrapping_add(CELL_CENTRE_LEPTONS),
+                        world_y: offset_y
+                            .wrapping_add(i32::from(cell.ry).wrapping_mul(LEPTONS_PER_CELL))
+                            .wrapping_add(CELL_CENTRE_LEPTONS),
+                        world_z: i32::from(cell.level as i8)
+                            .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS),
+                        z_adjust: anim.z_adjust,
+                    });
+                }
+            }
+        }
+
+        if run_lat {
+            self.apply_authored_load_lat_slope(state, index);
+        }
+
+        if let Some(request) = anim_request.as_ref() {
+            effects
+                .construct_terrain_attached_anim(request)
+                .map_err(LoadCellRecalcError::Effect)?;
+            state.latch_terrain_anim(index);
+        }
+
+        if !early_overlay_branch && state.cliff_back_impassability != 0 {
+            let behind_cliff = self.authored_load_cell_is_behind_cliff(index);
+            if behind_cliff && state.cliff_back_impassability == 2 {
+                if let Some((ground_blocked, build_blocked)) =
+                    self.apply_authored_load_cliff_back_rock(
+                        state,
+                        index,
+                        base_cliff_eligible,
+                        current_cliff_eligible,
+                    )
+                {
+                    current_land_ground_blocked = ground_blocked;
+                    current_land_build_blocked = build_blocked;
+                }
+            }
+        }
+
+        self.finish_authored_load_cell_projection(
+            state,
+            index,
+            finalized,
+            current_land_ground_blocked,
+            current_land_build_blocked,
+        );
+        let cell = &self.cells[index];
+        let navigation_after = load_navigation_signature(cell);
+        Ok(LoadCellRecalcOutcome {
+            finalized,
+            zone_before,
+            zone_after: cell.zone_type,
+            navigation_changed: navigation_before != navigation_after,
+        })
+    }
+
+    fn apply_authored_load_lat_slope(
+        &mut self,
+        state: &LoadCellRecalcState<'_>,
+        index: usize,
+    ) {
+        let Some(cell) = self.cells.get(index) else {
+            return;
+        };
+        let x = cell.rx as i16;
+        let y = cell.ry as i16;
+        let tile = cell.final_tile_index;
+        let slope = cell.slope_type;
+        let cardinal_coords = [
+            (x, y.wrapping_sub(1)),
+            (x.wrapping_add(1), y),
+            (x, y.wrapping_add(1)),
+            (x.wrapping_sub(1), y),
+        ];
+        let lat_tile = state.lat_config.as_ref().map_or(tile, |lat_config| {
+            lat::lat_fixed_tile_live(tile, lat_config, || {
+                cardinal_coords.map(|(nx, ny)| self.authored_load_neighbor_tile(nx, ny))
+            })
+        });
+        let final_tile = state.slope_config.map_or(lat_tile, |slope_config| {
+            lat::slope_fixed_tile_live(lat_tile, slope, slope_config, |slot| {
+                let (nx, ny) = cardinal_coords[slot];
+                self.authored_load_neighbor_slope(nx, ny)
+            })
+        });
+        self.cells[index].final_tile_index = final_tile;
+    }
+
+    fn authored_load_neighbor_tile(&mut self, x: i16, y: i16) -> i32 {
+        if let Some(index) = self.native_fixed_cell_index(x, y) {
+            self.cells[index].final_tile_index
+        } else {
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(x), i32::from(y));
+            0xFFFF
+        }
+    }
+
+    fn authored_load_neighbor_slope(&mut self, x: i16, y: i16) -> u8 {
+        if let Some(index) = self.native_fixed_cell_index(x, y) {
+            self.cells[index].slope_type
+        } else {
+            self.shared_cell_dummy
+                .stamp_coord(i32::from(x), i32::from(y));
+            self.shared_cell_dummy.snapshot().slope_type
+        }
+    }
+
+    fn authored_load_cell_is_behind_cliff(&self, index: usize) -> bool {
+        const OFFSETS: [(i16, i16); 6] =
+            [(0, -1), (-1, 0), (2, 2), (1, 1), (-1, 1), (1, -1)];
+        let cell = &self.cells[index];
+        let x = cell.rx as i16;
+        let y = cell.ry as i16;
+        let threshold = i16::from(cell.level as i8).wrapping_add(4);
+        for (dx, dy) in OFFSETS {
+            let nx = x.wrapping_add(dx);
+            let ny = y.wrapping_add(dy);
+            let neighbor_level = if let Some(neighbor_index) = self.native_fixed_cell_index(nx, ny)
+            {
+                self.cells[neighbor_index].level as i8
+            } else {
+                self.shared_cell_dummy
+                    .stamp_coord(i32::from(nx), i32::from(ny));
+                self.shared_cell_dummy.snapshot().level
+            };
+            if i16::from(neighbor_level) >= threshold {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn apply_authored_load_cliff_back_rock(
+        &mut self,
+        state: &LoadCellRecalcState<'_>,
+        index: usize,
+        apply_base: bool,
+        apply_current: bool,
+    ) -> Option<(bool, bool)> {
+        if state.cliff_back_impassability != 2 || (!apply_base && !apply_current) {
+            return None;
+        }
+        let rock = state
+            .terrain_rules
+            .and_then(|rules| rules.semantics_for_land_type(LandType::Rock.as_index()))
+            .copied();
+        let cell = &mut self.cells[index];
+        let terrain_class = rock.map_or(LandType::Rock.terrain_class(), |row| row.terrain_class);
+        let mut speed_costs = rock.map_or_else(SpeedCostProfile::default, |row| row.speed_costs);
+        if rock.is_none() {
+            speed_costs.wheel = Some(0);
+        }
+        let ground_blocked = rock.is_none_or(|row| row.ground_blocked);
+        let build_blocked = rock.is_none_or(|row| !row.buildable);
+        if apply_base {
+            cell.base_land_type = LandType::Rock.as_index();
+            cell.base_yr_cell_land_type = LandType::Rock.as_index();
+            cell.base_terrain_class = terrain_class;
+            cell.base_speed_costs = speed_costs;
+            cell.base_ground_walk_blocked = ground_blocked;
+            cell.base_build_blocked = build_blocked;
+        }
+        if apply_current {
+            cell.land_type = LandType::Rock.as_index();
+            cell.yr_cell_land_type = LandType::Rock.as_index();
+            cell.terrain_class = terrain_class;
+            cell.speed_costs = speed_costs;
+            cell.is_water = false;
+            cell.is_cliff_like = true;
+            cell.is_rough = false;
+            cell.is_road = false;
+        }
+        apply_current.then_some((ground_blocked, build_blocked))
+    }
+
+    fn finish_authored_load_cell_projection(
+        &mut self,
+        state: &LoadCellRecalcState<'_>,
+        index: usize,
+        finalized: FinalizedOverlayCell,
+        land_ground_blocked: bool,
+        land_build_blocked: bool,
+    ) {
+        let overlay_id = finalized.overlay_id();
+        let flags = overlay_id.and_then(|overlay_id| state.overlay_types.flags(overlay_id));
+        let overlay_zone_type = overlay_reduced_zone_type(flags);
+        let overlay_blocks = matches!(
+            overlay_zone_type,
+            Some(zone_class::WALL) | Some(zone_class::IMPASSABLE)
+        );
+        let overlay_name = overlay_id
+            .and_then(|overlay_id| state.overlay_types.name(overlay_id))
+            .unwrap_or("");
+        let cell = &mut self.cells[index];
+        cell.overlay_zone_type = overlay_zone_type;
+        cell.overlay_blocks = overlay_blocks;
+        cell.bridge_layer = overlay_id.and_then(|overlay_id| {
+            crate::map::overlay_types::is_bridge_overlay_index(overlay_id).then(|| {
+                let direction = match overlay_id {
+                    24 | 237 => BridgeDirection::EastWest,
+                    25 | 238 => BridgeDirection::NorthSouth,
+                    _ => BridgeDirection::Low,
+                };
+                BridgeLayer {
+                    overlay_id,
+                    overlay_name: overlay_name.to_string(),
+                    deck_level: match direction {
+                        BridgeDirection::Low => cell.level,
+                        BridgeDirection::EastWest | BridgeDirection::NorthSouth => {
+                            cell.level.saturating_add(4)
+                        }
+                    },
+                    direction,
+                }
+            })
+        });
+        let identity_bridge = cell.bridge_layer.is_some();
+        let structural_bridge = cell.bridge_facts.has_structural_bridge();
+        cell.has_bridge_deck = identity_bridge || structural_bridge;
+        cell.bridge_deck_level = if structural_bridge
+            || cell
+                .bridge_layer
+                .as_ref()
+                .is_some_and(|layer| layer.direction != BridgeDirection::Low)
+        {
+            cell.level.saturating_add(4)
+        } else {
+            cell.level
+        };
+        cell.bridge_walkable = structural_bridge
+            && !cell.terrain_object_blocks
+            && !cell.overlay_blocks;
+        cell.bridge_transition = cell.bridge_facts.has_transition_flag();
+        cell.ground_walk_blocked = land_ground_blocked
+            || cell.terrain_object_blocks
+            || cell.overlay_blocks;
+        cell.build_blocked = land_build_blocked
+            || cell.terrain_object_blocks
+            || cell.overlay_blocks
+            || cell.has_bridge_deck;
+        cell.outside_playfield = state.playfield.is_some_and(|playfield| {
+            !playfield.contains_raised(cell.rx, cell.ry, cell.level as i8, cell.slope_type)
+        });
+        cell.zone_type = recalc_zone_type(
+            cell.outside_playfield,
+            cell.overlay_zone_type,
+            cell.land_type,
+            cell.speed_costs.wheel,
+            cell.terrain_object_occupation,
+        );
+        cell.bridge_facts.overlay_id = overlay_id;
+        cell.bridge_facts.state_byte = finalized.state();
+        cell.is_wood_bridge_repair_tile =
+            is_wood_bridge_repair_tile(state.theater_data, cell.final_tile_index);
+    }
+
+    /// Borrow the sparse native CellClass allocation plane used by fixed-grid
+    /// map lookups. Load-local owners may snapshot this once so later overlay
+    /// writes do not need to keep an immutable borrow of the live terrain grid.
+    pub(crate) fn native_allocation_mask(&self) -> Option<&[bool]> {
+        self.native_allocated.as_deref()
+    }
+
     pub(crate) fn bridge_flag_execution_state(&self) -> CellClassBridgeFlagState {
         CellClassBridgeFlagState::from_grid(self)
     }
@@ -1216,6 +1868,45 @@ impl ResolvedTerrainGrid {
             stamp,
             None,
         )
+    }
+
+    /// Apply one authored high-bridge setter slot in native call order. The
+    /// caller synchronizes the slot's `Cell+0x11E` write on the live overlay
+    /// surface immediately after this flag/fact mutation, without repeating a
+    /// fixed-grid lookup or restamping the shared dummy.
+    pub(crate) fn apply_authored_bridge_flag_slot(
+        &mut self,
+        stamp: BridgeFlagStamp,
+        family: crate::map::bridge_facts::BridgeStampFamily,
+        slot: crate::map::bridge_facts::BridgeStampSlot,
+        requested: Option<(i32, i32)>,
+    ) -> Option<usize> {
+        let (x, y) = requested?;
+        if let Some(index) = native_resolved_cell_index(
+            self.width,
+            self.height,
+            self.native_allocated.as_deref(),
+            self.cells.len(),
+            x,
+            y,
+        ) {
+            crate::map::bridge_facts::apply_bridge_fact_slot(
+                &mut self.cells[index].bridge_facts,
+                slot,
+                BridgeAnchorRelation {
+                    anchor: (stamp.anchor.0 as u16, stamp.anchor.1 as u16),
+                    slot,
+                    family,
+                    direction: stamp.direction,
+                },
+                stamp.set,
+            );
+            Some(index)
+        } else {
+            self.shared_cell_dummy.stamp_coord(x, y);
+            self.shared_cell_dummy.apply_bridge_flag_slot(slot, stamp.set);
+            None
+        }
     }
 
     /// Project only allocated real-cell values for a setter that already ran
@@ -2533,13 +3224,16 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        if map.has_overlay_data_pack() {
+        let raw_overlay_data = map
+            .overlay_data_pack()
+            .expect("legacy terrain projection must precede authored pack consumption");
+        if raw_overlay_data.is_present() {
             for (index, cell) in cells.iter_mut().enumerate() {
                 if native_allocated
                     .as_deref()
                     .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
                 {
-                    cell.bridge_facts.state_byte = map.overlay_data_at(cell.rx, cell.ry);
+                    cell.bridge_facts.state_byte = raw_overlay_data.byte_at(cell.rx, cell.ry);
                 }
             }
         }
@@ -2961,6 +3655,40 @@ impl Default for TileMetadata {
     }
 }
 
+impl TileMetadata {
+    #[cfg(test)]
+    fn from_resolved_cell(cell: &ResolvedTerrainCell) -> Self {
+        Self {
+            tileset_index: cell.tileset_index,
+            has_tmp_metadata: true,
+            tmp_file_valid: true,
+            subtile_entry_valid: Some(true),
+            template_width_cells: 1,
+            template_height_cells: 1,
+            land_type: cell.base_land_type,
+            yr_cell_land_type: cell.base_yr_cell_land_type,
+            raw_land_type: cell.base_land_type,
+            slope_type: cell.slope_type,
+            template_height: cell.template_height,
+            height_in_pixels: cell.height_in_pixels,
+            render_offset_x: cell.render_offset_x,
+            render_offset_y: cell.render_offset_y,
+            terrain_class: cell.base_terrain_class,
+            speed_costs: cell.base_speed_costs,
+            is_water: cell.base_terrain_class == TerrainClass::Water,
+            is_cliff_like: cell.is_cliff_like,
+            is_rough: cell.is_rough,
+            is_road: cell.is_road,
+            has_ramp: cell.has_ramp,
+            ground_blocked: cell.base_ground_walk_blocked,
+            build_blocked: cell.base_build_blocked,
+            radar_left: cell.radar_left,
+            radar_right: cell.radar_right,
+            has_damaged_data: cell.has_damaged_data,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct OverlayEffects {
     /// The overlay owns this cell's attributes, so `RecalcAttributes` takes its
@@ -3037,6 +3765,82 @@ fn cliff_back_normal_reclass_applies(land_type: u8) -> bool {
         || land_type == LandType::Water.as_index()
         || land_type == LandType::Beach.as_index()
         || land_type == LandType::Ice.as_index()
+}
+
+fn apply_load_land_to_cell(
+    cell: &mut ResolvedTerrainCell,
+    land: LandType,
+    speed_costs: Option<SpeedCostProfile>,
+    ground_blocked: bool,
+) {
+    cell.land_type = land.as_index();
+    cell.yr_cell_land_type = land.as_index();
+    cell.terrain_class = land.terrain_class();
+    cell.speed_costs = speed_costs.unwrap_or_default();
+    cell.is_water = land.is_water();
+    cell.is_cliff_like = land.is_cliff_like();
+    cell.is_rough = land.is_rough();
+    cell.is_road = land.is_road();
+    cell.ground_walk_blocked = ground_blocked;
+}
+
+fn restore_load_base_land(cell: &mut ResolvedTerrainCell) {
+    cell.land_type = cell.base_land_type;
+    cell.yr_cell_land_type = cell.base_yr_cell_land_type;
+    cell.terrain_class = cell.base_terrain_class;
+    cell.speed_costs = cell.base_speed_costs;
+    cell.is_water = cell.base_land_type == LandType::Water.as_index();
+    cell.is_cliff_like = matches!(
+        cell.base_land_type,
+        land if land == LandType::Rock.as_index() || land == LandType::Wall.as_index()
+    );
+    cell.is_rough = cell.base_land_type == LandType::Rough.as_index();
+    cell.is_road = cell.base_land_type == LandType::Road.as_index();
+}
+
+fn apply_pristine_load_metadata(
+    cell: &mut ResolvedTerrainCell,
+    metadata: &TileMetadata,
+    accepts_smudge: bool,
+    allows_tiberium: bool,
+) {
+    cell.tileset_index = metadata.tileset_index;
+    cell.land_type = metadata.land_type;
+    cell.yr_cell_land_type = metadata.yr_cell_land_type;
+    cell.slope_type = metadata.slope_type;
+    cell.template_height = metadata.template_height;
+    cell.height_in_pixels = metadata.height_in_pixels;
+    cell.terrain_class = metadata.terrain_class;
+    cell.speed_costs = metadata.speed_costs;
+    cell.is_water = metadata.is_water;
+    cell.is_cliff_like = metadata.is_cliff_like;
+    cell.is_rough = metadata.is_rough;
+    cell.is_road = metadata.is_road;
+    cell.accepts_smudge = accepts_smudge;
+    cell.allows_tiberium = allows_tiberium;
+    cell.has_ramp = metadata.has_ramp;
+    cell.canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
+    cell.base_land_type = metadata.land_type;
+    cell.base_yr_cell_land_type = metadata.yr_cell_land_type;
+    cell.base_terrain_class = metadata.terrain_class;
+    cell.base_speed_costs = metadata.speed_costs;
+    cell.base_ground_walk_blocked = cell.canonical_ramp.is_none() && metadata.ground_blocked;
+    cell.base_build_blocked = metadata.build_blocked || cell.canonical_ramp.is_some();
+}
+
+fn load_navigation_signature(
+    cell: &ResolvedTerrainCell,
+) -> (bool, Option<u8>, u8, u8, TerrainClass, SpeedCostProfile, bool, bool) {
+    (
+        cell.overlay_blocks,
+        cell.overlay_zone_type,
+        cell.zone_type,
+        cell.land_type,
+        cell.terrain_class,
+        cell.speed_costs,
+        cell.ground_walk_blocked,
+        cell.build_blocked,
+    )
 }
 
 fn ordinary_variant_selection_enabled(
@@ -4069,9 +4873,8 @@ mod tests {
             cells,
             iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
-            overlay_identity: Default::default(),
             overlays,
-            overlay_data: crate::map::overlay::OverlayDataPack::default(),
+            authored_overlay_packs: crate::map::map_file::AuthoredOverlayPackSlot::empty(),
             smudges: Vec::new(),
             terrain_objects,
             waypoints: HashMap::new(),
@@ -4467,6 +5270,28 @@ mod tests {
             radar_right: [0, 0, 0],
             has_damaged_data: false,
             bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    #[derive(Default)]
+    struct LoadRecalcTestEffects {
+        requests: Vec<TerrainTileAnimation>,
+        fail: bool,
+    }
+
+    impl LoadCellRecalcEffects for LoadRecalcTestEffects {
+        type Error = &'static str;
+
+        fn construct_terrain_attached_anim(
+            &mut self,
+            request: &TerrainTileAnimation,
+        ) -> Result<(), Self::Error> {
+            self.requests.push(request.clone());
+            if self.fail {
+                Err("fixture failure")
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -7014,6 +7839,395 @@ NoUseTileLandType=no
     }
 
     #[test]
+    fn authored_load_lat_reads_live_cardinals_in_north_east_south_west_order() {
+        let theater = synthetic_theater_from_ini(
+            b"[General]\nRoughTile=0\nClearToRoughLat=1\n\
+              [TileSet0000]\nTilesInSet=1\nFileName=base\nSetName=Rough\n\
+              [TileSet0001]\nTilesInSet=16\nFileName=lat\nSetName=Rough LAT\n",
+        );
+        let lat_config = lat::parse_lat_config(&theater.ini_data, &theater.lookup);
+        let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(""), None);
+        let cardinals = [(1usize, 0usize), (2, 1), (1, 2), (0, 1)];
+
+        for (bit, (nx, ny)) in cardinals.into_iter().enumerate() {
+            let mut cells = (0..3)
+                .flat_map(|ry| (0..3).map(move |rx| make_test_cell(rx, ry)))
+                .collect::<Vec<_>>();
+            cells[ny * 3 + nx].final_tile_index = 99;
+            let mut grid = ResolvedTerrainGrid::from_cells(3, 3, cells);
+            let mut state = LoadCellRecalcState::synthetic(&registry, grid.cells.len());
+            state.lat_config = Some(lat_config.clone());
+            state.slope_config = Some(lat::SlopeFixupConfig {
+                ramp_base: -1,
+                ramp_smooth: -1,
+            });
+
+            grid.apply_authored_load_lat_slope(&state, 4);
+
+            assert_eq!(
+                grid.cells[4].final_tile_index,
+                1 + (1_i32 << bit),
+                "cardinal slot {bit} must retain native N/E/S/W mask polarity"
+            );
+        }
+
+        let mut edge = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        let mut state = LoadCellRecalcState::synthetic(&registry, 1);
+        state.lat_config = Some(lat_config);
+        state.slope_config = Some(lat::SlopeFixupConfig {
+            ramp_base: -1,
+            ramp_smooth: -1,
+        });
+        edge.apply_authored_load_lat_slope(&state, 0);
+        assert_eq!(
+            edge.cells[0].final_tile_index, 16,
+            "all four missing neighbors must contribute through dummy tile 0xFFFF"
+        );
+        assert_eq!(
+            edge.dummy_cell_requested_coord(),
+            (-1, 0),
+            "the final W lookup stamps the one shared dummy"
+        );
+
+        let mut guarded = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        guarded.cells[0].final_tile_index = 99;
+        guarded.stamp_dummy_cell_requested_coord(7, 8);
+        let mut state = LoadCellRecalcState::synthetic(&registry, 1);
+        state.lat_config = Some(lat::parse_lat_config(
+            &theater.ini_data,
+            &theater.lookup,
+        ));
+        state.slope_config = Some(lat::SlopeFixupConfig {
+            ramp_base: 100,
+            ramp_smooth: 500,
+        });
+        guarded.apply_authored_load_lat_slope(&state, 0);
+        assert_eq!(guarded.cells[0].final_tile_index, 99);
+        assert_eq!(
+            guarded.dummy_cell_requested_coord(),
+            (7, 8),
+            "failed LAT and ramp guards must issue no neighbor lookup"
+        );
+
+        let mut ramp = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        ramp.cells[0].final_tile_index = 100;
+        ramp.cells[0].slope_type = 1;
+        ramp.apply_authored_load_lat_slope(&state, 0);
+        assert_eq!(ramp.cells[0].final_tile_index, 502);
+        assert_eq!(
+            ramp.dummy_cell_requested_coord(),
+            (1, 0),
+            "slope 1 must probe W then E and leave the E request stamped"
+        );
+
+        let mut sloped_neighbors =
+            ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        sloped_neighbors.cells[0].final_tile_index = 100;
+        sloped_neighbors.cells[0].slope_type = 1;
+        sloped_neighbors.test_set_dummy_cell_level_slope(0, 9);
+        sloped_neighbors.apply_authored_load_lat_slope(&state, 0);
+        assert_eq!(sloped_neighbors.cells[0].final_tile_index, 100);
+        assert_eq!(sloped_neighbors.dummy_cell_requested_coord(), (1, 0));
+    }
+
+    #[test]
+    fn authored_load_cliff_back_uses_exact_six_probes_and_signed_levels() {
+        const OFFSETS: [(i16, i16); 6] =
+            [(0, -1), (-1, 0), (2, 2), (1, 1), (-1, 1), (1, -1)];
+        let center = (3i16, 3i16);
+        let center_index = 3 * 7 + 3;
+
+        for (dx, dy) in OFFSETS {
+            let mut cells = (0..7)
+                .flat_map(|ry| (0..7).map(move |rx| make_test_cell(rx, ry)))
+                .collect::<Vec<_>>();
+            let nx = usize::try_from(center.0 + dx).unwrap();
+            let ny = usize::try_from(center.1 + dy).unwrap();
+            cells[ny * 7 + nx].level = 4;
+            let grid = ResolvedTerrainGrid::from_cells(7, 7, cells);
+            assert!(
+                grid.authored_load_cell_is_behind_cliff(center_index),
+                "verified probe ({dx},{dy}) must reach the four-level boundary"
+            );
+        }
+
+        let mut excluded = (0..7)
+            .flat_map(|ry| (0..7).map(move |rx| make_test_cell(rx, ry)))
+            .collect::<Vec<_>>();
+        excluded[4 * 7 + 5].level = 4;
+        let excluded = ResolvedTerrainGrid::from_cells(7, 7, excluded);
+        assert!(
+            !excluded.authored_load_cell_is_behind_cliff(center_index),
+            "the adjacent but unprobed (+2,+1) cell must not affect CliffBack"
+        );
+
+        let mut signed = (0..7)
+            .flat_map(|ry| (0..7).map(move |rx| make_test_cell(rx, ry)))
+            .collect::<Vec<_>>();
+        signed[center_index].level = u8::MAX;
+        signed[2 * 7 + 3].level = 3;
+        let signed = ResolvedTerrainGrid::from_cells(7, 7, signed);
+        assert!(
+            signed.authored_load_cell_is_behind_cliff(center_index),
+            "signed -1 plus four reaches signed +3"
+        );
+    }
+
+    #[test]
+    fn authored_load_cliff_back_nonzero_modes_scan_but_only_two_writes() {
+        let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(""), None);
+
+        for mode in [0u8, 1, 3, u8::MAX] {
+            let mut grid =
+                ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+            grid.stamp_dummy_cell_requested_coord(7, 8);
+            if mode != 0 {
+                grid.test_set_dummy_cell_level_slope(4, 0);
+            }
+            let mut state = LoadCellRecalcState::synthetic(&registry, 1);
+            state.cliff_back_impassability = mode;
+            grid.recalc_authored_load_cell(
+                &mut state,
+                0,
+                FinalizedOverlayCell::default(),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("mode scan Recalc");
+
+            assert_eq!(grid.cells[0].land_type, LandType::Clear.as_index());
+            assert_eq!(
+                grid.dummy_cell_requested_coord(),
+                if mode == 0 { (7, 8) } else { (0, -1) },
+                "mode {mode} scan side effect"
+            );
+        }
+
+        let mut grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        grid.test_set_dummy_cell_level_slope(4, 0);
+        let mut state = LoadCellRecalcState::synthetic(&registry, 1);
+        state.cliff_back_impassability = 2;
+        grid.recalc_authored_load_cell(
+            &mut state,
+            0,
+            FinalizedOverlayCell::default(),
+            &mut LoadRecalcTestEffects::default(),
+        )
+        .expect("mode-2 writer Recalc");
+        assert_eq!(grid.cells[0].land_type, LandType::Rock.as_index());
+        assert_eq!(
+            grid.dummy_cell_requested_coord(),
+            (0, -1),
+            "the first qualifying probe short-circuits the mode-2 scan"
+        );
+    }
+
+    #[test]
+    fn authored_load_early_overlay_refreshes_tmp_slope_before_resource_clear() {
+        let theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=1\nFileName=early\nSetName=Clear\n",
+        );
+        let mut tmp = gsi_04_02_last_tiles_tmp_bytes(0, [1, 2, 3], [4, 5, 6]);
+        tmp[62] = 1;
+        let (_directory, assets) =
+            gsi_04_04_asset_manager_with_loose_tmp("early01.tem", &tmp);
+        let terrain_rules = TerrainRules::from_ini(&IniFile::from_str(""));
+        let registry = OverlayTypeRegistry::from_ini(
+            &IniFile::from_str(
+                "[OverlayTypes]\n0=EARLY_RESOURCE\n\
+                 [EARLY_RESOURCE]\nTiberium=yes\nLand=Tiberium\nNoUseTileLandType=yes\n",
+            ),
+            None,
+        );
+        let map = make_map(Vec::new(), Vec::new(), Vec::new());
+        let mut grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        assert_eq!(grid.cells[0].slope_type, 0, "fixture starts with stale flat cache");
+        let mut state = LoadCellRecalcState::for_authored_load(
+            &map,
+            &theater,
+            &assets,
+            &terrain_rules,
+            &registry,
+            false,
+            0,
+            1,
+        );
+
+        let outcome = grid
+            .recalc_authored_load_cell(
+                &mut state,
+                0,
+                FinalizedOverlayCell::from_parts(0, 7),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("early resource Recalc");
+
+        assert_eq!(grid.cells[0].slope_type, 1);
+        assert_eq!(outcome.finalized, FinalizedOverlayCell::default());
+        assert_eq!(grid.cells[0].bridge_facts.overlay_id, None);
+        assert_eq!(grid.cells[0].bridge_facts.state_byte, 0);
+        assert_eq!(
+            grid.cells[0].land_type,
+            LandType::Tiberium.as_index(),
+            "the early branch copies overlay Land before clearing its pair"
+        );
+
+        let mut unregistered =
+            ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        unregistered.cells[0].final_tile_index = 99;
+        unregistered.cells[0].slope_type = 1;
+        let outcome = unregistered
+            .recalc_authored_load_cell(
+                &mut state,
+                0,
+                FinalizedOverlayCell::from_parts(0, 9),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("unregistered early receiver Recalc");
+        assert_eq!(unregistered.cells[0].slope_type, 1);
+        assert_eq!(outcome.finalized, FinalizedOverlayCell::default());
+
+        let sparse_theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=1\nFileName=absent\nSetName=Clear\n",
+        );
+        let mut sparse = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+        sparse.cells[0].slope_type = 1;
+        let mut sparse_state = LoadCellRecalcState::for_authored_load(
+            &map,
+            &sparse_theater,
+            &assets,
+            &terrain_rules,
+            &registry,
+            false,
+            0,
+            1,
+        );
+        let outcome = sparse
+            .recalc_authored_load_cell(
+                &mut sparse_state,
+                0,
+                FinalizedOverlayCell::from_parts(0, 11),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("registered missing-TMP early receiver Recalc");
+        assert_eq!(sparse.cells[0].slope_type, 0);
+        assert_eq!(outcome.finalized, FinalizedOverlayCell::from_parts(0, 11));
+    }
+
+    #[test]
+    fn authored_load_recalc_keeps_three_cliff_back_writer_gates_distinct() {
+        let overlay_ini = IniFile::from_str(
+            "[OverlayTypes]\n0=EARLYROAD\n\
+             [EARLYROAD]\nLand=Road\nNoUseTileLandType=yes\n",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&overlay_ini, None);
+        let make_grid = |land: LandType| {
+            let mut cells = (0..3)
+                .flat_map(|ry| (0..3).map(move |rx| make_test_cell(rx, ry)))
+                .collect::<Vec<_>>();
+            let center = &mut cells[4];
+            center.land_type = land.as_index();
+            center.yr_cell_land_type = land.as_index();
+            center.terrain_class = land.terrain_class();
+            center.is_road = land == LandType::Road;
+            center.base_land_type = land.as_index();
+            center.base_yr_cell_land_type = land.as_index();
+            center.base_terrain_class = land.terrain_class();
+            cells[1].level = 4;
+            ResolvedTerrainGrid::from_cells(3, 3, cells)
+        };
+
+        let mut early = make_grid(LandType::Road);
+        let mut early_state = LoadCellRecalcState::synthetic(&registry, early.cells.len());
+        early_state.cliff_back_impassability = 2;
+        early
+            .recalc_authored_load_cell(
+                &mut early_state,
+                4,
+                FinalizedOverlayCell::from_parts(0, 0),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("early overlay Recalc");
+        assert_eq!(early.cells[4].land_type, LandType::Rock.as_index());
+        assert_eq!(
+            early.cells[4].base_land_type,
+            LandType::Road.as_index(),
+            "copy-1 reclasses the claimed current land without widening the base gate"
+        );
+        assert!(early.cells[4].ground_walk_blocked);
+        assert!(early.cells[4].build_blocked);
+        assert_eq!(early.cells[4].zone_type, zone_class::IMPASSABLE);
+        assert!(!early.cells[4].base_build_blocked);
+
+        let mut normal_clear = make_grid(LandType::Clear);
+        let mut normal_clear_state =
+            LoadCellRecalcState::synthetic(&registry, normal_clear.cells.len());
+        normal_clear_state.cliff_back_impassability = 2;
+        normal_clear
+            .recalc_authored_load_cell(
+                &mut normal_clear_state,
+                4,
+                FinalizedOverlayCell::default(),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("normal Clear Recalc");
+        assert_eq!(normal_clear.cells[4].land_type, LandType::Rock.as_index());
+        assert_eq!(
+            normal_clear.cells[4].base_land_type,
+            LandType::Rock.as_index()
+        );
+
+        let mut normal_road = make_grid(LandType::Road);
+        let mut normal_road_state =
+            LoadCellRecalcState::synthetic(&registry, normal_road.cells.len());
+        normal_road_state.cliff_back_impassability = 2;
+        normal_road
+            .recalc_authored_load_cell(
+                &mut normal_road_state,
+                4,
+                FinalizedOverlayCell::default(),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("normal Road Recalc");
+        assert_eq!(normal_road.cells[4].land_type, LandType::Road.as_index());
+        assert_eq!(
+            normal_road.cells[4].base_land_type,
+            LandType::Road.as_index()
+        );
+
+        let theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=1\nFileName=missing\nSetName=Clear\n",
+        );
+        let (_directory, assets) =
+            gsi_04_04_asset_manager_with_loose_tmp("unrelated.tem", b"not a TMP");
+        let terrain_rules = TerrainRules::from_ini(&IniFile::from_str(""));
+        let map = make_map(Vec::new(), Vec::new(), Vec::new());
+        let mut sparse = make_grid(LandType::Clear);
+        sparse.cells[4].final_sub_tile = 7;
+        let mut sparse_state = LoadCellRecalcState::for_authored_load(
+            &map,
+            &theater,
+            &assets,
+            &terrain_rules,
+            &registry,
+            false,
+            2,
+            sparse.cells.len(),
+        );
+        sparse
+            .recalc_authored_load_cell(
+                &mut sparse_state,
+                4,
+                FinalizedOverlayCell::default(),
+                &mut LoadRecalcTestEffects::default(),
+            )
+            .expect("sparse-subtile Recalc");
+        assert_eq!(sparse.cells[4].final_tile_index, 0xFFFF);
+        assert_eq!(sparse.cells[4].final_sub_tile, 0);
+        assert_eq!(sparse.cells[4].land_type, LandType::Rock.as_index());
+        assert_eq!(sparse.cells[4].base_land_type, LandType::Rock.as_index());
+    }
+
+    #[test]
     fn gsi_04_04_normal_cliff_back_writer_accepts_clear_but_not_road() {
         let theater = synthetic_theater_from_ini(
             b"[TileSet0000]\nTilesInSet=1\nFileName=clear\nSetName=Clear\n\
@@ -7474,6 +8688,109 @@ Tile03ZAdjust=-10
             sub_tile,
             z,
         }
+    }
+
+    #[test]
+    fn authored_load_recalc_latches_tile_anim_only_after_synchronous_success() {
+        let theater = theater_with_tile_anims();
+        let tmp = gsi_04_02_last_tiles_tmp_bytes(0, [1, 2, 3], [4, 5, 6]);
+        let (_directory, assets) =
+            gsi_04_04_asset_manager_with_loose_tmp("wf01.tem", &tmp);
+        let terrain_rules = TerrainRules::from_ini(&IniFile::from_str(""));
+        let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(""), None);
+        let map = make_map(Vec::new(), Vec::new(), Vec::new());
+        let mut grid = ResolvedTerrainGrid::from_cells(
+            2,
+            1,
+            vec![make_test_cell(0, 0), make_test_cell(1, 0)],
+        );
+        let mut state = LoadCellRecalcState::for_authored_load(
+            &map,
+            &theater,
+            &assets,
+            &terrain_rules,
+            &registry,
+            false,
+            0,
+            grid.cells.len(),
+        );
+        let mut effects = LoadRecalcTestEffects {
+            fail: true,
+            ..LoadRecalcTestEffects::default()
+        };
+
+        let failed = grid.recalc_authored_load_cell(
+            &mut state,
+            0,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        );
+        assert!(matches!(
+            failed,
+            Err(LoadCellRecalcError::Effect("fixture failure"))
+        ));
+        assert_eq!(effects.requests.len(), 1);
+        assert!(!state.terrain_anim_latched[0]);
+
+        effects.fail = false;
+        grid.recalc_authored_load_cell(
+            &mut state,
+            0,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        )
+        .expect("successful synchronous terrain-Anim construction");
+        assert_eq!(effects.requests.len(), 2);
+        assert!(state.terrain_anim_latched[0]);
+
+        grid.recalc_authored_load_cell(
+            &mut state,
+            0,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        )
+        .expect("latched Recalc");
+        assert_eq!(
+            effects.requests.len(),
+            2,
+            "the post-data Recalc must not duplicate an inline successful Anim"
+        );
+
+        grid.recalc_authored_load_cell(
+            &mut state,
+            1,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        )
+        .expect("second cell terrain-Anim construction");
+        assert_eq!(effects.requests.len(), 3);
+        assert!(state.terrain_anim_latched[1]);
+
+        assert!(state.clear_terrain_anim_latch(0));
+        assert!(
+            state.terrain_anim_latched[1],
+            "clearing one final-sweep receiver must not expose a future cell"
+        );
+        grid.recalc_authored_load_cell(
+            &mut state,
+            0,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        )
+        .expect("post-object unlatched Recalc");
+        assert_eq!(effects.requests.len(), 4);
+        assert!(state.terrain_anim_latched[0]);
+
+        assert!(state.clear_terrain_anim_latch(1));
+        grid.recalc_authored_load_cell(
+            &mut state,
+            1,
+            FinalizedOverlayCell::default(),
+            &mut effects,
+        )
+        .expect("second post-object receiver Recalc");
+        assert_eq!(effects.requests.len(), 5);
+        assert!(state.terrain_anim_latched[1]);
     }
 
     #[test]

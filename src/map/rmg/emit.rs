@@ -66,9 +66,8 @@ pub fn empty_map_file(options: &RmgOptions, gen_w: u32, gen_h: u32) -> MapFile {
         cells: Vec::new(),
         iso_map_pack_lookups: Vec::new(),
         entities: Vec::new(),
-        overlay_identity: Default::default(),
         overlays: Vec::new(),
-        overlay_data: Default::default(),
+        authored_overlay_packs: crate::map::map_file::AuthoredOverlayPackSlot::empty(),
         smudges: Vec::new(),
         terrain_objects: Vec::new(),
         waypoints: HashMap::new(),
@@ -137,7 +136,9 @@ pub fn populate(
     }
 
     if !overlay_cells.is_empty() {
-        map_file.overlay_data = OverlayDataPack::from_cells(overlay_cells);
+        map_file
+            .replace_unconsumed_overlay_data(OverlayDataPack::from_cells(overlay_cells))
+            .expect("new RMG map retains its raw overlay-pack slot");
     }
 
     for (name, x, y) in terrain {
@@ -271,8 +272,11 @@ mod tests {
         let ov = &map.overlays[0];
         assert_eq!((ov.rx, ov.ry, ov.overlay_id, ov.frame), (24, 24, 105, 7));
         // The data pack carries the same density at that cell.
-        assert!(map.overlay_data.is_present());
-        assert_eq!(map.overlay_data.byte_at(24, 24), 7);
+        let data = map
+            .overlay_data_pack()
+            .expect("new RMG map retains raw overlay data");
+        assert!(data.is_present());
+        assert_eq!(data.byte_at(24, 24), 7);
     }
 
     #[test]

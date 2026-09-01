@@ -414,9 +414,9 @@ mod tests {
             cells: Vec::new(),
             iso_map_pack_lookups: Vec::new(),
             entities: Vec::new(),
-            overlay_identity: Default::default(),
             overlays: Vec::new(),
-            overlay_data: crate::map::overlay::OverlayDataPack::default(),
+            authored_overlay_packs:
+                crate::map::map_file::AuthoredOverlayPackSlot::empty(),
             smudges: Vec::new(),
             terrain_objects: Vec::new(),
             waypoints,

@@ -1046,6 +1046,9 @@ impl MapLoadInitial {
             .map(|(&index, waypoint)| (index, waypoint.rx, waypoint.ry))
             .collect();
         waypoints.sort_unstable();
+        let raw_overlay_data = map_data
+            .overlay_data_pack()
+            .expect("generated projection must precede authored pack consumption");
         let map = RandomMapProjection {
             source_seed,
             header: (
@@ -1091,7 +1094,7 @@ impl MapLoadInitial {
                         overlay.ry,
                         overlay.overlay_id,
                         overlay.frame,
-                        map_data.overlay_data_at(overlay.rx, overlay.ry),
+                        raw_overlay_data.byte_at(overlay.rx, overlay.ry),
                     )
                 })
                 .collect(),
@@ -1222,7 +1225,9 @@ impl MapLoadInitial {
         );
         let mut overlay_grid = crate::sim::overlay_grid::OverlayGrid::from_native_overlay_packs(
             &map_data.overlays,
-            &map_data.overlay_data,
+            map_data
+                .overlay_data_pack()
+                .expect("random-map snapshot precedes authored pack consumption"),
             &mut resolved_terrain,
             &overlay_registry,
             &overlay_shp_ids,
@@ -2156,7 +2161,9 @@ pub(crate) fn load_map_from_initial(
     );
     let mut overlay_grid = crate::sim::overlay_grid::OverlayGrid::from_native_overlay_packs(
         &map_data.overlays,
-        &map_data.overlay_data,
+        map_data
+            .overlay_data_pack()
+            .map_err(|_| anyhow::anyhow!("authored overlay packs were already consumed"))?,
         &mut resolved_terrain,
         &overlay_registry,
         &overlay_shp_ids,

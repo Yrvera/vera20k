@@ -94,17 +94,12 @@ pub struct OverlayDataPack {
 impl OverlayDataPack {
     pub fn from_decoded(bytes: Vec<u8>) -> Self {
         let present = !bytes.is_empty();
-        let mut normalized = bytes;
-        normalized.resize(OVERLAY_TOTAL_CELLS, 0);
-        Self {
-            bytes: normalized,
-            present,
-        }
+        Self { bytes, present }
     }
 
     pub fn missing() -> Self {
         Self {
-            bytes: vec![0; OVERLAY_TOTAL_CELLS],
+            bytes: Vec::new(),
             present: false,
         }
     }
@@ -113,12 +108,30 @@ impl OverlayDataPack {
         self.present
     }
 
-    pub fn byte_at(&self, rx: u16, ry: u16) -> u8 {
-        if rx as usize >= OVERLAY_GRID_SIZE || ry as usize >= OVERLAY_GRID_SIZE {
-            return 0;
+    pub fn has_positive_length(&self) -> bool {
+        !self.bytes.is_empty()
+    }
+
+    pub fn decoded_len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Return the decoded byte for one fixed-grid reader coordinate. A short
+    /// body produces `None`, matching the native failed-read path rather than
+    /// fabricating a decoded zero byte.
+    pub fn read_byte(&self, rx: u16, ry: u16) -> Option<u8> {
+        if usize::from(rx) >= OVERLAY_GRID_SIZE
+            || usize::from(ry) >= OVERLAY_GRID_SIZE
+        {
+            return None;
         }
-        let idx = ry as usize * OVERLAY_GRID_SIZE + rx as usize;
-        self.bytes[idx]
+        self.bytes
+            .get(usize::from(ry) * OVERLAY_GRID_SIZE + usize::from(rx))
+            .copied()
+    }
+
+    pub fn byte_at(&self, rx: u16, ry: u16) -> u8 {
+        self.read_byte(rx, ry).unwrap_or(0)
     }
 
     /// Build a present data pack from per-cell frame values `(rx, ry, frame)`.
@@ -421,6 +434,18 @@ mod tests {
 
         assert!(data.is_present());
         assert_eq!(data.byte_at(9, 7), 42);
+    }
+
+    #[test]
+    fn raw_overlay_data_pack_preserves_failed_short_reads() {
+        let data = OverlayDataPack::from_decoded(vec![7, 8]);
+
+        assert!(data.has_positive_length());
+        assert_eq!(data.decoded_len(), 2);
+        assert_eq!(data.read_byte(0, 0), Some(7));
+        assert_eq!(data.read_byte(1, 0), Some(8));
+        assert_eq!(data.read_byte(2, 0), None);
+        assert_eq!(data.byte_at(2, 0), 0, "legacy projection remains zero-fallback");
     }
 
     #[test]
