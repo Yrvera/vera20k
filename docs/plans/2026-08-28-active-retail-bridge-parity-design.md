@@ -1012,25 +1012,50 @@ radar replay remains. Existing exact connectivity/count/snapshot/hash tests rema
 
 Recorded open items, each with its native reading and owner. None is closed by PR #207.
 
-- **OQ-37 post-`Full_Init` OreTwinkle Scenario draws (non-deferrable).** `FUN_00684C30` (called
-  by `ScenarioClass::Read_Scenario @ 0x00684620` after `Full_Init`) runs, in order: a third full
-  `RecalcAttributes` sweep (`0x00684FAB..0x00684FC0`), `ComputeBridgeZones @ 0x0056D6E0`,
-  `RebuildZoneConnectivity @ 0x0056C510`, `RebuildAllZoneLevels @ 0x00581F50`, `FUN_00586BF0`, one
-  `ParticleSystemClass @ 0x0062DC50` construction (native ID), then, when `Rules+0x1870`
-  (`OreTwinkle=TWNK1`) is non-null, an anti-diagonal pass over every real cell that calls
-  `Random::RandomRanged @ 0x0065C7E0` on the Scenario RNG (`ECX = Scenario+0x218`,
-  `0x00685095`) with range `(0, OreTwinkleChance-1)` for every cell whose
-  `CellClass::Get_Tiberium_Value @ 0x00485020` is nonzero and constructs `AnimClass @ 0x00421EA0` on a
-  zero roll. Rust's `finalize_scenario_post_map` has no twinkle step, so every fresh load with ore
-  advances the Scenario cursor differently from gamemd before the first tick and the start-of-match
-  twinkle animations are absent. Frequency: every map with resource overlays. Owner: the post-map
-  tail (transaction 3 continuation), inserted after the modeled AiOpeningCredits loop
-  (`HouseClass::Add_Tiberium_Credits` at `0x00684F45..0x00684F69` precedes all of the above).
-- **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6).** The final
-  authored sweep (`src/sim/runtime.rs` `finalize_and_populate_staged_authored_scenario`) performs
-  unlatch -> Recalc -> wall owner but not the arg-0 value call, the wrapping signed-32 sum, or the
-  `Full_Init` store to `0x0087F91C` with cell-array teardown reset. No active reader is proved; owner:
-  transaction 3 continuation.
+- **OQ-37 post-`Full_Init` setup tail (`FUN_00684C30`) — IMPLEMENTED by transaction-3 slice B
+  (`feature/bridge-post-load-tail`).** `ScenarioClass::Read_Scenario @ 0x00684620` calls
+  `FUN_00684C30` after `Full_Init`. Live-read order: increment the editor/suppression counter; call
+  `BuildingClass` vtable `+0x4E0` (`0x004456D0`) on every alive Building; `FUN_004F42F0(2)`
+  (Tactical `+0xD7D` flag plus `MapClass::IncrementBridgeCounter`, presentation); non-editor
+  `FUN_006D04F0(1)` sidebar toggle and, for `g_GameMode == 0` only, the campaign start-cell view
+  setup; the TagType attach/registry pass; `[Basic] FillSilos` (`Scenario+0x34B2`) credits-to-
+  tiberium loop (`HouseClass::Add_Tiberium_Credits` at `0x00684F45..0x00684F69`);
+  `MapClass::ParanoidUnrevealAll(1,0)`; `FUN_0075F020` (sqrt/sin lookup tables, no sim state); a
+  third full `RecalcAttributes(-1)` sweep (`0x00684FAB..0x00684FC0`); `ComputeBridgeZones @
+  0x0056D6E0`; `RebuildZoneConnectivity @ 0x0056C510`; `RebuildAllZoneLevels @ 0x00581F50`;
+  `FUN_00586BF0` (see transaction 4 below); then, when `DAT_00A8ED78` is null, one GasCloudSys
+  `ParticleSystemClass @ 0x0062DC50` at leptons `(0xA80, 0xA80, 0)` whose constructor assigns a
+  native ID (`ParticleSystemTypeClass::Find_Or_Allocate @ 0x00644630` finds the retail
+  `[ParticleSystems]` entry, so no Type is constructed); then, when `Rules+0x1870` is non-null, an
+  anti-diagonal `CellIterator` pass that draws `Random::RandomRanged @ 0x0065C7E0` on the Scenario
+  RNG (`ECX = Scenario+0x218`, `0x00685095`) over `(0, Rules+0x186C - 1)` for every cell whose
+  `Get_Tiberium_Value @ 0x00485020` is nonzero and constructs `AnimClass @ 0x00421EA0` at the
+  `CellClass` vtable `+0x48` centre coordinate (`0x00486840`) with `(delay 0, loop 1, flags 0x600,
+  ZAdjust 0, reverse 0)` on a zero roll; finally `FUN_0055AF40/50` write two globals with no
+  simulation reader. `Clear_Scene @ 0x006851F0` deletes the particle system and nulls
+  `DAT_00A8ED78` at `0x0068562E`, so every fresh `Full_Init` load reconstructs it (once-per-process
+  behavior exists only between shell previews, which is G11's domain). Rules readers are verified:
+  `ReadGeneral @ 0x0066D661..0x0066D699` reads `[General] OreTwinkle` (empty default, capacity
+  0x80, `AnimTypeClass::Find_Or_Allocate @ 0x00428B80`) and `ReadAudioVisual @ 0x0066B7F8..
+  0x0066B812` reads `[AudioVisual] OreTwinkleChance` (constructor default 0x32); retail sets
+  `TWNK1`/30. The `AnimClass` constructor assigns its native ID and registers before the optional
+  `RandomRate` draw, has no DetailLevel gate, and `TWNK1` (`LoopCount=-1`, `RandomLoopDelay=120,300`,
+  `Rate=450`) draws nothing at construction. Slice B models the particle-system native-ID spend, the
+  per-resource-cell Scenario draws in `CellIterator` order, and the zero-roll Anim construction with
+  its native ID (`src/sim/ore_twinkle.rs`, `src/sim/scenario_post_map.rs`, rules
+  `GeneralRules::{ore_twinkle, ore_twinkle_chance}`); it runs at the end of
+  `finalize_scenario_post_map`, after the modeled Post_Map_Init credit/crate/alliance work, for both
+  skirmish and generic fresh loads. Recorded, not modeled: the ParticleSystem object itself
+  (no sim consumer proved), the FillSilos loop (scenario-flag-conditional, not modeled in Rust at
+  all), the `+0x4E0` per-Building call (player-owned prebuilt Buildings only; kind switch on
+  `BuildingType+0xEB8`, UNCHECKED), the tag-attach pass (trigger system), and the campaign view
+  setup.
+- **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6) — IMPLEMENTED
+  by slice B.** The final authored sweep now calls the `Get_Tiberium_Value @ 0x00485020` model
+  (`TiberiumClass.Value * (OverlayData + 1)`, signed wrapping) for every real cell before that cell's
+  Recalc and stores the wrapping total in `Simulation::authored_tiberium_value_total`
+  (`MapClass+0x134` / `0x0087F91C` analogue, `serde(skip)`, `None` on a new Simulation and for
+  generated loads). No active reader is proved and none is invented.
 - **Ancillary `InitCellAttributes` slot seam.** The raw `0x300000` clear pass, per-cell `+0x30 = 0`,
   `FUN_00483E30(0,0x10000,0,1000,1000,1000)` light routing, latch clear, and AttachedTag `0x19`/`0x1A`
   restamp are not exposed as ordered slots by the final sweep. Owners remain the generic trigger
@@ -1050,6 +1075,14 @@ Recorded open items, each with its native reading and owner. None is closed by P
   phase14 code): `PostDestructionWallCleanup` publishes tactical and radar dirty per visit; the
   hostless wrapper does not. Frequency zero on retail (no `Wall=yes` crate image); recorded, not owned
   by the bridge program.
+- **`FUN_00586BF0` (post-load bridge-record gap restamp) — routed to transaction 4/13.** After the
+  zone rebuilds, `FUN_00684C30` walks the `MapClass+0x54` bridge-record array (count `+0x60`,
+  0x10-byte records: start `(x,y)`, end `(x,y)`, byte `+8`, pointer `+0xC`). For records with
+  `+0xC == 0` and byte `+8 == 0` it steps from start toward end along the record's axis and, on every
+  cell lacking raw `0x100`, writes `0x400` with `0x800` cleared (NE-SW records) or ORs `0xC` into
+  `Cell+0x141` (NW-SE records) across the five transverse cells `-2..=2` through the shared-dummy
+  `GetCell` seam. This is destroyed-span restamping at load and belongs with BR-M10/BR-M17; it is not
+  modeled by slice B.
 - Notes carried without action: `Land=9` is Railroad (retail `TRACKS01..16`) and the ordinary route
   yields identical bytes/Recalc/UnInit; `0xA7`/`0x7E` vein arms and `FUN_0074DE90` have zero retail
   content; germination's `% MaxDensity` is inert for `MaxDensity=12`; the transient
@@ -1290,7 +1323,7 @@ Every frozen question has a pre-implementation owner. A unit cannot become `CONT
 | OQ-34 complete native-ID prefix before the first generator/authored object: preview Set_Defaults/manual-storage branches plus fresh-Full_Init pre-map House/Type/Cell constructors, map-read transform, and Tube prefix | RESOLVED by `FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md`; transaction 3 implements the consumed-once prefix/preview lifetime, while positive Tube topology remains 5 |
 | OQ-35 `InitCellAttributes` raw `0x100000`/`0x200000` clear/restamp identity and consumers | RESOLVED as active generic AttachedTag event-`0x19`/`0x1A` row/column trigger acceleration, not bridge-zone topology; transaction 3 exposes the ordered ancillary seam and negative no-`BridgeFacts` assertion but does not implement or close the official-retail-reachable generic bits/consumer |
 | OQ-36 `InitCellAttributes` ordinary-cell LightConvert/ZAdjust recomputation | native ordinary/sentinel split and draw consumers are verified; transaction 3 executes and tests one cache invalidation at the recomputation-routing slot, while transaction 20 owns semantic rendered-cell-light equivalence and the final end-to-end stale-preview-cache test |
-| OQ-37 post-`Full_Init` OreTwinkle Scenario-RNG pass and the `FUN_00684C30` post-load order (third Recalc sweep, bridge-zone/zone-connectivity/zone-level rebuilds, particle-system ID, twinkle draws) | OPEN, non-deferrable; opened by PR #207's critic 3; transaction 3 continuation owns it in the post-map tail after the modeled credits loop |
+| OQ-37 post-`Full_Init` OreTwinkle Scenario-RNG pass and the `FUN_00684C30` post-load order (third Recalc sweep, bridge-zone/zone-connectivity/zone-level rebuilds, particle-system ID, twinkle draws) | IMPLEMENTED by transaction-3 slice B (particle-system ID, per-resource-cell Scenario draws, zero-roll Anim construction); `FUN_00586BF0` bridge-record restamp routed to transaction 4/13; FillSilos loop and the `+0x4E0` Building call recorded as non-bridge residuals |
 
 Two ancillary writes do not need new question numbers. Final wall-owner reconstruction is already a
 verified semantic match under GSI-04.07; transaction 3 must preserve its post-final-Recalc ordering

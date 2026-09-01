@@ -976,6 +976,12 @@ where
     if removed > 0 {
         log::info!("Scalar-deleted {removed} first-sweep terrain animations");
     }
+    // `MapClass::InitCellAttributes @ 0x00568BB0` with argument 0 calls
+    // `CellClass::Get_Tiberium_Value @ 0x00485020` for every real cell before
+    // that cell's Recalc and sums the returns with wrapping machine arithmetic;
+    // `ScenarioClass::Full_Init @ 0x00686B20` stores the return at
+    // `MapClass+0x134` (`0x0087F91C`).
+    let mut tiberium_value_total: i32 = 0;
     {
         let mut host = crate::sim::world::authored_load_host::SimulationAuthoredLoadHost::new(
             sim,
@@ -994,6 +1000,13 @@ where
             let current = overlay_grid
                 .finalized_map_cell(rx, ry)
                 .expect("final authored iterator coordinate remains in the live overlay grid");
+            tiberium_value_total =
+                tiberium_value_total.wrapping_add(crate::sim::ore_twinkle::tiberium_value(
+                    current.overlay_id(),
+                    current.state(),
+                    overlay_registry,
+                    &rules.tiberium_types,
+                ));
             let finalized = crate::map::authored_overlay::recalc_final_authored_overlay_cell(
                 &mut terrain,
                 &mut recalc,
@@ -1005,6 +1018,7 @@ where
             debug_assert!(written);
         }
     }
+    sim.authored_tiberium_value_total = Some(tiberium_value_total);
     terrain.rebuild_bridgehead_anchor_classes_from_final_tiles(theater_data);
     let bridge_destroyable = map_data
         .special_flags

@@ -603,6 +603,10 @@ mod retail_construction_tests {
             a.sim().bridge_state.is_some(),
             "bridge runtime state must be constructed by the funnel"
         );
+        assert!(
+            a.sim().authored_tiberium_value_total.is_some(),
+            "authored Full_Init stores the value-only InitCellAttributes(0) total"
+        );
 
         for tick in 0..30u32 {
             a.tick();

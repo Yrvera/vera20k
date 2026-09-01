@@ -115,6 +115,7 @@ mod spawn_manager_tests;
 
 // --- Economy, map resources ---
 pub mod ore_growth;
+pub(crate) mod ore_twinkle;
 pub mod radar;
 pub mod rocking;
 pub mod terrain_object;

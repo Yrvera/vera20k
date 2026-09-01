@@ -623,6 +623,44 @@ order exactly:
     snapshot/hash, and bridge parity-harness families remain green. The full suite is run once only at
     the final PR gate as `cargo test -p vera20k --lib`; focused work also uses `--lib` exclusively.
 
+## Continuation slice B: post-`Full_Init` setup tail (2026-09-01)
+
+Scope: the `FUN_00684C30` tail opened as OQ-37 by PR #207's critic and the G6 value-only aggregate.
+Native evidence (all decompiled live): `FUN_00684C30 @ 0x00684C30` (order at
+`0x00684FAB..0x006850F3`), `Clear_Scene @ 0x006851F0` (`DAT_00A8ED78` nulled at `0x0068562E`),
+`ParticleSystemClass @ 0x0062DC50`, `ParticleSystemTypeClass::Find_Or_Allocate @ 0x00644630`
+("GasCloudSys" @ `0x0083DA90`, present in retail `[ParticleSystems]`), `CellClass::Get_Tiberium_Value
+@ 0x00485020`, `Random::RandomRanged @ 0x0065C7E0`, `AnimClass @ 0x00421EA0` (ID and registry
+before `RandomRate`, no DetailLevel gate, `Middle` at delay 0), `CellClass` vtable `+0x48 @
+0x00486840`, `MapClass::CellIterator_Next @ 0x00578290`, `RulesClass::ReadGeneral @ 0x0066D661..
+0x0066D699` (`[General] OreTwinkle`), `RulesClass::ReadAudioVisual @ 0x0066B7F8..0x0066B812`
+(`[AudioVisual] OreTwinkleChance`, default 0x32), `MapClass::InitCellAttributes @ 0x00568BB0` and
+the `Full_Init` store at `0x0087F91C`.
+
+Required Rust (delivered on `feature/bridge-post-load-tail`):
+- `GeneralRules::ore_twinkle: Option<String>` and `ore_twinkle_chance: i32` with the verified
+  reader sections and defaults;
+- `Simulation::run_post_load_ore_twinkle_pass` at the end of `finalize_scenario_post_map`: one
+  native ID for the GasCloudSys `ParticleSystemClass` on every fresh load, then per real cell in
+  `CellIterator` order one `RandomRanged(0, chance-1)` Scenario draw when `Get_Tiberium_Value` is
+  nonzero, and on a zero roll one `AnimClass` with a fresh native ID at the cell centre and ground
+  height, `(delay 0, loop 1, flags 0x600, ZAdjust 0)`, registered before any `RandomRate` draw;
+- `Simulation::authored_tiberium_value_total` written by the authored final sweep from the exact
+  `Get_Tiberium_Value` model with wrapping signed-32 accumulation.
+
+Acceptance: `rules::ruleset::tests::ore_twinkle_keys_follow_the_native_reader_sections`,
+`sim::ore_twinkle::tests::get_tiberium_value_is_zero_for_non_resources_and_wraps_signed_products`,
+`sim::scenario_post_map::tests::post_load_ore_twinkle_pass_rolls_each_resource_cell_in_native_order`
+(native order, Scenario cursor equality against an independent replay, unchanged Main RNG, native-ID
+order `particle -> twinkle...`, draw flags 0x600, cells outside the diamond never rolled),
+`..._is_inert_without_the_rules_anim`, and the ignored retail Dustbowl headless load asserting the
+stored aggregate.
+
+Recorded residuals from this corridor: the ParticleSystem object itself, the `[Basic] FillSilos`
+credits-to-tiberium loop, the per-Building vtable `+0x4E0` call, the TagType attach pass, the
+campaign-only view setup, `FUN_004F42F0`/sidebar presentation, and `FUN_00586BF0` bridge-record gap
+restamping (routed to transaction 4/13).
+
 ## Known Non-Requirements
 
 - Do not construct Tube topology or use `explicit_tubes` as native-ID accounting input.

@@ -527,6 +527,21 @@ pub struct GeneralRules {
     pub generic_beep_sound: Option<String>,
     /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
     pub gui_checkbox_sound: Option<String>,
+    /// `[General] OreTwinkle=` AnimType name; `None` keeps the constructor's
+    /// null pointer so the post-load twinkle pass is skipped.
+    ///
+    /// gamemd: `RulesClass::ReadGeneral` at `0x0066D661..0x0066D699` reads
+    /// section "General" (`0x00826278`) key "OreTwinkle" (`0x0083CF4C`) with an
+    /// empty default and capacity 0x80, then resolves a non-empty value through
+    /// `AnimTypeClass::Find_Or_Allocate @ 0x00428B80` into `Rules+0x1870`.
+    pub ore_twinkle: Option<String>,
+    /// `[AudioVisual] OreTwinkleChance=`: one twinkle roll in N per resource cell.
+    ///
+    /// gamemd: `RulesClass::ReadAudioVisual` at `0x0066B7F8..0x0066B812` reads
+    /// section "AudioVisual" (`0x00839EA8`) key "OreTwinkleChance"
+    /// (`0x0083A1CC`) through `INIClass::ReadInt @ 0x005276D0` into
+    /// `Rules+0x186C`; the constructor default is 0x32.
+    pub ore_twinkle_chance: i32,
     /// Sidebar tab click sound from [AudioVisual] GUITabSound (retail
     /// `MenuTab`). The key→tab-click mapping is name-inferred — flagged for a
     /// Ghidra spot-check of the tab-ID consumer before parity sign-off.
@@ -1043,6 +1058,8 @@ impl Default for GeneralRules {
             generic_click_sound: None,
             generic_beep_sound: None,
             gui_checkbox_sound: None,
+            ore_twinkle: None,
+            ore_twinkle_chance: 50,
             gui_tab_sound: None,
             incoming_message_sound: None,
             message_delay_minutes: 0.6,
@@ -1747,6 +1764,13 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            ore_twinkle: {
+                let value = general.read_string("OreTwinkle", "", 0x80);
+                (!value.is_empty()).then_some(value)
+            },
+            ore_twinkle_chance: audio_visual
+                .and_then(|s| s.get_i32("OreTwinkleChance"))
+                .unwrap_or(defaults.ore_twinkle_chance),
             gui_tab_sound: audio_visual
                 .and_then(|s| s.get("GUITabSound"))
                 .map(str::trim)
@@ -5202,6 +5226,30 @@ GUIMainButtonSound=MenuClick
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.gui_main_button_sound.as_deref(), Some("MenuClick"));
+    }
+
+    /// The two OreTwinkle keys are read by different native readers: the anim
+    /// name from `[General]` (ReadGeneral) and the chance from `[AudioVisual]`
+    /// (ReadAudioVisual). A key in the other section is invisible to gamemd.
+    #[test]
+    fn ore_twinkle_keys_follow_the_native_reader_sections() {
+        let ini = IniFile::from_str(
+            "[General]\nOreTwinkle=TWNK1\nOreTwinkleChance=7\n\
+             [AudioVisual]\nOreTwinkleChance=30\nOreTwinkle=WRONG\n",
+        );
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.ore_twinkle.as_deref(), Some("TWNK1"));
+        assert_eq!(general.ore_twinkle_chance, 30);
+
+        let defaults = GeneralRules::from_ini(&IniFile::from_str("[General]\nOreTwinkle=\n"));
+        assert_eq!(
+            defaults.ore_twinkle, None,
+            "an empty value keeps the null pointer"
+        );
+        assert_eq!(
+            defaults.ore_twinkle_chance, 50,
+            "RulesClass constructor default 0x32"
+        );
     }
 
     #[test]

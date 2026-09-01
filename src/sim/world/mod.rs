@@ -688,6 +688,13 @@ pub struct Simulation {
     /// They are load-transient until persistence behavior is separately proved.
     #[serde(skip, default)]
     pub(crate) native_unique_ids: Option<crate::sim::native_identity::NativeUniqueIdCursor>,
+    /// `MapClass+0x134` (`0x0087F91C`) analogue: the wrapping signed total that
+    /// authored `ScenarioClass::Full_Init @ 0x00686B20` stores from
+    /// `InitCellAttributes(0)`'s value-only `Get_Tiberium_Value` pass. No active
+    /// reader is proved; cell-array teardown (a new Simulation) resets it and
+    /// generated loads leave it `None`.
+    #[serde(skip, default)]
+    pub(crate) authored_tiberium_value_total: Option<i32>,
     /// Successful raw `[Tubes]` constructor bindings from this fresh map read.
     /// Kept separate from resolved topology so its later owning transaction
     /// can consume the already-assigned IDs without recounting filtered facts.
@@ -3257,6 +3264,7 @@ impl Simulation {
             main_rng: SimRng::new(seed),
             mapgen_rng: SimRng::new(0),
             native_unique_ids: None,
+            authored_tiberium_value_total: None,
             native_map_tubes: crate::map::tubes::NativeMapTubesState::default(),
             load_objects: LoadObjectLifecycle::default(),
             fog: FogState::default(),
