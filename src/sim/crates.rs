@@ -22,6 +22,10 @@
 //! Part of `sim/` — depends on `rules/`, `map/` grid types and other `sim/`
 //! modules only. Never on render/, ui/, sidebar/, audio/, net/.
 
+mod state;
+
+pub use state::{CrateAuthority, CrateSlot};
+
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::crate_rules::CrateRules;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};

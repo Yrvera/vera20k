@@ -328,7 +328,9 @@ use crate::sim::world::Simulation;
 // latches co-enabled by successful qualifying base-unit deployment.
 // Bumped 112 -> 113: persist House AutocreateAllowed beside the three deploy
 // latches in native conceptual byte order.
-const SNAPSHOT_VERSION: u32 = 113;
+// Bumped 113 -> 114: persist the raw 256-entry MapClass crate-slot table,
+// including accepted ghosts and all native timer words.
+const SNAPSHOT_VERSION: u32 = 114;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2741,10 +2743,35 @@ mod tests {
     /// House BuildConst vector and immutable entity membership; 109 -> 110
     /// adds ordered BasePlan state and immutable BuildingType facts; 110 -> 111
     /// adds the distinct BaseClass plan center; 111 -> 112 adds the three House
-    /// AI activation latches; 112 -> 113 adds House AutocreateAllowed.
+    /// AI activation latches; 112 -> 113 adds House AutocreateAllowed;
+    /// 113 -> 114 adds the raw 256-entry scenario-crate slot table.
     #[test]
-    fn phase3_house_ai_activation_snapshot_version_is_113() {
-        assert_eq!(super::SNAPSHOT_VERSION, 113);
+    fn phase14_crate_authority_snapshot_version_is_114() {
+        assert_eq!(super::SNAPSHOT_VERSION, 114);
+    }
+
+    #[test]
+    fn phase14_crate_authority_roundtrips_visible_and_ghost_slots() {
+        let mut sim = Simulation::with_seed(0);
+        *sim.crate_authority.slot_mut(0) = crate::sim::crates::CrateSlot {
+            start_frame: 17,
+            aux: 0x40b5_1800,
+            duration: 3375,
+            cell_x: 6,
+            cell_y: 9,
+        };
+        *sim.crate_authority.slot_mut(1) = crate::sim::crates::CrateSlot {
+            start_frame: -2,
+            aux: u32::MAX,
+            duration: i32::MIN,
+            cell_x: -4,
+            cell_y: 12,
+        };
+        let expected = sim.crate_authority.clone();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let loaded = GameSnapshot::load(&bytes).expect("v114 crate authority snapshot");
+        assert_eq!(loaded.sim.crate_authority, expected);
     }
 
     #[test]

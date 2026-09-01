@@ -424,7 +424,7 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, true,
+            true, true, true, true, true, true,
         )
     }
 
@@ -436,7 +436,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false,
         )
     }
 
@@ -448,7 +448,7 @@ impl Simulation {
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
         self.state_hash_with_schema(
             false, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false,
         )
     }
 
@@ -458,7 +458,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_spark_dummy_level_slope_v107(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, false, false,
-            false, false, false, false, false,
+            false, false, false, false, false, false,
         )
     }
 
@@ -469,7 +469,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_naval_build_const_v109(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            false, false, false, false, false,
+            false, false, false, false, false, false,
         )
     }
 
@@ -480,7 +480,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_v110(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, false, false, false, false,
+            true, false, false, false, false, false,
         )
     }
 
@@ -489,7 +489,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_base_plan_center_v111(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, false, false, false,
+            true, true, false, false, false, false,
         )
     }
 
@@ -498,7 +498,7 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_deploy_latches_v112(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, false, false,
+            true, true, true, false, false, false,
         )
     }
 
@@ -508,7 +508,16 @@ impl Simulation {
     pub(crate) fn state_hash_without_house_update_activation_v113(&self) -> u64 {
         self.state_hash_with_schema(
             true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-            true, true, true, true, false,
+            true, true, true, true, false, false,
+        )
+    }
+
+    /// Test-only provenance probe for the schema-v114 raw crate-slot fold.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_crate_authority_v114(&self) -> u64 {
+        self.state_hash_with_schema(
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, false,
         )
     }
 
@@ -533,6 +542,7 @@ impl Simulation {
         include_base_plan_center_v111: bool,
         include_house_deploy_latches_v112: bool,
         include_house_update_activation_v113: bool,
+        include_crate_authority_v114: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -604,6 +614,9 @@ impl Simulation {
             self.dynamic_terrain_cells.hash(&mut hasher);
         }
         self.hash_overlay_grid(&mut hasher);
+        if include_crate_authority_v114 {
+            self.hash_crate_authority(&mut hasher);
+        }
         self.hash_smudge_grid(&mut hasher);
         self.hash_radiation(&mut hasher);
         if include_master_frame_v43 {
@@ -1133,6 +1146,20 @@ impl Simulation {
                 cell.overlay_data.hash(hasher);
                 cell.wall_owner.hash(hasher);
             }
+        }
+    }
+
+    /// Fold every raw MapClass crate-slot word in fixed ascending order.
+    /// Visible overlays are deliberately not the authority: accepted ghosts
+    /// retain future timer behavior without mutating `OverlayGrid`.
+    fn hash_crate_authority(&self, hasher: &mut impl Hasher) {
+        b"crate-authority-v1".hash(hasher);
+        for slot in self.crate_authority.slots() {
+            slot.start_frame.hash(hasher);
+            slot.aux.hash(hasher);
+            slot.duration.hash(hasher);
+            slot.cell_x.hash(hasher);
+            slot.cell_y.hash(hasher);
         }
     }
 

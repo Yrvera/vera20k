@@ -819,6 +819,9 @@ pub struct Simulation {
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
     pub overlay_grid: Option<crate::sim::overlay_grid::OverlayGrid>,
+    /// Persistent MapClass scenario-crate slots, including accepted ghosts and
+    /// their native timer words. This is authoritative save/hash state.
+    pub(crate) crate_authority: crate::sim::crates::CrateAuthority,
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
@@ -3011,6 +3014,7 @@ impl Simulation {
             dynamic_terrain_cells: BTreeMap::new(),
             bridge_state: None,
             overlay_grid: None,
+            crate_authority: crate::sim::crates::CrateAuthority::default(),
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,
