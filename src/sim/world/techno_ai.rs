@@ -712,6 +712,18 @@ pub(crate) enum BracketReach {
     Dispatched,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardDeployAiOwner {
+    /// The current deploy-building handler still owns the retry.
+    DeployBuilding,
+    /// A staged Move installed translational locomotion; native state 2 clears
+    /// UnitClass +0x68C and leaves the committed segment to finish.
+    Move,
+    /// Attack must promote, run its approach producer, then draw cadence RNG
+    /// before PerCell gets a chance to retry deployment.
+    Attack,
+}
+
 /// Per-Unit TechnoClass common bracket. Runs the contiguous
 /// `pre -> [IsAlive B] -> +0xC4/promotion -> [IsAlive E] -> post` structure at
 /// the gamemd-faithful per-object AI point (pre-movement, LogicVector order).
@@ -731,27 +743,127 @@ fn unit_techno_bracket(
     if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
         return BracketReach::DiedInPre;
     }
-    if let Some(rules) = rules
-        && sim.retry_forward_deploy_on_unit_ai(id, rules, ctx.overlay_registry)
-    {
+    let forward_deploy_owner = sim.substrate.entities.get(id).and_then(|entity| {
+        if !entity.forward_deploy_retry {
+            return None;
+        }
+        let queued = entity.mission.queued().known();
+        let current = entity.mission.current().known();
+        let has_nav_com = entity.navigation.nav_com.is_some();
+        Some(if current == Some(MissionType::Unload)
+            && queued == Some(MissionType::Move)
+            && has_nav_com
+        {
+            ForwardDeployAiOwner::Move
+        } else if entity.owns_forward_deploy_attack_retry() {
+            ForwardDeployAiOwner::Attack
+        } else {
+            ForwardDeployAiOwner::DeployBuilding
+        })
+    });
+
+    if forward_deploy_owner == Some(ForwardDeployAiOwner::Move) {
+        // `UnitClass::Mission_Deploy_Building @ 0x0073D630` state 2 calls
+        // Deploy first. That call still performs placement validation before
+        // its moving rejection, so a blocker installed during the facing turn
+        // must reject and queue Guard. Only a still-live retry then reaches the
+        // newly installed NavCom tail and clears +0x68C at 0x0073DD76. It does
+        // not consume the staged Move or committed Drive head.
+        if let Some(rules) = rules {
+            let _ = sim.retry_forward_deploy_on_unit_ai(id, rules, ctx.overlay_registry);
+        }
+        if let Some(entity) = sim.substrate.entities.get_mut(id) {
+            if entity.forward_deploy_retry {
+                entity.forward_deploy_retry = false;
+            }
+        }
         return BracketReach::Dispatched;
     }
-    // `UnitClass::Mission_Deploy_Building @ 0x0073D630` state 1/2 owns this
-    // period and re-enters `UnitClass::Deploy @ 0x007393C0`; the facing arm's
-    // UnitClass +0x68C request/progress byte keeps unrelated mission work out.
-    // The Rust latch owns the equivalent Unit AI visit while the world loop
-    // advances the locomotor FacingClass independently.
-    if sim
-        .substrate
-        .entities
-        .get(id)
-        .is_some_and(|entity| entity.forward_deploy_retry)
-    {
-        return BracketReach::Dispatched;
+
+    if forward_deploy_owner == Some(ForwardDeployAiOwner::DeployBuilding) {
+        if let Some(rules) = rules
+            && sim.retry_forward_deploy_on_unit_ai(id, rules, ctx.overlay_registry)
+        {
+            return BracketReach::Dispatched;
+        }
+        // A facing retry or footprint-valid pending attempt remains owned by
+        // Mission_Deploy_Building while the world loop advances FacingClass.
+        if sim
+            .substrate
+            .entities
+            .get(id)
+            .is_some_and(|entity| entity.forward_deploy_retry)
+        {
+            return BracketReach::Dispatched;
+        }
+    }
+    if forward_deploy_owner == Some(ForwardDeployAiOwner::Attack) {
+        let now = sim.session.binary_frame;
+        let queued_attack_still_turning = sim.substrate.entities.get(id).is_some_and(|entity| {
+            entity.mission.queued().known() == Some(MissionType::Attack)
+                && (entity
+                    .facing_target
+                    .is_some_and(|target| target != entity.facing)
+                    || entity
+                        .body_facing
+                        .as_ref()
+                        .is_some_and(|facing| facing.is_rotating(now)))
+        });
+        if queued_attack_still_turning {
+            // Rust's incomplete signed-height provider otherwise degrades this
+            // Ready query to pass. Native Ready defers the queued Attack until
+            // FacingClass has actually finished, so keep deploy-building as
+            // the owner for this visit.
+            if let Some(rules) = rules {
+                let _ = sim.retry_forward_deploy_on_unit_ai(id, rules, ctx.overlay_registry);
+            }
+            return BracketReach::Dispatched;
+        }
     }
     // The off-mission passive-target clear runs BEFORE the +0xC4 counter.
     clear_passive_target_off_mission(sim, id);
     mission_common_step(sim, id, rules);
+
+    if forward_deploy_owner == Some(ForwardDeployAiOwner::Attack) {
+        let attack_promoted =
+            sim.substrate.entities.get(id).is_some_and(|entity| {
+                entity.mission.current().known() == Some(MissionType::Attack)
+            });
+        if !attack_promoted {
+            // While FacingClass is still rotating, Ready declines the queued
+            // Attack and the current deploy-building handler retries Deploy.
+            if let Some(rules) = rules
+                && sim.retry_forward_deploy_on_unit_ai(id, rules, ctx.overlay_registry)
+            {
+                return BracketReach::Dispatched;
+            }
+            if sim
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.forward_deploy_retry)
+            {
+                return BracketReach::Dispatched;
+            }
+        } else if let Some(rules) = rules {
+            let attack_dispatch_due = sim.substrate.entities.get(id).is_some_and(|entity| {
+                entity
+                    .mission
+                    .dispatch_timer()
+                    .due(sim.session.binary_frame)
+            });
+            if attack_dispatch_due {
+                // `FootClass::Mission_Attack @ 0x004D4DC0` calls +0x53C first.
+                // Only after that result may it consume RandomRanged(0, 2).
+                sim.tick_attack_pursuit_one_with_overlay_registry(
+                    id,
+                    rules,
+                    ctx.path_grid,
+                    ctx.overlay_registry,
+                );
+            }
+        }
+    }
     // Mission_Dispatch position: the absorbed handler bodies run here,
     // timer-gated, ending with the verified post-handler epilogue write
     // (start = current frame, delay = handler return). Harvest (the miner
@@ -3141,6 +3253,7 @@ mod tests {
             has_attack_target: false,
             has_destination: false,
             effective_mission: Some(MissionType::Attack),
+            forward_deploy_retry: false,
             unit_deploy_begin_active: false,
             unit_deploy_reverse_active: false,
             infantry_deployed_do_type: false,
@@ -3150,6 +3263,18 @@ mod tests {
             foot_enter_idle_mode_queue(&rules, base),
             Some(MissionType::Guard),
             "no destination: Guard"
+        );
+        assert_eq!(
+            foot_enter_idle_mode_queue(
+                &rules,
+                MissionHandlerInput {
+                    category: EntityCategory::Unit,
+                    forward_deploy_retry: true,
+                    ..base
+                }
+            ),
+            None,
+            "UnitClass +0x68C refuses the idle replacement"
         );
         assert_eq!(
             foot_enter_idle_mode_queue(
@@ -3239,6 +3364,7 @@ mod tests {
             has_attack_target: false,
             has_destination: false,
             effective_mission: Some(MissionType::Attack),
+            forward_deploy_retry: false,
             unit_deploy_begin_active: false,
             unit_deploy_reverse_active: false,
             infantry_deployed_do_type: false,
@@ -3771,6 +3897,37 @@ mod tests {
             expected_rng.logical_state(),
             "exactly one RandomRanged(1, 5) and nothing else"
         );
+    }
+
+    #[test]
+    fn slave_miner_area_guard_stays_owned_by_its_unit_override() {
+        let mut sim = Simulation::with_seed(0x7441);
+        let rules = representative_foot_handler_rules();
+        let mut slave_miner = entity_of(1, EntityCategory::Unit);
+        slave_miner.miner = Some(crate::sim::miner::Miner::new(
+            crate::sim::miner::MinerKind::Slave,
+            &crate::sim::miner::MinerConfig::from_rules(&rules),
+            0,
+        ));
+        update_mission_test_fixture(&mut slave_miner.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::AreaGuard);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, slave_miner);
+        let before_rng = sim.scenario_rng.logical_state();
+        let before_timer = sim
+            .substrate
+            .entities
+            .get(1)
+            .expect("slave miner fixture")
+            .mission
+            .dispatch_timer();
+
+        mission_handlers::dispatch_supported_foot_mission_cadence(&mut sim, 1, &rules);
+
+        let after = sim.substrate.entities.get(1).expect("slave miner survives");
+        assert_eq!(after.mission.dispatch_timer(), before_timer);
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
     }
 
     fn capture_live_host_witness(sim: &Simulation, id: u64) -> LiveHostWitness {

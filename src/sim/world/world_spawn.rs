@@ -70,7 +70,8 @@ pub(crate) enum GeneratedTechnoInitError {
 pub(crate) enum UnitDeployOutcome {
     /// Entry, placement, construction, or Unlimbo rejected the transaction.
     Rejected,
-    /// Placement succeeded, but the Unit must finish turning before AI retries.
+    /// Placement succeeded, but the active locomotor still prevents commit.
+    /// This covers either a body-facing turn or translation on a later retry.
     FacingRetry,
     /// The replacement Building committed and owns this stable ID.
     Deployed(u64),
@@ -1925,8 +1926,58 @@ impl Simulation {
         rules: &RuleSet,
         _height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
-        self.deploy_unit_into_building_with_overlay_context(stable_id, rules, None)
+        self.begin_unit_deploy_into_building_with_overlay_context(stable_id, rules, None)
             .accepted()
+    }
+
+    /// Enter the explicit Unit deploy-building mission, then perform its first
+    /// Deploy call. Native reaches the facing retry with current Unload and
+    /// handler state 2; later PerCell retries deliberately bypass this wrapper
+    /// so an Attack approach remains current and cannot take Unload's NavCom
+    /// clear tail.
+    pub(crate) fn begin_unit_deploy_into_building_with_overlay_context(
+        &mut self,
+        stable_id: u64,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> UnitDeployOutcome {
+        let now = self.session.binary_frame;
+        if self
+            .mission_assign_exact(
+                stable_id,
+                MissionId::from_known(MissionType::Unload),
+                now,
+            )
+            .is_err()
+        {
+            return UnitDeployOutcome::Rejected;
+        }
+        let outcome = self.deploy_unit_into_building_with_overlay_context(
+            stable_id,
+            rules,
+            overlay_registry,
+        );
+        if outcome == UnitDeployOutcome::FacingRetry
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+            && entity.forward_deploy_retry
+        {
+            entity.mission.set_handler_state(2);
+        }
+        outcome
+    }
+
+    /// Resolve the target BuildingType's authored DeployFacing for a live
+    /// `DeploysInto` unit. Command retasks use this to restore UnitClass's
+    /// independent facing owner after discarding an unprocessed Move path.
+    pub(crate) fn forward_deploy_target_facing(
+        &self,
+        stable_id: u64,
+        rules: &RuleSet,
+    ) -> Option<u8> {
+        let entity = self.substrate.entities.get(stable_id)?;
+        let type_str = self.interner.resolve(entity.type_ref);
+        let yard_type = construction_yard_type_for_mcv(type_str, rules)?;
+        rules.object(&yard_type).map(|yard| yard.deploy_facing)
     }
 
     /// Shared active-retail UnitClass forward conversion. Placement is proved
@@ -1962,6 +2013,12 @@ impl Simulation {
                 entity.attached_trigger_tag,
                 yard_obj.foundation.clone(),
                 entity.facing,
+                entity.movement_target.is_some()
+                    || crate::sim::movement::drive_locomotor_is_moving(entity),
+                entity
+                    .body_facing
+                    .as_ref()
+                    .is_some_and(|facing| facing.is_rotating(self.session.binary_frame)),
                 yard_obj.construction_yard,
                 source_obj.enslaves.is_some(),
             ))
@@ -1978,6 +2035,8 @@ impl Simulation {
             attached_trigger_tag,
             foundation,
             source_facing,
+            source_translating,
+            source_facing_turning,
             is_construction_yard,
             source_has_slave_manager,
         )) = deploy_data
@@ -2033,6 +2092,18 @@ impl Simulation {
             }
         }
 
+        // UnitClass::Deploy performs the placement proof above before its
+        // locomotor `Is_Moving_Now` rejection. That order matters both for
+        // Mission_Unload state 2 after a Move installed NavCom and for each
+        // Drive `PerCellProcess(2)` contact during an Attack approach: a new
+        // footprint blocker rejects and queues Guard even though translation
+        // continues. During the last fractional FacingClass frames the exposed
+        // 8-bit heading can likewise equal DeployFacing while the turn remains
+        // live, so equality alone must not commit the Building.
+        if source_translating || source_facing_turning {
+            return UnitDeployOutcome::FacingRetry;
+        }
+
         // `UnitClass::Deploy @ 0x007393C0` facing arm writes the desired
         // locomotor heading, sets UnitClass +0x68C at `0x00739650`, and returns
         // without constructing the Building. Mission_Deploy_Building state 1/2
@@ -2084,7 +2155,7 @@ impl Simulation {
         }
 
         if source_has_slave_manager {
-            return crate::sim::slave_miner::commit_aligned_slave_miner_deploy_with_overlay_context(
+            return match crate::sim::slave_miner::commit_aligned_slave_miner_deploy_with_overlay_context(
                 self,
                 stable_id,
                 &yard_type,
@@ -2092,8 +2163,10 @@ impl Simulation {
                 ry,
                 rules,
                 overlay_registry,
-            )
-            .map_or(UnitDeployOutcome::Rejected, UnitDeployOutcome::Deployed);
+            ) {
+                Some(new_sid) => UnitDeployOutcome::Deployed(new_sid),
+                None => self.reject_forward_deploy(stable_id),
+            };
         }
 
         // Native reaches the bounded post-deploy transaction only after the
@@ -2180,27 +2253,36 @@ impl Simulation {
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.forward_deploy_retry = false;
         }
+        // UnitClass::Deploy @ 0x00739573 clears +0x68C and queues Guard when
+        // placement or target Unlimbo rejects the conversion. This is queued,
+        // not synchronously commenced: the ordinary mission host owns the
+        // later Ready -> Commence transition.
+        let now = self.session.binary_frame;
+        let _ = self.mission_queue_exact(
+            stable_id,
+            MissionId::from_known(MissionType::Guard),
+            0,
+            now,
+            &EntityReadyInputProvider,
+        );
         UnitDeployOutcome::Rejected
     }
 
-    /// Re-enter the shared UnitClass deploy transaction from each owning Unit
-    /// AI visit while translational locomotion is stopped. Native state 1 calls
-    /// Drive `ILocomotion::Is_Moving @ 0x004AFB80`, which ignores a pure facing
-    /// turn, before calling `UnitClass::Deploy @ 0x007393C0`; Deploy's later
-    /// `Is_Moving_Now @ 0x004AFC20` does observe FacingClass rotation. Returns
-    /// true only when this visit consumed the source.
+    /// Re-enter the shared UnitClass deploy transaction from an owning Unit AI
+    /// or PerCell callback. `UnitClass::Deploy @ 0x007393C0` validates placement
+    /// before its broader locomotor-moving rejection, so translating callers
+    /// still have to enter the transaction even though they cannot commit a
+    /// Building. Returns true only when this visit consumed the source.
     pub(crate) fn retry_forward_deploy_on_unit_ai(
         &mut self,
         stable_id: u64,
         rules: &RuleSet,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) -> bool {
-        let Some((is_unit, is_translating, had_retry)) =
+        let Some((is_unit, had_retry)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.category == EntityCategory::Unit,
-                    entity.movement_target.is_some()
-                        || crate::sim::movement::drive_locomotor_is_moving(entity),
                     entity.forward_deploy_retry,
                 )
             })
@@ -2214,10 +2296,6 @@ impl Simulation {
             self.reject_forward_deploy(stable_id);
             return false;
         }
-        if is_translating {
-            return false;
-        }
-
         matches!(
             self.deploy_unit_into_building_with_overlay_context(
                 stable_id,

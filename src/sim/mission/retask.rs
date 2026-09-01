@@ -45,7 +45,7 @@ pub enum DockTeardown {
 impl Simulation {
     /// Run the dock-reservation subset selected by `teardown`. Each branch calls
     /// the exact reservation helpers the corresponding command sites call today.
-    fn run_dock_teardown(&mut self, id: u64, teardown: DockTeardown) {
+    pub(crate) fn run_dock_teardown(&mut self, id: u64, teardown: DockTeardown) {
         match teardown {
             DockTeardown::All => {
                 self.cancel_depot_dock(id);

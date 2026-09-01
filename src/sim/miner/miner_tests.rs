@@ -8186,12 +8186,44 @@ fn stop_commits_guard_and_takes_a_harvesting_miner_off_the_loop() {
     assert_eq!(miner.mission.current().known(), Some(MissionType::Guard));
 }
 
+#[test]
+fn stop_commits_guard_immediately_from_return_too() {
+    use crate::sim::command::Command;
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let rules = miner_rules();
+    let mut sim = Simulation::new();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner present")
+        .lifecycle
+        .in_limbo = false;
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Return), 0)
+        .expect("miner exists");
+    let heights = BTreeMap::new();
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop {
+            entity_id: miner_id,
+        },
+        Some(&rules),
+        None,
+        &heights,
+    ));
+
+    let miner = sim.substrate.entities.get(miner_id).expect("miner present");
+    assert_eq!(miner.mission.current().known(), Some(MissionType::Guard));
+    assert_eq!(miner.mission.queued(), MissionId::NONE);
+}
+
 /// The mission write is the miner arm ONLY. Retail's Stop leaves every other
-/// object's committed mission untouched; VERA still commits mission 13 there
-/// (a recorded drift), but it must never write Guard.
+/// object's current and queued mission selectors byte-for-byte untouched.
 #[test]
 fn stop_does_not_force_guard_on_a_non_miner() {
-    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::command::Command;
     use crate::sim::mission::{MissionId, MissionType};
 
     let rules = miner_rules();
@@ -8222,14 +8254,25 @@ fn stop_does_not_force_guard_on_a_non_miner() {
     sim.mission_assign_exact(7, MissionId::from_known(MissionType::Move), 0)
         .expect("tank exists");
 
-    let stop = CommandEnvelope::new(owner_id, 1, Command::Stop { entity_id: 7 });
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    let _ = sim.advance_tick(&[stop], Some(&rules), &heights, None, None, 33);
+    let before = sim.substrate.entities.get(7).expect("tank present").mission;
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop { entity_id: 7 },
+        Some(&rules),
+        None,
+        &heights,
+    ));
 
     let tank = sim.substrate.entities.get(7).expect("tank present");
-    assert_ne!(
-        tank.mission.current().known(),
-        Some(MissionType::Guard),
-        "the Guard force-assign is the ore-miner arm only"
+    assert_eq!(
+        tank.mission.current(),
+        before.current(),
+        "ordinary Stop must not replace the committed mission"
+    );
+    assert_eq!(
+        tank.mission.queued(),
+        before.queued(),
+        "ordinary Stop must not write the queued mission"
     );
 }

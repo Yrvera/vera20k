@@ -104,8 +104,8 @@ pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub(crate) use movement_commands::issue_move_command_with_layered;
 pub use movement_commands::{
-    clear_navigation_for_entity, issue_direct_move, issue_move_command,
-    set_destination_for_teleporter_entity,
+    clear_navigation_for_entity, clear_navigation_preserving_committed_head, issue_direct_move,
+    issue_move_command, set_destination_for_teleporter_entity,
 };
 #[cfg(test)]
 pub(crate) use movement_path::{

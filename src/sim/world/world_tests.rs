@@ -5785,6 +5785,79 @@ fn test_stop_command_clears_move_and_attack_intent() {
 }
 
 #[test]
+fn phase8_stop_broadcasts_break_to_every_sparse_contact_without_retasking() {
+    let mut sim = Simulation::new();
+    let mut placements = Vec::new();
+    for (cell_x, type_id) in [(4, "MTNK"), (5, "GAREFN"), (6, "GAWEAP"), (7, "GADEPT")] {
+        let mut entity = make_test_entity(type_id, EntityCategory::Unit);
+        entity.cell_x = cell_x;
+        entity.cell_y = 4;
+        placements.push(entity);
+    }
+    assert_eq!(
+        sim.spawn_from_map(&placements, None, &empty_heights()),
+        placements.len() as u32
+    );
+    sim.mission_assign_exact(1, MissionId::from_known(MissionType::Attack), 0)
+        .expect("sender mission authority");
+    {
+        let sender = sim.substrate.entities.get_mut(1).expect("sender");
+        sender.radio_contacts.set_capacity(4);
+        assert_eq!(sender.radio_contacts.insert(2), Some(0));
+        assert_eq!(sender.radio_contacts.insert(3), Some(1));
+        assert_eq!(sender.radio_contacts.insert(4), Some(2));
+        assert_eq!(sender.radio_contacts.remove(3), Some(1));
+        sender.attack_target = Some(AttackTarget::new(2));
+        sender.navigation.nav_com = Some(crate::sim::components::NavTargetRef::cell(9, 4));
+        sender.movement_target = Some(MovementTarget::default());
+    }
+    for receiver_id in [2, 4] {
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get_mut(receiver_id)
+                .expect("receiver")
+                .radio_contacts
+                .insert(1),
+            Some(0)
+        );
+    }
+    let mission_before = sim.substrate.entities.get(1).expect("sender").mission;
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop { entity_id: 1 },
+        None,
+        None,
+        &empty_heights(),
+    ));
+
+    let sender = sim.substrate.entities.get(1).expect("sender survives");
+    assert!(sender.radio_contacts.is_empty());
+    assert!(sender.navigation.nav_com.is_none());
+    assert!(sender.movement_target.is_none());
+    assert!(sender.attack_target.is_none());
+    assert_eq!(sender.mission.current(), mission_before.current());
+    assert_eq!(sender.mission.queued(), mission_before.queued());
+    assert!(
+        sim.substrate
+            .entities
+            .get(2)
+            .expect("first receiver")
+            .radio_contacts
+            .is_empty()
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(4)
+            .expect("later sparse receiver")
+            .radio_contacts
+            .is_empty()
+    );
+}
+
+#[test]
 fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
     let mut sim = Simulation::new();
     sim.spawn_from_map(
@@ -5846,19 +5919,31 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
     };
     assert!(issued);
     {
-        let movement = sim
-            .substrate
-            .entities
-            .get_mut(1)
-            .unwrap()
-            .movement_target
-            .as_mut()
-            .unwrap();
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        let movement = entity.movement_target.as_mut().unwrap();
         movement.accel_factor = SimFixed::lit("0.03");
         movement.decel_factor = SimFixed::lit("0.002");
         movement.slowdown_distance = SimFixed::from_num(500);
+        let drive = entity.drive_locomotion.as_mut().expect("Drive runtime");
+        drive.target_speed_fraction = SIM_ONE;
+        drive.current_speed_fraction = SIM_HALF;
+        drive.owner_current_speed = 4;
     }
+    // `issue_move_command_with_layered` only stages the Rust curve. Native
+    // commitment belongs to the first locomotor Process_Movement visit, so run
+    // that production boundary before testing Stop's retained-head arm.
+    let heights = empty_heights();
+    let process_tick = sim.advance_tick(&[], None, &heights, Some(&grid), None, 1);
+    assert!(process_tick.frame_committed);
     assert!(sim.substrate.entities.get(1).unwrap().drive_track.is_some());
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .and_then(|entity| entity.drive_locomotion.as_ref())
+            .is_some_and(|drive| drive.track_valid),
+        "the production locomotor visit must commit the staged curve"
+    );
     let committed_head = sim
         .substrate
         .entities
@@ -5904,6 +5989,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
     let drive = stopped.drive_locomotion.as_ref().unwrap();
     assert!(drive.head_to.is_some());
     assert!(drive.occupation_head_to.is_some());
+    assert_eq!(drive.target_speed_fraction, SimFixed::lit("0.3"));
     assert!(sim.substrate.occupancy.contains_entity(4, 4, 1));
     assert!(
         !sim.substrate
@@ -5911,7 +5997,6 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             .contains_entity(committed_head.rx, committed_head.ry, 1)
     );
 
-    let heights = empty_heights();
     let initial_point_index = stopped.drive_track.as_ref().unwrap().point_index;
     let mut cursor_advanced = false;
     for _ in 0..32 {
@@ -6077,9 +6162,34 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
         )
     };
     assert!(issued);
+    {
+        let staged = sim.substrate.entities.get(1).unwrap();
+        assert!(staged.drive_track.is_some());
+        assert!(
+            staged
+                .ship_locomotion
+                .as_ref()
+                .is_some_and(|ship| !ship.track_valid),
+            "command admission alone must not commit the Ship curve"
+        );
+    }
+    // `issue_move_command_with_layered` may eagerly stage Ship's Rust curve,
+    // but native +0x3C head authority belongs to Process_Movement. Cross that
+    // production boundary before exercising Stop's committed-head arm.
+    let heights = empty_heights();
+    let process_tick = sim.advance_tick(&[], None, &heights, Some(&grid), None, 1);
+    assert!(process_tick.frame_committed);
+    assert!(sim.substrate.entities.get(1).unwrap().drive_track.is_some());
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .and_then(|entity| entity.ship_locomotion.as_ref())
+            .is_some_and(|ship| ship.track_valid),
+        "the production Ship Process_Movement visit must commit the staged curve"
+    );
     let committed_head = {
         let entity = sim.substrate.entities.get_mut(1).unwrap();
-        assert!(entity.drive_track.is_some());
         let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
         ship.target_speed_fraction = SIM_ONE;
         ship.current_speed_fraction = SIM_HALF;

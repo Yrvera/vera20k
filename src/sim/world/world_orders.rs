@@ -42,6 +42,24 @@ pub(crate) struct C4TickOutcome {
     pub bridge_state_changed: bool,
 }
 
+/// One owner-local result from `FootClass::Mission_Attack`'s approach helper.
+/// Keeping the decision separate from its mutation lets the ordinary global
+/// compatibility pass and the deploy-retry Unit AI path share one producer.
+enum PursuitAction {
+    IssueMove {
+        entity_id: u64,
+        goal: (u16, u16),
+    },
+    ClearMovement {
+        entity_id: u64,
+    },
+    /// A Sticky object that cannot already shoot its target: drop the target
+    /// and destination and produce no pursuit cell.
+    DropTargetAndMovement {
+        entity_id: u64,
+    },
+}
+
 impl Simulation {
     /// Pre-combat: entities with an OrderIntent but no current AttackTarget
     /// try to acquire a nearby enemy to engage.
@@ -1025,189 +1043,219 @@ impl Simulation {
         let Some(grid) = path_grid else {
             return;
         };
-
-        // Phase 1: collect pursuit decisions (read-only on entities).
-        // Two action kinds: issue a new path, or clear an existing one.
-        enum PursuitAction {
-            IssueMove {
-                entity_id: u64,
-                goal: (u16, u16),
-            },
-            ClearMovement {
-                entity_id: u64,
-            },
-            /// A Sticky object that cannot already shoot its target: drop the
-            /// target AND the destination, and produce no pursuit cell.
-            DropTargetAndMovement {
-                entity_id: u64,
-            },
-        }
-
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
-        let mut actions: Vec<PursuitAction> = Vec::new();
-
+        let mut actions = Vec::new();
         for &id in &keys {
             if turn_suppressed.contains(&id) {
                 continue;
             }
-            let Some(entity) = self.substrate.entities.get(id) else {
-                continue;
-            };
-            let Some(attack) = entity.attack_target.as_ref() else {
-                continue;
-            };
-
-            // Skip filters — see "Skips" doc above.
-            if entity.dying {
-                continue;
-            }
-            if entity.passively_acquired_target {
+            // UnitClass +0x68C owners run this producer at their own Attack
+            // handler position, before its RNG draw. Re-running them here
+            // would turn an A* failure into a second same-frame attempt.
+            if self
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.owns_forward_deploy_attack_retry())
+            {
                 continue;
             }
-            if entity.category == EntityCategory::Structure {
-                continue;
-            }
-            if entity.aircraft_mission.is_some() {
-                continue;
-            }
-            if entity.is_deployed() {
-                continue;
-            }
-            if entity.passenger_role.is_inside_transport() {
-                continue;
-            }
-
-            // Resolve target coords using the same helper combat tick uses.
-            // None means entity-target despawned; combat tick's target-dead
-            // branch handles cleanup.
-            let target_pos = combat::resolve_target_coords(
-                &attack.target,
-                &self.substrate.entities,
-                Some(rules),
-                &self.interner,
-            );
-            let Some((trx, try_, tsx, tsy)) = target_pos else {
-                continue;
-            };
-
-            // Resolve weapon range using shared helper. None means no weapon
-            // can engage; combat tick will drop on its own weapon-select fail.
-            let Some(weapon_range) = combat::pursuit_weapon_range(
-                entity,
-                &attack.target,
-                &self.substrate.entities,
-                rules,
-                &self.interner,
-            ) else {
-                continue;
-            };
-
-            // Range check — same math as combat tick.
-            let dist_sq = combat::lepton_distance_sq_raw(
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.sub_x,
-                entity.position.sub_y,
-                trx,
-                try_,
-                tsx,
-                tsy,
-            );
-            let in_range = combat::is_within_range_leptons(dist_sq, weapon_range);
-
-            if !in_range {
-                // **Sticky never chases.** The one place the engine tells
-                // Sticky apart from Guard at all — they share a mission handler
-                // — is the pursuit-cell producer: when the can-fire-at query
-                // fails and the object's committed mission is Sticky, it drops
-                // both its target and its destination and returns "nowhere to
-                // go", *before* the fallthrough that lets a Guard-family object
-                // pursue. That is the whole of `[Sticky]`'s "just like guard
-                // mode, but cannot move".
-                //
-                // Read off the RAW committed selector, as the original does —
-                // not the derived reading.
-                if entity.mission.current().known() == Some(MissionType::Sticky) {
-                    actions.push(PursuitAction::DropTargetAndMovement { entity_id: id });
-                } else if entity.movement_target.is_none() {
-                    // Out of range, no current pursuit — issue a path.
-                    actions.push(PursuitAction::IssueMove {
-                        entity_id: id,
-                        goal: (trx, try_),
-                    });
-                }
-                // else: existing pursuit movement is still running; let it continue.
-            } else if entity.movement_target.is_some() {
-                // In range — halt for firing.
-                actions.push(PursuitAction::ClearMovement { entity_id: id });
+            if let Some(action) = self.attack_pursuit_action(id, rules) {
+                actions.push(action);
             }
         }
-
-        // Phase 2: apply mutations.
         for action in actions {
-            match action {
-                PursuitAction::IssueMove { entity_id, goal } => {
-                    let Some(info) = self.resolve_move_info(entity_id, Some(rules)) else {
-                        continue;
-                    };
-                    let owner_str = self
-                        .substrate
-                        .entities
-                        .get(entity_id)
-                        .map(|e| self.interner.resolve(e.owner).to_string())
-                        .unwrap_or_default();
-                    let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
+            self.apply_attack_pursuit_action(action, rules, grid, overlay_registry);
+        }
+    }
+
+    /// Run the shared approach-result producer for one object. The deploy-
+    /// facing retry path calls this from the owner's Mission_Attack dispatch,
+    /// immediately before `RandomRanged(0, 2)`.
+    pub(crate) fn tick_attack_pursuit_one_with_overlay_registry(
+        &mut self,
+        id: u64,
+        rules: &RuleSet,
+        path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        let Some(grid) = path_grid else {
+            return;
+        };
+        let Some(action) = self.attack_pursuit_action(id, rules) else {
+            return;
+        };
+        self.apply_attack_pursuit_action(action, rules, grid, overlay_registry);
+    }
+
+    fn apply_attack_pursuit_action(
+        &mut self,
+        action: PursuitAction,
+        rules: &RuleSet,
+        grid: &PathGrid,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        match action {
+            PursuitAction::IssueMove { entity_id, goal } => {
+                let Some(info) = self.resolve_move_info(entity_id, Some(rules)) else {
+                    return;
+                };
+                let initialize_deploy_retry_drive_speed = self
+                    .substrate
+                    .entities
+                    .get(entity_id)
+                    .is_some_and(|entity| entity.owns_forward_deploy_attack_retry());
+                let owner_str = self
+                    .substrate
+                    .entities
+                    .get(entity_id)
+                    .map(|e| self.interner.resolve(e.owner).to_string())
+                    .unwrap_or_default();
+                let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
+                    &self.substrate.entities,
+                    &owner_str,
+                    &self.house_alliances,
+                    &self.interner,
+                    Some(rules),
+                );
+                let cost_grid = self.terrain_costs.get(&info.speed_type);
+                let blocker_neighbor_counts =
+                    bump_crush::build_blocker_neighbor_counts_with_overlays(
                         &self.substrate.entities,
-                        &owner_str,
-                        &self.house_alliances,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        self.overlay_grid.as_ref(),
+                        overlay_registry,
                         &self.interner,
                         Some(rules),
                     );
-                    let cost_grid = self.terrain_costs.get(&info.speed_type);
-                    let blocker_neighbor_counts =
-                        bump_crush::build_blocker_neighbor_counts_with_overlays(
-                            &self.substrate.entities,
-                            grid.width(),
-                            grid.height(),
-                            self.resolved_terrain.as_ref(),
-                            self.overlay_grid.as_ref(),
-                            overlay_registry,
-                            &self.interner,
-                            Some(rules),
-                        );
-                    let _issued = movement::issue_move_command_with_layered(
-                        &mut self.substrate.entities,
-                        grid,
-                        entity_id,
-                        goal,
-                        info.speed,
-                        false, // queue
-                        cost_grid,
-                        Some(&entity_blocks),
-                        self.resolved_terrain.as_ref(),
-                        self.zone_grid.as_ref(),
-                        Some(&entity_block_map),
-                        info.mover_is_crusher,
-                        Some(&blocker_neighbor_counts),
-                        self.playfield_bounds,
-                        Some(&mut self.substrate.cell_occupation),
-                    );
-                    // No-op if A* fails — pursuit retries next tick.
+                let issued = movement::issue_move_command_with_layered(
+                    &mut self.substrate.entities,
+                    grid,
+                    entity_id,
+                    goal,
+                    info.speed,
+                    false,
+                    cost_grid,
+                    Some(&entity_blocks),
+                    self.resolved_terrain.as_ref(),
+                    self.zone_grid.as_ref(),
+                    Some(&entity_block_map),
+                    info.mover_is_crusher,
+                    Some(&blocker_neighbor_counts),
+                    self.playfield_bounds,
+                    Some(&mut self.substrate.cell_occupation),
+                );
+                if issued
+                    && initialize_deploy_retry_drive_speed
+                    && let Some(target) = self
+                        .substrate
+                        .entities
+                        .get_mut(entity_id)
+                        .and_then(|entity| entity.movement_target.as_mut())
+                {
+                    // This verified owner-local Mission_Attack path reaches
+                    // the same Set_Destination/Process_Movement speed ramp as
+                    // player Move. Keep its fresh path on type-owned factors;
+                    // otherwise the stopped committed curve can leave an
+                    // accelerating deploy-retry Drive at zero speed forever.
+                    // All accepted mission-1 command variants share this owner.
+                    target.accel_factor = info.accel_factor;
+                    target.decel_factor = info.decel_factor;
+                    target.slowdown_distance = info.slowdown_distance;
                 }
-                PursuitAction::ClearMovement { entity_id } => {
-                    if let Some(e) = self.substrate.entities.get_mut(entity_id) {
-                        e.movement_target = None;
-                    }
-                }
-                PursuitAction::DropTargetAndMovement { entity_id } => {
-                    if let Some(e) = self.substrate.entities.get_mut(entity_id) {
-                        e.attack_target = None;
-                        e.passively_acquired_target = false;
-                        e.movement_target = None;
-                        e.navigation.nav_com = None;
+            }
+            PursuitAction::ClearMovement { entity_id } => {
+                let deploy_facing = self.forward_deploy_target_facing(entity_id, rules);
+                let (entities, cell_occupation) = (
+                    &mut self.substrate.entities,
+                    &mut self.substrate.cell_occupation,
+                );
+                if let Some(entity) = entities.get_mut(entity_id) {
+                    if entity.owns_forward_deploy_attack_retry() {
+                        let discarded_uncommitted =
+                            movement::clear_navigation_preserving_committed_head(
+                                entity,
+                                cell_occupation,
+                                entity_id,
+                            );
+                        if discarded_uncommitted && let Some(deploy_facing) = deploy_facing {
+                            entity.facing_target =
+                                (entity.facing != deploy_facing).then_some(deploy_facing);
+                        }
+                    } else {
+                        entity.movement_target = None;
                     }
                 }
             }
+            PursuitAction::DropTargetAndMovement { entity_id } => {
+                if let Some(entity) = self.substrate.entities.get_mut(entity_id) {
+                    entity.attack_target = None;
+                    entity.passively_acquired_target = false;
+                    entity.movement_target = None;
+                    entity.navigation.nav_com = None;
+                }
+            }
+        }
+    }
+
+    fn attack_pursuit_action(&self, id: u64, rules: &RuleSet) -> Option<PursuitAction> {
+        let entity = self.substrate.entities.get(id)?;
+        let attack = entity.attack_target.as_ref()?;
+        if entity.dying
+            || entity.passively_acquired_target
+            || entity.category == EntityCategory::Structure
+            || entity.aircraft_mission.is_some()
+            || entity.is_deployed()
+            || entity.passenger_role.is_inside_transport()
+        {
+            return None;
+        }
+
+        let (trx, try_, tsx, tsy) = combat::resolve_target_coords(
+            &attack.target,
+            &self.substrate.entities,
+            Some(rules),
+            &self.interner,
+        )?;
+        let weapon_range = combat::pursuit_weapon_range(
+            entity,
+            &attack.target,
+            &self.substrate.entities,
+            rules,
+            &self.interner,
+        )?;
+        let dist_sq = combat::lepton_distance_sq_raw(
+            entity.position.rx,
+            entity.position.ry,
+            entity.position.sub_x,
+            entity.position.sub_y,
+            trx,
+            try_,
+            tsx,
+            tsy,
+        );
+        let in_range = combat::is_within_range_leptons(dist_sq, weapon_range);
+
+        if !in_range {
+            if entity.mission.current().known() == Some(MissionType::Sticky) {
+                Some(PursuitAction::DropTargetAndMovement { entity_id: id })
+            } else if entity.movement_target.is_none()
+                || (entity.owns_forward_deploy_attack_retry()
+                    && entity.navigation.nav_com.is_none())
+            {
+                Some(PursuitAction::IssueMove {
+                    entity_id: id,
+                    goal: (trx, try_),
+                })
+            } else {
+                None
+            }
+        } else if entity.movement_target.is_some() {
+            Some(PursuitAction::ClearMovement { entity_id: id })
+        } else {
+            None
         }
     }
 }

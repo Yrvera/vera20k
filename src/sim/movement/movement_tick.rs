@@ -2014,9 +2014,14 @@ fn tick_movement_with_grids_scoped(
                 if uses_drive_locomotor {
                     let raw_speed_per_frame = target.speed / SimFixed::from_num(15);
                     if let Some(drive) = entity.drive_locomotion.as_mut() {
+                        let requested_fraction =
+                            super::drive_locomotion::drive_process_target_speed_fraction(
+                                drive,
+                                cell_speed_mod,
+                            );
                         super::drive_locomotion::update_drive_speed_fraction(
                             drive,
-                            cell_speed_mod,
+                            requested_fraction,
                             snap.drive_accelerates,
                             raw_speed_per_frame,
                             target.accel_factor,

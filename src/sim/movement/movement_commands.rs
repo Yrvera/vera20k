@@ -29,6 +29,7 @@ use super::{PathfindingContext, facing_from_delta};
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::components::OrderIntent;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::occupancy::CellOccupationGrid;
 
 use super::drive_track;
 use super::teleport_movement;
@@ -79,6 +80,154 @@ fn can_accept_destination(entity: &GameEntity) -> bool {
 pub fn clear_navigation_for_entity(entity: &mut GameEntity) {
     super::navcom::set_destination_internal_null(entity);
     entity.navigation.nav_queue.clear();
+}
+
+/// Clear the owner destination while preserving only a Drive/Ship curve that
+/// has already committed its next head. Stop and Attack's null-destination
+/// token share this native boundary: trailing A* steps are abandoned, but the
+/// current-to-head segment reaches PerCell before the locomotor rests.
+///
+/// Returns `true` when this discarded a Drive/Ship destination or curve that
+/// Rust had eagerly staged but the locomotor had not processed yet. Native
+/// `Set_Destination` records the head first and only commits the curve from
+/// `Process_Movement`; each runtime's `track_valid` is that production boundary
+/// in Rust. Treating a merely allocated `drive_track` as committed lets a
+/// same-frame Move -> Attack retain and follow the cancelled Move head.
+pub fn clear_navigation_preserving_committed_head(
+    entity: &mut GameEntity,
+    cell_occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+) -> bool {
+    let current_cell = (entity.position.rx, entity.position.ry);
+    let current_layer = entity.movement_layer_or_ground();
+    let locomotor_kind = entity.locomotor.as_ref().map(|locomotor| locomotor.kind);
+    let uncommitted_drive_navigation = locomotor_kind == Some(LocomotorKind::Drive)
+        && entity.drive_locomotion.as_ref().is_some_and(|drive| {
+            (!drive.track_valid || entity.drive_track.is_none())
+                && (drive.destination.is_some()
+                    || drive.head_to.is_some()
+                    || entity.drive_track.is_some()
+                    || entity.movement_target.is_some())
+        });
+    let uncommitted_ship_navigation = locomotor_kind == Some(LocomotorKind::Ship)
+        && entity.ship_locomotion.as_ref().is_some_and(|ship| {
+            (!ship.track_valid || entity.drive_track.is_none())
+                && (ship.destination.is_some()
+                    || ship.head_to.is_some()
+                    || entity.drive_track.is_some()
+                    || entity.movement_target.is_some())
+        });
+    let shared_track_committed = match locomotor_kind {
+        Some(LocomotorKind::Drive) => entity
+            .drive_locomotion
+            .as_ref()
+            .is_some_and(|drive| drive.track_valid && drive.head_to.is_some()),
+        Some(LocomotorKind::Ship) => entity
+            .ship_locomotion
+            .as_ref()
+            .is_some_and(|ship| ship.track_valid && ship.head_to.is_some()),
+        _ => false,
+    };
+    let committed_head = shared_track_committed
+        .then(|| {
+            let track = entity.drive_track.as_ref()?;
+            let (_, head) = drive_track::is_at_coord_track_cells(track, current_cell, false);
+            let head_cell = (u16::try_from(head.0).ok()?, u16::try_from(head.1).ok()?);
+            let head_layer = entity
+                .movement_target
+                .as_ref()
+                .and_then(|target| {
+                    target
+                        .path
+                        .iter()
+                        .enumerate()
+                        .skip(target.next_index.saturating_sub(1))
+                        .find_map(|(index, &cell)| {
+                            (cell == head_cell).then(|| target.layer_at(index))
+                        })
+                })
+                .unwrap_or(current_layer);
+            Some((head_cell, head_layer))
+        })
+        .flatten();
+
+    clear_navigation_for_entity(entity);
+    if uncommitted_drive_navigation || uncommitted_ship_navigation {
+        if uncommitted_drive_navigation && let Some(drive) = entity.drive_locomotion.as_mut() {
+            // A fresh Rust path reserves its curve head (and sometimes its
+            // turning handoff) before the first locomotor process. The native
+            // null-destination event arrives before either claim exists, so
+            // release both synthetic reservations before dropping the curve.
+            crate::sim::occupancy::drop_drive_handoff_occupation(
+                drive,
+                cell_occupation,
+                entity_id,
+                current_cell,
+                current_layer,
+            );
+            crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+                drive,
+                cell_occupation,
+                entity_id,
+                current_cell,
+                current_layer,
+            );
+            drive.head_to = None;
+            drive.path = Default::default();
+            drive.turn = Default::default();
+            drive.track_index = -1;
+            drive.point_index = 0;
+            drive.track_valid = false;
+            drive.target_speed_fraction = SIM_ZERO;
+            drive.current_speed_fraction = SIM_ZERO;
+            drive.owner_current_speed = 0;
+            drive.residual_budget = 0;
+            drive.current_occupation_cleared = false;
+        }
+        if uncommitted_ship_navigation && let Some(ship) = entity.ship_locomotion.as_mut() {
+            ship.head_to = None;
+            ship.track_valid = false;
+            ship.path = Default::default();
+            ship.target_speed_fraction = SIM_ZERO;
+            ship.current_speed_fraction = SIM_ZERO;
+            ship.owner_current_speed = 0;
+        }
+        entity.drive_track = None;
+        entity.movement_target = None;
+        // These are also eagerly synthesized from the cancelled Move path.
+        // A caller with an independent facing owner (forward DeploysInto) can
+        // restore that verified target after this function returns.
+        entity.facing_target = None;
+        entity.body_facing = None;
+        return true;
+    }
+    if let (Some((head_cell, head_layer)), Some(target)) =
+        (committed_head, entity.movement_target.as_mut())
+    {
+        if current_cell == head_cell {
+            target.path = vec![head_cell];
+            target.path_layers = vec![head_layer];
+            target.next_index = 1;
+            target.move_dir_x = SIM_ZERO;
+            target.move_dir_y = SIM_ZERO;
+            target.move_dir_len = SIM_ZERO;
+        } else {
+            target.path = vec![current_cell, head_cell];
+            target.path_layers = vec![current_layer, head_layer];
+            target.next_index = 1;
+            let (dir_x, dir_y, dir_len) = crate::util::lepton::cell_delta_to_lepton_dir(
+                i32::from(head_cell.0) - i32::from(current_cell.0),
+                i32::from(head_cell.1) - i32::from(current_cell.1),
+            );
+            target.move_dir_x = dir_x;
+            target.move_dir_y = dir_y;
+            target.move_dir_len = dir_len;
+        }
+        target.final_goal = Some(head_cell);
+    } else {
+        entity.movement_target = None;
+    }
+    false
 }
 
 /// Issue a move command: compute an A* path and attach a MovementTarget to the entity.
@@ -801,6 +950,7 @@ pub(crate) fn issue_move_command_with_layered(
                 entity_mut.facing_target = turn_first;
                 if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
                     ship.head_to = None;
+                    ship.track_valid = false;
                 }
             } else {
                 entity_mut.drive_track = None;
@@ -882,6 +1032,9 @@ pub(crate) fn issue_move_command_with_layered(
             let fallback_z = entity_mut.position.z;
             let mover_on_bridge = entity_mut.on_bridge;
             if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
+                // Command admission stages a curve and +0x3C adapter, but the
+                // first Ship Process_Movement has not accepted it yet.
+                ship.track_valid = false;
                 if let Some(reference) = accepted_path_reference {
                     super::path_markers::accept_path_replay(
                         &mut ship.path,

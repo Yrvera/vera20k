@@ -474,7 +474,7 @@ impl SlaveMinerConfig {
 /// still owns the commit.
 pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
     let outcome: UnitDeployOutcome =
-        sim.deploy_unit_into_building_with_overlay_context(stable_id, rules, None);
+        sim.begin_unit_deploy_into_building_with_overlay_context(stable_id, rules, None);
     outcome.deployed_id()
 }
 
@@ -529,6 +529,14 @@ pub(crate) fn commit_aligned_slave_miner_deploy_with_overlay_context(
         rules,
         overlay_registry,
     )?;
+
+    #[cfg(test)]
+    sim.trace_lifecycle_for_test(
+        crate::sim::world::LifecycleTestEvent::ForwardDeployTargetConstructed {
+            stable_id: new_sid,
+            scenario_rng_state: sim.scenario_rng.state(),
+        },
+    );
 
     if let Some(target) = sim.substrate.entities.get_mut(new_sid) {
         target.health.current =
@@ -1087,11 +1095,12 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use crate::sim::command::Command;
+    use crate::sim::command::{Command, CommandEnvelope};
     use crate::sim::house_state::HouseState;
     use crate::sim::miner::ResourceType;
     use crate::sim::mission::{MissionId, MissionType};
     use crate::sim::rng::SimRng;
+    use crate::sim::world::LifecycleTestEvent;
 
     fn complete_undeploy_for_test(
         sim: &mut Simulation,
@@ -1293,7 +1302,7 @@ mod tests {
         sim.session.house_order.push(yuri);
         let height_map = BTreeMap::new();
         let smin = sim
-            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0, 0x80, &rules)
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0x80, 0, &rules)
             .expect("spawn misfaced SMIN");
         let original_slave_ids = sim
             .production
@@ -1302,6 +1311,20 @@ mod tests {
             .cloned()
             .expect("SMIN constructor manager");
         assert_eq!(original_slave_ids.len(), 5);
+        let idle_hold_frame = sim.session.binary_frame;
+        for slave_id in &original_slave_ids {
+            sim.substrate
+                .entities
+                .get_mut(*slave_id)
+                .and_then(|entity| entity.infantry.as_mut())
+                .expect("live slave infantry")
+                .idle_action_timer
+                .defer(idle_hold_frame, 100);
+        }
+        // This fixture proves the forward-deploy constructor's six draws. Keep
+        // the five live SLAV idle-action feeders outside its 40-tick window so
+        // their unrelated first-frame wait/action/facing draws do not pollute
+        // that exact stream assertion.
         let tag = sim.interner.intern("TAG_SMIN_FACING_RETRY");
         sim.substrate
             .entities
@@ -1396,6 +1419,2105 @@ mod tests {
             sim.scenario_rng.logical_state(),
             expected_rng.logical_state()
         );
+    }
+
+    #[test]
+    fn forward_deploy_retry_near_attack_draws_before_constructor_and_never_fires() {
+        let rules = make_test_rules();
+        let seed = 0x51A7_E007;
+        let mut sim = Simulation::with_seed(seed);
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        let height_map = BTreeMap::new();
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0x80, 0, &rules)
+            .expect("spawn misfaced SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 14, 0, 0, &rules)
+            .expect("spawn in-range target");
+        let target_health = sim
+            .substrate
+            .entities
+            .get(target)
+            .expect("target")
+            .health
+            .current;
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Attack {
+                attacker_id: smin,
+                target_id: target,
+            },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        let staged = sim.substrate.entities.get(smin).expect("staged SMIN");
+        assert!(staged.forward_deploy_retry);
+        assert_eq!(staged.mission.queued().known(), Some(MissionType::Attack));
+
+        // Isolate the source-local ordering from unrelated full-tick RNG
+        // consumers. Ready sees the completed facing, promotes Attack, runs its
+        // approach producer, then Mission_Attack draws RandomRanged(0,2).
+        // PerCell(0) performs the deploy transaction immediately afterward.
+        for other_id in sim
+            .live_object_order_snapshot()
+            .into_iter()
+            .filter(|&id| id != smin)
+            .collect::<Vec<_>>()
+        {
+            assert!(sim.unregister_live_object(other_id));
+        }
+        {
+            let source = sim.substrate.entities.get_mut(smin).expect("staged SMIN");
+            source.facing = 0;
+            source.facing_target = None;
+            source.body_facing = None;
+        }
+        sim.clear_lifecycle_test_events_for_test();
+        let rng_before_attack_dispatch = sim.scenario_rng.clone();
+        let commit_tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+        assert!(commit_tick.spawned_entities);
+        assert!(
+            sim.substrate.entities.get(smin).is_none(),
+            "the full production tick drains the consumed SMIN after PerCell deploy"
+        );
+
+        let yarefn = sim
+            .substrate
+            .entities
+            .values()
+            .find(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+            .map(|entity| entity.stable_id)
+            .expect("near Attack production tick must deploy the source");
+        let mut expected_after_constructor = rng_before_attack_dispatch;
+        let _ = expected_after_constructor.next_range_u32_inclusive(0, 2);
+        let expected_after_attack = expected_after_constructor.state();
+        for _ in 0..6 {
+            let _ = expected_after_constructor.next_u32();
+        }
+        let events = sim.lifecycle_test_events_for_test();
+        let attack_boundary = events
+            .iter()
+            .enumerate()
+            .find_map(|(index, event)| match event {
+                LifecycleTestEvent::ForwardDeployAttackCadenceDrawn {
+                    stable_id,
+                    scenario_rng_state,
+                } if *stable_id == smin => Some((index, *scenario_rng_state)),
+                _ => None,
+            })
+            .expect("full tick must dispatch current Attack before PerCell");
+        let constructor_boundary = events
+            .iter()
+            .enumerate()
+            .find_map(|(index, event)| match event {
+                LifecycleTestEvent::ForwardDeployTargetConstructed {
+                    stable_id,
+                    scenario_rng_state,
+                } if *stable_id == yarefn => Some((index, *scenario_rng_state)),
+                _ => None,
+            })
+            .expect("full tick must construct YAREFN after the Attack dispatch");
+        assert!(attack_boundary.0 < constructor_boundary.0);
+        assert_eq!(attack_boundary.1, expected_after_attack);
+        assert_eq!(constructor_boundary.1, expected_after_constructor.state());
+        assert!(sim.substrate.entities.get(yarefn).is_some());
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(target)
+                .expect("target survives")
+                .health
+                .current,
+            target_health,
+            "PerCell deploy consumes SMIN before Unit fire"
+        );
+    }
+
+    #[test]
+    fn forward_deploy_retry_force_fire_variants_use_attack_owner_before_deploy() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E011);
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        let height_map = BTreeMap::new();
+        let object_attacker = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0x80, 0, &rules)
+            .expect("spawn force-object SMIN");
+        let cell_attacker = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 20, 20, 0x80, 0, &rules)
+            .expect("spawn force-cell SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 14, 0, 0, &rules)
+            .expect("spawn force-object target");
+
+        for attacker in [object_attacker, cell_attacker] {
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::DeployMcv {
+                    entity_id: attacker,
+                },
+                Some(&rules),
+                None,
+                &height_map,
+            ));
+        }
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::ForceAttack {
+                attacker_id: object_attacker,
+                target_id: target,
+            },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::ForceAttackCell {
+                attacker_id: cell_attacker,
+                target_rx: 20,
+                target_ry: 16,
+            },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+
+        let object_source = sim
+            .substrate
+            .entities
+            .get(object_attacker)
+            .expect("object force-fire source remains live");
+        assert!(object_source.forward_deploy_retry);
+        assert!(object_source.owns_forward_deploy_attack_retry());
+        assert_eq!(
+            object_source
+                .attack_target
+                .as_ref()
+                .map(|attack| attack.target),
+            Some(crate::sim::combat::TargetKind::Entity(target))
+        );
+        assert!(object_source.navigation.nav_com.is_none());
+        assert!(object_source.movement_target.is_none());
+
+        let cell_source = sim
+            .substrate
+            .entities
+            .get(cell_attacker)
+            .expect("cell force-fire source remains live");
+        assert!(cell_source.forward_deploy_retry);
+        assert!(cell_source.owns_forward_deploy_attack_retry());
+        assert_eq!(
+            cell_source
+                .attack_target
+                .as_ref()
+                .map(|attack| attack.target),
+            Some(crate::sim::combat::TargetKind::Cell(20, 16))
+        );
+        assert!(cell_source.navigation.nav_com.is_none());
+        assert!(cell_source.movement_target.is_none());
+
+        // Exercise the actual object scheduler, not only command-state bits.
+        // Keep just the two source Units in LogicVector order. Both targets are
+        // comfortably in range. Each mission-1 variant must dispatch cadence
+        // before its owner-local PerCell retry consumes the source.
+        for other_id in sim
+            .live_object_order_snapshot()
+            .into_iter()
+            .filter(|id| ![object_attacker, cell_attacker].contains(id))
+            .collect::<Vec<_>>()
+        {
+            assert!(sim.unregister_live_object(other_id));
+        }
+        sim.clear_lifecycle_test_events_for_test();
+        let target_health = sim
+            .substrate
+            .entities
+            .get(target)
+            .expect("force-fire target")
+            .health
+            .current;
+        let mut conversion_tick = None;
+        for step in 1..=64 {
+            let tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+            let yarefn_count = sim
+                .substrate
+                .entities
+                .values()
+                .filter(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+                .count();
+            if yarefn_count == 2 {
+                assert!(tick.spawned_entities);
+                conversion_tick = Some(step);
+                break;
+            }
+        }
+        assert!(
+            conversion_tick.is_some(),
+            "both force-fire sources deploy normally"
+        );
+        assert!(sim.substrate.entities.get(object_attacker).is_none());
+        assert!(sim.substrate.entities.get(cell_attacker).is_none());
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(target)
+                .expect("target survives both owner-local conversions")
+                .health
+                .current,
+            target_health,
+            "source liveness must suppress the object force-fire shot after conversion"
+        );
+
+        let events = sim.lifecycle_test_events_for_test();
+        for attacker in [object_attacker, cell_attacker] {
+            let cadence_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        LifecycleTestEvent::ForwardDeployAttackCadenceDrawn { stable_id, .. }
+                            if *stable_id == attacker
+                    )
+                })
+                .expect("each force-fire variant must dispatch Mission_Attack cadence");
+            let constructor_index = events
+                .iter()
+                .enumerate()
+                .skip(cadence_index + 1)
+                .find_map(|(index, event)| {
+                    matches!(
+                        event,
+                        LifecycleTestEvent::ForwardDeployTargetConstructed { .. }
+                    )
+                    .then_some(index)
+                })
+                .expect("each force-fire cadence must precede a deploy constructor");
+            assert!(cadence_index < constructor_index);
+        }
+        let deployed_cells = sim
+            .substrate
+            .entities
+            .values()
+            .filter(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+            .map(|entity| (entity.position.rx, entity.position.ry))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(deployed_cells, [(10, 10), (20, 20)].into_iter().collect());
+    }
+
+    #[test]
+    fn forward_deploy_retry_far_force_fire_variants_approach_before_deploy() {
+        let rules = make_test_rules();
+        for (cell_target, seed, case) in [
+            (false, 0x51A7_E012, "object force-fire"),
+            (true, 0x51A7_E013, "cell force-fire"),
+        ] {
+            let mut sim = Simulation::with_seed(seed);
+            let yuri = sim.interner.intern("YuriCountry");
+            let americans = sim.interner.intern("Americans");
+            sim.houses
+                .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+            sim.houses.insert(
+                americans,
+                HouseState::new(americans, 0, Some(americans), true, 0, 10),
+            );
+            sim.session.house_order.extend([yuri, americans]);
+            for house in sim.houses.values_mut() {
+                house.multiplay_passive = true;
+            }
+            let heights = BTreeMap::new();
+            let grid = PathGrid::new(40, 40);
+            let source_cell = (20, 20);
+            let attacker = sim
+                .spawn_object_at_height(
+                    "SMIN",
+                    "YuriCountry",
+                    source_cell.0,
+                    source_cell.1,
+                    0x80,
+                    0,
+                    &rules,
+                )
+                .expect("spawn far force-fire SMIN");
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::DeployMcv {
+                    entity_id: attacker
+                },
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            let (command, expected_target) = if cell_target {
+                (
+                    Command::ForceAttackCell {
+                        attacker_id: attacker,
+                        target_rx: 20,
+                        target_ry: 12,
+                    },
+                    crate::sim::combat::TargetKind::Cell(20, 12),
+                )
+            } else {
+                let target = sim
+                    .spawn_object_at_height("TARGET", "Americans", 20, 12, 0, 0, &rules)
+                    .expect("spawn far object target");
+                sim.spawn_object_at_height("SPOTTER", "YuriCountry", 25, 12, 0, 0, &rules)
+                    .expect("spawn allied sight provider");
+                if let Some(target_entity) = sim.substrate.entities.get_mut(target) {
+                    target_entity.health.current = u16::MAX;
+                    target_entity.health.max = u16::MAX;
+                }
+                (
+                    Command::ForceAttack {
+                        attacker_id: attacker,
+                        target_id: target,
+                    },
+                    crate::sim::combat::TargetKind::Entity(target),
+                )
+            };
+            assert!(
+                sim.apply_command("YuriCountry", &command, Some(&rules), Some(&grid), &heights,),
+                "{case}"
+            );
+            let source = sim.substrate.entities.get(attacker).expect("staged source");
+            assert!(source.owns_forward_deploy_attack_retry());
+            assert_eq!(
+                source.attack_target.as_ref().map(|attack| attack.target),
+                Some(expected_target)
+            );
+            assert!(source.navigation.nav_com.is_none());
+            assert!(source.movement_target.is_none());
+            sim.clear_lifecycle_test_events_for_test();
+            let mut approach_cell = None;
+            let mut residual = None;
+            for _ in 0..256 {
+                let tick = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+                assert!(tick.frame_committed, "{case}");
+                residual = sim.substrate.entities.get(attacker).map(|source| {
+                    (
+                        source.forward_deploy_retry,
+                        source.mission.current().known(),
+                        source.mission.queued().known(),
+                        source.attack_target.as_ref().map(|attack| attack.target),
+                        source.navigation.nav_com,
+                        source
+                            .movement_target
+                            .as_ref()
+                            .map(|target| target.final_goal),
+                        (source.position.rx, source.position.ry),
+                    )
+                });
+                if let Some(source) = sim.substrate.entities.get(attacker)
+                    && source.owns_forward_deploy_attack_retry()
+                    && source.mission.current().known() == Some(MissionType::Attack)
+                    && source.navigation.nav_com.is_some()
+                    && source.movement_target.is_some()
+                {
+                    assert_eq!(
+                        source.attack_target.as_ref().map(|attack| attack.target),
+                        Some(expected_target),
+                        "{case}"
+                    );
+                    approach_cell = Some((source.position.rx, source.position.ry));
+                    break;
+                }
+            }
+            assert!(
+                approach_cell.is_some(),
+                "{case} must install a live far approach before deploy; residual={residual:?}"
+            );
+            assert!(sim.interner.get("YAREFN").is_none_or(|yarefn| {
+                sim.substrate
+                    .entities
+                    .values()
+                    .all(|entity| entity.type_ref != yarefn)
+            }));
+
+            for _ in 0..2048 {
+                sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+                if sim.substrate.entities.get(attacker).is_none() {
+                    break;
+                }
+            }
+            assert!(sim.substrate.entities.get(attacker).is_none(), "{case}");
+            let deployed = sim
+                .substrate
+                .entities
+                .values()
+                .find(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+                .expect("far force-fire must deploy YAREFN");
+            assert!(
+                deployed.position.ry < source_cell.1,
+                "{case} must deploy from an approached cell, not the original cell: {:?}",
+                (deployed.position.rx, deployed.position.ry)
+            );
+            assert!(
+                sim.lifecycle_test_events_for_test().iter().any(|event| {
+                    matches!(
+                        event,
+                        LifecycleTestEvent::ForwardDeployAttackCadenceDrawn { stable_id, .. }
+                            if *stable_id == attacker
+                    )
+                }),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_deploy_retry_attack_target_loss_draws_jitter_and_keeps_attack_until_deploy() {
+        let rules = make_test_rules();
+        let seed = 0x51A7_E008;
+        let mut sim = Simulation::with_seed(seed);
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        let height_map = BTreeMap::new();
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0x80, 0, &rules)
+            .expect("spawn misfaced SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 14, 0, 0, &rules)
+            .expect("spawn target");
+
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Attack {
+                attacker_id: smin,
+                target_id: target,
+            },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(smin)
+                .expect("staged SMIN")
+                .mission
+                .queued()
+                .known(),
+            Some(MissionType::Attack)
+        );
+
+        sim.stop_all_targeting_on_detach(target);
+        let detached = sim.substrate.entities.get(smin).expect("detached attacker");
+        assert!(detached.attack_target.is_none());
+        assert!(detached.forward_deploy_retry);
+        assert_eq!(detached.mission.queued().known(), Some(MissionType::Attack));
+
+        for other_id in sim
+            .live_object_order_snapshot()
+            .into_iter()
+            .filter(|&id| id != smin)
+            .collect::<Vec<_>>()
+        {
+            assert!(sim.unregister_live_object(other_id));
+        }
+        {
+            let source = sim.substrate.entities.get_mut(smin).expect("staged SMIN");
+            source.facing = 0;
+            source.facing_target = None;
+            source.body_facing = None;
+        }
+
+        sim.clear_lifecycle_test_events_for_test();
+        let rng_before_dispatch = sim.scenario_rng.clone();
+        let commit_tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+        assert!(commit_tick.spawned_entities);
+        assert!(
+            sim.substrate.entities.get(smin).is_none(),
+            "the full production tick drains the targetless attacker after deploy"
+        );
+
+        let yarefn = sim
+            .substrate
+            .entities
+            .values()
+            .find(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+            .map(|entity| entity.stable_id)
+            .expect("targetless Attack production tick must deploy the source");
+        let mut expected_after_constructor = rng_before_dispatch;
+        let _ = expected_after_constructor.next_range_u32_inclusive(0, 2);
+        let expected_after_attack = expected_after_constructor.state();
+        for _ in 0..6 {
+            let _ = expected_after_constructor.next_u32();
+        }
+        let events = sim.lifecycle_test_events_for_test();
+        let attack_boundary = events
+            .iter()
+            .enumerate()
+            .find_map(|(index, event)| match event {
+                LifecycleTestEvent::ForwardDeployAttackCadenceDrawn {
+                    stable_id,
+                    scenario_rng_state,
+                } if *stable_id == smin => Some((index, *scenario_rng_state)),
+                _ => None,
+            })
+            .expect("targetless current Attack must still draw its cadence jitter");
+        let constructor_boundary = events
+            .iter()
+            .enumerate()
+            .find_map(|(index, event)| match event {
+                LifecycleTestEvent::ForwardDeployTargetConstructed {
+                    stable_id,
+                    scenario_rng_state,
+                } if *stable_id == yarefn => Some((index, *scenario_rng_state)),
+                _ => None,
+            })
+            .expect("targetless Attack must reach the later deploy constructor");
+        assert!(attack_boundary.0 < constructor_boundary.0);
+        assert_eq!(attack_boundary.1, expected_after_attack);
+        assert_eq!(constructor_boundary.1, expected_after_constructor.state());
+    }
+
+    #[test]
+    fn forward_deploy_retry_same_frame_stop_attack_uses_immediate_then_staged_order() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E009);
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        for house in sim.houses.values_mut() {
+            house.multiplay_passive = true;
+        }
+        let height_map = BTreeMap::new();
+        let grid = PathGrid::new(40, 40);
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x80, 0, &rules)
+            .expect("spawn misfaced SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 8, 0, 0, &rules)
+            .expect("spawn far target");
+        let _spotter = sim
+            .spawn_object_at_height("SPOTTER", "YuriCountry", 15, 8, 0, 0, &rules)
+            .expect("spawn allied vision provider");
+
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            Some(&grid),
+            &height_map,
+        ));
+        sim.substrate
+            .entities
+            .get_mut(smin)
+            .expect("turning SMIN")
+            .radio_contacts
+            .insert(target);
+        sim.substrate
+            .entities
+            .get_mut(target)
+            .expect("radio peer")
+            .radio_contacts
+            .insert(smin);
+
+        let execute_tick = sim.session.tick + 1;
+        // Deliberately submit Attack first. Native drains opcode-6 Stop from
+        // the primary ring before the staged opcode-4 MegaMission FIFO.
+        let tick = sim.advance_tick(
+            &[
+                CommandEnvelope::new(
+                    yuri,
+                    execute_tick,
+                    Command::Attack {
+                        attacker_id: smin,
+                        target_id: target,
+                    },
+                ),
+                CommandEnvelope::new(yuri, execute_tick, Command::Stop { entity_id: smin }),
+            ],
+            Some(&rules),
+            &height_map,
+            Some(&grid),
+            None,
+            16,
+        );
+        assert!(tick.frame_committed);
+        let staged = sim.substrate.entities.get(smin).expect("staged attacker");
+        assert!(staged.forward_deploy_retry);
+        assert_eq!(staged.mission.current().known(), Some(MissionType::Unload));
+        assert_eq!(staged.mission.queued().known(), Some(MissionType::Attack));
+        assert_eq!(
+            staged.attack_target.as_ref().map(|attack| attack.target),
+            Some(crate::sim::combat::TargetKind::Entity(target))
+        );
+        assert!(staged.navigation.nav_com.is_none());
+        assert!(staged.movement_target.is_none());
+        assert!(staged.radio_contacts.is_empty());
+        assert!(
+            sim.substrate
+                .entities
+                .get(target)
+                .expect("radio peer survives")
+                .radio_contacts
+                .is_empty()
+        );
+
+        sim.clear_lifecycle_test_events_for_test();
+        let mut approach_started = false;
+        for _ in 0..80 {
+            let tick = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 16);
+            assert!(tick.frame_committed);
+            approach_started = sim.substrate.entities.get(smin).is_some_and(|entity| {
+                entity.forward_deploy_retry
+                    && entity.mission.current().known() == Some(MissionType::Attack)
+                    && entity.mission.queued() == MissionId::NONE
+                    && entity.attack_target.as_ref().map(|attack| attack.target)
+                        == Some(crate::sim::combat::TargetKind::Entity(target))
+                    && entity.navigation.nav_com.is_some()
+                    && entity.movement_target.is_some()
+            });
+            if approach_started {
+                break;
+            }
+        }
+        assert!(
+            approach_started,
+            "the staged Attack must survive Stop and select the far approach"
+        );
+        assert!(sim.lifecycle_test_events_for_test().iter().any(|event| {
+            matches!(
+                event,
+                LifecycleTestEvent::ForwardDeployAttackCadenceDrawn { stable_id, .. }
+                    if *stable_id == smin
+            )
+        }));
+        assert!(sim.interner.get("YAREFN").is_none_or(|yarefn| {
+            sim.substrate
+                .entities
+                .values()
+                .all(|entity| entity.type_ref != yarefn)
+        }));
+    }
+
+    #[test]
+    fn forward_deploy_retry_far_attack_revalidates_at_promotion_before_first_contact() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E00A);
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        let heights = BTreeMap::new();
+        let grid = PathGrid::new(40, 40);
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x80, 0, &rules)
+            .expect("spawn misfaced SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 8, 0, 0, &rules)
+            .expect("spawn far target");
+        sim.spawn_object_at_height("SPOTTER", "YuriCountry", 15, 8, 0, 0, &rules)
+            .expect("spawn allied vision provider");
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Attack {
+                attacker_id: smin,
+                target_id: target,
+            },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+
+        // Isolate the scheduler seam exactly as the near-Attack ordering
+        // acceptance does: complete FacingClass between actor visits while
+        // leaving the real queued Attack and retry ownership untouched. The
+        // next production visit must promote Attack, choose the far approach,
+        // draw cadence, then run rotation-finished PerCell(0).
+        {
+            let source = sim.substrate.entities.get_mut(smin).expect("staged SMIN");
+            source.facing = 0;
+            source.facing_target = None;
+            source.body_facing = None;
+        }
+        let staged = sim
+            .substrate
+            .entities
+            .get(smin)
+            .expect("promotion boundary");
+        assert!(staged.forward_deploy_retry);
+        assert_eq!(staged.mission.queued().known(), Some(MissionType::Attack));
+
+        // YAREFN is 2x2 at the SMIN cell. Rooting another YAREFN one cell east
+        // leaves the northbound approach lane open but overlaps the candidate
+        // deploy footprint's eastern column. It appears after the final facing
+        // visit and therefore must be caught by the first Attack-owned
+        // PerCell(0), before any committed cell contact.
+        let source_cell = sim
+            .substrate
+            .entities
+            .get(smin)
+            .map(|entity| (entity.position.rx, entity.position.ry))
+            .expect("source at promotion boundary");
+        let blocker = sim
+            .spawn_object_at_height(
+                "YAREFN",
+                "Americans",
+                source_cell.0 + 1,
+                source_cell.1,
+                0,
+                0,
+                &rules,
+            )
+            .expect("spawn promotion-window footprint blocker");
+        let yarefn_type = sim.interner.get("YAREFN").expect("YAREFN interned");
+        let sound_count = sim.sound_events.len();
+        sim.clear_lifecycle_test_events_for_test();
+
+        let tick = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+        assert!(
+            !tick.spawned_entities,
+            "blocked PerCell(0) cannot construct"
+        );
+        let source = sim
+            .substrate
+            .entities
+            .get(smin)
+            .expect("placement rejection retains SMIN source");
+        assert_eq!(
+            (source.position.rx, source.position.ry),
+            source_cell,
+            "promotion-boundary rejection must precede the first committed cell contact"
+        );
+        assert_eq!(source.mission.current().known(), Some(MissionType::Guard));
+        assert_eq!(source.mission.queued(), MissionId::NONE);
+        assert!(!source.forward_deploy_retry);
+        assert!(source.navigation.nav_com.is_some());
+        assert!(source.movement_target.is_some());
+        assert!(source.drive_track.is_some());
+        assert!(sim.lifecycle_test_events_for_test().iter().any(|event| {
+            matches!(
+                event,
+                LifecycleTestEvent::ForwardDeployAttackCadenceDrawn { stable_id, .. }
+                    if *stable_id == smin
+            )
+        }));
+        assert!(sim.substrate.entities.get(blocker).is_some());
+        assert_eq!(
+            sim.substrate
+                .entities
+                .values()
+                .filter(|entity| entity.type_ref == yarefn_type)
+                .count(),
+            1,
+            "only the pre-existing blocker YAREFN may remain"
+        );
+        assert_eq!(sim.sound_events.len(), sound_count + 1);
+        assert!(sim.sound_events.iter().any(
+            |event| matches!(event, crate::sim::world::SimSoundEvent::CannotDeployHere { owner } if *owner == yuri)
+        ));
+    }
+
+    #[test]
+    fn forward_deploy_retry_far_attack_rejects_at_intermediate_per_cell_contact() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E009);
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        let heights = BTreeMap::new();
+        let grid = PathGrid::new(40, 40);
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x80, 0, &rules)
+            .expect("spawn misfaced SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 8, 0, 0, &rules)
+            .expect("spawn far target");
+        sim.spawn_object_at_height("SPOTTER", "YuriCountry", 15, 8, 0, 0, &rules)
+            .expect("spawn allied vision provider");
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Attack {
+                attacker_id: smin,
+                target_id: target,
+            },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+
+        let mut approach_cell = None;
+        for _ in 0..80 {
+            sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+            approach_cell = sim.substrate.entities.get(smin).and_then(|entity| {
+                (entity.forward_deploy_retry
+                    && entity.mission.current().known() == Some(MissionType::Attack)
+                    && entity.movement_target.is_some()
+                    && entity.drive_track.is_some())
+                .then_some((entity.position.rx, entity.position.ry))
+            });
+            if approach_cell.is_some() {
+                break;
+            }
+        }
+        let (start_rx, start_ry) = approach_cell.expect("far Attack starts a live Drive track");
+        assert!(
+            start_ry >= 2,
+            "fixture needs a northbound adjacent blocker cell"
+        );
+
+        // YAREFN is 2x2. A blocker rooted one cell east and two north does not
+        // overlap the source's current footprint, but it overlaps the footprint
+        // rooted at the first northbound committed cell at exactly one cell.
+        let blocker = sim
+            .spawn_object_at_height(
+                "YAREFN",
+                "Americans",
+                start_rx + 1,
+                start_ry - 2,
+                0,
+                0,
+                &rules,
+            )
+            .expect("spawn adjacent PerCell footprint blocker");
+        let yarefn_type = sim.interner.get("YAREFN").expect("YAREFN interned");
+        let sound_count = sim.sound_events.len();
+        let mut rejected_contact = None;
+        for step in 1..=512 {
+            let before = sim
+                .substrate
+                .entities
+                .get(smin)
+                .map(|entity| {
+                    (
+                        (entity.position.rx, entity.position.ry),
+                        entity.movement_target.is_some()
+                            || crate::sim::movement::drive_locomotor_is_moving(entity),
+                    )
+                })
+                .expect("source remains before the blocking contact");
+            let tick = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+            assert!(
+                !tick.spawned_entities,
+                "blocked PerCell retry cannot construct"
+            );
+            let source = sim
+                .substrate
+                .entities
+                .get(smin)
+                .expect("placement rejection retains SMIN source");
+            if !source.forward_deploy_retry {
+                rejected_contact = Some((step, before, (source.position.rx, source.position.ry)));
+                assert!(
+                    before.1,
+                    "the rejecting callback must begin with a live approach"
+                );
+                assert_ne!(
+                    before.0,
+                    (source.position.rx, source.position.ry),
+                    "rejection must occur on the committed cell-contact tick"
+                );
+                assert_eq!(source.mission.effective().known(), Some(MissionType::Guard));
+                assert!(source.movement_target.is_some());
+                break;
+            }
+        }
+        assert!(
+            rejected_contact.is_some(),
+            "the first blocked intermediate PerCell contact must terminate the retry"
+        );
+        assert!(sim.substrate.entities.get(blocker).is_some());
+        assert_eq!(
+            sim.substrate
+                .entities
+                .values()
+                .filter(|entity| entity.type_ref == yarefn_type)
+                .count(),
+            1,
+            "only the pre-existing blocker YAREFN may remain"
+        );
+        assert_eq!(sim.sound_events.len(), sound_count + 1);
+        assert!(sim.sound_events.iter().any(
+            |event| matches!(event, crate::sim::world::SimSoundEvent::CannotDeployHere { owner } if *owner == yuri)
+        ));
+    }
+
+    #[test]
+    fn forward_deploy_retry_stop_during_far_attack_finishes_head_then_deploys() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::with_seed(0x51A7_E008);
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        let height_map = BTreeMap::new();
+        let grid = PathGrid::new(40, 40);
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x80, 0, &rules)
+            .expect("spawn misfaced SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 8, 0, 0, &rules)
+            .expect("spawn far target");
+        let _spotter = sim
+            .spawn_object_at_height("SPOTTER", "YuriCountry", 15, 8, 0, 0, &rules)
+            .expect("spawn allied vision provider");
+
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            Some(&grid),
+            &height_map,
+        ));
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Attack {
+                attacker_id: smin,
+                target_id: target,
+            },
+            Some(&rules),
+            Some(&grid),
+            &height_map,
+        ));
+
+        let mut approach_started = false;
+        for _ in 0..80 {
+            let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 16);
+            approach_started = sim.substrate.entities.get(smin).is_some_and(|entity| {
+                entity.forward_deploy_retry
+                    && entity.mission.current().known() == Some(MissionType::Attack)
+                    && entity.attack_target.is_some()
+                    && entity.navigation.nav_com.is_some()
+                    && entity.movement_target.is_some()
+                    && entity.drive_track.is_some()
+            });
+            if approach_started {
+                break;
+            }
+        }
+        assert!(
+            approach_started,
+            "far Attack must install its approach before RNG"
+        );
+        {
+            let source = sim
+                .substrate
+                .entities
+                .get_mut(smin)
+                .expect("approaching SMIN");
+            source.radio_contacts.insert(target);
+            let drive = source.drive_locomotion.as_mut().expect("Drive runtime");
+            drive.target_speed_fraction = crate::util::fixed_math::SIM_ONE;
+            drive.current_speed_fraction = crate::util::fixed_math::SIM_HALF;
+        }
+        sim.substrate
+            .entities
+            .get_mut(target)
+            .expect("radio receiver")
+            .radio_contacts
+            .insert(smin);
+        let mission_before = sim.substrate.entities.get(smin).expect("source").mission;
+
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Stop { entity_id: smin },
+            Some(&rules),
+            Some(&grid),
+            &height_map,
+        ));
+        let stopped = sim.substrate.entities.get(smin).expect("stopped SMIN");
+        assert!(stopped.forward_deploy_retry);
+        assert_eq!(stopped.mission.current(), mission_before.current());
+        assert_eq!(stopped.mission.queued(), mission_before.queued());
+        assert!(stopped.attack_target.is_none());
+        assert!(stopped.navigation.nav_com.is_none());
+        assert!(stopped.movement_target.is_some());
+        assert!(stopped.radio_contacts.is_empty());
+        assert!(
+            sim.substrate
+                .entities
+                .get(target)
+                .expect("radio receiver")
+                .radio_contacts
+                .is_empty()
+        );
+        assert_eq!(
+            stopped
+                .drive_locomotion
+                .as_ref()
+                .expect("Drive runtime")
+                .target_speed_fraction,
+            crate::util::fixed_math::SimFixed::lit("0.3")
+        );
+
+        // Stage the retained current Attack as due now. Stop preserves the
+        // committed head and its Mission-dispatch state; making that state
+        // explicitly due proves the next production visit still executes the
+        // native Attack cadence before the locomotor retires the head.
+        let now = sim.session.binary_frame;
+        sim.substrate
+            .entities
+            .get_mut(smin)
+            .expect("stopped SMIN")
+            .mission
+            .write_dispatch_epilogue(now as i32, 0);
+
+        // Anything traced while establishing the far approach predates Stop
+        // and cannot prove the retained committed head keeps current Attack's
+        // native cadence. Observe only post-Stop production visits.
+        sim.clear_lifecycle_test_events_for_test();
+        let mut cadence_while_head_live = false;
+        let mut committed = false;
+        // Speed=3 is seven leptons per baseline tick: ten cells alone require
+        // at least 366 ticks before acceleration and Drive-curve overhead.
+        for _ in 0..768 {
+            let translating_before = sim.substrate.entities.get(smin).is_some_and(|entity| {
+                entity.movement_target.is_some()
+                    || crate::sim::movement::drive_locomotor_is_moving(entity)
+            });
+            let event_count_before = sim.lifecycle_test_events_for_test().len();
+            let mut expected_after_cadence = sim.scenario_rng.clone();
+            let _ = expected_after_cadence.next_range_u32_inclusive(0, 2);
+            let tick = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 16);
+            if let Some(scenario_rng_state) = sim.lifecycle_test_events_for_test()
+                [event_count_before..]
+                .iter()
+                .find_map(|event| match event {
+                    LifecycleTestEvent::ForwardDeployAttackCadenceDrawn {
+                        stable_id,
+                        scenario_rng_state,
+                    } if *stable_id == smin => Some(*scenario_rng_state),
+                    _ => None,
+                })
+            {
+                assert!(
+                    translating_before,
+                    "post-Stop Attack cadence must run before the retained head retires"
+                );
+                assert_eq!(
+                    scenario_rng_state,
+                    expected_after_cadence.state(),
+                    "the source is first in LogicVector order, so its due cadence is exactly one RandomRanged(0,2) draw"
+                );
+                cadence_while_head_live = true;
+            }
+            let yarefn_count = sim
+                .substrate
+                .entities
+                .values()
+                .filter(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+                .count();
+            if yarefn_count == 1 {
+                assert!(translating_before, "conversion belongs to head retirement");
+                assert!(tick.spawned_entities);
+                let source = sim
+                    .substrate
+                    .entities
+                    .get(smin)
+                    .expect("late-tick deploy awaits the next delete drain");
+                assert!(!source.forward_deploy_retry);
+                assert!(!source.lifecycle.object_alive);
+                assert!(source.dying);
+                assert!(source.lifecycle.in_limbo);
+                assert!(sim.substrate.pending_delete.contains(&smin));
+                committed = true;
+                break;
+            }
+            assert!(
+                sim.substrate
+                    .entities
+                    .get(smin)
+                    .expect("source remains")
+                    .forward_deploy_retry
+            );
+        }
+        assert!(
+            cadence_while_head_live,
+            "a due current-Attack dispatch must consume cadence RNG while Stop's committed head remains live"
+        );
+        assert!(committed, "retained Stop head must end in same-tick deploy");
+        sim.flush_pending_delete();
+        assert!(sim.substrate.entities.get(smin).is_none());
+    }
+
+    #[test]
+    fn forward_deploy_retry_move_then_attack_variants_clear_stale_move_navcom() {
+        let rules = make_test_rules();
+        // Cover both Rust eager shapes. Facing south makes the eastbound Move
+        // wait in TurnFirst with no curve; facing east allocates a curve and
+        // reserves its head before any locomotor process. Native has committed
+        // neither shape when the following same-frame mission-1 event nulls
+        // destination. Exercise all three accepted event producers because the
+        // active binary converges ordinary object Attack, Ctrl-object Attack,
+        // and Ctrl-cell Attack onto that same envelope.
+        for (attack_variant, order_case) in [
+            (0_u8, "object Attack"),
+            (1_u8, "object ForceAttack"),
+            (2_u8, "cell ForceAttack"),
+        ] {
+            for (initial_facing, expects_eager_curve, movement_case) in
+                [(0x80, false, "TurnFirst"), (0x40, true, "eager curve")]
+            {
+                let case = format!("{order_case} / {movement_case}");
+                let mut sim = Simulation::new();
+                let yuri = sim.interner.intern("YuriCountry");
+                let americans = sim.interner.intern("Americans");
+                sim.houses
+                    .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+                sim.houses.insert(
+                    americans,
+                    HouseState::new(americans, 0, Some(americans), true, 0, 10),
+                );
+                sim.session.house_order.extend([yuri, americans]);
+                let heights = BTreeMap::new();
+                let grid = PathGrid::new(40, 40);
+                let source_cell = (10, 20);
+                let smin = sim
+                    .spawn_object_at_height(
+                        "SMIN",
+                        "YuriCountry",
+                        source_cell.0,
+                        source_cell.1,
+                        initial_facing,
+                        0,
+                        &rules,
+                    )
+                    .expect("spawn SMIN");
+                let target = sim
+                    .spawn_object_at_height("TARGET", "Americans", 10, 16, 0, 0, &rules)
+                    .expect("spawn target");
+                assert!(sim.apply_command(
+                    "YuriCountry",
+                    &Command::DeployMcv { entity_id: smin },
+                    Some(&rules),
+                    Some(&grid),
+                    &heights,
+                ));
+                assert!(sim.apply_command(
+                    "YuriCountry",
+                    &Command::Move {
+                        entity_id: smin,
+                        target_rx: 20,
+                        target_ry: 20,
+                        queue: false,
+                        group_id: None,
+                    },
+                    Some(&rules),
+                    Some(&grid),
+                    &heights,
+                ));
+                let eager_head = {
+                    let moving = sim.substrate.entities.get(smin).expect("moving SMIN");
+                    assert!(moving.navigation.nav_com.is_some(), "{case}");
+                    let drive = moving.drive_locomotion.as_ref().expect("Drive runtime");
+                    assert!(
+                        !drive.track_valid,
+                        "{case} has not reached Process_Movement"
+                    );
+                    assert!(drive.head_to.is_some(), "{case} staged a Move head");
+                    assert_eq!(moving.drive_track.is_some(), expects_eager_curve, "{case}");
+                    assert_eq!(
+                        drive.occupation_head_to.is_some(),
+                        expects_eager_curve,
+                        "{case} reservation shape"
+                    );
+                    drive.occupation_head_to
+                };
+                if let Some(head) = eager_head {
+                    assert_ne!((head.rx, head.ry), source_cell);
+                    assert_ne!(
+                        sim.substrate
+                            .cell_occupation
+                            .vehicle_bits(head.rx, head.ry, head.layer)
+                            & crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                        0,
+                        "eager curve head is reserved before command replacement"
+                    );
+                }
+
+                assert!(sim.apply_command(
+                    "YuriCountry",
+                    &match attack_variant {
+                        0 => Command::Attack {
+                            attacker_id: smin,
+                            target_id: target,
+                        },
+                        1 => Command::ForceAttack {
+                            attacker_id: smin,
+                            target_id: target,
+                        },
+                        2 => Command::ForceAttackCell {
+                            attacker_id: smin,
+                            target_rx: 10,
+                            target_ry: 16,
+                        },
+                        _ => unreachable!(),
+                    },
+                    Some(&rules),
+                    Some(&grid),
+                    &heights,
+                ));
+                {
+                    let attacker = sim.substrate.entities.get(smin).expect("attacker");
+                    assert!(attacker.navigation.nav_com.is_none(), "{case}");
+                    assert!(attacker.movement_target.is_none(), "{case}");
+                    assert!(attacker.drive_track.is_none(), "{case}");
+                    assert_eq!(
+                        attacker.mission.queued().known(),
+                        Some(MissionType::Attack),
+                        "{case}"
+                    );
+                    let expected_target = if attack_variant == 2 {
+                        crate::sim::combat::TargetKind::Cell(10, 16)
+                    } else {
+                        crate::sim::combat::TargetKind::Entity(target)
+                    };
+                    assert_eq!(
+                        attacker.attack_target.as_ref().map(|attack| attack.target),
+                        Some(expected_target),
+                        "{case}"
+                    );
+                    assert!(attacker.forward_deploy_retry, "{case}");
+                    assert_eq!(
+                        attacker.facing_target,
+                        Some(0),
+                        "{case} must restore YAREFN's deploy-facing owner"
+                    );
+                    let drive = attacker.drive_locomotion.as_ref().expect("Drive runtime");
+                    assert!(drive.destination.is_none(), "{case}");
+                    assert!(drive.head_to.is_none(), "{case}");
+                    assert!(drive.path.directions.is_empty(), "{case}");
+                    assert!(drive.occupation_head_to.is_none(), "{case}");
+                    assert!(drive.occupation_handoff.is_none(), "{case}");
+                    assert_eq!(
+                        drive.target_speed_fraction,
+                        crate::util::fixed_math::SIM_ZERO,
+                        "{case}"
+                    );
+                    assert_eq!(
+                        drive.current_speed_fraction,
+                        crate::util::fixed_math::SIM_ZERO,
+                        "{case}"
+                    );
+                    assert_eq!(drive.owner_current_speed, 0, "{case}");
+                }
+                if let Some(head) = eager_head {
+                    assert_eq!(
+                        sim.substrate
+                            .cell_occupation
+                            .vehicle_bits(head.rx, head.ry, head.layer)
+                            & crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+                        0,
+                        "cancelled eager curve cannot strand its head reservation"
+                    );
+                }
+
+                // Complete the independent deploy facing between actor visits, as
+                // in the near-Attack ordering acceptance. The next real production
+                // tick must promote Attack and convert at the original cell; a
+                // retained Move head would translate or wedge this transaction.
+                for other_id in sim
+                    .live_object_order_snapshot()
+                    .into_iter()
+                    .filter(|&id| id != smin)
+                    .collect::<Vec<_>>()
+                {
+                    assert!(sim.unregister_live_object(other_id));
+                }
+                {
+                    let source = sim.substrate.entities.get_mut(smin).expect("staged SMIN");
+                    source.facing = 0;
+                    source.facing_target = None;
+                    source.body_facing = None;
+                }
+                sim.clear_lifecycle_test_events_for_test();
+                let tick = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+                assert!(tick.spawned_entities, "{case}");
+                assert!(sim.substrate.entities.get(smin).is_none(), "{case}");
+                let deployed = sim
+                    .substrate
+                    .entities
+                    .values()
+                    .find(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN")
+                    .expect("same-frame replacement must deploy YAREFN");
+                assert_eq!(
+                    (deployed.position.rx, deployed.position.ry),
+                    source_cell,
+                    "{case} must not carry the conversion toward stale Move"
+                );
+                assert!(sim.lifecycle_test_events_for_test().iter().any(|event| {
+                    matches!(
+                        event,
+                        LifecycleTestEvent::ForwardDeployAttackCadenceDrawn { stable_id, .. }
+                            if *stable_id == smin
+                    )
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn forward_deploy_retry_move_then_attack_variants_discard_unprocessed_ship_head() {
+        let rules = make_test_rules();
+        for (attack_variant, case) in [
+            (0_u8, "object Attack"),
+            (1_u8, "object ForceAttack"),
+            (2_u8, "cell ForceAttack"),
+        ] {
+            let mut sim = Simulation::new();
+            let yuri = sim.interner.intern("YuriCountry");
+            let americans = sim.interner.intern("Americans");
+            sim.houses
+                .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+            sim.houses.insert(
+                americans,
+                HouseState::new(americans, 0, Some(americans), true, 0, 10),
+            );
+            sim.session.house_order.extend([yuri, americans]);
+            let heights = BTreeMap::new();
+            let grid = PathGrid::new(40, 40);
+            let smin = sim
+                .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x40, 0, &rules)
+                .expect("spawn Ship-shaped SMIN");
+            let target = sim
+                .spawn_object_at_height("TARGET", "Americans", 10, 16, 0, 0, &rules)
+                .expect("spawn target");
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::DeployMcv { entity_id: smin },
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            {
+                let source = sim.substrate.entities.get_mut(smin).expect("live SMIN");
+                let locomotor = source.locomotor.as_mut().expect("locomotor");
+                locomotor.kind = crate::rules::locomotor_type::LocomotorKind::Ship;
+                locomotor.slot = crate::sim::movement::locomotion::LocomotorSlot::from_kind(
+                    crate::rules::locomotor_type::LocomotorKind::Ship,
+                );
+                source.drive_locomotion = None;
+                source.ship_locomotion = Some(Default::default());
+            }
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::Move {
+                    entity_id: smin,
+                    target_rx: 20,
+                    target_ry: 20,
+                    queue: false,
+                    group_id: None,
+                },
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            {
+                let staged = sim.substrate.entities.get(smin).expect("staged Ship curve");
+                assert!(staged.drive_track.is_some(), "{case}");
+                let ship = staged.ship_locomotion.as_ref().expect("Ship runtime");
+                assert!(ship.head_to.is_some(), "{case}");
+                assert!(
+                    !ship.track_valid,
+                    "{case}: command admission is not Ship Process_Movement"
+                );
+            }
+
+            let command = match attack_variant {
+                0 => Command::Attack {
+                    attacker_id: smin,
+                    target_id: target,
+                },
+                1 => Command::ForceAttack {
+                    attacker_id: smin,
+                    target_id: target,
+                },
+                2 => Command::ForceAttackCell {
+                    attacker_id: smin,
+                    target_rx: 10,
+                    target_ry: 16,
+                },
+                _ => unreachable!(),
+            };
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &command,
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            let cleared = sim.substrate.entities.get(smin).expect("retasked Ship");
+            assert!(cleared.navigation.nav_com.is_none(), "{case}");
+            assert!(cleared.movement_target.is_none(), "{case}");
+            assert!(cleared.drive_track.is_none(), "{case}");
+            assert!(cleared.forward_deploy_retry, "{case}");
+            assert_eq!(
+                cleared.mission.queued().known(),
+                Some(MissionType::Attack),
+                "{case}"
+            );
+            let expected_target = if attack_variant == 2 {
+                crate::sim::combat::TargetKind::Cell(10, 16)
+            } else {
+                crate::sim::combat::TargetKind::Entity(target)
+            };
+            assert_eq!(
+                cleared.attack_target.as_ref().map(|attack| attack.target),
+                Some(expected_target),
+                "{case}"
+            );
+            let ship = cleared.ship_locomotion.as_ref().expect("Ship runtime");
+            assert!(ship.destination.is_none(), "{case}");
+            assert!(ship.head_to.is_none(), "{case}");
+            assert!(!ship.track_valid, "{case}");
+            assert!(ship.path.directions.is_empty(), "{case}");
+            assert_eq!(
+                ship.target_speed_fraction,
+                crate::util::fixed_math::SIM_ZERO
+            );
+            assert_eq!(
+                ship.current_speed_fraction,
+                crate::util::fixed_math::SIM_ZERO
+            );
+            assert_eq!(ship.owner_current_speed, 0);
+        }
+    }
+
+    #[test]
+    fn forward_deploy_retry_processed_bridge_drive_head_survives_stop_and_attack() {
+        let rules = make_test_rules();
+        for (use_attack, case) in [(false, "Stop"), (true, "Attack")] {
+            let mut sim = Simulation::new();
+            let yuri = sim.interner.intern("YuriCountry");
+            let americans = sim.interner.intern("Americans");
+            sim.houses
+                .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+            sim.houses.insert(
+                americans,
+                HouseState::new(americans, 0, Some(americans), true, 0, 10),
+            );
+            sim.session.house_order.extend([yuri, americans]);
+            let heights = BTreeMap::new();
+            let grid = PathGrid::new(40, 40);
+            let smin = sim
+                .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x40, 4, &rules)
+                .expect("spawn bridge SMIN");
+            let target = sim
+                .spawn_object_at_height("TARGET", "Americans", 10, 8, 0, 0, &rules)
+                .expect("spawn Attack target");
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::DeployMcv { entity_id: smin },
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::Move {
+                    entity_id: smin,
+                    target_rx: 20,
+                    target_ry: 20,
+                    queue: false,
+                    group_id: None,
+                },
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            let (old_head, track_identity) = {
+                let source = sim.substrate.entities.get_mut(smin).expect("moving SMIN");
+                source.on_bridge = true;
+                source.bridge_occupancy =
+                    Some(crate::sim::components::BridgeOccupancy { deck_level: 4 });
+                let movement = source.movement_target.as_mut().expect("Move path");
+                movement
+                    .path_layers
+                    .fill(crate::sim::movement::locomotor::MovementLayer::Bridge);
+                let track = source.drive_track.as_ref().expect("Drive curve");
+                let track_identity = (track.raw_track_index, track.point_index);
+                let drive = source.drive_locomotion.as_mut().expect("Drive runtime");
+                let reference = drive.path.reference_cell.expect("accepted Drive head");
+                let old_head = (
+                    u16::try_from(reference.0).expect("head x"),
+                    u16::try_from(reference.1).expect("head y"),
+                );
+                drive.track_valid = true;
+                drive.occupation_head_to = None;
+                drive.occupation_handoff = None;
+                (old_head, track_identity)
+            };
+
+            let command = if use_attack {
+                Command::Attack {
+                    attacker_id: smin,
+                    target_id: target,
+                }
+            } else {
+                Command::Stop { entity_id: smin }
+            };
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &command,
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            let retained = sim
+                .substrate
+                .entities
+                .get(smin)
+                .expect("retained bridge head");
+            assert!(retained.navigation.nav_com.is_none(), "{case}");
+            let movement = retained
+                .movement_target
+                .as_ref()
+                .expect("processed Bridge head remains movement authority");
+            assert_eq!(movement.final_goal, Some(old_head), "{case}");
+            assert_eq!(
+                movement.path_layers.last(),
+                Some(&crate::sim::movement::locomotor::MovementLayer::Bridge),
+                "{case}"
+            );
+            let track = retained.drive_track.as_ref().expect("live Bridge curve");
+            assert_eq!(
+                (track.raw_track_index, track.point_index),
+                track_identity,
+                "{case}"
+            );
+            let drive = retained.drive_locomotion.as_ref().expect("Drive runtime");
+            assert!(drive.track_valid, "{case}");
+            assert!(drive.occupation_head_to.is_none(), "{case}");
+            assert!(
+                crate::sim::movement::drive_locomotor_is_moving(retained),
+                "{case}: retained Bridge curve must not freeze behind the movement-target gate"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_deploy_retry_committed_head_far_retarget_installs_new_attack_destination() {
+        let rules = make_test_rules();
+        for (cell_retarget, case) in [(false, "object Attack"), (true, "cell ForceAttack")] {
+            let mut sim = Simulation::new();
+            let yuri = sim.interner.intern("YuriCountry");
+            let americans = sim.interner.intern("Americans");
+            sim.houses
+                .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+            sim.houses.insert(
+                americans,
+                HouseState::new(americans, 0, Some(americans), true, 0, 10),
+            );
+            sim.session.house_order.extend([yuri, americans]);
+            for house in sim.houses.values_mut() {
+                house.multiplay_passive = true;
+            }
+            let heights = BTreeMap::new();
+            let grid = PathGrid::new(50, 50);
+            let smin = sim
+                .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x80, 0, &rules)
+                .expect("spawn retarget SMIN");
+            let first_target = sim
+                .spawn_object_at_height("TARGET", "Americans", 10, 5, 0, 0, &rules)
+                .expect("spawn first far target");
+            let second_target = sim
+                .spawn_object_at_height("TARGET", "Americans", 35, 20, 0, 0, &rules)
+                .expect("spawn second far target");
+            let _spotter_a = sim
+                .spawn_object_at_height("SPOTTER", "YuriCountry", 15, 5, 0, 0, &rules)
+                .expect("spawn north spotter");
+            let _spotter_b = sim
+                .spawn_object_at_height("SPOTTER", "YuriCountry", 30, 20, 0, 0, &rules)
+                .expect("spawn east spotter");
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::DeployMcv { entity_id: smin },
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &Command::Attack {
+                    attacker_id: smin,
+                    target_id: first_target,
+                },
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+
+            let mut committed = false;
+            for _ in 0..96 {
+                let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+                committed = sim.substrate.entities.get(smin).is_some_and(|source| {
+                    source.forward_deploy_retry
+                        && source.mission.current().known() == Some(MissionType::Attack)
+                        && source.drive_track.is_some()
+                        && source
+                            .drive_locomotion
+                            .as_ref()
+                            .is_some_and(|drive| drive.track_valid)
+                });
+                if committed {
+                    break;
+                }
+            }
+            assert!(
+                committed,
+                "{case}: first far approach must own a processed head"
+            );
+            let old_head = {
+                let source = sim.substrate.entities.get(smin).expect("approaching SMIN");
+                let reference = source
+                    .drive_locomotion
+                    .as_ref()
+                    .expect("Drive runtime")
+                    .path
+                    .reference_cell
+                    .expect("processed Drive head");
+                (
+                    u16::try_from(reference.0).expect("head x"),
+                    u16::try_from(reference.1).expect("head y"),
+                )
+            };
+            let retarget = if cell_retarget {
+                Command::ForceAttackCell {
+                    attacker_id: smin,
+                    target_rx: 35,
+                    target_ry: 20,
+                }
+            } else {
+                Command::Attack {
+                    attacker_id: smin,
+                    target_id: second_target,
+                }
+            };
+            assert!(sim.apply_command(
+                "YuriCountry",
+                &retarget,
+                Some(&rules),
+                Some(&grid),
+                &heights,
+            ));
+            {
+                let source = sim
+                    .substrate
+                    .entities
+                    .get_mut(smin)
+                    .expect("retargeted SMIN");
+                assert!(source.navigation.nav_com.is_none(), "{case}");
+                assert_eq!(
+                    source
+                        .movement_target
+                        .as_ref()
+                        .and_then(|movement| movement.final_goal),
+                    Some(old_head),
+                    "{case}: null destination retains only the processed physical head"
+                );
+                source
+                    .mission
+                    .write_dispatch_epilogue(sim.session.binary_frame as i32, 0);
+            }
+            let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 0);
+            let source = sim
+                .substrate
+                .entities
+                .get(smin)
+                .expect("retarget survives zero-dt owner visit");
+            assert!(source.navigation.nav_com.is_some(), "{case}");
+            let movement = source
+                .movement_target
+                .as_ref()
+                .expect("new far approach is installed");
+            assert_eq!(
+                movement.path.first().copied(),
+                Some(old_head),
+                "{case}: the new route starts at the physical head still in flight"
+            );
+            assert_ne!(
+                movement.final_goal,
+                Some(old_head),
+                "{case}: the old physical head cannot remain destination authority"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_deploy_retry_move_after_current_far_attack_keeps_latch_until_per_cell() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::new();
+        let yuri = sim.interner.intern("YuriCountry");
+        let americans = sim.interner.intern("Americans");
+        sim.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        sim.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        sim.session.house_order.extend([yuri, americans]);
+        // This is a command-interruption fixture, not a match-outcome fixture.
+        // Passive houses keep defeat from freezing the native frame clock while
+        // the long Drive retask runs.
+        for house in sim.houses.values_mut() {
+            house.multiplay_passive = true;
+        }
+        let heights = BTreeMap::new();
+        let grid = PathGrid::new(40, 40);
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x80, 0, &rules)
+            .expect("spawn SMIN");
+        let target = sim
+            .spawn_object_at_height("TARGET", "Americans", 10, 8, 0, 0, &rules)
+            .expect("spawn far target");
+        sim.spawn_object_at_height("SPOTTER", "YuriCountry", 15, 8, 0, 0, &rules)
+            .expect("spawn allied sight provider");
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Attack {
+                attacker_id: smin,
+                target_id: target,
+            },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+
+        let mut current_far_attack = false;
+        for _ in 0..80 {
+            let tick = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+            assert!(
+                tick.frame_committed,
+                "the acceptance clock must remain live"
+            );
+            current_far_attack = sim.substrate.entities.get(smin).is_some_and(|entity| {
+                entity.forward_deploy_retry
+                    && entity.mission.current().known() == Some(MissionType::Attack)
+                    && entity.navigation.nav_com.is_some()
+                    && entity.movement_target.is_some()
+                    && entity.drive_track.is_some()
+            });
+            if current_far_attack {
+                break;
+            }
+        }
+        assert!(
+            current_far_attack,
+            "far Attack must become current and translate"
+        );
+
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::Move {
+                entity_id: smin,
+                target_rx: 20,
+                target_ry: 20,
+                queue: false,
+                group_id: None,
+            },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+        let retasked = sim.substrate.entities.get(smin).expect("retasked SMIN");
+        assert_eq!(
+            retasked.mission.current().known(),
+            Some(MissionType::Attack)
+        );
+        assert_eq!(retasked.mission.queued().known(), Some(MissionType::Move));
+        assert!(retasked.navigation.nav_com.is_some());
+        assert!(retasked.forward_deploy_retry);
+
+        let mut committed = false;
+        // Stock SMIN Speed=3 needs well over 160 simulation ticks to cover the
+        // ten-cell retask after finishing Attack's already-committed head.
+        for _ in 0..768 {
+            let tick = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+            assert!(
+                tick.frame_committed,
+                "the acceptance clock must remain live"
+            );
+            if tick.spawned_entities {
+                committed = sim
+                    .substrate
+                    .entities
+                    .values()
+                    .any(|entity| sim.interner.resolve(entity.type_ref) == "YAREFN");
+                break;
+            }
+            assert!(
+                sim.substrate
+                    .entities
+                    .get(smin)
+                    .expect("retasked source remains")
+                    .forward_deploy_retry,
+                "Move after current Attack must not take the Unload-only NavCom clear"
+            );
+        }
+        let residual = sim.substrate.entities.get(smin).map(|entity| {
+            (
+                (entity.position.rx, entity.position.ry),
+                entity.mission.current().known(),
+                entity.mission.queued().known(),
+                entity.navigation.nav_com,
+                entity
+                    .movement_target
+                    .as_ref()
+                    .map(|target| (target.next_index, target.path.len(), target.final_goal)),
+                entity.drive_track.as_ref().map(|track| track.point_index),
+                entity.forward_deploy_retry,
+            )
+        });
+        assert!(
+            committed,
+            "retasked movement must retain retry through PerCell; residual={residual:?}"
+        );
+    }
+
+    #[test]
+    fn forward_deploy_retry_far_attack_snapshot_replays_hash_rng_and_commit() {
+        use crate::sim::snapshot::GameSnapshot;
+
+        let rules = make_test_rules();
+        let mut live = Simulation::new();
+        let yuri = live.interner.intern("YuriCountry");
+        let americans = live.interner.intern("Americans");
+        live.houses
+            .insert(yuri, HouseState::new(yuri, 2, Some(yuri), true, 0, 10));
+        live.houses.insert(
+            americans,
+            HouseState::new(americans, 0, Some(americans), true, 0, 10),
+        );
+        live.session.house_order.extend([yuri, americans]);
+        for house in live.houses.values_mut() {
+            house.multiplay_passive = true;
+        }
+        let heights = BTreeMap::new();
+        let grid = PathGrid::new(40, 40);
+        let smin = live
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 20, 0x80, 0, &rules)
+            .expect("spawn SMIN");
+        let target = live
+            .spawn_object_at_height("TARGET", "Americans", 10, 12, 0, 0, &rules)
+            .expect("spawn far target");
+        live.spawn_object_at_height("SPOTTER", "YuriCountry", 15, 12, 0, 0, &rules)
+            .expect("spawn allied sight provider");
+        assert!(live.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+        assert!(live.apply_command(
+            "YuriCountry",
+            &Command::Attack {
+                attacker_id: smin,
+                target_id: target,
+            },
+            Some(&rules),
+            Some(&grid),
+            &heights,
+        ));
+
+        let mut current_far_attack = false;
+        for _ in 0..80 {
+            let tick = live.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+            assert!(
+                tick.frame_committed,
+                "the snapshot boundary clock must remain live"
+            );
+            current_far_attack = live.substrate.entities.get(smin).is_some_and(|entity| {
+                entity.forward_deploy_retry
+                    && entity.mission.current().known() == Some(MissionType::Attack)
+                    && entity.attack_target.is_some()
+                    && entity.navigation.nav_com.is_some()
+                    && entity.movement_target.is_some()
+                    && entity.drive_track.is_some()
+            });
+            if current_far_attack {
+                break;
+            }
+        }
+        let boundary_residual = live.substrate.entities.get(smin).map(|entity| {
+            (
+                entity.forward_deploy_retry,
+                entity.mission.current().known(),
+                entity.mission.queued().known(),
+                entity.attack_target.is_some(),
+                entity.navigation.nav_com,
+                entity
+                    .movement_target
+                    .as_ref()
+                    .map(|target| (target.next_index, target.path.len(), target.final_goal)),
+                entity.drive_track.as_ref().map(|track| track.point_index),
+            )
+        });
+        assert!(
+            current_far_attack,
+            "snapshot boundary needs a live far approach; residual={boundary_residual:?}"
+        );
+
+        live.scenario_rng = SimRng::new(0);
+        let saved_hash = live.state_hash();
+        let bytes = GameSnapshot::save(&live, 0, 0, "forward-deploy-far-attack", 0);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("current far-Attack deploy snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("far-Attack deploy snapshot restores structurally");
+        assert_eq!(restored.state_hash(), saved_hash);
+        let restored_source = restored
+            .substrate
+            .entities
+            .get(smin)
+            .expect("restored source");
+        assert!(restored_source.forward_deploy_retry);
+        assert_eq!(
+            restored_source.mission.current().known(),
+            Some(MissionType::Attack)
+        );
+        assert!(restored_source.attack_target.is_some());
+        assert!(restored_source.navigation.nav_com.is_some());
+        let restored_approach = restored_source
+            .movement_target
+            .as_ref()
+            .expect("restored far-Attack approach");
+        assert!(
+            restored_approach.accel_factor > crate::util::fixed_math::SIM_ZERO,
+            "Mission_Attack pursuit must carry the SMIN type's acceleration ramp"
+        );
+        assert!(restored_source.drive_track.is_some());
+
+        let mut commit_step = None;
+        for step in 1..=1024 {
+            let live_tick = live.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+            let restored_tick =
+                restored.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 16);
+            assert!(live_tick.frame_committed && restored_tick.frame_committed);
+            assert_eq!(restored_tick.spawned_entities, live_tick.spawned_entities);
+            assert_eq!(restored.state_hash(), live.state_hash());
+            assert_eq!(
+                restored.scenario_rng.logical_state(),
+                live.scenario_rng.logical_state()
+            );
+            let live_yarefn = live
+                .substrate
+                .entities
+                .values()
+                .filter(|entity| live.interner.resolve(entity.type_ref) == "YAREFN")
+                .count();
+            let restored_yarefn = restored
+                .substrate
+                .entities
+                .values()
+                .filter(|entity| restored.interner.resolve(entity.type_ref) == "YAREFN")
+                .count();
+            assert_eq!(restored_yarefn, live_yarefn);
+            if live_yarefn == 1 {
+                assert!(live_tick.spawned_entities);
+                commit_step = Some(step);
+                break;
+            }
+        }
+        let residual = live.substrate.entities.get(smin).map(|entity| {
+            (
+                (entity.position.rx, entity.position.ry),
+                (entity.position.sub_x, entity.position.sub_y),
+                entity.mission.current().known(),
+                entity.mission.queued().known(),
+                entity.navigation.nav_com,
+                entity
+                    .movement_target
+                    .as_ref()
+                    .map(|target| (target.next_index, target.path.len(), target.final_goal)),
+                entity.drive_track.as_ref().map(|track| track.point_index),
+                entity
+                    .drive_locomotion
+                    .as_ref()
+                    .map(|drive| (drive.destination, drive.head_to, drive.track_index)),
+                entity.attack_target.is_some(),
+                entity.forward_deploy_retry,
+            )
+        });
+        assert!(
+            commit_step.is_some(),
+            "both branches must deploy after approach; residual={residual:?}"
+        );
+        assert_eq!(restored.state_hash(), live.state_hash());
     }
 
     #[test]
@@ -1639,12 +3761,17 @@ mod tests {
     fn make_test_rules() -> RuleSet {
         use crate::rules::ini_parser::IniFile;
         let ini_str: &str = "\
-[InfantryTypes]\n1=SLAV\n\
+[InfantryTypes]\n1=SLAV\n2=TARGET\n3=SPOTTER\n\
 [VehicleTypes]\n1=SMIN\n\
 [BuildingTypes]\n1=YAREFN\n\
 [SLAV]\nStrength=125\nSpeed=3\nSlaved=yes\nStorage=4\nHarvestRate=150\n\
-[SMIN]\nStrength=2000\nSpeed=3\nROT=5\nEnslaves=SLAV\nSlavesNumber=5\nDeploysInto=YAREFN\nResourceGatherer=yes\nResourceDestination=yes\n\
+[TARGET]\nStrength=125\nSpeed=3\n\
+[SPOTTER]\nStrength=100\nSight=5\n\
+[SMIN]\nStrength=2000\nSpeed=3\nROT=5\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\nPrimary=20mmRapid\nTurret=yes\nOpportunityFire=yes\nEnslaves=SLAV\nSlavesNumber=5\nDeploysInto=YAREFN\nResourceGatherer=yes\nResourceDestination=yes\n\
 [YAREFN]\nStrength=2000\nCost=1750\nSoylent=1750\nDeployFacing=0\nEnslaves=SLAV\nSlavesNumber=5\nUndeploysInto=SMIN\nFoundation=2x2\n\
+[20mmRapid]\nDamage=30\nROF=20\nRange=5.5\nWarhead=SA\n\
+[SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\nCellSpread=0\n\
+[Attack]\nRate=.016\n\
 [General]\nRefundPercent=50%\nSlaveMinerShortScan=8\nSlaveMinerSlaveScan=14\nSlaveMinerLongScan=48\nSlaveMinerScanCorrection=3\nSlaveMinerKickFrameDelay=150\n\
 [AudioVisual]\nSlavesFreeSound=SlaveWorkerLiberated\n\
 ";

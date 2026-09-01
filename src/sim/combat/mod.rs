@@ -868,6 +868,30 @@ pub fn issue_attack_command(
     rules: Option<&RuleSet>,
     interner: &StringInterner,
 ) -> bool {
+    issue_attack_command_inner(entities, attacker_id, target_id, rules, interner, true)
+}
+
+/// Attack command variant for a caller that already applied the native null
+/// destination token. It must not discard the current-to-head segment that
+/// `clear_navigation_preserving_committed_head` retained for PerCell.
+pub(crate) fn issue_attack_command_with_precleared_destination(
+    entities: &mut EntityStore,
+    attacker_id: u64,
+    target_id: u64,
+    rules: Option<&RuleSet>,
+    interner: &StringInterner,
+) -> bool {
+    issue_attack_command_inner(entities, attacker_id, target_id, rules, interner, false)
+}
+
+fn issue_attack_command_inner(
+    entities: &mut EntityStore,
+    attacker_id: u64,
+    target_id: u64,
+    rules: Option<&RuleSet>,
+    interner: &StringInterner,
+    clear_movement_target: bool,
+) -> bool {
     // Read target position first (immutable borrow, lepton-precise).
     // Use foundation center for buildings (see target_coords doc comment).
     let target_pos = entities
@@ -903,8 +927,12 @@ pub fn issue_attack_command(
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
     }
 
-    // Remove existing movement (stop moving to attack).
-    attacker.movement_target = None;
+    if clear_movement_target {
+        // Legacy/direct entry: remove existing movement. Player Attack first
+        // clears the owner destination at its event site and uses the variant
+        // above so an already committed Drive/Ship head can survive.
+        attacker.movement_target = None;
+    }
 
     // Attach the attack target using stable ID (fire immediately).
     attacker.attack_target = Some(AttackTarget::new(target_id));
@@ -969,6 +997,48 @@ pub fn issue_attack_cell_command(
     rules: Option<&RuleSet>,
     interner: &StringInterner,
 ) -> bool {
+    issue_attack_cell_command_inner(
+        entities,
+        attacker_id,
+        target_rx,
+        target_ry,
+        rules,
+        interner,
+        true,
+    )
+}
+
+/// Cell-target Attack variant for a caller that already applied the native
+/// null destination token. Target kind remains `Cell`; only the old owner
+/// destination has already been torn down.
+pub(crate) fn issue_attack_cell_command_with_precleared_destination(
+    entities: &mut EntityStore,
+    attacker_id: u64,
+    target_rx: u16,
+    target_ry: u16,
+    rules: Option<&RuleSet>,
+    interner: &StringInterner,
+) -> bool {
+    issue_attack_cell_command_inner(
+        entities,
+        attacker_id,
+        target_rx,
+        target_ry,
+        rules,
+        interner,
+        false,
+    )
+}
+
+fn issue_attack_cell_command_inner(
+    entities: &mut EntityStore,
+    attacker_id: u64,
+    target_rx: u16,
+    target_ry: u16,
+    rules: Option<&RuleSet>,
+    interner: &StringInterner,
+    clear_movement_target: bool,
+) -> bool {
     // Read attacker position + weapon presence before mutable borrow.
     let attacker_info = entities.get(attacker_id).map(|a| {
         let type_str = interner.resolve(a.type_ref);
@@ -1012,7 +1082,9 @@ pub fn issue_attack_cell_command(
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
     }
 
-    attacker.movement_target = None;
+    if clear_movement_target {
+        attacker.movement_target = None;
+    }
     attacker.attack_target = Some(AttackTarget::for_cell(target_rx, target_ry));
     attacker.passively_acquired_target = false;
     true

@@ -3941,6 +3941,7 @@ mod tests {
             .ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(ship_head),
             head_to: Some(ship_head),
+            track_valid: true,
             target_speed_fraction: SIM_ONE,
             current_speed_fraction: SIM_HALF,
             owner_current_speed: 10,
@@ -3972,6 +3973,7 @@ mod tests {
             .expect("restored Ship runtime");
         assert_eq!(restored_ship.destination, Some(ship_head));
         assert_eq!(restored_ship.head_to, Some(ship_head));
+        assert!(restored_ship.track_valid);
         assert_eq!(restored_ship.target_speed_fraction, SIM_ONE);
         assert_eq!(restored_ship.current_speed_fraction, SIM_HALF);
         assert_eq!(restored_ship.owner_current_speed, 10);

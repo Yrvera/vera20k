@@ -123,6 +123,10 @@ fn accept_shared_track(
                     consumed_directions,
                 );
                 ship.head_to = Some(endpoint_coord);
+                // This helper is reached only from Ship Process_Movement. A
+                // command-time curve uses the separate installer and remains
+                // uncommitted until this process boundary.
+                ship.track_valid = true;
             }
         }
         _ => {}
@@ -286,6 +290,7 @@ pub(super) fn configure_motion_after_transition(
         } else {
             if is_ship && let Some(ship) = ship_locomotion.as_mut() {
                 ship.head_to = None;
+                ship.track_valid = false;
             }
             // The exact-facing precondition takes precedence over the ordinary
             // step facing: the body must reach the head node's octant before any
@@ -1386,6 +1391,7 @@ fn advance_drive_track_retry_after_selection(
     facing_target: &mut Option<u8>,
     drive_track_state: &mut Option<DriveTrackState>,
     drive_locomotion: &mut Option<DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<ShipLocomotionRuntime>,
     cell_occupation: &mut Option<&mut CellOccupationGrid>,
     entity_id: u64,
     current_occupation_layer: MovementLayer,
@@ -1404,7 +1410,11 @@ fn advance_drive_track_retry_after_selection(
         drive.track_valid = !advance.finished;
         advance
     } else {
-        drive_track::advance_drive_track(track_state, SIM_ZERO, SIM_ONE)
+        let advance = drive_track::advance_drive_track(track_state, SIM_ZERO, SIM_ONE);
+        if let Some(ship) = ship_locomotion.as_mut() {
+            ship.track_valid = !advance.finished;
+        }
+        advance
     };
     if track_state.point_index != prior_point_index {
         // Real forward progress clears the owner's impatience flag. gamemd does
@@ -1507,7 +1517,11 @@ pub(super) fn advance_lepton_position(
             drive.track_valid = !advance.finished;
             advance
         } else {
-            drive_track::advance_drive_track(track_state, effective_speed, dt)
+            let advance = drive_track::advance_drive_track(track_state, effective_speed, dt);
+            if let Some(ship) = ship_locomotion.as_mut() {
+                ship.track_valid = !advance.finished;
+            }
+            advance
         };
         if track_state.point_index != prior_point_index {
             // Same forward-progress clear as the retry path above: gamemd's
@@ -1556,6 +1570,9 @@ pub(super) fn advance_lepton_position(
 
         if advance.finished {
             *drive_track_state = None;
+            if let Some(ship) = ship_locomotion.as_mut() {
+                ship.track_valid = false;
+            }
             position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
             let shared_kind = shared_track_kind(locomotor);
@@ -1588,6 +1605,7 @@ pub(super) fn advance_lepton_position(
                             facing_target,
                             drive_track_state,
                             drive_locomotion,
+                            ship_locomotion,
                             &mut cell_occupation,
                             entity_id,
                             current_occupation_layer,
@@ -1605,6 +1623,7 @@ pub(super) fn advance_lepton_position(
                     FreshTrackOutcome::None => {
                         if is_ship && let Some(ship) = ship_locomotion.as_mut() {
                             ship.head_to = None;
+                            ship.track_valid = false;
                         }
                     }
                 }
@@ -1680,6 +1699,7 @@ pub(super) fn advance_lepton_position(
                             facing_target,
                             drive_track_state,
                             drive_locomotion,
+                            ship_locomotion,
                             &mut cell_occupation,
                             entity_id,
                             current_occupation_layer,
@@ -1694,6 +1714,7 @@ pub(super) fn advance_lepton_position(
                     FreshTrackOutcome::None => {
                         if is_ship && let Some(ship) = ship_locomotion.as_mut() {
                             ship.head_to = None;
+                            ship.track_valid = false;
                         }
                     }
                 }

@@ -17,6 +17,7 @@ use crate::sim::components::Health;
 use crate::sim::deploy::{DEPLOY_DEFAULT_TICKS, DeployPhase, frames_to_ticks};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::house_state::HouseAiActivationLatches;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::world::{SimSoundEvent, Simulation};
 
 const SPLIT_AI_ACTIVATION: HouseAiActivationLatches = HouseAiActivationLatches {
@@ -158,6 +159,7 @@ Strength=450
 Armor=heavy
 Speed=5
 ROT=5
+Locomotor={4A582741-9839-11D1-B709-00A024DDAFD1}
 DeploysInto=GACNST
 
 [SMIN]
@@ -165,6 +167,7 @@ Name=Slave Miner
 Strength=2000
 Armor=heavy
 Speed=3
+Locomotor={4A582741-9839-11D1-B709-00A024DDAFD1}
 DeploysInto=YAREFN
 
 [GACNST]
@@ -651,6 +654,287 @@ fn deploy_mcv_waits_for_target_building_deploy_facing() {
 }
 
 #[test]
+fn forward_deploy_retry_different_cell_move_clears_latch_and_keeps_navcom() {
+    let rules = make_mcv_rules();
+    let height_map = BTreeMap::new();
+    let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 0x40, &rules, &height_map)
+        .expect("spawn MCV");
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(mcv)
+            .and_then(|entity| entity.locomotor.as_ref())
+            .map(|locomotor| locomotor.kind),
+        Some(crate::rules::locomotor_type::LocomotorKind::Drive),
+        "fixture must exercise stock AMCV Drive/NavCom, not constructor-default Teleport"
+    );
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        Some(&grid),
+        &height_map,
+    ));
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Move {
+            entity_id: mcv,
+            target_rx: 25,
+            target_ry: 22,
+            queue: false,
+            group_id: None,
+        },
+        Some(&rules),
+        Some(&grid),
+        &height_map,
+    ));
+    let staged = sim.substrate.entities.get(mcv).expect("staged MCV");
+    assert!(staged.forward_deploy_retry);
+    assert_eq!(
+        staged.navigation.nav_com,
+        Some(crate::sim::components::NavTargetRef::cell(25, 22)),
+        "Move installs the requested owner NavCom before Unit AI clears +0x68C"
+    );
+    assert_eq!(staged.mission.queued().known(), Some(MissionType::Move));
+
+    let tick = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 16);
+    let moved = sim
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("Move retains source");
+    assert!(!tick.spawned_entities);
+    assert!(!moved.forward_deploy_retry);
+    assert_eq!(
+        moved.navigation.nav_com,
+        Some(crate::sim::components::NavTargetRef::cell(25, 22)),
+        "Unit AI clears +0x68C without clearing the Move NavCom"
+    );
+    assert!(moved.movement_target.is_some());
+    assert!(sim.interner.get("GACNST").is_none_or(|yard| {
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| entity.type_ref != yard)
+    }));
+}
+
+#[test]
+fn forward_deploy_retry_move_revalidates_footprint_before_navcom_clear() {
+    let rules = make_mcv_rules();
+    let height_map = BTreeMap::new();
+    let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    add_house(&mut sim, "Soviets", false);
+    let americans = sim.interner.get("Americans").expect("owner interned");
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 0x40, &rules, &height_map)
+        .expect("spawn MCV");
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        Some(&grid),
+        &height_map,
+    ));
+
+    // GACNST is 4x3, so the AMCV cell (20,22) maps to foundation origin
+    // (19,21). Install a blocker there only after the facing retry started;
+    // keep it northwest of the requested eastbound Move lane.
+    let blocker = sim
+        .spawn_object("GAPOWR", "Soviets", 19, 21, 0, &rules, &height_map)
+        .expect("insert facing-window footprint blocker");
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Move {
+            entity_id: mcv,
+            target_rx: 25,
+            target_ry: 22,
+            queue: false,
+            group_id: None,
+        },
+        Some(&rules),
+        Some(&grid),
+        &height_map,
+    ));
+    let sound_count = sim.sound_events.len();
+
+    let tick = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 16);
+    assert!(!tick.spawned_entities);
+    let source = sim
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("placement rejection retains moving source");
+    assert!(!source.forward_deploy_retry);
+    assert_eq!(
+        source.mission.effective().known(),
+        Some(MissionType::Guard),
+        "Deploy rejection must replace the staged Move with native Guard fallback"
+    );
+    assert!(source.navigation.nav_com.is_some());
+    assert!(source.movement_target.is_some());
+    assert!(sim.substrate.entities.get(blocker).is_some());
+    assert_eq!(
+        sim.sound_events.len(),
+        sound_count + 1,
+        "state-2 Deploy must emit the placement failure before its NavCom clear tail"
+    );
+    assert!(sim.sound_events.iter().any(
+        |event| matches!(event, SimSoundEvent::CannotDeployHere { owner } if *owner == americans)
+    ));
+    assert!(sim.interner.get("GACNST").is_none_or(|yard| {
+        sim.substrate
+            .entities
+            .values()
+            .all(|entity| entity.type_ref != yard)
+    }));
+}
+
+#[test]
+fn forward_deploy_retry_move_cancellation_snapshot_replays_hash_and_rng() {
+    use crate::sim::snapshot::GameSnapshot;
+
+    let rules = make_mcv_rules();
+    let height_map = BTreeMap::new();
+    let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+    let mut live = Simulation::new();
+    add_house(&mut live, "Americans", false);
+    let mcv = live
+        .spawn_object("AMCV", "Americans", 20, 22, 0x40, &rules, &height_map)
+        .expect("spawn MCV");
+    assert!(live.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        Some(&grid),
+        &height_map,
+    ));
+    assert!(live.apply_command(
+        "Americans",
+        &Command::Move {
+            entity_id: mcv,
+            target_rx: 25,
+            target_ry: 22,
+            queue: false,
+            group_id: None,
+        },
+        Some(&rules),
+        Some(&grid),
+        &height_map,
+    ));
+    let staged = live.substrate.entities.get(mcv).expect("staged MCV");
+    assert!(staged.forward_deploy_retry);
+    assert_eq!(staged.mission.current().known(), Some(MissionType::Unload));
+    assert_eq!(staged.mission.queued().known(), Some(MissionType::Move));
+    assert_eq!(
+        staged.navigation.nav_com,
+        Some(crate::sim::components::NavTargetRef::cell(25, 22))
+    );
+
+    live.scenario_rng = crate::sim::rng::SimRng::new(0);
+    let saved_hash = live.state_hash();
+    let bytes = GameSnapshot::save(&live, 0, 0, "forward-deploy-move-cancel", 0);
+    let mut restored = GameSnapshot::load(&bytes)
+        .expect("current interrupted deploy snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("interrupted deploy snapshot restores structurally");
+    assert_eq!(restored.state_hash(), saved_hash);
+
+    for step in 1..=8 {
+        let live_tick =
+            live.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 16);
+        let restored_tick =
+            restored.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 16);
+        assert_eq!(restored_tick.spawned_entities, live_tick.spawned_entities);
+        assert_eq!(restored.state_hash(), live.state_hash());
+        assert_eq!(
+            restored.scenario_rng.logical_state(),
+            live.scenario_rng.logical_state()
+        );
+        if step == 1 {
+            for sim in [&live, &restored] {
+                let moved = sim.substrate.entities.get(mcv).expect("Move source remains");
+                assert!(!moved.forward_deploy_retry);
+                assert_eq!(
+                    moved.navigation.nav_com,
+                    Some(crate::sim::components::NavTargetRef::cell(25, 22))
+                );
+                assert!(moved.movement_target.is_some());
+            }
+        }
+    }
+    assert!(live.interner.get("GACNST").is_none_or(|yard| {
+        live.substrate
+            .entities
+            .values()
+            .all(|entity| entity.type_ref != yard)
+    }));
+}
+
+#[test]
+fn forward_deploy_retry_stop_during_facing_keeps_owner_and_still_commits() {
+    let rules = make_mcv_rules();
+    let height_map = BTreeMap::new();
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 0x40, &rules, &height_map)
+        .expect("spawn MCV");
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+    let mission_before = sim
+        .substrate
+        .entities
+        .get(mcv)
+        .expect("turning MCV")
+        .mission;
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+    let stopped = sim.substrate.entities.get(mcv).expect("stopped MCV");
+    assert!(stopped.forward_deploy_retry);
+    assert_eq!(stopped.mission.current(), mission_before.current());
+    assert_eq!(stopped.mission.queued(), mission_before.queued());
+
+    let mut committed = false;
+    for _ in 0..32 {
+        let tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
+        if tick.spawned_entities {
+            committed = true;
+            break;
+        }
+    }
+    assert!(committed, "Stop must not cancel the deploy-building retry");
+    assert!(sim.substrate.entities.get(mcv).is_none());
+    let yard = sim.interner.get("GACNST").expect("GACNST interned");
+    assert_eq!(
+        sim.substrate
+            .entities
+            .values()
+            .filter(|entity| entity.type_ref == yard)
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn forward_deploy_retry_snapshot_resumes_identical_mcv_commit() {
     use crate::sim::snapshot::GameSnapshot;
 
@@ -788,8 +1072,11 @@ ConstructionYard=yes
         .entities
         .get(mcv)
         .expect("zero-ROT source survives its command frame");
-    assert_eq!(source.facing, 0x80);
-    assert_eq!(source.facing_target, None);
+    // ROT=0 is explicitly outside the active-stock research scope. Preserve
+    // the verified scheduler boundary: the command frame records the desired
+    // facing and latch, while the next Unit AI visit owns completion/commit.
+    assert_eq!(source.facing, 0x40);
+    assert_eq!(source.facing_target, Some(0x80));
     assert!(source.forward_deploy_retry);
 
     let commit_tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
@@ -841,6 +1128,8 @@ fn forward_deploy_retry_rechecks_blocker_during_turn_and_cancels() {
         .get(mcv)
         .expect("blocked retry retains source");
     assert!(!source.forward_deploy_retry);
+    assert_eq!(source.mission.current().known(), Some(MissionType::Guard));
+    assert_eq!(source.mission.queued(), MissionId::NONE);
     assert_eq!(source.facing_target, Some(0x80));
     assert!(source.body_facing.is_some());
     assert_eq!(source.attached_trigger_tag, Some(tag));
@@ -858,6 +1147,8 @@ fn forward_deploy_retry_rechecks_blocker_during_turn_and_cancels() {
 
     sim.uninit_with_rules(blocker, &rules);
     sim.flush_pending_delete();
+    // The rejection queued Guard inside the Unit-AI bracket; the same visit's
+    // ordinary mission host promoted it before this post-tick observation.
     for _ in 0..32 {
         let tick = sim.advance_tick(&[], Some(&rules), &height_map, None, None, 16);
         assert!(!tick.spawned_entities);
@@ -870,6 +1161,8 @@ fn forward_deploy_retry_rechecks_blocker_during_turn_and_cancels() {
     assert_eq!(source.facing, 0x80);
     assert_eq!(source.facing_target, None);
     assert!(source.body_facing.is_none());
+    assert_eq!(source.mission.current().known(), Some(MissionType::Guard));
+    assert_eq!(source.mission.queued(), MissionId::NONE);
     assert_eq!(source.attached_trigger_tag, Some(tag));
     assert!(sim.interner.get("GACNST").is_none_or(|yard| {
         sim.substrate

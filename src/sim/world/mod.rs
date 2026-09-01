@@ -6696,6 +6696,7 @@ impl Simulation {
         self.trace_master_frame_rung(MasterFrameTestRung::LogicVector);
         let mut movement_stats = movement::MovementTickStats::default();
         let mut tube_turn_owned_ids = BTreeSet::new();
+        let mut attack_pursuit_suppressed_ids = BTreeSet::new();
         self.for_each_live_object(|sim, stable_id| {
             // UnitClass::AI / InfantryClass::AI give an active TubeMovement
             // object the whole live-object turn.  Capture before the leaf:
@@ -6720,8 +6721,35 @@ impl Simulation {
                 .entities
                 .get(stable_id)
                 .is_some_and(|entity| entity.forward_deploy_retry);
+            let (forward_deploy_attack_owner_at_entry, forward_deploy_attack_queued_at_entry) = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| {
+                    let queued_attack = entity.mission.queued().known()
+                        == Some(crate::sim::mission::MissionType::Attack);
+                    let owner = entity.owns_forward_deploy_attack_retry();
+                    (owner, owner && queued_attack)
+                })
+                .unwrap_or((false, false));
+            if forward_deploy_attack_owner_at_entry {
+                // The owner-local Mission_Attack seam already resolved pursuit
+                // before cadence. Keep this identity through the rest of the
+                // frame even if a later PerCell placement rejection clears the
+                // retry bits, or the global combat-pre pass would resolve the
+                // same pursuit twice.
+                attack_pursuit_suppressed_ids.insert(stable_id);
+            }
             let next_stable_id_before_object_ai = sim.substrate.next_stable_object_id;
             sim.object_ai_visit_one(stable_id, rules, object_ctx);
+            let forward_deploy_attack_promoted_this_visit = forward_deploy_attack_queued_at_entry
+                && sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                    entity.owns_forward_deploy_attack_retry()
+                        && entity.mission.current().known()
+                            == Some(crate::sim::mission::MissionType::Attack)
+                        && entity.mission.queued().known()
+                            != Some(crate::sim::mission::MissionType::Attack)
+                });
             spawned_entities |= forward_deploy_retry_at_entry
                 && sim.substrate.next_stable_object_id != next_stable_id_before_object_ai
                 && sim
@@ -6747,7 +6775,29 @@ impl Simulation {
                 return;
             }
 
+            let deploy_facing_before_turn =
+                sim.substrate.entities.get(stable_id).and_then(|entity| {
+                    entity
+                        .forward_deploy_retry
+                        .then_some((entity.facing, entity.facing_target))
+                });
             sim.tick_stationary_body_turn_one(stable_id);
+            let deploy_facing_completed =
+                deploy_facing_before_turn.is_some_and(|(before, target)| {
+                    target.is_some_and(|target| before != target)
+                        && sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                            entity.forward_deploy_retry
+                                && entity.facing_target.is_none()
+                                && target == Some(entity.facing)
+                        })
+                });
+
+            let deploy_translation_before_movement =
+                sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                    entity.forward_deploy_retry
+                        && (entity.movement_target.is_some()
+                            || movement::drive_locomotor_is_moving(entity))
+                });
 
             let before_movement = sim.movement_sound_probe(stable_id);
             let cell_before_movement = sim
@@ -6783,6 +6833,47 @@ impl Simulation {
                 &mut sim.sound_events,
                 &mut sim.pending_lifecycle_requests,
             ));
+
+            // UnitClass::PerCellProcess is called by Drive after a turn or a
+            // committed track/cell finishes. Its deploy-facing +0x68C arm must
+            // run before the object's later post-locomotor work. Attack owns
+            // rotation-finished PerCell(0), including the first far-approach
+            // visit where Mission_Attack just installed translation; a
+            // completed movement owns PerCell(2).
+            // A still-queued Attack is excluded: Ready must promote it first so
+            // Mission_Attack's approach and RNG precede this retry.
+            let deploy_post_movement = sim.substrate.entities.get(stable_id).map(|entity| {
+                let translating =
+                    entity.movement_target.is_some() || movement::drive_locomotor_is_moving(entity);
+                (
+                    entity.forward_deploy_retry,
+                    entity.mission.queued().known()
+                        == Some(crate::sim::mission::MissionType::Attack),
+                    translating,
+                )
+            });
+            let deploy_per_cell_contact = cell_before_movement.zip(
+                sim.substrate
+                    .entities
+                    .get(stable_id)
+                    .map(|entity| (entity.position.rx, entity.position.ry)),
+            ).is_some_and(|(before, after)| before != after);
+            let should_retry_after_locomotor =
+                deploy_post_movement.is_some_and(|(retry, attack_queued, translating)| {
+                    retry
+                        && !attack_queued
+                        && (deploy_per_cell_contact
+                            || forward_deploy_attack_promoted_this_visit
+                            || deploy_facing_completed
+                            || (deploy_translation_before_movement && !translating))
+                });
+            if should_retry_after_locomotor
+                && let Some(rules) = rules
+                && sim.retry_forward_deploy_on_unit_ai(stable_id, rules, overlay_registry)
+            {
+                spawned_entities = true;
+                return;
+            }
 
             // FootClass advances the SHP Unit body counter immediately after
             // this object's locomotor Process, against the still-current
@@ -6825,6 +6916,7 @@ impl Simulation {
                 });
             if tube_owns_whole_turn {
                 tube_turn_owned_ids.insert(stable_id);
+                attack_pursuit_suppressed_ids.insert(stable_id);
                 return;
             }
 
@@ -7138,7 +7230,7 @@ impl Simulation {
                 rules,
                 path_grid,
                 overlay_registry,
-                &tube_turn_owned_ids,
+                &attack_pursuit_suppressed_ids,
             );
             // LogicClass live-object order drives the firing/damage/kill-credit
             // resolution sequence. Snapshot is owned, so it does not conflict

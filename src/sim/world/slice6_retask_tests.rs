@@ -14,7 +14,7 @@ use super::*;
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::AttackTarget;
+use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::OrderIntent;
 use crate::sim::mission::{MissionId, MissionType};
@@ -196,8 +196,23 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // Re-baselined 2026-08-30 for GSI-04.03 Drive slope payload ownership. The
 // common locomotor fold reaches both historical probes; the scripted retasks
 // and record/replay equality remain exact, so this is composition-only.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x368E_E20F_77C7_0725;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
+// Re-baselined 2026-09-01 for the verified command-interruption pair exercised
+// by this script: ordinary Attack at tick 9 applies its null destination while
+// preserving an already committed Drive head, and EventClass case-6 Stop at
+// tick 11 broadcasts BREAK, clears target/destination, clamps that head, and
+// assigns no general Stop mission.
+// Re-baselined again after the bounded active-binary force-fire extension:
+// the tick-5 cell and tick-7 object producers both emit mission 1 with a null
+// destination. Rust used to clear only `movement_target`, leaving NavCom and
+// the locomotor destination live. Both commands now take the same verified
+// null-destination boundary as ordinary Attack while preserving only a truly
+// committed head. The assertions below prove the target kind, null NavCom,
+// and null Drive destination immediately after both production commands. This
+// fixture has no forward-deploy retry, and both legacy probes exclude the v116
+// fold, yet both moved identically: the shift is therefore behavior-bearing,
+// not the removal of the unsupported v116 command-origin carrier.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x34D3_7696_2541_32CF;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x3C18_0855_C283_65A6;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -325,8 +340,10 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
 // Re-baselined 2026-08-30 for v110's unconditional ordered BasePlan authority.
 // The dedicated pre-v110 probe reproduces the prior baseline exactly, isolating
 // the measured shift to current-schema composition.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x214E_DE3E_7939_F143;
-const SLICE6_BASELINE_HASH: u64 = 0x4397_FA88_D95E_5208;
+// Re-baselined for the same verified Attack/Stop and ForceAttack
+// behavior-bearing changes documented at the two historical probes above.
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0xDFF6_B538_E99B_819C;
+const SLICE6_BASELINE_HASH: u64 = 0xD3D9_A2C0_4F67_EC79;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -399,6 +416,34 @@ fn replay_hash_stable_through_slice6() {
             .map(|(t, c)| cmd_envelope(&sim, "Americans", *t, c.clone()))
             .collect();
         let _ = sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, 67);
+        let expected_force_target = match tick + 1 {
+            5 => Some(TargetKind::Cell(18, 3)),
+            7 => Some(TargetKind::Entity(2)),
+            _ => None,
+        };
+        if let Some(expected_force_target) = expected_force_target {
+            let attacker = sim
+                .substrate
+                .entities
+                .get(1)
+                .expect("scripted force-fire attacker");
+            assert_eq!(
+                attacker.attack_target.as_ref().map(|attack| attack.target),
+                Some(expected_force_target),
+                "force-fire must retain object-vs-cell target kind"
+            );
+            assert!(
+                attacker.navigation.nav_com.is_none(),
+                "force-fire's mission-1 event must commit a null owner destination"
+            );
+            assert!(
+                attacker
+                    .drive_locomotion
+                    .as_ref()
+                    .is_some_and(|drive| drive.destination.is_none()),
+                "force-fire must null the Drive destination while a committed head may finish"
+            );
+        }
     }
 
     let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();

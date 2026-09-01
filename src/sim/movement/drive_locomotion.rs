@@ -168,6 +168,21 @@ pub(super) fn update_ship_speed_fraction(
     );
 }
 
+/// Drive normally recomputes its requested fraction in `Process_Movement`.
+/// `Stop_Moving @ 0x004AFE00` is the exception: while a committed head remains,
+/// Process_Drive_Track consumes the class-owned min(old, 0.3) request instead
+/// of overwriting it with the next terrain-derived value.
+pub(super) fn drive_process_target_speed_fraction(
+    drive: &DriveLocomotionRuntime,
+    movement_target_fraction: SimFixed,
+) -> SimFixed {
+    if drive.destination.is_none() && drive.head_to.is_some() {
+        drive.target_speed_fraction
+    } else {
+        movement_target_fraction
+    }
+}
+
 /// Ship normally recomputes its requested fraction in `Process_Movement`.
 /// `Stop_Moving` is the active exception: after it clears destination while a
 /// committed head remains, `Process_Drive_Track` consumes the class-owned
@@ -424,6 +439,46 @@ mod tests {
         assert_eq!(ship.head_to, Some(DriveCoord::cell(4, 3, 0)));
         assert_eq!(ship.current_speed_fraction, SimFixed::lit("0.3"));
         assert_eq!(ship.owner_current_speed, 6);
+    }
+
+    #[test]
+    fn phase8_nonterminal_drive_post_stop_process_preserves_clamped_target() {
+        use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
+
+        let speed = ra2_speed_to_leptons_per_second(3);
+        let mut drive = DriveLocomotionRuntime {
+            destination: None,
+            head_to: Some(DriveCoord::cell(4, 3, 0)),
+            target_speed_fraction: SimFixed::lit("0.3"),
+            current_speed_fraction: SIM_HALF,
+            owner_current_speed: 10,
+            ..Default::default()
+        };
+
+        // Stock SMIN speed 3 decelerates more slowly than the speed-8 Ship
+        // fixture above; keep processing long enough to reach the retained
+        // Stop clamp and prove it neither resets nor decays below 0.3.
+        for _ in 0..64 {
+            let requested = drive_process_target_speed_fraction(&drive, SIM_ONE);
+            assert_eq!(requested, SimFixed::lit("0.3"));
+            update_drive_speed_fraction(
+                &mut drive,
+                requested,
+                true,
+                speed / SimFixed::from_num(15),
+                SimFixed::lit("0.03"),
+                SimFixed::lit("0.002"),
+                SIM_ZERO,
+                SimFixed::from_num(256),
+            );
+            drive.owner_current_speed =
+                owner_current_speed_from_fraction(speed, drive.current_speed_fraction);
+            assert_eq!(drive.target_speed_fraction, SimFixed::lit("0.3"));
+        }
+
+        assert_eq!(drive.destination, None);
+        assert_eq!(drive.head_to, Some(DriveCoord::cell(4, 3, 0)));
+        assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.3"));
     }
 
     fn terrain_cell(rx: u16, ry: u16, speed_costs: SpeedCostProfile) -> ResolvedTerrainCell {

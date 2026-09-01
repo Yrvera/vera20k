@@ -1340,6 +1340,7 @@ impl Simulation {
             entity.facing_target.hash(hasher);
             if include_forward_deploy_retry_v116 && entity.forward_deploy_retry {
                 b"forward-deploy-retry-v1".hash(hasher);
+                entity.forward_deploy_retry.hash(hasher);
             }
             // Body-rotation interpolator (present only while turning in place).
             if let Some(ref bf) = entity.body_facing {

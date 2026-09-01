@@ -920,6 +920,16 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
+    /// Whether the live UnitClass `+0x68C` retry is owned by the effective
+    /// Attack mission. Accepted ordinary object Attack, Ctrl object force-fire,
+    /// and Ctrl cell force-fire all converge on mission 1 before dispatch; no
+    /// command-origin discriminator survives the MegaMission envelope.
+    pub(crate) fn owns_forward_deploy_attack_retry(&self) -> bool {
+        self.forward_deploy_retry
+            && (self.mission.queued().known() == Some(MissionType::Attack)
+                || self.mission.current().known() == Some(MissionType::Attack))
+    }
+
     /// The Harvest FSM cursor of record, decoded from
     /// `MissionCom::handler_state`. `None` when the entity has no Miner
     /// component. An out-of-vocabulary cursor decodes as `SearchOre` (the

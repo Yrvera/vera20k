@@ -395,6 +395,12 @@ pub struct ShipLocomotionRuntime {
     pub destination: Option<DriveCoord>,
     #[serde(default)]
     pub head_to: Option<DriveCoord>,
+    /// True only after Ship `Process_Movement` has accepted the live shared
+    /// curve. Command admission eagerly allocates Rust's `drive_track` and
+    /// `head_to`; those staged values are not yet the native committed +0x3C
+    /// head and must not survive a same-frame null-destination command.
+    #[serde(default)]
+    pub track_valid: bool,
     #[serde(default)]
     pub path: DrivePathQueue,
     #[serde(default)]

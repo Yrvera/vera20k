@@ -37,19 +37,22 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             return;
         }
         let mission = entity.mission.current().known();
-        // A miner's dispatch is owned by the absorbed Harvest handler, which
-        // writes its own epilogue — except on Guard, which the Harvest handler
-        // now declines. That is the native split: a vehicle on Guard enters the
-        // harvester Guard override, which layers the slave/refinery checks and
-        // then tail-calls the same FootClass Guard handler every other unit
-        // uses; a vehicle on Harvest enters the Harvest handler. Exactly one of
-        // the two runs, so the timer keeps a single writer.
+        // A miner's dispatch is still owned by its leaf handler except on Guard,
+        // which that handler declines. The one verified exception is a Slave
+        // Miner on Attack: its UnitClass slot tail-calls
+        // `FootClass::Mission_Attack @ 0x004D4DC0`. Do not widen that exception
+        // to AreaGuard/Hunt/Move; UnitClass::Mission_AreaGuard @ 0x00744100, for
+        // example, owns a distinct RandomRanged(0,2) tail.
         //
         // RESIDUAL, not modelled: the harvester Guard override's player arm
         // re-queues Harvest when a Refinery the house owns sits in one of the
         // eight neighbouring cells, so a retail miner stopped next to its
         // refinery goes back to work on its own. VERA's stays put.
-        if entity.miner.is_some() && mission != Some(MissionType::Guard) {
+        if entity.miner.as_ref().is_some_and(|miner| {
+            mission != Some(MissionType::Guard)
+                && !(miner.kind == crate::sim::miner::MinerKind::Slave
+                    && mission == Some(MissionType::Attack))
+        }) {
             return;
         }
         let moving = entity.movement_target.is_some()
@@ -68,6 +71,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             // that one field.
             has_destination: entity.navigation.nav_com.is_some(),
             effective_mission: entity.mission.effective().known(),
+            forward_deploy_retry: entity.forward_deploy_retry,
             unit_deploy_begin_active: entity
                 .mission_leaf
                 .as_unit()
@@ -397,6 +401,18 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         },
     };
 
+    #[cfg(test)]
+    if input.forward_deploy_retry
+        && input.mission == Some(MissionType::Attack)
+    {
+        sim.trace_lifecycle_for_test(
+            crate::sim::world::LifecycleTestEvent::ForwardDeployAttackCadenceDrawn {
+                stable_id: id,
+                scenario_rng_state: sim.scenario_rng.state(),
+            },
+        );
+    }
+
     if evaluation.clear_stale_attack_target || evaluation.clear_attack_target {
         if let Some(entity) = sim.substrate.entities.get_mut(id) {
             entity.attack_target = None;
@@ -439,6 +455,9 @@ pub(super) struct MissionHandlerInput {
     /// Current when present, otherwise queued — the selector the idle-mode
     /// early returns and the control-entry lookups read.
     pub(super) effective_mission: Option<MissionType>,
+    /// UnitClass +0x68C: EnterIdle refuses to replace the current mission while
+    /// deploy-building retry/progress remains live.
+    pub(super) forward_deploy_retry: bool,
     pub(super) unit_deploy_begin_active: bool,
     pub(super) unit_deploy_reverse_active: bool,
     /// This is an infantryman whose DoType sits in native's deployed set, so
@@ -587,6 +606,12 @@ pub(super) fn foot_enter_idle_mode_queue(
     rules: &RuleSet,
     input: MissionHandlerInput,
 ) -> Option<MissionType> {
+    // `UnitClass::Enter_Idle_Mode @ 0x00738970` tests +0x68C before choosing
+    // Guard/Move. Target loss during an interrupted deploy therefore retains
+    // Attack, even though Mission_Attack still consumes its cadence draw.
+    if input.forward_deploy_retry {
+        return None;
+    }
     // The tail gate, evaluated on the committed selector.
     let committed_blocks_assign = matches!(
         input.mission,
@@ -675,11 +700,12 @@ const AREA_GUARD_CADENCE_JITTER_MAX: u32 = 5;
 ///   the `(1, 5)` above. Trigger: a miner on Area Guard. Player effect: retail
 ///   puts it straight back to work; VERA's keeps area-guarding. Frequency:
 ///   invisible today — the miner exclusion at the head of
-///   [`dispatch_supported_foot_mission_cadence`] keeps any miner not on Guard
-///   out of the handler, and the only route onto Area Guard is the Move-arrival
-///   promotion that is itself a recorded residual. Downstream risk is why it is
-///   written down: the `(1, 10) + 1` return is an RNG-consumption difference
-///   that lands the moment either of those two closes. `+0xE0E` is UNCHECKED.
+///   [`dispatch_supported_foot_mission_cadence`] keeps every miner route except
+///   Guard and the verified Slave-Miner Attack tail-call out of this handler,
+///   and the only route onto Area Guard is the Move-arrival promotion that is
+///   itself a recorded residual. Downstream risk is why it is written down: the
+///   `(1, 10) + 1` return is an RNG-consumption difference that lands the moment
+///   either of those two closes. `+0xE0E` is UNCHECKED.
 /// - **the tank-bunker adjacency scan** at 0x004D6F44, byte-for-byte the block
 ///   recorded on [`evaluate_foot_guard_cadence`].
 /// - **the infantry idle action.** With still no target the handler calls

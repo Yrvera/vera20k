@@ -14,6 +14,25 @@ use crate::app::types::{
 };
 use crate::sim::combat;
 
+/// Whether one resolved object may show the Ctrl-cell force-fire reticle.
+///
+/// This is the presentation half of the same production decision made by the
+/// context-order cell payload: literal null weapon spellings are unarmed, while
+/// either real weapon slot admits force-fire.
+fn force_fire_cursor_weapon_eligible(
+    sim: &crate::sim::world::Simulation,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    stable_id: u64,
+) -> bool {
+    sim.entities()
+        .get(stable_id)
+        .and_then(|entity| rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref))))
+        .is_some_and(|obj| {
+            crate::app::input::context_order::has_weapon_reference(obj.primary.as_deref())
+                || crate::app::input::context_order::has_weapon_reference(obj.secondary.as_deref())
+        })
+}
+
 pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFeedbackKind> {
     // A right-drag pan owns the cursor for as long as it owns the camera, and it
     // is tested first because native gates the cursor write and the edge-scroll
@@ -177,17 +196,12 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // over allies, own units and empty ground. Ctrl+Shift is attack-move and
     // Ctrl+Alt is guard area — neither force-fires — so this reads the resolved
     // modifier verb rather than raw Ctrl. The armed test runs on the one
-    // resolved object, matching gamemd's single-object dispatch.
+    // resolved object, matching gamemd's single-object dispatch. Share the
+    // click producer's null-weapon spelling rule so stock CMIN (`Primary=none`)
+    // shows Move while armed SMIN shows the force-fire reticle.
     if modifier == crate::app::input::context_order::OrderModifier::ForceFire {
-        let best_is_armed = best_id.is_some_and(|id| {
-            sim.entities().get(id).is_some_and(|e| {
-                let type_str = sim.interner.resolve(e.type_ref);
-                state
-                    .rules()
-                    .and_then(|r| r.object(type_str))
-                    .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
-            })
-        });
+        let best_is_armed =
+            best_id.is_some_and(|id| force_fire_cursor_weapon_eligible(sim, state.rules(), id));
         if best_is_armed {
             // EnemyUnit is the standard attack-reticle cursor; reuse it for
             // force-fire over allies/own/empty. (Exact mouse SHP frame for
@@ -1337,6 +1351,7 @@ mod tests {
              0=MTNK\n\
              1=TRUCKA\n\
              2=SREF\n\
+             3=CMIN\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              [MTNK]\n\
@@ -1347,6 +1362,10 @@ mod tests {
              [SREF]\n\
              Strength=200\n\
              Secondary=105mm\n\
+             [CMIN]\n\
+             Strength=1000\n\
+             Harvester=yes\n\
+             Primary=none\n\
              [WeaponTypes]\n\
              0=105mm\n\
              [105mm]\n\
@@ -1723,6 +1742,35 @@ mod tests {
             Some(arty),
             "the armed tier wins even from much farther away",
         );
+    }
+
+    /// The force-fire cursor and click producer must share the same null-weapon
+    /// rule. Stock CMIN carries the literal `Primary=none`, so Ctrl over empty
+    /// ground shows Move; a real weapon slot shows the attack reticle.
+    #[test]
+    fn force_fire_cursor_weapon_gate_rejects_primary_none() {
+        let rules = cell_action_rules();
+        let mut sim = Simulation::new();
+        sim.resolve_type_handles(&rules);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+        let tank = sim
+            .spawn_object("MTNK", "Americans", 5, 5, 0, &rules, &height_map)
+            .expect("armed tank");
+        let chrono_miner = sim
+            .spawn_object("CMIN", "Americans", 6, 5, 0, &rules, &height_map)
+            .expect("unarmed Chrono Miner");
+
+        assert!(super::force_fire_cursor_weapon_eligible(
+            &sim,
+            Some(&rules),
+            tank
+        ));
+        assert!(!super::force_fire_cursor_weapon_eligible(
+            &sim,
+            Some(&rules),
+            chrono_miner
+        ));
     }
 
     /// Ties inside one tier break on 3-D lepton distance to the *cell centre*.

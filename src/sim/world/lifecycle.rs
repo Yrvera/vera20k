@@ -332,6 +332,14 @@ pub(crate) enum LifecycleTestEvent {
         attacker_id: u64,
         scenario_rng_state: u64,
     },
+    ForwardDeployAttackCadenceDrawn {
+        stable_id: u64,
+        scenario_rng_state: u64,
+    },
+    ForwardDeployTargetConstructed {
+        stable_id: u64,
+        scenario_rng_state: u64,
+    },
     UninitAliveCleared {
         stable_id: u64,
     },

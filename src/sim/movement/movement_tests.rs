@@ -462,14 +462,8 @@ fn drive_slope_boundary_is_detected_on_process_after_forced_track_crossing() {
         .active_slope_transition_mut()
         .unwrap()
         .snap(4, 0);
-    let forced = drive_track::begin_forced_turn_track(
-        0x47,
-        0,
-        256,
-        SimFixed::from_num(128),
-        false,
-    )
-    .expect("retail southbound force track");
+    let forced = drive_track::begin_forced_turn_track(0x47, 0, 256, SimFixed::from_num(128), false)
+        .expect("retail southbound force track");
     {
         let (entities, cell_occupation) = (
             &mut sim.substrate.entities,
@@ -547,11 +541,8 @@ fn drive_ship_slope_process_uses_foot_class_boundary_not_object_speed_or_art() {
 
 #[test]
 fn entry_active_tube_excludes_drive_slope_process_for_the_whole_turn() {
-    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
-        1,
-        1,
-        vec![slope_cell(0, 9)],
-    );
+    let terrain =
+        crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(1, 1, vec![slope_cell(0, 9)]);
     let mut sim = Simulation::new();
     let mut entity = GameEntity::test_default(1, "DRIVE", "Americans", 0, 0);
     entity.owner = sim.intern("Americans");
@@ -1698,6 +1689,85 @@ fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
     assert_eq!(drive.path.reference_cell, Some((3, 3)));
     assert_eq!(drive.path.cursor, 0);
     assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 3)));
+}
+
+#[test]
+fn ship_head_becomes_committed_only_after_process_and_then_survives_null_destination() {
+    let mut entities = EntityStore::new();
+    let grid = PathGrid::new(20, 20);
+    let mut ship = GameEntity::test_default(1, "DLPH", "Americans", 2, 3);
+    ship.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+    ship.facing = 0x40;
+    entities.insert(ship);
+
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (7, 3),
+        SimFixed::from_num(768),
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+    {
+        let staged = entities.get(1).expect("staged Ship order");
+        assert!(staged.drive_track.is_some());
+        let ship = staged.ship_locomotion.as_ref().expect("Ship runtime");
+        assert!(ship.head_to.is_some());
+        assert!(
+            !ship.track_valid,
+            "command admission alone cannot commit the Ship head"
+        );
+    }
+
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut lifecycle_requests = Vec::new();
+    tick_movement_with_grid(
+        &mut entities,
+        Some(&grid),
+        &Default::default(),
+        &Default::default(),
+        &mut occupancy,
+        &mut rng,
+        0,
+        &mut test_interner(),
+        &mut lifecycle_requests,
+    );
+    {
+        let processed = entities.get(1).expect("processed Ship");
+        assert!(processed.drive_track.is_some());
+        assert!(
+            processed
+                .ship_locomotion
+                .as_ref()
+                .expect("Ship runtime")
+                .track_valid,
+            "the first Ship Process_Movement owns the committed-head boundary"
+        );
+    }
+
+    let mut cell_occupation = CellOccupationGrid::rebuild(&entities);
+    let discarded = clear_navigation_preserving_committed_head(
+        entities.get_mut(1).expect("processed Ship"),
+        &mut cell_occupation,
+        1,
+    );
+    assert!(!discarded, "a processed Ship head must be retained");
+    let stopped = entities.get(1).expect("stopped Ship");
+    assert!(stopped.navigation.nav_com.is_none());
+    assert!(stopped.movement_target.is_some());
+    assert!(stopped.drive_track.is_some());
+    assert!(
+        stopped
+            .ship_locomotion
+            .as_ref()
+            .expect("Ship runtime")
+            .track_valid
+    );
 }
 
 // The player-visible symptom of replacing an in-flight curve: the fresh curve's

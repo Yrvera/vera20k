@@ -14,6 +14,7 @@ use crate::sim::mission::MissionType;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 const SHIP_STOP_TARGET_FRACTION: SimFixed = SimFixed::lit("0.3");
+const DRIVE_STOP_TARGET_FRACTION: SimFixed = SimFixed::lit("0.3");
 
 fn is_drive_locomotor(entity: &GameEntity) -> bool {
     entity
@@ -164,6 +165,7 @@ pub(super) fn finish_drive_navigation(
         // ordinary Ship null-destination path observes that same rest state.
         if let Some(ship) = entity.ship_locomotion.as_mut() {
             ship.head_to = None;
+            ship.track_valid = false;
             ship.path.cursor = ship.path.directions.len().min(u16::MAX as usize) as u16;
         }
         set_destination_internal_null(entity);
@@ -254,16 +256,16 @@ fn drive_stop_moving(entity: &mut GameEntity) {
     let drive = entity
         .drive_locomotion
         .get_or_insert_with(DriveLocomotionRuntime::default);
+    // `DriveLocomotionClass::Stop_Moving @ 0x004AFE00` preserves an already
+    // committed head but clamps the locomotor-owned request to min(old, 0.3)
+    // before clearing only the primary destination. Process_Drive_Track then
+    // consumes that stored request until the head retires.
+    if drive.target_speed_fraction > DRIVE_STOP_TARGET_FRACTION {
+        drive.target_speed_fraction = DRIVE_STOP_TARGET_FRACTION;
+    }
     drive.destination = None;
-    // Drive rest state. The gamemd Drive `Process` tail drives the applied speed
-    // fraction to exactly 0.0 once the drive destination coord, the head-to
-    // coord and the owner path head are all empty and the fraction is still
-    // above zero — there is no rest clamp on this path. The 0.3 an earlier
-    // revision used here is the destination-brake FLOOR (a different branch),
-    // and the 0.2 it was modelled on belongs to the unrelated bump/rock clamp
-    // inside `Process_Drive_Track`. Every `Accelerates=true` departure therefore
-    // ramps up from zero; in stock YR that set is the Ore Miner and both MCVs,
-    // which omit `Accelerates=` and take the constructor default.
+
+    // With no committed head the Drive Process tail still owns a full stop.
     if drive.head_to.is_none() {
         if drive.current_speed_fraction > SIM_ZERO {
             drive.current_speed_fraction = SIM_ZERO;
@@ -295,8 +297,10 @@ fn ship_stop_moving(entity: &mut GameEntity) {
     // FootClass::Stop_Moving clears the owner path sentinel. With no committed
     // Ship head there is therefore no segment left to consume: retire Rust's
     // path-replay adapter and reproduce the Process-tail SetSpeedFraction(0).
-    // A non-null head is the sole case that preserves the committed segment.
-    if ship.head_to.is_none() {
+    // Command admission may have allocated `head_to` before the first process;
+    // only the explicit process-owned validity bit preserves the segment.
+    if !ship.track_valid {
+        ship.head_to = None;
         ship.path.cursor = ship.path.directions.len().min(u16::MAX as usize) as u16;
         if ship.current_speed_fraction > SIM_ZERO {
             ship.current_speed_fraction = SIM_ZERO;
@@ -347,6 +351,7 @@ mod tests {
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(5, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
+            track_valid: true,
             path: crate::sim::components::DrivePathQueue {
                 directions: vec![64, 64],
                 cursor: 1,
@@ -389,6 +394,7 @@ mod tests {
         entity.ship_locomotion = Some(ShipLocomotionRuntime {
             destination: Some(DriveCoord::cell(4, 3, 0)),
             head_to: Some(DriveCoord::cell(4, 3, 0)),
+            track_valid: true,
             path: crate::sim::components::DrivePathQueue {
                 directions: vec![64],
                 cursor: 0,
@@ -433,6 +439,43 @@ mod tests {
         let drive = entity.drive_locomotion.as_ref().expect("drive state");
         assert_eq!(drive.current_speed_fraction, SIM_ZERO);
         assert_eq!(drive.destination, None);
+    }
+
+    #[test]
+    fn phase8_drive_stop_clamps_target_only_while_committed_head_survives() {
+        let mut entity = GameEntity::test_default(1, "SMIN", "YuriCountry", 3, 3);
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        entity.navigation.nav_com = Some(NavTargetRef::cell(5, 3));
+        entity.drive_locomotion = Some(DriveLocomotionRuntime {
+            destination: Some(DriveCoord::cell(5, 3, 0)),
+            head_to: Some(DriveCoord::cell(4, 3, 0)),
+            target_speed_fraction: SIM_ONE,
+            current_speed_fraction: SIM_HALF,
+            owner_current_speed: 10,
+            ..Default::default()
+        });
+
+        set_destination_internal_null(&mut entity);
+        let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+        assert_eq!(drive.destination, None);
+        assert_eq!(drive.head_to, Some(DriveCoord::cell(4, 3, 0)));
+        assert_eq!(drive.target_speed_fraction, DRIVE_STOP_TARGET_FRACTION);
+        assert_eq!(drive.current_speed_fraction, SIM_HALF);
+        assert_eq!(drive.owner_current_speed, 10);
+
+        let drive = entity.drive_locomotion.as_mut().expect("Drive runtime");
+        drive.destination = Some(DriveCoord::cell(5, 3, 0));
+        drive.target_speed_fraction = SimFixed::lit("0.2");
+        set_destination_internal_null(&mut entity);
+        assert_eq!(
+            entity
+                .drive_locomotion
+                .as_ref()
+                .expect("Drive runtime")
+                .target_speed_fraction,
+            SimFixed::lit("0.2"),
+            "Stop stores min(previous target, 0.3)"
+        );
     }
 
     /// The reset is gated, not unconditional: gamemd requires the head-to coord

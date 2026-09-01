@@ -737,71 +737,32 @@ impl Simulation {
                 if !self.order_actor_admits(*entity_id) {
                     return false;
                 }
-                // Retail breaks EVERY radio contact on Stop (it broadcasts the
-                // break message to the whole contact list), so the refinery,
-                // airfield and service-depot links all go at once. Cancelling
-                // only the depot reservation left an aircraft that was told to
-                // stop while inbound to a helipad holding that pad for the rest
-                // of the match — a permanent leak that compounds.
-                self.queue_mission_with_teardown(*entity_id, MissionType::Stop, DockTeardown::All);
-                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
-                    let current_cell = (e.position.rx, e.position.ry);
-                    let current_layer = e.movement_layer_or_ground();
-                    let committed_head = e
-                        .drive_track
-                        .as_ref()
-                        .and_then(|_| {
-                            e.drive_locomotion
-                                .as_ref()
-                                .and_then(|drive| drive.occupation_head_to)
-                        })
-                        .map(|head| ((head.rx, head.ry), head.layer))
-                        .or_else(|| {
-                            let head = e
-                                .drive_track
-                                .as_ref()
-                                .and_then(|_| e.ship_locomotion.as_ref()?.head_to)?;
-                            let head_cell = (
-                                u16::try_from(head.x.div_euclid(256)).ok()?,
-                                u16::try_from(head.y.div_euclid(256)).ok()?,
-                            );
-                            let target = e.movement_target.as_ref()?;
-                            let head_index =
-                                target.path.iter().position(|&cell| cell == head_cell)?;
-                            Some((head_cell, target.layer_at(head_index)))
-                        });
-                    movement::clear_navigation_for_entity(e);
-                    // Stop clears the owner destination immediately, but an
-                    // already committed Drive/Ship curve keeps only the
-                    // current-to-head step. Removing every trailing A* entry
-                    // prevents chaining or segment repath toward the abandoned
-                    // owner goal.
-                    if let (Some((head_cell, head_layer)), Some(target)) =
-                        (committed_head, e.movement_target.as_mut())
+                // EventClass::Execute case 6 broadcasts BREAK to every live
+                // radio contact, then clears destination and target. Stop is
+                // not a MEGAMISSION and does not queue a general Stop mission;
+                // the ore-miner Guard exception at the tail is its sole mission
+                // write. Keep VERA's reservation teardown, then send the real
+                // synchronous radio messages before taking the entity borrow.
+                self.run_dock_teardown(*entity_id, DockTeardown::All);
+                crate::sim::radio::broadcast_break(self, *entity_id);
+                let deploy_facing =
+                    rules.and_then(|rules| self.forward_deploy_target_facing(*entity_id, rules));
+                let (entities, cell_occupation) = (
+                    &mut self.substrate.entities,
+                    &mut self.substrate.cell_occupation,
+                );
+                if let Some(e) = entities.get_mut(*entity_id) {
+                    let discarded_uncommitted =
+                        movement::clear_navigation_preserving_committed_head(
+                            e,
+                            cell_occupation,
+                            *entity_id,
+                        );
+                    if discarded_uncommitted
+                        && e.forward_deploy_retry
+                        && let Some(deploy_facing) = deploy_facing
                     {
-                        if current_cell == head_cell {
-                            target.path = vec![head_cell];
-                            target.path_layers = vec![head_layer];
-                            target.next_index = 1;
-                            target.move_dir_x = SIM_ZERO;
-                            target.move_dir_y = SIM_ZERO;
-                            target.move_dir_len = SIM_ZERO;
-                        } else {
-                            target.path = vec![current_cell, head_cell];
-                            target.path_layers = vec![current_layer, head_layer];
-                            target.next_index = 1;
-                            let (dir_x, dir_y, dir_len) =
-                                crate::util::lepton::cell_delta_to_lepton_dir(
-                                    i32::from(head_cell.0) - i32::from(current_cell.0),
-                                    i32::from(head_cell.1) - i32::from(current_cell.1),
-                                );
-                            target.move_dir_x = dir_x;
-                            target.move_dir_y = dir_y;
-                            target.move_dir_len = dir_len;
-                        }
-                        target.final_goal = Some(head_cell);
-                    } else {
-                        e.movement_target = None;
+                        e.facing_target = (e.facing != deploy_facing).then_some(deploy_facing);
                     }
                     e.attack_target = None;
                     e.passively_acquired_target = false;
@@ -900,6 +861,8 @@ impl Simulation {
                 {
                     return false;
                 }
+                let deploy_facing =
+                    rules.and_then(|rules| self.forward_deploy_target_facing(*attacker_id, rules));
                 // Cancel aircraft RTB/wait + docked-idle (not depot), then retask
                 // onto Attack keeping the interrupt stack (combat sets the target).
                 self.queue_megamission_with_teardown(
@@ -907,11 +870,27 @@ impl Simulation {
                     MissionType::Attack,
                     DockTeardown::AircraftOnly,
                 );
-                if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
+                let (entities, cell_occupation) = (
+                    &mut self.substrate.entities,
+                    &mut self.substrate.cell_occupation,
+                );
+                if let Some(e) = entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
+                    let discarded_uncommitted =
+                        movement::clear_navigation_preserving_committed_head(
+                            e,
+                            cell_occupation,
+                            *attacker_id,
+                        );
+                    if discarded_uncommitted
+                        && e.forward_deploy_retry
+                        && let Some(deploy_facing) = deploy_facing
+                    {
+                        e.facing_target = (e.facing != deploy_facing).then_some(deploy_facing);
+                    }
                 }
-                combat::issue_attack_command(
+                combat::issue_attack_command_with_precleared_destination(
                     &mut self.substrate.entities,
                     *attacker_id,
                     *target_id,
@@ -936,17 +915,36 @@ impl Simulation {
                 {
                     return false;
                 }
-                // Force-attack bypasses friendship check (Ctrl+click). Release a
-                // docked-idle aircraft only, then retask onto Attack keeping fields.
+                let deploy_facing =
+                    rules.and_then(|rules| self.forward_deploy_target_facing(*attacker_id, rules));
+                // Force-attack bypasses friendship check (Ctrl+click). It still
+                // emits the same mission-1 target + null-destination envelope as
+                // ordinary Attack, so destination teardown is identical.
                 self.queue_megamission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
                     DockTeardown::IdleOnly,
                 );
-                if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
+                let (entities, cell_occupation) = (
+                    &mut self.substrate.entities,
+                    &mut self.substrate.cell_occupation,
+                );
+                if let Some(e) = entities.get_mut(*attacker_id) {
                     e.order_intent = None;
+                    let discarded_uncommitted =
+                        movement::clear_navigation_preserving_committed_head(
+                            e,
+                            cell_occupation,
+                            *attacker_id,
+                        );
+                    if discarded_uncommitted
+                        && e.forward_deploy_retry
+                        && let Some(deploy_facing) = deploy_facing
+                    {
+                        e.facing_target = (e.facing != deploy_facing).then_some(deploy_facing);
+                    }
                 }
-                combat::issue_attack_command(
+                combat::issue_attack_command_with_precleared_destination(
                     &mut self.substrate.entities,
                     *attacker_id,
                     *target_id,
@@ -967,8 +965,11 @@ impl Simulation {
                 if !self.order_actor_admits(*attacker_id) {
                     return false;
                 }
-                // No target-entity existence check — cells always "exist". Release
-                // a docked-idle aircraft only, then retask onto Attack keeping fields.
+                let deploy_facing =
+                    rules.and_then(|rules| self.forward_deploy_target_facing(*attacker_id, rules));
+                // No target-entity existence check — cells always "exist". The
+                // cell target is distinct, but its mission-1 envelope also carries
+                // a null destination.
                 self.queue_megamission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
@@ -978,7 +979,25 @@ impl Simulation {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
                 }
-                combat::issue_attack_cell_command(
+                let (entities, cell_occupation) = (
+                    &mut self.substrate.entities,
+                    &mut self.substrate.cell_occupation,
+                );
+                if let Some(e) = entities.get_mut(*attacker_id) {
+                    let discarded_uncommitted =
+                        movement::clear_navigation_preserving_committed_head(
+                            e,
+                            cell_occupation,
+                            *attacker_id,
+                        );
+                    if discarded_uncommitted
+                        && e.forward_deploy_retry
+                        && let Some(deploy_facing) = deploy_facing
+                    {
+                        e.facing_target = (e.facing != deploy_facing).then_some(deploy_facing);
+                    }
+                }
+                combat::issue_attack_cell_command_with_precleared_destination(
                     &mut self.substrate.entities,
                     *attacker_id,
                     *target_rx,
@@ -1118,7 +1137,7 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                self.deploy_unit_into_building_with_overlay_context(
+                self.begin_unit_deploy_into_building_with_overlay_context(
                     *entity_id,
                     rules,
                     overlay_registry,

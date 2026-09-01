@@ -277,6 +277,17 @@ fn finish_order(
 /// exactly the same as having no `Primary=` line at all.
 const NO_WEAPON_NAMES: [&str; 2] = ["none", "<none>"];
 
+/// Whether an INI weapon slot names a real weapon rather than a null spelling.
+pub(crate) fn has_weapon_reference(slot: Option<&str>) -> bool {
+    slot.is_some_and(|name| {
+        let name = name.trim();
+        !name.is_empty()
+            && !NO_WEAPON_NAMES
+                .iter()
+                .any(|none| name.eq_ignore_ascii_case(none))
+    })
+}
+
 /// Does this object accept an attack-move order?
 ///
 /// Retail asks the object, and the object forwards the question straight to its
@@ -331,13 +342,7 @@ fn entity_can_attack_move(
     if obj.prevent_attack_move {
         return false;
     }
-    obj.primary.as_deref().is_some_and(|primary| {
-        let primary = primary.trim();
-        !primary.is_empty()
-            && !NO_WEAPON_NAMES
-                .iter()
-                .any(|none| primary.eq_ignore_ascii_case(none))
-    })
+    has_weapon_reference(obj.primary.as_deref())
 }
 
 /// Every selected object has to accept an attack-move order for the chord to fire.
@@ -423,6 +428,48 @@ pub(crate) fn object_click_payload(
             attacker_id,
             target_id,
         },
+    }
+}
+
+/// The command one selected mobile commits for Ctrl force-fire on an empty cell.
+///
+/// gamemd-derived: `TechnoClass::What_Action_OnCell @ 0x00700600` returns the
+/// armed-unit Attack action, and `FootClass::ClickedAction_Cell @ 0x004D7D50`
+/// emits MegaMission 1 with the clicked cell as target and a null destination.
+/// There is no Harvester exclusion: stock SMIN is both a miner and armed, so it
+/// takes this path. Unarmed units retain VERA's existing Move fallback.
+fn cell_force_fire_payload(
+    sim: &crate::sim::world::Simulation,
+    rules: &crate::rules::ruleset::RuleSet,
+    attacker_id: u64,
+    target_rx: u16,
+    target_ry: u16,
+    queue: bool,
+) -> Command {
+    let unit_armed = sim
+        .entities()
+        .get(attacker_id)
+        .and_then(|entity| rules.object(sim.interner.resolve(entity.type_ref)))
+        .is_some_and(|obj| {
+            has_weapon_reference(obj.primary.as_deref())
+                || has_weapon_reference(obj.secondary.as_deref())
+        });
+
+    if unit_armed {
+        Command::ForceAttackCell {
+            attacker_id,
+            target_rx,
+            target_ry,
+        }
+    } else {
+        let goal = nearest_reachable_goal(sim.path_grid(), (target_rx, target_ry));
+        Command::Move {
+            entity_id: attacker_id,
+            target_rx: goal.0,
+            target_ry: goal.1,
+            queue,
+            group_id: None,
+        }
     }
 }
 
@@ -1105,61 +1152,17 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     )
                 } else if force_fire && !cell_is_shrouded {
                     // Force-fire on empty terrain: per-unit dispatch matching
-                    // gamemd What_Action_OnCell — armed mobile units fire at
-                    // the cell, unarmed (Engineer/Harvester/MCV) fall through
-                    // to plain Move.
-                    let unit_armed = sim
-                        .entities()
-                        .get(stable_id)
-                        .and_then(|e| {
-                            let type_str = sim.interner.resolve(e.type_ref);
-                            Some(&resources.rules)
-                                .and_then(|r| r.object(type_str))
-                                .map(|obj| obj.primary.is_some() || obj.secondary.is_some())
-                        })
-                        .unwrap_or(false);
-                    let is_harvester = sim
-                        .entities()
-                        .get(stable_id)
-                        .is_some_and(|e| e.miner.is_some());
-
-                    if unit_armed && !is_harvester {
-                        Command::ForceAttackCell {
-                            attacker_id: stable_id,
-                            target_rx,
-                            target_ry,
-                        }
-                    } else {
-                        // Unarmed fall-through to plain Move. Reuse the same
-                        // walkability fallback the regular Move path uses
-                        // (lines below) — if the cell is unwalkable, route to
-                        // nearest walkable cell so an Engineer ctrl-clicking
-                        // water doesn't silently stall.
-                        let goal: (u16, u16) = {
-                            let mut g = (target_rx, target_ry);
-                            if let Some(grid) = sim.path_grid() {
-                                if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(
-                                    grid, g.0, g.1,
-                                ) {
-                                    if let Some(nearest) =
-                                        crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
-                                            grid, g, 12,
-                                        )
-                                    {
-                                        g = nearest;
-                                    }
-                                }
-                            }
-                            g
-                        };
-                        Command::Move {
-                            entity_id: stable_id,
-                            target_rx: goal.0,
-                            target_ry: goal.1,
-                            queue: queue_mode,
-                            group_id: None,
-                        }
-                    }
+                    // gamemd What_Action_OnCell — armed mobile units, including
+                    // the stock armed SMIN, fire at the cell; unarmed units fall
+                    // through to plain Move.
+                    cell_force_fire_payload(
+                        sim,
+                        &resources.rules,
+                        stable_id,
+                        target_rx,
+                        target_ry,
+                        queue_mode,
+                    )
                 } else {
                     match order_mode {
                         OrderMode::Move | OrderMode::AttackMove => {
@@ -1429,19 +1432,25 @@ mod tests {
     fn chord_rules() -> crate::rules::ruleset::RuleSet {
         let ini = crate::rules::ini_parser::IniFile::from_str(
             "[InfantryTypes]\n\
+             0=SLAV\n\
              [VehicleTypes]\n\
              0=MTNK\n\
              1=HARV\n\
              2=SREF\n\
              3=CMIN\n\
              4=SHAD\n\
+             5=SMIN\n\
              [AircraftTypes]\n\
              0=ORCA\n\
              [BuildingTypes]\n\
              0=GAWEAP\n\
+             1=YAREFN\n\
              [MTNK]\n\
              Strength=300\n\
              Primary=105mm\n\
+             [SLAV]\n\
+             Strength=125\n\
+             Slaved=yes\n\
              [HARV]\n\
              Strength=1000\n\
              Harvester=yes\n\
@@ -1454,6 +1463,15 @@ mod tests {
              Strength=200\n\
              Primary=105mm\n\
              PreventAttackMove=yes\n\
+             [SMIN]\n\
+             Strength=2000\n\
+             ResourceGatherer=yes\n\
+             ResourceDestination=yes\n\
+             Primary=105mm\n\
+             DeploysInto=YAREFN\n\
+             ROT=5\n\
+             Enslaves=SLAV\n\
+             SlavesNumber=5\n\
              [SREF]\n\
              Strength=200\n\
              Secondary=105mm\n\
@@ -1463,6 +1481,11 @@ mod tests {
              [GAWEAP]\n\
              Strength=1000\n\
              Primary=105mm\n\
+             [YAREFN]\n\
+             Strength=2000\n\
+             DeployFacing=0\n\
+             UndeploysInto=SMIN\n\
+             Foundation=2x2\n\
              [WeaponTypes]\n\
              0=105mm\n\
              [105mm]\n\
@@ -1536,6 +1559,89 @@ mod tests {
         assert!(!entity_can_attack_move(&sim, Some(&rules), chrono_miner));
         // A secondary-only type is refused: the rule reads Primary only.
         assert!(!entity_can_attack_move(&sim, Some(&rules), arty));
+    }
+
+    /// Production proof for the stock exception that exposed the old gate:
+    /// SMIN has a live miner component *and* a real weapon. The same payload
+    /// helper called by `try_queue_context_order_at_screen_point` must therefore
+    /// produce ForceAttackCell, and the real world-command consumer must retain
+    /// mission-1 ownership while its deploy-facing retry is live.
+    #[test]
+    fn ctrl_empty_cell_producer_routes_armed_smin_into_deploy_retry_attack_owner() {
+        let rules = chord_rules();
+        let mut sim = Simulation::new();
+        sim.resolve_type_handles(&rules);
+        let height_map: std::collections::BTreeMap<(u16, u16), u8> =
+            std::collections::BTreeMap::new();
+        let yuri = sim.interner.intern("YuriCountry");
+        sim.houses.insert(
+            yuri,
+            crate::sim::house_state::HouseState::new(yuri, 2, Some(yuri), true, 0, 10),
+        );
+        sim.session.house_order.push(yuri);
+
+        let smin = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0x80, 0, &rules)
+            .expect("stock-shaped armed SMIN");
+        let cmin = sim
+            .spawn_object("CMIN", "YuriCountry", 14, 10, 0, &rules, &height_map)
+            .expect("stock-shaped unarmed Chrono Miner");
+        assert!(
+            sim.entities()
+                .get(smin)
+                .is_some_and(|entity| entity.miner.is_some()),
+            "fixture must exercise the former harvester exclusion"
+        );
+        assert!(
+            sim.entities()
+                .get(cmin)
+                .is_some_and(|entity| entity.miner.is_some()),
+            "negative control must also own a Miner component"
+        );
+        assert_eq!(
+            cell_force_fire_payload(&sim, &rules, cmin, 14, 6, false),
+            Command::Move {
+                entity_id: cmin,
+                target_rx: 14,
+                target_ry: 6,
+                queue: false,
+                group_id: None,
+            },
+            "unarmed miner must retain the Move fallback"
+        );
+        assert!(sim.apply_command(
+            "YuriCountry",
+            &Command::DeployMcv { entity_id: smin },
+            Some(&rules),
+            None,
+            &height_map,
+        ));
+        assert!(
+            sim.entities()
+                .get(smin)
+                .is_some_and(|entity| entity.forward_deploy_retry),
+            "mis-facing deploy must leave the native retry live"
+        );
+
+        let command = cell_force_fire_payload(&sim, &rules, smin, 10, 6, false);
+        assert_eq!(
+            command,
+            Command::ForceAttackCell {
+                attacker_id: smin,
+                target_rx: 10,
+                target_ry: 6,
+            }
+        );
+        assert!(sim.apply_command("YuriCountry", &command, Some(&rules), None, &height_map,));
+
+        let source = sim.entities().get(smin).expect("SMIN remains live");
+        assert!(source.owns_forward_deploy_attack_retry());
+        assert_eq!(
+            source.attack_target.as_ref().map(|attack| attack.target),
+            Some(crate::sim::combat::TargetKind::Cell(10, 6))
+        );
+        assert!(source.navigation.nav_com.is_none());
+        assert!(source.movement_target.is_none());
     }
 
     /// `TechnoTypeClass::Can_Attack_Move @ 0x00711E90` reads BOTH halves: a real
