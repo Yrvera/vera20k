@@ -135,9 +135,37 @@ enum LauncherRegion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LauncherControl {
+    Detail,
+    Resolution,
+    Difficulty,
+    Tooltips,
+    TargetLines,
+    ShowHidden,
+    Scroll,
+    Score,
+    Sound,
+    Voice,
+    Keyboard,
+    Network,
+    MainMenu,
+    BlankFooter,
+    WarningDecoration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LauncherSlot {
+    Column { column: u8, order: u8 },
+    Row { order: u8 },
+    Lane { lane: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LauncherDescriptorEntry {
     id: u16,
+    control: LauncherControl,
     region: LauncherRegion,
+    slot: LauncherSlot,
 }
 
 /// gamemd-derived: the `0xD5` resource hierarchy consumed by primary-proc
@@ -146,65 +174,125 @@ struct LauncherDescriptorEntry {
 const LAUNCHER_DESCRIPTOR: [LauncherDescriptorEntry; 15] = [
     LauncherDescriptorEntry {
         id: 0x52B,
+        control: LauncherControl::Detail,
         region: LauncherRegion::Display,
+        slot: LauncherSlot::Column {
+            column: 0,
+            order: 0,
+        },
     },
     LauncherDescriptorEntry {
         id: 0x6ED,
+        control: LauncherControl::Resolution,
         region: LauncherRegion::Display,
+        slot: LauncherSlot::Column {
+            column: 1,
+            order: 0,
+        },
     },
     LauncherDescriptorEntry {
         id: 0x50F,
+        control: LauncherControl::Difficulty,
         region: LauncherRegion::Game,
+        slot: LauncherSlot::Row { order: 0 },
     },
     LauncherDescriptorEntry {
         id: 0x602,
+        control: LauncherControl::Tooltips,
         region: LauncherRegion::Ui,
+        slot: LauncherSlot::Column {
+            column: 0,
+            order: 0,
+        },
     },
     LauncherDescriptorEntry {
         id: 0x601,
+        control: LauncherControl::TargetLines,
         region: LauncherRegion::Ui,
+        slot: LauncherSlot::Column {
+            column: 0,
+            order: 1,
+        },
     },
     LauncherDescriptorEntry {
         id: 0x604,
+        control: LauncherControl::ShowHidden,
         region: LauncherRegion::Ui,
+        slot: LauncherSlot::Column {
+            column: 0,
+            order: 2,
+        },
     },
     LauncherDescriptorEntry {
         id: 0x52A,
+        control: LauncherControl::Scroll,
         region: LauncherRegion::Ui,
+        slot: LauncherSlot::Column {
+            column: 1,
+            order: 0,
+        },
     },
     LauncherDescriptorEntry {
         id: 0x52F,
+        control: LauncherControl::Score,
         region: LauncherRegion::Audio,
+        slot: LauncherSlot::Lane { lane: 0 },
     },
     LauncherDescriptorEntry {
         id: 0x532,
+        control: LauncherControl::Sound,
         region: LauncherRegion::Audio,
+        slot: LauncherSlot::Lane { lane: 1 },
     },
     LauncherDescriptorEntry {
         id: 0x536,
+        control: LauncherControl::Voice,
         region: LauncherRegion::Audio,
+        slot: LauncherSlot::Lane { lane: 2 },
     },
     LauncherDescriptorEntry {
         id: 0x5CE,
+        control: LauncherControl::Keyboard,
         region: LauncherRegion::RightRail,
+        slot: LauncherSlot::Row { order: 0 },
     },
     LauncherDescriptorEntry {
         id: 0x5CD,
+        control: LauncherControl::Network,
         region: LauncherRegion::RightRail,
+        slot: LauncherSlot::Row { order: 1 },
     },
     LauncherDescriptorEntry {
         id: 0x686,
+        control: LauncherControl::MainMenu,
         region: LauncherRegion::RightRail,
+        slot: LauncherSlot::Row { order: 2 },
     },
     LauncherDescriptorEntry {
         id: 0x695,
+        control: LauncherControl::BlankFooter,
         region: LauncherRegion::Footer,
+        slot: LauncherSlot::Row { order: 0 },
     },
     LauncherDescriptorEntry {
         id: 0x71C,
+        control: LauncherControl::WarningDecoration,
         region: LauncherRegion::Footer,
+        slot: LauncherSlot::Row { order: 1 },
     },
 ];
+
+fn launcher_entries(region: LauncherRegion) -> Vec<&'static LauncherDescriptorEntry> {
+    let mut entries = LAUNCHER_DESCRIPTOR
+        .iter()
+        .filter(|entry| entry.region == region)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| match entry.slot {
+        LauncherSlot::Column { order, .. } | LauncherSlot::Row { order } => order,
+        LauncherSlot::Lane { lane } => lane,
+    });
+    entries
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LauncherTrackbarId {
@@ -247,6 +335,7 @@ pub(crate) enum LauncherCheckboxId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LauncherCue {
+    MainButton,
     GenericClick,
     Checkbox,
     ComboOpen,
@@ -289,6 +378,9 @@ pub(crate) struct LauncherResolutionRow {
 }
 
 impl LauncherResolutionRow {
+    /// gamemd-derived: primary-proc slice `0x005601A0..0x00560270` appends
+    /// admitted dimension pairs to the `0xD5` combo using literal
+    /// `%d x %d x 16` display text.
     pub(crate) fn new(width: i32, height: i32) -> Self {
         Self {
             width,
@@ -467,6 +559,9 @@ fn trackbar_paint_geometry(
     id: LauncherTrackbarId,
     position: u8,
 ) -> TrackbarPaintGeometry {
+    // gamemd-derived: `TrackBar_ProcessMouse @ 0x0061D950` and its owner-draw
+    // path share the literal 12x22 grip, 6px rail inset, and plaque reserve;
+    // paint therefore consumes the same integer `thumb_left` as admission.
     let width = control.width();
     let height = control.height();
     let rail_right = (width - id.plaque_reserve() - 6).max(6);
@@ -521,6 +616,9 @@ impl PhysicalControlFrame {
     }
 }
 
+/// gamemd-derived: the fresh launcher trackbars created by primary-proc slice
+/// `0x0055FDB0..0x0056047A` reject an out-of-range set-position request and
+/// retain constructor position zero rather than clamping it.
 pub(crate) fn admitted_initial_position(requested: i64, maximum: u8) -> u8 {
     u8::try_from(requested)
         .ok()
@@ -528,6 +626,9 @@ pub(crate) fn admitted_initial_position(requested: i64, maximum: u8) -> u8 {
         .unwrap_or(0)
 }
 
+/// gamemd-derived: launcher volume setup in primary-proc slice
+/// `0x0055FDB0..0x0056047A`, fed by setters `0x005FA4A0/0x005FA510/0x005FA590`,
+/// forms the x87 request `trunc(volume * 10 + 0.5)` before range admission.
 pub(crate) fn admitted_volume_position(volume: f32) -> u8 {
     let request = f64::from(volume) * 10.0 + 0.5;
     if !request.is_finite() {
@@ -808,6 +909,15 @@ impl OptionsDialogState {
         }
     }
 
+    /// gamemd-derived: ordinary `0xD5` owner-draw buttons emit
+    /// `[AudioVisual] GUIMainButtonSound` on admitted primary mouse-down;
+    /// `OptionsClass__ShowLauncherDialog @ 0x0055FC80` observes the distinct
+    /// Back/Network/Keyboard result only on the later activation release.
+    pub(crate) fn main_button_mouse_down(&mut self) {
+        self.pending_events
+            .push(LauncherOptionsEvent::Cue(LauncherCue::MainButton));
+    }
+
     /// gamemd-derived: primary-proc slice `0x0055FDB0..0x0056047A` accepts only
     /// a valid combo row and publishes its width/height immediately; final
     /// accepted projection `0x0055FAA0` does not own the resolution pair.
@@ -876,26 +986,11 @@ pub(crate) fn draw_launcher_options_dialog(
                     draw_ui_group(ui, state, palette);
                     ui.add_space(10.0);
                     draw_audio_group(ui, state, palette);
-                    if !state.labels.blank.is_empty() {
-                        ui.label(&state.labels.blank);
-                    }
                 });
                 ui.separator();
-                ui.vertical_centered_justified(|ui| {
-                    ui.heading(&state.labels.options);
-                    ui.add_space(18.0);
-                    if ui.button(&state.labels.keyboard).clicked() {
-                        state.request_result(LauncherParentResult::Keyboard);
-                    }
-                    if ui.button(&state.labels.network).clicked() {
-                        state.request_result(LauncherParentResult::Network);
-                    }
-                    ui.add_space(36.0);
-                    if ui.button(&state.labels.main_menu).clicked() {
-                        state.request_result(LauncherParentResult::Back);
-                    }
-                });
+                draw_right_rail(ui, state);
             });
+            draw_footer(ui, state);
         });
 
     state.drain_output()
@@ -908,20 +1003,26 @@ fn draw_display_group(
 ) {
     client_theme::section_label(ui, &state.labels.display_options, palette);
     ui.columns(2, |columns| {
-        columns[0].label(format!(
-            "{} — {}",
-            state.labels.visual_details, state.detail_caption
-        ));
-        draw_trackbar(
-            &mut columns[0],
-            state,
-            LauncherTrackbarId::Detail,
-            180.0,
-            palette,
-        );
-
-        columns[1].label(&state.labels.set_resolution);
-        draw_resolution_combo(&mut columns[1], state, palette);
+        for entry in launcher_entries(LauncherRegion::Display) {
+            let LauncherSlot::Column { column, .. } = entry.slot else {
+                continue;
+            };
+            let column = &mut columns[usize::from(column)];
+            match entry.control {
+                LauncherControl::Detail => {
+                    column.label(format!(
+                        "{} — {}",
+                        state.labels.visual_details, state.detail_caption
+                    ));
+                    draw_trackbar(column, state, LauncherTrackbarId::Detail, 180.0, palette);
+                }
+                LauncherControl::Resolution => {
+                    column.label(&state.labels.set_resolution);
+                    draw_resolution_combo(column, state, palette);
+                }
+                _ => {}
+            }
+        }
     });
 }
 
@@ -931,11 +1032,15 @@ fn draw_game_group(
     palette: client_theme::ClientPalette,
 ) {
     client_theme::section_label(ui, &state.labels.game_options, palette);
-    ui.label(format!(
-        "{} — {}",
-        state.labels.difficulty, state.difficulty_caption
-    ));
-    draw_trackbar(ui, state, LauncherTrackbarId::Difficulty, 180.0, palette);
+    for entry in launcher_entries(LauncherRegion::Game) {
+        if entry.control == LauncherControl::Difficulty {
+            ui.label(format!(
+                "{} — {}",
+                state.labels.difficulty, state.difficulty_caption
+            ));
+            draw_trackbar(ui, state, LauncherTrackbarId::Difficulty, 180.0, palette);
+        }
+    }
 }
 
 fn draw_ui_group(
@@ -945,42 +1050,35 @@ fn draw_ui_group(
 ) {
     client_theme::section_label(ui, &state.labels.ui_options, palette);
     ui.columns(2, |columns| {
-        let tooltips = state.labels.tooltips.clone();
-        let target_lines = state.labels.target_lines.clone();
-        let show_hidden = state.labels.show_hidden.clone();
-        draw_checkbox(
-            &mut columns[0],
-            state,
-            LauncherCheckboxId::Tooltips,
-            &tooltips,
-            palette,
-        );
-        draw_checkbox(
-            &mut columns[0],
-            state,
-            LauncherCheckboxId::TargetLines,
-            &target_lines,
-            palette,
-        );
-        draw_checkbox(
-            &mut columns[0],
-            state,
-            LauncherCheckboxId::ShowHidden,
-            &show_hidden,
-            palette,
-        );
-
-        columns[1].label(format!(
-            "{} — {}",
-            state.labels.scroll_rate, state.scroll_caption
-        ));
-        draw_trackbar(
-            &mut columns[1],
-            state,
-            LauncherTrackbarId::Scroll,
-            180.0,
-            palette,
-        );
+        for entry in launcher_entries(LauncherRegion::Ui) {
+            let LauncherSlot::Column { column, .. } = entry.slot else {
+                continue;
+            };
+            let column = &mut columns[usize::from(column)];
+            let checkbox = match entry.control {
+                LauncherControl::Tooltips => {
+                    Some((LauncherCheckboxId::Tooltips, state.labels.tooltips.clone()))
+                }
+                LauncherControl::TargetLines => Some((
+                    LauncherCheckboxId::TargetLines,
+                    state.labels.target_lines.clone(),
+                )),
+                LauncherControl::ShowHidden => Some((
+                    LauncherCheckboxId::ShowHidden,
+                    state.labels.show_hidden.clone(),
+                )),
+                _ => None,
+            };
+            if let Some((id, label)) = checkbox {
+                draw_checkbox(column, state, id, &label, palette);
+            } else if entry.control == LauncherControl::Scroll {
+                column.label(format!(
+                    "{} — {}",
+                    state.labels.scroll_rate, state.scroll_caption
+                ));
+                draw_trackbar(column, state, LauncherTrackbarId::Scroll, 180.0, palette);
+            }
+        }
     });
 }
 
@@ -991,31 +1089,81 @@ fn draw_audio_group(
 ) {
     client_theme::section_label(ui, &state.labels.audio_options, palette);
     ui.columns(3, |columns| {
-        columns[0].label(&state.labels.music_volume);
-        draw_trackbar(
-            &mut columns[0],
-            state,
-            LauncherTrackbarId::Score,
-            128.0,
-            palette,
-        );
-        columns[1].label(&state.labels.sound_volume);
-        draw_trackbar(
-            &mut columns[1],
-            state,
-            LauncherTrackbarId::Sound,
-            128.0,
-            palette,
-        );
-        columns[2].label(&state.labels.voice_volume);
-        draw_trackbar(
-            &mut columns[2],
-            state,
-            LauncherTrackbarId::Voice,
-            128.0,
-            palette,
-        );
+        for entry in launcher_entries(LauncherRegion::Audio) {
+            let LauncherSlot::Lane { lane } = entry.slot else {
+                continue;
+            };
+            let (id, label) = match entry.control {
+                LauncherControl::Score => {
+                    (LauncherTrackbarId::Score, state.labels.music_volume.clone())
+                }
+                LauncherControl::Sound => {
+                    (LauncherTrackbarId::Sound, state.labels.sound_volume.clone())
+                }
+                LauncherControl::Voice => {
+                    (LauncherTrackbarId::Voice, state.labels.voice_volume.clone())
+                }
+                _ => continue,
+            };
+            let column = &mut columns[usize::from(lane)];
+            column.label(label);
+            draw_trackbar(column, state, id, 128.0, palette);
+        }
     });
+}
+
+fn draw_right_rail(ui: &mut egui::Ui, state: &mut OptionsDialogState) {
+    ui.vertical_centered_justified(|ui| {
+        ui.heading(&state.labels.options);
+        ui.add_space(18.0);
+        for entry in launcher_entries(LauncherRegion::RightRail) {
+            let (label, result) = match entry.control {
+                LauncherControl::Keyboard => (
+                    state.labels.keyboard.clone(),
+                    LauncherParentResult::Keyboard,
+                ),
+                LauncherControl::Network => {
+                    (state.labels.network.clone(), LauncherParentResult::Network)
+                }
+                LauncherControl::MainMenu => {
+                    ui.add_space(36.0);
+                    (state.labels.main_menu.clone(), LauncherParentResult::Back)
+                }
+                _ => continue,
+            };
+            draw_parent_result_button(ui, state, &label, result);
+        }
+    });
+}
+
+fn draw_parent_result_button(
+    ui: &mut egui::Ui,
+    state: &mut OptionsDialogState,
+    label: &str,
+    result: LauncherParentResult,
+) {
+    let response = ui.button(label);
+    let pressed = ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary));
+    if pressed && response.is_pointer_button_down_on() {
+        state.main_button_mouse_down();
+    }
+    if response.clicked_by(egui::PointerButton::Primary) {
+        state.request_result(result);
+    }
+}
+
+fn draw_footer(ui: &mut egui::Ui, state: &OptionsDialogState) {
+    for entry in launcher_entries(LauncherRegion::Footer) {
+        match entry.control {
+            LauncherControl::BlankFooter if !state.labels.blank.is_empty() => {
+                ui.label(&state.labels.blank);
+            }
+            // Exact `0x71C` warning-decoration SHP/timing is a frozen visual
+            // exactification residual; the semantic parent keeps it inert.
+            LauncherControl::WarningDecoration | LauncherControl::BlankFooter => {}
+            _ => {}
+        }
+    }
 }
 
 fn draw_trackbar(
@@ -1348,19 +1496,86 @@ mod tests {
 
     #[test]
     fn exact_launcher_label_fallbacks_are_local_and_complete() {
+        const EXPECTED: [(&str, &str); 34] = [
+            ("GUI:OptionsMenu", "Options"),
+            ("GUI:MainMenu", "Main Menu"),
+            ("GUI:Keyboard", "Keyboard"),
+            ("GUI:Network", "Network"),
+            ("GUI:DisplayOptions", "Display Options"),
+            ("GUI:GameOptions", "Game Options"),
+            ("GUI:UIOptions", "UI Options"),
+            ("GUI:AudioOptions", "Audio Options"),
+            ("GUI:SetResolution", "Set Game Resolution"),
+            ("GUI:VisualDetails", "Visual Details"),
+            ("GUI:Difficulty", "Difficulty"),
+            ("GUI:Tooltips", "Tooltips"),
+            ("GUI:ScrollRate", "Scroll Rate"),
+            ("GUI:TargetLines", "Target Lines"),
+            ("GUI:ShowHidden", "See Hidden Objects"),
+            ("GUI:MusicVolume", "Music Volume"),
+            ("GUI:SoundVolume", "Sound Volume"),
+            ("GUI:VoiceVolume", "Voice Volume"),
+            ("GUI:Blank", ""),
+            ("GUI:HigherDetail", "Higher"),
+            ("GUI:Harder", "Harder"),
+            ("GUI:Faster", "Faster"),
+            ("TXT_LOW", "Low"),
+            ("TXT_HIGH", "High"),
+            ("TXT_EASY", "Easy"),
+            ("TXT_NORMAL", "Normal"),
+            ("TXT_HARD", "Hard"),
+            ("TXT_SLOWEST", "Slowest"),
+            ("TXT_SLOWER", "Slower"),
+            ("TXT_SLOW", "Slow"),
+            ("TXT_MEDIUM", "Medium"),
+            ("TXT_FAST", "Fast"),
+            ("TXT_FASTER", "Faster"),
+            ("TXT_FASTEST", "Fastest"),
+        ];
+        assert_eq!(LAUNCHER_LABEL_SPECS, EXPECTED);
         let seen = std::cell::RefCell::new(Vec::new());
         let labels = LauncherOptionsLabels::resolve(&|key| {
             seen.borrow_mut().push(key.to_string());
             None
         });
-        assert_eq!(
-            seen.into_inner(),
-            LAUNCHER_LABEL_SPECS.map(|(key, _)| key.to_string())
-        );
-        assert_eq!(labels.options, "Options");
-        assert_eq!(labels.main_menu, "Main Menu");
-        assert_eq!(labels.blank, "");
-        assert_eq!(labels.scroll_tokens[6], "Fastest");
+        assert_eq!(seen.into_inner(), EXPECTED.map(|(key, _)| key.to_string()));
+        let actual_values = [
+            labels.options.as_str(),
+            labels.main_menu.as_str(),
+            labels.keyboard.as_str(),
+            labels.network.as_str(),
+            labels.display_options.as_str(),
+            labels.game_options.as_str(),
+            labels.ui_options.as_str(),
+            labels.audio_options.as_str(),
+            labels.set_resolution.as_str(),
+            labels.visual_details.as_str(),
+            labels.difficulty.as_str(),
+            labels.tooltips.as_str(),
+            labels.scroll_rate.as_str(),
+            labels.target_lines.as_str(),
+            labels.show_hidden.as_str(),
+            labels.music_volume.as_str(),
+            labels.sound_volume.as_str(),
+            labels.voice_volume.as_str(),
+            labels.blank.as_str(),
+            labels.higher_detail.as_str(),
+            labels.harder.as_str(),
+            labels.faster.as_str(),
+            labels.low.as_str(),
+            labels.high.as_str(),
+            labels.easy.as_str(),
+            labels.normal.as_str(),
+            labels.hard.as_str(),
+            labels.scroll_tokens[0].as_str(),
+            labels.scroll_tokens[1].as_str(),
+            labels.scroll_tokens[2].as_str(),
+            labels.scroll_tokens[3].as_str(),
+            labels.scroll_tokens[4].as_str(),
+            labels.scroll_tokens[5].as_str(),
+            labels.scroll_tokens[6].as_str(),
+        ];
+        assert_eq!(actual_values, EXPECTED.map(|(_, fallback)| fallback));
     }
 
     #[test]
@@ -1378,20 +1593,142 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_preserves_region_order_and_omits_dormant_603() {
-        assert_eq!(LAUNCHER_DESCRIPTOR[0].region, LauncherRegion::Display);
-        assert_eq!(LAUNCHER_DESCRIPTOR[2].region, LauncherRegion::Game);
-        assert_eq!(LAUNCHER_DESCRIPTOR[3].region, LauncherRegion::Ui);
-        assert_eq!(LAUNCHER_DESCRIPTOR[7].region, LauncherRegion::Audio);
-        assert_eq!(LAUNCHER_DESCRIPTOR[10].region, LauncherRegion::RightRail);
-        assert_eq!(LAUNCHER_DESCRIPTOR[13].region, LauncherRegion::Footer);
+    fn descriptor_is_complete_authoritative_layout_and_omits_dormant_603() {
+        let actual =
+            LAUNCHER_DESCRIPTOR.map(|entry| (entry.id, entry.control, entry.region, entry.slot));
+        let expected = [
+            (
+                0x52B,
+                LauncherControl::Detail,
+                LauncherRegion::Display,
+                LauncherSlot::Column {
+                    column: 0,
+                    order: 0,
+                },
+            ),
+            (
+                0x6ED,
+                LauncherControl::Resolution,
+                LauncherRegion::Display,
+                LauncherSlot::Column {
+                    column: 1,
+                    order: 0,
+                },
+            ),
+            (
+                0x50F,
+                LauncherControl::Difficulty,
+                LauncherRegion::Game,
+                LauncherSlot::Row { order: 0 },
+            ),
+            (
+                0x602,
+                LauncherControl::Tooltips,
+                LauncherRegion::Ui,
+                LauncherSlot::Column {
+                    column: 0,
+                    order: 0,
+                },
+            ),
+            (
+                0x601,
+                LauncherControl::TargetLines,
+                LauncherRegion::Ui,
+                LauncherSlot::Column {
+                    column: 0,
+                    order: 1,
+                },
+            ),
+            (
+                0x604,
+                LauncherControl::ShowHidden,
+                LauncherRegion::Ui,
+                LauncherSlot::Column {
+                    column: 0,
+                    order: 2,
+                },
+            ),
+            (
+                0x52A,
+                LauncherControl::Scroll,
+                LauncherRegion::Ui,
+                LauncherSlot::Column {
+                    column: 1,
+                    order: 0,
+                },
+            ),
+            (
+                0x52F,
+                LauncherControl::Score,
+                LauncherRegion::Audio,
+                LauncherSlot::Lane { lane: 0 },
+            ),
+            (
+                0x532,
+                LauncherControl::Sound,
+                LauncherRegion::Audio,
+                LauncherSlot::Lane { lane: 1 },
+            ),
+            (
+                0x536,
+                LauncherControl::Voice,
+                LauncherRegion::Audio,
+                LauncherSlot::Lane { lane: 2 },
+            ),
+            (
+                0x5CE,
+                LauncherControl::Keyboard,
+                LauncherRegion::RightRail,
+                LauncherSlot::Row { order: 0 },
+            ),
+            (
+                0x5CD,
+                LauncherControl::Network,
+                LauncherRegion::RightRail,
+                LauncherSlot::Row { order: 1 },
+            ),
+            (
+                0x686,
+                LauncherControl::MainMenu,
+                LauncherRegion::RightRail,
+                LauncherSlot::Row { order: 2 },
+            ),
+            (
+                0x695,
+                LauncherControl::BlankFooter,
+                LauncherRegion::Footer,
+                LauncherSlot::Row { order: 0 },
+            ),
+            (
+                0x71C,
+                LauncherControl::WarningDecoration,
+                LauncherRegion::Footer,
+                LauncherSlot::Row { order: 1 },
+            ),
+        ];
+        assert_eq!(actual, expected);
         assert!(!LAUNCHER_DESCRIPTOR.iter().any(|entry| entry.id == 0x603));
         assert_eq!(
-            LAUNCHER_DESCRIPTOR[7..10]
+            launcher_entries(LauncherRegion::Audio)
                 .iter()
-                .map(|entry| entry.id)
+                .map(|entry| entry.control)
                 .collect::<Vec<_>>(),
-            [0x52F, 0x532, 0x536]
+            [
+                LauncherControl::Score,
+                LauncherControl::Sound,
+                LauncherControl::Voice,
+            ]
+        );
+        assert_eq!(
+            launcher_entries(LauncherRegion::RightRail)
+                .iter()
+                .map(|entry| entry.control)
+                .collect::<Vec<_>>(),
+            [
+                LauncherControl::Keyboard,
+                LauncherControl::Network,
+                LauncherControl::MainMenu,
+            ]
         );
     }
 
@@ -1733,6 +2070,28 @@ mod tests {
         assert_eq!(packed.score_volume.to_bits(), 0.0_f32.to_bits());
         assert_eq!(packed.sound_volume.to_bits(), 0.5_f32.to_bits());
         assert_eq!(packed.voice_volume.to_bits(), 0.6_f32.to_bits());
+    }
+
+    #[test]
+    fn main_button_press_cues_before_release_result() {
+        let mut state = state(true);
+        state.main_button_mouse_down();
+        assert_eq!(
+            state.drain_output(),
+            LauncherOptionsFrameOutput {
+                events: vec![LauncherOptionsEvent::Cue(LauncherCue::MainButton)],
+                result: None,
+            }
+        );
+
+        state.request_result(LauncherParentResult::Network);
+        assert_eq!(
+            state.drain_output(),
+            LauncherOptionsFrameOutput {
+                events: Vec::new(),
+                result: Some(LauncherParentResult::Network),
+            }
+        );
     }
 
     #[test]
