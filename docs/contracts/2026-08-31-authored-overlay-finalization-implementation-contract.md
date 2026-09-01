@@ -3,6 +3,7 @@
 Date: 2026-08-31
 Scope: Bridge transaction 3: fresh-load OverlayPack/OverlayData finalization, fixed-map low Mark, both load-time Recalc boundaries, generated phase preservation, and the native-identity/lifecycle prerequisites they share
 Status: READY_FOR_IMPLEMENTATION — amended 2026-09-01 for verified authored-wall ScenarioInit success and retained blocker-neighbor counts
+Landing status (2026-09-01): PR #207 delivered the authored arms of G1-G9, G12, and G13 (critic 3 PASS, no blocking findings). Still open for the transaction-3 continuation: G10, G11, the G6 value-only `MapClass+0x134` aggregate, the ancillary `InitCellAttributes` slot seam, the G7 `None`-plane rejection gate, the CellAnim tiberium remap/ZAdjust child fields, and OQ-37 (post-`Full_Init` OreTwinkle Scenario draws) — see the design ledger's "Transaction 3 residual ledger after PR #207".
 
 ## Gap Being Closed
 

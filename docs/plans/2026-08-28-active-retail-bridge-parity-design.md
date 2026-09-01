@@ -8,9 +8,9 @@ The result must preserve behavior that already matches, replace behavior that co
 
 ## Status and Scope Decision
 
-**Revision 20 is TRANSACTION-3-CRITIC-REPAIR-DESIGN-APPROVED. Revision 19's authored-wall work remains required, but the first implementation critic rejected commit `95f77159`: live wall damage and placement still deferred or omitted native tactical/radar publication and placement still reordered cleanup, owner, navigation, pointer expiry, and the common Recalc tail. Fresh live checks of `CellClass::DestroyOverlay @ 0x00480CB0`, `CellClass::PostDestructionWallCleanup @ 0x00480630`, and `OverlayClass::Mark @ 0x005FC570` define the synchronous host repair below. P0-R1 remains merged through PR #196; transaction 3 remains the active transaction and no wall mechanism is closed.**
+**Revision 21 is TRANSACTION-3-SLICE-A-LANDED. PR #207 (`feature/bridge-authored-overlay-finalization`, merged with `main` @ `15a48e55`) carries the fresh authored load corridor: the one y-outer/x-inner OverlayPack/OverlayData transaction with the ephemeral Overlay object lifecycle, ordinary/high/low/wall Mark, Land-5 germination, the unconditional drain, the first anti-diagonal Recalc with per-Mark/first-sweep terrain Anims, the consumed-once finalized identity/state/authored-wall-count payload, Terrain/growth-then-spread-queue/Techno/Smudge native-ID ordering, scalar deletion and the final unlatch/Recalc sweep, the synchronous wall-mutation host, and both production ingresses (`load_map_from_initial` authored arm and `headless_scenario::load`). Its critic chain is wall critic 1 NEEDS_FIX on `95f77159`, wall critic 2 PASS on `da38da27`, and full-slice critic 3 PASS on the merged HEAD with zero blocking findings and six recorded residuals (below). Transaction 3 remains the active transaction: G10 (generated phase journal), G11 (preview lifetime), the value-only `MapClass+0x134` aggregate, the ancillary `InitCellAttributes` slot seam, the `None` retained-plane rejection gate, the CellAnim tiberium remap/ZAdjust child fields, and the newly found post-`Full_Init` OreTwinkle Scenario draws (OQ-37) stay open, so no `BR-M` row closes here.**
 
-`docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows; the living inventory now has 36 explicit questions. OQ-34 closed the complete pre-map native-ID prefix, while the same zero-add pass reopened and then routed the terminal raw `0x100000`/`0x200000` clear/restamp and ordinary-cell LightConvert recomputation as OQ-35/OQ-36. The tenth broad pass added nothing. Before every transaction the inventory is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
+`docs/research/bridges/00-system-models/ACTIVE_RETAIL_BRIDGE_COVERAGE_REINVESTIGATION_GHIDRA_REPORT.md` at commit `50d0ef8a` is the bounded discovery baseline. Ten successive read-only omission audits expanded that baseline to 27 mechanism rows; the living inventory now has 37 explicit questions (OQ-37 was opened by PR #207's fresh critic). OQ-34 closed the complete pre-map native-ID prefix, while the same zero-add pass reopened and then routed the terminal raw `0x100000`/`0x200000` clear/restamp and ordinary-cell LightConvert recomputation as OQ-35/OQ-36. The tenth broad pass added nothing. Before every transaction the inventory is refreshed against then-current `main`, active-retail `gamemd.exe`, retail data, named validation, and critic evidence. A newly proved writer, consumer, contradiction, or exclusion reopens the affected mechanism and transaction routing. Status comes from cited evidence and commits, never a hand-maintained parity percentage.
 
 The fourth review's random-map blocker and the Revision-4/Revision-5 critics' launch, projection,
 trace-schema and authored-constructor blockers are closed by
@@ -36,17 +36,19 @@ closure gates. A transaction may supply part of more than one mechanism, and a m
 more than one transaction; neither fact permits a mechanism to inherit another row's pass.
 
 Current implementation baseline is freshly fetched `origin/main` commit
-`50e4b7ba4732fd3fb48e5b819e1abc55327ec557` (2026-08-31), with PR #170 merge
-`f4baff6e` confirmed as an ancestor. PR #170 merged P0, transaction 1 (load inputs/raw facts), and
+`15a48e5528` (2026-09-01, PR #209 crate authority) plus PR #207's authored load corridor,
+with PR #170 merge `f4baff6e` confirmed as an ancestor. PR #170 merged P0, transaction 1 (load inputs/raw facts), and
 transaction 2 (RMG low-bridge launch construction), including their focused validation and critic
 corrections. PR #196 then merged P0-R1's universal stock-offline Scenario prefix, accepted-RMG
 active-waypoint ownership, one post-Fill cursor, and its fresh critic corrections. Later merged work
 also changed ground-height ownership, Drive/Ship slope handling, radar-overlay projection, FNPC
 bridge projection, final House `BasePlan`/AI state, snapshot schema v113, lifecycle/deploy seams, and
 bridge-harness hashes. PR #197 added only Team-AI INI tests and did not touch a transaction-3 owner.
-No merge through `50e4b7ba` closed transaction 3's authored OverlayPack,
-procedural low Mark, finalized-payload, or two-Recalc-boundary work. Those changes are evidence to
-preserve, not proof that any remaining `BR-M` row is closed. Before each remaining transaction is
+PR #207 landed transaction 3's authored OverlayPack, procedural low Mark, finalized-payload, and
+two-Recalc-boundary work for authored sources; main's later crate authority (PR #209) is merged
+underneath it with distinct snapshot/hash schema steps (v114 crate slots, v115 retained wall plane and
+shared-dummy overlay word). Those changes are evidence to preserve, not proof that any remaining
+`BR-M` row is closed. Before each remaining transaction is
 contracted, its builder runs a fresh direct disparity scan against then-current `main`; stale Rust
 gap descriptions in the bounded coverage report are historical hypotheses only.
 
@@ -61,9 +63,10 @@ Building/Anim/ID/sound lifetime across replacement, Cancel, re-entry, and accept
 real authored Overlay object/registry/deferred-drain/slope-survivor lifecycle. A later focused wall
 report additionally proves authored ScenarioInit success, active-retail wall reachability, and the
 retained blocker-neighbor count plane that final identities cannot reconstruct. They also
-reopen Revision 15's one-sweep and dummy-Land/zone/cache assumptions. Every required Rust
-contribution remains open until the corrected design, implementation contract, focused validation,
-fresh critic chain, and PR merge pass. GSI-04.12, GSI-04.13, GSI-04.14, and GSI-04.15 remain
+reopen Revision 15's one-sweep and dummy-Land/zone/cache assumptions. PR #207 delivered the
+authored contributions of G1-G9, G12, and G13 through a passed fresh critic chain; the remaining
+transaction-3 work is the residual ledger below (G10, G11, `MapClass+0x134`, ancillary slots, the
+`None`-plane gate, CellAnim child fields, and OQ-37). GSI-04.12, GSI-04.13, GSI-04.14, and GSI-04.15 remain
 aggregate-open until all of their mechanisms and cross-system consumers pass. This ledger is
 replaced with current evidence after each merged transaction rather than appended as historical
 prose.
@@ -1005,6 +1008,54 @@ and production witnesses for ordinary combat, persistent projectile, Lightning, 
 sale, and the active-data-conditional placement cleanup. Tests must prove that no deferred production
 radar replay remains. Existing exact connectivity/count/snapshot/hash tests remain preservation gates.
 
+##### Transaction 3 residual ledger after PR #207 (critic 3, 2026-09-01)
+
+Recorded open items, each with its native reading and owner. None is closed by PR #207.
+
+- **OQ-37 post-`Full_Init` OreTwinkle Scenario draws (non-deferrable).** `FUN_00684C30` (called
+  by `ScenarioClass::Read_Scenario @ 0x00684620` after `Full_Init`) runs, in order: a third full
+  `RecalcAttributes` sweep (`0x00684FAB..0x00684FC0`), `ComputeBridgeZones @ 0x0056D6E0`,
+  `RebuildZoneConnectivity @ 0x0056C510`, `RebuildAllZoneLevels @ 0x00581F50`, `FUN_00586BF0`, one
+  `ParticleSystemClass @ 0x0062DC50` construction (native ID), then, when `Rules+0x1870`
+  (`OreTwinkle=TWNK1`) is non-null, an anti-diagonal pass over every real cell that calls
+  `Random::RandomRanged @ 0x0065C7E0` on the Scenario RNG (`ECX = Scenario+0x218`,
+  `0x00685095`) with range `(0, OreTwinkleChance-1)` for every cell whose
+  `CellClass::Get_Tiberium_Value @ 0x00485020` is nonzero and constructs `AnimClass @ 0x00421EA0` on a
+  zero roll. Rust's `finalize_scenario_post_map` has no twinkle step, so every fresh load with ore
+  advances the Scenario cursor differently from gamemd before the first tick and the start-of-match
+  twinkle animations are absent. Frequency: every map with resource overlays. Owner: the post-map
+  tail (transaction 3 continuation), inserted after the modeled AiOpeningCredits loop
+  (`HouseClass::Add_Tiberium_Credits` at `0x00684F45..0x00684F69` precedes all of the above).
+- **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6).** The final
+  authored sweep (`src/sim/runtime.rs` `finalize_and_populate_staged_authored_scenario`) performs
+  unlatch -> Recalc -> wall owner but not the arg-0 value call, the wrapping signed-32 sum, or the
+  `Full_Init` store to `0x0087F91C` with cell-array teardown reset. No active reader is proved; owner:
+  transaction 3 continuation.
+- **Ancillary `InitCellAttributes` slot seam.** The raw `0x300000` clear pass, per-cell `+0x30 = 0`,
+  `FUN_00483E30(0,0x10000,0,1000,1000,1000)` light routing, latch clear, and AttachedTag `0x19`/`0x1A`
+  restamp are not exposed as ordered slots by the final sweep. Owners remain the generic trigger
+  subsystem, transaction 20, and transaction 21/OQ-19; transaction 3 continuation owes the ordered
+  seam and the negative no-`BridgeFacts` assertion.
+- **Retained wall plane `None` acceptance (contract G7).** Snapshot v115 rejects only a length
+  mismatch; the generated production arm still builds `OverlayGrid::from_native_overlay_packs` with
+  `retained_wall_neighbor_counts: None` and the global count owner falls back to the legacy scan.
+  The current-version `None` rejection lands with G10.
+- **CellAnim child fields.** `OverlayClass::Mark`'s ordinary tail constructs the CellAnim at
+  `Location+0x180` per axis with `GetGroundHeight`, then, when the cell has a tiberium type, writes
+  `Anim+0xD4 = ColorScheme[Tiberium+0xC0]+0x30C` and `Anim+0xFC = cell.nZAdjust_Ground`. The
+  production host passes no remap and `z_adjust 0`, and its `+0x80` centre versus the native
+  `+0x180` object-Location offset is UNCHECKED. Frequency zero on retail (every `CellAnim=` in
+  `rulesmd.ini` is commented out); custom-content residual.
+- **Startup-crate wall image uses the hostless placement wrapper** (`src/sim/crates.rs`, main-side
+  phase14 code): `PostDestructionWallCleanup` publishes tactical and radar dirty per visit; the
+  hostless wrapper does not. Frequency zero on retail (no `Wall=yes` crate image); recorded, not owned
+  by the bridge program.
+- Notes carried without action: `Land=9` is Railroad (retail `TRACKS01..16`) and the ordinary route
+  yields identical bytes/Recalc/UnInit; `0xA7`/`0x7E` vein arms and `FUN_0074DE90` have zero retail
+  content; germination's `% MaxDensity` is inert for `MaxDensity=12`; the transient
+  `OverlayGrid`/terrain clone round-trip between the two finalize calls creates no divergent
+  authority today; `FUN_00452D40` building wall extension after the second drain is UNCHECKED.
+
 #### Repair and CABHUT transaction
 
 1. Preserve the outer Y-major discriminator and inner X-major first-hit scan distinction.
@@ -1239,6 +1290,7 @@ Every frozen question has a pre-implementation owner. A unit cannot become `CONT
 | OQ-34 complete native-ID prefix before the first generator/authored object: preview Set_Defaults/manual-storage branches plus fresh-Full_Init pre-map House/Type/Cell constructors, map-read transform, and Tube prefix | RESOLVED by `FULL_INIT_AND_PREVIEW_NATIVE_ID_PREFIX_REINVESTIGATION_GHIDRA_REPORT.md`; transaction 3 implements the consumed-once prefix/preview lifetime, while positive Tube topology remains 5 |
 | OQ-35 `InitCellAttributes` raw `0x100000`/`0x200000` clear/restamp identity and consumers | RESOLVED as active generic AttachedTag event-`0x19`/`0x1A` row/column trigger acceleration, not bridge-zone topology; transaction 3 exposes the ordered ancillary seam and negative no-`BridgeFacts` assertion but does not implement or close the official-retail-reachable generic bits/consumer |
 | OQ-36 `InitCellAttributes` ordinary-cell LightConvert/ZAdjust recomputation | native ordinary/sentinel split and draw consumers are verified; transaction 3 executes and tests one cache invalidation at the recomputation-routing slot, while transaction 20 owns semantic rendered-cell-light equivalence and the final end-to-end stale-preview-cache test |
+| OQ-37 post-`Full_Init` OreTwinkle Scenario-RNG pass and the `FUN_00684C30` post-load order (third Recalc sweep, bridge-zone/zone-connectivity/zone-level rebuilds, particle-system ID, twinkle draws) | OPEN, non-deferrable; opened by PR #207's critic 3; transaction 3 continuation owns it in the post-map tail after the modeled credits loop |
 
 Two ancillary writes do not need new question numbers. Final wall-owner reconstruction is already a
 verified semantic match under GSI-04.07; transaction 3 must preserve its post-final-Recalc ordering
@@ -1647,7 +1699,7 @@ After P0 and all bridge-mechanism passes:
 1. Start from each active native writer/consumer and prove a Rust owner, exact test or evidence-backed exclusion.
 2. Start from every Rust bridge field, helper, ignored test, approximation marker and branch and prove current active-retail authority or remove/correct it.
 3. Re-run the OpenTS correspondence ledger as leads and confirm no active YR mechanism disappeared between unit boundaries.
-4. Recheck all 27 mechanism rows, all 36 living questions, and every entry in the complete frozen negative-fact ledger; every open item must be resolved and every exclusion preserved, not deferred.
+4. Recheck all 27 mechanism rows, all 37 living questions, and every entry in the complete frozen negative-fact ledger; every open item must be resolved and every exclusion preserved, not deferred.
 5. Re-run named retail fixture traces for load, move, target, damage, collapse, repair, render and restore.
 6. Reconcile every merged transaction's full-suite certification and current `main` ancestry, update only verified System Map connections, and produce the final handoff. If the audit discovers any code correction, route it through a new dependency-coherent transaction, fresh critic chain, one PR-readiness full-suite run, and merge before repeating the affected audit rows.
 
@@ -1685,7 +1737,7 @@ The preferred approach is distributed exact-delta closure in current owners. It 
   authored-wall report in Sources, or explicitly
   open;
 - all 27 mechanisms map to explicit mechanism gates and contributing implementation transactions;
-- all 36 living questions route to a pre-implementation owner, evidence-backed exclusion, or final audit;
+- all 37 living questions route to a pre-implementation owner, evidence-backed exclusion, or final audit;
 - no chosen interface collapses distinct native facts;
 - the player-experience ledger covers ordinary high/low traversal, combat, collapse/repair, RMG, presentation, content-conditional tubes/triggers and restore;
 - the critic protocol cannot close a mechanism with unresolved evidence;
@@ -1777,6 +1829,12 @@ fixture. Choosing deferred effect replay or a Simulation-owned wall service woul
 expensive rework, so both are forbidden. This self-approval satisfies the autonomous design gate but
 does not waive the required new fresh read-only critic, who must recheck the original findings and the
 complete correction.
+Revision 21 records PR #207's landing. Its full-slice critic 3 decompiled the reader, Mark, wall
+cleanup, `IsWallConnectableInDirection`, the cell iterator, `InitCellAttributes`, the
+`AssignUniqueID` constructor roster, and the merge's two rules-processing claims live, returned PASS
+with zero blocking findings, and opened OQ-37. The residual ledger above is the transaction-3
+continuation's contract input; the next slice starts from refreshed `main` with G10/G11, the
+`MapClass+0x134` aggregate, the ancillary seam, the `None`-plane gate, and OQ-37.
 These review passes close no bridge mechanism and waive none of transaction 3's implementation contract,
 builder/fresh-critic chain, focused validation, PR-readiness full suite, or merge gate.
 
