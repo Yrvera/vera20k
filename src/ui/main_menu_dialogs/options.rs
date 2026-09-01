@@ -3,9 +3,11 @@
 //! The parent owns bounded control state and emits ordered effects. It owns no
 //! profile, filesystem, audio device, window, or child-dialog callback.
 
-use super::CsfLookup;
 use crate::ui::client_theme;
 
+/// gamemd-derived: launcher owner `OptionsClass__ShowLauncherDialog @
+/// 0x0055FC80` and its primary-proc slice `0x0055FDB0..0x0056047A` bind the
+/// RT_DIALOG `0xD5` controls to these launcher-local CSF keys/fallbacks.
 pub(crate) const LAUNCHER_LABEL_SPECS: [(&str, &str); 34] = [
     ("GUI:OptionsMenu", "Options"),
     ("GUI:MainMenu", "Main Menu"),
@@ -76,10 +78,10 @@ pub(crate) struct LauncherOptionsLabels {
 }
 
 impl LauncherOptionsLabels {
-    pub(crate) fn resolve(csf: &CsfLookup<'_>) -> Self {
+    pub(crate) fn resolve(csf: &dyn Fn(&str) -> Option<String>) -> Self {
         let label = |index: usize| {
             let (key, fallback) = LAUNCHER_LABEL_SPECS[index];
-            csf(key, fallback)
+            csf(key).unwrap_or_else(|| fallback.to_string())
         };
         Self {
             options: label(0),
@@ -138,6 +140,9 @@ struct LauncherDescriptorEntry {
     region: LauncherRegion,
 }
 
+/// gamemd-derived: the `0xD5` resource hierarchy consumed by primary-proc
+/// slice `0x0055FDB0..0x0056047A`; dormant control `0x603` is not admitted by
+/// the active launcher owner `OptionsClass__ShowLauncherDialog @ 0x0055FC80`.
 const LAUNCHER_DESCRIPTOR: [LauncherDescriptorEntry; 15] = [
     LauncherDescriptorEntry {
         id: 0x52B,
@@ -248,6 +253,9 @@ pub(crate) enum LauncherCue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// gamemd-derived: notification order in launcher primary-proc slice
+/// `0x0055FDB0..0x0056047A`; owner `OptionsClass__ShowLauncherDialog @
+/// 0x0055FC80` consumes these before any parent-result teardown.
 pub(crate) enum LauncherOptionsEvent {
     Cue(LauncherCue),
     ResolutionSelected { width: i32, height: i32 },
@@ -257,6 +265,9 @@ pub(crate) enum LauncherOptionsEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// gamemd-derived: the distinct exits owned by
+/// `OptionsClass__ShowLauncherDialog @ 0x0055FC80`; every accepted result first
+/// projects through `OptionsClass__ApplyFromLauncherDialog @ 0x0055FAA0`.
 pub(crate) enum LauncherParentResult {
     Back,
     Network,
@@ -329,7 +340,164 @@ pub(crate) struct LauncherOptionsPacked {
     pub(crate) voice_volume: f32,
 }
 
-/// One integer-pixel control frame derived from egui's logical point geometry.
+const TRACKBAR_HEIGHT_PX: i32 = 24;
+const CHECKBOX_HEIGHT_PX: i32 = 20;
+const COMBO_HEIGHT_PX: i32 = 24;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PhysicalLocalRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl PhysicalLocalRect {
+    const fn from_min_size(left: i32, top: i32, width: i32, height: i32) -> Self {
+        Self {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+        }
+    }
+}
+
+/// One rounded physical-pixel control rectangle shared by native-style paint
+/// geometry and input admission. Each global edge is rounded before width and
+/// height subtraction, matching the Winit/egui boundary contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PhysicalControlRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl PhysicalControlRect {
+    fn from_logical_edges(
+        left: f64,
+        top: f64,
+        right: f64,
+        bottom: f64,
+        pixels_per_point: f64,
+    ) -> Option<Self> {
+        if !pixels_per_point.is_finite()
+            || pixels_per_point <= 0.0
+            || ![left, top, right, bottom].into_iter().all(f64::is_finite)
+        {
+            return None;
+        }
+        let physical = |value: f64| (value * pixels_per_point).round() as i32;
+        let rect = Self {
+            left: physical(left),
+            top: physical(top),
+            right: physical(right),
+            bottom: physical(bottom),
+        };
+        (rect.width() > 0 && rect.height() > 0).then_some(rect)
+    }
+
+    fn from_egui(rect: egui::Rect, pixels_per_point: f32) -> Option<Self> {
+        Self::from_logical_edges(
+            f64::from(rect.left()),
+            f64::from(rect.top()),
+            f64::from(rect.right()),
+            f64::from(rect.bottom()),
+            f64::from(pixels_per_point),
+        )
+    }
+
+    const fn width(self) -> i32 {
+        self.right - self.left
+    }
+
+    const fn height(self) -> i32 {
+        self.bottom - self.top
+    }
+
+    fn frame_from_logical_pointer(
+        self,
+        pointer_x: f64,
+        pointer_y: f64,
+        pixels_per_point: f64,
+    ) -> Option<PhysicalControlFrame> {
+        if !pixels_per_point.is_finite()
+            || pixels_per_point <= 0.0
+            || !pointer_x.is_finite()
+            || !pointer_y.is_finite()
+        {
+            return None;
+        }
+        let physical = |value: f64| (value * pixels_per_point).round() as i32;
+        Some(PhysicalControlFrame {
+            local_x: physical(pointer_x) - self.left,
+            local_y: physical(pointer_y) - self.top,
+            width: self.width(),
+            height: self.height(),
+        })
+    }
+
+    fn local_rect_to_egui(self, rect: PhysicalLocalRect, pixels_per_point: f32) -> egui::Rect {
+        let point = |x: i32, y: i32| {
+            egui::pos2(
+                (self.left + x) as f32 / pixels_per_point,
+                (self.top + y) as f32 / pixels_per_point,
+            )
+        };
+        egui::Rect::from_min_max(point(rect.left, rect.top), point(rect.right, rect.bottom))
+    }
+
+    fn local_pos_to_egui(self, x: i32, y: i32, pixels_per_point: f32) -> egui::Pos2 {
+        egui::pos2(
+            (self.left + x) as f32 / pixels_per_point,
+            (self.top + y) as f32 / pixels_per_point,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrackbarPaintGeometry {
+    rail: PhysicalLocalRect,
+    thumb: PhysicalLocalRect,
+}
+
+fn trackbar_paint_geometry(
+    control: PhysicalControlRect,
+    id: LauncherTrackbarId,
+    position: u8,
+) -> TrackbarPaintGeometry {
+    let width = control.width();
+    let height = control.height();
+    let rail_right = (width - id.plaque_reserve() - 6).max(6);
+    let rail_top = height / 2 - 2;
+    let thumb_top = (height - 22) / 2;
+    TrackbarPaintGeometry {
+        rail: PhysicalLocalRect {
+            left: 6,
+            top: rail_top,
+            right: rail_right,
+            bottom: rail_top + 4,
+        },
+        thumb: PhysicalLocalRect::from_min_size(
+            thumb_left(position, width, id.plaque_reserve(), id.maximum()),
+            thumb_top,
+            12,
+            22,
+        ),
+    }
+}
+
+fn points_for_physical_pixels(pixels: i32, pixels_per_point: f32) -> f32 {
+    if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+        pixels as f32 / pixels_per_point
+    } else {
+        pixels as f32
+    }
+}
+
+/// One integer-pixel input frame derived from the same rounded control
+/// rectangle that owns launcher custom-control paint geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PhysicalControlFrame {
     pub(crate) local_x: i32,
@@ -348,42 +516,8 @@ impl PhysicalControlFrame {
         pointer_y: f64,
         pixels_per_point: f64,
     ) -> Option<Self> {
-        if !pixels_per_point.is_finite()
-            || pixels_per_point <= 0.0
-            || ![left, top, right, bottom, pointer_x, pointer_y]
-                .into_iter()
-                .all(f64::is_finite)
-        {
-            return None;
-        }
-        let physical = |value: f64| (value * pixels_per_point).round() as i32;
-        let left = physical(left);
-        let top = physical(top);
-        let right = physical(right);
-        let bottom = physical(bottom);
-        let width = right - left;
-        let height = bottom - top;
-        if width <= 0 || height <= 0 {
-            return None;
-        }
-        Some(Self {
-            local_x: physical(pointer_x) - left,
-            local_y: physical(pointer_y) - top,
-            width,
-            height,
-        })
-    }
-
-    fn from_egui(rect: egui::Rect, pointer: egui::Pos2, pixels_per_point: f32) -> Option<Self> {
-        Self::from_logical(
-            f64::from(rect.left()),
-            f64::from(rect.top()),
-            f64::from(rect.right()),
-            f64::from(rect.bottom()),
-            f64::from(pointer.x),
-            f64::from(pointer.y),
-            f64::from(pixels_per_point),
-        )
+        PhysicalControlRect::from_logical_edges(left, top, right, bottom, pixels_per_point)?
+            .frame_from_logical_pointer(pointer_x, pointer_y, pixels_per_point)
     }
 }
 
@@ -440,12 +574,22 @@ pub(crate) struct OptionsDialogState {
 
 impl Default for OptionsDialogState {
     fn default() -> Self {
-        let labels = LauncherOptionsLabels::resolve(&|_, fallback| fallback.to_string());
-        Self::new(labels, LauncherOptionsValues::default(), Vec::new(), None, false)
+        let labels = LauncherOptionsLabels::resolve(&|_| None);
+        Self::new(
+            labels,
+            LauncherOptionsValues::default(),
+            Vec::new(),
+            None,
+            false,
+        )
     }
 }
 
 impl OptionsDialogState {
+    /// gamemd-derived: `OptionsClass__ShowLauncherDialog @ 0x0055FC80`
+    /// creates each fresh `0xD5` parent, while primary-proc slice
+    /// `0x0055FDB0..0x0056047A` admits initial positions and preserves the
+    /// resource Detail/Difficulty/Scroll captions until a changed notification.
     pub(crate) fn new(
         labels: LauncherOptionsLabels,
         mut values: LauncherOptionsValues,
@@ -482,6 +626,9 @@ impl OptionsDialogState {
         self.launcher_audio_available
     }
 
+    /// gamemd-derived: the parent snapshot consumed by
+    /// `OptionsClass__ApplyFromLauncherDialog @ 0x0055FAA0` maps the six
+    /// positions and three normalized checkboxes exactly as below.
     pub(crate) fn pack(&self) -> LauncherOptionsPacked {
         LauncherOptionsPacked {
             detail_level: if self.values.detail_position == 0 {
@@ -511,6 +658,9 @@ impl OptionsDialogState {
         }
     }
 
+    /// gamemd-derived: primary-proc slice `0x0055FDB0..0x0056047A` changes
+    /// captions and queues preview/cue work only after the integer position
+    /// actually changes; the accepted projection remains owned by `0x0055FAA0`.
     fn set_trackbar_position(&mut self, id: LauncherTrackbarId, position: u8) {
         if position > id.maximum() || (id.is_audio() && !self.launcher_audio_available) {
             return;
@@ -658,6 +808,9 @@ impl OptionsDialogState {
         }
     }
 
+    /// gamemd-derived: primary-proc slice `0x0055FDB0..0x0056047A` accepts only
+    /// a valid combo row and publishes its width/height immediately; final
+    /// accepted projection `0x0055FAA0` does not own the resolution pair.
     pub(crate) fn select_resolution(&mut self, index: usize) {
         let Some(row) = self.resolution_rows.get(index) else {
             return;
@@ -671,12 +824,18 @@ impl OptionsDialogState {
             });
     }
 
+    /// gamemd-derived: `OptionsClass__ShowLauncherDialog @ 0x0055FC80` gives
+    /// Back, Network, Keyboard, and terminal completion distinct parent
+    /// results; the first admitted result owns the frame's teardown path.
     pub(crate) fn request_result(&mut self, result: LauncherParentResult) {
         if self.pending_result.is_none() {
             self.pending_result = Some(result);
         }
     }
 
+    /// gamemd-derived: primary-proc slice `0x0055FDB0..0x0056047A` observes
+    /// control notifications in order before owner `0x0055FC80` dispatches a
+    /// parent result through accepted projection `0x0055FAA0`.
     pub(crate) fn drain_output(&mut self) -> LauncherOptionsFrameOutput {
         LauncherOptionsFrameOutput {
             events: std::mem::take(&mut self.pending_events),
@@ -867,39 +1026,37 @@ fn draw_trackbar(
     palette: client_theme::ClientPalette,
 ) {
     let enabled = !id.is_audio() || state.launcher_audio_available;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::click_and_drag());
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let (rect, _response) = ui.allocate_exact_size(
+        egui::vec2(
+            width,
+            points_for_physical_pixels(TRACKBAR_HEIGHT_PX, pixels_per_point),
+        ),
+        egui::Sense::click_and_drag(),
+    );
+    let control = PhysicalControlRect::from_egui(rect, pixels_per_point);
     let rail_color = if enabled {
         palette.line
     } else {
         palette.text_muted.gamma_multiply(0.45)
     };
-    ui.painter().rect_filled(
-        egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 6.0, rect.center().y - 2.0),
-            egui::pos2(
-                rect.right() - f32::from(id.plaque_reserve() as i16) - 6.0,
-                rect.center().y + 2.0,
-            ),
-        ),
-        1.0,
-        rail_color,
-    );
-    let fraction = f32::from(state.trackbar_position(id)) / f32::from(id.maximum());
-    let travel = (rect.width() - id.plaque_reserve() as f32 - 13.0).max(1.0);
-    let thumb_left = rect.left() + 1.0 + fraction * travel;
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(
-            egui::pos2(thumb_left, rect.top() + 1.0),
-            egui::vec2(12.0, 22.0),
-        ),
-        2.0,
-        if enabled {
-            palette.accent
-        } else {
-            palette.text_muted
-        },
-    );
+    if let Some(control) = control {
+        let geometry = trackbar_paint_geometry(control, id, state.trackbar_position(id));
+        ui.painter().rect_filled(
+            control.local_rect_to_egui(geometry.rail, pixels_per_point),
+            points_for_physical_pixels(1, pixels_per_point),
+            rail_color,
+        );
+        ui.painter().rect_filled(
+            control.local_rect_to_egui(geometry.thumb, pixels_per_point),
+            points_for_physical_pixels(2, pixels_per_point),
+            if enabled {
+                palette.accent
+            } else {
+                palette.text_muted
+            },
+        );
+    }
 
     let (pointer, pressed, released, down) = ui.input(|input| {
         (
@@ -910,10 +1067,14 @@ fn draw_trackbar(
         )
     });
     if let Some(pointer) = pointer
-        && let Some(frame) =
-            PhysicalControlFrame::from_egui(rect, pointer, ui.ctx().pixels_per_point())
+        && let Some(control) = control
+        && let Some(frame) = control.frame_from_logical_pointer(
+            f64::from(pointer.x),
+            f64::from(pointer.y),
+            f64::from(pixels_per_point),
+        )
     {
-        if pressed && response.contains_pointer() {
+        if pressed {
             state.trackbar_mouse_down(id, frame);
         } else if down {
             state.trackbar_mouse_move(id, frame);
@@ -931,48 +1092,70 @@ fn draw_checkbox(
     label: &str,
     palette: client_theme::ClientPalette,
 ) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(220.0, 20.0), egui::Sense::click());
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let (rect, _response) = ui.allocate_exact_size(
+        egui::vec2(
+            220.0,
+            points_for_physical_pixels(CHECKBOX_HEIGHT_PX, pixels_per_point),
+        ),
+        egui::Sense::click(),
+    );
+    let control = PhysicalControlRect::from_egui(rect, pixels_per_point);
     let checked = match id {
         LauncherCheckboxId::Tooltips => state.values.tooltips,
         LauncherCheckboxId::TargetLines => state.values.target_lines,
         LauncherCheckboxId::ShowHidden => state.values.show_hidden,
     };
-    let icon = egui::Rect::from_min_size(rect.min, egui::vec2(18.0, 18.0));
-    ui.painter().rect_stroke(
-        icon,
-        1.0,
-        egui::Stroke::new(1.0, palette.line),
-        egui::StrokeKind::Middle,
-    );
-    if checked {
-        ui.painter().line_segment(
-            [
-                icon.left_top() + egui::vec2(3.0, 9.0),
-                icon.center_bottom() - egui::vec2(0.0, 3.0),
-            ],
-            egui::Stroke::new(2.0, palette.accent),
+    if let Some(control) = control {
+        let icon = PhysicalLocalRect::from_min_size(0, 0, 18, 18);
+        ui.painter().rect_stroke(
+            control.local_rect_to_egui(icon, pixels_per_point),
+            points_for_physical_pixels(1, pixels_per_point),
+            egui::Stroke::new(
+                points_for_physical_pixels(1, pixels_per_point),
+                palette.line,
+            ),
+            egui::StrokeKind::Middle,
         );
-        ui.painter().line_segment(
-            [
-                icon.center_bottom() - egui::vec2(0.0, 3.0),
-                icon.right_top() + egui::vec2(-2.0, 3.0),
-            ],
-            egui::Stroke::new(2.0, palette.accent),
+        if checked {
+            ui.painter().line_segment(
+                [
+                    control.local_pos_to_egui(3, 9, pixels_per_point),
+                    control.local_pos_to_egui(9, 15, pixels_per_point),
+                ],
+                egui::Stroke::new(
+                    points_for_physical_pixels(2, pixels_per_point),
+                    palette.accent,
+                ),
+            );
+            ui.painter().line_segment(
+                [
+                    control.local_pos_to_egui(9, 15, pixels_per_point),
+                    control.local_pos_to_egui(16, 3, pixels_per_point),
+                ],
+                egui::Stroke::new(
+                    points_for_physical_pixels(2, pixels_per_point),
+                    palette.accent,
+                ),
+            );
+        }
+        ui.painter().text(
+            control.local_pos_to_egui(26, 1, pixels_per_point),
+            egui::Align2::LEFT_TOP,
+            label,
+            egui::FontId::proportional(13.0),
+            palette.text,
         );
     }
-    ui.painter().text(
-        rect.min + egui::vec2(26.0, 1.0),
-        egui::Align2::LEFT_TOP,
-        label,
-        egui::FontId::proportional(13.0),
-        palette.text,
-    );
     let pressed = ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary));
     if pressed
-        && response.contains_pointer()
         && let Some(pointer) = ui.input(|input| input.pointer.interact_pos())
-        && let Some(frame) =
-            PhysicalControlFrame::from_egui(rect, pointer, ui.ctx().pixels_per_point())
+        && let Some(control) = control
+        && let Some(frame) = control.frame_from_logical_pointer(
+            f64::from(pointer.x),
+            f64::from(pointer.y),
+            f64::from(pixels_per_point),
+        )
     {
         state.checkbox_mouse_down(id, frame);
     }
@@ -983,34 +1166,56 @@ fn draw_resolution_combo(
     state: &mut OptionsDialogState,
     palette: client_theme::ClientPalette,
 ) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(180.0, 24.0), egui::Sense::click());
-    ui.painter().rect_filled(rect, 1.0, palette.panel_alt);
-    ui.painter().rect_stroke(
-        rect,
-        1.0,
-        egui::Stroke::new(1.0, palette.line),
-        egui::StrokeKind::Middle,
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let (rect, _response) = ui.allocate_exact_size(
+        egui::vec2(
+            180.0,
+            points_for_physical_pixels(COMBO_HEIGHT_PX, pixels_per_point),
+        ),
+        egui::Sense::click(),
     );
-    ui.painter().text(
-        rect.min + egui::vec2(3.0, 4.0),
-        egui::Align2::LEFT_TOP,
-        state.selected_resolution_label(),
-        egui::FontId::proportional(13.0),
-        palette.text,
-    );
-    ui.painter().text(
-        egui::pos2(rect.right() - 10.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        "▼",
-        egui::FontId::proportional(12.0),
-        palette.text,
-    );
+    let control = PhysicalControlRect::from_egui(rect, pixels_per_point);
+    if let Some(control) = control {
+        let face = PhysicalLocalRect::from_min_size(0, 0, control.width(), control.height());
+        let face = control.local_rect_to_egui(face, pixels_per_point);
+        ui.painter().rect_filled(
+            face,
+            points_for_physical_pixels(1, pixels_per_point),
+            palette.panel_alt,
+        );
+        ui.painter().rect_stroke(
+            face,
+            points_for_physical_pixels(1, pixels_per_point),
+            egui::Stroke::new(
+                points_for_physical_pixels(1, pixels_per_point),
+                palette.line,
+            ),
+            egui::StrokeKind::Middle,
+        );
+        ui.painter().text(
+            control.local_pos_to_egui(3, 4, pixels_per_point),
+            egui::Align2::LEFT_TOP,
+            state.selected_resolution_label(),
+            egui::FontId::proportional(13.0),
+            palette.text,
+        );
+        ui.painter().text(
+            control.local_pos_to_egui(control.width() - 10, control.height() / 2, pixels_per_point),
+            egui::Align2::CENTER_CENTER,
+            "▼",
+            egui::FontId::proportional(12.0),
+            palette.text,
+        );
+    }
     let pressed = ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary));
     if pressed
-        && response.contains_pointer()
         && let Some(pointer) = ui.input(|input| input.pointer.interact_pos())
-        && let Some(frame) =
-            PhysicalControlFrame::from_egui(rect, pointer, ui.ctx().pixels_per_point())
+        && let Some(control) = control
+        && let Some(frame) = control.frame_from_logical_pointer(
+            f64::from(pointer.x),
+            f64::from(pointer.y),
+            f64::from(pixels_per_point),
+        )
     {
         state.combo_mouse_down(frame);
     }
@@ -1040,9 +1245,10 @@ fn draw_resolution_combo(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::csf_file::CsfFile;
 
     fn labels() -> LauncherOptionsLabels {
-        LauncherOptionsLabels::resolve(&|_, fallback| fallback.to_string())
+        LauncherOptionsLabels::resolve(&|_| None)
     }
 
     fn state(audio: bool) -> OptionsDialogState {
@@ -1067,22 +1273,108 @@ mod tests {
         }
     }
 
+    fn physical_control(
+        scale: f64,
+        logical_width: f64,
+        physical_height: i32,
+    ) -> PhysicalControlRect {
+        PhysicalControlRect::from_logical_edges(
+            10.25,
+            20.25,
+            10.25 + logical_width,
+            20.25 + f64::from(physical_height) / scale,
+            scale,
+        )
+        .unwrap()
+    }
+
+    fn production_frame(
+        scale: f64,
+        logical_width: f64,
+        physical_height: i32,
+        local_x: i32,
+        local_y: i32,
+    ) -> PhysicalControlFrame {
+        let control = physical_control(scale, logical_width, physical_height);
+        PhysicalControlFrame::from_logical(
+            10.25,
+            20.25,
+            10.25 + logical_width,
+            20.25 + f64::from(physical_height) / scale,
+            f64::from(control.left + local_x) / scale,
+            f64::from(control.top + local_y) / scale,
+            scale,
+        )
+        .unwrap()
+    }
+
+    fn set_position_without_notification(
+        state: &mut OptionsDialogState,
+        id: LauncherTrackbarId,
+        position: u8,
+    ) {
+        match id {
+            LauncherTrackbarId::Detail => state.values.detail_position = position,
+            LauncherTrackbarId::Difficulty => state.values.difficulty_position = position,
+            LauncherTrackbarId::Scroll => state.values.scroll_position = position,
+            LauncherTrackbarId::Score => state.values.score_position = position,
+            LauncherTrackbarId::Sound => state.values.sound_position = position,
+            LauncherTrackbarId::Voice => state.values.voice_position = position,
+        }
+    }
+
+    fn build_single_label_csf(label: &str, value: &str) -> Vec<u8> {
+        let encoded_value: Vec<u8> = value
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| !byte)
+            .collect();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x4353_4620_u32.to_le_bytes());
+        data.extend_from_slice(&3_u32.to_le_bytes());
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend_from_slice(&0x4C42_4C20_u32.to_le_bytes());
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&(label.len() as u32).to_le_bytes());
+        data.extend_from_slice(label.as_bytes());
+        data.extend_from_slice(&0x5354_5220_u32.to_le_bytes());
+        data.extend_from_slice(&(value.encode_utf16().count() as u32).to_le_bytes());
+        data.extend_from_slice(&encoded_value);
+        data
+    }
+
     #[test]
     fn exact_launcher_label_fallbacks_are_local_and_complete() {
         let seen = std::cell::RefCell::new(Vec::new());
-        let labels = LauncherOptionsLabels::resolve(&|key, fallback| {
-            seen.borrow_mut()
-                .push((key.to_string(), fallback.to_string()));
-            fallback.to_string()
+        let labels = LauncherOptionsLabels::resolve(&|key| {
+            seen.borrow_mut().push(key.to_string());
+            None
         });
         assert_eq!(
             seen.into_inner(),
-            LAUNCHER_LABEL_SPECS.map(|(key, fallback)| (key.to_string(), fallback.to_string()))
+            LAUNCHER_LABEL_SPECS.map(|(key, _)| key.to_string())
         );
         assert_eq!(labels.options, "Options");
         assert_eq!(labels.main_menu, "Main Menu");
         assert_eq!(labels.blank, "");
         assert_eq!(labels.scroll_tokens[6], "Fastest");
+    }
+
+    #[test]
+    fn loaded_nonempty_csf_missing_launcher_key_uses_local_fallback() {
+        let csf = CsfFile::from_bytes(&build_single_label_csf(
+            "GUI:OptionsMenu",
+            "Localized Options",
+        ))
+        .unwrap();
+        assert!(!csf.is_empty());
+        let labels = LauncherOptionsLabels::resolve(&|key| csf.get(key).map(str::to_owned));
+        assert_eq!(labels.options, "Localized Options");
+        assert_eq!(labels.main_menu, "Main Menu");
+        assert_eq!(csf.text("GUI:MainMenu"), "MISSING:'GUI:MainMenu'");
     }
 
     #[test]
@@ -1179,6 +1471,104 @@ mod tests {
         assert!(
             PhysicalControlFrame::from_logical(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, f64::NAN).is_none()
         );
+    }
+
+    #[test]
+    fn painted_thumb_centers_capture_and_drag_through_physical_frames_at_common_scales() {
+        let ids = [
+            LauncherTrackbarId::Detail,
+            LauncherTrackbarId::Difficulty,
+            LauncherTrackbarId::Scroll,
+            LauncherTrackbarId::Score,
+            LauncherTrackbarId::Sound,
+            LauncherTrackbarId::Voice,
+        ];
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for id in ids {
+                let logical_width = if id.is_audio() { 128.0 } else { 180.0 };
+                let control = physical_control(scale, logical_width, TRACKBAR_HEIGHT_PX);
+                assert_eq!(control.height(), TRACKBAR_HEIGHT_PX);
+                for position in 0..=id.maximum() {
+                    let mut state = state(true);
+                    set_position_without_notification(&mut state, id, position);
+                    let geometry = trackbar_paint_geometry(control, id, position);
+                    assert_eq!(geometry.thumb.right - geometry.thumb.left, 12);
+                    assert_eq!(geometry.thumb.bottom - geometry.thumb.top, 22);
+                    let down = production_frame(
+                        scale,
+                        logical_width,
+                        TRACKBAR_HEIGHT_PX,
+                        (geometry.thumb.left + geometry.thumb.right) / 2,
+                        (geometry.thumb.top + geometry.thumb.bottom) / 2,
+                    );
+                    state.trackbar_mouse_down(id, down);
+                    assert_eq!(
+                        state.trackbar_position(id),
+                        position,
+                        "scale={scale} id={id:?}"
+                    );
+                    assert_eq!(state.capture, Some(id), "scale={scale} id={id:?}");
+
+                    let drag = production_frame(
+                        scale,
+                        logical_width,
+                        TRACKBAR_HEIGHT_PX,
+                        control.width() + 100,
+                        -400,
+                    );
+                    state.trackbar_mouse_move(id, drag);
+                    assert_eq!(state.trackbar_position(id), id.maximum());
+                    state.trackbar_mouse_up(id);
+                    assert_eq!(state.capture, None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_and_combo_paint_boundaries_drive_admission_at_common_scales() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let checkbox = physical_control(scale, 220.0, CHECKBOX_HEIGHT_PX);
+            assert_eq!(checkbox.height(), CHECKBOX_HEIGHT_PX);
+            let mut checkbox_state = state(true);
+            checkbox_state.checkbox_mouse_down(
+                LauncherCheckboxId::Tooltips,
+                production_frame(scale, 220.0, CHECKBOX_HEIGHT_PX, 17, 17),
+            );
+            assert!(!checkbox_state.values.tooltips, "scale={scale}");
+            checkbox_state.drain_output();
+            checkbox_state.checkbox_mouse_down(
+                LauncherCheckboxId::Tooltips,
+                production_frame(scale, 220.0, CHECKBOX_HEIGHT_PX, 18, 5),
+            );
+            assert!(!checkbox_state.values.tooltips, "scale={scale}");
+            assert!(checkbox_state.drain_output().events.is_empty());
+
+            let combo = physical_control(scale, 180.0, COMBO_HEIGHT_PX);
+            assert_eq!(combo.height(), COMBO_HEIGHT_PX);
+            let arrow_left = combo.width() - 20;
+            let mut combo_state = state(true);
+            combo_state.combo_mouse_down(production_frame(
+                scale,
+                180.0,
+                COMBO_HEIGHT_PX,
+                arrow_left,
+                COMBO_HEIGHT_PX / 2,
+            ));
+            assert!(!combo_state.resolution_popup_open, "scale={scale}");
+            assert_eq!(
+                combo_state.drain_output().events,
+                [LauncherOptionsEvent::Cue(LauncherCue::ComboOpen)]
+            );
+            combo_state.combo_mouse_down(production_frame(
+                scale,
+                180.0,
+                COMBO_HEIGHT_PX,
+                arrow_left + 1,
+                COMBO_HEIGHT_PX / 2,
+            ));
+            assert!(combo_state.resolution_popup_open, "scale={scale}");
+        }
     }
 
     #[test]
