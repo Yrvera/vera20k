@@ -132,6 +132,16 @@ pub struct OverlayGrid {
     /// before the authoritative hash. Not part of game state; never serialized.
     #[serde(skip, default)]
     dirty_cells: Vec<(u16, u16)>,
+    /// Cells whose overlay identity was erased this tick *without* a native
+    /// attribute recalc. Presentation must drop their render entry, but
+    /// `CrateSlot__RemoveCrateOverlayFromCell @ 0x004A1AA0` ends at its two
+    /// field writes with no `CellClass::RecalcAttributes @ 0x0047D2B0` tail —
+    /// so the cell keeps the land type the removed overlay gave it, and these
+    /// coordinates must NOT enter `dirty_cells`, whose frame-tail drain
+    /// re-derives land, speed and zone from the pristine tile.
+    /// Not part of game state; never serialized.
+    #[serde(skip, default)]
+    removed_render_cells: Vec<(u16, u16)>,
     /// A synchronous sim-side recalc already observed a passability change for
     /// one of the dirty cells. The frame finalizer must preserve that first result
     /// even though recalculating the now-current terrain returns `false`.
@@ -154,6 +164,7 @@ impl OverlayGrid {
             retained_wall_neighbor_counts: None,
             dirty_cells: Vec::new(),
             synchronous_passability_changed: false,
+            removed_render_cells: Vec::new(),
             synchronous_navigation_cells: Vec::new(),
         }
     }
@@ -184,6 +195,7 @@ impl OverlayGrid {
             retained_wall_neighbor_counts: Some(retained_wall_neighbor_counts),
             dirty_cells: Vec::new(),
             synchronous_passability_changed: false,
+            removed_render_cells: Vec::new(),
             synchronous_navigation_cells: Vec::new(),
         }
     }
@@ -621,9 +633,16 @@ impl OverlayGrid {
         };
         self.cells[idx].overlay_id = None;
         self.cells[idx].overlay_data = 0;
-        self.dirty_cells.push((rx, ry));
+        self.removed_render_cells.push((rx, ry));
         resolved_terrain.clear_runtime_overlay_identity(rx, ry);
         true
+    }
+
+    /// Drain the coordinates whose overlay identity was erased without a
+    /// recalc. The frame finalizer forwards these to presentation so the
+    /// removed sprite stops drawing.
+    pub(crate) fn take_removed_render_cells(&mut self) -> Vec<(u16, u16)> {
+        std::mem::take(&mut self.removed_render_cells)
     }
 
     /// Write only the raw `CellClass::OverlayData` byte and emit the setter's

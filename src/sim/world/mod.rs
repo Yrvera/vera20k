@@ -307,6 +307,10 @@ pub(crate) struct SimFrameOutput {
     pub trigger_effects: Vec<TriggerEffect>,
     pub lifecycle_outputs: Vec<LifecycleOutput>,
     pub overlay_updates: Vec<OverlayEntry>,
+    /// Coordinates whose overlay identity was erased this frame. Presentation
+    /// drops their render entry; `overlay_updates` only ever upserts occupied
+    /// cells and can never express a removal.
+    pub overlay_removals: Vec<(u16, u16)>,
     pub sound_events: Vec<SimSoundEvent>,
     pub fire_events: Vec<SimFireEvent>,
     pub invulnerability_impacts: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
@@ -344,6 +348,7 @@ pub(crate) enum MasterFrameTestRung {
     SessionCommands,
     Triggers,
     LogicVector,
+    CrateRegen,
     Houses,
     TeamScript,
     FrameCommit,
@@ -735,6 +740,11 @@ pub struct Simulation {
     /// boundary. The app drains these into its render-only overlay list.
     #[serde(skip)]
     frame_overlay_updates: Vec<OverlayEntry>,
+    /// Ordered coordinates whose overlay identity was erased at the
+    /// authoritative frame boundary. Drained into `SimFrameOutput` beside the
+    /// occupied upserts.
+    #[serde(skip)]
+    frame_overlay_removals: Vec<(u16, u16)>,
     /// One-shot raw post-match score result. Serialized and hashed so a save at
     /// the outcome wait cannot repeat its Scenario RNG draws after load.
     pub(super) terminal_score_snapshot: Option<crate::sim::score::TerminalScoreSnapshot>,
@@ -3297,6 +3307,7 @@ impl Simulation {
             substrate: ObjectSubstrate::new(),
             lifecycle_outputs: Vec::new(),
             frame_overlay_updates: Vec::new(),
+            frame_overlay_removals: Vec::new(),
             terminal_score_snapshot: None,
             pending_lifecycle_requests: Vec::new(),
             pending_rocket_detonations: Vec::new(),
@@ -5188,8 +5199,14 @@ impl Simulation {
     }
 
     /// Finalize mutable overlay identity, passability, and canonical navigation
-    /// before the frame hash is latched. Only occupied cells cross the app
-    /// boundary; cleared cells remain render-inert through OverlayGrid authority.
+    /// before the frame hash is latched.
+    ///
+    /// `dirty_cells` carries mutations that also re-derive CellClass attributes,
+    /// mirroring `OverlayClass::Mark`'s `RecalcAttributes` tail; only its
+    /// occupied cells produce an upsert. Identity erasures that native performs
+    /// *without* a recalc arrive separately through `take_removed_render_cells`
+    /// and cross the boundary as removals, since an upsert list cannot express
+    /// one.
     fn finalize_frame_overlays_and_navigation(
         &mut self,
         rules: Option<&RuleSet>,
@@ -5200,6 +5217,7 @@ impl Simulation {
         let overlay_ready =
             rules.is_some() && self.resolved_terrain.is_some() && overlay_registry.is_some();
         if overlay_ready && let Some(grid) = self.overlay_grid.as_mut() {
+            self.frame_overlay_removals = grid.take_removed_render_cells();
             let (dirty_cells, synchronous_passability_changed) =
                 grid.take_dirty_cells_with_passability_signal();
             let synchronous_navigation_cells = grid.take_synchronous_navigation_cells();
@@ -6703,6 +6721,7 @@ impl Simulation {
         };
         let lifecycle_outputs = std::mem::take(&mut self.lifecycle_outputs);
         let overlay_updates = std::mem::take(&mut self.frame_overlay_updates);
+        let overlay_removals = std::mem::take(&mut self.frame_overlay_removals);
         let fire_events = std::mem::take(&mut self.fire_events);
         let sound_events = std::mem::take(&mut self.sound_events);
         SimFrameOutput {
@@ -6710,6 +6729,7 @@ impl Simulation {
             trigger_effects,
             lifecycle_outputs,
             overlay_updates,
+            overlay_removals,
             sound_events,
             fire_events,
             invulnerability_impacts,
@@ -7613,7 +7633,14 @@ impl Simulation {
             // between `AlphaShapeClass::PurgeDisabled` and the Tactical,
             // Factory and House callbacks, on the pre-increment frame counter
             // this tick's phases have all observed.
+            // The `Option` is a Rust availability gate with no native
+            // counterpart: `MapClass__UpdateCrateRegenTimers` owns its own two
+            // gates and nothing else. The sole production caller
+            // (`SimRuntime::advance_frame`) always binds the registry, and
+            // `crate_regen_rung_runs_in_every_production_frame` pins that.
             if let Some(overlay_registry) = overlay_registry {
+                #[cfg(test)]
+                self.trace_master_frame_rung(MasterFrameTestRung::CrateRegen);
                 let regen = crate::sim::crates::tick_crate_regeneration(
                     self,
                     rules,
@@ -7627,6 +7654,12 @@ impl Simulation {
                     // cache, so refresh it once per pass that installed an
                     // overlay and let the existing frame-boundary navigation
                     // seam republish; this adds no RNG or ordering boundary.
+                    //
+                    // Deliberately not refreshed on a removal-only pass: only a
+                    // Mark can stamp bridge topology, and the random placer
+                    // refuses any cell that already carries an overlay, so a
+                    // crate can never sit on — or un-stamp — a bridge piece
+                    // under stock rules.
                     bridge_state_changed |= self.refresh_bridge_runtime_after_crate_mark();
                 }
             }

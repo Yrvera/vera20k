@@ -161,7 +161,9 @@ pub fn place_scenario_start_crates(
 
 /// Production entry carrying the already parsed ordinary ScenarioClass
 /// lighting profile. `OverlayClass::Mark` copies each target CellClass's
-/// `+0x10A` value into a spawned CellAnim after construction.
+/// `+0x10A` value into a spawned CellAnim after construction. The runtime
+/// regeneration rung reaches the same Mark path every tick, so the shared
+/// helpers below are no longer scenario-start-only.
 pub(crate) fn place_scenario_start_crates_with_lighting(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -1118,12 +1120,12 @@ fn spawn_crate_cell_anim(
         )
         .unwrap_or_else(|error| {
             panic!(
-                "startup crate CellAnim [{cell_anim}] must be bound before OverlayClass::Mark: {error}"
+                "crate CellAnim [{cell_anim}] must be bound before OverlayClass::Mark: {error}"
             )
         });
     assert!(
         sim.set_cell_anim_draw_authority(anim_id, remap_color, z_adjust),
-        "startup crate CellAnim {anim_id} disappeared before OverlayClass post-constructor writes"
+        "crate CellAnim {anim_id} disappeared before OverlayClass post-constructor writes"
     );
 }
 
@@ -1206,7 +1208,7 @@ fn snap_to_passable_with_radius(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
@@ -1237,7 +1239,12 @@ mod tests {
         RuleSet::from_ini(&ini).expect("rules")
     }
 
-    fn crate_ruleset_with_images(wood: &str, common: &str, water: &str, extra: &str) -> RuleSet {
+    pub(crate) fn crate_ruleset_with_images(
+        wood: &str,
+        common: &str,
+        water: &str,
+        extra: &str,
+    ) -> RuleSet {
         let ini = IniFile::from_str(&format!(
             "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
              [CrateRules]\nCrateImg={common}\nWoodCrateImg={wood}\nWaterCrateImg={water}\n{extra}",

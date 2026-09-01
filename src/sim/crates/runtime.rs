@@ -204,8 +204,13 @@ pub(crate) fn tick_crate_regeneration(
 /// A paused slot (`start == -1`) expires only once its stored duration has
 /// already reached zero — and then it re-fires on every following tick until a
 /// replacement takes the slot. A running slot expires as soon as the signed
-/// elapsed frame count reaches its duration; the remaining-frames recheck below
-/// that branch only ever fires on signed wraparound.
+/// elapsed frame count reaches its duration.
+///
+/// Native reaches the shared `TEST ECX,ECX` at `0x0056BC33` from both branches,
+/// but for a running slot it is dead: `remaining == 0` would need
+/// `duration == elapsed`, which the preceding `JGE` already took. The shared
+/// tail is reproduced as one expression because it is the paused branch's whole
+/// test, not because the running branch can reach it.
 fn crate_slot_timer_expired(slot: CrateSlot, current_frame: i32) -> bool {
     let mut remaining = slot.duration;
     if slot.start_frame != -1 {
@@ -252,13 +257,18 @@ mod tests {
         assert!(!crate_slot_timer_expired(running(-1, 1), i32::MAX));
         assert!(crate_slot_timer_expired(running(-1, 0), 0));
         assert!(crate_slot_timer_expired(running(-1, 0), i32::MIN));
-        // Negative duration is already past due for a running slot.
+        // Negative duration is already past due for a running slot — this is
+        // the assertion that pins the native `JGE` over an unsigned compare.
         assert!(crate_slot_timer_expired(running(100, -5), 100));
-        // Signed wraparound reaches the remaining-frames recheck: elapsed is
-        // "less than" duration only because the subtraction wrapped.
+        // Elapsed is computed with wrapping subtraction across the signed
+        // boundary, and the comparison stays signed.
         assert!(crate_slot_timer_expired(
-            running(1, i32::MIN),
-            i32::MIN.wrapping_add(1)
+            running(i32::MAX, 4),
+            i32::MIN.wrapping_add(3)
+        ));
+        assert!(!crate_slot_timer_expired(
+            running(i32::MAX, 6),
+            i32::MIN.wrapping_add(3)
         ));
     }
 
@@ -395,9 +405,12 @@ mod tests {
             "removal writes CellClass+0x44 and +0x11E only"
         );
         assert_eq!(
-            sim.overlay_grid.as_mut().unwrap().take_dirty_cells(),
+            sim.overlay_grid
+                .as_mut()
+                .unwrap()
+                .take_removed_render_cells(),
             vec![(15, 15)],
-            "the removed cell publishes exactly one dirty receipt"
+            "the removed cell publishes exactly one presentation receipt"
         );
     }
 
@@ -598,10 +611,90 @@ mod tests {
         assert_eq!(regen.visible, 1);
         let now = sim.crate_authority.slots()[0];
         assert_eq!(now.start_frame, 500, "the replacement armed a fresh timer");
+        assert_ne!(
+            (now.cell_x, now.cell_y),
+            (15, 15),
+            "fixture precondition: the replacement drew a different cell, so the              assertions below actually distinguish removal from a no-op"
+        );
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(15, 15).overlay_id,
+            None,
+            "the expired crate's overlay identity was erased"
+        );
         assert_eq!(
             crate_cells(&sim, &registry),
             vec![(now.cell_x as u16, now.cell_y as u16)],
             "the expired crate overlay is gone and only the replacement remains"
+        );
+    }
+
+    /// Retail names the same overlay for two of the three image slots
+    /// (`CrateImg` and `WoodCrateImg` are both `CRATE`), and all three are
+    /// accepted identities. Pin every slot, including the duplicate case the
+    /// stock pointer table actually produces.
+    #[test]
+    fn crate_overlay_removal_accepts_every_rules_image_including_duplicates() {
+        let registry = crate_registry();
+        for (wood, common, water) in [
+            ("WOOD", "SILVER", "WATER"),
+            // The stock shape: WoodCrateImg == CrateImg == CRATE.
+            ("SILVER", "SILVER", "WATER"),
+        ] {
+            let rules = super::super::tests::crate_ruleset_with_images(wood, common, water, "");
+            for name in [wood, common, water] {
+                let mut sim = sim_with_grid(0x60);
+                let id = registry.id_for_name(name).expect("configured overlay");
+                sim.overlay_grid
+                    .as_mut()
+                    .expect("grid")
+                    .place_overlay(15, 15, id, 0xFF);
+                assert!(
+                    remove_crate_overlay_from_cell(&mut sim, &rules, &registry, (15, 15)),
+                    "identity {name} is one of the three live Rules crate images"
+                );
+                assert_eq!(
+                    sim.overlay_grid.as_ref().unwrap().cell(15, 15).overlay_id,
+                    None
+                );
+            }
+        }
+    }
+
+    /// `CrateSlot__RemoveCrateOverlayFromCell` ends at its two field writes with
+    /// no `CellClass::RecalcAttributes` tail, so the cell keeps the land type
+    /// the crate gave it. The erased coordinate must therefore reach
+    /// presentation through the removal channel and NOT through `dirty_cells`,
+    /// whose frame-tail drain re-derives land from the pristine tile.
+    #[test]
+    fn crate_overlay_removal_publishes_a_removal_and_never_a_recalc_dirty_cell() {
+        let mut sim = sim_with_grid(0x61);
+        let rules = crate_ruleset("");
+        let registry = crate_registry();
+        let wood = registry.id_for_name("WOOD").expect("WOOD overlay");
+        {
+            let grid = sim.overlay_grid.as_mut().expect("grid");
+            grid.place_overlay(15, 15, wood, 0xFF);
+            let _ = grid.take_dirty_cells();
+            let _ = grid.take_removed_render_cells();
+        }
+
+        assert!(remove_crate_overlay_from_cell(
+            &mut sim,
+            &rules,
+            &registry,
+            (15, 15)
+        ));
+
+        let grid = sim.overlay_grid.as_mut().expect("grid");
+        assert_eq!(
+            grid.take_dirty_cells(),
+            Vec::new(),
+            "a removal must not enter the attribute-recalc queue"
+        );
+        assert_eq!(
+            grid.take_removed_render_cells(),
+            vec![(15, 15)],
+            "presentation learns about the erased cell on its own channel"
         );
     }
 
@@ -644,6 +737,12 @@ mod tests {
         assert!(
             !regenerated.is_empty(),
             "the replacement took the free slot"
+        );
+
+        assert!(
+            on.take_master_frame_test_trace()
+                .contains(&crate::sim::world::MasterFrameTestRung::CrateRegen),
+            "the rung is an observable master-frame position, not an incidental call"
         );
 
         let mut off = sim_with_grid(0x5C);
