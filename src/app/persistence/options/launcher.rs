@@ -7,9 +7,9 @@
 
 use crate::app::persistence::options_profile::RetailOptionsProfile;
 use crate::ui::main_menu_dialogs::options::{
-    LauncherCue, LauncherOptionsEvent, LauncherOptionsPacked, LauncherOptionsValues,
-    LauncherParentResult, LauncherResolutionRow, OptionsDialogState, admitted_initial_position,
-    admitted_volume_position,
+    LauncherCue, LauncherOptionsEvent, LauncherOptionsLabels, LauncherOptionsPacked,
+    LauncherOptionsValues, LauncherParentResult, LauncherResolutionRow, OptionsDialogState,
+    admitted_initial_position, admitted_volume_position,
 };
 
 /// Pure result of substituting current-monitor Winit dimension pairs for the
@@ -82,6 +82,29 @@ pub(crate) fn project_launcher_resolutions(
         rows,
         selected_index,
     }
+}
+
+/// Build one fresh primary snapshot from already-owned platform and text facts.
+/// Child return and initial open both use this same constructor path.
+pub(crate) fn launcher_dialog_from_profile(
+    profile: &RetailOptionsProfile,
+    labels: LauncherOptionsLabels,
+    mode_pairs: impl IntoIterator<Item = (u32, u32)>,
+    launcher_audio_available: bool,
+) -> OptionsDialogState {
+    let values = launcher_values_from_profile(profile);
+    let resolutions = project_launcher_resolutions(
+        mode_pairs,
+        profile.allow_hi_res_modes,
+        (profile.screen_width, profile.screen_height),
+    );
+    OptionsDialogState::new(
+        labels,
+        values,
+        resolutions.rows,
+        resolutions.selected_index,
+        launcher_audio_available,
+    )
 }
 
 /// Concrete effects admitted by one launcher UI frame.
@@ -382,6 +405,46 @@ mod tests {
             project_launcher_resolutions([(640, 480)], false, (800, 600)).selected_index,
             None
         );
+    }
+
+    #[test]
+    fn fresh_dialog_constructor_projects_the_retained_parent_subset_and_audio_gate() {
+        let profile = RetailOptionsProfile {
+            detail_level: 0,
+            difficulty: 2,
+            scroll_rate: 0,
+            tooltips: false,
+            unit_action_lines: false,
+            show_hidden: true,
+            score_volume: 0.2,
+            sound_volume: 0.5,
+            voice_volume: 0.8,
+            screen_width: 800,
+            screen_height: 600,
+            ..RetailOptionsProfile::default()
+        };
+        let dialog = launcher_dialog_from_profile(
+            &profile,
+            LauncherOptionsLabels::resolve(&|_| None),
+            [(1024, 768), (800, 600), (800, 600)],
+            false,
+        );
+
+        assert_eq!(
+            dialog.pack(),
+            LauncherOptionsPacked {
+                detail_level: 0,
+                difficulty: 2,
+                unit_action_lines: false,
+                show_hidden: true,
+                tooltips: false,
+                scroll_rate: 0,
+                score_volume: 0.2,
+                sound_volume: 0.5,
+                voice_volume: 0.8,
+            }
+        );
+        assert!(!dialog.launcher_audio_available());
     }
 
     #[derive(Debug, Clone, PartialEq)]

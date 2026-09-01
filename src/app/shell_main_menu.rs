@@ -57,6 +57,217 @@ fn dispatch_egui_fallback_confirmed_quit(operations: &mut impl ConfirmedQuitOper
     dispatch_confirmed_quit(operations, ConfirmedQuitOwner::EguiFallback);
 }
 
+struct AppStateLauncherPreviewOperations<'a> {
+    state: &'a mut AppState,
+}
+
+impl crate::app::persistence::options::launcher::LauncherPreviewOperations
+    for AppStateLauncherPreviewOperations<'_>
+{
+    fn launcher_audio_available(&self) -> bool {
+        self.state.audio.launcher_audio_available
+    }
+
+    fn play_cue(&mut self, cue: crate::ui::main_menu_dialogs::options::LauncherCue) {
+        App::play_launcher_options_cue(self.state, cue);
+    }
+
+    fn store_resolution(&mut self, width: i32, height: i32) {
+        self.state.persistence.options_profile.screen_width = width;
+        self.state.persistence.options_profile.screen_height = height;
+    }
+
+    fn store_score_volume(&mut self, volume: f32) {
+        self.state.persistence.options_profile.score_volume = volume;
+    }
+
+    fn apply_score_output(&mut self, volume: f32) {
+        if let Some(player) = self.state.audio.music_player.as_mut() {
+            player.set_volume(f64::from(volume));
+        }
+    }
+
+    fn store_sound_volume(&mut self, volume: f32) {
+        self.state.persistence.options_profile.sound_volume = volume;
+    }
+
+    fn apply_sound_output(&mut self, volume: f32) {
+        if let Some(player) = self.state.audio.sfx_player.as_mut() {
+            player.set_sound_volume(f64::from(volume));
+        }
+    }
+
+    fn store_voice_volume(&mut self, volume: f32) {
+        self.state.persistence.options_profile.voice_volume = volume;
+    }
+
+    fn apply_voice_output(&mut self, volume: f32) {
+        if let Some(player) = self.state.audio.sfx_player.as_mut() {
+            player.set_voice_volume(f64::from(volume));
+        }
+    }
+
+    fn play_generic_beep(&mut self, local_multiplier: f32) {
+        App::play_launcher_generic_beep(self.state, local_multiplier);
+    }
+}
+
+struct AppStateLauncherParentOperations<'a> {
+    state: &'a mut AppState,
+}
+
+impl crate::app::persistence::options::launcher::LauncherParentOperations
+    for AppStateLauncherParentOperations<'_>
+{
+    fn observe_pack(
+        &mut self,
+        _packed: crate::ui::main_menu_dialogs::options::LauncherOptionsPacked,
+    ) {
+        debug_assert!(self.state.frontend.options_dialog.is_none());
+    }
+
+    fn store_detail_level(&mut self, value: i32) -> bool {
+        let changed = self.state.persistence.options_profile.detail_level != value;
+        self.state.persistence.options_profile.detail_level = value;
+        self.state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .detail_level = value.max(0) as u32;
+        changed
+    }
+
+    fn refresh_detail(&mut self) {
+        // Rust-native display invalidation for native `0x004AE450`. The live
+        // presentation reads the projection above on the requested frame.
+        self.state.platform.window.request_redraw();
+    }
+
+    fn store_difficulty(&mut self, value: i32) {
+        self.state.persistence.options_profile.difficulty = value;
+    }
+
+    fn store_unit_action_lines(&mut self, value: bool) {
+        self.state.persistence.options_profile.unit_action_lines = value;
+        self.state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .unit_action_lines = value;
+    }
+
+    fn refresh_unit_action_lines(&mut self) {
+        let enabled = self
+            .state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .unit_action_lines;
+        self.state
+            .match_state
+            .match_presentation
+            .target_lines
+            .set_unit_action_lines_enabled(enabled);
+    }
+
+    fn store_show_hidden(&mut self, value: bool) {
+        self.state.persistence.options_profile.show_hidden = value;
+        self.state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .show_hidden = value;
+    }
+
+    fn store_tooltips(&mut self, value: bool) {
+        self.state.persistence.options_profile.tooltips = value;
+        self.state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .tooltips = value;
+        self.state
+            .match_state
+            .match_presentation
+            .tooltips
+            .set_enabled(value);
+    }
+
+    fn store_scroll_rate(&mut self, value: i32) {
+        self.state.persistence.options_profile.scroll_rate = value;
+        self.state
+            .match_state
+            .match_presentation
+            .in_game_options
+            .scroll_rate = value.max(0) as u32;
+    }
+
+    fn store_score_volume(&mut self, value: f32) {
+        self.state.persistence.options_profile.score_volume = value;
+    }
+
+    fn apply_score_output(&mut self, value: f32) {
+        if let Some(player) = self.state.audio.music_player.as_mut() {
+            player.set_volume(f64::from(value));
+        }
+    }
+
+    fn queue_then_stop_score_zero(&mut self) {
+        self.state.audio.queue_then_stop_score_zero();
+    }
+
+    fn store_sound_volume(&mut self, value: f32) {
+        self.state.persistence.options_profile.sound_volume = value;
+    }
+
+    fn apply_sound_output(&mut self, value: f32) {
+        if let Some(player) = self.state.audio.sfx_player.as_mut() {
+            player.set_sound_volume(f64::from(value));
+        }
+    }
+
+    fn store_voice_volume(&mut self, value: f32) {
+        self.state.persistence.options_profile.voice_volume = value;
+    }
+
+    fn apply_voice_output(&mut self, value: f32) {
+        if let Some(player) = self.state.audio.sfx_player.as_mut() {
+            player.set_voice_volume(f64::from(value));
+        }
+    }
+
+    fn primary_dropped(&mut self) {
+        debug_assert!(self.state.frontend.options_dialog.is_none());
+    }
+
+    fn persist_profile(&mut self) {
+        crate::app::persistence::options::persist_options_profile(self.state);
+    }
+
+    fn prepare_network_settings(&mut self) {
+        self.state
+            .frontend
+            .offline_skirmish_runtime
+            .refresh_local_multiplayer_preferences();
+    }
+
+    fn route_network(&mut self) {
+        log::info!(
+            "Launcher Options Network child boundary reached; RT_DIALOG 0xD7 is not implemented"
+        );
+    }
+
+    fn route_keyboard(&mut self) {
+        log::info!(
+            "Launcher Options Keyboard child boundary reached; RT_DIALOG 0xA3 is not implemented"
+        );
+    }
+
+    fn reopen_parent(&mut self) {
+        App::open_launcher_options_dialog(self.state);
+    }
+}
+
 impl App {
     pub(super) fn single_player_shell_active(state: &AppState) -> bool {
         state.frontend.screen == GameScreen::MainMenu && state.frontend.shell_route.single_player()
@@ -293,6 +504,97 @@ impl App {
             .as_ref()
             .map(|csf| csf.text(key).into_owned())
             .unwrap_or_else(|| fallback.to_string())
+    }
+
+    /// Construct a fresh launcher Options primary from the current retained
+    /// profile, current-monitor dimension pairs, live CSF table, and frozen
+    /// process-start common audio gate. No display mode is applied here.
+    fn open_launcher_options_dialog(state: &mut AppState) {
+        use crate::app::persistence::options::launcher::launcher_dialog_from_profile;
+        use crate::ui::main_menu_dialogs::options::LauncherOptionsLabels;
+
+        let labels = LauncherOptionsLabels::resolve(&|key| {
+            state
+                .process_assets
+                .csf
+                .as_ref()
+                .and_then(|csf| csf.get(key))
+                .map(str::to_owned)
+        });
+        let mode_pairs: Vec<_> = state
+            .platform
+            .window
+            .current_monitor()
+            .map(|monitor| {
+                monitor
+                    .video_modes()
+                    .map(|mode| {
+                        let size = mode.size();
+                        (size.width, size.height)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let dialog = launcher_dialog_from_profile(
+            &state.persistence.options_profile,
+            labels,
+            mode_pairs,
+            state.audio.launcher_audio_available,
+        );
+        state.frontend.options_dialog = Some(dialog);
+    }
+
+    fn play_launcher_options_cue(
+        state: &mut AppState,
+        cue: crate::ui::main_menu_dialogs::options::LauncherCue,
+    ) {
+        use crate::ui::main_menu_dialogs::options::LauncherCue;
+
+        let sound_id = state.rules().and_then(|rules| match cue {
+            LauncherCue::MainButton => rules.general.gui_main_button_sound.as_deref(),
+            LauncherCue::GenericClick => rules.general.generic_click_sound.as_deref(),
+            LauncherCue::Checkbox => rules.general.gui_checkbox_sound.as_deref(),
+            LauncherCue::ComboOpen => rules.general.gui_combo_open_sound.as_deref(),
+        });
+        let sound_id = sound_id.map(str::to_owned);
+        Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
+    }
+
+    fn play_launcher_generic_beep(state: &mut AppState, local_multiplier: f32) {
+        let sound_id = state
+            .rules()
+            .and_then(|rules| rules.general.generic_beep_sound.as_deref())
+            .map(str::to_owned);
+        let Some(sound_id) = sound_id else {
+            return;
+        };
+        let Some(assets) = state.process_assets.manager() else {
+            return;
+        };
+        let Some(sfx) = state.audio.sfx_player.as_mut() else {
+            return;
+        };
+        sfx.play_sound_with_volume(
+            &sound_id,
+            local_multiplier,
+            &state.audio.sound_registry,
+            assets,
+            &state.audio.audio_indices,
+        );
+    }
+
+    /// Pump-terminal completion enters the same always-apply parent transaction
+    /// as Back, then writes once before the caller performs unrelated exit work.
+    pub(crate) fn close_launcher_options_terminal(state: &mut AppState) {
+        let Some(dialog) = state.frontend.options_dialog.take() else {
+            return;
+        };
+        let mut operations = AppStateLauncherParentOperations { state };
+        crate::app::persistence::options::launcher::dispatch_launcher_parent_result(
+            &mut operations,
+            dialog,
+            crate::ui::main_menu_dialogs::options::LauncherParentResult::Terminal,
+        );
     }
 
     /// Adapt the laid-out main-menu buttons into the shared controller's
@@ -627,8 +929,7 @@ impl App {
                 Self::open_single_player_shell(state);
             }
             MainMenuShellAction::Options => {
-                state.frontend.options_dialog =
-                    Some(crate::ui::main_menu_dialogs::OptionsDialogState::default());
+                Self::open_launcher_options_dialog(state);
             }
             MainMenuShellAction::MoviesAndCredits => {
                 state.frontend.movies_credits_dialog =
@@ -738,13 +1039,33 @@ impl App {
             }
         }
 
-        if state.frontend.options_dialog.is_some() {
-            let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
-            if matches!(
-                dialogs::draw_options_dialog(&state.renderer.egui.ctx, &csf),
-                dialogs::OptionsDialogAction::Close
-            ) {
-                state.frontend.options_dialog = None;
+        if let Some(mut dialog) = state.frontend.options_dialog.take() {
+            debug_assert_eq!(
+                dialog.launcher_audio_available(),
+                state.audio.launcher_audio_available
+            );
+            let output = dialogs::options::draw_launcher_options_dialog(
+                &state.renderer.egui.ctx,
+                &mut dialog,
+            );
+            {
+                let mut operations = AppStateLauncherPreviewOperations { state };
+                for event in output.events {
+                    crate::app::persistence::options::launcher::dispatch_launcher_preview_event(
+                        &mut operations,
+                        event,
+                    );
+                }
+            }
+            if let Some(result) = output.result {
+                let mut operations = AppStateLauncherParentOperations { state };
+                crate::app::persistence::options::launcher::dispatch_launcher_parent_result(
+                    &mut operations,
+                    dialog,
+                    result,
+                );
+            } else {
+                state.frontend.options_dialog = Some(dialog);
             }
             return false;
         }

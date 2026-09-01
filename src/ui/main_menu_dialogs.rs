@@ -6,8 +6,7 @@
 //!
 //! - Exit Game -> a confirm message box ("are you sure?") with confirm/cancel.
 //!   The game does NOT quit on the first click; it quits only on confirm.
-//! - Options -> a launcher options dialog (open-level shell only here; the real
-//!   option widgets + INI write-back are not yet decoded).
+//! - Options -> the retained launcher Options parent in `options`.
 //! - Movies & Credits -> a sub-panel with Sneak Preview / Movies / Credits /
 //!   Back (open-level; playback + credits roller not implemented here).
 //! - Single Player -> New Campaign -> a campaign selector (Allied/Soviet +
@@ -118,60 +117,6 @@ pub(crate) fn draw_exit_confirm_modal(
             });
         });
 
-    action
-}
-
-// ---------------------------------------------------------------------------
-// Options launcher dialog compatibility entry
-// ---------------------------------------------------------------------------
-
-/// Temporary production adapter retained until the launcher transaction commit
-/// connects the retained semantic parent from `options` to AppState effects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OptionsDialogAction {
-    None,
-    Close,
-}
-
-pub(crate) fn draw_options_dialog(ctx: &egui::Context, csf: &CsfLookup<'_>) -> OptionsDialogAction {
-    let palette = client_theme::apply_client_theme(ctx);
-    let mut action = OptionsDialogAction::None;
-    let back_label = csf("GUI:Back", "Back");
-
-    draw_backdrop(ctx, "options_backdrop");
-    egui::Window::new("")
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(client_theme::card_frame(palette.panel, palette.line))
-        .min_width(420.0)
-        .show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.vertical(|ui| {
-                client_theme::section_label(ui, "OPTIONS", palette);
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("Options")
-                        .size(24.0)
-                        .strong()
-                        .color(palette.text),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Resolution, volumes, scroll rate, tooltips and game speed are not \
-                         implemented yet.",
-                    )
-                    .size(13.0)
-                    .color(palette.text_muted),
-                );
-                ui.add_space(16.0);
-                if ui.button(&back_label).clicked() {
-                    action = OptionsDialogAction::Close;
-                }
-            });
-        });
     action
 }
 

@@ -64,7 +64,7 @@ pub(crate) struct FrontendState {
     /// confirm quitting. The app only exits on confirm, never on the first
     /// Exit click.
     pub(crate) exit_confirm_modal: Option<crate::ui::main_menu_dialogs::ExitConfirmModalState>,
-    /// Options launcher dialog (open-level shell; real widgets not decoded).
+    /// Retained active-YR launcher Options `0xD5` parent snapshot.
     pub(crate) options_dialog: Option<crate::ui::main_menu_dialogs::OptionsDialogState>,
     /// Movies & Credits sub-panel (open-level shell; playback not implemented).
     pub(crate) movies_credits_dialog:
