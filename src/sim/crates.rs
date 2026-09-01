@@ -39,6 +39,7 @@ use crate::sim::cell_rect::cell_is_in_playfield_height_aware;
 use crate::sim::find_nearby_cell::{
     NearbyAnchorGate, NearbyFootprint, NearbyQuery, PassabilityArgs, find_nearby_passable_cell,
 };
+use crate::sim::occupancy::OBJECT_OCCUPATION_BIT;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::SimFixed;
@@ -615,7 +616,10 @@ fn validate_and_stamp_candidate_inner(
                 .raw_cell_occupation
                 .ground_bits(cell.0, cell.1)
         };
-        if selected_occupation != 0 {
+        // `CellClass::CheckCellPassability @ 0x004834A0` applies both native
+        // occupation filters; their intersection is exactly bit 0x40. Other
+        // raw occupation bits do not reject this Mark admission.
+        if selected_occupation & OBJECT_OCCUPATION_BIT != 0 {
             if let Some(full_rules) = full_rules {
                 spawn_crate_cell_anim(
                     sim,
@@ -1657,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn scenario_start_crate_any_ground_occupation_bit_accepts_a_timed_ghost() {
+    fn scenario_start_crate_object_ground_occupation_accepts_a_timed_ghost() {
         let rules = crate_ruleset("CrateMinimum=1\nCrateMaximum=1\n");
         let registry = crate_registry();
         let grid = PathGrid::test_all_passable(MAP, MAP);
@@ -1669,7 +1673,7 @@ mod tests {
         sim.substrate.raw_cell_occupation.mark_ground(
             rx,
             ry,
-            crate::sim::occupancy::OBJECT_OCCUPATION_BIT,
+            OBJECT_OCCUPATION_BIT,
         );
 
         let result = place_scenario_start_crates(&mut sim, &rules, &registry, Some(&grid), 1);
@@ -1698,7 +1702,7 @@ mod tests {
     }
 
     #[test]
-    fn scenario_start_crate_every_nonzero_ground_occupation_bit_ghosts() {
+    fn scenario_start_crate_only_object_ground_occupation_bit_ghosts() {
         let rules = crate_ruleset("CrateMinimum=1\nCrateMaximum=1\n");
         let registry = crate_registry();
         let grid = PathGrid::test_all_passable(MAP, MAP);
@@ -1712,10 +1716,15 @@ mod tests {
             let result = place_scenario_start_crates(&mut sim, &rules, &registry, Some(&grid), 1);
             assert_eq!(
                 (result.accepted, result.visible),
-                (1, 0),
-                "raw occupation bit {bit:#04x} must reject Mark"
+                (1, u32::from(bit != OBJECT_OCCUPATION_BIT)),
+                "only raw occupation bit 0x40 may reject Mark; tested {bit:#04x}"
             );
             assert!(sim.crate_authority.slots()[0].cell_x != 0);
+            assert_eq!(
+                crate_cells(&sim, &registry).contains(&cell),
+                bit != OBJECT_OCCUPATION_BIT,
+                "non-object occupation bits must retain the visible crate"
+            );
         }
     }
 
@@ -1934,8 +1943,8 @@ mod tests {
             "structural bridge chooses empty deck and bypasses ground speed zero"
         );
 
-        let mut ghost = sim_with_grid(0xB21D_0002);
-        let terrain_cell = ghost
+        let mut non_object_deck = sim_with_grid(0xB21D_0002);
+        let terrain_cell = non_object_deck
             .resolved_terrain
             .as_mut()
             .unwrap()
@@ -1943,20 +1952,45 @@ mod tests {
             .unwrap();
         terrain_cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
         terrain_cell.speed_costs.track = Some(100);
-        ghost
+        non_object_deck
             .substrate
             .raw_cell_occupation
             .mark_deck(cell.0, cell.1, 0x01);
         assert_eq!(
             validate_and_stamp_candidate(
-                &mut ghost,
+                &mut non_object_deck,
+                &rules.crate_rules,
+                &registry,
+                cell,
+                ForcedPostPrecheckFailure::None,
+            ),
+            AcceptedCellResult::Visible,
+            "a selected deck byte without object bit 0x40 passes Mark"
+        );
+
+        let mut object_deck = sim_with_grid(0xB21D_0003);
+        let terrain_cell = object_deck
+            .resolved_terrain
+            .as_mut()
+            .unwrap()
+            .cell_mut(cell.0, cell.1)
+            .unwrap();
+        terrain_cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        terrain_cell.speed_costs.track = Some(100);
+        object_deck
+            .substrate
+            .raw_cell_occupation
+            .mark_deck(cell.0, cell.1, OBJECT_OCCUPATION_BIT);
+        assert_eq!(
+            validate_and_stamp_candidate(
+                &mut object_deck,
                 &rules.crate_rules,
                 &registry,
                 cell,
                 ForcedPostPrecheckFailure::None,
             ),
             AcceptedCellResult::Ghost,
-            "any nonzero selected deck byte rejects Mark"
+            "selected deck object bit 0x40 rejects Mark"
         );
     }
 
@@ -2290,7 +2324,7 @@ mod tests {
         ghost
             .substrate
             .raw_cell_occupation
-            .mark_ground(cell.0, cell.1, 1);
+            .mark_ground(cell.0, cell.1, OBJECT_OCCUPATION_BIT);
         assert_eq!(
             validate_and_stamp_candidate_with_rules(
                 &mut ghost,

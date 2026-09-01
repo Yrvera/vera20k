@@ -86,7 +86,8 @@ retail order, and the app consumes live overlay state through the existing
   - **Source:** active placement report `0x004A1944..0x004A1A78`.
 - **Only two retryable hard rejections:** outside playfield or pre-existing
   overlay retries. Every subsequent failure, including null identity and any
-  nonzero occupation byte, creates a timed ghost. Steep slopes are rejected by
+  selected occupation bit `0x40`, creates a timed ghost. Other occupation bits
+  remain admitted. Steep slopes are rejected by
   Mark except for exact raw overlay ID `0xB2`. — **Confidence: high**
   - **Source:** active placement report; `CrateSlot__ValidateCellAndCreateOverlay
     @ 0x004A18F0`.
@@ -195,8 +196,8 @@ audio API is introduced.
   spelling.
 - `none` can compare equal to another null configured pointer, but no object
   exists; it must still ghost after hard prechecks.
-- Occupation tests use the complete selected byte (`== 0`), not
-  `OBJECT_OCCUPATION_BIT` masking.
+- Occupation tests apply the exact `OBJECT_OCCUPATION_BIT` (`0x40`) mask to the
+  selected ground/deck byte; other raw bits remain admitted.
 - Mark rejects `slope_type > 4` unless the selected raw overlay ID is exactly
   `0xB2`.
 - Serde 1.0.229 implements direct fixed-array traits only through length 32;
@@ -649,8 +650,8 @@ After FNPC returns a snapped cell:
    current water ID first -> Float; otherwise matching current crate or wood ID
    -> Track;
 6. in the ordinary branch, a selected `None`, unresolved terrain cell,
-   `slope_type > 4` when the selected raw overlay ID is not exact `0xB2`, any
-   nonzero selected occupation byte, selected
+   `slope_type > 4` when the selected raw overlay ID is not exact `0xB2`,
+   selected occupation bit `0x40`, selected
    non-bridge speed zero, or injected allocation/Unlimbo/Mark failure ->
    accepted ghost;
 7. `bridge_facts.raw_flags & 0x100 != 0` selects
@@ -663,8 +664,9 @@ After FNPC returns a snapped cell:
    A constructed CellAnim receives Tiberium `Color=` palette authority and the
    CellClass ground Z-adjust only when the now-live cell reports tiberium.
 
-Do not use `OBJECT_OCCUPATION_BIT` masking and do not use
-`place_overlay_native_runtime` wall/protection semantics.
+Use the exact `OBJECT_OCCUPATION_BIT` mask; do not collapse it to whole-byte
+nonzero admission. Do not use `place_overlay_native_runtime` wall/protection
+semantics.
 
 **Step 4: Add the specialized raw-field stamp and branch helpers**
 
@@ -724,10 +726,11 @@ Cover:
 - destination water/land image;
 - water-first alias priority;
 - null image accepted ghost;
-- terrain object, non-exempt slopes 5+, every individual nonzero occupation
-  bit, speed-zero, and injected Mark failure accepted ghosts;
+- terrain object, non-exempt slopes 5+, selected occupation bit `0x40`,
+  speed-zero, and injected Mark failure accepted ghosts; other ground/deck
+  occupation bits remain visible;
 - exact raw overlay ID `0xB2` remains eligible on slopes 5+;
-- structural bridge selects deck, checks whole byte, and bypasses underlying
+- structural bridge selects deck, checks bit `0x40`, and bypasses underlying
   speed zero;
 - occupied overlay/outside playfield retry and do not install timer;
 - visible stamp writes zero ordinarily, one for Road, and `0xFF` for

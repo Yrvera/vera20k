@@ -39,7 +39,7 @@ presentation list, and performs AI opening credits before crates.
 | Water/common identity | Destination land type selects the configured water or wood/common overlay identity; Mark then selects Float only when the selected identity equals the current water identity, otherwise Track. |
 | Aliased configured identities | Water identity comparison has priority. If water and wood/common resolve to the same identity, the selected identity uses Float facts. |
 | Configured `none` image | Null identity survives the hard prechecks, then becomes an accepted timed ghost; it does not retry or fail closed. |
-| Terrain object, non-exempt steep slope, ordinary occupation/speed-zero, allocation, Unlimbo, or Mark failure after hard prechecks | The call is accepted as a ghost: the slot and timer persist, RNG is consumed, and no visible overlay is stamped. A TerrainClass object gates the constructor before every Mark branch. Raw overlay ID `0xB2` is the exact retail exception that remains Mark-eligible above slope four; high-anchor IDs explicitly bypass ordinary ground/deck occupation and speed checks. |
+| Terrain object, non-exempt steep slope, ordinary object-occupation bit `0x40`/speed-zero, allocation, Unlimbo, or Mark failure after hard prechecks | The call is accepted as a ghost: the slot and timer persist, RNG is consumed, and no visible overlay is stamped. Other raw occupation bits do not block Mark. A TerrainClass object gates the constructor before every Mark branch. Raw overlay ID `0xB2` is the exact retail exception that remains Mark-eligible above slope four; high-anchor IDs explicitly bypass ordinary ground/deck occupation and speed checks. |
 | Custom configured Mark-special identity | The selected dense runtime ID follows the active `OverlayClass::Mark` branch: high-anchor bridge stamping, Railroad bypass, wall placement/connectivity, low-bridge endpoint transaction, Road tiberium germination, and ordinary `CellAnim` are not collapsed to the default crate write. |
 | Configured TS veins/veinhole identity (`0x7E`/`0xA7`) | The startup slot is accepted and timed, but Rust creates no overlay or TS world mutation. GSI-18.01 remains explicitly excluded. |
 | Occupied overlay or snapped cell outside the playfield | The attempt is rejected before construction and retries, preserving the exact draw sequence. |
@@ -279,7 +279,7 @@ The transaction order is explicit:
    Water-first priority preserves configured pointer aliases.
 7. Run Unlimbo/ordinary-Mark facts. A null/unknown selected identity,
    slope above four when the selected raw overlay ID is not
-   exact `0xB2`, nonzero selected occupation byte,
+   exact `0xB2`, selected occupation bit `0x40`,
    non-bridge selected-speed zero, bridge-plane failure, allocation failure,
    Unlimbo failure, or Mark failure is an accepted ghost.
 8. Structural bridge `raw_flags & 0x100` selects deck occupation and bypasses
