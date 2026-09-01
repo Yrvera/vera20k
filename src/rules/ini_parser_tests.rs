@@ -369,6 +369,95 @@ fn process_rules_passes(root: &str, later: &str) -> ProcessedRulesLayers {
 }
 
 #[test]
+fn crate_rules_constructor_and_stock_fields_keep_native_bits() {
+    let defaults = RulesLayerStack::new(IniFile::from_str("")).process();
+    assert_eq!(defaults.crate_rules().minimum, 1);
+    assert_eq!(defaults.crate_rules().maximum, 255);
+    assert_eq!(defaults.crate_rules().regen.bits(), 10.0_f64.to_bits());
+    assert_eq!(defaults.crate_rules().wood_crate_img, None);
+    assert_eq!(defaults.crate_rules().crate_img, None);
+    assert_eq!(defaults.crate_rules().water_crate_img, None);
+
+    let stock = RulesLayerStack::new(IniFile::from_str(
+        "[CrateRules]\nCrateMinimum=1\nCrateMaximum=255\nCrateRegen=3\n\
+         WoodCrateImg=CRATE\nCrateImg=CRATE\nWaterCrateImg=WCRATE\n",
+    ))
+    .process();
+    assert_eq!(stock.crate_rules().minimum, 1);
+    assert_eq!(stock.crate_rules().maximum, 255);
+    assert_eq!(stock.crate_rules().regen.bits(), 3.0_f64.to_bits());
+    assert_eq!(stock.crate_rules().wood_crate_img.as_deref(), Some("CRATE"));
+    assert_eq!(stock.crate_rules().crate_img.as_deref(), Some("CRATE"));
+    assert_eq!(
+        stock.crate_rules().water_crate_img.as_deref(),
+        Some("WCRATE")
+    );
+}
+
+#[test]
+fn crate_rules_retain_per_pass_and_preserve_signed_values() {
+    let processed = process_rules_passes(
+        "[CrateRules]\nCrateMinimum=-7\nCrateMaximum=-12\nCrateRegen=3\n\
+         WoodCrateImg=WOOD\nCrateImg=COMMON\nWaterCrateImg=WATER\n",
+        "[CrateRules]\nCrateMaximum=2\nWaterCrateImg=none\n",
+    );
+    let rules = processed.crate_rules();
+    assert_eq!(rules.minimum, -7, "missing later key retains signed value");
+    assert_eq!(rules.maximum, 2);
+    assert_eq!(rules.regen.bits(), 3.0_f64.to_bits());
+    assert_eq!(rules.wood_crate_img.as_deref(), Some("WOOD"));
+    assert_eq!(rules.crate_img.as_deref(), Some("COMMON"));
+    assert_eq!(rules.water_crate_img, None);
+
+    let absent = process_rules_passes(
+        "[CrateRules]\nCrateMinimum=9\nCrateMaximum=3\nCrateImg=FIRST\n",
+        "[General]\nBuildSpeed=.7\n",
+    );
+    assert_eq!(absent.crate_rules().minimum, 9);
+    assert_eq!(absent.crate_rules().maximum, 3);
+    assert_eq!(absent.crate_rules().crate_img.as_deref(), Some("FIRST"));
+}
+
+#[test]
+fn crate_rule_images_allocate_and_alias_by_overlay_identity() {
+    let processed = RulesLayerStack::new(IniFile::from_str(
+        "[CrateRules]\nWoodCrateImg=AliasCrate\nCrateImg=aliascrate\n\
+         WaterCrateImg=NewWater\n",
+    ))
+    .process();
+    let overlays = processed
+        .ini()
+        .section("OverlayTypes")
+        .expect("crate references allocate overlays");
+    assert_eq!(overlays.get_values(), vec!["AliasCrate", "NewWater"]);
+
+    let registry =
+        crate::rules::overlay_types::OverlayTypeRegistry::from_ini(processed.ini(), None);
+    assert_eq!(
+        registry.id_for_name("AliasCrate"),
+        registry.id_for_name("aliascrate")
+    );
+    assert_ne!(
+        registry.id_for_name("AliasCrate"),
+        registry.id_for_name("NewWater")
+    );
+}
+
+#[test]
+fn crate_rules_direct_and_one_layer_entry_points_agree() {
+    let ini = IniFile::from_str(
+        "[CrateRules]\nCrateMinimum=-2\nCrateMaximum=6\nCrateRegen=3\n\
+         WoodCrateImg=WOOD\nCrateImg=COMMON\nWaterCrateImg=WATER\n",
+    );
+    let direct = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("direct rules");
+    let layered =
+        crate::rules::ruleset::RuleSet::from_rules_layers(&RulesLayerStack::new(ini.clone()))
+            .expect("layered rules");
+    assert_eq!(direct.crate_rules, layered.crate_rules);
+    assert_eq!(direct.source_ini_hash(), layered.source_ini_hash());
+}
+
+#[test]
 fn later_malformed_weapon_bool_preserves_current_field_default() {
     use crate::rules::weapon_type::WeaponType;
 
