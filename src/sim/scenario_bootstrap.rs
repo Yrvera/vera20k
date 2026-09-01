@@ -3698,6 +3698,7 @@ mod tests {
             map_height: SIZE,
             basic: &map.basic,
             special_flags: &map.special_flags,
+            normal_lighting: crate::map::lighting::parse_lighting_profiles(&map.ini).normal,
             rules: &rules,
             overlay_registry: &overlays,
             house_roster: &house_roster,

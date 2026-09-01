@@ -1278,6 +1278,23 @@ impl ResolvedTerrainGrid {
             || cell.has_bridge_deck;
     }
 
+    /// Project a direct `CellClass::OverlayData` write into the derived bridge
+    /// facts without inventing an overlay identity. The native high-bridge
+    /// setters write this byte on four cells before `OverlayClass::Mark`
+    /// decides whether the anchor itself receives an overlay.
+    pub(crate) fn set_runtime_overlay_bridge_state_byte(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        overlay_data: u8,
+    ) -> bool {
+        let Some(cell) = self.cell_mut(rx, ry) else {
+            return false;
+        };
+        cell.bridge_facts.state_byte = overlay_data;
+        true
+    }
+
     /// Project only allocated real-cell values for a setter that already ran
     /// synchronously through [`CellClassBridgeFlagState`]. This performs no
     /// GetCell fallback and cannot stamp or mutate the shared dummy.

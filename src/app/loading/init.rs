@@ -97,9 +97,9 @@ fn resolved_overlay_shp_ids(
     available
 }
 
-/// Append visible accepted startup crates to the initial presentation index.
-/// Ghost slots remain authoritative simulation state but have no live overlay
-/// identity and therefore produce no render entry.
+/// Append every visible real-cell write made by startup crate Mark to the
+/// initial presentation index. Ghost slots have no live overlay identity, while
+/// low-bridge Mark may write many cells for one timed slot.
 fn connect_startup_crate_overlays(
     overlays: &mut Vec<OverlayEntry>,
     simulation: &Simulation,
@@ -107,9 +107,12 @@ fn connect_startup_crate_overlays(
     let Some(grid) = simulation.overlay_grid.as_ref() else {
         return 0;
     };
-    let candidates = simulation
-        .crate_authority
-        .occupied_cells()
+    let mut seen = BTreeSet::new();
+    let candidates = grid
+        .pending_dirty_cells()
+        .iter()
+        .copied()
+        .filter(|cell| seen.insert(*cell))
         .filter_map(|(rx, ry)| {
             let cell = grid.cell(rx, ry);
             Some(OverlayEntry {
@@ -174,6 +177,43 @@ mod startup_crate_presentation_tests {
         assert!(
             source.iter().all(|entry| (entry.rx, entry.ry) != (7, 8)),
             "a timed ghost has no initial render entry"
+        );
+    }
+
+    #[test]
+    fn startup_crate_presentation_includes_low_bridge_extension_without_consuming_dirty_receipt() {
+        let mut simulation = Simulation::new();
+        simulation.overlay_grid = Some(OverlayGrid::new(32, 32));
+        *simulation.crate_authority.slot_mut(0) = CrateSlot {
+            start_frame: 10,
+            aux: 20,
+            duration: 30,
+            cell_x: 12,
+            cell_y: 12,
+        };
+        let grid = simulation.overlay_grid.as_mut().unwrap();
+        grid.place_overlay(12, 11, 0x5C, 0);
+        grid.place_overlay(12, 12, 0x4A, 1);
+        grid.place_overlay(12, 13, 0x4B, 2);
+        let dirty_before = grid.pending_dirty_cells().to_vec();
+        let mut source = Vec::new();
+
+        assert_eq!(connect_startup_crate_overlays(&mut source, &simulation), 3);
+        assert_eq!(
+            source
+                .iter()
+                .map(|entry| (entry.rx, entry.ry, entry.overlay_id, entry.frame))
+                .collect::<Vec<_>>(),
+            vec![(12, 11, 0x5C, 0), (12, 12, 0x4A, 1), (12, 13, 0x4B, 2)]
+        );
+        assert_eq!(
+            simulation
+                .overlay_grid
+                .as_ref()
+                .unwrap()
+                .pending_dirty_cells(),
+            dirty_before,
+            "initial presentation must not consume the sim/navigation receipt"
         );
     }
 }
@@ -1166,7 +1206,11 @@ impl MapLoadInitial {
             || theater_ext_for(&map_data.header.theater),
             |td| td.extension,
         );
-        let scheduler_roots = scheduler_anim_roots(&rules, resolved_terrain.tile_animations());
+        let scheduler_roots = scheduler_anim_roots(
+            &rules,
+            &overlay_registry,
+            resolved_terrain.tile_animations(),
+        );
         art.bind_scheduler_anim_assets(
             &scheduler_roots,
             asset_manager,
@@ -2046,7 +2090,7 @@ pub(crate) fn load_map_from_initial(
     // have resolved, but before any atlas or AnimClass construction. Missing
     // tile art is a load error rather than a silently invisible map feature.
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
-        let roots = scheduler_anim_roots(r, resolved_terrain.tile_animations());
+        let roots = scheduler_anim_roots(r, &overlay_registry, resolved_terrain.tile_animations());
         a.bind_scheduler_anim_assets(
             &roots,
             &asset_manager,
@@ -2309,6 +2353,7 @@ pub(crate) fn load_map_from_initial(
         &map_data.header.theater,
         rules.as_ref(),
         art.as_ref(),
+        &overlay_registry,
         &house_color_map,
         unit_palette.as_ref(),
         overlay_iso_palette.as_ref(),
@@ -2403,6 +2448,7 @@ pub(crate) fn load_map_from_initial(
                     &map_data.header.theater,
                     rules.as_ref(),
                     art.as_ref(),
+                    &overlay_registry,
                     &house_color_map,
                     unit_palette.as_ref(),
                     overlay_iso_palette.as_ref(),

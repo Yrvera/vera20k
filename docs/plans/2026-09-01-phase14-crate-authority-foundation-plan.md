@@ -90,10 +90,13 @@ retail order, and the app consumes live overlay state through the existing
   Mark except for exact raw overlay ID `0xB2`. — **Confidence: high**
   - **Source:** active placement report; `CrateSlot__ValidateCellAndCreateOverlay
     @ 0x004A18F0`.
-- **Dispatch the complete reachable Mark body:** the universal slope gate
+- **Dispatch the complete reachable Mark body:** the constructor TerrainClass
+  scan precedes Unlimbo and every Mark branch. The universal slope gate then
   precedes high bridge, TS legacy, Railroad, wall, low endpoint, and ordinary
-  branches. Low bodies use `3*L` raw Scenario draws and exact dense-ID tables;
-  Road tiberium calls `SpreadCellGerminate(false)`. — **Confidence: high**
+  branches. High setters write raw `0`/`9` data before falling through and the
+  four high IDs explicitly bypass ordinary passability. Low bodies use `3*L`
+  raw Scenario draws and exact dense-ID tables; Road tiberium calls
+  `SpreadCellGerminate(false)`. — **Confidence: high**
   - **Source:** `OverlayClass::Mark @ 0x005FC570`;
     `LOW_OVERLAY_MARK_FIXED_MAP_STAMP_RNG_TRANSACTION_GHIDRA_REPORT.md`;
     `CellClass::SpreadCellGerminate @ 0x004818E0`.
@@ -638,22 +641,27 @@ After FNPC returns a snapped cell:
 2. existing overlay identity -> retry;
 3. destination `yr_cell_land_type == Water` selects resolved
    `WaterCrateImg`, otherwise resolved `WoodCrateImg`;
-4. apply the universal slope gate, then dispatch high anchors, explicit
-   `0x7E`/`0xA7` TS ghosts, Railroad, walls, and low endpoint trigger tables;
+4. apply the constructor TerrainClass gate, then the universal slope gate;
+   dispatch high anchors, explicit `0x7E`/`0xA7` TS ghosts, Railroad, walls,
+   and low endpoint trigger tables. High setters write anchor/F1/F2/opposite
+   data `0` or `9`, stamp flags, and continue through later precedence;
 5. only the ordinary branch compares selected numeric identity with resolved
    current water ID first -> Float; otherwise matching current crate or wood ID
    -> Track;
-6. in the ordinary branch, a selected `None`, unresolved terrain cell, terrain object,
+6. in the ordinary branch, a selected `None`, unresolved terrain cell,
    `slope_type > 4` when the selected raw overlay ID is not exact `0xB2`, any
    nonzero selected occupation byte, selected
    non-bridge speed zero, or injected allocation/Unlimbo/Mark failure ->
    accepted ghost;
 7. `bridge_facts.raw_flags & 0x100 != 0` selects
-   `raw_cell_occupation.deck_bits` and bypasses non-bridge speed-zero;
-   otherwise select `ground_bits`;
-8. ordinary success preserves native write order: identity/data zero, Road data
-   one and optional tiberium germination, `Crate=yes` override, `CellAnim`, then
-   common Recalc.
+   `raw_cell_occupation.deck_bits` and bypasses non-bridge speed-zero for a
+   non-high ordinary overlay; otherwise select `ground_bits`. Exact high IDs
+   bypass both occupation planes and speed checks explicitly;
+8. ordinary success preserves native write order: identity/data zero (except
+   high anchors, whose setter data is retained), Road data one and optional
+   tiberium germination, `Crate=yes` override, `CellAnim`, then common Recalc.
+   A constructed CellAnim receives Tiberium `Color=` palette authority and the
+   CellClass ground Z-adjust only when the now-live cell reports tiberium.
 
 Do not use `OBJECT_OCCUPATION_BIT` masking and do not use
 `place_overlay_native_runtime` wall/protection semantics.
@@ -725,10 +733,13 @@ Cover:
 - visible stamp writes zero ordinarily, one for Road, and `0xFF` for
   `Crate=yes`, preserves wall owner, and dirties once;
 - Railroad bypass/data zero; wall passability/connectivity/data ordering; high
-  anchor flag family and preserved data; every low trigger table with exact
+  anchor raw setter data, fallthrough overrides, explicit passability bypass,
+  and flag family; every low trigger table with exact
   `3*L` raw draws plus occupied-row no-op; Road tiberium neighbor density;
-  visible and failed ordinary `CellAnim`; explicit TS legacy ghosts;
-- ghost preserves the cell;
+  visible and failed ordinary `CellAnim`, including conditional tiberium
+  palette/Z post-writes; explicit TS legacy ghosts;
+- ordinary pre-stamp ghosts preserve the cell; specialized branches retain any
+  native writes that precede a later rejection;
 - both visible and ghost slots store coordinate then timer words;
 - 1,000 hard rejections return with empty slot.
 
@@ -796,8 +807,9 @@ Add a test-only trace around these three calls and assert
 
 After `finalize_constructed_scenario` and before building `MapLoadResult`:
 
-- iterate accepted nonempty slot coordinates in slot order;
-- query the live `OverlayGrid`;
+- inspect the `OverlayGrid` pending dirty-cell receipt without consuming it;
+- de-duplicate coordinates in first-write order so low-bridge extensions and
+  high-setter neighbor writes are included;
 - materialize `OverlayEntry {rx,ry,overlay_id,frame:overlay_data}` only when
   identity is present;
 - upsert those entries into the initial source vector with
@@ -814,9 +826,12 @@ Extend `preregister_runtime_overlay_names` to accept registry entries whose
 flags have `crate_type` plus all three resolved `CrateRules` identities, in
 addition to walls and low bridges. Preload the actual reachable Mark outputs:
 frame zero for flagged crates, ordinary/Railroad data, wall frames, low
-fixed/body IDs and states, all preserved high-anchor data values, and Road
-tiberium density frames. Keep counters separate so crate additions are not
-misreported as bridges.
+fixed/body IDs and states, and Road tiberium density frames. Route selected
+high-anchor identities to `BridgeAtlas` body/shadow roots before startup
+placement rather than generating `OverlayAtlas` keys. Add reachable crate
+`CellAnim` names to the scheduler asset closure and live tiberium-remap keys to
+the SHP atlas. Keep counters separate so crate additions are not misreported as
+bridges.
 
 **Step 5: Add focused production tests**
 
@@ -825,11 +840,15 @@ misreported as bridges.
 - option-on Skirmish ordering trace;
 - accepted generated map reaches `Some` and installs slots;
 - preview lifecycle creates no sim crate state;
-- visible startup slots append after source overlays in slot order;
+- every visible startup Mark dirty cell appends after source overlays in
+  first-write order without consuming the sim/navigation receipt;
+- startup bridge writes rebuild `BridgeRuntimeState` and republish initial
+  navigation before AI credits, while leaving that dirty receipt pending;
 - ghosts do not enter the index;
 - existing-coordinate upsert retains its source slot;
 - CRATE/WCRATE and a late-allocated configured `Crate=false` identity are
-  preregistered/preloaded before scatter;
+  preregistered/preloaded before scatter; high roots use BridgeAtlas and a
+  crate CellAnim is bound before construction with its remap variant covered;
 - renderer constant remains crate frame zero.
 
 **Step 6: Verify and commit**

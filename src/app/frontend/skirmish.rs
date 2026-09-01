@@ -2896,6 +2896,7 @@ pub(crate) fn build_overlay_atlas_from_map(
             theater_ext,
             &map_data.header.theater,
             &overlay_registry,
+            crate_rules,
             rules_ini,
             art_registry,
         )

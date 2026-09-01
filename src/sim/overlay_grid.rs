@@ -401,6 +401,34 @@ impl OverlayGrid {
         true
     }
 
+    /// Write only the raw `CellClass::OverlayData` byte and emit the setter's
+    /// immediate radar-dirty event. High-bridge setters do this even when the
+    /// target cell has no overlay identity yet.
+    pub(crate) fn write_crate_mark_data_field(
+        &mut self,
+        resolved_terrain: &mut ResolvedTerrainGrid,
+        rx: u16,
+        ry: u16,
+        overlay_data: u8,
+    ) -> bool {
+        let Some(idx) = index_of(self.width, self.height, rx, ry) else {
+            return false;
+        };
+        if !resolved_terrain.set_runtime_overlay_bridge_state_byte(rx, ry, overlay_data) {
+            return false;
+        }
+        self.cells[idx].overlay_data = overlay_data;
+        self.dirty_cells.push((rx, ry));
+        true
+    }
+
+    /// Pending overlay/radar dirty coordinates without consuming the runtime
+    /// receipt. Initial presentation uses this to include every real cell
+    /// written by a multi-cell startup Mark transaction.
+    pub(crate) fn pending_dirty_cells(&self) -> &[(u16, u16)] {
+        &self.dirty_cells
+    }
+
     /// Reconstruct owners for map-loaded wall overlays after buildings exist.
     /// Strict distance improvement preserves the first candidate on ties.
     pub fn reconstruct_map_wall_owners(

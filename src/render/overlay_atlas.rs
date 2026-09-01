@@ -253,6 +253,12 @@ fn runtime_crate_sprite_keys(
         let Some(flags) = overlay_registry.flags(selected_id) else {
             continue;
         };
+        // High-bridge bodies and their shadow halves are drawn exclusively by
+        // BridgeAtlas. Rooting 256 ordinary OverlayAtlas frames here cannot
+        // make that production draw path reachable.
+        if crate::map::bridge_facts::high_bridge_stamp_for_overlay(selected_id).is_some() {
+            continue;
+        }
         let mut reachable: Vec<(u8, std::ops::RangeInclusive<u8>)> = Vec::new();
         match selected_id {
             // Active-YR low endpoint Mark replaces the trigger with one fixed
@@ -304,10 +310,6 @@ fn runtime_crate_sprite_keys(
                 for id in 0xD6..=0xD9 {
                     reachable.push((id, 0..=2));
                 }
-            }
-            // High-anchor Mark preserves the target cell's prior raw data.
-            0x18 | 0x19 | 0xED | 0xEE => {
-                reachable.push((selected_id, 0..=u8::MAX));
             }
             _ if flags.wall => {
                 // The general wall preload below owns the complete frame set.
@@ -1212,12 +1214,10 @@ mod tests {
             ..CrateRules::default()
         };
         let high_keys = runtime_crate_sprite_keys(&high_registry, &high_rules);
-        for frame in [0, 7, u8::MAX] {
-            assert!(high_keys.contains(&OverlaySpriteKey {
-                name: "HIGHANCHOR".to_owned(),
-                frame,
-            }));
-        }
+        assert!(
+            high_keys.is_empty(),
+            "high startup identities are rooted in BridgeAtlas, never OverlayAtlas"
+        );
     }
 
     #[test]

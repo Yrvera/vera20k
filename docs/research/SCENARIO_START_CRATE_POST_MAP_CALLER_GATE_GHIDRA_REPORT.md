@@ -98,8 +98,8 @@ For ordinary Skirmish startup, Rust must preserve the native relative order: ini
 | Input | Authority in this slice | Verified effect |
 |---|---|---|
 | `[MultiplayerDialogSettings] Crates=` | launcher/session option, stock `yes` | gates the entire initial attempt loop through `0x00A8B261` |
-| `[General] CrateMinimum=` | finalized Rules object | signed lower bound for attempts |
-| `[General] CrateMaximum=` | finalized Rules object | signed upper cap for attempts |
+| `[CrateRules] CrateMinimum=` | finalized Rules object | signed lower bound for attempts |
+| `[CrateRules] CrateMaximum=` | finalized Rules object | signed upper cap for attempts |
 | `[Basic] Official=` | scenario input passed to `Post_Map_Init` | not the crate gate or count source |
 
 Scenario-specific rule overrides are finalized before the fixed-map caller decides whether to invoke `Post_Map_Init`, so startup crate bounds must be read from the same final layered rules authority used by the launched scenario.

@@ -119,6 +119,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                     &state.match_state.match_presentation.theater_name,
                     bound_rules,
                     bound_rules.map(|rules| &rules.art_registry),
+                    &rt.resources.overlay_registry,
                     &state.match_state.match_presentation.house_color_map,
                     None, // entity_unit_palette — atlas builder loads it from assets
                     None, // cell palette reloads from the active theater archive

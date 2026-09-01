@@ -1394,6 +1394,7 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
         world_coord: AnimWorldCoord { x: 0, y: 0, z: 0 },
         draw_flags: 0,
         z_adjust: 0,
+        remap_color: None,
         effective_end: 1,
         effective_loop_end: 1,
         runtime: AnimRuntime {

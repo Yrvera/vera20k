@@ -201,6 +201,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     // separate loads remain isolated.
     let scheduler_roots = crate::app::loading::init_helpers::scheduler_anim_roots(
         &rules,
+        &overlay_registry,
         terrain_bootstrap.resolved.tile_animations(),
     );
     art.bind_scheduler_anim_assets(

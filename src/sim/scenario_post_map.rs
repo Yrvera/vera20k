@@ -24,6 +24,7 @@ pub(crate) struct ScenarioPostMapInput<'a> {
     pub(crate) map_height: u16,
     pub(crate) basic: &'a BasicSection,
     pub(crate) special_flags: &'a SpecialFlagsSection,
+    pub(crate) normal_lighting: crate::map::lighting::LightingProfileUnits,
     pub(crate) rules: &'a RuleSet,
     pub(crate) overlay_registry: &'a OverlayTypeRegistry,
     pub(crate) house_roster: &'a HouseRoster,
@@ -97,7 +98,7 @@ impl Simulation {
 
         // Runtime rebuilds use this same sim-owned publication seam. Crate
         // placement below pins the newly published path snapshot.
-        let navigation_published = self.rebuild_dynamic_navigation(input.rules);
+        let mut navigation_published = self.rebuild_dynamic_navigation(input.rules);
 
         #[cfg(test)]
         let mut skirmish_order = [None; 3];
@@ -109,13 +110,22 @@ impl Simulation {
             {
                 skirmish_order[0] = Some(ScenarioPostMapStep::StartupCrates);
             }
-            let placement = crate::sim::crates::place_scenario_start_crates(
+            let placement = crate::sim::crates::place_scenario_start_crates_with_lighting(
                 self,
                 input.rules,
                 input.overlay_registry,
                 initial_path.as_deref(),
                 player_count,
+                input.normal_lighting,
             );
+            // Startup OverlayClass::Mark completes synchronously before native
+            // proceeds to AI credits. Rust's BridgeRuntimeState is a derived
+            // cache built earlier in the load funnel, so rebuild it from the
+            // now-final CellClass projection and publish matching first-frame
+            // navigation without consuming OverlayGrid's dirty receipt.
+            if self.refresh_bridge_runtime_after_startup_crates() {
+                navigation_published = self.rebuild_dynamic_navigation(input.rules);
+            }
             #[cfg(test)]
             {
                 skirmish_order[1] = Some(ScenarioPostMapStep::AiOpeningCredits);
@@ -144,6 +154,27 @@ impl Simulation {
             skirmish_order,
         }
     }
+
+    fn refresh_bridge_runtime_after_startup_crates(&mut self) -> bool {
+        let Some((destroyable, bridge_strength)) = self
+            .bridge_state
+            .as_ref()
+            .map(|state| (state.is_destroyable(), state.bridge_strength()))
+        else {
+            return false;
+        };
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return false;
+        };
+        self.bridge_state = Some(
+            crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
+                terrain,
+                destroyable,
+                bridge_strength,
+            ),
+        );
+        true
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +182,7 @@ mod tests {
     use super::*;
 
     use std::collections::BTreeSet;
+    use std::fmt::Write as _;
 
     use crate::map::bridge_facts::BridgeCellFacts;
     use crate::map::houses::HouseDefinition;
@@ -374,6 +406,7 @@ mod tests {
             map_height: MAP_SIZE,
             basic: &basic,
             special_flags: &special_flags,
+            normal_lighting: crate::map::lighting::ParsedLightingProfiles::default().normal,
             rules: &rules,
             overlay_registry: &overlays,
             house_roster: &roster,
@@ -434,6 +467,104 @@ mod tests {
     }
 
     #[test]
+    fn startup_high_bridge_reaches_bridge_runtime_and_initial_navigation() {
+        let mut ini_text = String::from(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [OverlayTypes]\n",
+        );
+        for overlay_id in 0..=0x18u8 {
+            let name = if overlay_id == 0x18 {
+                "BRIDGE1".to_string()
+            } else {
+                format!("OV{overlay_id:03}")
+            };
+            writeln!(&mut ini_text, "{overlay_id}={name}").unwrap();
+        }
+        ini_text.push_str(
+            "[BRIDGE1]\nCrate=yes\n\
+             [CrateRules]\nCrateImg=BRIDGE1\nWoodCrateImg=BRIDGE1\n\
+             WaterCrateImg=BRIDGE1\nCrateMinimum=1\nCrateMaximum=1\n",
+        );
+        let ini = IniFile::from_str(&ini_text);
+        let rules = RuleSet::from_ini(&ini).expect("high startup crate rules");
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let mut sim = Simulation::with_seed(0x51C0_0414);
+        sim.session.map_width = MAP_SIZE;
+        sim.session.map_height = MAP_SIZE;
+        sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+            base: 4,
+            off_fc: -32,
+            off_100: -32,
+            off_104: 64,
+            off_108: 64,
+        });
+        sim.playfield_size_height = Some(4);
+        sim.session.game_options.crates = true;
+        let terrain = flat_terrain();
+        sim.bridge_state = Some(
+            crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
+                &terrain, true, 300,
+            ),
+        );
+        sim.resolved_terrain = Some(terrain);
+        sim.overlay_grid = Some(OverlayGrid::new(MAP_SIZE, MAP_SIZE));
+        let player = sim.interner.intern("Player");
+        sim.houses
+            .insert(player, HouseState::new(player, 0, None, true, 5_000, 10));
+        let descriptor = crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(
+            allied_skirmish_session(),
+        )
+        .expect("fixture session is fully resolved");
+
+        let output = sim.finalize_scenario_post_map(ScenarioPostMapInput {
+            map_width: MAP_SIZE,
+            map_height: MAP_SIZE,
+            basic: &BasicSection::default(),
+            special_flags: &SpecialFlagsSection::default(),
+            normal_lighting: crate::map::lighting::ParsedLightingProfiles::default().normal,
+            rules: &rules,
+            overlay_registry: &overlays,
+            house_roster: &HouseRoster::default(),
+            skirmish_session: Some(&descriptor),
+        });
+
+        assert_eq!(
+            output.crates,
+            Some(CratePlacement {
+                requested: 1,
+                accepted: 1,
+                visible: 1,
+            })
+        );
+        let anchor = sim
+            .crate_authority
+            .occupied_cells()
+            .next()
+            .expect("one startup crate anchor");
+        let bridge_cell = sim
+            .bridge_state
+            .as_ref()
+            .and_then(|state| state.cell(anchor.0, anchor.1))
+            .expect("startup high anchor reaches BridgeRuntimeState");
+        assert!(bridge_cell.deck_present);
+        assert_eq!(bridge_cell.overlay_byte, 0x18);
+        let path_cell = sim
+            .path_grid()
+            .and_then(|grid| grid.cell(anchor.0, anchor.1))
+            .expect("republished initial path cell");
+        assert!(path_cell.bridge_structural);
+        assert!(path_cell.bridge_walkable);
+        assert!(
+            !sim.overlay_grid
+                .as_ref()
+                .unwrap()
+                .pending_dirty_cells()
+                .is_empty(),
+            "bridge/nav rebuild must not consume the first-frame overlay receipt"
+        );
+    }
+
+    #[test]
     fn generic_post_map_preserves_rng_and_credits_when_overlay_authority_is_absent() {
         let (rules, overlays) = post_map_rules_and_overlays();
         let mut sim = Simulation::with_seed(0x51C0_0402);
@@ -476,6 +607,7 @@ mod tests {
             map_height: MAP_SIZE,
             basic: &BasicSection::default(),
             special_flags: &SpecialFlagsSection::default(),
+            normal_lighting: crate::map::lighting::ParsedLightingProfiles::default().normal,
             rules: &rules,
             overlay_registry: &overlays,
             house_roster: &roster,

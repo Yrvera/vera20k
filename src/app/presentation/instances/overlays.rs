@@ -378,7 +378,7 @@ pub(crate) fn build_anim_class_instances(
             type_id: type_name.to_string(),
             facing: 0,
             frame,
-            house_color: HouseColorIndex(0),
+            house_color: anim.remap_color.unwrap_or(HouseColorIndex(0)),
         };
         let Some(entry) = atlas.get(&key) else {
             continue;

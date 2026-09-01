@@ -329,7 +329,8 @@ use crate::sim::world::Simulation;
 // Bumped 112 -> 113: persist House AutocreateAllowed beside the three deploy
 // latches in native conceptual byte order.
 // Bumped 113 -> 114: persist the raw 256-entry MapClass crate-slot table,
-// including accepted ghosts and all native timer words.
+// including accepted ghosts and all native timer words, plus the per-Anim
+// Convert palette selector installed by startup crate CellAnim.
 const SNAPSHOT_VERSION: u32 = 114;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
@@ -2744,7 +2745,8 @@ mod tests {
     /// adds ordered BasePlan state and immutable BuildingType facts; 110 -> 111
     /// adds the distinct BaseClass plan center; 111 -> 112 adds the three House
     /// AI activation latches; 112 -> 113 adds House AutocreateAllowed;
-    /// 113 -> 114 adds the raw 256-entry scenario-crate slot table.
+    /// 113 -> 114 adds the raw 256-entry scenario-crate slot table and the
+    /// per-Anim Convert palette selector used by startup crate CellAnim.
     #[test]
     fn phase14_crate_authority_snapshot_version_is_114() {
         assert_eq!(super::SNAPSHOT_VERSION, 114);

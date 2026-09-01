@@ -26,8 +26,10 @@ mod state;
 pub use state::{CrateAuthority, CrateSlot};
 
 use crate::map::bridge_facts::{
-    BRIDGE_FLAG_STRUCTURAL, BridgeFlagStamp, high_bridge_stamp_for_overlay,
+    BRIDGE_FLAG_STRUCTURAL, BridgeFlagStamp, BridgeStampFamily, BridgeStampSlot,
+    high_bridge_stamp_for_overlay,
 };
+use crate::map::lighting::{LightingProfileUnits, ParsedLightingProfiles};
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::crate_rules::CrateRules;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
@@ -143,12 +145,34 @@ pub fn place_scenario_start_crates(
     path_grid: Option<&PathGrid>,
     player_count: i32,
 ) -> CratePlacement {
+    place_scenario_start_crates_with_lighting(
+        sim,
+        rules,
+        overlay_registry,
+        path_grid,
+        player_count,
+        ParsedLightingProfiles::default().normal,
+    )
+}
+
+/// Production entry carrying the already parsed ordinary ScenarioClass
+/// lighting profile. `OverlayClass::Mark` copies each target CellClass's
+/// `+0x10A` value into a spawned CellAnim after construction.
+pub(crate) fn place_scenario_start_crates_with_lighting(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    overlay_registry: &OverlayTypeRegistry,
+    path_grid: Option<&PathGrid>,
+    player_count: i32,
+    lighting_profile: LightingProfileUnits,
+) -> CratePlacement {
     place_scenario_start_crates_with_failure(
         sim,
         rules,
         overlay_registry,
         path_grid,
         player_count,
+        lighting_profile,
         ForcedPostPrecheckFailure::None,
     )
 }
@@ -159,6 +183,7 @@ fn place_scenario_start_crates_with_failure(
     overlay_registry: &OverlayTypeRegistry,
     path_grid: Option<&PathGrid>,
     player_count: i32,
+    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> CratePlacement {
     if !sim.session.game_options.crates {
@@ -185,6 +210,7 @@ fn place_scenario_start_crates_with_failure(
             rules,
             overlay_registry,
             path_grid,
+            lighting_profile,
             forced_failure,
         ) {
             OneCrateResult::HardRejected => {}
@@ -239,6 +265,7 @@ fn place_one_random_crate(
     rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
     path_grid: Option<&PathGrid>,
+    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> OneCrateResult {
     let Some(slot_index) = sim.crate_authority.first_empty_index() else {
@@ -283,11 +310,12 @@ fn place_one_random_crate(
         {
             continue;
         }
-        let accepted = validate_and_stamp_candidate_with_rules(
+        let accepted = validate_and_stamp_candidate_with_rules_and_lighting(
             sim,
             rules,
             overlay_registry,
             cell,
+            lighting_profile,
             forced_failure,
         );
 
@@ -387,6 +415,7 @@ fn validate_and_stamp_candidate(
         None,
         overlay_registry,
         cell,
+        ParsedLightingProfiles::default().normal,
         forced_failure,
     )
 }
@@ -398,12 +427,31 @@ fn validate_and_stamp_candidate_with_rules(
     cell: (u16, u16),
     forced_failure: ForcedPostPrecheckFailure,
 ) -> AcceptedCellResult {
+    validate_and_stamp_candidate_with_rules_and_lighting(
+        sim,
+        rules,
+        overlay_registry,
+        cell,
+        ParsedLightingProfiles::default().normal,
+        forced_failure,
+    )
+}
+
+fn validate_and_stamp_candidate_with_rules_and_lighting(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    overlay_registry: &OverlayTypeRegistry,
+    cell: (u16, u16),
+    lighting_profile: LightingProfileUnits,
+    forced_failure: ForcedPostPrecheckFailure,
+) -> AcceptedCellResult {
     validate_and_stamp_candidate_inner(
         sim,
         &rules.crate_rules,
         Some(rules),
         overlay_registry,
         cell,
+        lighting_profile,
         forced_failure,
     )
 }
@@ -414,6 +462,7 @@ fn validate_and_stamp_candidate_inner(
     full_rules: Option<&RuleSet>,
     overlay_registry: &OverlayTypeRegistry,
     cell: (u16, u16),
+    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> AcceptedCellResult {
     let water_id = rules
@@ -443,6 +492,12 @@ fn validate_and_stamp_candidate_inner(
     let Some(selected_flags) = overlay_registry.flags(selected_id).cloned() else {
         return AcceptedCellResult::Ghost;
     };
+    // `OverlayClass::OverlayClass @ 0x005FC380` performs the TerrainClass scan
+    // before calling Unlimbo. A hit skips Unlimbo, so Mark never reaches its
+    // slope, bridge, CellAnim, or common RecalcAttributes paths.
+    if sim.production.terrain_object_cells.contains_key(&cell) {
+        return AcceptedCellResult::Ghost;
+    }
     let Some(slope_type) = sim
         .resolved_terrain
         .as_ref()
@@ -458,22 +513,15 @@ fn validate_and_stamp_candidate_inner(
         return AcceptedCellResult::Ghost;
     }
 
-    if let Some((family, direction)) = high_bridge_stamp_for_overlay(selected_id) {
-        let preserved_data = sim
-            .overlay_grid
-            .as_ref()
-            .map(|grid| grid.cell(cell.0, cell.1).overlay_data)
-            .unwrap_or(0);
-        sim.apply_runtime_bridge_mark_stamp(BridgeFlagStamp::new(cell, direction, true), family);
-        let wrote =
-            write_real_crate_mark_fields(sim, overlay_registry, cell, selected_id, preserved_data);
-        recalc_real_crate_mark_cell(sim, overlay_registry, cell);
-        return if wrote {
-            AcceptedCellResult::Visible
-        } else {
-            AcceptedCellResult::Ghost
-        };
-    }
+    // The four high-anchor identities call their bridge setter first, then
+    // continue through Mark's ordinary precedence. The setters write raw data
+    // on anchor/F1/F2/opposite even before any overlay identity exists.
+    let high_bridge_data = high_bridge_stamp_for_overlay(selected_id).map(|(family, direction)| {
+        let stamp = BridgeFlagStamp::new(cell, direction, true);
+        let data = if direction == 0 { 0 } else { 9 };
+        apply_high_bridge_crate_setter(sim, stamp, family, data);
+        data
+    });
 
     // GSI-18.01 is explicitly excluded by the Phase 14 contract: these two
     // hard-coded branches are the TS veins/veinhole carryover. Preserve crate
@@ -504,7 +552,6 @@ fn validate_and_stamp_candidate_inner(
             .and_then(|terrain| terrain.cell(cell.0, cell.1))
             .is_some_and(|terrain_cell| terrain_cell.speed_costs.track != Some(0));
         if !wall_passes {
-            recalc_real_crate_mark_cell(sim, overlay_registry, cell);
             return AcceptedCellResult::Ghost;
         }
         let wrote = write_real_crate_mark_fields(sim, overlay_registry, cell, selected_id, 0);
@@ -543,45 +590,68 @@ fn validate_and_stamp_candidate_inner(
         return AcceptedCellResult::Ghost;
     };
 
-    let Some(terrain_cell) = sim
-        .resolved_terrain
-        .as_ref()
-        .and_then(|terrain| terrain.cell(cell.0, cell.1))
-    else {
-        return AcceptedCellResult::Ghost;
-    };
-    if sim.production.terrain_object_cells.contains_key(&cell) {
-        if let Some(full_rules) = full_rules {
-            spawn_crate_cell_anim(sim, full_rules, cell, selected_flags.cell_anim.as_deref());
+    // `OverlayClass::Mark @ 0x005FCFE7..0x005FD003` forces passability true
+    // for the four high-anchor IDs after their setter. This is an explicit
+    // identity bypass, not an inferred consequence of selecting deck facts;
+    // even a nonzero deck occupation byte does not reject the ordinary tail.
+    if high_bridge_data.is_none() {
+        let Some((bridge_layer_selected, selected_speed_cost)) = sim
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(cell.0, cell.1))
+            .map(|terrain_cell| {
+                (
+                    terrain_cell.bridge_facts.raw_flags & BRIDGE_FLAG_STRUCTURAL != 0,
+                    terrain_cell.speed_costs.cost_for_speed_type(mark_speed),
+                )
+            })
+        else {
+            return AcceptedCellResult::Ghost;
+        };
+        let selected_occupation = if bridge_layer_selected {
+            sim.substrate.raw_cell_occupation.deck_bits(cell.0, cell.1)
+        } else {
+            sim.substrate
+                .raw_cell_occupation
+                .ground_bits(cell.0, cell.1)
+        };
+        if selected_occupation != 0 {
+            if let Some(full_rules) = full_rules {
+                spawn_crate_cell_anim(
+                    sim,
+                    full_rules,
+                    overlay_registry,
+                    cell,
+                    selected_flags.cell_anim.as_deref(),
+                    lighting_profile,
+                );
+            }
+            recalc_real_crate_mark_cell(sim, overlay_registry, cell);
+            return AcceptedCellResult::Ghost;
         }
-        recalc_real_crate_mark_cell(sim, overlay_registry, cell);
-        return AcceptedCellResult::Ghost;
-    }
-    let bridge_layer_selected = terrain_cell.bridge_facts.raw_flags & BRIDGE_FLAG_STRUCTURAL != 0;
-    let selected_occupation = if bridge_layer_selected {
-        sim.substrate.raw_cell_occupation.deck_bits(cell.0, cell.1)
-    } else {
-        sim.substrate
-            .raw_cell_occupation
-            .ground_bits(cell.0, cell.1)
-    };
-    if selected_occupation != 0 {
-        if let Some(full_rules) = full_rules {
-            spawn_crate_cell_anim(sim, full_rules, cell, selected_flags.cell_anim.as_deref());
+        if !bridge_layer_selected && selected_speed_cost == Some(0) {
+            if let Some(full_rules) = full_rules {
+                spawn_crate_cell_anim(
+                    sim,
+                    full_rules,
+                    overlay_registry,
+                    cell,
+                    selected_flags.cell_anim.as_deref(),
+                    lighting_profile,
+                );
+            }
+            recalc_real_crate_mark_cell(sim, overlay_registry, cell);
+            return AcceptedCellResult::Ghost;
         }
-        recalc_real_crate_mark_cell(sim, overlay_registry, cell);
-        return AcceptedCellResult::Ghost;
-    }
-    if !bridge_layer_selected && terrain_cell.speed_costs.cost_for_speed_type(mark_speed) == Some(0)
-    {
-        if let Some(full_rules) = full_rules {
-            spawn_crate_cell_anim(sim, full_rules, cell, selected_flags.cell_anim.as_deref());
-        }
-        recalc_real_crate_mark_cell(sim, overlay_registry, cell);
-        return AcceptedCellResult::Ghost;
     }
 
-    let wrote = write_real_crate_mark_fields(sim, overlay_registry, cell, selected_id, 0);
+    let wrote = write_real_crate_mark_fields(
+        sim,
+        overlay_registry,
+        cell,
+        selected_id,
+        high_bridge_data.unwrap_or(0),
+    );
     if wrote && selected_flags.land == LandType::Road {
         set_crate_mark_data(sim, cell, 1);
         if let Some(full_rules) = full_rules {
@@ -597,7 +667,14 @@ fn validate_and_stamp_candidate_inner(
         set_crate_mark_data(sim, cell, u8::MAX);
     }
     if let Some(full_rules) = full_rules {
-        spawn_crate_cell_anim(sim, full_rules, cell, selected_flags.cell_anim.as_deref());
+        spawn_crate_cell_anim(
+            sim,
+            full_rules,
+            overlay_registry,
+            cell,
+            selected_flags.cell_anim.as_deref(),
+            lighting_profile,
+        );
     }
     recalc_real_crate_mark_cell(sim, overlay_registry, cell);
     if wrote
@@ -717,6 +794,53 @@ fn write_crate_mark_fields(
     }
 }
 
+fn write_crate_mark_raw_data(sim: &mut Simulation, cell: (i16, i16), overlay_data: u8) {
+    match resolve_crate_mark_cell(sim, cell) {
+        CrateMarkCellRef::Real(rx, ry) => {
+            let (Some(grid), Some(terrain)) =
+                (sim.overlay_grid.as_mut(), sim.resolved_terrain.as_mut())
+            else {
+                return;
+            };
+            let _ = grid.write_crate_mark_data_field(terrain, rx, ry, overlay_data);
+        }
+        CrateMarkCellRef::Dummy(dummy) => {
+            let (overlay_id, _) = dummy.overlay_fields();
+            dummy.set_overlay_fields(overlay_id, overlay_data);
+        }
+    }
+}
+
+fn apply_high_bridge_crate_setter(
+    sim: &mut Simulation,
+    stamp: BridgeFlagStamp,
+    family: BridgeStampFamily,
+    overlay_data: u8,
+) {
+    let Some(slots) = stamp.slots() else {
+        return;
+    };
+    // `SetBridgeDirection_NESW/NWSE @ 0x0047E040/0x0047E470` write the
+    // data byte on exactly these four visits. Perform those writes before the
+    // flag transaction so the shared dummy ends on the setter's final visit.
+    for (slot, coord) in slots {
+        if !matches!(
+            slot,
+            BridgeStampSlot::Anchor
+                | BridgeStampSlot::Forward1
+                | BridgeStampSlot::Forward2
+                | BridgeStampSlot::Opposite
+        ) {
+            continue;
+        }
+        let Some((x, y)) = coord else {
+            continue;
+        };
+        write_crate_mark_raw_data(sim, (x as i16, y as i16), overlay_data);
+    }
+    sim.apply_runtime_bridge_mark_stamp(stamp, family);
+}
+
 fn write_real_crate_mark_fields(
     sim: &mut Simulation,
     registry: &OverlayTypeRegistry,
@@ -747,11 +871,19 @@ fn recalc_real_crate_mark_cell(
 }
 
 fn set_crate_mark_data(sim: &mut Simulation, cell: (u16, u16), data: u8) {
-    if let Some(grid) = sim.overlay_grid.as_mut() {
+    let wrote = if let Some(grid) = sim.overlay_grid.as_mut() {
         let target = grid.cell_mut(cell.0, cell.1);
         if target.overlay_id.is_some() {
             target.overlay_data = data;
+            true
+        } else {
+            false
         }
+    } else {
+        false
+    };
+    if wrote && let Some(terrain) = sim.resolved_terrain.as_mut() {
+        let _ = terrain.set_runtime_overlay_bridge_state_byte(cell.0, cell.1, data);
     }
 }
 
@@ -901,15 +1033,17 @@ fn spread_cell_germinate_without_randomization(
 fn spawn_crate_cell_anim(
     sim: &mut Simulation,
     rules: &RuleSet,
+    overlay_registry: &OverlayTypeRegistry,
     cell: (u16, u16),
     cell_anim: Option<&str>,
+    lighting_profile: LightingProfileUnits,
 ) {
     let Some(cell_anim) = cell_anim else {
         return;
     };
     let center_x = i32::from(cell.0).wrapping_mul(256).wrapping_add(128);
     let center_y = i32::from(cell.1).wrapping_mul(256).wrapping_add(128);
-    let ground_z = sim
+    let (ground_z, level) = sim
         .resolved_terrain
         .as_ref()
         .and_then(|terrain| terrain.cell(cell.0, cell.1))
@@ -921,7 +1055,30 @@ fn spawn_crate_cell_anim(
                 center_y,
             )
             .ok()
+            .map(|ground_z| (ground_z, terrain_cell.level))
         })
+        .unwrap_or((0, 0));
+    // `OverlayClass::Mark @ 0x005FD1B9..0x005FD1F4` calls
+    // `CellClass::GetTiberiumType` with ECX = the target CellClass. Only a
+    // successfully installed tiberium identity enters the palette/+0xFC
+    // post-write block; a failed or non-tiberium Mark leaves constructor zero.
+    let tiberium_type = sim
+        .overlay_grid
+        .as_ref()
+        .and_then(|grid| grid.cell(cell.0, cell.1).overlay_id)
+        .and_then(|overlay_id| {
+            overlay_registry.tiberium_type_for_overlay(&rules.tiberium_types, overlay_id)
+        })
+        .and_then(|type_id| rules.tiberium_types.get(type_id));
+    let remap_color = tiberium_type
+        .and_then(|tiberium| tiberium.color.as_deref())
+        .and_then(|color| {
+            crate::rules::color_scheme::scheme_entry_by_name(&rules.color_schemes, color)
+        })
+        .and_then(|entry| u8::try_from(entry).ok())
+        .map(crate::rules::house_colors::HouseColorIndex);
+    let z_adjust = tiberium_type
+        .map(|_| crate::map::lighting::cell_ground_z_adjust(lighting_profile, level))
         .unwrap_or(0);
     let type_name = sim.interner.intern(cell_anim);
     let mut descriptor = crate::sim::components::AnimClassSpawnDescriptor::new(
@@ -937,14 +1094,24 @@ fn spawn_crate_cell_anim(
     descriptor.draw_flags = 0x600;
     descriptor.z_adjust = 0;
     descriptor.reverse = false;
-    let _ = sim.spawn_anim_at_world(
-        rules,
-        descriptor,
-        crate::sim::anim_class::AnimWorldCoord {
-            x: center_x.wrapping_add(0x180),
-            y: center_y.wrapping_add(0x180),
-            z: ground_z,
-        },
+    let anim_id = sim
+        .spawn_anim_at_world(
+            rules,
+            descriptor,
+            crate::sim::anim_class::AnimWorldCoord {
+                x: center_x.wrapping_add(0x180),
+                y: center_y.wrapping_add(0x180),
+                z: ground_z,
+            },
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "startup crate CellAnim [{cell_anim}] must be bound before OverlayClass::Mark: {error}"
+            )
+        });
+    assert!(
+        sim.set_cell_anim_draw_authority(anim_id, remap_color, z_adjust),
+        "startup crate CellAnim {anim_id} disappeared before OverlayClass post-constructor writes"
     );
 }
 
@@ -1634,6 +1801,7 @@ mod tests {
                 &registry,
                 Some(&grid),
                 1,
+                ParsedLightingProfiles::default().normal,
                 failure,
             );
             assert_eq!((result.accepted, result.visible), (1, 0));
@@ -1918,10 +2086,12 @@ mod tests {
         };
         let mut sim = sim_with_grid(0x14_09_0001);
         let cell = (12, 13);
-        sim.production.terrain_object_cells.insert(cell, 77);
         sim.substrate
             .raw_cell_occupation
             .mark_ground(cell.0, cell.1, 0xFF);
+        sim.substrate
+            .raw_cell_occupation
+            .mark_deck(cell.0, cell.1, 0xFF);
         sim.resolved_terrain
             .as_mut()
             .unwrap()
@@ -1956,7 +2126,6 @@ mod tests {
         };
         let cell = (12, 13);
         let mut visible = sim_with_grid(0x14_09_0002);
-        visible.production.terrain_object_cells.insert(cell, 88);
         visible
             .substrate
             .raw_cell_occupation
@@ -2056,8 +2225,10 @@ mod tests {
     fn ordinary_cell_anim_spawns_after_visible_or_failed_ordinary_mark() {
         let ini = IniFile::from_str(
             "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [Colors]\nGold=43,239,255\nNeonGreen=104,241,195\n\
+             [Tiberiums]\n0=Riparius\n[Riparius]\nImage=1\nColor=NeonGreen\n\
              [Animations]\n0=SPARK\n\
-             [OverlayTypes]\n0=ANIMBOX\n[ANIMBOX]\nCellAnim=SPARK\n\
+             [OverlayTypes]\n0=ANIMBOX\n[ANIMBOX]\nTiberium=yes\nCellAnim=SPARK\n\
              [CrateRules]\nCrateImg=ANIMBOX\nWoodCrateImg=ANIMBOX\nWaterCrateImg=ANIMBOX\n",
         );
         let registry = OverlayTypeRegistry::from_ini(&ini, None);
@@ -2070,12 +2241,21 @@ mod tests {
         let cell = (12, 13);
 
         let mut visible = sim_with_grid(0x14_09_0005);
+        let lighting = LightingProfileUnits {
+            ambient_percent: 80,
+            red_percent: 100,
+            green_percent: 100,
+            blue_percent: 100,
+            ground_units: 25,
+            level_units: 5,
+        };
         assert_eq!(
-            validate_and_stamp_candidate_with_rules(
+            validate_and_stamp_candidate_with_rules_and_lighting(
                 &mut visible,
                 &rules,
                 &registry,
                 cell,
+                lighting,
                 ForcedPostPrecheckFailure::None,
             ),
             AcceptedCellResult::Visible
@@ -2090,9 +2270,27 @@ mod tests {
             }
         );
         assert_eq!(visible_anim.draw_flags, 0x600);
+        assert_eq!(
+            visible_anim.remap_color,
+            Some(crate::rules::house_colors::HouseColorIndex(1)),
+            "the constructed CellAnim uses the live tiberium Color scheme"
+        );
+        assert_eq!(
+            visible_anim.z_adjust, 775,
+            "CellClass +0x10A is ambient*10 + level*height - ground"
+        );
+        let encoded = bincode::serialize(&visible).expect("serialize CellAnim remap state");
+        let restored: Simulation =
+            bincode::deserialize(&encoded).expect("restore CellAnim remap state");
+        let restored_anim = restored.substrate.anims.iter().next().unwrap().1;
+        assert_eq!(restored_anim.remap_color, visible_anim.remap_color);
+        assert_eq!(restored_anim.z_adjust, visible_anim.z_adjust);
 
         let mut ghost = sim_with_grid(0x14_09_0006);
-        ghost.production.terrain_object_cells.insert(cell, 99);
+        ghost
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(cell.0, cell.1, 1);
         assert_eq!(
             validate_and_stamp_candidate_with_rules(
                 &mut ghost,
@@ -2103,9 +2301,40 @@ mod tests {
             ),
             AcceptedCellResult::Ghost
         );
-        assert_eq!(ghost.substrate.anims.iter().count(), 1);
+        let ghost_anim = ghost.substrate.anims.iter().next().unwrap().1;
+        assert_eq!(ghost_anim.remap_color, None);
+        assert_eq!(
+            ghost_anim.z_adjust, 0,
+            "failed Mark leaves the Cell without tiberium, so native skips both post-writes"
+        );
         assert_eq!(
             ghost
+                .overlay_grid
+                .as_ref()
+                .unwrap()
+                .cell(cell.0, cell.1)
+                .overlay_id,
+            None
+        );
+
+        let mut terrain_object = sim_with_grid(0x14_09_0007);
+        terrain_object
+            .production
+            .terrain_object_cells
+            .insert(cell, 99);
+        assert_eq!(
+            validate_and_stamp_candidate_with_rules(
+                &mut terrain_object,
+                &rules,
+                &registry,
+                cell,
+                ForcedPostPrecheckFailure::None,
+            ),
+            AcceptedCellResult::Ghost
+        );
+        assert_eq!(terrain_object.substrate.anims.iter().count(), 0);
+        assert_eq!(
+            terrain_object
                 .overlay_grid
                 .as_ref()
                 .unwrap()
@@ -2116,7 +2345,7 @@ mod tests {
     }
 
     #[test]
-    fn high_bridge_crate_mark_stamps_family_and_preserves_existing_data() {
+    fn high_bridge_crate_mark_writes_setter_data_then_falls_through_crate_override() {
         let registry = dense_registry(0x18, &[(0x18, "HIGHCRATE", "Crate=yes\n")]);
         let rules = CrateRules {
             wood_crate_img: Some("HIGHCRATE".to_owned()),
@@ -2125,16 +2354,17 @@ mod tests {
             ..CrateRules::default()
         };
         let cell = (12, 13);
-        let mut sim = sim_with_grid(0x14_09_0007);
-        sim.overlay_grid
-            .as_mut()
-            .unwrap()
-            .cell_mut(cell.0, cell.1)
-            .overlay_data = 7;
-        sim.production.terrain_object_cells.insert(cell, 100);
+        let mut sim = sim_with_grid(0x14_09_0008);
+        for target in [(12, 13), (12, 12), (12, 11), (12, 10), (12, 14)] {
+            write_crate_mark_raw_data(&mut sim, (target.0 as i16, target.1 as i16), 7);
+        }
+        let _ = sim.overlay_grid.as_mut().unwrap().take_dirty_cells();
         sim.substrate
             .raw_cell_occupation
             .mark_ground(cell.0, cell.1, 0xFF);
+        sim.substrate
+            .raw_cell_occupation
+            .mark_deck(cell.0, cell.1, 0xFF);
         sim.resolved_terrain
             .as_mut()
             .unwrap()
@@ -2153,17 +2383,130 @@ mod tests {
             ),
             AcceptedCellResult::Visible
         );
-        let written = sim.overlay_grid.as_ref().unwrap().cell(cell.0, cell.1);
-        assert_eq!((written.overlay_id, written.overlay_data), (Some(0x18), 7));
-        let facts = sim
-            .resolved_terrain
-            .as_ref()
+        let grid = sim.overlay_grid.as_ref().unwrap();
+        assert_eq!(
+            (grid.cell(12, 13).overlay_id, grid.cell(12, 13).overlay_data),
+            (Some(0x18), u8::MAX),
+            "Crate=yes runs after the direction-0 setter writes zero"
+        );
+        for target in [(12, 12), (12, 11), (12, 14)] {
+            assert_eq!(grid.cell(target.0, target.1).overlay_data, 0, "{target:?}");
+        }
+        assert_eq!(grid.cell(12, 10).overlay_data, 7, "F3 gets flags, not data");
+
+        let terrain = sim.resolved_terrain.as_ref().unwrap();
+        let anchor = terrain.cell(12, 13).unwrap().bridge_facts;
+        assert!(anchor.is_anchor_self());
+        assert!(anchor.has_structural_bridge());
+        assert_eq!(anchor.state_byte, u8::MAX);
+        for target in [(12, 12), (12, 11), (12, 14)] {
+            assert_eq!(
+                terrain
+                    .cell(target.0, target.1)
+                    .unwrap()
+                    .bridge_facts
+                    .state_byte,
+                0,
+                "derived state follows raw setter data at {target:?}"
+            );
+        }
+        assert_eq!(terrain.cell(12, 10).unwrap().bridge_facts.state_byte, 7);
+
+        let mut terrain_blocked = sim_with_grid(0x14_09_0009);
+        write_crate_mark_raw_data(&mut terrain_blocked, (12, 13), 7);
+        let _ = terrain_blocked
+            .overlay_grid
+            .as_mut()
             .unwrap()
-            .cell(cell.0, cell.1)
-            .unwrap()
-            .bridge_facts;
-        assert!(facts.is_anchor_self());
-        assert!(facts.has_structural_bridge());
+            .take_dirty_cells();
+        terrain_blocked
+            .production
+            .terrain_object_cells
+            .insert(cell, 100);
+        assert_eq!(
+            validate_and_stamp_candidate(
+                &mut terrain_blocked,
+                &rules,
+                &registry,
+                cell,
+                ForcedPostPrecheckFailure::None,
+            ),
+            AcceptedCellResult::Ghost
+        );
+        assert_eq!(
+            terrain_blocked
+                .overlay_grid
+                .as_ref()
+                .unwrap()
+                .cell(cell.0, cell.1)
+                .overlay_data,
+            7,
+            "TerrainClass constructor gate runs before the high setter"
+        );
+        assert_eq!(
+            terrain_blocked
+                .resolved_terrain
+                .as_ref()
+                .unwrap()
+                .cell(cell.0, cell.1)
+                .unwrap()
+                .bridge_facts
+                .raw_flags
+                & BRIDGE_FLAG_STRUCTURAL,
+            0
+        );
+        assert!(
+            terrain_blocked
+                .overlay_grid
+                .as_ref()
+                .unwrap()
+                .pending_dirty_cells()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn direction_six_high_bridge_setter_data_precedes_road_override() {
+        let registry = dense_registry(0x19, &[(0x19, "HIGHROAD", "Land=Road\n")]);
+        let rules = CrateRules {
+            wood_crate_img: Some("HIGHROAD".to_owned()),
+            crate_img: Some("HIGHROAD".to_owned()),
+            water_crate_img: Some("HIGHROAD".to_owned()),
+            ..CrateRules::default()
+        };
+        let cell = (12, 13);
+        let mut sim = sim_with_grid(0x14_09_000A);
+
+        assert_eq!(
+            validate_and_stamp_candidate(
+                &mut sim,
+                &rules,
+                &registry,
+                cell,
+                ForcedPostPrecheckFailure::None,
+            ),
+            AcceptedCellResult::Visible
+        );
+        let grid = sim.overlay_grid.as_ref().unwrap();
+        assert_eq!(
+            (grid.cell(12, 13).overlay_id, grid.cell(12, 13).overlay_data),
+            (Some(0x19), 1),
+            "Road runs after the direction-6 setter writes nine"
+        );
+        for target in [(11, 13), (10, 13), (13, 13)] {
+            assert_eq!(grid.cell(target.0, target.1).overlay_data, 9, "{target:?}");
+            assert_eq!(
+                sim.resolved_terrain
+                    .as_ref()
+                    .unwrap()
+                    .cell(target.0, target.1)
+                    .unwrap()
+                    .bridge_facts
+                    .state_byte,
+                9,
+                "derived state follows raw setter data at {target:?}"
+            );
+        }
     }
 
     #[test]

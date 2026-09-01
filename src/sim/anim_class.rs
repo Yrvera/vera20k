@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::rules::art_data::AnimTypeRuntimeConfig;
+use crate::rules::house_colors::HouseColorIndex;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::intern::InternedId;
@@ -320,6 +321,10 @@ pub struct AnimObject {
     pub world_coord: AnimWorldCoord,
     pub draw_flags: u32,
     pub z_adjust: i32,
+    /// Optional ConvertClass palette selected by a producer after construction
+    /// (for example OverlayClass CellAnim over a Tiberium cell).
+    #[serde(default)]
+    pub remap_color: Option<HouseColorIndex>,
     pub effective_end: i32,
     pub effective_loop_end: i32,
     pub runtime: AnimRuntime,
@@ -560,6 +565,7 @@ impl Simulation {
             world_coord,
             draw_flags: descriptor.draw_flags,
             z_adjust: descriptor.z_adjust,
+            remap_color: None,
             effective_end,
             effective_loop_end,
             runtime: AnimRuntime {
@@ -636,6 +642,7 @@ impl Simulation {
             world_coord,
             draw_flags: TRAILER_DRAW_FLAGS,
             z_adjust: MULTIPLAYER_FEEDBACK_Z_ADJUST,
+            remap_color: None,
             effective_end,
             effective_loop_end,
             runtime: AnimRuntime {
@@ -1169,6 +1176,23 @@ impl Simulation {
             anim.runtime.current_frame = frame;
             anim.z_adjust = z_adjust;
         }
+    }
+
+    /// Apply OverlayClass's post-constructor CellAnim writes: `+0xD4` selects
+    /// the Tiberium ConvertClass when present and `+0xFC` receives CellClass's
+    /// current ground Z-adjust (`+0x10A`).
+    pub(crate) fn set_cell_anim_draw_authority(
+        &mut self,
+        id: AnimId,
+        remap_color: Option<HouseColorIndex>,
+        z_adjust: i32,
+    ) -> bool {
+        let Some(anim) = self.anim_mut_by_id(id) else {
+            return false;
+        };
+        anim.remap_color = remap_color;
+        anim.z_adjust = z_adjust;
+        true
     }
 
     /// Apply CellClass's producer-owned `AnimClass +0x100` write after the
