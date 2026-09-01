@@ -108,8 +108,12 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// Re-baselined 2026-08-30 for v110's unconditional ordered BasePlan authority.
 /// The dedicated pre-v110 probe below reproduces the prior baseline exactly;
 /// path, bridge tripwires, RNG streams, and tick-for-tick replay remain exact.
+/// Re-baselined 2026-09-01 for v114's unconditional raw 256-slot crate authority.
+/// The dedicated pre-v114 probe reproduces the prior current baseline exactly;
+/// the same crossing, tripwires, streams, and replay equality remain exact.
 const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x5B44_6C68_9BC2_F0AF;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x6AFB_F54C_7397_0202;
+const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x6AFB_F54C_7397_0202;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x874E_6F7E_7BF1_F8D6;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so
@@ -503,8 +507,9 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
 
     let final_hash = *replayed.last().expect("at least one tick replayed");
     let pre_base_plan_hash = rep.state_hash_without_base_plan_v110();
+    let pre_crate_authority_hash = rep.state_hash_without_crate_authority_v114();
     println!(
-        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} streams={:016X},{:016X},{:016X}",
+        "[bridge parity] final_hash={final_hash:016X} pre-v110:{pre_base_plan_hash:016X} pre-v114:{pre_crate_authority_hash:016X} streams={:016X},{:016X},{:016X}",
         rep.scenario_rng.state(),
         rep.main_rng.state(),
         rep.mapgen_rng.state(),
@@ -512,6 +517,10 @@ fn bridge_crossing_replay_is_deterministic_and_baseline_stable() {
     assert_eq!(
         pre_base_plan_hash, BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH,
         "the dedicated pre-v110 probe must reproduce the prior bridge baseline"
+    );
+    assert_eq!(
+        pre_crate_authority_hash, BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH,
+        "the dedicated pre-v114 probe must reproduce the prior bridge current baseline"
     );
     assert_eq!(
         final_hash, BRIDGE_HARNESS_FINAL_HASH,

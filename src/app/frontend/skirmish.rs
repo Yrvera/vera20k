@@ -2441,17 +2441,51 @@ mod tests {
         let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&text), None);
         let mut names = BTreeMap::new();
 
-        let (wall_count, low_bridge_count) =
-            preregister_runtime_overlay_names(&registry, &mut names);
+        let (wall_count, low_bridge_count, crate_count) =
+            preregister_runtime_overlay_names(
+                &registry,
+                &crate::rules::crate_rules::CrateRules::default(),
+                &mut names,
+            );
 
         assert_eq!(wall_count, 0);
         assert_eq!(low_bridge_count, 64);
+        assert_eq!(crate_count, 0);
         assert_eq!(names.get(&0x50).map(String::as_str), Some("LOBRDG07"));
         assert_eq!(names.get(&0x64).map(String::as_str), Some("LOBRDG27"));
         assert_eq!(names.get(&0xE7).map(String::as_str), Some("LOBRDB27"));
         assert!(
             !names.contains_key(&24) && !names.contains_key(&237),
             "high bridges remain owned by the dedicated bridge renderer"
+        );
+    }
+
+    #[test]
+    fn runtime_overlay_names_include_every_crate_identity_before_startup_scatter() {
+        let registry = OverlayTypeRegistry::from_ini(
+            &IniFile::from_str(
+                "[OverlayTypes]\n0=CRATE\n1=WCRATE\n2=PLAIN\n\
+                 [CRATE]\nCrate=yes\n[WCRATE]\nCrate=yes\n[PLAIN]\n",
+            ),
+            None,
+        );
+        let mut names = BTreeMap::new();
+
+        let crate_rules = crate::rules::crate_rules::CrateRules {
+            wood_crate_img: Some("CRATE".to_owned()),
+            crate_img: Some("PLAIN".to_owned()),
+            water_crate_img: Some("WCRATE".to_owned()),
+            ..crate::rules::crate_rules::CrateRules::default()
+        };
+        let counts = preregister_runtime_overlay_names(&registry, &crate_rules, &mut names);
+
+        assert_eq!(counts, (0, 0, 3));
+        assert_eq!(names.get(&0).map(String::as_str), Some("CRATE"));
+        assert_eq!(names.get(&1).map(String::as_str), Some("WCRATE"));
+        assert_eq!(
+            names.get(&2).map(String::as_str),
+            Some("PLAIN"),
+            "late-allocated configured identity registers even with Crate=false"
         );
     }
 }
@@ -2605,19 +2639,36 @@ pub fn deployable_building_types<'a>(
     result
 }
 
-fn preregister_runtime_overlay_names(
+pub(crate) fn preregister_runtime_overlay_names(
     overlay_registry: &OverlayTypeRegistry,
+    crate_rules: &crate::rules::crate_rules::CrateRules,
     overlay_names: &mut BTreeMap<u8, String>,
-) -> (u32, u32) {
+) -> (u32, u32, u32) {
+    let selected_crate_ids = [
+        crate_rules
+            .wood_crate_img
+            .as_deref()
+            .and_then(|name| overlay_registry.id_for_name(name)),
+        crate_rules
+            .crate_img
+            .as_deref()
+            .and_then(|name| overlay_registry.id_for_name(name)),
+        crate_rules
+            .water_crate_img
+            .as_deref()
+            .and_then(|name| overlay_registry.id_for_name(name)),
+    ];
     let mut wall_ids_added: u32 = 0;
     let mut low_bridge_ids_added: u32 = 0;
+    let mut crate_ids_added: u32 = 0;
     for overlay_id in 0u8..=u8::MAX {
-        let is_wall = overlay_registry
-            .flags(overlay_id)
-            .is_some_and(|flags| flags.wall);
+        let flags = overlay_registry.flags(overlay_id);
+        let is_wall = flags.is_some_and(|flags| flags.wall);
+        let is_crate = flags.is_some_and(|flags| flags.crate_type)
+            || selected_crate_ids.contains(&Some(overlay_id));
         let is_low_bridge =
             is_bridge_overlay_index(overlay_id) && !is_high_bridge_index(overlay_id);
-        if !is_wall && !is_low_bridge {
+        if !is_wall && !is_low_bridge && !is_crate {
             continue;
         }
         let Some(name) = resolve_overlay_name_for_render(overlay_registry, overlay_id) else {
@@ -2627,12 +2678,16 @@ fn preregister_runtime_overlay_names(
             entry.insert(name);
             if is_wall {
                 wall_ids_added += 1;
-            } else {
+            }
+            if is_low_bridge {
                 low_bridge_ids_added += 1;
+            }
+            if is_crate {
+                crate_ids_added += 1;
             }
         }
     }
-    (wall_ids_added, low_bridge_ids_added)
+    (wall_ids_added, low_bridge_ids_added, crate_ids_added)
 }
 
 /// Build overlay sprite atlas and name mapping from map data + rules.ini.
@@ -2643,6 +2698,7 @@ pub(crate) fn build_overlay_atlas_from_map(
     batch: &BatchRenderer,
     theater_ext: &str,
     rules_ini: &IniFile,
+    crate_rules: &crate::rules::crate_rules::CrateRules,
     art_registry: &ArtRegistry,
     theater_iso_palette: Option<&Palette>,
     theater_unit_palette: Option<&Palette>,
@@ -2737,8 +2793,8 @@ pub(crate) fn build_overlay_atlas_from_map(
     // Register overlay identities the sim can create after map load. Walls can
     // be placed by production; low bridges replace their CellClass identity as
     // damage/collapse/repair advances while the map-pack entry stays fixed.
-    let (wall_ids_added, low_bridge_ids_added) =
-        preregister_runtime_overlay_names(&overlay_registry, &mut overlay_names);
+    let (wall_ids_added, low_bridge_ids_added, crate_ids_added) =
+        preregister_runtime_overlay_names(&overlay_registry, crate_rules, &mut overlay_names);
     if wall_ids_added > 0 {
         log::info!(
             "Pre-registered {} wall overlay type(s) in overlay_names for player placement",
@@ -2749,6 +2805,12 @@ pub(crate) fn build_overlay_atlas_from_map(
         log::info!(
             "Pre-registered {} low-bridge overlay variant(s) in overlay_names",
             low_bridge_ids_added
+        );
+    }
+    if crate_ids_added > 0 {
+        log::info!(
+            "Pre-registered {} crate overlay type(s) in overlay_names for startup/runtime placement",
+            crate_ids_added
         );
     }
 
@@ -2814,6 +2876,7 @@ pub(crate) fn build_overlay_atlas_from_map(
             &map_data.header.theater,
             &overlay_registry,
             &tiberium_types,
+            crate_rules,
             rules_ini,
             art_registry,
             smudge_types,
@@ -2833,6 +2896,7 @@ pub(crate) fn build_overlay_atlas_from_map(
             theater_ext,
             &map_data.header.theater,
             &overlay_registry,
+            crate_rules,
             rules_ini,
             art_registry,
         )

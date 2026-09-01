@@ -638,6 +638,18 @@ where
     build_cell_light_grid_from_heights_and_units_with_detail(heights, profile, 2)
 }
 
+/// Exact initial `CellClass +0x10A` ground Z-adjust for one elevation level.
+/// This is the value `OverlayClass::Mark` copies to a newly constructed
+/// `CellAnim` after its delay-zero constructor has completed.
+pub fn cell_ground_z_adjust(profile: LightingProfileUnits, level: u8) -> i32 {
+    let units = scenario_units_from_profile(profile);
+    units
+        .ambient
+        .wrapping_add(units.level.wrapping_mul(i32::from(level)))
+        .wrapping_sub(units.ground)
+        .clamp(LIGHT_CLAMP_MIN, LIGHT_CLAMP_MAX)
+}
+
 /// Build a cell-light grid using the native Options detail-level RGB cache mask.
 pub fn build_cell_light_grid_from_heights_and_units_with_detail<I>(
     heights: I,
@@ -1413,6 +1425,10 @@ mod tests {
         assert_eq!(light.common_scalar, 982);
         assert_eq!(light.top_scalar, 982);
         assert_eq!(light.bottom_scalar, 1014);
+        assert_eq!(
+            cell_ground_z_adjust(parse_lighting_profiles(&IniFile::from_str("")).normal, 4),
+            982
+        );
     }
 
     #[test]

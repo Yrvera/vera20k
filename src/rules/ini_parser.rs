@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use crate::rules::crate_rules::{CrateRules, CrateRulesAccumulator};
 use crate::rules::error::RulesError;
 
 const READ_LINE_PAYLOAD: usize = 511;
@@ -573,8 +574,10 @@ impl RulesLayerStack {
         for (_, ini) in self.iter_passes() {
             processor.apply_pass(ini);
         }
+        let (ini, crate_rules) = processor.finish();
         ProcessedRulesLayers {
-            ini: processor.finish(),
+            ini,
+            crate_rules,
             content_hash: self.content_hash(),
         }
     }
@@ -584,6 +587,7 @@ impl RulesLayerStack {
 #[derive(Debug, Clone)]
 pub struct ProcessedRulesLayers {
     ini: IniFile,
+    crate_rules: CrateRules,
     content_hash: u64,
 }
 
@@ -598,6 +602,10 @@ impl ProcessedRulesLayers {
 
     pub fn content_hash(&self) -> u64 {
         self.content_hash
+    }
+
+    pub fn crate_rules(&self) -> &CrateRules {
+        &self.crate_rules
     }
 }
 
@@ -656,6 +664,7 @@ impl ProcessedType {
 #[derive(Debug, Default)]
 struct RulesPassProcessor {
     ordinary: Option<IniFile>,
+    crate_rules: CrateRulesAccumulator,
     families: HashMap<RulesTypeFamily, Vec<ProcessedType>>,
     tiberiums: Vec<ProcessedType>,
     colors: Vec<(String, String)>,
@@ -787,6 +796,7 @@ impl RulesPassProcessor {
         // ReadSpecialWeapons then explicitly re-runs every Warhead ReadINI, so
         // late-created warheads do consume their body in this same pass.
         self.allocate_late_global_references(pass);
+        self.crate_rules.apply_pass(pass);
         if pass.section("SpecialWeapons").is_some() {
             self.apply_family(RulesTypeFamily::Warhead, pass);
         }
@@ -1141,14 +1151,17 @@ impl RulesPassProcessor {
                 self.find_or_allocate(RulesTypeFamily::Vehicle, value);
             }
             for key in ["WoodCrateImg", "CrateImg", "WaterCrateImg"] {
-                if let Some(value) = section.get(key) {
-                    self.find_or_allocate(RulesTypeFamily::Overlay, value);
+                if section.get(key).is_some() {
+                    // Same caller capacity as the semantic CrateRules pass:
+                    // ReadCrateRules @ 0x0066B956/0x0066B989/0x0066B9C7.
+                    let value = section.read_string(key, "", 0x80);
+                    self.find_or_allocate(RulesTypeFamily::Overlay, &value);
                 }
             }
         }
     }
 
-    fn finish(mut self) -> IniFile {
+    fn finish(mut self) -> (IniFile, CrateRules) {
         let mut ini = self.ordinary.take().unwrap_or_else(IniFile::empty);
 
         for &(registry, family) in RULE_TYPE_FAMILIES {
@@ -1206,11 +1219,11 @@ impl RulesPassProcessor {
             ini.replace_first_section(member.body);
         }
 
-        ini
+        (ini, self.crate_rules.finish())
     }
 }
 
-fn trim_ascii_controls(value: &str) -> &str {
+pub(crate) fn trim_ascii_controls(value: &str) -> &str {
     value.trim_matches(|character| u32::from(character) <= 0x20)
 }
 

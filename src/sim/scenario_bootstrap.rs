@@ -3698,6 +3698,7 @@ mod tests {
             map_height: SIZE,
             basic: &map.basic,
             special_flags: &map.special_flags,
+            normal_lighting: crate::map::lighting::parse_lighting_profiles(&map.ini).normal,
             rules: &rules,
             overlay_registry: &overlays,
             house_roster: &house_roster,
@@ -3707,7 +3708,8 @@ mod tests {
             output.crates,
             Some(crate::sim::crates::CratePlacement {
                 requested: 1,
-                placed: 1,
+                accepted: 1,
+                visible: 1,
             })
         );
         let wood = overlays.id_for_name("WOOD").expect("WOOD crate overlay");

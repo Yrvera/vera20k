@@ -17,7 +17,7 @@ use crate::app::AppState;
 use crate::map::lighting::{self, CellLightGrid};
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
-use crate::render::bridge_atlas::{BridgeAtlasLookup, is_high_bridge_body_name};
+use crate::render::bridge_atlas::{BridgeAtlasLookup, is_high_bridge_body_identity};
 use crate::render::bridge_railing_atlas::BridgeKind;
 use crate::render::draw_state::DrawState;
 use crate::sim::bridge_state::{Axis, BridgeRuntimeCell, BridgeRuntimeState, DamageState};
@@ -152,7 +152,7 @@ pub fn build_bridge_body_instances_inner(
         let Some(name) = overlay_names.get(&cell.overlay_byte) else {
             continue;
         };
-        if !is_high_bridge_body_name(name) {
+        if !is_high_bridge_body_identity(cell.overlay_byte, name) {
             continue;
         }
 
@@ -237,28 +237,20 @@ pub(crate) fn build_bridge_body_instances(
 /// Step 5 pass 2). Shadow frame = `(frame_count / 2) + state`. EW states
 /// 9..17 get a `(BRIDGE_SHADOW_EW_DX, +BRIDGE_SHADOW_EW_DY)` shift per
 /// ledger #9–10. Drawn passthrough (Z-test ON, Z-write OFF, neutral tint).
-pub(crate) fn build_bridge_shadow_instances(
-    state: &AppState,
+#[allow(clippy::too_many_arguments)]
+fn build_bridge_shadow_instances_inner(
+    bridge_state: &BridgeRuntimeState,
+    atlas: &dyn BridgeAtlasLookup,
+    overlay_names: &BTreeMap<u8, String>,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    origin_y: f32,
+    world_height: f32,
+    cam_x: f32,
+    cam_y: f32,
     sw: f32,
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        return;
-    };
-    let Some(bridge_state) = sim.bridge_state.as_ref() else {
-        return;
-    };
-    let Some(atlas) = state.match_state.match_presentation.bridge_atlas.as_ref() else {
-        return;
-    };
-    let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
-        .as_ref()
-        .map(|g| (g.origin_y, g.world_height))
-        .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.match_state.input.camera_x, state.match_state.input.camera_y);
-
     for ((rx, ry), cell) in bridge_state.iter_cells() {
         if !cell.deck_present {
             continue;
@@ -267,10 +259,10 @@ pub(crate) fn build_bridge_shadow_instances(
             continue;
         };
         let Some(axis) = cell.axis else { continue };
-        let Some(name) = state.match_state.match_presentation.overlay_names.get(&cell.overlay_byte) else {
+        let Some(name) = overlay_names.get(&cell.overlay_byte) else {
             continue;
         };
-        if !is_high_bridge_body_name(name) {
+        if !is_high_bridge_body_identity(cell.overlay_byte, name) {
             continue;
         }
 
@@ -283,8 +275,7 @@ pub(crate) fn build_bridge_shadow_instances(
         let frame = compute_bridge_body_shp_frame(render_state, axis, rx, ry);
         let y_offset = compute_bridge_body_y_offset(render_state, axis);
 
-        let z: u8 = state
-            .height_map()
+        let z: u8 = height_map
             .get(&(rx, ry))
             .copied()
             .unwrap_or(cell.deck_level);
@@ -324,6 +315,43 @@ pub(crate) fn build_bridge_shadow_instances(
             ..Default::default()
         });
     }
+}
+
+pub(crate) fn build_bridge_shadow_instances(
+    state: &AppState,
+    sw: f32,
+    sh: f32,
+    out: &mut Vec<SpriteInstance>,
+) {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+        return;
+    };
+    let Some(bridge_state) = sim.bridge_state.as_ref() else {
+        return;
+    };
+    let Some(atlas) = state.match_state.match_presentation.bridge_atlas.as_ref() else {
+        return;
+    };
+    let (origin_y, world_height) = state
+        .match_state.match_presentation.terrain_grid
+        .as_ref()
+        .map(|g| (g.origin_y, g.world_height))
+        .unwrap_or((0.0, 1.0));
+    let (cam_x, cam_y) = (state.match_state.input.camera_x, state.match_state.input.camera_y);
+    let height_map = state.height_map();
+    build_bridge_shadow_instances_inner(
+        bridge_state,
+        atlas,
+        &state.match_state.match_presentation.overlay_names,
+        &height_map,
+        origin_y,
+        world_height,
+        cam_x,
+        cam_y,
+        sw,
+        sh,
+        out,
+    );
 }
 
 /// Build sprite instances for the bridge railing pass (RE doc §3.4.1, Step 7).
@@ -682,6 +710,10 @@ mod tests {
                     None
                 }
             }
+
+            fn shadow_entry(&self, _name: &str, _frame: u8) -> Option<&OverlaySpriteEntry> {
+                None
+            }
         }
 
         // Seed three visible EW cells. Their 0xDC overlay byte is the render
@@ -729,7 +761,7 @@ mod tests {
         };
 
         // Map every overlay byte the walker may have written to "BRIDGE1" so
-        // `is_high_bridge_body_name` accepts it.
+        // the canonical destroy-band route accepts it.
         let mut overlay_names: BTreeMap<u8, String> = BTreeMap::new();
         for byte in 0xCDu8..=0xE8u8 {
             overlay_names.insert(byte, "BRIDGE1".to_string());
@@ -793,6 +825,114 @@ mod tests {
         assert_eq!(
             instance.draw_state.fx_params[3],
             bridge_body_depth_scale(world_height)
+        );
+    }
+
+    #[test]
+    fn startup_numeric_high_identity_emits_custom_named_body_and_shadow() {
+        use crate::map::lighting::CellLightGrid;
+        use crate::render::overlay_atlas::OverlaySpriteEntry;
+        use crate::sim::bridge_state::{BridgeCellRole, BridgeheadAnchorClass};
+
+        struct MockAtlas {
+            entry: OverlaySpriteEntry,
+            body_queries: std::cell::RefCell<Vec<(String, u8)>>,
+            shadow_queries: std::cell::RefCell<Vec<(String, u8)>>,
+        }
+        impl BridgeAtlasLookup for MockAtlas {
+            fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+                self.body_queries
+                    .borrow_mut()
+                    .push((name.to_string(), frame));
+                (name == "HIGHANCHOR" && frame == 1).then_some(&self.entry)
+            }
+
+            fn shadow_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+                self.shadow_queries
+                    .borrow_mut()
+                    .push((name.to_string(), frame));
+                (name == "HIGHANCHOR" && frame == 1).then_some(&self.entry)
+            }
+        }
+
+        let mut bridge_state = BridgeRuntimeState::default();
+        bridge_state.test_seed_cell(
+            5,
+            5,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 4,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 1 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0x18,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            },
+        );
+        let atlas = MockAtlas {
+            entry: OverlaySpriteEntry {
+                uv_origin: [0.0, 0.0],
+                uv_size: [1.0, 1.0],
+                pixel_size: [60.0, 30.0],
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+            body_queries: std::cell::RefCell::new(Vec::new()),
+            shadow_queries: std::cell::RefCell::new(Vec::new()),
+        };
+        let overlay_names = BTreeMap::from([(0x18, "HIGHANCHOR".to_string())]);
+        let height_map = BTreeMap::new();
+        let lighting_grid = CellLightGrid::new();
+        let (cell_x, cell_y) = terrain::iso_to_screen(5, 5, 4);
+        let (cam_x, cam_y) = (cell_x - 400.0, cell_y - 300.0);
+        let mut bodies = Vec::new();
+        let mut shadows = Vec::new();
+
+        build_bridge_body_instances_inner(
+            &bridge_state,
+            &atlas,
+            &overlay_names,
+            &height_map,
+            &lighting_grid,
+            0.0,
+            5000.0,
+            cam_x,
+            cam_y,
+            800.0,
+            600.0,
+            &mut bodies,
+        );
+        build_bridge_shadow_instances_inner(
+            &bridge_state,
+            &atlas,
+            &overlay_names,
+            &height_map,
+            0.0,
+            5000.0,
+            cam_x,
+            cam_y,
+            800.0,
+            600.0,
+            &mut shadows,
+        );
+
+        assert_eq!(bodies.len(), 1, "numeric high identity must emit one body");
+        assert_eq!(
+            shadows.len(),
+            1,
+            "numeric high identity must emit one shadow"
+        );
+        assert_eq!(
+            atlas.body_queries.into_inner(),
+            vec![("HIGHANCHOR".to_string(), 1)]
+        );
+        assert_eq!(
+            atlas.shadow_queries.into_inner(),
+            vec![("HIGHANCHOR".to_string(), 1)]
         );
     }
 

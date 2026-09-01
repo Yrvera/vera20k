@@ -1693,12 +1693,14 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         bound_rules,
         Some(&sim.interner),
     );
-    let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
+    let mut sprite_base_keys = sprite_atlas::collect_needed_base_keys(
         sim.entities(),
         &state.match_state.match_presentation.house_color_map,
         &extra_buildings,
         Some(&sim.interner),
     );
+    let anim_remap_keys = sprite_atlas::collect_anim_remap_base_keys(sim);
+    sprite_base_keys.extend(anim_remap_keys.iter().cloned());
     let sprite_rebuild: bool = match &state.match_state.match_presentation.sprite_atlas {
         Some(atlas) => !sprite_atlas::atlas_covers_base_keys(atlas, &sprite_base_keys),
         None => !sprite_base_keys.is_empty(),
@@ -1757,6 +1759,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             bound_rules.map(|rules| &rules.art_registry),
             &state.match_state.match_presentation.house_color_map,
             &extra_buildings,
+            &anim_remap_keys,
             &cell_drawer_type_ids,
             cell_palette.as_ref(),
             existing,

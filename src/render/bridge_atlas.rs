@@ -6,11 +6,12 @@ use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
 use crate::assets::shp_file::ShpFile;
 use crate::map::overlay::OverlayEntry;
-use crate::map::overlay_types::{OverlayTypeFlags, OverlayTypeRegistry};
+use crate::map::overlay_types::{OverlayTypeFlags, OverlayTypeRegistry, is_high_bridge_index};
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::OverlaySpriteEntry;
 use crate::rules::art_data::{self, ArtRegistry};
+use crate::rules::crate_rules::CrateRules;
 use crate::rules::ini_parser::IniFile;
 use wgpu::util::DeviceExt;
 
@@ -58,11 +59,16 @@ impl BridgeAtlas {
 /// instance builders can be exercised in unit tests with a pure-data mock.
 pub trait BridgeAtlasLookup {
     fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry>;
+    fn shadow_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry>;
 }
 
 impl BridgeAtlasLookup for BridgeAtlas {
     fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
         BridgeAtlas::body_entry(self, name, frame)
+    }
+
+    fn shadow_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+        BridgeAtlas::shadow_entry(self, name, frame)
     }
 }
 
@@ -82,29 +88,55 @@ pub fn is_high_bridge_body_name(name: &str) -> bool {
     )
 }
 
-pub fn build_bridge_atlas(
-    gpu: &GpuContext,
-    batch: &BatchRenderer,
+/// Route a live high-bridge body by the CellClass numeric identity first.
+///
+/// Native `OverlayClass::Mark @ 0x005FC570` dispatches the four high-anchor
+/// setters by numeric OverlayType index, so a layered rules file may retain
+/// high-bridge semantics under a noncanonical art name. Canonical names remain
+/// accepted for the established destroy-band cells written by bridge runtime.
+pub fn is_high_bridge_body_identity(overlay_id: u8, name: &str) -> bool {
+    is_high_bridge_index(overlay_id) || is_high_bridge_body_name(name)
+}
+
+fn needed_bridge_sprite_keys(
     overlays: &[OverlayEntry],
     overlay_names: &BTreeMap<u8, String>,
-    asset_manager: &AssetManager,
-    theater_palette: &Palette,
-    unit_palette: &Palette,
-    theater_ext: &str,
-    theater_name: &str,
     overlay_registry: &OverlayTypeRegistry,
-    rules_ini: &IniFile,
-    art_registry: &ArtRegistry,
-) -> Option<BridgeAtlas> {
-    let mut needed: HashSet<BridgeAtlasKey> = HashSet::new();
+    crate_rules: &CrateRules,
+) -> HashSet<BridgeAtlasKey> {
+    let mut names = HashSet::new();
     for entry in overlays {
-        let Some(name) = overlay_names.get(&entry.overlay_id) else {
+        if let Some(name) = overlay_names.get(&entry.overlay_id)
+            && is_high_bridge_body_identity(entry.overlay_id, name)
+        {
+            names.insert(name.clone());
+        }
+    }
+    for selected_name in [
+        crate_rules.wood_crate_img.as_deref(),
+        crate_rules.crate_img.as_deref(),
+        crate_rules.water_crate_img.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let Some(overlay_id) = overlay_registry.id_for_name(selected_name) else {
             continue;
         };
-        if !is_high_bridge_body_name(name) {
+        if crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay_id).is_none() {
             continue;
         }
-        // Pack body half (frames 0..18) AND shadow half (frames 18..36) — RE doc §3.3.2.
+        let name = overlay_names
+            .get(&overlay_id)
+            .map(String::as_str)
+            .or_else(|| overlay_registry.name(overlay_id));
+        if let Some(name) = name {
+            names.insert(name.to_string());
+        }
+    }
+
+    let mut needed = HashSet::new();
+    for name in names {
         for frame in 0u8..18u8 {
             needed.insert(BridgeAtlasKey {
                 name: name.clone(),
@@ -118,6 +150,25 @@ pub fn build_bridge_atlas(
             });
         }
     }
+    needed
+}
+
+pub fn build_bridge_atlas(
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    overlays: &[OverlayEntry],
+    overlay_names: &BTreeMap<u8, String>,
+    asset_manager: &AssetManager,
+    theater_palette: &Palette,
+    unit_palette: &Palette,
+    theater_ext: &str,
+    theater_name: &str,
+    overlay_registry: &OverlayTypeRegistry,
+    crate_rules: &CrateRules,
+    rules_ini: &IniFile,
+    art_registry: &ArtRegistry,
+) -> Option<BridgeAtlas> {
+    let needed = needed_bridge_sprite_keys(overlays, overlay_names, overlay_registry, crate_rules);
     if needed.is_empty() {
         return None;
     }
@@ -453,6 +504,8 @@ fn create_r8_texture(gpu: &GpuContext, data: &[u8], width: u32, height: u32) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     #[test]
@@ -468,6 +521,40 @@ mod tests {
             kind: BridgeFrameKind::Shadow,
         };
         assert_ne!(body, shadow);
+    }
+
+    #[test]
+    fn startup_high_bridge_crate_roots_body_and_shadow_without_map_authored_high_overlay() {
+        let mut rules_text = String::from("[OverlayTypes]\n");
+        for id in 0..=0x18u8 {
+            let name = if id == 0x18 {
+                "HIGHANCHOR".to_string()
+            } else {
+                format!("OV{id:03}")
+            };
+            writeln!(&mut rules_text, "{id}={name}").unwrap();
+        }
+        rules_text.push_str("[HIGHANCHOR]\nCrate=yes\n");
+        let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&rules_text), None);
+        let crate_rules = CrateRules {
+            wood_crate_img: Some("HIGHANCHOR".to_string()),
+            crate_img: Some("HIGHANCHOR".to_string()),
+            water_crate_img: Some("HIGHANCHOR".to_string()),
+            ..CrateRules::default()
+        };
+
+        let keys = needed_bridge_sprite_keys(&[], &BTreeMap::new(), &registry, &crate_rules);
+
+        assert_eq!(keys.len(), 36);
+        for frame in 0..18 {
+            for kind in [BridgeFrameKind::Body, BridgeFrameKind::Shadow] {
+                assert!(keys.contains(&BridgeAtlasKey {
+                    name: "HIGHANCHOR".to_string(),
+                    frame,
+                    kind,
+                }));
+            }
+        }
     }
 
     #[test]

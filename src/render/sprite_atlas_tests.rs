@@ -259,6 +259,28 @@ fn gsi_13_08_effect_frame_count_halves_only_shadowed_non_scheduler_assets() {
 }
 
 #[test]
+fn cell_anim_remap_registration_covers_every_bound_frame_for_its_color() {
+    let remaps = HashSet::from([
+        ("CRATE_SPARK".to_string(), HouseColorIndex(1)),
+        ("OTHER".to_string(), HouseColorIndex(2)),
+    ]);
+    let mut needed = HashSet::new();
+
+    insert_anim_remap_frame_keys(&mut needed, "CRATE_SPARK", 3, &remaps);
+
+    assert_eq!(needed.len(), 3);
+    for frame in 0..3 {
+        assert!(needed.contains(&ShpSpriteKey {
+            type_id: "CRATE_SPARK".to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(1),
+        }));
+    }
+    assert!(needed.iter().all(|key| key.house_color != HouseColorIndex(2)));
+}
+
+#[test]
 fn gsi_13_08_warpout_keeps_all_frames_and_drives_the_progressive_alpha_ladder() {
     let ini = crate::rules::ini_parser::IniFile::from_str("[WARPOUT]\nTranslucent=yes\nRate=120\n");
     let art = ArtRegistry::from_ini(&ini);

@@ -818,6 +818,7 @@ pub(crate) fn finalize_constructed_scenario(
         map_height: map_data.header.height as u16,
         basic: &map_data.basic,
         special_flags: &map_data.special_flags,
+        normal_lighting: crate::map::lighting::parse_lighting_profiles(&map_data.ini).normal,
         rules,
         overlay_registry,
         house_roster,

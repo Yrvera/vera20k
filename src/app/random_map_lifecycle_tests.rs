@@ -503,6 +503,106 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         ui_launch.post_map_output.tiberium_queues.is_some(),
         "shared Post_Map_Init must rebuild the generated overlay queues"
     );
+    assert_eq!(
+        ui_launch.post_map_output.crates,
+        Some(crate::sim::crates::CratePlacement {
+            requested: 1,
+            accepted: 1,
+            visible: ui_launch
+                .startup_crate_slots
+                .iter()
+                .filter(|(_, _, overlay)| overlay.is_some())
+                .count() as u32,
+        }),
+        "accepted playable RMG must reach the ordinary startup-crate post-map seam"
+    );
+    assert_eq!(ui_launch.startup_crate_slots.len(), 1);
+    let (slot_index, slot, live_overlay) = ui_launch.startup_crate_slots[0];
+    assert_eq!(slot_index, 0, "first accepted crate owns slot zero");
+    assert!(!slot.is_empty());
+    assert_eq!(slot.start_frame, 0);
+    assert_ne!(slot.aux, 0);
+    assert!(slot.duration > 0);
+    let (_, data) = live_overlay.expect("retail lifecycle fixture places a visible startup crate");
+    assert_eq!(data, u8::MAX);
+    assert!(ui_launch.startup_crate.crates_enabled);
+    assert_eq!(ui_launch.startup_crate.minimum, 1);
+    assert_eq!(ui_launch.startup_crate.maximum, 255);
+    assert_eq!(ui_launch.startup_crate.regen_bits, 3.0_f64.to_bits());
+    assert_eq!(ui_launch.startup_crate.wood_name.as_deref(), Some("CRATE"));
+    assert_eq!(
+        ui_launch.startup_crate.common_name.as_deref(),
+        Some("CRATE")
+    );
+    assert_eq!(
+        ui_launch.startup_crate.water_name.as_deref(),
+        Some("WCRATE")
+    );
+    assert_eq!(
+        ui_launch.startup_crate.wood_id, ui_launch.startup_crate.common_id,
+        "stock wood/common image aliases resolve to one overlay identity"
+    );
+    let wood_id = ui_launch
+        .startup_crate
+        .wood_id
+        .expect("installed CRATE overlay identity");
+    let water_id = ui_launch
+        .startup_crate
+        .water_id
+        .expect("installed WCRATE overlay identity");
+    assert_ne!(wood_id, water_id);
+    assert_eq!(ui_launch.startup_crate.body_frame, 0);
+    assert!(
+        ui_launch
+            .startup_crate
+            .runtime_names
+            .contains(&(wood_id, "CRATE".to_string()))
+    );
+    assert!(
+        ui_launch
+            .startup_crate
+            .runtime_names
+            .contains(&(water_id, "WCRATE".to_string()))
+    );
+    assert_eq!(ui_launch.startup_crate.presented.len(), 1);
+    assert_eq!(
+        ui_launch.startup_crate.presented[0],
+        (
+            u16::try_from(slot.cell_x).expect("positive crate x"),
+            u16::try_from(slot.cell_y).expect("positive crate y"),
+            live_overlay.expect("visible overlay").0,
+            u8::MAX,
+        )
+    );
+    println!(
+        "STARTUP_CRATE_PRODUCTION rules=min:{} max:{} regen_bits:{:#018X} wood:{} common:{} water:{} ids:{wood_id}/{water_id} frame:{}",
+        ui_launch.startup_crate.minimum,
+        ui_launch.startup_crate.maximum,
+        ui_launch.startup_crate.regen_bits,
+        ui_launch.startup_crate.wood_name.as_deref().unwrap(),
+        ui_launch.startup_crate.common_name.as_deref().unwrap(),
+        ui_launch.startup_crate.water_name.as_deref().unwrap(),
+        ui_launch.startup_crate.body_frame,
+    );
+    println!(
+        "STARTUP_CRATE_SLOT index:{slot_index} cell:{},{} start:{} aux:{:#010X} duration:{} overlay:{:?}",
+        slot.cell_x, slot.cell_y, slot.start_frame, slot.aux, slot.duration, live_overlay
+    );
+    for asset_name in ["CRATE.TEM", "WCRATE.TEM"] {
+        let bytes = assets
+            .get_ref(asset_name)
+            .unwrap_or_else(|| panic!("active theater archive resolves {asset_name}"));
+        let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes)
+            .unwrap_or_else(|err| panic!("parse active {asset_name} as SHP(TS): {err}"));
+        assert_eq!((shp.width, shp.height, shp.frames.len()), (60, 60, 2));
+        println!(
+            "STARTUP_CRATE_ASSET name:{asset_name} bytes:{} format:SHP(TS) canvas:{}x{} frames:{}",
+            bytes.len(),
+            shp.width,
+            shp.height,
+            shp.frames.len()
+        );
+    }
 
     std::fs::remove_file(seed_dir.join(seed_name)).expect("remove lifecycle .SED");
     std::fs::remove_file(randmap_img).expect("remove common-teardown preview");

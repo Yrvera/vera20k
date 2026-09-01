@@ -380,6 +380,7 @@ mod tests {
             world_coord: AnimWorldCoord { x, y, z: 0 },
             draw_flags: 0,
             z_adjust: 0,
+            remap_color: None,
             effective_end: 1,
             effective_loop_end: 1,
             runtime: AnimRuntime {

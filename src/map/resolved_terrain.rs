@@ -783,6 +783,11 @@ pub(crate) struct DestroyableCliffMutation {
 #[derive(Debug, Clone)]
 pub struct SharedCellDummy {
     state: Arc<AtomicU64>,
+    /// OverlayClass::Mark can read and write the fallback CellClass's
+    /// `+0x44/+0x11E` fields independently of the coordinate/terrain/bridge
+    /// word above. This is process state, not Scenario payload, and therefore
+    /// follows the same shared identity without entering snapshots or hashes.
+    overlay_state: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Default for SharedCellDummy {
@@ -795,6 +800,7 @@ impl SharedCellDummy {
     pub fn fresh() -> Self {
         Self {
             state: Arc::new(AtomicU64::new(0)),
+            overlay_state: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -808,6 +814,7 @@ impl SharedCellDummy {
     /// fields are not represented by this handle yet.
     pub(crate) fn reconstruct_for_map_resize(&self) {
         self.state.store(0, Ordering::Relaxed);
+        self.overlay_state.store(0, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> SharedCellDummySnapshot {
@@ -835,6 +842,24 @@ impl SharedCellDummy {
 
     pub fn same_identity(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
+    }
+
+    /// Read the fallback CellClass overlay identity/data pair. Bit 16 is the
+    /// explicit `OverlayTypeIndex != -1` discriminator, allowing runtime ID
+    /// zero to remain distinct from the native empty sentinel.
+    pub(crate) fn overlay_fields(&self) -> (Option<u8>, u8) {
+        let packed = self.overlay_state.load(Ordering::Relaxed);
+        let overlay_id = (packed & (1 << 16) != 0).then_some(packed as u8);
+        (overlay_id, (packed >> 8) as u8)
+    }
+
+    /// Write only fallback `CellClass+0x44/+0x11E`, preserving every other
+    /// process-global dummy field.
+    pub(crate) fn set_overlay_fields(&self, overlay_id: Option<u8>, overlay_data: u8) {
+        let packed = u32::from(overlay_id.unwrap_or(0))
+            | (u32::from(overlay_data) << 8)
+            | u32::from(overlay_id.is_some()) << 16;
+        self.overlay_state.store(packed, Ordering::Relaxed);
     }
 
     /// Apply one exact `SetBridgeDirection_*` slot to the modeled flag subset
@@ -989,6 +1014,33 @@ fn apply_planned_bridge_flag_stamp_to_real_parts(
         real_cell_updates.push((index, facts.raw_flags & MODELED_CELLCLASS_BRIDGE_FLAG_MASK));
     }
     real_cell_updates
+}
+
+fn refresh_runtime_bridge_projection(cell: &mut ResolvedTerrainCell) {
+    let facts = cell.bridge_facts;
+    if facts.has_structural_bridge() {
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = !cell.terrain_object_blocks && !cell.overlay_blocks;
+        cell.bridge_deck_level = cell.level.saturating_add(4);
+        cell.build_blocked = cell.base_build_blocked
+            || cell.terrain_object_blocks
+            || cell.overlay_blocks
+            || cell.bridge_walkable;
+    } else if facts.family != BridgeStampFamily::None
+        && cell
+            .bridge_layer
+            .as_ref()
+            .is_some_and(|layer| layer.direction != BridgeDirection::Low)
+    {
+        cell.has_bridge_deck = false;
+        cell.bridge_walkable = false;
+        cell.bridge_deck_level = cell.level;
+        cell.build_blocked =
+            cell.base_build_blocked || cell.terrain_object_blocks || cell.overlay_blocks;
+    }
+    if facts.has_transition_flag() {
+        cell.bridge_transition = true;
+    }
 }
 
 /// Convert a `Tile%02dXOffset` / `YOffset` screen-pixel pair into the world
@@ -1152,6 +1204,95 @@ impl ResolvedTerrainGrid {
             stamp,
             None,
         )
+    }
+
+    /// Apply the high-anchor `OverlayClass::Mark` setter and refresh the
+    /// Rust-native bridge projection carried beside the literal CellClass
+    /// flag word. Unlike damage/repair runtime setters, a newly constructed
+    /// anchor establishes its family/anchor relations at this call site.
+    pub(crate) fn apply_runtime_bridge_mark_stamp(
+        &mut self,
+        stamp: BridgeFlagStamp,
+        family: BridgeStampFamily,
+    ) -> Vec<(usize, u32)> {
+        let updates = apply_native_bridge_flag_stamp_to_parts(
+            &mut self.cells,
+            self.width,
+            self.height,
+            self.native_allocated.as_deref(),
+            &self.shared_cell_dummy,
+            stamp,
+            Some(family),
+        );
+        for &(index, _) in &updates {
+            if let Some(cell) = self.cells.get_mut(index) {
+                refresh_runtime_bridge_projection(cell);
+            }
+        }
+        updates
+    }
+
+    /// Project a direct runtime overlay-field write into the map-owned bridge
+    /// cache. The literal identity/data remain owned by OverlayGrid; this is
+    /// only the derived bridge metadata that pathing and bridge damage read.
+    pub(crate) fn set_runtime_overlay_bridge_identity(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        overlay_id: u8,
+        overlay_data: u8,
+        overlay_name: &str,
+    ) {
+        let Some(cell) = self.cell_mut(rx, ry) else {
+            return;
+        };
+        cell.bridge_facts.overlay_id = Some(overlay_id);
+        cell.bridge_facts.state_byte = overlay_data;
+        if !crate::map::overlay_types::is_bridge_overlay_index(overlay_id) {
+            return;
+        }
+
+        let direction = match overlay_id {
+            0x18 | 0xED => BridgeDirection::EastWest,
+            0x19 | 0xEE => BridgeDirection::NorthSouth,
+            _ => BridgeDirection::Low,
+        };
+        let deck_level = match direction {
+            BridgeDirection::EastWest | BridgeDirection::NorthSouth => cell.level.saturating_add(4),
+            BridgeDirection::Low => cell.level,
+        };
+        cell.bridge_layer = Some(BridgeLayer {
+            overlay_id,
+            overlay_name: overlay_name.to_string(),
+            deck_level,
+            direction,
+        });
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = direction != BridgeDirection::Low
+            && !cell.terrain_object_blocks
+            && !cell.overlay_blocks;
+        cell.bridge_deck_level = deck_level;
+        cell.build_blocked = cell.base_build_blocked
+            || cell.terrain_object_blocks
+            || cell.overlay_blocks
+            || cell.has_bridge_deck;
+    }
+
+    /// Project a direct `CellClass::OverlayData` write into the derived bridge
+    /// facts without inventing an overlay identity. The native high-bridge
+    /// setters write this byte on four cells before `OverlayClass::Mark`
+    /// decides whether the anchor itself receives an overlay.
+    pub(crate) fn set_runtime_overlay_bridge_state_byte(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        overlay_data: u8,
+    ) -> bool {
+        let Some(cell) = self.cell_mut(rx, ry) else {
+            return false;
+        };
+        cell.bridge_facts.state_byte = overlay_data;
+        true
     }
 
     /// Project only allocated real-cell values for a setter that already ran
