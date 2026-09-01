@@ -12,8 +12,8 @@ use crate::map::bridge_facts::{
 use crate::map::map_file::AuthoredOverlayPackReceipt;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::{
-    LoadCellRecalcEffects, LoadCellRecalcError, LoadCellRecalcState, ResolvedTerrainGrid,
-    SharedCellDummy, TerrainTileAnimation,
+    LoadCellRecalcEffects, LoadCellRecalcError, LoadCellRecalcOutcome, LoadCellRecalcState,
+    ResolvedTerrainGrid, SharedCellDummy, TerrainTileAnimation,
 };
 use crate::rules::terrain_rules::LandType;
 use crate::rules::tiberium_type::TiberiumTypeRegistry;
@@ -332,9 +332,9 @@ fn recalc_target<H: AuthoredOverlayLoadHost>(
     cells: &mut LiveOverlayCells,
     host: &mut H,
     cell: AuthoredOverlayCellRef,
-) -> Result<(), AuthoredOverlayFinalizeError<H::Error>> {
+) -> Result<Option<LoadCellRecalcOutcome>, AuthoredOverlayFinalizeError<H::Error>> {
     let NativeOverlayCellTarget::Real(index) = cell.target else {
-        return Ok(());
+        return Ok(None);
     };
     let current = cells.read(cell.target);
     let outcome = {
@@ -359,7 +359,7 @@ fn recalc_target<H: AuthoredOverlayLoadHost>(
         outcome.finalized.state(),
     );
     host.observe_recalc(cell, outcome.finalized);
-    Ok(())
+    Ok(Some(outcome))
 }
 
 fn mirror_real_overlay_pair(
@@ -727,9 +727,14 @@ impl<'load, 'resources, H: AuthoredOverlayLoadHost>
                             .map_err(AuthoredOverlayFinalizeError::Host)
                     }
                     AuthoredWallEffect::CleanupRecalcAndZone(cell) => {
-                        recalc_target(terrain, recalc, cells, host, cell)?;
-                        host.merge_wall_zone(cell)
-                            .map_err(AuthoredOverlayFinalizeError::Host)
+                        let outcome = recalc_target(terrain, recalc, cells, host, cell)?;
+                        if outcome.is_some_and(|outcome| {
+                            outcome.zone_before != outcome.zone_after
+                        }) {
+                            host.merge_wall_zone(cell)
+                                .map_err(AuthoredOverlayFinalizeError::Host)?;
+                        }
+                        Ok(())
                     }
                     AuthoredWallEffect::BlockerCountIncrement(cell) => {
                         host.observe_blocker_count_increment(cell)
@@ -2312,6 +2317,38 @@ mod tests {
             assert_eq!(counts[index], 1);
         }
         assert_eq!(counts[14], 0);
+    }
+
+    #[test]
+    fn authored_wall_cleanup_skips_zone_merge_when_recalc_keeps_zone() {
+        let mut terrain = flat_terrain(6, 6);
+        terrain.cells[14].zone_type = zone_class::WALL;
+        let shape = NativeOverlayMapShape::new(2, 2);
+        let registry = wall_registry();
+        let tiberium_types = TiberiumTypeRegistry::default();
+        let shp_ids = BTreeSet::from([0]);
+        let packs = raw_packs(&[(2, 2, 0)], &[]);
+        let mut host = LoadHost::default();
+
+        AuthoredOverlayFinalizer::new(
+            &mut terrain,
+            shape,
+            &registry,
+            &tiberium_types,
+            &shp_ids,
+            4,
+            false,
+            &mut host,
+        )
+        .run(packs)
+        .expect("authored wall row");
+
+        assert!(
+            !host
+                .events
+                .iter()
+                .any(|event| matches!(event, LoadEvent::WallZone(_)))
+        );
     }
 
     #[test]
