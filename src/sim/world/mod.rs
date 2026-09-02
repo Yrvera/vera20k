@@ -1015,6 +1015,7 @@ fn dispatch_tiberium_reduction_inline(
     terrain: Option<&mut ResolvedTerrainGrid>,
     ore_growth_state: &mut crate::sim::ore_growth::OreGrowthState,
     source_object_cells: &BTreeSet<(u16, u16)>,
+    live_objects: Option<crate::sim::tiberium::NativeCellObjectView<'_>>,
     binary_frame: u32,
     spread_enabled: bool,
     radar_dirty_cells: &mut Vec<(u16, u16)>,
@@ -1029,6 +1030,7 @@ fn dispatch_tiberium_reduction_inline(
         tiberium_types: Some(&rules.tiberium_types),
         resolved_terrain: terrain,
         source_object_cells: Some(source_object_cells),
+        live_objects,
         rng: Some(scenario_rng),
         binary_frame,
         spread_enabled,
@@ -1074,6 +1076,7 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationAreaDamageCell
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         terrain: Option<&mut ResolvedTerrainGrid>,
         scenario_rng: Option<&mut SimRng>,
+        occupancy: Option<&OccupancyGrid>,
     ) {
         let Some(amount) = self.tiberium_amount else {
             return;
@@ -1102,6 +1105,7 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationAreaDamageCell
             terrain,
             self.ore_growth_state,
             self.source_object_cells,
+            occupancy.map(crate::sim::tiberium::NativeCellObjectView::new),
             self.binary_frame,
             self.spread_enabled,
             self.radar_dirty_cells,
@@ -1336,6 +1340,7 @@ fn dispatch_smudge_inline(
         overlay_registry,
         tiberium_types: Some(&rules.tiberium_types),
         source_object_cells: Some(source_object_cells),
+        live_objects: Some(crate::sim::tiberium::NativeCellObjectView::new(occupancy)),
         binary_frame,
         spread_enabled,
         radar_dirty_cells,
@@ -1709,6 +1714,7 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         terrain: Option<&mut ResolvedTerrainGrid>,
         terrain_area_state: Option<&crate::sim::terrain_object::TerrainAreaState>,
+        occupancy: Option<&OccupancyGrid>,
     ) {
         let Some(terrain_area_state) = terrain_area_state else {
             return;
@@ -1725,6 +1731,7 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
             terrain,
             &mut self.sim.production.ore_growth_state,
             terrain_area_state.tiberium_spawning_terrain_cells(),
+            occupancy.map(crate::sim::tiberium::NativeCellObjectView::new),
             binary_frame,
             spread_enabled,
             &mut self.sim.radar_terrain_dirty_cells,
@@ -3572,6 +3579,7 @@ impl Simulation {
             tiberium_types: None,
             resolved_terrain: self.resolved_terrain.as_mut(),
             source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
+            live_objects: None,
             rng: Some(&mut self.scenario_rng),
             binary_frame: self.session.binary_frame,
             spread_enabled: self.production.ore_growth_config.spreads,
@@ -3601,6 +3609,9 @@ impl Simulation {
             tiberium_types: rules.map(|rules| &rules.tiberium_types),
             resolved_terrain: self.resolved_terrain.as_mut(),
             source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
+            live_objects: Some(crate::sim::tiberium::NativeCellObjectView::new(
+                &self.substrate.occupancy,
+            )),
             // ore growth/spread — scenario stream. Direct field (not ore_rng()): this
             // literal co-borrows other &mut self fields, so the all-self accessor conflicts.
             rng: Some(&mut self.scenario_rng),

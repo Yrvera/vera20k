@@ -194,8 +194,14 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // Re-baselined 2026-08-30 for GSI-04.03 Drive slope payload ownership. The
 // common locomotor fold reaches both historical probes; the scripted retasks
 // and record/replay equality remain exact, so this is composition-only.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x368E_E20F_77C7_0725;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
+// Re-baselined 2026-09-02 for the native tiberium queue store (OQ-38, bridge transaction 3
+// slice D): every class now carries the native entry array, float min-heap, capacity, and
+// `native_rect`, rebuilds walk `CellIterator` order, and spread admission applies the
+// `FirstObject` occupier gate. This is behavior-bearing on every fixture with ore, so the
+// historical probes move as well; the RNG stream tuple and tick-for-tick record/replay
+// equality remain exact.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xDE9E_7A6C_EC29_29D1;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xED16_9102_5536_B67E;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -330,10 +336,10 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9856_E7DA_D9F1_676A;
 // shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 // prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 // current-schema composition moved.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x214E_DE3E_7939_F143;
-const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x4397_FA88_D95E_5208;
-const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE61A_9D19_669A_1B9C;
-const SLICE6_BASELINE_HASH: u64 = 0x7E57_DD5F_060A_C42E;
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0xCEBC_0EC3_08AA_C9B7;
+const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xF6D7_06A1_4979_2F14;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x4193_B427_916C_B830;
+const SLICE6_BASELINE_HASH: u64 = 0x00EE_8FFD_59DA_F4E6;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

@@ -656,6 +656,9 @@ fn place_tiberium_empty(
             resolved_terrain,
             source_object_cells,
             new_cell_admission,
+            live_objects: new_cell_admission
+                .and_then(|admission| admission.live_objects())
+                .map(|objects| objects.object_view()),
             rng,
             binary_frame,
             growth_enabled: true,
@@ -1675,9 +1678,9 @@ SpreadPercentage=.06
             "native path should bypass the legacy growth queue"
         );
         let class = &growth_state.native_tiberium_state().classes[0];
-        assert_eq!(class.growth_heap.len(), 1);
+        assert_eq!(class.growth.len(), 1);
         assert!(class.growth_bitmap.contains(&expected_cell));
-        let entry = class.growth_heap[0];
+        let entry = class.growth.heap_entry(0).unwrap();
         assert_eq!((entry.rx, entry.ry), expected_cell);
         assert_eq!(
             entry.priority_bits,

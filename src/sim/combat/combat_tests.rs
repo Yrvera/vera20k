@@ -371,6 +371,7 @@ impl CombatInlineHooks for BaseDefenseResponseTraceHook {
         _overlay_registry: Option<&OverlayTypeRegistry>,
         _terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
         _terrain_area_state: Option<&TerrainAreaState>,
+        _occupancy: Option<&OccupancyGrid>,
     ) {
     }
 

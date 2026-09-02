@@ -349,8 +349,14 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // The payload is part of the common locomotor fold, so both historical probes
 // move. All three RNG fingerprints and tick-for-tick record/replay remain exact,
 // isolating this to the intentional hash-owner composition change.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x0F6E_2B0B_5FF4_B23D;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE2B3_9FAA_432F_4A75;
+// Re-baselined 2026-09-02 for the native tiberium queue store (OQ-38, bridge transaction 3
+// slice D): every class now carries the native entry array, float min-heap, capacity, and
+// `native_rect`, rebuilds walk `CellIterator` order, and spread admission applies the
+// `FirstObject` occupier gate. This is behavior-bearing on every fixture with ore, so the
+// historical probes move as well; the RNG stream tuple and tick-for-tick record/replay
+// equality remain exact.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x6629_30DF_3D74_CFFC;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2606_8F5B_1593_4024;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -525,10 +531,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xE2B3_9FAA_432F_4A75;
 // shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 // prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 // current-schema composition moved.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x254E_775C_65A2_B50A;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x0E44_D6C4_D418_D99A;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x08C7_02E3_A11C_9F70;
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2961_F44A_E0EC_C364;
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x7559_F045_E3B2_DD8B;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x3AD8_7124_9E0F_C6EA;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xC37B_4E5E_2944_D130;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x6069_40F4_4234_DAB6;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

@@ -85,6 +85,7 @@ pub(crate) trait AoECellPrelude {
         overlay_registry: Option<&OverlayTypeRegistry>,
         terrain: Option<&mut ResolvedTerrainGrid>,
         scenario_rng: Option<&mut SimRng>,
+        occupancy: Option<&OccupancyGrid>,
     );
 
     fn wall_navigation_step(
@@ -535,6 +536,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
                     layer_context.overlay_registry,
                     layer_context.terrain.as_deref_mut(),
                     layer_context.scenario_rng.as_deref_mut(),
+                    layer_context.occupancy,
                 );
             }
             route_wall_before_cell_objects(
@@ -629,6 +631,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
                 layer_context.overlay_registry,
                 layer_context.terrain.as_deref_mut(),
                 layer_context.scenario_rng.as_deref_mut(),
+                layer_context.occupancy,
             );
         }
         route_wall_before_cell_objects(
@@ -1400,6 +1403,7 @@ mod tests {
                 _overlay_registry: Option<&OverlayTypeRegistry>,
                 _terrain: Option<&mut ResolvedTerrainGrid>,
                 scenario_rng: Option<&mut SimRng>,
+                _occupancy: Option<&OccupancyGrid>,
             ) {
                 if (rx, ry) == self.cell {
                     let _ = scenario_rng

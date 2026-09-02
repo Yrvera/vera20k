@@ -459,6 +459,7 @@ mod tests {
             &rules,
             &registry,
             Some(&grid),
+            (MAP_WIDTH, MAP_HEIGHT),
         )
         .expect("a grid seeds the native queues");
         let queue_bitmaps = |sim: &Simulation| {

@@ -336,7 +336,10 @@ use crate::sim::world::Simulation;
 // reconstruct counts left behind by a later authored low-body overwrite. The
 // v115 hash schema also folds the live shared-dummy overlay identity/state;
 // that process-global pair is intentionally not Scenario-serialized.
-const SNAPSHOT_VERSION: u32 = 115;
+/// v116: `NativeTiberiumClassState` carries the native queue stores
+/// (`NativeTiberiumQueue`: entry array, heap of references, capacity) and
+/// `OreGrowthState::native_rect`; the serialized queue shape changed.
+const SNAPSHOT_VERSION: u32 = 116;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1778,6 +1781,7 @@ impl Simulation {
         let grows = self.production.ore_growth_config.grows;
         let spreads = self.production.ore_growth_config.spreads;
         let current_frame = self.session.binary_frame;
+        let native_rect = (self.session.map_width, self.session.map_height);
         Ok(self
             .production
             .ore_growth_state
@@ -1790,6 +1794,7 @@ impl Simulation {
                 grows,
                 spreads,
                 current_frame,
+                native_rect,
             ))
     }
 }
@@ -1930,20 +1935,20 @@ mod tests {
         fn base_sim(ore_id: u8, cells: &[(u16, u16)]) -> Simulation {
             let mut sim = Simulation::with_seed(0x17_04);
             sim.session.binary_frame = 91;
-            sim.session.map_width = 4;
-            sim.session.map_height = 1;
+            sim.session.map_width = 8;
+            sim.session.map_height = 8;
             sim.production.ore_growth_config = OreGrowthConfig {
                 grows: true,
                 spreads: true,
                 growth_rate_seconds: 1,
             };
-            sim.production.ore_growth_state = OreGrowthState::new(4, 1);
-            let mut overlays = OverlayGrid::new(4, 1);
+            sim.production.ore_growth_state = OreGrowthState::new(8, 8);
+            let mut overlays = OverlayGrid::new(8, 8);
             for &(rx, ry) in cells {
                 overlays.place_overlay(rx, ry, ore_id, 5);
             }
             sim.overlay_grid = Some(overlays);
-            sim.install_resolved_terrain_for_new_map(flat_terrain(4, 1));
+            sim.install_resolved_terrain_for_new_map(flat_terrain(8, 8));
             sim
         }
 
@@ -2039,7 +2044,7 @@ mod tests {
                         registry,
                         &rules.tiberium_types,
                         resolved,
-                        &BTreeSet::new(),
+                        false,
                         ore_cell.0,
                         ore_cell.1,
                         41,
@@ -2073,11 +2078,11 @@ mod tests {
         #[test]
         fn gsi_17_04_postload_rebuild_discards_saved_queues_and_uses_ground_object_list() {
             let (rules, registry, ore_id) = tiberium_fixture();
-            let mut sim = base_sim(ore_id, &[(0, 0), (1, 0), (2, 0), (3, 0)]);
-            add_marked_unit(&mut sim, (1, 0), false);
-            add_marked_unit(&mut sim, (2, 0), true);
-            add_live_terrain_object(&mut sim, (3, 0));
-            seed_serialized_queue_state(&mut sim, &rules, &registry, (0, 0));
+            let mut sim = base_sim(ore_id, &[(4, 5), (5, 5), (6, 5), (7, 5)]);
+            add_marked_unit(&mut sim, (5, 5), false);
+            add_marked_unit(&mut sim, (6, 5), true);
+            add_live_terrain_object(&mut sim, (7, 5));
+            seed_serialized_queue_state(&mut sim, &rules, &registry, (4, 5));
 
             let mut restored = restore_before_map_authority(&sim);
             let saved_class = &restored
@@ -2086,19 +2091,22 @@ mod tests {
                 .native_tiberium_state()
                 .classes[0];
             assert_eq!(saved_class.growth_timer.start_frame, 7);
-            assert_ne!(saved_class.growth_heap[0].priority_bits, 0.0f32.to_bits());
+            assert_ne!(
+                saved_class.growth.heap_entry(0).unwrap().priority_bits,
+                0.0f32.to_bits()
+            );
             assert_eq!(
                 restored
                     .substrate
                     .occupancy
-                    .count_on_layer(1, 0, MovementLayer::Ground),
+                    .count_on_layer(5, 5, MovementLayer::Ground),
                 1
             );
             assert_eq!(
                 restored
                     .substrate
                     .occupancy
-                    .count_on_layer(2, 0, MovementLayer::Bridge),
+                    .count_on_layer(6, 5, MovementLayer::Bridge),
                 1
             );
 
@@ -2125,31 +2133,31 @@ mod tests {
             assert_eq!(class.spread_timer.interval, 0);
             assert!(
                 class
-                    .growth_heap
-                    .iter()
+                    .growth
+                    .iter_heap()
                     .all(|entry| entry.priority_bits == 0.0f32.to_bits())
             );
             assert!(
                 class
-                    .spread_heap
-                    .iter()
+                    .spread
+                    .iter_heap()
                     .all(|entry| entry.priority_bits == 0.0f32.to_bits())
             );
             let growth_cells: BTreeSet<_> = class
-                .growth_heap
-                .iter()
+                .growth
+                .iter_heap()
                 .map(|entry| (entry.rx, entry.ry))
                 .collect();
             let spread_cells: BTreeSet<_> = class
-                .spread_heap
-                .iter()
+                .spread
+                .iter_heap()
                 .map(|entry| (entry.rx, entry.ry))
                 .collect();
             assert_eq!(
                 growth_cells,
-                BTreeSet::from([(0, 0), (1, 0), (2, 0), (3, 0)])
+                BTreeSet::from([(4, 5), (5, 5), (6, 5), (7, 5)])
             );
-            assert_eq!(spread_cells, BTreeSet::from([(0, 0), (2, 0)]));
+            assert_eq!(spread_cells, BTreeSet::from([(4, 5), (6, 5)]));
             assert_eq!(class.growth_bitmap, growth_cells);
             assert_eq!(class.spread_bitmap, spread_cells);
         }
@@ -2157,8 +2165,8 @@ mod tests {
         #[test]
         fn gsi_17_04_first_resumed_pass_reloads_type_growth_and_spread_intervals() {
             let (rules, registry, ore_id) = tiberium_fixture();
-            let mut sim = base_sim(ore_id, &[(0, 0)]);
-            seed_serialized_queue_state(&mut sim, &rules, &registry, (0, 0));
+            let mut sim = base_sim(ore_id, &[(4, 5)]);
+            seed_serialized_queue_state(&mut sim, &rules, &registry, (4, 5));
             let mut restored = restore_before_map_authority(&sim);
             restored
                 .restore_map_authority_after_snapshot_load(&rules, &registry)
@@ -2200,7 +2208,7 @@ mod tests {
         #[test]
         fn gsi_17_04_missing_dependency_rejects_postload_queue_admission() {
             let (rules, registry, ore_id) = tiberium_fixture();
-            let mut sim = base_sim(ore_id, &[(0, 0)]);
+            let mut sim = base_sim(ore_id, &[(4, 5)]);
             sim.production
                 .ore_growth_state
                 .reset_native_tiberium_classes(rules.tiberium_types.len(), 7);
@@ -2817,10 +2825,13 @@ mod tests {
     /// 113 -> 114 adds the raw 256-entry scenario-crate slot table and the
     /// per-Anim Convert palette selector used by startup crate CellAnim;
     /// 114 -> 115 adds retained wall-neighbor count authority and begins the
-    /// live shared-dummy overlay pair in the current hash schema.
+    /// live shared-dummy overlay pair in the current hash schema; 115 -> 116
+    /// replaces the per-class tiberium heap vectors with the native queue
+    /// stores (entry array, heap of references, capacity) and adds the
+    /// `MapRect` the stores are sized from.
     #[test]
-    fn authored_wall_neighbor_authority_snapshot_version_is_115() {
-        assert_eq!(super::SNAPSHOT_VERSION, 115);
+    fn native_tiberium_queue_store_snapshot_version_is_116() {
+        assert_eq!(super::SNAPSHOT_VERSION, 116);
     }
 
     #[test]

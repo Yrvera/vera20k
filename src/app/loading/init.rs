@@ -2583,6 +2583,7 @@ pub(crate) fn load_map_from_initial(
                 ruleset,
                 &overlay_registry,
                 Some(&overlay_grid),
+                (map_data.header.width as u16, map_data.header.height as u16),
             );
             if let Some(stats) = queue_stats {
                 log::info!(

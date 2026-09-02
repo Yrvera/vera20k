@@ -37,6 +37,9 @@ pub struct ReduceTiberiumContext<'a> {
     pub tiberium_types: Option<&'a TiberiumTypeRegistry>,
     pub resolved_terrain: Option<&'a mut ResolvedTerrainGrid>,
     pub source_object_cells: Option<&'a std::collections::BTreeSet<(u16, u16)>>,
+    /// Live ground object lists for the neighbour reseed's `CanSpreadTiberium`
+    /// `FirstObject` gate.
+    pub live_objects: Option<NativeCellObjectView<'a>>,
     pub rng: Option<&'a mut SimRng>,
     pub binary_frame: u32,
     pub spread_enabled: bool,
@@ -112,6 +115,41 @@ impl<'a> TiberiumPlacementObjectContext<'a> {
             interner,
         }
     }
+
+    /// The ground object-list view of this context.
+    pub(crate) fn object_view(&self) -> NativeCellObjectView<'a> {
+        NativeCellObjectView::new(self.occupancy)
+    }
+}
+
+/// Read-only view of the CellClass ground object lists for the
+/// `CellClass+0xE4 FirstObject` gates.
+#[derive(Clone, Copy)]
+pub struct NativeCellObjectView<'a> {
+    occupancy: &'a OccupancyGrid,
+}
+
+impl<'a> NativeCellObjectView<'a> {
+    pub fn new(occupancy: &'a OccupancyGrid) -> Self {
+        Self { occupancy }
+    }
+
+    /// `CellClass+0xE4 FirstObject != 0` for a Techno: any member of the
+    /// cell's ground object list (`AddContent @ 0x0047E8A0` links units,
+    /// infantry, and buildings there; the bridge list is `AltObject`).
+    pub(crate) fn ground_object_present(&self, cell: (u16, u16)) -> bool {
+        self.occupancy.count_on_layer(
+            cell.0,
+            cell.1,
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+        ) > 0
+    }
+
+    /// Every cell whose ground object list holds a Techno.
+    pub(crate) fn occupied_ground_cells(&self) -> impl Iterator<Item = (u16, u16)> + 'a {
+        self.occupancy
+            .occupied_cells_on_layer(crate::sim::movement::locomotor::MovementLayer::Ground)
+    }
 }
 
 /// Proof that a caller selected an explicit new-cell admission policy.
@@ -150,6 +188,11 @@ impl<'a> NewTiberiumAdmission<'a> {
             path_grid,
             live_objects,
         }
+    }
+
+    /// The live CellClass-style object view this admission carries, if any.
+    pub(crate) fn live_objects(&self) -> Option<TiberiumPlacementObjectContext<'a>> {
+        self.live_objects
     }
 }
 
@@ -228,6 +271,9 @@ pub struct PlaceTiberiumContext<'a> {
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
     pub source_object_cells: &'a std::collections::BTreeSet<(u16, u16)>,
     pub new_cell_admission: Option<NewTiberiumAdmission<'a>>,
+    /// Live ground object lists for the `CanSpreadTiberium` `FirstObject`
+    /// gate of the existing-cell spread feed.
+    pub live_objects: Option<NativeCellObjectView<'a>>,
     pub rng: &'a mut SimRng,
     pub binary_frame: u32,
     pub growth_enabled: bool,
@@ -312,12 +358,17 @@ pub fn place_tiberium(
     let new_data = view.overlay_data.wrapping_add(amount).min(11);
     ctx.overlay_grid.set_overlay_data(cell.0, cell.1, new_data);
     mark_place_tactical_dirty(ctx, cell);
+    let source_has_object = crate::sim::ore_growth::cell_has_native_object(
+        ctx.source_object_cells,
+        ctx.live_objects,
+        cell,
+    );
     ctx.ore_growth_state.add_native_spread_queue_cell(
         ctx.overlay_grid,
         ctx.overlay_registry,
         ctx.tiberium_types,
         ctx.resolved_terrain,
-        ctx.source_object_cells,
+        source_has_object,
         cell.0,
         cell.1,
         ctx.binary_frame,
@@ -469,6 +520,7 @@ pub fn reduce_tiberium(
                 types,
                 ctx.resolved_terrain.as_deref(),
                 source_object_cells,
+                ctx.live_objects,
                 cell,
                 ctx.binary_frame,
                 ctx.spread_enabled,
@@ -778,6 +830,7 @@ SpreadPercentage=.06
                 resolved_terrain: Some(&terrain),
                 source_object_cells: &source_cells,
                 new_cell_admission: admission,
+                live_objects: None,
                 rng: &mut rng,
                 binary_frame: 40,
                 growth_enabled: true,
@@ -791,8 +844,8 @@ SpreadPercentage=.06
 
         assert_eq!(overlay.cell(0, 0).overlay_id, None);
         assert!(growth.native_tiberium_state().classes.iter().all(|class| {
-            class.growth_heap.is_empty()
-                && class.spread_heap.is_empty()
+            class.growth.is_empty()
+                && class.spread.is_empty()
                 && class.growth_bitmap.is_empty()
                 && class.spread_bitmap.is_empty()
         }));
@@ -830,6 +883,7 @@ SpreadPercentage=.06
                 resolved_terrain: None,
                 source_object_cells: &source_cells,
                 new_cell_admission: Some(compatibility_admission),
+                live_objects: None,
                 rng: &mut rng,
                 binary_frame: 40,
                 growth_enabled: true,
@@ -844,7 +898,7 @@ SpreadPercentage=.06
         assert_eq!(overlay.cell(4, 4).overlay_data, 11);
         let class = &growth.native_tiberium_state().classes[0];
         assert_eq!(
-            class.growth_heap.len(),
+            class.growth.len(),
             1,
             "AddToGrowthQueue must run while the newly stamped cell still has data zero"
         );
@@ -863,6 +917,7 @@ SpreadPercentage=.06
             resolved_terrain: None,
             source_object_cells: &source_cells,
             new_cell_admission: Some(compatibility_admission),
+            live_objects: None,
             rng: &mut rng,
             binary_frame: 40,
             growth_enabled: true,
@@ -904,6 +959,7 @@ SpreadPercentage=.06
                 resolved_terrain: None,
                 source_object_cells: &source_cells,
                 new_cell_admission: None,
+                live_objects: None,
                 rng: &mut rng,
                 binary_frame: 0,
                 growth_enabled: true,
@@ -1119,6 +1175,7 @@ SpreadPercentage=.06
             tiberium_types: None,
             resolved_terrain: None,
             source_object_cells: None,
+            live_objects: None,
             rng: None,
             binary_frame: 0,
             spread_enabled: false,
@@ -1168,6 +1225,7 @@ SpreadPercentage=.06
                 tiberium_types: Some(&tiberium_types),
                 resolved_terrain: None,
                 source_object_cells: None,
+                live_objects: None,
                 rng: None,
                 binary_frame: 0,
                 spread_enabled: false,
@@ -1223,6 +1281,7 @@ SpreadPercentage=.06
             tiberium_types: Some(&tiberium_types),
             resolved_terrain: None,
             source_object_cells: None,
+            live_objects: None,
             rng: None,
             binary_frame: 0,
             spread_enabled: false,
@@ -1254,6 +1313,7 @@ SpreadPercentage=.06
             tiberium_types: Some(&tiberium_types),
             resolved_terrain: None,
             source_object_cells: None,
+            live_objects: None,
             rng: Some(&mut rng),
             binary_frame: 42,
             spread_enabled: false,
@@ -1269,8 +1329,7 @@ SpreadPercentage=.06
         assert_eq!(overlay.cell(4, 4).overlay_data, 0);
         assert!(
             growth.native_tiberium_state().classes[0]
-                .growth_heap
-                .is_empty()
+                .growth.is_empty()
         );
         assert!(
             growth.native_tiberium_state().classes[0]
@@ -1316,6 +1375,7 @@ SpreadPercentage=.06
                 tiberium_types: Some(&tiberium_types),
                 resolved_terrain: Some(&mut terrain),
                 source_object_cells: None,
+                live_objects: None,
                 rng: None,
                 binary_frame: 0,
                 spread_enabled: false,
@@ -1375,6 +1435,7 @@ SpreadPercentage=.06
             tiberium_types: None,
             resolved_terrain: None,
             source_object_cells: None,
+            live_objects: None,
             rng: None,
             binary_frame: 0,
             spread_enabled: false,
@@ -1417,6 +1478,7 @@ SpreadPercentage=.06
             tiberium_types: None,
             resolved_terrain: None,
             source_object_cells: None,
+            live_objects: None,
             rng: None,
             binary_frame: 0,
             spread_enabled: false,
@@ -1459,6 +1521,7 @@ SpreadPercentage=.06
             tiberium_types: None,
             resolved_terrain: None,
             source_object_cells: None,
+            live_objects: None,
             rng: None,
             binary_frame: 0,
             spread_enabled: false,
@@ -1499,32 +1562,34 @@ SpreadPercentage=.06
         growth.reset_native_tiberium_classes(tiberium_types.len(), 100);
         let mut rng = SimRng::new(3);
         let source_object_cells = BTreeSet::new();
-        // Seed the removed-cell membership into two wrong classes as well as
-        // the actual class. Switching the authoritative overlay between calls
-        // is enough to leave the native per-class bitmap/heap state behind.
+        // Seed the removed-cell membership into a wrong class as well as the
+        // actual class. Switching the authoritative overlay between calls is
+        // enough to leave the native per-class bitmap/heap state behind. The
+        // fixture's Cruentus carries the retail `SpreadPercentage=0`, so
+        // `CanSpreadTiberium @ 0x00483690` (`pct < 1e-05`) never admits it.
         for overlay_id in [tib01, gem01, tib2_20] {
             overlay.place_overlay(5, 5, overlay_id, 3);
-            assert!(
-                growth
-                    .add_native_spread_queue_cell(
-                        &overlay,
-                        &overlay_registry,
-                        &tiberium_types,
-                        None,
-                        &source_object_cells,
-                        5,
-                        5,
-                        100,
-                        true,
-                        &mut rng,
-                    )
-                    .is_some()
-            );
+            let inserted = growth
+                .add_native_spread_queue_cell(
+                    &overlay,
+                    &overlay_registry,
+                    &tiberium_types,
+                    None,
+                    false,
+                    5,
+                    5,
+                    100,
+                    true,
+                    &mut rng,
+                )
+                .is_some();
+            assert_eq!(inserted, overlay_id != gem01);
         }
         for (class_index, class) in growth.native_tiberium_state().classes.iter().enumerate() {
-            assert!(
+            assert_eq!(
                 class.spread_bitmap.contains(&(5, 5)),
-                "precondition: class {class_index} contains the removed-cell bit"
+                class_index != 1,
+                "precondition: class {class_index} removed-cell bit"
             );
         }
         let mut expected_rng = rng.clone();
@@ -1539,6 +1604,7 @@ SpreadPercentage=.06
             tiberium_types: Some(&tiberium_types),
             resolved_terrain: None,
             source_object_cells: Some(&source_object_cells),
+            live_objects: None,
             rng: Some(&mut rng),
             binary_frame: 200,
             spread_enabled: true,
@@ -1556,15 +1622,15 @@ SpreadPercentage=.06
         assert!(class.spread_bitmap.contains(&(5, 6)));
         assert_eq!(
             class
-                .spread_heap
-                .iter()
+                .spread
+                .iter_heap()
                 .filter(|entry| (entry.rx, entry.ry) == (6, 5) || (entry.rx, entry.ry) == (5, 6))
                 .count(),
             2
         );
         let reseeded: Vec<_> = class
-            .spread_heap
-            .iter()
+            .spread
+            .iter_heap()
             .filter(|entry| (entry.rx, entry.ry) != (5, 5))
             .map(|entry| (entry.rx, entry.ry))
             .collect();
@@ -1576,13 +1642,20 @@ SpreadPercentage=.06
                 "full removal clears class {class_index}'s removed-cell bit"
             );
             if class_index != 2 {
+                // Class 1 (retail `SpreadPercentage=0`) was never admitted, so
+                // it has no stale entry to retain.
+                let expected_stale = if class_index == 1 {
+                    Vec::new()
+                } else {
+                    vec![(5, 5)]
+                };
                 assert_eq!(
                     wrong_class
-                        .spread_heap
-                        .iter()
+                        .spread
+                        .iter_heap()
                         .map(|entry| (entry.rx, entry.ry))
                         .collect::<Vec<_>>(),
-                    vec![(5, 5)],
+                    expected_stale,
                     "wrong class {class_index} retains only its stale removed-cell heap entry"
                 );
                 assert!(wrong_class.spread_bitmap.is_empty());
@@ -1609,6 +1682,7 @@ SpreadPercentage=.06
             tiberium_types: None,
             resolved_terrain: None,
             source_object_cells: None,
+            live_objects: None,
             rng: None,
             binary_frame: 0,
             spread_enabled: false,

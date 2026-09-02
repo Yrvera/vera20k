@@ -757,6 +757,88 @@ boundary is modelled as the post-Resize `-1`; whether generator constructors sta
 keeps the painted density for ore cells after germination; its readers are bridge-family gated and the
 oracle export view, so only a per-cell `OverlayData` oracle comparison could observe it.
 
+## Continuation slice D: native tiberium queue store parity (OQ-38, 2026-09-02)
+
+Scope: the per-`TiberiumClass` growth/spread queue stores that the bridge load corridor seeds
+(authored `Full_Init` between Terrain and Techno, the generator tail before `InitCellAttributes(1)`,
+`Load_Game_From_File`) and that the growth/spread processors consume every tick: store shape, rebuild
+walk order and admission, processor pop order, batch arithmetic, the queue-density literal, and the
+`FirstObject` occupier gate. Out of scope and recorded: the array-counter rebuild triggers of
+`AddToGrowthQueue`/`AddToSpreadQueue` (unreachable in ordinary play, below).
+
+Native evidence (decompiled live 2026-09-02 through the plugin's HTTP endpoints):
+- `TiberiumClass::InitGrowthQueues_All @ 0x00722D00` / `InitSpreadQueues_All @ 0x00722240`: for
+  every class free the heap (`+0x110`/`+0xF4`: count, capacity, slots, max, min), the flag plane
+  (`+0x114`/`+0xF8`) and the entry array (`+0x118`/`+0xFC`, 8 bytes: packed coord + float priority),
+  reset the counter (`+0x10C`/`+0xF0`), allocate all three from `FUN_0042B1F0 = (MapRect.Height + 4) *
+  MapRect.Width * 2` (`g_nMapRectWidth @ 0x0087F8DC`, `g_nMapRectHeight @ 0x0087F8E0`), then call
+  `RebuildGrowthQueue @ 0x007233A0` / `RebuildSpreadQueue @ 0x007228B0`.
+- `RebuildGrowthQueue` / `RebuildSpreadQueue`: zero the heap and flag plane; `MapClass::CellIterator_Init
+  @ 0x00578350` then for every `CellIterator_Next @ 0x00578290` cell (anti-diagonal order) whose
+  `CellClass::GetTiberiumType @ 0x00485010` equals the class index and `CanGrowTiberium @ 0x00483620` /
+  `CanSpreadTiberium @ 0x00483690` holds: append `{coord, 0.0f}` at the counter, increment it, and when
+  `count + 1 < capacity` heap-insert with sift-up that stops on `parent <= new`; set the flag byte at
+  `FUN_0042B1C0(coord)`.
+- `CanGrowTiberium`: `Scenario+0x34A6` (`[Basic] TiberiumGrowthEnabled`), `OverlayToTiberiumIndex != -1`,
+  `+0x11C == 0`, reject `MaxDensity - 1 <= OverlayData`, reject `GrowthPercentage (+0xB0) < 1e-05`.
+- `CanSpreadTiberium`: `SpecialFlags & 0x80` (`TiberiumSpreads`), index `!= -1`, reject `OverlayData <=
+  tiberium_index / 2` (the class INDEX, not `MaxDensity`), `+0x11C == 0`, reject `SpreadPercentage
+  (+0xA0) < 1e-05`, then `CellClass+0xE4 FirstObject == 0` (`AddContent @ 0x0047E8A0` links units,
+  infantry and buildings into that ground list; the bridge list is `AltObject`).
+- `GrowthProcessor @ 0x00722F00`: return on null/empty heap or `GrowthPercentage <= 1e-05`
+  (`FCOMP [0x007E3810]`, `TEST AH,0x41`); batch = `_ftol(FILD count * pct)` (`Math__ftol @ 0x007C5F00`
+  loads control word `0x0E7F`: chop) clamped `[5, 50]`; one Scenario `Random::Next` for
+  `attempts = abs(raw) % batch + 1`; rebuild this class when `count > capacity - 2 * attempts`; pop
+  slot 1 (move the last slot to the root, `FloatMinHeap::SiftDown @ 0x005AD870`: a child replaces its
+  parent only when strictly smaller, left before right); per popped entry: on a type match
+  `CellClass::GrowTiberium @ 0x00483710` (= `PlaceTiberium(type, 1)`, whose existing-cell branch calls
+  `AddToSpreadQueue`), then if `OverlayData < 0x0B` append + `Random::Next` priority `frame + abs(raw) %
+  50` + heap insert + flag, else clear the flag; a type mismatch drops the entry silently.
+- `SpreadProcessor @ 0x00722440`: same shape with `SpreadPercentage`, clamp `[5, 25]`, rebuild when
+  `count > capacity - 0x14`; per popped entry count the eight `CanPlaceTiberium` neighbours; zero
+  clears the flag without spending budget; otherwise `SpreadTiberium(0)`, budget++, and with more than
+  one target reinsert at priority 0 without a draw.
+- `AddToGrowthQueue @ 0x007235A0`: `OverlayData < 0x0B`; rebuild when `counter > capacity - 10`;
+  append + draw + heap + flag. `AddToSpreadQueue @ 0x00722AF0`: `CanSpreadTiberium` and flag byte 0;
+  rebuild when `counter >= capacity - 0x14`; append + draw + heap + flag.
+- `CanPlaceTiberium @ 0x004838E0` (target admission) rejects only a live Building (unless its type's
+  `+0xC9A`/`+0x1701` flags) or a ChainReaction terrain object in the cell's list; no unit gate.
+- `native_x87` module contract: the process runs 53-bit precision with chop rounding, so `count * pct`
+  is chopped before `_ftol` (e.g. 50 * 0.06 -> 2, where round-to-nearest gives 3).
+
+Player effect and frequency: every map with ore, every growth/spread processor tick. Before this
+slice Rust (a) inserted rebuild entries in row-major order and consumed a stably sorted vector, so
+equal-priority pops came in a different order; (b) rounded the batch product instead of chopping it,
+changing the RNG modulus whenever `count * pct` sits just below an integer (count 50, 100, 150 ... at
+`.06`); (c) let cells with a unit standing on them into the spread queue; (d) admitted percentages
+between 0 and 1e-05 (custom data only).
+
+Landed Rust:
+- `src/rules/tiberium_type.rs`: `growth_percentage_bits` / `spread_percentage_bits` (the native
+  doubles).
+- `src/sim/ore_growth.rs`: `NativeTiberiumQueue` (entry array, 1-based heap of entry indices, capacity,
+  `push` with the native sift-up and capacity skip, `pop_root` with the native sift-down),
+  `native_tiberium_queue_capacity`, `native_rebuild_cells` (`CellIterator` order restricted to the
+  overlay storage), `rebuild_growth_queue_for_type` / `rebuild_spread_queue_for_type`,
+  `native_can_grow_tiberium`, `source_can_spread_tiberium` with `source_has_object`,
+  `native_percentage_admits` / `native_percentage_drives` (x87 compares against the `1e-05` bits),
+  `native_processor_batch` (`X87Chop53` product + `ftol`), the processor rebuild triggers, the `0x0B`
+  literal, `OreGrowthState::native_rect`, hashing of the whole store.
+- `src/sim/tiberium/mod.rs`: `NativeCellObjectView` (ground object-list view) carried by
+  `PlaceTiberiumContext` / `ReduceTiberiumContext`; the existing-cell spread feed and the removal
+  reseed apply the `FirstObject` gate.
+- Callers: `initialize_native_tiberium_queues` (authored and generated arms) and the post-map /
+  snapshot rebuilds pass the `[Map] Size` rect and the occupied set (terrain objects plus ground-list
+  Technos); the area-damage prelude/commit traits and the crater smudge path carry the occupancy view;
+  the harvester reduction path builds it from the live grid.
+
+Recorded DRIFT (deferred, unreachable in ordinary play): the enqueue-side rebuild triggers need
+`counter > capacity - 10` (growth) / `counter >= capacity - 0x14` (spread) where `capacity = 2 * W *
+(H + 4)` (20,800 on a 100x100 map) and the counter only grows by one per reinsert or runtime insert
+(tens per processor tick every `Growth=2200` frames): hours of play on one map. The processor-side
+triggers are implemented. `MaxDensity` is the constant 12 (`TiberiumClass+0xE4` initializer not
+re-read); the native `atof` rounding of long percentage decimals is UNCHECKED (retail `.06`).
+
 ## Known Non-Requirements
 
 - Do not construct Tube topology or use `explicit_tubes` as native-ID accounting input.

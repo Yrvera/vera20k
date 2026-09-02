@@ -789,6 +789,7 @@ where
             rules,
             overlay_registry,
             live_grid.as_ref(),
+            (map_data.header.width as u16, map_data.header.height as u16),
         );
         sim.overlay_grid = live_grid;
         if let Some(stats) = stats {
@@ -847,6 +848,7 @@ pub(crate) fn initialize_native_tiberium_queues(
     rules: &RuleSet,
     overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
     overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    native_rect: (u16, u16),
 ) -> Option<crate::sim::ore_growth::NativeTiberiumRebuildStats> {
     sim.production.ore_growth_config =
         crate::sim::ore_growth::OreGrowthConfig::from_ini(&rules.general, basic, special_flags);
@@ -859,12 +861,20 @@ pub(crate) fn initialize_native_tiberium_queues(
         })
         .unwrap_or((0, 0));
     sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(width, height);
-    let source_object_cells = sim
+    // `CellClass+0xE4 FirstObject != 0` at this point: terrain objects plus
+    // every ground-list Techno already constructed (none on an authored load,
+    // the generator's own Technos on a generated one).
+    let mut source_object_cells = sim
         .production
         .terrain_object_cells
         .keys()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
+    source_object_cells.extend(
+        sim.substrate
+            .occupancy
+            .occupied_cells_on_layer(crate::sim::movement::locomotor::MovementLayer::Ground),
+    );
     let Some(overlay_grid) = overlay_grid else {
         sim.production
             .ore_growth_state
@@ -883,6 +893,7 @@ pub(crate) fn initialize_native_tiberium_queues(
                 basic.tiberium_growth_enabled.unwrap_or(true),
                 rules.general.tiberium_spreads && special_flags.tiberium_spreads.unwrap_or(true),
                 sim.session.binary_frame,
+                native_rect,
             ),
     )
 }

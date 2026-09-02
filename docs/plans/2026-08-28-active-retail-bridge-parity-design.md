@@ -1101,9 +1101,29 @@ Recorded open items, each with its native reading and owner. None is closed by P
   journal. The crate Mark seam's own lookup (`resolve_crate_mark_cell`) still treats in-storage
   off-diamond cells as real where native NULL slots resolve to the dummy (DRIFT, diamond-edge crates
   only; fix by routing through `native_fixed_cell_index`, owner: the next crate slice). The slice also
-  opened OQ-38 (native queue rebuild parity: the
-  admission predicates are verified, the heap insertion/pop order and the percentage/occupier gates
-  are recorded DRIFT for the next slice).
+  opened OQ-38 (native queue rebuild parity), which transaction-3 slice D then implemented (see the
+  OQ-38 row and the bullet below).
+- **OQ-38 native tiberium queue store parity — IMPLEMENTED by transaction-3 slice D
+  (`feature/bridge-queue-rebuild-parity`).** The per-`TiberiumClass` stores the bridge load corridor
+  seeds are now the native shape: `NativeTiberiumQueue` (append-only entry array with its counter, a
+  1-based float min-heap of entry indices with `FloatMinHeap::SiftDown @ 0x005AD870` semantics and the
+  `parent <= new` sift-up stop, capacity `(MapRect.Height + 4) * MapRect.Width * 2` from `FUN_0042B1F0`
+  with the over-capacity array-only append), rebuilt per class in `CellIterator_Init/Next @
+  0x00578350/0x00578290` order through `CanGrowTiberium @ 0x00483620` / `CanSpreadTiberium @ 0x00483690`
+  (flat slope, `OverlayData < MaxDensity - 1` / `OverlayData > class index / 2`, percentage `>= 1e-05`
+  as an x87 double compare, and the `CellClass+0xE4 FirstObject == 0` occupier gate modelled by
+  `sim::tiberium::NativeCellObjectView` over the ground occupancy list plus terrain objects). The
+  processors (`GrowthProcessor @ 0x00722F00`, `SpreadProcessor @ 0x00722440`) pop the root, size the
+  batch as `_ftol(FILD count * pct)` under the process's 53-bit chop control word (`native_x87`),
+  gate on `pct > 1e-05`, reinsert on the literal `OverlayData < 0x0B`, and rebuild their class when
+  `count > capacity - 2 * attempts` / `count > capacity - 0x14`. The occupancy view reaches the
+  load-time rebuilds (authored, generated, post-map, snapshot restore), the growth feed inside
+  `PlaceTiberium`, and the harvester, crater-smudge, and area-damage reduction reseeds (the
+  `AoECellPrelude`/`commit_tiberium_reduction` traits now carry the AoE transaction's occupancy).
+  Rules keep the native percentage doubles (`growth_percentage_bits` / `spread_percentage_bits`).
+  Deferred DRIFT, recorded in the OQ-38 row: the enqueue-side array-counter rebuild triggers
+  (hours of play on one map before they fire), `MaxDensity` pinned to 12, native `atof` rounding of
+  long decimals UNCHECKED.
 - **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6) — IMPLEMENTED
   by slice B.** The final authored sweep now calls the `Get_Tiberium_Value @ 0x00485020` model
   (`TiberiumClass.Value * (OverlayData + 1)`, signed wrapping) for every real cell before that cell's
@@ -1384,7 +1404,7 @@ Every frozen question has a pre-implementation owner. A unit cannot become `CONT
 | OQ-35 `InitCellAttributes` raw `0x100000`/`0x200000` clear/restamp identity and consumers | RESOLVED as active generic AttachedTag event-`0x19`/`0x1A` row/column trigger acceleration, not bridge-zone topology; transaction 3 exposes the ordered ancillary seam and negative no-`BridgeFacts` assertion but does not implement or close the official-retail-reachable generic bits/consumer |
 | OQ-36 `InitCellAttributes` ordinary-cell LightConvert/ZAdjust recomputation | native ordinary/sentinel split and draw consumers are verified; transaction 3 executes and tests one cache invalidation at the recomputation-routing slot, while transaction 20 owns semantic rendered-cell-light equivalence and the final end-to-end stale-preview-cache test |
 | OQ-37 post-`Full_Init` OreTwinkle Scenario-RNG pass and the `FUN_00684C30` post-load order (third Recalc sweep, bridge-zone/zone-connectivity/zone-level rebuilds, particle-system ID, twinkle draws) | IMPLEMENTED by transaction-3 slice B (particle-system ID, per-resource-cell Scenario draws, zero-roll Anim construction); `FUN_00586BF0` bridge-record restamp routed to transaction 4/13; FillSilos loop and the `+0x4E0` Building call recorded as non-bridge residuals |
-| OQ-38 native tiberium queue rebuild parity (`TiberiumClass::RebuildGrowthQueue @ 0x007233A0`, `RebuildSpreadQueue @ 0x007228B0`, `CellClass::CanGrowTiberium @ 0x00483620`, `CellClass::CanSpreadTiberium @ 0x00483690`; decompiled live 2026-09-02) | PARTIALLY VERIFIED, OPEN. Verified: the spread admission `OverlayData > TiberiumClass index / 2` is native (`CanSpreadTiberium` compares `+0x11E` against `OverlayToTiberiumIndex / 2`), as are the flat-slope (`+0x11C == 0`) gate and the growth `OverlayData < MaxDensity - 1` gate, so `src/sim/ore_growth.rs::rebuild_native_tiberium_queues_from_overlays` matches those. DRIFT recorded, owner transaction-3 continuation (next slice, non-deferrable: every map's initial growth/spread order): (a) both rebuilds walk `MapClass::CellIterator_Init/Next @ 0x00578350/0x00578290` (anti-diagonal) and insert priority-0 entries into a binary heap whose sift-up breaks on `<=`, while Rust inserts in row-major `iter_occupied` order and consumes by stable sort + front pop, so equal-priority pop order differs; (b) native admits only `GrowthPercentage`/`SpreadPercentage >= 1e-05` (doubles at `TiberiumClass+0xB0`/`+0xA0`) while Rust admits `ppm >= 0` (custom data only; retail `.06`); (c) native spread requires `CellClass+0xE4 FirstObject == 0` (no occupier), Rust excludes only terrain-object cells (units/buildings standing on ore at load, UNCHECKED frequency); (d) native gates read the Scenario `TiberiumGrows` (`+0x34A6`) / `TiberiumSpreads` (`&0x80`) flags, Rust passes the map/rules booleans (equivalence UNCHECKED) |
+| OQ-38 native tiberium queue store parity (`TiberiumClass::InitGrowthQueues_All @ 0x00722D00` / `InitSpreadQueues_All @ 0x00722240`, `RebuildGrowthQueue @ 0x007233A0` / `RebuildSpreadQueue @ 0x007228B0`, `GrowthProcessor @ 0x00722F00` / `SpreadProcessor @ 0x00722440`, `AddToGrowthQueue @ 0x007235A0` / `AddToSpreadQueue @ 0x00722AF0`, `CellClass::CanGrowTiberium @ 0x00483620` / `CanSpreadTiberium @ 0x00483690`, `FloatMinHeap::SiftDown @ 0x005AD870`, `Math__ftol @ 0x007C5F00`; decompiled live 2026-09-02) | IMPLEMENTED by transaction-3 slice D (`feature/bridge-queue-rebuild-parity`): `src/sim/ore_growth.rs::NativeTiberiumQueue` models the append-only entry array, the 1-based float min-heap with the native sift-up/sift-down, and the `(MapRect.Height + 4) * MapRect.Width * 2` capacity; rebuilds walk `CellIterator` order per class; the processors pop the heap root, size the batch with the x87 chop product and `_ftol`, gate on `pct > 1e-05`, reinsert on the literal `OverlayData < 0x0B`, and rebuild on `count > capacity - 2 * attempts` / `count > capacity - 0x14`; admission gates on `pct >= 1e-05` and the `CellClass+0xE4 FirstObject == 0` occupier test (`sim::tiberium::NativeCellObjectView`, threaded through the load rebuilds, the growth feed, the harvester/crater/area-damage reductions). Deferred DRIFT, recorded: the enqueue-side array-counter rebuild triggers (`counter > capacity - 10` growth, `counter >= capacity - 0x14` spread; hours of play on one map before they fire), `MaxDensity` pinned to 12 (`TiberiumClass+0xE4` initializer not re-read), native `atof` rounding of long percentage decimals UNCHECKED |
 
 Two ancillary writes do not need new question numbers. Final wall-owner reconstruction is already a
 verified semantic match under GSI-04.07; transaction 3 must preserve its post-final-Recalc ordering

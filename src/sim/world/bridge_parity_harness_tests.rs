@@ -115,10 +115,16 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 /// shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 /// prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 /// current-schema composition moved.
-const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x5B44_6C68_9BC2_F0AF;
-const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x6AFB_F54C_7397_0202;
-const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x874E_6F7E_7BF1_F8D6;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0xD381_C11A_FC88_4CE0;
+// Re-baselined 2026-09-02 for the native tiberium queue store (OQ-38, bridge transaction 3
+// slice D): every class now carries the native entry array, float min-heap, capacity, and
+// `native_rect`, rebuilds walk `CellIterator` order, and spread admission applies the
+// `FirstObject` occupier gate. This is behavior-bearing on every fixture with ore, so the
+// historical probes move as well; the RNG stream tuple and tick-for-tick record/replay
+// equality remain exact.
+const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x8211_8936_272A_AA53;
+const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x6CB4_48E4_0471_9419;
+const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x9996_B042_ACF6_7C2E;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x32F4_252D_E18A_4139;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so

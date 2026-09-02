@@ -1828,6 +1828,7 @@ pub(crate) trait CombatInlineHooks {
         overlay_registry: Option<&OverlayTypeRegistry>,
         terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
         terrain_area_state: Option<&TerrainAreaState>,
+        occupancy: Option<&OccupancyGrid>,
     );
 
     #[allow(clippy::too_many_arguments)]
@@ -1881,6 +1882,7 @@ impl self::combat_aoe::AoECellPrelude for CombatTiberiumCellPrelude<'_, '_> {
         overlay_registry: Option<&OverlayTypeRegistry>,
         terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
         scenario_rng: Option<&mut SimRng>,
+        occupancy: Option<&OccupancyGrid>,
     ) {
         let Some(amount) = self.amount else {
             return;
@@ -1910,6 +1912,7 @@ impl self::combat_aoe::AoECellPrelude for CombatTiberiumCellPrelude<'_, '_> {
                 overlay_registry,
                 terrain,
                 self.terrain_area_state,
+                occupancy,
             );
         } else {
             self.deferred.push(request);
