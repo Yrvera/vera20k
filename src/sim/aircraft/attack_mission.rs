@@ -126,13 +126,28 @@ pub fn tick_attack_state(
     // elite `+0xA94`), which `Primary=`/`ElitePrimary=` alias — see
     // `ObjectType::read_weapon_arrays`.
     //
-    // RESIDUAL (UNCHECKED, pre-existing, not introduced here): native compares a
-    // *lepton* distance strictly (`JGE` → approach, so firing needs
-    // `dist < Range`), while this compares a cell-Chebyshev distance with `<=`.
-    // Trigger: any attack run. Player effect: the approach can end up to one
-    // cell early or late relative to gamemd. Frequency: every aircraft attack.
-    // Downstream: the firing tick; not fixed here because it is a whole-function
-    // distance-model change outside this mechanism's scope.
+    // RESIDUAL (DRIFT, pre-existing, not introduced here): the native side is
+    // established, so this is a confirmed difference rather than an UNCHECKED
+    // one. `ObjectClass::Distance_To @ 0x005F6440` is a 2-D *Euclidean* lepton
+    // distance (`Sqrt_Approx` then `Math__ftol`) and the `JGE` at `0x0041810F`
+    // is a signed strict compare, so firing needs `dist < Range`. This compares
+    // a cell-Chebyshev distance with `<=`.
+    //
+    // Two terms diverge, and the elite fix above *enlarges* the first because
+    // the gap scales with Range:
+    // - Chebyshev underestimates Euclidean by up to √2, so an elite `[ORCA]`
+    //   (Range 9) against a target at cell offset (9, 9) fires here while gamemd
+    //   is still approaching — about 3.7 cells, not one.
+    // - `Distance_To` subtracts `(FoundationH + FoundationW) * 0x40` leptons for
+    //   a building target — 2 cells against a 4×4 structure. This subtracts
+    //   nothing.
+    //
+    // Trigger: any attack run; the building term on every run against a base.
+    // Player effect: the approach ends early, so an aircraft opens fire from
+    // outside the range gamemd would use. Frequency: every aircraft attack.
+    // Downstream: the firing tick and the cells flown over. Not fixed here
+    // because replacing the distance model is a whole-function change outside
+    // this mechanism's scope.
     let weapon_range_cells: SimFixed = obj
         .and_then(|o| {
             let wpn_name =
