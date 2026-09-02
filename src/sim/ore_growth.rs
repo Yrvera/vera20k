@@ -712,7 +712,10 @@ impl OreGrowthState {
             ry,
             spread_enabled,
         )?;
-        let class = self.native_tiberium.classes.get_mut(store_type.0 as usize)?;
+        let class = self
+            .native_tiberium
+            .classes
+            .get_mut(store_type.0 as usize)?;
         if class.spread_bitmap.contains(&(rx, ry)) {
             return None;
         }
@@ -1877,7 +1880,12 @@ fn spread_tiberium_from_source(
             radar_dirty_generation: radar_dirty_generation.as_deref_mut(),
             tactical_dirty_cells: tactical_dirty_cells.as_deref_mut(),
         };
-        if !place_tiberium(&mut context, target, source_type, SPREAD_GERMINATION_DENSITY) {
+        if !place_tiberium(
+            &mut context,
+            target,
+            source_type,
+            SPREAD_GERMINATION_DENSITY,
+        ) {
             return None;
         }
         return Some(target);
