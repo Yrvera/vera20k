@@ -26,7 +26,7 @@ mod runtime;
 mod state;
 
 pub use state::{CrateAuthority, CrateSlot};
-pub(crate) use runtime::{CrateRegeneration, tick_crate_regeneration};
+pub(crate) use runtime::tick_crate_regeneration;
 
 use crate::map::bridge_facts::{
     BRIDGE_FLAG_STRUCTURAL, BridgeFlagStamp, BridgeStampFamily, BridgeStampSlot,
