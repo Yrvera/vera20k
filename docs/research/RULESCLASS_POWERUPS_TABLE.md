@@ -21,7 +21,7 @@ runtime) and the save/load routines at `FUN_0067F7E0` / `FUN_0067F9C0`.
 INI line format:
 
 ```
-<PowerupName>=<weight>, <anim>, <enabled>, <value>
+<PowerupName>=<weight>, <anim>, <over-water>, <value>
 ; e.g. Money=20,MONEY,yes,2000
 ;      Armor=10,ARMOR,yes,1.5
 ;      Napalm=0,<none>,no,600
@@ -86,7 +86,7 @@ Each has **exactly 19 entries**, layout confirmed by the loop bound in
 
 | Global base | Array type | Size (bytes) | Field source | Semantics |
 |---|---|---:|---|---|
-| `DAT_0081DA8C` | `int32[19]` | `0x4C` (76) | 1st token, via `atoi` | **drop weight** — summed across all enabled slots for random selection |
+| `DAT_0081DA8C` | `int32[19]` | `0x4C` (76) | 1st token, via `atoi` | **drop weight** — summed across **all nineteen** slots for random selection; a zero weight is the only thing that makes a slot unrollable |
 | `DAT_0081DAD8` | `int32[19]` | `0x4C` (76) | 2nd token, via `AnimTypeClass::Find_Index` (`FUN_00422B20`) | **pickup anim index** — index into `g_AnimTypes_Array`, or `-1` for `<none>` |
 | `DAT_0089ECC0` | `u8[19]` | `0x13` (19) | 3rd token, literal strcmp | **over-water eligibility** — `1` if `yes`, `0` if `no`, otherwise unchanged. Byte-wide: the writes at `0x00673F64`/`0x00673F7F` are `MOV byte ptr [EDI + 0x89ecc0], ...` and the read at `0x00481D5B` is `MOV AL, byte ptr [EBX + 0x89ecc0]` |
 | `DAT_0089EC28` | `double[19]` | `0x98` (152) | 4th token, via `atof` (× `0.01` if `%` present) | **effect parameter** — see per-powerup table above |
@@ -206,7 +206,7 @@ HIGH — all 19 name pointers resolved to ASCII literals, all 4 global
 arrays bounded and sized from the ReadPowerups loop bound, every field
 extractor (atoi / AnimType::Find_Index / yes-no strcmp / atof+%-scale)
 confirmed in the decomp, CrateClass consumer xrefs match the
-expected access patterns (weight-sum, enabled-gate, parameter-load).
+expected access patterns (weight-sum, over-water gate, parameter-load).
 
 ## Cross-refs
 

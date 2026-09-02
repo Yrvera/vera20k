@@ -151,17 +151,31 @@ impl IniSection {
         })
     }
 
-    /// ReadRange (P20): `read_double(-1.0)` sentinel; ==-1.0 -> default; else ftol
-    /// TRUNCATE-TOWARD-ZERO. NOT `util::sim_to_i32` (that floors toward −∞ — DRIFT
-    /// on negatives, ledger #18). `f64 as i32` truncates toward zero (saturating,
-    /// NaN->0), matching gamemd ftol RC=11. `5.9→5`.
+    /// `CCINIClass__ReadRange @ 0x00474620`: read the key through
+    /// `ReadDouble` with a hardcoded `-1.0` default (`0x00474628`), compare
+    /// against `0x007E4900` (= `-1.0`) and return the CALLER's default
+    /// unconverted on a match — covering both an absent key and a literal `-1`.
+    ///
+    /// Otherwise the value is a CELL count that the reader converts to leptons:
+    /// `FMUL double ptr [0x007E1710]` at `0x0047464C`, where that address holds
+    /// `0x4070000000000000` = `256.0`, then `Math__ftol @ 0x007C5F00`, whose
+    /// control word `0x0E7F` selects chop. `f64 as i32` truncates toward zero
+    /// (saturating, NaN->0) and matches it; NOT `util::sim_to_i32`, which
+    /// floors toward −∞ (DRIFT on negatives, ledger #18).
+    ///
+    /// The lepton scale is load-bearing and was missing here until it was
+    /// re-derived from the disassembly on 2026-09-02 — the Ghidra decompiler
+    /// elides the `FMUL` because it is folded into the x87 argument chain that
+    /// `Math__ftol` consumes, so the pseudocode shows a bare `ftol`. Stock
+    /// `[CrateRules] CrateRadius=3.0` is 768 leptons, consistent with the
+    /// RulesClass constructor default of `0x280` (2.5 cells).
     pub fn read_range(&self, key: &str, default: i32) -> i32 {
         self.fold_rules_values(key, default, |current, raw| {
             let parsed = parse_read_double(raw);
             if parsed == -1.0 {
                 current
             } else {
-                parsed as i32
+                (parsed * 256.0) as i32
             }
         })
     }
@@ -206,7 +220,7 @@ pub(crate) fn parse_read_double(raw: &str) -> f64 {
 
 /// strtrim equivalent (P5): strip bytes <= 0x20 from BOTH ends. ASCII-only by
 /// design (RA2 INI is ASCII); does NOT use `str::trim` (Unicode whitespace).
-fn strtrim_ascii(s: &str) -> &str {
+pub(crate) fn strtrim_ascii(s: &str) -> &str {
     let b = s.as_bytes();
     let mut start = 0usize;
     while start < b.len() && b[start] <= STRTRIM_MAX {
@@ -484,9 +498,11 @@ mod tests {
     fn test_read_range_truncates() {
         let ini = sec("[S]\nA=5.9\nB=5\nC=0.4\n");
         let s = ini.section("S").unwrap();
-        assert_eq!(s.read_range("A", -1), 5); // 5.9 -> 5 (never rounds to 6)
-        assert_eq!(s.read_range("B", -1), 5);
-        assert_eq!(s.read_range("C", -1), 0);
+        // Values are cells; the reader scales to leptons and truncates toward
+        // zero. 5.9 cells is 1510.4 leptons -> 1510, never 1511.
+        assert_eq!(s.read_range("A", -1), 1510);
+        assert_eq!(s.read_range("B", -1), 1280, "5 cells");
+        assert_eq!(s.read_range("C", -1), 102, "0.4 cells is 102.4 leptons");
         assert_eq!(s.read_range("MISSING", 7), 7); // absent -> default (sentinel -1.0)
     }
 }

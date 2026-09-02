@@ -94,15 +94,38 @@ impl CrateRulesAccumulator {
             return;
         };
 
-        // Native read order, one key at a time; a missing key keeps the live
-        // field because every reader is handed the current value as its default.
+        // `RulesClass__ReadCrateRules @ 0x0066B900` reads its keys in exactly
+        // this order. Every reader is handed the live value as its default, so
+        // a missing key keeps the field. The order is behaviourally inert today
+        // because the fields are independent, but native allocates OverlayType
+        // and UnitType objects while reading the string keys, so a future
+        // consumer reproducing those allocations needs the sequence to be right.
         self.0.free_mcv = section.read_bool("FreeMCV", self.0.free_mcv);
+        for (key, target) in [
+            ("WoodCrateImg", &mut self.0.wood_crate_img),
+            ("CrateImg", &mut self.0.crate_img),
+            ("WaterCrateImg", &mut self.0.water_crate_img),
+            ("HealCrateSound", &mut self.0.heal_crate_sound),
+        ] {
+            if section.get(key).is_none() {
+                continue;
+            }
+            // Every ReadString call in this body is given capacity 0x80, so
+            // truncation owns both the retained identity and the earlier late
+            // allocation.
+            let value = section.read_string(key, "", 0x80);
+            *target = (!is_native_none_type_name(&value)).then(|| value.to_ascii_uppercase());
+        }
         if section.get("CrateMinimum").is_some() {
             self.0.minimum = section.read_int("CrateMinimum", self.0.minimum);
         }
         if section.get("CrateMaximum").is_some() {
             self.0.maximum = section.read_int("CrateMaximum", self.0.maximum);
         }
+        // `CrateRadius` is stored in leptons; the stock `3.0` is three cells.
+        // ReadRange owns the absent-key and `-1` sentinel cases itself, so this
+        // needs no presence guard of its own.
+        self.0.radius = section.read_range("CrateRadius", self.0.radius);
         if section.get("CrateRegen").is_some() {
             self.0.regen = NativeF64Bits::from_bits(
                 section
@@ -110,11 +133,10 @@ impl CrateRulesAccumulator {
                     .to_bits(),
             );
         }
-
-        if section.get("CrateRadius").is_some() {
-            // `CCINIClass__ReadRange` yields the stored lepton value; the stock
-            // `3.0` is three cells.
-            self.0.radius = read_range_leptons(section, "CrateRadius", self.0.radius);
+        if section.get("UnitCrateType").is_some() {
+            let value = section.read_string("UnitCrateType", "", 0x80);
+            self.0.unit_crate_type =
+                (!is_native_none_type_name(&value)).then(|| value.to_ascii_uppercase());
         }
         if section.get("SoloCrateMoney").is_some() {
             self.0.solo_crate_money = section.read_int("SoloCrateMoney", self.0.solo_crate_money);
@@ -130,41 +152,13 @@ impl CrateRulesAccumulator {
             // `FUN_004759F0` reads the string, then `Powerup_From_Name` maps it
             // to a slot; an unmatched name resolves to Money rather than failing.
             let value = section.read_string(key, "", 0x80);
-            *target = crate::rules::powerups::powerup_from_name(value.trim());
-        }
-
-        for (key, target) in [
-            ("WoodCrateImg", &mut self.0.wood_crate_img),
-            ("CrateImg", &mut self.0.crate_img),
-            ("WaterCrateImg", &mut self.0.water_crate_img),
-            ("HealCrateSound", &mut self.0.heal_crate_sound),
-            ("UnitCrateType", &mut self.0.unit_crate_type),
-        ] {
-            if section.get(key).is_none() {
-                continue;
-            }
-            // `RulesClass__ReadCrateRules @ 0x0066B900` supplies capacity
-            // 0x80 to all three ReadString calls. Truncation therefore owns
-            // both the retained identity and the earlier late allocation.
-            let value = section.read_string(key, "", 0x80);
-            *target = (!is_native_none_type_name(&value)).then(|| value.to_ascii_uppercase());
+            *target = crate::rules::powerups::powerup_from_name(&value);
         }
     }
 
     pub(crate) fn finish(self) -> CrateRules {
         self.0
     }
-}
-
-/// `CCINIClass__ReadRange` stores a cell-denominated key in leptons.
-fn read_range_leptons(
-    section: &crate::rules::ini_parser::IniSection,
-    key: &str,
-    default: i32,
-) -> i32 {
-    let cells = section.read_double(key, f64::from(default) / 256.0);
-    // Native multiplies by the 256-lepton cell and truncates toward zero.
-    (cells * 256.0) as i32
 }
 
 #[cfg(test)]

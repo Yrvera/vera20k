@@ -26,7 +26,8 @@
 //! ## Dependency rules
 //! Part of `rules/` — INI parsing and rule data only.
 
-use crate::rules::ini_parser::{IniFile, is_native_none_type_name};
+use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_value::strtrim_ascii;
 use crate::util::native_x87::NativeF64Bits;
 
 /// Slots in the hardcoded name table at `0x007E523C`. The loop bound is
@@ -77,6 +78,14 @@ pub const POWERUP_VETERAN: usize = 14;
 const DEFAULT_WEIGHTS: [i32; POWERUP_COUNT] = [
     50, 20, 1, 3, 5, 5, 20, 1, 1, 10, 10, 10, 1, 3, 1, 1, 1, 1, 1,
 ];
+
+/// `CCINIClass::ReadString` capacity supplied by `ReadPowerups`.
+const READ_STRING_CAPACITY: usize = 0x80;
+
+/// The default handed to every `ReadString` call, verified at `0x0083D4AC`.
+/// Two tokens only: an absent row zeroes the weight and clears the animation
+/// while leaving the flag and magnitude untouched.
+const DEFAULT_ROW: &str = "0,NONE";
 
 /// `Powerup_From_Name @ 0x0048DE70`: case-insensitive walk of the same fixed
 /// name table, returning the slot index. A null or unmatched name yields slot
@@ -155,24 +164,35 @@ impl PowerupsAccumulator {
             // Native always parses, falling back to the literal `"0,NONE"`, so
             // an absent row still zeroes the weight and clears the animation
             // while leaving the flag and magnitude untouched.
-            let raw = section
+            // `CCINIClass__ReadString` copies at most `capacity - 1` bytes and
+            // forces the terminator, so an over-long value truncates at 127.
+            let raw: String = section
                 .get(name)
-                .map(str::to_owned)
-                .unwrap_or_else(|| "0,NONE".to_owned());
-            let mut tokens = raw.split(',');
+                .unwrap_or(DEFAULT_ROW)
+                .chars()
+                .take(READ_STRING_CAPACITY - 1)
+                .collect();
+            // `CRT__strtok` collapses runs of the delimiter and skips leading
+            // ones, so an empty field is not a token at all: `20,,yes,2000`
+            // yields three tokens, not four.
+            let mut tokens = raw.split(',').filter(|token| !token.is_empty());
 
             if let Some(token) = tokens.next() {
-                self.0.weights[slot] = native_atoi(token.trim());
+                self.0.weights[slot] = native_atoi(strtrim_ascii(token));
             }
             if let Some(token) = tokens.next() {
-                let token = token.trim();
+                let token = strtrim_ascii(token);
+                // `AnimTypeClass::Find_Index @ 0x00422B20` special-cases only
+                // the literal `<none>`; every other name falls through to the
+                // array search and yields -1 solely by not matching, which
+                // `anim_for` reproduces against the registered set.
                 self.0.anims[slot] =
-                    (!is_native_none_type_name(token)).then(|| token.to_ascii_uppercase());
+                    (!token.eq_ignore_ascii_case("<none>")).then(|| token.to_ascii_uppercase());
             }
             if let Some(token) = tokens.next() {
                 // Exactly two literals are recognised (`0x00825BF8` "yes" and
                 // `0x00825BF4` "no"); anything else leaves the slot as it was.
-                let token = token.trim();
+                let token = strtrim_ascii(token);
                 if token.eq_ignore_ascii_case("yes") {
                     self.0.over_water[slot] = true;
                 } else if token.eq_ignore_ascii_case("no") {
@@ -185,7 +205,7 @@ impl PowerupsAccumulator {
                 let value = if token.contains('%') {
                     native_atof(token) * 0.01
                 } else {
-                    native_atof(token.trim())
+                    native_atof(strtrim_ascii(token))
                 };
                 self.0.magnitudes[slot] = NativeF64Bits::from_bits(value.to_bits());
             }
@@ -243,6 +263,20 @@ fn native_atof(token: &str) -> f64 {
         end += 1;
         while matches!(bytes.get(end), Some(byte) if byte.is_ascii_digit()) {
             end += 1;
+        }
+    }
+    // CRT `atof` also accepts an exponent, but only when at least one digit
+    // follows it; otherwise the prefix ends before the `e`.
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let mut exponent = end + 1;
+        if matches!(bytes.get(exponent), Some(b'+' | b'-')) {
+            exponent += 1;
+        }
+        if matches!(bytes.get(exponent), Some(byte) if byte.is_ascii_digit()) {
+            while matches!(bytes.get(exponent), Some(byte) if byte.is_ascii_digit()) {
+                exponent += 1;
+            }
+            end = exponent;
         }
     }
     token[..end].parse::<f64>().unwrap_or(0.0)
@@ -314,7 +348,16 @@ mod tests {
             parsed.weights[POWERUP_MONEY], 0,
             "the default's first token"
         );
-        assert_eq!(parsed.anims[POWERUP_MONEY], None, "NONE clears the anim");
+        // The default row's second token is a bare `NONE`, which is NOT
+        // Find_Index's `<none>` sentinel: it falls through the array search and
+        // yields -1 only by failing to match. `anim_for` is the resolution
+        // point, so that is where the absence becomes observable.
+        assert_eq!(parsed.anims[POWERUP_MONEY].as_deref(), Some("NONE"));
+        assert_eq!(
+            parsed.anim_for(POWERUP_MONEY, &["MONEY".to_owned(), "ARMOR".to_owned()]),
+            None,
+            "no registered AnimType is called NONE, so the slot has no animation"
+        );
         assert!(
             parsed.over_water[POWERUP_MONEY],
             "no third token, so the live flag survives"
@@ -438,6 +481,88 @@ mod tests {
             parsed.anim_for(POWERUP_MONEY, &registered),
             Some("MONEY"),
             "resolution is case-insensitive, like Find_Index"
+        );
+    }
+
+    /// `strtok` skips empty fields, so a doubled or leading comma shifts which
+    /// token feeds which slot.
+    #[test]
+    fn empty_fields_are_not_tokens() {
+        let parsed = table("[Powerups]\nMoney=20,,yes,2000\n");
+        assert_eq!(parsed.weights[POWERUP_MONEY], 20);
+        assert_eq!(
+            parsed.anims[POWERUP_MONEY].as_deref(),
+            Some("YES"),
+            "the third field became the second token"
+        );
+        assert!(
+            !parsed.over_water[POWERUP_MONEY],
+            "`2000` is neither literal, so the flag keeps its default"
+        );
+        assert_eq!(
+            f64::from_bits(parsed.magnitudes[POWERUP_MONEY].bits()),
+            0.0,
+            "there is no fourth token"
+        );
+
+        let parsed = table("[Powerups]\nMoney=,20,MONEY\n");
+        assert_eq!(
+            parsed.weights[POWERUP_MONEY], 20,
+            "a leading delimiter is skipped, not treated as an empty first token"
+        );
+    }
+
+    /// `atof` accepts an exponent, but only with at least one digit after it.
+    #[test]
+    fn magnitude_accepts_exponent_notation() {
+        let parsed = table("[Powerups]\nGas=1,<none>,yes,1e3\nArmor=1,ARMOR,yes,2.5E-2\n");
+        assert_eq!(f64::from_bits(parsed.magnitudes[16].bits()), 1000.0);
+        assert_eq!(
+            f64::from_bits(parsed.magnitudes[POWERUP_ARMOR].bits()),
+            0.025
+        );
+
+        // A trailing `e` with no digits ends the prefix before it.
+        let parsed = table("[Powerups]\nGas=1,<none>,yes,7e\n");
+        assert_eq!(f64::from_bits(parsed.magnitudes[16].bits()), 7.0);
+    }
+
+    /// `strtrim` strips bytes <= 0x20, which is not `str::trim`'s Unicode set.
+    #[test]
+    fn tokens_are_trimmed_with_the_native_ascii_rule() {
+        let parsed = table("[Powerups]\nMoney=\u{1}20\u{1},\u{b}MONEY\u{b},yes,3\n");
+        assert_eq!(parsed.weights[POWERUP_MONEY], 20);
+        assert_eq!(parsed.anims[POWERUP_MONEY].as_deref(), Some("MONEY"));
+        assert_eq!(f64::from_bits(parsed.magnitudes[POWERUP_MONEY].bits()), 3.0);
+    }
+
+    /// Retail lines all carry a trailing `;` comment; the loader strips it
+    /// before the table ever sees the value.
+    #[test]
+    fn trailing_comments_are_stripped_before_tokenizing() {
+        let parsed = table(
+            "[Powerups]\nMoney=20,MONEY,yes,2000             ; a chunk o' cash (maximum cash)\n",
+        );
+        assert_eq!(parsed.weights[POWERUP_MONEY], 20);
+        assert_eq!(parsed.anims[POWERUP_MONEY].as_deref(), Some("MONEY"));
+        assert!(parsed.over_water[POWERUP_MONEY]);
+        assert_eq!(
+            f64::from_bits(parsed.magnitudes[POWERUP_MONEY].bits()),
+            2000.0
+        );
+    }
+
+    /// Only the literal `<none>` is Find_Index's sentinel; a bare `NONE` is an
+    /// ordinary name that simply fails to resolve.
+    #[test]
+    fn only_angle_bracket_none_is_the_anim_sentinel() {
+        let parsed = table("[Powerups]\nMoney=1,<NONE>,yes\nArmor=1,none,yes\n");
+        assert_eq!(parsed.anims[POWERUP_MONEY], None);
+        assert_eq!(parsed.anims[POWERUP_ARMOR].as_deref(), Some("NONE"));
+        assert_eq!(
+            parsed.anim_for(POWERUP_ARMOR, &["MONEY".to_owned()]),
+            None,
+            "an unregistered name still resolves to no animation"
         );
     }
 
