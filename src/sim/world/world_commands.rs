@@ -487,9 +487,7 @@ impl Simulation {
                         .map(|cell| cell.zone_type),
                 )
                 .is_some_and(|(old, new)| old != new);
-            if cleanup_zone_changed
-                && let Some(prefix_grid) = tail_grid.as_ref()
-            {
+            if cleanup_zone_changed && let Some(prefix_grid) = tail_grid.as_ref() {
                 self.repair_wall_sale_zone_prefix(
                     prefix_grid,
                     (rx, ry),
@@ -505,8 +503,8 @@ impl Simulation {
             // 0x00480630` runs its own eight-step `+0x122` decrement
             // (`0x00480999..0x004809EF`) only when this cell's hardcoded
             // isolated removal fired (`TEST BL,BL` at `0x0048097D`) AND
-            // `RecalcAttributes` changed its zone type (compare at
-            // `0x00480972`). A removed wall whose zone is unchanged keeps its
+            // `RecalcAttributes` changed its zone type (load at
+            // `0x00480972`, compare at `0x00480975`). A removed wall whose zone is unchanged keeps its
             // eight contributions, natively.
             if result == RecomputeResult::Destroyed && cleanup_zone_changed {
                 let terrain = self

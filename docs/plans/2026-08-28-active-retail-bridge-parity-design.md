@@ -1201,13 +1201,26 @@ Recorded open items, each with its native reading and owner. None is closed by P
   `CellClass::DestroyOverlay @ 0x00480CB0` (`0x00481070..0x00481082`, unconditional once its removal
   path is taken) and `CellClass::PostDestructionWallCleanup @ 0x00480630`, whose own eight-step
   `DEC DL` loop (`0x00480999..0x004809EF`) runs only when that cell's hardcoded isolated removal
-  fired (`TEST BL,BL` at `0x0048097D`) AND `RecalcAttributes` changed its zone type (the compare at
-  `0x00480972`). Rust reproduces that gate at the two cleanup fan-out sites in
-  `src/sim/overlay_grid.rs` and at the wall-sale site in `src/sim/world/world_commands.rs`. Native
-  therefore keeps a removed wall's eight contributions when the zone does not change, so being a
-  history counter the plane genuinely differs from what a final-identity rescan would produce — by
-  design, not by deferral. At placement time the two agree except when a neighbour is unallocated,
-  where the rescan's rectangular fan-out counts a cell the allocation-aware plane does not. The byte
+  fired (`TEST BL,BL` at `0x0048097D`) AND `RecalcAttributes` changed its zone type (the load at
+  `0x00480972`, compare at `0x00480975`). Rust reproduces that gate at the two cleanup fan-out sites
+  in `src/sim/overlay_grid.rs` and at the cross site in `src/sim/world/world_commands.rs`.
+  A third route removes a wall and reverses nothing: `HouseClass::Sell_Building_At_Cell @
+  0x004FCE80` clears the identity itself (`+0x44 = -1` at `0x004FCFBC`, `+0x11E = 0` at
+  `0x004FCFCA`, `+0x50 = -1` at `0x004FCFDD`), then runs `RecalcAttributes(-1)` at `0x004FCFE7` and
+  `PostDestructionWallCleanup(0)` at `0x004FCFFB` — whose per-cell gate rejects the just-cleared
+  sold cell at `0x004807CA` — and touches `CellClass+0x122` nowhere in its body. A sold wall's eight
+  increments stay in the byte permanently. Rust matches exactly: the sale clears through
+  `OverlayGrid::clear_overlay` with no plane decrement, and the cross skips the sold cell because it
+  is no longer a wall. That is the mechanism by which the plane, being a history counter, genuinely
+  differs from what a final-identity rescan would produce, and it is ordinary play — selling a wall
+  segment to reopen a lane permanently inflates the pathfinding blocker count on its eight
+  neighbours, exactly as gamemd does. Before this row a generated launch rescanned identities, so
+  the leak self-corrected there and did not match. PDWC's own zone-unchanged case is verified in
+  code shape but its reachability is not demonstrated: `CellClass::RecalcZoneType @ 0x00483C80`
+  stores zone `2` from the overlay Wall flag at `0x00483CD4` and returns, so a cleared wall cell's
+  zone changes except through the building-occupancy re-entry at `0x00483E06`. At placement time the
+  plane and a rescan agree except when a neighbour is unallocated, where the rescan's rectangular
+  fan-out counts a cell the allocation-aware plane does not. The byte
   is a general blocker counter (`BuildingClass`, `FootClass` and `TerrainClass` limbo/unlimbo write
   it too, and `AStar_main_loop @ 0x00429EB1` is its sole reader); the retained plane is its wall-only
   slice, which Rust keeps as a separate contribution to the blocker counts.
@@ -1224,24 +1237,27 @@ Recorded open items, each with its native reading and owner. None is closed by P
   cannot overflow from wall Marks alone at the map-pack boundary (one pack entry per cell, so at
   most eight increments), but the `BuildingClass::Unlimbo` contribution to the same byte was not
   re-derived, so overflow overall is
-  UNCHECKED — the map-pack pass takes at most eight increments per cell, but across a match a
-  removal can skip its decrement (above), so the count is unbounded exactly as native's is; (e) the
-  only part of the cleanup gate still open is whether `RecalcAttributes @ 0x0047D2B0`'s effect on
-  `Cell+0x4C` and the Rust `zone_type` recompute agree cell for cell, which decides whether the two
-  `Destroyed && zone_changed` predicates fire on the same cells; (g) `clear_overlay` is a documented
-  plane bypass, and the destroyable-cliff collapse callback in `src/sim/world/mod.rs` clears every
-  overlay identity in the replacement footprint through it, so a wall lost that way would keep its
-  eight contributions. Which native routine performs that clear, and whether it routes through
-  `DestroyOverlay`, is UNCHECKED; the case needs a wall on cliff terrain, which is not
-  wall-buildable, so it is not demonstrated to fire; (f) the plane increments only for an entry the Rust acceptance filter
+  UNCHECKED: the map-pack pass takes at most eight increments per cell, but across a match the
+  count is unbounded because the sale route above removes a wall without reversing it — exactly as
+  native's is; (c) the only part of the cleanup gate still open is whether
+  `CellClass::RecalcZoneType @ 0x00483C80` (which owns `Cell+0x4C`; `RecalcAttributes @ 0x0047D2B0`
+  only calls it) and the Rust `recalc_zone_type` agree on the removal transition, so the two
+  `Destroyed && zone_changed` predicates fire on the same cells. The overlay-priority half already
+  has a gamemd-named check (`gsi_04_04_recalc_zone_type_overlay_priority_matches_gamemd`); (d) the
+  destroyable-cliff collapse callback in `src/sim/world/mod.rs` clears every overlay identity in the
+  replacement footprint through `clear_overlay`, which touches no plane, so a wall lost that way
+  would keep its eight contributions. Which native routine performs that clear is UNCHECKED; the
+  case needs a wall on cliff terrain, which is not wall-buildable, so it is not demonstrated to fire.
+  The other production `clear_overlay` bypass, the wall sale, is verified native-faithful above and
+  is NOT a residual; (e) the plane increments only for an entry the Rust acceptance filter
   accepts, and whether that filter is a superset, subset or neither of the native reader-side filter
-  is UNCHECKED; (c) `SNAPSHOT_VERSION` stays 116, so a v116 state saved by an earlier build of this
+  is UNCHECKED; (f) `SNAPSHOT_VERSION` stays 116, so a v116 state saved by an earlier build of this
   repo on a generated map is now rejected at load, and `Simulation::state_hash` folds the plane in
   (`retained-wall-neighbor-counts-v1`), so a generated launch's hash differs from `origin/main`'s
   from frame zero — intended, since the plane is authoritative state, and nothing was re-baselined
   because no committed hash golden reaches this constructor (the global harness builds its grid
   through `OverlayGrid::new`, and the bridge and slice6 harnesses install none at all, so the hash
-  takes its no-grid early-out); (d) the Rust runs the eight increments before
+  takes its no-grid early-out); (g) the Rust runs the eight increments before
   each stamp's `recalc_overlay_passability` where Mark runs its tail last — the counts are
   unaffected (they accumulate in a local plane and recalc never reads them), but the shared-dummy
   coordinate both paths stamp can end on a different value once a wall can reach this boundary.

@@ -1963,8 +1963,8 @@ pub(crate) fn refresh_wall_connectivity_after_placement_with_host(
             // 0x00480630` runs its own eight-step `+0x122` decrement
             // (`0x00480999..0x004809EF`) only when this cell's hardcoded
             // isolated removal fired (`TEST BL,BL` at `0x0048097D`) AND
-            // `RecalcAttributes` changed its zone type (compare at
-            // `0x00480972`). A removed wall whose zone is unchanged keeps its
+            // `RecalcAttributes` changed its zone type (load at
+            // `0x00480972`, compare at `0x00480975`). A removed wall whose zone is unchanged keeps its
             // eight contributions, natively.
             if result == RecomputeResult::Destroyed && recalc.zone_changed {
                 grid.remove_retained_wall_neighbor_source(Some(terrain), nx, ny);
@@ -2136,8 +2136,8 @@ fn cleanup_wall_neighbors_into(
                 // 0x00480630` runs its own eight-step `+0x122` decrement
                 // (`0x00480999..0x004809EF`) only when this cell's hardcoded
                 // isolated removal fired (`TEST BL,BL` at `0x0048097D`) AND
-                // `RecalcAttributes` changed its zone type (compare at
-                // `0x00480972`). A removed wall whose zone is unchanged keeps its
+                // `RecalcAttributes` changed its zone type (load at
+                // `0x00480972`, compare at `0x00480975`). A removed wall whose zone is unchanged keeps its
                 // eight contributions, natively.
                 if recomputed == RecomputeResult::Destroyed && recalc.zone_changed {
                     grid.remove_retained_wall_neighbor_source(Some(terrain), nx, ny);
