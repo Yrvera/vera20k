@@ -20,7 +20,7 @@ use crate::app::types::SIM_TICK_HZ;
 use crate::app::types::SIM_TICK_MS;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
-use crate::audio::events::GameSoundEvent;
+use crate::audio::events::{GameSoundEvent, SoundSource};
 use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
@@ -450,9 +450,19 @@ fn build_score_screen_model(
     }
 }
 
-fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f32, f32) {
+fn anim_world_sound_source(world: crate::sim::anim_class::AnimWorldCoord) -> SoundSource {
     let (rx, ry, sub_x, sub_y, z) = world.to_cell_sub_z();
-    crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z)
+    let screen = crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z);
+    SoundSource::new(screen, (rx, ry))
+}
+
+/// The sound source of a flat cell event. Native `VocClass::PlayAt`
+/// callers pass an object or cell coordinate — the cell centre `(cell << 8)
+/// + 0x80` — so the projected point is the cell's diamond centre, not the
+/// tile's north-west corner.
+fn sound_source_at_cell(rx: u16, ry: u16) -> SoundSource {
+    let screen = crate::app::input::camera::cell_centre_world_point(rx, ry, 0);
+    SoundSource::new(screen, (rx, ry))
 }
 
 fn cloak_sound_for_app(
@@ -467,7 +477,7 @@ fn cloak_sound_for_app(
         crate::util::lepton::lepton_to_screen_exact_z(rx, ry, sub_x, sub_y, world_z_leptons);
     GameSoundEvent::CloakSound {
         sound_id,
-        screen_pos: Some((sx, sy)),
+        source: Some(SoundSource::new((sx, sy), (rx, ry))),
     }
 }
 
@@ -1013,11 +1023,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         sound_id,
                         world,
                     } => {
-                        let (sx, sy) = anim_world_sound_screen(world);
                         GameSoundEvent::AnimationStarted {
                             anim_id,
                             sound_id: sim.interner.resolve(sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(anim_world_sound_source(world)),
                         }
                     }
                     SimSoundEvent::AnimationStopped {
@@ -1025,12 +1034,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         stop_sound_id,
                         world,
                     } => {
-                        let (sx, sy) = anim_world_sound_screen(world);
                         GameSoundEvent::AnimationStopped {
                             anim_id,
                             stop_sound_id: stop_sound_id
                                 .map(|id| sim.interner.resolve(id).to_string()),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(anim_world_sound_source(world)),
                         }
                     }
                     SimSoundEvent::WeaponFired {
@@ -1038,10 +1046,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         rx,
                         ry,
                     } => {
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::WeaponFired {
                             sound_id: sim.interner.resolve(report_sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::EntityDied {
@@ -1049,10 +1056,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         rx,
                         ry,
                     } => {
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::EntityDestroyed {
                             sound_id: sim.interner.resolve(die_sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::EntityCrushed {
@@ -1060,10 +1066,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         rx,
                         ry,
                     } => {
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::EntityCrushed {
                             sound_id: sim.interner.resolve(crush_sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::EntityDeployed {
@@ -1071,10 +1076,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         rx,
                         ry,
                     } => {
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::EntityDeployed {
                             sound_id: sim.interner.resolve(deploy_sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::EntityUndeployed {
@@ -1082,10 +1086,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         rx,
                         ry,
                     } => {
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::EntityUndeployed {
                             sound_id: sim.interner.resolve(undeploy_sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::DockDeploy { .. } => {
@@ -1094,10 +1097,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         continue;
                     }
                     SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::ChronoTeleport {
                             sound_id: sim.interner.resolve(sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::UnitPromoted {
@@ -1123,11 +1125,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // so the arm pushes its own events and never falls
                         // through to the shared push below.
                         if let Some(sound_id) = sound_id {
-                            let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                             state.match_state.match_audio.sound_events.push(
                                 GameSoundEvent::UnitPromoted {
                                     sound_id: sim.interner.resolve(sound_id).to_string(),
-                                    screen_pos: Some((sx, sy)),
+                                    source: Some(sound_source_at_cell(rx, ry)),
                                 },
                             );
                         }
@@ -1315,10 +1316,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             Some(s) if !s.is_empty() => s.to_string(),
                             _ => continue,
                         };
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::BuildingGarrisonedSfx {
                             sound_id,
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::ChuteSound { rx, ry } => {
@@ -1328,17 +1328,15 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             Some(s) if !s.is_empty() => s.to_string(),
                             _ => continue,
                         };
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::ChuteSound {
                             sound_id,
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::C4Planted { rx, ry } => {
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::C4Planted {
                             sound_id: "SealPlaceBomb".to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::RefineryExitSfx { rx, ry } => {
@@ -1351,10 +1349,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             Some(s) if !s.is_empty() => s.to_string(),
                             _ => continue,
                         };
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::RefineryExitSfx {
                             sound_id,
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::BunkerWallsUp { rx, ry } => {
@@ -1365,10 +1362,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             Some(s) if !s.is_empty() => s.to_string(),
                             _ => continue,
                         };
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::BunkerWalls {
                             sound_id,
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::BunkerWallsDown { rx, ry } => {
@@ -1379,10 +1375,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             Some(s) if !s.is_empty() => s.to_string(),
                             _ => continue,
                         };
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::BunkerWalls {
                             sound_id,
-                            screen_pos: Some((sx, sy)),
+                            source: Some(sound_source_at_cell(rx, ry)),
                         }
                     }
                     SimSoundEvent::BridgeRepaired {
@@ -1397,11 +1392,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         let sound_id = Some(&resources.rules)
                             .and_then(|r| r.bridge_rules.repair_sound.clone())
                             .unwrap_or_default();
-                        let screen_pos = if sound_id.is_empty() {
+                        let source = if sound_id.is_empty() {
                             None
                         } else {
-                            let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-                            Some((sx, sy))
+                            Some(sound_source_at_cell(rx, ry))
                         };
                         // EVA cue gated on local-human owner. Resolves
                         // `EVA_BridgeRepaired` from the registry (no faction
@@ -1429,7 +1423,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         GameSoundEvent::BridgeRepaired {
                             sound_id,
-                            screen_pos,
+                            source,
                             eva_sound_id,
                         }
                     }
@@ -1493,7 +1487,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z);
                         GameSoundEvent::WorldEffectStarted {
                             sound_id: sim.interner.resolve(sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
+                            source: Some(SoundSource::new((sx, sy), (rx, ry))),
                         }
                     }
                 };
@@ -2271,8 +2265,10 @@ mod tests {
             event,
             crate::audio::events::GameSoundEvent::CloakSound {
                 sound_id,
-                screen_pos: Some((-45.0, 315.0)),
+                source: Some(source),
             } if sound_id == "NavalUnitEmerge"
+                && source.screen_pos() == (-45.0, 315.0)
+                && source.cell() == (10, 11)
         ));
     }
 

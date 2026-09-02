@@ -1105,6 +1105,8 @@ impl Simulation {
                 &self.substrate.entities,
                 rules,
                 &self.interner,
+                self.resolved_terrain.as_ref(),
+                Some(&self.house_alliances),
             ) else {
                 continue;
             };

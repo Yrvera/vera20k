@@ -121,7 +121,9 @@ pub struct WarheadType {
     pub wall_absolute_destroyer: bool,
     /// Chrono legionnaire erase effect. Offset +0x152.
     pub temporal: bool,
-    /// Changes target's locomotor (magnetron). Offset +0x153.
+    /// Changes target's locomotor (magnetron). `WarheadTypeClass+0x15B`
+    /// (ReadINI `0x0075D87C`), read by
+    /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F352E`.
     pub is_locomotor: bool,
     /// Terror drone attach. Offset +0x154.
     pub parasite: bool,
@@ -133,7 +135,8 @@ pub struct WarheadType {
     pub mind_control: bool,
     /// Poison damage. Offset +0x176.
     pub poison: bool,
-    /// Calls in airstrike. Offset +0x177.
+    /// Calls in airstrike. `WarheadTypeClass+0x16C` (ReadINI `0x0075D8F0`),
+    /// read by `TechnoClass::What_Weapon_Should_I_Use @ 0x006F3481`.
     pub airstrike: bool,
     /// Tesla weapon. Offset +0x178.
     pub electric: bool,
@@ -145,6 +148,10 @@ pub struct WarheadType {
     pub makes_disguise: bool,
     /// Ordered BulletClass detonation predicates whose effect bodies remain
     /// explicit unsupported runtime branches.
+    ///
+    /// `electric_assault` is `WarheadTypeClass+0x158` (ReadINI
+    /// `0x0075D82E`), read by
+    /// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F361F`.
     pub electric_assault: bool,
     pub bomb_disarm: bool,
     pub nuke_maker: bool,

@@ -29,9 +29,12 @@
 
 use std::collections::BTreeMap;
 
-use super::combat_weapon::{VersesGate, select_weapon_with_override, verses_gate};
+use super::combat_weapon::{
+    VersesGate, attacker_facts, attacker_facts_from_snapshot, is_ally_by_object,
+    select_weapon_for_target, techno_target_facts, verses_gate,
+};
 use super::threat_range::{ScanMission, ScanRange, scan_mission_for, scan_range};
-use super::{armor_index, combat_target_category, is_within_range_leptons, lepton_distance_sq_raw};
+use super::{armor_index, is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{HouseAllianceMap, is_allied_with};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -125,8 +128,15 @@ pub fn acquire_best_target_for_entity(
         }
     }
     let obj = rules.object(interner.resolve(entity.type_ref))?;
-    // Need at least one weapon to acquire targets.
-    if obj.primary.is_none() && obj.secondary.is_none() {
+    // Native `TechnoClass::Greatest_Threat @ 0x006F8DF0` has no weapon
+    // early-out of its own; the armed requirement sits upstream in
+    // `TechnoClass::CanAcquireTarget @ 0x007091D0`, whose last term is
+    // `Is_Armed` (vtable `+0x2AC`). This is the same predicate, kept here
+    // because VERA's acquisition entry is also reached from the order and
+    // deployed-reacquire paths. It must NOT read `Primary=`: a `TurretCount>0`
+    // type never parses that key (`TechnoTypeClass::ReadINI @ 0x007128B2`), so
+    // `[SREF]` and `[YAGGUN]` were classified unarmed and could never acquire.
+    if !super::combat_weapon::is_armed(entity, obj) {
         return None;
     }
 
@@ -168,9 +178,13 @@ pub fn acquire_best_target_for_entity(
     )
 }
 
-fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId) -> u8 {
-    match rules.object(interner.resolve(type_id)) {
-        Some(obj) if obj.primary.is_some() => 0,
+/// VERA's own four-bucket target ordering (see the GSI-08.01 residual below).
+/// The "armed" bucket uses the native `Is_Armed` model rather than `Primary=`
+/// so that a `TurretCount>0` candidate — `[SREF]`, `[YAGGUN]` — is not ranked
+/// as an unarmed bystander; those types carry no `Primary=` at all.
+fn threat_class(rules: &RuleSet, interner: &StringInterner, candidate: &GameEntity) -> u8 {
+    match rules.object(interner.resolve(candidate.type_ref)) {
+        Some(obj) if super::combat_weapon::is_armed(candidate, obj) => 0,
         Some(obj) => match obj.category {
             ObjectCategory::Vehicle | ObjectCategory::Aircraft | ObjectCategory::Infantry => 1,
             ObjectCategory::Building => 2,
@@ -317,23 +331,32 @@ pub(crate) fn acquire_best_target(
             }
         }
 
-        // Check if any weapon can engage this target (projectile flags + Verses > 0%).
-        let target_cat: EntityCategory = combat_target_category(candidate, rules, interner);
-        let target_armor: &str = rules
-            .object(interner.resolve(candidate.type_ref))
-            .map(|o| o.armor.as_str())
-            .unwrap_or("none");
-        let selected = match select_weapon_with_override(
-            rules,
-            attacker_obj,
-            target_cat,
-            target_armor,
-            attacker.veterancy,
-            attacker.weapon_override,
-        ) {
-            Some(s) => s,
-            None => continue, // No weapon can engage this target.
+        // Run the selection ladder and the GetFireError targeting subset for
+        // this candidate. Allies were filtered above, so the ally fact is
+        // false whenever a fog/alliance view exists.
+        let Some(candidate_obj) = rules.object(interner.resolve(candidate.type_ref)) else {
+            continue;
         };
+        let scanner_facts = entities
+            .get(attacker.stable_id)
+            .map(|entity| attacker_facts(entity, attacker_obj))
+            .unwrap_or_else(|| attacker_facts_from_snapshot(attacker, attacker_obj));
+        let candidate_facts = techno_target_facts(
+            candidate,
+            candidate_obj,
+            terrain,
+            is_ally_by_object(
+                fog.map(|fog_state| &fog_state.alliances),
+                interner,
+                attacker.owner,
+                candidate.owner,
+            ),
+        );
+        let selected =
+            match select_weapon_for_target(rules, attacker_obj, &scanner_facts, &candidate_facts) {
+                Some(s) => s,
+                None => continue, // The selected weapon cannot engage this target.
+            };
 
         // For passive acquisition, skip targets where Verses is Suppressed (1%).
         if verses_gate(selected.verses_pct) == VersesGate::Suppressed {
@@ -392,7 +415,7 @@ pub(crate) fn acquire_best_target(
             continue;
         }
 
-        let class = threat_class(rules, interner, candidate.type_ref);
+        let class = threat_class(rules, interner, candidate);
         let rank = (dist_sq, class, candidate.stable_id);
         match best {
             Some(current) if rank >= current => {}
@@ -409,28 +432,28 @@ fn can_retaliate(
     attacker: &GameEntity,
     rules: &RuleSet,
     interner: &StringInterner,
+    terrain: Option<&ResolvedTerrainGrid>,
+    alliances: Option<&HouseAllianceMap>,
 ) -> bool {
     let obj = match rules.object(interner.resolve(entity.type_ref)) {
         Some(o) => o,
         None => return false,
     };
-    let target_cat: EntityCategory = combat_target_category(attacker, rules, interner);
-    let target_armor: &str = rules
-        .object(interner.resolve(attacker.type_ref))
-        .map(|o| o.armor.as_str())
-        .unwrap_or("none");
-    let selected = match select_weapon_with_override(
-        rules,
-        obj,
-        target_cat,
-        target_armor,
-        entity.veterancy,
-        entity.weapon_override,
-    ) {
-        Some(s) => s,
-        None => return false,
+    let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) else {
+        return false;
     };
-    // 0% is already filtered by select_weapon_with_override (returns None).
+    let target_facts = techno_target_facts(
+        attacker,
+        attacker_obj,
+        terrain,
+        is_ally_by_object(alliances, interner, entity.owner, attacker.owner),
+    );
+    let selected =
+        match select_weapon_for_target(rules, obj, &attacker_facts(entity, obj), &target_facts) {
+            Some(s) => s,
+            None => return false,
+        };
+    // 0% is already filtered by the GetFireError subset (returns None).
     // 1% (Suppressed) also blocks retaliation.
     verses_gate(selected.verses_pct) != VersesGate::Suppressed
 }
@@ -474,6 +497,7 @@ pub(crate) fn calculate_ai_threat_score(
     rules: &RuleSet,
     interner: &StringInterner,
     terrain: Option<&ResolvedTerrainGrid>,
+    alliances: Option<&HouseAllianceMap>,
 ) -> Option<X87Value> {
     let scorer = entities.get(scorer_id)?;
     let candidate = entities.get(candidate_id)?;
@@ -489,14 +513,17 @@ pub(crate) fn calculate_ai_threat_score(
 
     // B: the candidate's selected weapon against the scorer. A candidate
     // already targeting the scorer contributes the negated term.
-    let scorer_category = combat_target_category(scorer, rules, interner);
-    if let Some(selected) = select_weapon_with_override(
+    let scorer_as_target = techno_target_facts(
+        scorer,
+        scorer_type,
+        terrain,
+        is_ally_by_object(alliances, interner, candidate.owner, scorer.owner),
+    );
+    if let Some(selected) = select_weapon_for_target(
         rules,
         candidate_type,
-        scorer_category,
-        &scorer_type.armor,
-        candidate.veterancy,
-        candidate.weapon_override,
+        &attacker_facts(candidate, candidate_type),
+        &scorer_as_target,
     ) {
         let verses =
             load_threat_double(selected.warhead.verses_f64[armor_index(&scorer_type.armor)])?;
@@ -522,14 +549,17 @@ pub(crate) fn calculate_ai_threat_score(
 
     // A: the scorer's selected weapon against the candidate. Retain the
     // selected weapon for the native range term below.
-    let candidate_category = combat_target_category(candidate, rules, interner);
-    let selected_scorer_weapon = select_weapon_with_override(
+    let candidate_as_target = techno_target_facts(
+        candidate,
+        candidate_type,
+        terrain,
+        is_ally_by_object(alliances, interner, scorer.owner, candidate.owner),
+    );
+    let selected_scorer_weapon = select_weapon_for_target(
         rules,
         scorer_type,
-        candidate_category,
-        &candidate_type.armor,
-        scorer.veterancy,
-        scorer.weapon_override,
+        &attacker_facts(scorer, scorer_type),
+        &candidate_as_target,
     );
     if let Some(selected) = selected_scorer_weapon.as_ref() {
         let verses =
@@ -670,18 +700,20 @@ pub(crate) fn should_retaliate_from_damage(
     if is_human && victim.attack_target.is_some() {
         return false;
     }
-    let target_category = combat_target_category(attacker, rules, interner);
-    let target_armor = rules
-        .object(interner.resolve(attacker.type_ref))
-        .map(|object| object.armor.as_str())
-        .unwrap_or("none");
-    let Some(selected) = select_weapon_with_override(
+    let Some(attacker_type) = rules.object(interner.resolve(attacker.type_ref)) else {
+        return false;
+    };
+    let attacker_as_target = techno_target_facts(
+        attacker,
+        attacker_type,
+        terrain,
+        is_ally_by_object(Some(alliances), interner, victim.owner, attacker.owner),
+    );
+    let Some(selected) = select_weapon_for_target(
         rules,
         victim_type,
-        target_category,
-        target_armor,
-        victim.veterancy,
-        victim.weapon_override,
+        &attacker_facts(victim, victim_type),
+        &attacker_as_target,
     ) else {
         return false;
     };
@@ -693,8 +725,24 @@ pub(crate) fn should_retaliate_from_damage(
         && let Some(super::TargetKind::Entity(current_id)) =
             victim.attack_target.as_ref().map(|target| target.target)
         && let (Some(current_score), Some(attacker_score)) = (
-            calculate_ai_threat_score(entities, victim_id, current_id, rules, interner, terrain),
-            calculate_ai_threat_score(entities, victim_id, attacker_id, rules, interner, terrain),
+            calculate_ai_threat_score(
+                entities,
+                victim_id,
+                current_id,
+                rules,
+                interner,
+                terrain,
+                Some(alliances),
+            ),
+            calculate_ai_threat_score(
+                entities,
+                victim_id,
+                attacker_id,
+                rules,
+                interner,
+                terrain,
+                Some(alliances),
+            ),
         )
         // This comparison changed behaviour in the GSI-05.13 slice, and the
         // change is a correction rather than a side effect: `X87Chop53::compare`
@@ -722,6 +770,8 @@ pub fn tick_retaliation(
     rules: &RuleSet,
     interner: &StringInterner,
     live_order: &[u64],
+    terrain: Option<&ResolvedTerrainGrid>,
+    alliances: Option<&HouseAllianceMap>,
 ) {
     // Collect retaliation candidates: (retaliator_id, attacker_id).
     let mut retaliators: Vec<(u64, u64)> = Vec::new();
@@ -776,7 +826,7 @@ pub fn tick_retaliation(
                     continue;
                 }
             };
-            can_retaliate(entity, attacker, rules, interner)
+            can_retaliate(entity, attacker, rules, interner, terrain, alliances)
         };
 
         if retaliate {
@@ -804,5 +854,106 @@ pub fn tick_retaliation(
         if let Some(entity) = entities.get_mut(entity_id) {
             entity.last_attacker_id = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::intern::test_interner;
+
+    /// Stock key shape for the two `TurretCount>0` types that carry NO live
+    /// `Primary=`, copied from retail `ini/rulesmd.ini`:
+    ///
+    /// ```text
+    /// [SREF]    ; Primary=Comet          <- commented out by Westwood
+    ///           ; ElitePrimary=SuperComet
+    ///           TurretCount=4  WeaponCount=1  Weapon1=Comet
+    /// [YAGGUN]  (no Primary=, no Secondary= anywhere in the section)
+    ///           IsGattling=yes  TurretCount=1  WeaponCount=6  Weapon1=AGGattling ...
+    /// ```
+    ///
+    /// `TechnoTypeClass::ReadINI @ 0x007128B2` branches on `TurretCount > 0`
+    /// and jumps past the `Primary=` block, so those keys are never read for
+    /// either type and `obj.primary`/`obj.secondary` stay `None`.
+    fn gunner_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=SREF\n1=HTNK\n\
+             [BuildingTypes]\n0=YAGGUN\n\
+             [WeaponTypes]\n0=Comet\n1=AGGattling\n\
+             [SREF]\nStrength=300\nArmor=heavy\nCost=1200\n\
+             TurretCount=4\nWeaponCount=1\nWeapon1=Comet\nEliteWeapon1=Comet\n\
+             [YAGGUN]\nStrength=810\nArmor=steel\nCost=1000\n\
+             IsGattling=yes\nTurretCount=1\nWeaponCount=6\nWeapon1=AGGattling\n\
+             [HTNK]\nStrength=400\nArmor=heavy\nCost=900\nPrimary=Comet\n\
+             [Comet]\nDamage=100\nROF=110\nRange=6\nWarhead=WH\n\
+             [AGGattling]\nDamage=15\nROF=10\nRange=6\nWarhead=WH\n\
+             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("gunner fixture")
+    }
+
+    /// GSI-08.02 regression: the Prism Tank and the Gattling Cannon must read
+    /// as armed. `TechnoClass::Is_Armed @ 0x00701120` resolves ONE slot through
+    /// `GetCurrentWeapon @ 0x0070E1A0`, which for a `TurretCount>0` type is
+    /// `GetWeapon(CurrentWeaponNumber)`.
+    ///
+    /// This also pins the storage fact the whole crate now depends on:
+    /// `Weapon1=` writes the same `TechnoTypeClass+0x898` field that `Primary=`
+    /// does (`TechnoTypeClass::ReadINI`, cursor `0x007128D6 LEA EDI,[EBP+0xA94]`
+    /// storing at `0x0071294A MOV [EDI-0x1FC],EAX`, and `0xA94-0x1FC = 0x898`),
+    /// so `obj.primary` reads as the native field for these two types even
+    /// though neither section authors a live `Primary=` key.
+    #[test]
+    fn gsi_08_02_stock_sref_and_yaggun_are_armed_through_weapon_one() {
+        let rules = gunner_rules();
+        let sref_obj = rules.object("SREF").expect("SREF");
+        let yaggun_obj = rules.object("YAGGUN").expect("YAGGUN");
+
+        // Same storage: `Weapon1=` lands in the `Primary` field, `Weapon2=` in
+        // `Secondary`. SREF stops at `WeaponCount=1`, so its slot 1 is empty.
+        assert_eq!(sref_obj.primary.as_deref(), Some("Comet"));
+        assert_eq!(sref_obj.secondary, None);
+        assert_eq!(yaggun_obj.primary.as_deref(), Some("AGGattling"));
+
+        let mut sref = GameEntity::test_default(1, "SREF", "Americans", 5, 5);
+        sref.category = EntityCategory::Unit;
+        let mut yaggun = GameEntity::test_default(2, "YAGGUN", "YuriCountry", 9, 9);
+        yaggun.category = EntityCategory::Structure;
+
+        assert!(super::super::combat_weapon::is_armed(&sref, sref_obj));
+        assert!(super::super::combat_weapon::is_armed(&yaggun, yaggun_obj));
+    }
+
+    /// The gate this file owns: a Prism Tank must get past
+    /// `acquire_best_target_for_entity`'s armed check and pick the enemy tank
+    /// next to it. Against the old predicate — which read the raw
+    /// `Primary=`/`Secondary=` INI keys instead of the weapon-array fields they
+    /// name — this returns `None`, and a Prism Tank on Guard never opened fire
+    /// on anything that walked past.
+    #[test]
+    fn gsi_08_02_sref_acquires_a_target_through_the_armed_gate() {
+        let rules = gunner_rules();
+        let mut entities = EntityStore::new();
+
+        let mut sref = GameEntity::test_default(1, "SREF", "Americans", 5, 5);
+        sref.category = EntityCategory::Unit;
+        sref.lifecycle.in_limbo = false;
+        entities.insert(sref);
+
+        let mut enemy = GameEntity::test_default(2, "HTNK", "Russians", 6, 5);
+        enemy.category = EntityCategory::Unit;
+        enemy.lifecycle.in_limbo = false;
+        entities.insert(enemy);
+
+        // Snapshot the thread-local test interner only after `test_default`
+        // has interned both owners and both type names.
+        let interner = test_interner();
+
+        assert_eq!(
+            acquire_best_target_for_entity(&entities, &rules, &interner, 1, None, None, false),
+            Some(2)
+        );
     }
 }

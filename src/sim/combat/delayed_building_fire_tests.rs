@@ -146,6 +146,19 @@ fn gsi_05_10_expiry_reads_live_target_but_keeps_saved_weapon_slot() {
     let tower = spawn(&mut sim, &rules, "TESLA", "Soviet", 5, 5);
     let air = spawn(&mut sim, &rules, "AIR", "Allies", 7, 5);
     let ground = spawn(&mut sim, &rules, "GROUND", "Allies", 8, 5);
+    // The tower must arm against a genuinely airborne target for the AA
+    // secondary to be the saved slot. `TechnoClass::What_Weapon_Should_I_Use`
+    // arm V (`0x006F37E7`) reads `ObjectClass::IsHighFlying @ 0x005F6B90` —
+    // altitude, not `AircraftTypes` membership — so a parked aircraft would
+    // arm the ground primary instead.
+    sim.substrate
+        .entities
+        .get_mut(air)
+        .and_then(|entity| entity.locomotor.as_mut())
+        .expect("AIR carries a locomotor")
+        .altitude = crate::util::fixed_math::SimFixed::from_num(
+        crate::util::lepton::HIGH_FLIGHT_THRESHOLD_LEPTONS,
+    );
     assert!(issue_attack_command(
         &mut sim.substrate.entities,
         tower,

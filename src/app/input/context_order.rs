@@ -284,17 +284,25 @@ const NO_WEAPON_NAMES: [&str; 2] = ["none", "<none>"];
 ///
 /// * a **building** type answers no, unconditionally;
 /// * an **aircraft** type answers no, unconditionally;
-/// * every other type answers "`Primary=` names a real weapon **and**
-///   `PreventAttackMove=` is off".
+/// * every other type answers "the `Primary` weapon field names a real weapon
+///   **and** `PreventAttackMove=` is off".
 ///
-/// `Secondary=` is never consulted — a secondary-only type is refused — and
-/// there is no harvester clause anywhere. The Soviet War Miner and the Slave
-/// Miner both carry a real `Primary=`, so retail lets them attack-move along
-/// with the rest of a defended-expansion group; the Chrono Miner is refused by
-/// its `Primary=none` on its own.
+/// The `Secondary` slot is never consulted — a secondary-only type is refused —
+/// and there is no harvester clause anywhere. The Soviet War Miner and the Slave
+/// Miner both carry a real primary, so retail lets them attack-move along with
+/// the rest of a defended-expansion group; the Chrono Miner is refused by its
+/// `Primary=none` on its own.
 ///
 /// gamemd-derived: `TechnoTypeClass::Can_Attack_Move @ 0x00711E90` (vtable
-/// `+0xA4`) — `Primary != NULL && PreventAttackMove(+0x6C8) == 0`.
+/// `+0xA4`) — `Primary(+0x898) != NULL && PreventAttackMove(+0x6C8) == 0`.
+/// Native reads the raw slot-0 *field*, not `GetWeapon`, so the elite tier does
+/// not apply here and `obj.primary` is the exact read: `+0x898` is the storage
+/// `Weapon1=` writes as well (`TechnoTypeClass::ReadINI @ 0x0071294A`, cursor
+/// seeded at `0x007128D6`), which `ObjectType::read_weapon_arrays` reproduces.
+/// That is what lets a Prism Tank (`[SREF]`, whose `Primary=Comet` is commented
+/// out but whose `Weapon1=Comet` is not) attack-move here as it does in gamemd —
+/// and, because `selection_can_attack_move` below is an `.all(..)`, keeps one
+/// Prism Tank in a mixed selection from disabling the chord for the whole group.
 ///
 /// Stock YR sets `PreventAttackMove=yes` on eleven types and `=no` on two. Two
 /// of the eleven are refused anyway by the aircraft rule above — `ORCA` and
@@ -1105,9 +1113,14 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     )
                 } else if force_fire && !cell_is_shrouded {
                     // Force-fire on empty terrain: per-unit dispatch matching
-                    // gamemd What_Action_OnCell — armed mobile units fire at
-                    // the cell, unarmed (Engineer/Harvester/MCV) fall through
-                    // to plain Move.
+                    // gamemd `TechnoClass::What_Action_OnCell @ 0x00700600` —
+                    // armed mobile units fire at the cell, unarmed
+                    // (Engineer/Harvester/MCV) fall through to plain Move. The
+                    // armed test is the inlined `TechnoClass::Is_Armed` at
+                    // `0x007008BD` (one weapon slot, via `GetCurrentWeapon`),
+                    // not `Primary=`/`Secondary=`: those keys are never parsed
+                    // for a `TurretCount>0` type, so the Prism Tank and the
+                    // Gattling Cannon were routed to Move instead of firing.
                     let unit_armed = sim
                         .entities()
                         .get(stable_id)
@@ -1115,7 +1128,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             let type_str = sim.interner.resolve(e.type_ref);
                             Some(&resources.rules)
                                 .and_then(|r| r.object(type_str))
-                                .map(|obj| obj.primary.is_some() || obj.secondary.is_some())
+                                .map(|obj| crate::sim::combat::combat_weapon::is_armed(e, obj))
                         })
                         .unwrap_or(false);
                     let is_harvester = sim
@@ -1432,9 +1445,10 @@ mod tests {
              [VehicleTypes]\n\
              0=MTNK\n\
              1=HARV\n\
-             2=SREF\n\
+             2=SECONLY\n\
              3=CMIN\n\
              4=SHAD\n\
+             5=SREF\n\
              [AircraftTypes]\n\
              0=ORCA\n\
              [BuildingTypes]\n\
@@ -1454,9 +1468,14 @@ mod tests {
              Strength=200\n\
              Primary=105mm\n\
              PreventAttackMove=yes\n\
-             [SREF]\n\
+             [SECONLY]\n\
              Strength=200\n\
              Secondary=105mm\n\
+             [SREF]\n\
+             Strength=200\n\
+             TurretCount=4\n\
+             WeaponCount=1\n\
+             Weapon1=105mm\n\
              [ORCA]\n\
              Strength=200\n\
              Primary=105mm\n\
@@ -1526,7 +1545,7 @@ mod tests {
             .spawn_object("CMIN", "Americans", 8, 5, 0, &rules, &height_map)
             .expect("unarmed miner");
         let arty = sim
-            .spawn_object("SREF", "Americans", 7, 5, 0, &rules, &height_map)
+            .spawn_object("SECONLY", "Americans", 7, 5, 0, &rules, &height_map)
             .expect("secondary-only unit");
 
         assert!(entity_can_attack_move(&sim, Some(&rules), tank));
@@ -1536,6 +1555,39 @@ mod tests {
         assert!(!entity_can_attack_move(&sim, Some(&rules), chrono_miner));
         // A secondary-only type is refused: the rule reads Primary only.
         assert!(!entity_can_attack_move(&sim, Some(&rules), arty));
+    }
+
+    /// GSI-08.02 regression: a `TurretCount>0` type carries its weapon in the
+    /// `Primary` field even though it authors no `Primary=` key, because
+    /// `Weapon1=` and `Primary=` are the same storage
+    /// (`TechnoTypeClass::ReadINI`: cursor `0x007128D6 LEA EDI,[EBP+0xA94]`,
+    /// base store `0x0071294A MOV [EDI-0x1FC],EAX`, and `0xA94-0x1FC = 0x898`
+    /// which is the `Primary` field `Can_Attack_Move @ 0x00711E90` reads).
+    ///
+    /// The group case is the one a player feels: `selection_can_attack_move` is
+    /// an `.all(..)`, so a single Prism Tank answering "no" used to silently
+    /// disable the attack-move chord for every other unit selected with it.
+    #[test]
+    fn gsi_08_02_turret_count_type_attack_moves_through_weapon_one() {
+        let rules = chord_rules();
+        let mut sim = Simulation::new();
+        sim.resolve_type_handles(&rules);
+        let height_map: std::collections::BTreeMap<(u16, u16), u8> =
+            std::collections::BTreeMap::new();
+
+        let prism = sim
+            .spawn_object("SREF", "Americans", 7, 6, 0, &rules, &height_map)
+            .expect("TurretCount type");
+        let tank = sim
+            .spawn_object("MTNK", "Americans", 5, 5, 0, &rules, &height_map)
+            .expect("tank");
+
+        assert!(entity_can_attack_move(&sim, Some(&rules), prism));
+        assert!(selection_can_attack_move(
+            &sim,
+            Some(&rules),
+            &[prism, tank]
+        ));
     }
 
     /// `TechnoTypeClass::Can_Attack_Move @ 0x00711E90` reads BOTH halves: a real

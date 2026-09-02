@@ -11,13 +11,11 @@ use crate::sim::intern::{InternedId, StringInterner};
 use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::ground_height_leptons;
 
-use super::super::combat_weapon::{VersesGate, primary_for_tier, verses_gate};
-use super::super::{TargetKind, armor_index, combat_target_category, object_world_z_leptons};
+use super::super::combat_weapon::{
+    VersesGate, is_armed, primary_for_tier, target_is_high_flying, verses_gate,
+};
+use super::super::{TargetKind, armor_index, object_world_z_leptons};
 use super::{BaseDefenseResponseContext, ExistingTargetDisposition, ResponderPeekFireError};
-
-pub(super) fn object_has_weapon(object: &ObjectType) -> bool {
-    object.primary.is_some() || object.secondary.is_some() || !object.weapon_list.is_empty()
-}
 
 pub(super) fn entity_coord(entity: &GameEntity, terrain: Option<&ResolvedTerrainGrid>) -> [i32; 3] {
     [
@@ -142,6 +140,9 @@ pub(super) fn should_be_on_bridge_for_response(
     Some(entity.on_bridge)
 }
 
+/// gamemd-derived: `FootClass::Evaluate_Target_Threat @ 0x004D97A0` returns
+/// `-Cost` when the current `TarCom (+0x2B4)` is the requester, and 0 when it
+/// is some other Techno (`+0x14 & 1`) that `Is_Armed (vt+0x2AC)`.
 pub(super) fn current_target_disposition(
     candidate: &GameEntity,
     attacker_id: u64,
@@ -154,10 +155,11 @@ pub(super) fn current_target_disposition(
             ExistingTargetDisposition::RequestedAttacker
         }
         Some(TargetKind::Entity(id))
-            if entities
-                .get(id)
-                .and_then(|target| rules.object(interner.resolve(target.type_ref)))
-                .is_some_and(object_has_weapon) =>
+            if entities.get(id).is_some_and(|target| {
+                rules
+                    .object(interner.resolve(target.type_ref))
+                    .is_some_and(|object| is_armed(target, object))
+            }) =>
         {
             ExistingTargetDisposition::OtherArmedTarget
         }
@@ -181,21 +183,75 @@ pub(super) fn primary_range_leptons(
 /// caller.
 ///
 /// gamemd-derived: `TechnoClass__GetFireError @ 0x006FC0B0`, called through
-/// vtable `+0x3BC` with range checking disabled by
+/// vtable `+0x3BC` (`0x006FC090`) with range checking disabled by
 /// `TechnoClass__RespondToBaseAttack @ 0x00708276/0x007084AC`.
+///
+/// The air/ground arm is the same altitude-driven one the selection path uses
+/// (`combat_weapon::targeting_fire_error_blocks`): `0x006FC705..0x006FC739`
+/// blocks a shot at an `IsHighFlying` target without an AA projectile, and the
+/// AG test at `0x006FC7EB` is reached only when `TEST EBP,EBP` @ `0x006FC762`
+/// finds a non-`ObjectClass` target — a force-fired cell, never the attacking
+/// Techno this peek is aimed at. Neither arm reads the target's category.
 ///
 /// RESIDUAL: state that VERA does not yet represent (Ivan bomb attachment,
 /// temporal/drain target latches, several Magnetron immunity bytes and the
 /// subclass-only illegal arms) cannot yet be classified here. The GSI row stays
 /// open until those active-YR producers and the Unit/Infantry overrides have
 /// executable coverage.
+///
+/// RESIDUAL (UNCHECKED) — four GetFireError arms this peek still omits. All
+/// four make VERA *more* permissive: a candidate gamemd rejects with 5 is
+/// admitted to the response list here. Downstream on all four: none — the real
+/// fire path re-runs the full verdict, so the candidate simply walks to a shot
+/// it cannot take.
+/// - `0x006FC76A..0x006FC7CA` (naval `-1`). `0x006FC775`/`0x006FC789` set BL
+///   when the **target**'s `GetOccupiedCell()->LandType (+0xEC)` is Water(2) or
+///   Beach(6); `0x006FC79D` clears it for an `IsHighFlying` target and
+///   `0x006FC7A6` clears it for one standing `OnBridge (+0x8C)`. Only with BL
+///   set does `0x006FC7C1` call the attacker's `NavalTargeting` selector
+///   (`vt+0x2E8`), and `-1` returns 5. So the trigger is **the target being on
+///   water**, not the responder. The stock types whose selector can answer `-1`
+///   are the `NavalTargeting=6` set — `[DOG]`, `[ADOG]`, `[YDOG]`, `[YADOG]`,
+///   `[AEGIS]`, `[NASAM]`, `[NAFLAK]`, `[CAOS]`, `[DRON]` — plus `[ASW]`
+///   (`=2`, `-1` against anything not `Underwater`), and every default
+///   (`NavalTargeting` unset) type against a *submerged* `Underwater` target.
+///   `[DLPH]`/`[SUB]` (`=5`) and `[SQD]` (`=3`) never answer `-1`.
+///   Frequency: whenever a base-defence responder is recruited against an
+///   attacker standing on water or a beach — a naval or amphibious raid on a
+///   coastal base, which is ordinary play on any water map.
+/// - `0x006FC7D0..0x006FC868` (`LandTargeting==1`) is the **opposite** arm: it
+///   is reached on the BL-clear path (`0x006FC7E1 TEST BL,BL / JNZ` skips it
+///   when the target is on water), after `target->vt+0x50` (`IsLowFlying` for
+///   an ObjectClass target) is true, and returns 5 when the **attacker**'s
+///   `Type.LandTargeting (+0x604) == 1`. Stock authors: `[NASAM]` (Patriot) and
+///   `[NAFLAK]` (Flak Cannon) — the standard AA base defences on every map —
+///   plus `[AEGIS]`, `[ASW]`, `[DLPH]`, `[SQD]`, `[SUB]`. So the live case is
+///   an AA defence recruited against an ordinary ground attacker, not a naval
+///   one. Frequency: every base-defence response that reaches a Patriot or Flak
+///   Cannon while the attacker is on land.
+///   Both arms need the target's occupied-cell `LandType`, which this call site
+///   has no terrain handle for.
+/// - `0x006FC742..0x006FC75C` (Foot-layer AA gate): a target with
+///   `AbstractFlags (+0x14) & 4` (Foot) whose `InWhichLayer (vt+0x78) != 2` and
+///   a non-AA projectile jumps to `0x006FC86A` = 5. VERA has no layer model
+///   (see `combat_weapon` R1). Trigger: an airborne-but-low target — a
+///   Rocketeer or Kirov just after lift-off. Frequency: brief windows per
+///   flight.
+/// - `0x006FC727` splits the high-flying verdict into 3 (the target is this
+///   object's `DeployedFrom`, instance field `TechnoClass+0x2AC`) and 5, and
+///   the caller admits 3 (`0x00708282`/`0x007084B8` are `CMP EAX,0x5 / JZ
+///   <reject>` — only 5 rejects). VERA reports `Illegal` for both, so such a
+///   candidate is rejected where gamemd keeps it — the one arm here that makes
+///   VERA *less* permissive. Trigger: `0x006FC70E` must first find the target
+///   `IsHighFlying`, and `+0x2AC` links to the structure this object deployed
+///   out of, which is never at flight level. Frequency: practically
+///   unreachable on stock data.
 pub(crate) fn responder_peek_fire_error(
     candidate: &GameEntity,
     target: &GameEntity,
     candidate_object: &ObjectType,
     target_object: &ObjectType,
     rules: &RuleSet,
-    interner: &StringInterner,
 ) -> ResponderPeekFireError {
     if candidate.slave_harvester.is_some()
         || target.lifecycle.in_limbo
@@ -219,17 +275,14 @@ pub(crate) fn responder_peek_fire_error(
     let Some(warhead) = weapon.warhead.as_deref().and_then(|id| rules.warhead(id)) else {
         return ResponderPeekFireError::Cant;
     };
-    let target_category = combat_target_category(target, rules, interner);
     let projectile = weapon
         .projectile
         .as_deref()
         .and_then(|id| rules.projectile(id));
-    let projectile_legal = match target_category {
-        EntityCategory::Aircraft => projectile.is_some_and(|projectile| projectile.aa),
-        EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Structure => {
-            projectile.is_none_or(|projectile| projectile.ag)
-        }
-    };
+    // `0x006FC705..0x006FC739`: altitude, not category — a landed Rocketeer is
+    // an ordinary ground target and needs no AA projectile.
+    let projectile_legal =
+        !target_is_high_flying(target) || projectile.is_some_and(|projectile| projectile.aa);
     if !projectile_legal
         || verses_gate(
             warhead
@@ -271,7 +324,7 @@ pub(super) fn candidate_admitted(
             .is_some_and(|(_, is_base_defense)| !is_base_defense)
         || !candidate.base_defense_response.recruitable_a
         || !candidate.base_defense_response.recruitable_b
-        || !object_has_weapon(candidate_object)
+        || !is_armed(candidate, candidate_object)
         || (!context.game_mode_nonzero
             && !candidate
                 .mission
@@ -299,7 +352,6 @@ pub(super) fn candidate_admitted(
                 )
                 .expect("entry retained attacker type"),
             context.rules,
-            context.interner,
         ) == ResponderPeekFireError::Illegal
     {
         return false;
