@@ -89,6 +89,51 @@ pub const RAMP_SPAN_MS: u32 = 1000;
 /// `SoundEvent::UpdateState @ 0x004055C0` draws
 /// `RandomRanged(AMBIENT ? 0x21 : Delay.min, Delay.max)` and discards any
 /// result below `0x21` (`if (iVar5 < 0x21) return;`).
+///
+/// **Deferred DRIFT — the whole `Delay.min >= 0x21` playout path is a second
+/// native mechanism VERA does not implement (gamemd read, VERA behaviour
+/// UNCHECKED against it).** This value is not only a pre-delay floor: it
+/// selects between two different sample loaders, and VERA implements only
+/// the low side.
+///
+/// - Below the floor (what VERA models): `SoundEvent::PreparePlayout @
+///   0x00404700` builds the whole playlist at `event+0x160` and
+///   `AdvancePlaylist @ 0x004047B0` walks it; all three of that function's
+///   arms — chain, LOOP restart, DECAY tail — sit inside its opening
+///   `if (Voc+0x58 < 0x21 || (flags & 0x20))`.
+/// - At or above it: `SoundEvent::LoadSamples @ 0x004048B0` takes a wholly
+///   separate branch that loads **one** body sample per service pass, chosen
+///   by `SoundEvent::SelectNextSample @ 0x00404BB0` (plus the decay sample
+///   when `Control=decay`). `SelectNextSample` keeps its own playlist at
+///   `event+0x1E8` with its own cursor `+0x270`, remaining count `+0x268`
+///   and pass counter `+0x26C`, and returns `-1` to end the cue: after pass 1
+///   without `Control=loop`, or when `Loop != 0 && Loop <= pass`. So the
+///   `Loop=` budget and the `Control=all` set are honoured there, one sample
+///   per `SoundSystem::UpdateTick @ 0x004041D0` pass, with the pre-delay
+///   between them. `LoadSamples` is called only from `UpdateTick`, and
+///   `SelectNextSample` only from `LoadSamples` (`get_function_callers`).
+///
+/// VERA instead resolves every entry through the low-side path:
+/// `resolve_entry_playback_pass` chains `select_playout_pass`'s whole order
+/// into one payload regardless of `Delay`. Trigger: submitting an entry
+/// whose `Delay=` low bound is >= 33 ms. Player effect, both halves: VERA
+/// plays the full chained set back-to-back as one pass where gamemd plays a
+/// single sample, waits out the re-drawn pre-delay, then plays the next; and
+/// because [`SoundArbiter::advance_loop`] correctly refuses the
+/// `AdvancePlaylist` restart above the floor while VERA models no substitute,
+/// VERA then *stops*, where gamemd sustains the cue under
+/// `SelectNextSample`'s own `Loop=` budget. So an ambient authored to run
+/// forever would play once and fall silent. Frequency: **zero
+/// today** — exactly 24 `Control=loop` entries in `ini/soundmd.ini` have
+/// `Delay` min >= 33 (23 `ambient`, plus the debug `TestRandomLoopDelayAll`),
+/// none has a producer in `audio/events.rs`, and all 41 distinct
+/// `MoveSound=` values in `ini/rulesmd.ini` resolve to entries with `Delay`
+/// min 0. It goes live the day ambients get a producer. Downstream risk:
+/// closing it needs the per-buffer playlist that residuals R4 and R9 also
+/// wait on, plus a port of `SelectNextSample`'s separate cursor state — it
+/// is a mechanism port, not a gate on the existing one, which is why the
+/// half-fix (truncating the chain to one sample here) is deliberately not
+/// applied: it would pick the wrong sample and still not loop correctly.
 pub const PREDELAY_FLOOR_MS: i32 = 0x21;
 
 /// Threshold above which the many-sounds limiter engages, and the numerator
@@ -730,10 +775,13 @@ impl SoundArbiter {
     /// `(Control & LOOP) && !(flags & 0x20) && (Loop == 0 || iteration <
     /// Loop - 1)`. The two combine to `Delay.min < 0x21 && !(flags & 0x20)
     /// && ...`: an entry whose `Delay=` low bound is 33 ms or more never
-    /// reaches the LOOP branch at all — its sustain is instead the streaming
-    /// callback `FUN_00405AC0` parking the token and re-drawing
-    /// `RandomRanged(Delay.min, Delay.max)` between samples, which is the
-    /// pre-delay path [`EventState::PreDelay`] already models.
+    /// reaches *this* LOOP branch.
+    ///
+    /// That is a claim about this path only. Such an entry still loops, and
+    /// still plays its whole `Sounds=` set, through a second mechanism VERA
+    /// does not model — see the `Delay >= 0x21` residual on
+    /// [`PREDELAY_FLOOR_MS`]. Do not read this gate as "the entry does not
+    /// loop".
     ///
     /// Consumes one iteration when it answers yes.
     pub fn advance_loop(&mut self, id: EventId) -> bool {

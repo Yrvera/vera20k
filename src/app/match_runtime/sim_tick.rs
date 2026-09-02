@@ -528,12 +528,26 @@ pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
 /// `VoxClass::PauseEVA @ 0x007535B0` raises.
 ///
 /// Pause is the explicit `GamePause::Enter @ 0x00406F00` path: suspend every
-/// event, stop the playing channels, and pause the EVA/speech stream. VERA's
-/// separate "in-game menu open" state is deliberately NOT treated as a pause
-/// — gamemd reaches
-/// `GamePause::Enter` only through `ScenarioPause::Enter @ 0x00684060` and
-/// `StateMachine::EnterPause @ 0x00683EB0`, and whether the YR options dialog
-/// routes through either of those is UNCHECKED.
+/// event, stop the playing channels, and pause the EVA/speech stream.
+///
+/// `match_state.paused` **is** VERA's in-game-menu state — `in_game.rs` sets
+/// it from `InGameMenuState::is_open()`, and apart from the `J` debug toggle
+/// VERA has no other pause. That is not a divergence from gamemd; it is
+/// exactly gamemd's pause. `State_Machine @ 0x0048C8B0` brackets its entire
+/// dialog switch — case 5 `OptionsClass::ShowInGameDialog`, case 8
+/// `Show_Diplomacy_Menu`, case 9 `ScenarioClass::ShowMissionRestateBriefing`
+/// — between `StateMachine::EnterPause @ 0x00683EB0`, whose first statement
+/// is `GamePause::Enter`, and `StateMachine::ExitPause @ 0x00683FB0`, whose
+/// last is `GamePause::Exit`. `get_function_callers` on `0x00683EB0` returns
+/// only `State_Machine`, and on `0x00406F00` only that path plus
+/// `ScenarioPause::Enter @ 0x00684060` (the nuke-flash / in-game-movie /
+/// trigger route, not a menu).
+///
+/// So opening the in-game menu in gamemd is a full game pause: the SFX
+/// channels stop and the EVA stream is cut mid-word. Passing `paused`
+/// straight into `set_paused` is the correct behaviour — do **not** add a
+/// "menu open is not really a pause" carve-out here; that would be a
+/// regression against the binary.
 pub(crate) fn pump_audio_service(state: &mut AppState, now_ms: u64) {
     let paused = state.match_state.paused;
     let registry = &state.audio.sound_registry;

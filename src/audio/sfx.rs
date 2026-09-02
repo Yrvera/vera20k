@@ -915,6 +915,17 @@ impl VoiceSuspend {
     fn dequeue_allowed(&self) -> bool {
         self.depth == 0
     }
+
+    /// `VoxClass::ResetAll @ 0x007535F0` zeroes `DAT_00b1d428` outright
+    /// (`DAT_00b1d428 = 0;`, after stopping the stream and calling
+    /// `VoxClass::ClearAllQueues`) rather than unwinding it pause by pause.
+    /// A reset therefore drops any depth a `GamePause::Enter` had raised —
+    /// native does not touch the game's own pause state here, and neither
+    /// does VERA, so a reset taken while paused leaves the dequeue ungated
+    /// in both. Harmless in both, because the queue is empty by then.
+    fn reset(&mut self) {
+        self.depth = 0;
+    }
 }
 
 /// Manages sound effect playback with separate SFX pool and voice slot.
@@ -1358,7 +1369,12 @@ impl SfxPlayer {
     /// `VoxClass::PlayNextQueued @ 0x00752780` wraps its whole body in
     /// `... && (DAT_00b1d428 == 0)` (`0x007527D5`), so while the game is
     /// paused the queue does not advance and the slot is not even recycled.
-    /// The guard is first, as it is there.
+    ///
+    /// VERA tests it first; in native it is the **last** term of the inner
+    /// `if` at `0x007527D5`, after the `StreamPlayer::IsPlaying` poll and the
+    /// end-time comparison. Equivalent, because every term before it is a
+    /// side-effect-free poll and every side effect — the slot recycle
+    /// `DAT_00b1d4c4 + 0x50 = 2` included — sits inside the gate.
     pub fn advance_voice_queue(&mut self) {
         if !self.voice_suspend.dequeue_allowed() {
             return;
@@ -1793,6 +1809,10 @@ impl SfxPlayer {
         }
         self.queued_voice.clear();
         self.current_voice_id = None;
+        // `VoxClass::ResetAll @ 0x007535F0`: stop the stream, clear every
+        // queue, then `DAT_00b1d428 = 0`. The suspend depth is reset here,
+        // not left to unwind on the next pause edge.
+        self.voice_suspend.reset();
     }
 
     /// Get the current SFX master volume.
@@ -2987,6 +3007,28 @@ mod tests {
 
         // `if (d != 0) { d -= 1; if (d < 0) d = 0; }` — an unmatched resume
         // never drives the counter negative, so the next pause still blocks.
+        suspend.set_paused(false);
+        assert!(suspend.dequeue_allowed());
+        suspend.set_paused(true);
+        assert!(!suspend.dequeue_allowed());
+    }
+
+    /// `VoxClass::ResetAll @ 0x007535F0` ends with `DAT_00b1d428 = 0`, so a
+    /// reset drops the whole suspend depth at once instead of unwinding it
+    /// one `GamePause::Exit` at a time. `SfxPlayer::stop_all` is VERA's
+    /// analogue and now does the same.
+    #[test]
+    fn a_reset_clears_the_whole_eva_suspend_depth_at_once() {
+        let mut suspend = VoiceSuspend::default();
+        suspend.set_paused(true);
+        suspend.set_paused(true);
+        assert!(!suspend.dequeue_allowed());
+
+        suspend.reset();
+        assert!(suspend.dequeue_allowed());
+
+        // The depth really is zero, not merely decremented: a single resume
+        // afterwards must not underflow, and a single pause must block again.
         suspend.set_paused(false);
         assert!(suspend.dequeue_allowed());
         suspend.set_paused(true);
