@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use crate::app::AppState;
-use crate::audio::events::GameSoundEvent;
+use crate::audio::events::{GameSoundEvent, SoundSource};
 use crate::map::entities::EntityCategory;
 use crate::rules::art_data::{ArtEntry, ArtRegistry};
 use crate::rules::ruleset::RuleSet;
@@ -307,7 +307,10 @@ fn build_non_garrison_fire_effects(
         if let Some(report_id) = ev.report_sound_id {
             sounds.push(GameSoundEvent::WeaponFired {
                 sound_id: sim.interner.resolve(report_id).to_string(),
-                screen_pos: Some((origin.screen_x, origin.screen_y)),
+                source: Some(SoundSource::new(
+                    (origin.screen_x, origin.screen_y),
+                    (origin.rx, origin.ry),
+                )),
             });
         }
         if ev.garrison_muzzle_index.is_some() {
@@ -768,14 +771,15 @@ mod tests {
         assert_eq!(flashes[0].screen_x, expected_origin.screen_x);
         assert_eq!(sounds.len(), 1);
         match &sounds[0] {
-            GameSoundEvent::WeaponFired {
-                sound_id,
-                screen_pos,
-            } => {
+            GameSoundEvent::WeaponFired { sound_id, source } => {
                 assert_eq!(sound_id, "GIAttack");
                 assert_eq!(
-                    *screen_pos,
+                    source.map(|s| s.screen_pos()),
                     Some((expected_origin.screen_x, expected_origin.screen_y))
+                );
+                assert_eq!(
+                    source.map(|s| s.cell()),
+                    Some((expected_origin.rx, expected_origin.ry))
                 );
             }
             other => panic!("unexpected sound event: {other:?}"),
@@ -897,8 +901,11 @@ mod tests {
         assert_eq!(sounds.len(), 1);
         let origin = resolve_fire_origin_from_sim(&sim, &rules, &art, &events[0]).unwrap();
         match &sounds[0] {
-            GameSoundEvent::WeaponFired { screen_pos, .. } => {
-                assert_eq!(*screen_pos, Some((origin.screen_x, origin.screen_y)));
+            GameSoundEvent::WeaponFired { source, .. } => {
+                assert_eq!(
+                    source.map(|s| s.screen_pos()),
+                    Some((origin.screen_x, origin.screen_y))
+                );
             }
             other => panic!("unexpected sound event: {other:?}"),
         }
