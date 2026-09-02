@@ -136,13 +136,22 @@ pub const RAMP_SPAN_MS: u32 = 1000;
 /// `Control=loop` yields that same one sample from either loader and then
 /// ends.
 ///
-/// Frequency: **zero today**, but for the narrower reason. The audible half
-/// needs an above-floor entry with `Control=all`/`attack`/`decay` and more
-/// than one `Sounds=` name — 22 such entries, every one an ambient plus the
-/// debug `TestRandomLoopDelayAll`, and `AmbientSound=` has no producer
-/// anywhere in the crate. All 41 distinct `MoveSound=` values in
-/// `ini/rulesmd.ini` resolve to entries with `Delay` min 0. It goes live the
-/// day ambients get a producer. Downstream risk:
+/// Frequency: **zero today**, and the audible set is the union of the two
+/// halves above, not just the chaining one. Chaining diverges for an
+/// above-floor entry with more than one `Sounds=` name — 22 entries.
+/// Sustain diverges for every above-floor `Control=loop` entry, single-sample
+/// ones included: `SelectNextSample` ends a cue only on
+/// `((flags & 1) == 0 && pass == 1)` or
+/// `((flags & 1) != 0 && Voc+0x4C != 0 && Voc+0x4C <= pass)`, and **no**
+/// section in `ini/soundmd.ini` sets `Loop=`, so all 24 sustain forever
+/// natively while [`SoundArbiter::advance_loop`] refuses them. Two of the 24
+/// carry a single `Sounds=` name and so fall outside the chaining set —
+/// `CruiseShipAmbience` (`gship1a`, wired as `AmbientSound=`) and
+/// `_Amb_DesertHawk`. Union: 24 entries, every one an ambient plus the debug
+/// `TestRandomLoopDelayAll`, and `AmbientSound=` has no producer anywhere in
+/// the crate. All 41 distinct `MoveSound=` values in `ini/rulesmd.ini`
+/// resolve to entries with `Delay` min 0. It goes live the day ambients get a
+/// producer. Downstream risk:
 /// closing it needs the per-buffer playlist that residuals R4 and R9 also
 /// wait on, plus a port of `SelectNextSample`'s separate cursor state — it
 /// is a mechanism port, not a gate on the existing one, which is why the
