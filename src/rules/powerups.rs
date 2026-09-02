@@ -20,14 +20,16 @@
 //! rows that stop after three tokens (`HealBase`, `Reveal`, `Veteran`, `Unit`,
 //! …) never write a magnitude, and a token-three value that is neither literal
 //! leaves the flag alone. Because the default string carries only two tokens, a
-//! `[Powerups]` section that omits a name still zeroes its weight and clears its
-//! animation.
+//! `[Powerups]` section that omits a name still zeroes its weight and leaves it
+//! with no animation — via the default's bare `NONE`, which is not
+//! `Find_Index`'s `<none>` sentinel and reaches -1 only by failing the type
+//! search, exactly as [`PowerupTable::anim_for`] does.
 //!
 //! ## Dependency rules
 //! Part of `rules/` — INI parsing and rule data only.
 
 use crate::rules::ini_parser::IniFile;
-use crate::rules::ini_value::strtrim_ascii;
+use crate::rules::ini_value::{strtrim_ascii, truncate_bytes};
 use crate::util::native_x87::NativeF64Bits;
 
 /// Slots in the hardcoded name table at `0x007E523C`. The loop bound is
@@ -83,8 +85,8 @@ const DEFAULT_WEIGHTS: [i32; POWERUP_COUNT] = [
 const READ_STRING_CAPACITY: usize = 0x80;
 
 /// The default handed to every `ReadString` call, verified at `0x0083D4AC`.
-/// Two tokens only: an absent row zeroes the weight and clears the animation
-/// while leaving the flag and magnitude untouched.
+/// Two tokens only: an absent row zeroes the weight and leaves the slot with no
+/// resolvable animation, while the flag and magnitude keep their live values.
 const DEFAULT_ROW: &str = "0,NONE";
 
 /// `Powerup_From_Name @ 0x0048DE70`: case-insensitive walk of the same fixed
@@ -138,8 +140,14 @@ impl PowerupTable {
     ///
     /// Native resolves at parse time through `AnimTypeClass::Find_Index`, so an
     /// unregistered name is stored as `-1` and can never spawn. VERA keeps the
-    /// parsed name and applies the same filter here; the anim-type set is fixed
-    /// once rules finish loading, so the two agree at every observable point.
+    /// parsed name and applies the same filter here.
+    ///
+    /// These agree for the final rules state, which is the only state gameplay
+    /// reads. They differ for one intermediate case: if a later INI layer
+    /// registers an AnimType that an earlier layer's `[Powerups]` row already
+    /// named, native has already stored `-1` and keeps it, while VERA resolves
+    /// the name against the finished set. That needs a multi-layer mod to
+    /// reach; recorded as a deferred DRIFT rather than claimed equivalent.
     pub fn anim_for(&self, slot: usize, registered: &[String]) -> Option<&str> {
         let name = self.anims.get(slot)?.as_deref()?;
         registered
@@ -164,14 +172,12 @@ impl PowerupsAccumulator {
             // Native always parses, falling back to the literal `"0,NONE"`, so
             // an absent row still zeroes the weight and clears the animation
             // while leaving the flag and magnitude untouched.
-            // `CCINIClass__ReadString` copies at most `capacity - 1` bytes and
-            // forces the terminator, so an over-long value truncates at 127.
-            let raw: String = section
-                .get(name)
-                .unwrap_or(DEFAULT_ROW)
-                .chars()
-                .take(READ_STRING_CAPACITY - 1)
-                .collect();
+            // `CCINIClass__ReadString` is `strncpy` plus a forced terminator, so
+            // an over-long value is cut at 127 BYTES, not 127 characters.
+            let raw = truncate_bytes(
+                section.get(name).unwrap_or(DEFAULT_ROW),
+                READ_STRING_CAPACITY - 1,
+            );
             // `CRT__strtok` collapses runs of the delimiter and skips leading
             // ones, so an empty field is not a token at all: `20,,yes,2000`
             // yields three tokens, not four.

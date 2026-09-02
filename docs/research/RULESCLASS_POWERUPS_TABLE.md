@@ -40,7 +40,12 @@ INI line format:
 - `value` — double, the powerup's per-kind effect parameter. If the token
   contains a `%`, the raw `atof` is multiplied by `0.01` (so `50%` becomes
   `0.5`); otherwise it is stored verbatim. Interpreted per-powerup:
-  - Money → maximum cash granted
+  - Money → the **minimum** cash granted, not the maximum. The Money branch
+    does `EAX = ftol(magnitude); EDX = EAX + 0x384; RandomRanged(EAX, EDX)`
+    (`0x00482484..0x004824A0`), so stock `Money=20,MONEY,yes,2000` pays
+    **2000–2900**. The retail INI's own trailing comment `(maximum cash)` is
+    wrong and this doc inherited it. In game mode zero the draw is skipped
+    entirely and `[CrateRules] SoloCrateMoney` is paid flat.
   - Armor/Firepower/Speed → multiplier applied to nearby units
   - Veteran → veteran levels added
   - Invulnerability → duration in minutes

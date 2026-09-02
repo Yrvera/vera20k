@@ -1108,7 +1108,7 @@ impl RulesPassProcessor {
 
         // Difficulty readers contain no Type factories.
         self.allocate_crate_references(pass);
-        // ReadCrateRules @ 0x0066B8F0 reads the semantic crate values in the
+        // ReadCrateRules @ 0x0066B900 reads the semantic crate values in the
         // same Process pass; it allocates no Type and spends no ID.
         self.crate_rules.apply_pass(pass);
         self.powerups.apply_pass(pass);

@@ -62,13 +62,17 @@ impl IniSection {
     /// ReadString (P5, P18): copy at most `capacity - 1` bytes, force the final
     /// NUL, then trim bytes ≤0x20 at both ends. Capacities are caller-specific
     /// in retail, so they are explicit here too.
+    ///
+    /// `CCINIClass__ReadString @ 0x00528A10` is `strncpy(dst, src, capacity)`
+    /// followed by `dst[capacity - 1] = 0`, so the cut is by BYTE, not by
+    /// character. Truncating by `char` would keep text native discards on any
+    /// value whose first `capacity - 1` characters span more bytes than that.
     pub fn read_string(&self, key: &str, default: &str, capacity: usize) -> String {
         if capacity == 0 {
             return String::new();
         }
         let raw = self.get(key).unwrap_or(default);
-        let copied: String = raw.chars().take(capacity - 1).collect();
-        strtrim_ascii(&copied).to_string()
+        strtrim_ascii(truncate_bytes(raw, capacity - 1)).to_string()
     }
 
     /// Read3Int (P8): comma "%d,%d,%d". All-defaults on ABSENT key. Each field
@@ -160,8 +164,13 @@ impl IniSection {
     /// `FMUL double ptr [0x007E1710]` at `0x0047464C`, where that address holds
     /// `0x4070000000000000` = `256.0`, then `Math__ftol @ 0x007C5F00`, whose
     /// control word `0x0E7F` selects chop. `f64 as i32` truncates toward zero
-    /// (saturating, NaN->0) and matches it; NOT `util::sim_to_i32`, which
-    /// floors toward −∞ (DRIFT on negatives, ledger #18).
+    /// like it does, and NOT `util::sim_to_i32`, which floors toward −∞ (DRIFT
+    /// on negatives, ledger #18).
+    ///
+    /// One residual: `Math__ftol` executes `FISTP qword` and keeps only the low
+    /// dword, so an out-of-range magnitude WRAPS, while `f64 as i32` saturates.
+    /// Reaching it needs |value| >= 8388608 cells; NaN agrees either way,
+    /// because x87 integer-indefinite has a zero low dword.
     ///
     /// The lepton scale is load-bearing and was missing here until it was
     /// re-derived from the disassembly on 2026-09-02 — the Ghidra decompiler
@@ -216,6 +225,21 @@ pub(crate) fn parse_read_double(raw: &str) -> f64 {
     } else {
         widened
     }
+}
+
+/// Byte-wise `strncpy` truncation. A cut that would land inside a multi-byte
+/// sequence backs up to the preceding boundary: native writes the partial bytes
+/// and the forced NUL, which is not representable as a Rust `str`, and no INI
+/// value in retail data is non-ASCII.
+pub(crate) fn truncate_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 /// strtrim equivalent (P5): strip bytes <= 0x20 from BOTH ends. ASCII-only by

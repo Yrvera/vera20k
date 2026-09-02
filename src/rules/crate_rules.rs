@@ -23,10 +23,14 @@ pub struct CrateRules {
     /// `HealCrateSound` -> `Rules+0x718`, a Voc index natively.
     ///
     /// Native resolves the name through `VocClass__FindByName` at parse time and
-    /// keeps the previous index when the lookup fails, so an unresolvable name
-    /// is indistinguishable from an absent key. VERA retains the name and
-    /// resolves against the sound registry at use; the two differ only for a
-    /// name no sound defines, which cannot occur in stock data.
+    /// keeps the PREVIOUS index when the lookup fails, so an unresolvable name
+    /// is indistinguishable from an absent key. A no-type sentinel is modelled
+    /// exactly — it retains the live value instead of clearing it. What cannot
+    /// be modelled here is an ordinary name that no sound defines: VERA has no
+    /// Voc registry at rules-parse time, so it stores the name and resolves at
+    /// use, where native would already have kept the earlier sound. Reaching
+    /// that needs two passes, the first naming a real sound and the second an
+    /// undefined one; recorded as a deferred DRIFT.
     pub heal_crate_sound: Option<String>,
     /// `CrateMinimum` -> `Rules+0x1470`.
     pub minimum: i32,
@@ -105,7 +109,6 @@ impl CrateRulesAccumulator {
             ("WoodCrateImg", &mut self.0.wood_crate_img),
             ("CrateImg", &mut self.0.crate_img),
             ("WaterCrateImg", &mut self.0.water_crate_img),
-            ("HealCrateSound", &mut self.0.heal_crate_sound),
         ] {
             if section.get(key).is_none() {
                 continue;
@@ -115,6 +118,16 @@ impl CrateRulesAccumulator {
             // allocation.
             let value = section.read_string(key, "", 0x80);
             *target = (!is_native_none_type_name(&value)).then(|| value.to_ascii_uppercase());
+        }
+        if section.get("HealCrateSound").is_some() {
+            // `if ((read == 0) || (index = VocClass__FindByName(), index == -1))
+            //  { index = previous; }` — a failed lookup RETAINS the live index
+            // rather than clearing it, so a no-type sentinel must not null the
+            // field the way the image keys above do.
+            let value = section.read_string("HealCrateSound", "", 0x80);
+            if !is_native_none_type_name(&value) {
+                self.0.heal_crate_sound = Some(value.to_ascii_uppercase());
+            }
         }
         if section.get("CrateMinimum").is_some() {
             self.0.minimum = section.read_int("CrateMinimum", self.0.minimum);
@@ -243,6 +256,36 @@ mod tests {
         assert_eq!(rules.radius, 768);
         assert_eq!(rules.silver_crate, POWERUP_VETERAN);
         assert_eq!(rules.minimum, 4);
+    }
+
+    /// A failed `VocClass__FindByName` retains the live index, so a no-type
+    /// sentinel must not clear the sound the way the three image keys are.
+    #[test]
+    fn heal_crate_sound_sentinel_retains_the_live_value() {
+        let mut accumulator = CrateRulesAccumulator::default();
+        accumulator.apply_pass(&IniFile::from_str(
+            "[CrateRules]
+HealCrateSound=HealCrate
+CrateImg=CRATE
+",
+        ));
+        accumulator.apply_pass(&IniFile::from_str(
+            "[CrateRules]
+HealCrateSound=<none>
+CrateImg=<none>
+",
+        ));
+        let rules = accumulator.finish();
+
+        assert_eq!(
+            rules.heal_crate_sound.as_deref(),
+            Some("HEALCRATE"),
+            "a sentinel keeps the previously resolved sound"
+        );
+        assert_eq!(
+            rules.crate_img, None,
+            "the image keys DO null on a sentinel — FindOrCreate has no retain branch"
+        );
     }
 
     /// An unmatched solo-crate mapping resolves to Money rather than failing —
