@@ -1172,10 +1172,22 @@ Recorded open items, each with its native reading and owner. None is closed by P
   restamp are not exposed as ordered slots by the final sweep. Owners remain the generic trigger
   subsystem, transaction 20, and transaction 21/OQ-19; transaction 3 continuation owes the ordered
   seam and the negative no-`BridgeFacts` assertion.
-- **Retained wall plane `None` acceptance (contract G7).** Snapshot v115 rejects only a length
-  mismatch; the generated production arm still builds `OverlayGrid::from_native_overlay_packs` with
-  `retained_wall_neighbor_counts: None` and the global count owner falls back to the legacy scan.
-  The current-version `None` rejection lands with G10.
+- **Retained wall plane `None` acceptance (contract G7) — IMPLEMENTED by transaction-3 slice E
+  (`feature/bridge-retained-wall-plane`).** `OverlayGrid::from_native_overlay_packs` — the generated
+  launch's overlay authority, and any authored pack reaching that boundary — now owns the
+  `CellClass+0x122` wall plane instead of leaving the legacy `None` compatibility mode: it starts at
+  zero and wrapping-increments the eight neighbours of every accepted wall stamp in N, NE, E, SE, S,
+  SW, W, NW order (`OverlayClass::Mark`'s wall tail, the same increment the authored finalizer
+  models), dropping off-grid steps because native resolves those to the shared dummy CellClass whose
+  byte no real cell reads. Snapshot restore rejects a current-version state with no plane
+  (`SnapshotRestoreError::MissingRetainedWallNeighborPlane`) rather than falling through to the
+  identity rescan, so the blocker-count owner's legacy scan is now reachable only from test-only
+  legacy constructors. Player-visible effect today: none. The retail random-map generator emits only
+  tiberium (`GEM01`-`GEM12`, `TIB01`-`TIB12`), low-bridge deck and `SROCK`/`TROCK` overlay indices,
+  and no index in those ranges carries `Wall=yes` in `rulesmd.ini` (walls are `GASAND`, `CYCL`,
+  `GAWALL`, `NAWALL`, `CAFNCB`, `CAFNCW`, `CAKRMW`, `CAFNCP`), so a generated launch keeps an
+  all-zero plane and the observable counts are unchanged. The row closes the authority hole: a
+  runtime-destroyed wall no longer silently drops its Mark history from the count.
 - **CellAnim child fields.** `OverlayClass::Mark`'s ordinary tail constructs the CellAnim at
   `Location+0x180` per axis with `GetGroundHeight`, then, when the cell has a tiberium type, writes
   `Anim+0xD4 = ColorScheme[Tiberium+0xC0]+0x30C` and `Anim+0xFC = cell.nZAdjust_Ground`. The
