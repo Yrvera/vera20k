@@ -293,6 +293,45 @@ mod tests {
         assert!(fresh.resources.waypoints.is_empty());
     }
 
+    /// The crate regeneration rung is guarded in the master frame by
+    /// `if let Some(overlay_registry)`, a Rust availability gate with no native
+    /// counterpart. Prove the SOLE production frame entry point always binds
+    /// one, so that gate can never silently disable
+    /// `MapClass__UpdateCrateRegenTimers @ 0x0056BBE0` in a real match.
+    #[test]
+    fn crate_regen_rung_runs_in_every_production_frame() {
+        use crate::sim::crates::CrateSlot;
+        use crate::sim::crates::tests::{crate_registry, crate_ruleset, sim_with_grid};
+
+        let mut simulation = sim_with_grid(0x62);
+        simulation.session.game_mode_nonzero = true;
+        simulation.session.game_options.crates = true;
+        let due = CrateSlot {
+            start_frame: -1,
+            aux: 0,
+            duration: 0,
+            cell_x: 15,
+            cell_y: 15,
+        };
+        *simulation.crate_authority.slot_mut(0) = due;
+
+        let mut resources = SimResources::empty();
+        resources.rules = crate_ruleset("");
+        resources.overlay_registry = crate_registry();
+        let mut runtime = SimRuntime {
+            simulation,
+            resources,
+        };
+
+        let _ = runtime.advance_frame(&[], 33, crate::sim::world::TickLane::Ordinary);
+
+        assert_ne!(
+            runtime.simulation.crate_authority.slots()[0],
+            due,
+            "SimRuntime::advance_frame must reach the crate regeneration rung"
+        );
+    }
+
     #[test]
     fn gsi_04_12_generated_funnel_projects_preconsumed_words_without_scenario_draw() {
         use crate::map::entities::{EntityCategory, MapEntity};
