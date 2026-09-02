@@ -123,17 +123,39 @@ pub const RAMP_SPAN_MS: u32 = 1000;
 /// `AdvancePlaylist` restart above the floor while VERA models no substitute,
 /// VERA then *stops*, where gamemd sustains the cue under
 /// `SelectNextSample`'s own `Loop=` budget. So an ambient authored to run
-/// forever would play once and fall silent. Frequency: **zero
-/// today** — exactly 24 `Control=loop` entries in `ini/soundmd.ini` have
-/// `Delay` min >= 33 (23 `ambient`, plus the debug `TestRandomLoopDelayAll`),
-/// none has a producer in `audio/events.rs`, and all 41 distinct
-/// `MoveSound=` values in `ini/rulesmd.ini` resolve to entries with `Delay`
-/// min 0. It goes live the day ambients get a producer. Downstream risk:
+/// forever would play once and fall silent.
+///
+/// Trigger set, stated precisely because the obvious reading is wrong: the
+/// loader split at `0x004048B0` tests `Voc+0x58` alone, with **no `Control=`
+/// term**, so it is not the 24 `Control=loop` entries that qualify but every
+/// entry above the floor — **30** in `ini/soundmd.ini`. Six of those carry no
+/// `Control=loop`, and two of the six, `UpgradeVeteran`/`UpgradeElite`
+/// (`Delay=400`), are produced on **every unit promotion**
+/// (`rules/ruleset.rs` → `sim/world/techno_ai.rs` → `audio/events.rs`). They
+/// are nonetheless inaudibly identical, because a single-sample entry with no
+/// `Control=loop` yields that same one sample from either loader and then
+/// ends.
+///
+/// Frequency: **zero today**, but for the narrower reason. The audible half
+/// needs an above-floor entry with `Control=all`/`attack`/`decay` and more
+/// than one `Sounds=` name — 22 such entries, every one an ambient plus the
+/// debug `TestRandomLoopDelayAll`, and `AmbientSound=` has no producer
+/// anywhere in the crate. All 41 distinct `MoveSound=` values in
+/// `ini/rulesmd.ini` resolve to entries with `Delay` min 0. It goes live the
+/// day ambients get a producer. Downstream risk:
 /// closing it needs the per-buffer playlist that residuals R4 and R9 also
 /// wait on, plus a port of `SelectNextSample`'s separate cursor state — it
 /// is a mechanism port, not a gate on the existing one, which is why the
 /// half-fix (truncating the chain to one sample here) is deliberately not
 /// applied: it would pick the wrong sample and still not loop correctly.
+///
+/// VERA-internal, gamemd equivalent UNCHECKED: native's floor test reads
+/// `*(uint *)(Voc+0x58)` and compares UNSIGNED, so a negative `Delay=` low
+/// bound (which `crt_atoi` will happily parse from a leading `-`) lands above
+/// the floor there and below it here, where the comparison is signed `i32`.
+/// No stock `Delay=` is negative, so this cannot fire on retail data; it is
+/// labelled only because the rest of this module labels its unreachable
+/// divergences.
 pub const PREDELAY_FLOOR_MS: i32 = 0x21;
 
 /// Threshold above which the many-sounds limiter engages, and the numerator
