@@ -173,7 +173,14 @@ pub fn acquire_best_target_for_entity(
         scan_mission: scan_mission_for(entity),
     };
     acquire_best_target(
-        entities, rules, interner, &snapshot, obj, fog, None, terrain,
+        entities,
+        rules,
+        interner,
+        &snapshot,
+        obj,
+        fog,
+        None,
+        terrain,
         require_playfield_membership,
     )
 }
@@ -309,6 +316,38 @@ pub(crate) fn acquire_best_target(
         if require_playfield_membership && !candidate.in_playfield {
             continue;
         }
+        // `TechnoClass::Evaluate_Candidate @ 0x006F7DA9` — the cloak arm, in its
+        // native slot: after the `+0x81` InLimbo and `+0x6C` Health rejections
+        // and before the `+0x3D5` playfield byte. A fully cloaked candidate
+        // (`CloakState == 2`) is illegal unless the ATTACKER'S house holds a
+        // positive sensor count on the candidate's own cell, or the two share
+        // an owner. States 1 and 3 are never filtered, and alliance does not
+        // exempt — an allied submerged sub is just as illegal as an enemy one.
+        //
+        // This is what stops every Grizzly, Prism Tower and Aegis in range from
+        // auto-firing at a submerged Typhoon: it is continuous in any naval
+        // game, and until this landed VERA had no cloak term in acquisition at
+        // all.
+        //
+        // With `fog` absent (headless fixtures, sandbox) there is no sensor
+        // plane to consult, so the cell reads as unsensed — the same answer
+        // native gives a house with no deposit there.
+        if crate::sim::cloak_disguise::cloak_rejects_candidate(
+            candidate
+                .cloak
+                .as_ref()
+                .is_some_and(|cloak| cloak.is_fully_cloaked()),
+            fog.is_some_and(|fog_state| {
+                fog_state.has_sensor_for_house(
+                    attacker.owner,
+                    candidate.position.rx,
+                    candidate.position.ry,
+                )
+            }),
+            candidate.owner == attacker.owner,
+        ) {
+            continue;
+        }
         // Skip entities inside a transport — they are hidden from the battlefield.
         if candidate.passenger_role.is_inside_transport() {
             continue;
@@ -413,6 +452,69 @@ pub(crate) fn acquire_best_target(
         };
         if !in_range {
             continue;
+        }
+
+        // `TechnoClass::Evaluate_Candidate @ 0x006F84B1..0x006F854B` — the
+        // disguise arm, in its native slot (after the distance/`CanFireAt`
+        // block, before the flag-driven score extras).
+        //
+        // `IsDisguisedTo` (`UnitClass @ 0x00746750`, `InfantryClass @
+        // 0x005227F0`, vt+0xC8) is evaluated per observer; the allied clause is
+        // already satisfied here because allied candidates were dropped above.
+        // A `DetectDisguise=` attacker TYPE skips the whole arm — that is the
+        // dogs' (ADOG/DOG/YADOG/YDOG), Yuri's and the Psi Corps Trooper's
+        // entire special role against Spies and Mirage Tanks. The building side
+        // of the key reaches this through the per-cell counter instead.
+        //
+        // RESIDUAL — the Mirage fake-blink window and the AI detection roll.
+        // Native, having rejected a DetectDisguise-less attacker, gives it a
+        // second chance while the candidate's `+0x1EC/+0x1F4` blink timer is
+        // running (armed only by `UnitClass::Fire_At @ 0x00741340` with the
+        // firing weapon's `DisguiseFakeBlinkTime=`) AND the attacking house is
+        // computer-controlled, at the cost of one `RandomRanged(0, 99)` on the
+        // Scenario stream compared against `[General]
+        // DisabledDisguiseDetectionPercent=15,5,2`. VERA stores no blink timer,
+        // so `0` is passed and the gate collapses to a plain reject.
+        // - Trigger: an AI-owned attacker evaluating a Mirage Tank within
+        //   `DisguiseFakeBlinkTime` frames of that Mirage's own shot.
+        // - Player effect: none today — every VERA house is human-controlled,
+        //   and native rejects a human attacker on the very next line, so both
+        //   engines reject identically.
+        // - Frequency: zero until an AI opponent ships.
+        // - Downstream risk: wiring it costs one Scenario draw per evaluated
+        //   disguised candidate, which moves RNG order for every later consumer
+        //   in the same tick. It must land together with the AI house, not
+        //   before it.
+        const BLINK_TIMER_NOT_MODELLED: i32 = 0;
+        let candidate_disguised_to_attacker = candidate.disguise.as_ref().is_some_and(|disguise| {
+            crate::sim::cloak_disguise::is_disguised_to(
+                disguise.disguised,
+                false,
+                fog.is_some_and(|fog_state| {
+                    fog_state.detects_disguise_for_house(
+                        attacker.owner,
+                        candidate.position.rx,
+                        candidate.position.ry,
+                    )
+                }),
+                disguise.disguised_as_house.is_some_and(|fake| {
+                    fake == attacker.owner
+                        || fog.is_some_and(|fog_state| {
+                            fog_state.is_friendly(attacker_owner_str, interner.resolve(fake))
+                        })
+                }),
+                disguise.disguised_as_house.is_some(),
+            )
+        });
+        let attacker_detects_disguise = attacker_obj.detect_disguise;
+        match crate::sim::cloak_disguise::disguise_rejects_candidate(
+            candidate_disguised_to_attacker,
+            attacker_detects_disguise,
+            BLINK_TIMER_NOT_MODELLED,
+            true,
+        ) {
+            crate::sim::cloak_disguise::DisguiseGateOutcome::Accept => {}
+            _ => continue,
         }
 
         let class = threat_class(rules, interner, candidate);
