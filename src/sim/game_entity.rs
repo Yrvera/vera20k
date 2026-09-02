@@ -588,7 +588,13 @@ pub struct GameEntity {
     /// from `FacingClass::Is_Rotating` at `0x00736B16`) and read only by
     /// `UnitClass::GetFireError @ 0x00741233`. While set, the aim block is
     /// skipped so the turret finishes the arc it started instead of
-    /// re-snapshotting every frame, and the fire gate answers FIRE_ROTATING(4).
+    /// re-snapshotting every frame, and — unless the projectile homes — the
+    /// fire gate answers FIRE_ROTATING(4) at `0x00741250`, refusing the shot
+    /// until the arc completes.
+    ///
+    /// Not folded into `world_hash`: it is last tick's `barrel_facing`
+    /// `Is_Rotating`, which the hash already folds, so a divergence surfaces
+    /// one tick later through the interpolator itself.
     #[serde(default)]
     pub turret_rotation_latch: bool,
     /// Frame of this object's own last shot — `TechnoClass+0x120`. The
@@ -597,6 +603,10 @@ pub struct GameEntity {
     /// `g_CurrentFrameCounter`. `UnitClass::Facing_Update` gates the idle turret
     /// return on `frame - this >= GuardAreaTargetingDelay + 5`, so the dwell is
     /// measured from the unit's own last shot, NOT from target loss.
+    ///
+    /// Not folded into `world_hash`: its only consumer is that idle return, so
+    /// a divergence surfaces one tick later through `barrel_facing`, which the
+    /// hash does fold.
     #[serde(default = "default_last_fire_frame")]
     pub last_fire_frame: i64,
     /// Building construction animation progress.

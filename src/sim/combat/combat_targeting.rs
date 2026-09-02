@@ -98,6 +98,12 @@ pub(crate) struct AttackerSnapshot {
     /// facing gate reads it for `Turret=no` firers so the comparison uses the
     /// full 16-bit animated value rather than the 8-bit mirrored heading.
     pub hull_facing: Option<crate::sim::movement::FacingClass>,
+    /// Turret rotation latch (`UnitClass+0x6AF`) as it stood BEFORE this tick's
+    /// `Facing_Update`, which is the value `UnitClass::GetFireError @
+    /// 0x00741233` reads: `UnitClass::AI` runs `Fire_At_Target @ 0x007365E1`
+    /// before `Facing_Update @ 0x007365E8`, and VERA commits the new latch in
+    /// `apply_unit_facing` after Phase 5.
+    pub turret_rotation_latch: bool,
     pub burst_remaining: u8,
     pub burst_delay_ticks: u8,
     /// Weapon-selection override (Gunner-IFV slot OR open-topped passenger weapon).
@@ -171,6 +177,7 @@ pub fn acquire_best_target_for_entity(
         pending_building_fire: None,
         barrel_facing: entity.barrel_facing,
         hull_facing: entity.body_facing,
+        turret_rotation_latch: entity.turret_rotation_latch,
         burst_remaining: 0,
         burst_delay_ticks: 0,
         weapon_override: entity.weapon_override,

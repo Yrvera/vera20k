@@ -1291,3 +1291,109 @@ TurretAnimIsVoxel={}\n\n\
         "and is refused past it, with no snap-and-retry"
     );
 }
+
+#[test]
+fn gsi_08_04_rotation_latch_refuses_the_shot_until_the_arc_finishes() {
+    // `UnitClass::GetFireError @ 0x00740FD0` step 14
+    // (`0x00741229`..`0x00741259`): firing-sequence byte `+0x68D` clear AND
+    // rotation latch `+0x6AF` set AND the projectile's `ROT=`
+    // (`BulletTypeClass+0x2DC`) zero -> `MOV EAX,0x4; RET 0xc`, i.e.
+    // FIRE_ROTATING, returned BEFORE the OmniFire skip at `0x0074125C` and
+    // before the step-17 angle test. A turret that has committed to an arc may
+    // not fire partway through it, even once it is inside 0x0800.
+    fn fires_with_latch(latch: bool, projectile_rot: u32, offset: u16) -> bool {
+        let rules = rules_with_homing_projectile(projectile_rot);
+        let mut sim = Simulation::new();
+        spawn_turreted(&mut sim, 1, 5, 5, 5);
+        spawn_target(&mut sim, 2, 5, 9);
+        use_test_interner(&mut sim);
+        let attacker = sim.substrate.entities.get_mut(1).unwrap();
+        attacker.attack_target = Some(AttackTarget::new(2));
+        attacker.barrel_facing = Some(FacingClass::new(
+            facing_from_5_5_to_5_9().wrapping_add(offset),
+            5,
+        ));
+        attacker.turret_rotation_latch = latch;
+        !run_combat_direct(&mut sim, &rules).fire_events.is_empty()
+    }
+
+    // Exactly on target, so nothing but the latch can be doing the refusing.
+    assert!(
+        fires_with_latch(false, 0, 0),
+        "a finished arc fires: this is the control"
+    );
+    assert!(
+        !fires_with_latch(true, 0, 0),
+        "an armed +0x6AF refuses the shot even when the turret is dead on"
+    );
+    // The refusal precedes the tolerance test, so it also refuses a shot the
+    // angle arm would have passed at the edge of 0x0800.
+    assert!(
+        !fires_with_latch(true, 0, 0x0800),
+        "and it is checked before the angle test, not after it"
+    );
+
+    // `MOV EDX,[EBX+0xA0]; MOV EAX,[EDX+0x2DC]; TEST; JNZ 0x0074125C` at
+    // `0x0074123D`..`0x0074124B` skips the whole refusal when the projectile
+    // homes: a missile turret keeps shooting mid-arc where a cannon may not.
+    // It is the same `+0x2DC` that widens the step-17 tolerance to 0x1000.
+    assert!(
+        fires_with_latch(true, 30, 0),
+        "a homing projectile skips FIRE_ROTATING and fires mid-arc"
+    );
+    assert!(
+        fires_with_latch(true, 30, 0x1000),
+        "with its widened tolerance still applying"
+    );
+}
+
+#[test]
+fn gsi_08_04_no_shot_lands_while_the_turret_is_still_swinging() {
+    // The same step 14 refusal, driven through the production
+    // `Simulation::advance_tick` path rather than the combat entry directly,
+    // so the latch really is committed by `apply_unit_facing` and really is
+    // read back by the gate.
+    //
+    // A half-turn arc at `ROT=1` (0x0100 per frame) takes ~128 frames, and its
+    // last 0x0800 takes 8 of them. Without the FIRE_ROTATING refusal the tank
+    // opens fire for those 8 frames while the turret is visibly still swinging;
+    // with it, no shot lands until the arc is over.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 1); // facing north
+    spawn_target(&mut sim, 2, 5, 9); // due south: half a turn away
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(1);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let start_hp = sim.substrate.entities.get(2).unwrap().health.current;
+    let mut fired_on_tick = None;
+    for tick in 0..400u32 {
+        let frame = sim.session.binary_frame;
+        let rotating = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .barrel_facing
+            .as_ref()
+            .is_some_and(|barrel| barrel.is_rotating(frame));
+        sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+        let hp = sim
+            .substrate
+            .entities
+            .get(2)
+            .map_or(0, |target| target.health.current);
+        if hp < start_hp {
+            assert!(
+                !rotating,
+                "tick {tick}: a shot landed while the turret was still mid-arc"
+            );
+            fired_on_tick = Some(tick);
+            break;
+        }
+    }
+    assert!(
+        fired_on_tick.is_some(),
+        "the refusal must not deadlock the unit - the arc ends and the shot lands"
+    );
+}

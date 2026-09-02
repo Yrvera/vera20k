@@ -344,7 +344,15 @@ use crate::sim::world::Simulation;
 // `DetectDisguiseRange=` radius on each SensorDeposit. Both fields already
 // round-trip (they are `#[serde(default)]` additive), so this bump exists to
 // keep the hash-schema probes and the serialized version aligned.
-const SNAPSHOT_VERSION: u32 = 117;
+// Bumped 117 -> 118: `GameEntity` gains the `UnitClass+0x6AF` turret rotation
+// latch and the `TechnoClass+0x120` last-fire frame. Both are inserted
+// MID-STRUCT — after `barrel_facing`, before `building_up` — and both are
+// present on EVERY entity. Bincode is not self-describing: the decoder reads
+// the next field's bytes unconditionally and `#[serde(default)]` never fires
+// for a short record, so a v117 save would pass the version check and then
+// misread every byte from entity one onward. A mid-struct insertion is exactly
+// the case serde defaults cannot cover, so the version has to move.
+const SNAPSHOT_VERSION: u32 = 118;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -3061,10 +3069,13 @@ mod tests {
     /// stores (entry array, heap of references, capacity) and adds the
     /// `MapRect` the stores are sized from; 116 -> 117 folds the
     /// disguise-detect counter plane and the cached `DetectDisguiseRange=`
-    /// deposit radius into the hash schema.
+    /// deposit radius into the hash schema; 117 -> 118 inserts the
+    /// `UnitClass+0x6AF` turret rotation latch and the `TechnoClass+0x120`
+    /// last-fire frame mid-`GameEntity`, on every entity, which bincode cannot
+    /// decode from a shorter v117 record.
     #[test]
-    fn disguise_detect_plane_snapshot_version_is_117() {
-        assert_eq!(super::SNAPSHOT_VERSION, 117);
+    fn turret_rotation_latch_snapshot_version_is_118() {
+        assert_eq!(super::SNAPSHOT_VERSION, 118);
     }
 
     #[test]

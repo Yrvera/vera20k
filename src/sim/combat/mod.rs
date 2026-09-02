@@ -6266,6 +6266,7 @@ pub(crate) fn build_attacker_snapshot(
         pending_building_fire,
         barrel_facing: entity.barrel_facing,
         hull_facing: entity.body_facing,
+        turret_rotation_latch: entity.turret_rotation_latch,
         burst_remaining,
         burst_delay_ticks,
         weapon_override: entity.weapon_override,
@@ -7006,6 +7007,50 @@ pub(crate) fn resolve_attacker_fire(
         }
     }
 
+    // The projectile's `ROT=` (`BulletTypeClass+0x2DC`) is read twice in this
+    // region of `UnitClass::GetFireError`: once by the rotation refusal below
+    // (`0x00741243`) and once to widen the angle tolerance (`0x007412B6`).
+    let projectile_homes = weapon
+        .projectile
+        .as_deref()
+        .and_then(|id| rules.projectile(id))
+        .is_some_and(|projectile| projectile.rot != 0);
+
+    // ---- FIRE_ROTATING (4) ----------------------------------------------
+    //
+    // gamemd-derived: `UnitClass::GetFireError @ 0x00740FD0` step 14,
+    // `0x00741229`..`0x00741259` (disassembled this session):
+    //
+    //   MOV AL,[ESI+0x68D] / TEST AL,AL / JNZ 0x0074125C  ; firing sequence set
+    //   MOV AL,[ESI+0x6AF] / TEST AL,AL / JZ  0x0074125C  ; latch clear
+    //   MOV EDX,[EBX+0xA0] / MOV EAX,[EDX+0x2DC] / TEST / JNZ 0x0074125C ; homing
+    //   MOV EAX,0x4 / RET 0xC                             ; FIRE_ROTATING
+    //
+    // A vehicle whose turret is mid-arc is refused HERE, before the OmniFire
+    // skip at `0x0074125C` and before the step-17 angle test — so it may not
+    // fire until the arc it committed to has actually finished, not merely
+    // once the animated turret wanders inside the tolerance. Without this the
+    // latch would delay the aim but not the shot, and every re-aim wider than
+    // one tolerance step would open fire two to three frames early.
+    //
+    // Unit-and-turret only. `+0x6AF` is read by `UnitClass::GetFireError`
+    // alone (`search_instructions` over `+ 0x6af]` — the other reads on this
+    // layout are Receive_Radio, Mission_Unload, Scatter, PassiveAcquireGate and
+    // the checksum walk; `BuildingClass`/`InfantryClass::GetFireError` have no
+    // such term), and the only writer, `UnitClass::Facing_Update @ 0x00736B16`,
+    // sets it exclusively inside the `Turret=yes` arm.
+    //
+    // The firing-sequence byte needs no VERA analogue: of the 21 references to
+    // `+0x68D`, the only store of 1 is `InfantryClass::Fire_At_Target @
+    // 0x00520912`. On a UnitClass receiver the byte is written 0 by
+    // `FootClass::Constructor @ 0x004D33C6` and by three sites in
+    // `UnitClass::Fire_At_Target` (`0x00736EF9`, `0x0073702D`, `0x0073704B`)
+    // and never set, so for a vehicle the first test always falls through.
+    if snap.category == EntityCategory::Unit && snap.turret_rotation_latch && !projectile_homes {
+        // FireDecision::Rotating — native code 4, also a gattling spin-up code.
+        return;
+    }
+
     // ---- Facing arm of the fire gate ------------------------------------
     //
     // gamemd-derived: `UnitClass::GetFireError @ 0x00740FD0` step 17
@@ -7070,12 +7115,7 @@ pub(crate) fn resolve_attacker_fire(
             snap.category == EntityCategory::Structure && obj.turret_anim_is_voxel;
         let tolerance: i32 = if is_voxel_turret_building {
             NATIVE_FIRE_FACING_TOLERANCE_VOXEL_TURRET
-        } else if weapon
-            .projectile
-            .as_deref()
-            .and_then(|id| rules.projectile(id))
-            .is_some_and(|projectile| projectile.rot != 0)
-        {
+        } else if projectile_homes {
             NATIVE_FIRE_FACING_TOLERANCE_HOMING
         } else {
             NATIVE_FIRE_FACING_TOLERANCE
@@ -7091,6 +7131,13 @@ pub(crate) fn resolve_attacker_fire(
         // Cannon at `ROT=1` fires on the tick it comes within one step instead
         // of waiting a further frame.
         if !aligned && is_voxel_turret_building {
+            // VERA-internal, gamemd equivalent UNCHECKED: native builds the step
+            // as `abs((i16)(ROT << 8))`, which wraps for `ROT >= 0x80`; this
+            // clamps instead. Trigger: a building type authoring `ROT=` at or
+            // above 128. Player effect: none observed — the highest stock
+            // building `ROT=` is `[GTGCAN] ROT=1` — so frequency is zero in
+            // stock. Downstream risk: none; the clamp only bounds the retry
+            // window of a refusal that is re-evaluated next tick anyway.
             let rot_step: i32 = i32::from(obj.turret_rot.clamp(0, 0x7F) as u8) << 8;
             if obj.turret_rot == 0 || delta.abs() <= rot_step {
                 if let Some(barrel) = entities

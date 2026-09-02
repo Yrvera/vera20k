@@ -233,6 +233,23 @@ pub(crate) fn facing_update(
             // `0x00736B11`..`0x00736B16` — commit to the arc; arm A stays shut
             // until it finishes, so the turret steps in completed turns rather
             // than re-snapshotting `prev` every frame against a mover.
+            //
+            // DRIFT (GSI-08.14), deferred — this is a PURE READ, so
+            // `is_rotating` is evaluated against the barrel as it stood at the
+            // start of the frame, i.e. BEFORE arm A's own `Set` above (which
+            // `apply_unit_facing` commits post-batch). Native evaluates it
+            // after, because `Facing_Update` mutates `+0x3A0` in place. Effect:
+            // on the FIRST frame of an arc VERA reports `latch = false` where
+            // native reports true, so arm A runs once more on the next frame
+            // and re-snapshots `prev` — one extra re-aim per arc against a
+            // moving target, exactly what the latch exists to prevent. The arc
+            // still ends on the same frame (the destination is unchanged when
+            // the target has not moved), and the fire gate is unaffected,
+            // because it reads the previous tick's committed latch either way.
+            // Trigger: any turreted vehicle starting an arc at a mover.
+            // Frequency: once per arc, so every engagement opening.
+            // Downstream risk: closing it means committing the turret write
+            // before the latch read, i.e. splitting this pure read in two.
             out.latch = true;
         } else if entity.attack_target.is_none() {
             let dwell = rules.map_or(NATIVE_IDLE_TURRET_DWELL_FALLBACK, |r| {
