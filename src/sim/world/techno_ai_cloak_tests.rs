@@ -3,6 +3,7 @@ use crate::map::playfield::PlayfieldBounds;
 use crate::rules::ini_parser::IniFile;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::combat::{AttackTarget, TargetKind};
+use crate::sim::components::NavTargetRef;
 use crate::sim::game_entity::PendingBuildingFire;
 use crate::sim::snapshot::GameSnapshot;
 use crate::util::fixed_math::SimFixed;
@@ -749,12 +750,14 @@ fn start_cloaking_drops_every_targeter_whose_house_cannot_sense_the_cell() {
 }
 
 #[test]
-fn a_dive_detaches_the_full_pointer_expiry_slot_family_not_just_the_target() {
-    // `Detach_All(false)` runs the SAME `TechnoClass::PointerExpired @
-    // 0x007077C0` body as UnInit over EVERY registered object, so a receiver
-    // that never targeted the diving object still loses its radio contact —
-    // `RadioClass::PointerExpired` nulls matching sparse slots regardless of
-    // the control value. Only the `+0x2B4`/`+0x2B8` pair is behind `allowClear`.
+fn a_dive_reaches_every_registered_object_but_leaves_radio_contacts_intact() {
+    // `Detach_All(false)` runs the SAME `TechnoClass -> RadioClass ->
+    // ObjectClass` body as UnInit over EVERY registered object, so a receiver
+    // that never targeted the diving object is still visited. But
+    // `RadioClass::PointerExpired @ 0x0065AAC0` nulls a matching sparse slot
+    // only on a NONZERO control — `0065aaf0 TEST BL,BL / 0065aaf2 JZ` skips the
+    // `0065aaf4 MOV dword ptr [EAX],0x0` on control 0. So a dive leaves the
+    // contact standing and only the UnInit at the end breaks it.
     let (mut sim, rules, cloaker) = spawned_sub();
     let cell = sim
         .substrate
@@ -776,14 +779,95 @@ fn a_dive_detaches_the_full_pointer_expiry_slot_family_not_just_the_target() {
     tick_stock_cloak_producer(&mut sim, cloaker, &rules);
 
     assert!(
+        sim.substrate
+            .entities
+            .get(bystander)
+            .unwrap()
+            .has_live_contact_with(cloaker),
+        "a dive is control 0, so the radio contact survives the broadcast"
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+
+    // Control 1 — `ObjectClass::UnInit` dispatches the same roster walk with a
+    // nonzero control at `0x005F6616`, and the slot clear then runs.
+    sim.techno_limbo_with_rules(cloaker, &rules);
+    assert!(
         !sim.substrate
             .entities
             .get(bystander)
             .unwrap()
             .has_live_contact_with(cloaker),
-        "the dive nulls the radio contact the old cloak-local sweep never visited"
+        "UnInit is control 1, so the same slot clear does fire"
     );
-    assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+}
+
+#[test]
+fn a_sensing_house_keeps_both_target_and_destination_across_a_dive() {
+    // `FootClass::PointerExpired @ 0x004D9960` computes its own `allowClear`
+    // from a SECOND `SensorCountForHouse` call — `0x004D9A57 CALL 0x004870D0`,
+    // at the diving object's `GetCoords` cell for the RECEIVER's house — and
+    // that Boolean gates the `+0x5A0`/`+0x5A4` NavCom pair clear exactly as the
+    // Techno body's copy gates the `+0x2B4`/`+0x2B8` Target pair. So a
+    // Destroyer whose house senses the sub's cell keeps CHASING it, not just
+    // shooting at it. `+0x5A8` (SuspendedNavCom) is cleared above that guard
+    // and goes on both controls.
+    let (mut sim, rules, cloaker) = spawned_sub();
+    let cell = sim
+        .substrate
+        .entities
+        .get(cloaker)
+        .map(|entity| (entity.position.rx, entity.position.ry))
+        .unwrap();
+    let sensing = sim
+        .spawn_object_at_height("DEST", "Americans", cell.0 + 1, cell.1, 0, 0, &rules)
+        .unwrap();
+    // RANKED carries no `SensorsSight=`, so it deposits nothing and stays blind.
+    let blind = sim
+        .spawn_object_at_height("RANKED", "Neutral", cell.0 + 2, cell.1, 0, 0, &rules)
+        .unwrap();
+    for chaser in [sensing, blind] {
+        let entity = sim.substrate.entities.get_mut(chaser).unwrap();
+        entity.attack_target = Some(AttackTarget::new(cloaker));
+        entity.navigation.nav_com = Some(NavTargetRef::object(cloaker));
+        entity.navigation.nav_com_aux = Some(NavTargetRef::object(cloaker));
+        entity.navigation.suspended_nav_com = Some(NavTargetRef::object(cloaker));
+    }
+    let american = sim.substrate.entities.get(sensing).unwrap().owner;
+    sim.fog.increment_sensor_at(american, cell.0, cell.1);
+
+    tick_stock_cloak_producer(&mut sim, cloaker, &rules);
+
+    let sensing_after = sim.substrate.entities.get(sensing).unwrap();
+    assert!(
+        sensing_after.attack_target.is_some(),
+        "the sensing house keeps its Target (+0x2B4)"
+    );
+    assert_eq!(
+        sensing_after.navigation.nav_com,
+        Some(NavTargetRef::object(cloaker)),
+        "and keeps its destination (+0x5A4) — it must not stop closing"
+    );
+    assert_eq!(
+        sensing_after.navigation.nav_com_aux,
+        Some(NavTargetRef::object(cloaker)),
+        "the +0x5A0 half of the pair is behind the same allowClear"
+    );
+    assert_eq!(
+        sensing_after.navigation.suspended_nav_com, None,
+        "+0x5A8 is cleared above the guard, so it goes even for a sensing house"
+    );
+
+    let blind_after = sim.substrate.entities.get(blind).unwrap();
+    assert!(
+        blind_after.attack_target.is_none(),
+        "a blind house loses the Target"
+    );
+    assert_eq!(
+        blind_after.navigation.nav_com, None,
+        "and loses the destination with it"
+    );
+    assert_eq!(blind_after.navigation.nav_com_aux, None);
+    assert_eq!(blind_after.navigation.suspended_nav_com, None);
 }
 
 #[test]

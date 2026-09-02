@@ -330,8 +330,8 @@ pub(crate) fn sensor_reevaluate_stock_cloak(
 /// (`Simulation::detach_all_pointer_expired`) rather than a cloak-local copy.
 /// A miniature copy would have cleared the receiver's Target and nothing else —
 /// no `RandomRanged(4, 8)` re-arm of the `+0x180/+0x188` targeting timer, no
-/// radio-contact null, no cargo/NavCom/manager slot clears, and none of it for
-/// the non-targeters `Detach_All` also visits.
+/// NavCom/cargo/manager slot clears, and none of it for the non-targeters
+/// `Detach_All` also visits.
 ///
 /// The clause that matters most for cloak: the receiver's `Target(+0x2B4)` is
 /// cleared through `Assign_Target(NULL)` unless
@@ -341,10 +341,18 @@ pub(crate) fn sensor_reevaluate_stock_cloak(
 /// * the expiring object has the same owner (`expired->vt+0x3C == my +0x21C`,
 ///   `0x007079B7..0x007079CB`).
 ///
-/// So a destroyer whose house covers the diving submarine keeps firing at it,
-/// and everyone else loses the target the instant the dive begins. Before this
-/// landed, VERA kept every attacker locked on until the next passive-scan
-/// cadence (~28 frames) re-evaluated.
+/// `FootClass::PointerExpired @ 0x004D9960` then recomputes the SAME Boolean
+/// from its own `0x004D9A57 CALL 0x004870D0` and gates the `+0x5A0`/`+0x5A4`
+/// NavCom pair on it, so the sensing house keeps its destination too. Together
+/// those mean a destroyer whose house covers the diving submarine keeps both
+/// firing at it and closing on it, while everyone else loses target and chase
+/// the instant the dive begins. Before this landed, VERA kept every attacker
+/// locked on until the next passive-scan cadence (~28 frames) re-evaluated.
+///
+/// `RadioClass::PointerExpired @ 0x0065AAC0` is the counter-example: its slot
+/// clear is control-1 only (`0065aaf0 TEST BL,BL / JZ`), so a dive breaks no
+/// radio contact — the diving sub keeps its naval-yard repair and transport
+/// links.
 ///
 /// Running this after `CloakRuntime::tick` has written the new state instead of
 /// before it is output-equivalent: the admission test reads only the cloaker's

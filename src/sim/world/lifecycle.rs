@@ -2363,8 +2363,25 @@ impl Simulation {
                     .arm(self.session.binary_frame, delay);
             }
 
-            // RadioClass::PointerExpired nulls matching sparse slots in place.
-            listener.clear_live_contact_with(expired_id);
+            // `RadioClass::PointerExpired @ 0x0065AAC0` nulls matching sparse
+            // slots in place, but ONLY on a nonzero control:
+            //
+            // ```
+            // 0065aac1 MOV EBX,[ESP+0xc]      ; EBX = the control argument
+            // 0065aae6 MOV EDX,[EAX + ECX*4]  ; slot
+            // 0065aaec CMP EDX,EDI            ; slot == expired ?
+            // 0065aaee JNZ 0065aafa
+            // 0065aaf0 TEST BL,BL             ; control
+            // 0065aaf2 JZ   0065aafa          ; control 0 skips the clear
+            // 0065aaf4 MOV dword ptr [EAX],0x0
+            // ```
+            //
+            // So `Detach_All(false)` — the dive — leaves radio contacts intact,
+            // and only UnInit breaks them. A diving submarine therefore keeps
+            // its naval-yard repair link and its transport link.
+            if control == PointerExpiryControl::Uninit {
+                listener.clear_live_contact_with(expired_id);
+            }
 
             // TechnoClass removes an expiring passenger from its CargoClass before
             // clearing its target/archive/manager reference family.
@@ -2398,6 +2415,16 @@ impl Simulation {
 
         // FootClass clears SuspendedNavCom first, then its current/aux target,
         // and removes every matching queue entry. Cell targets are unaffected.
+        //
+        // `FootClass::PointerExpired @ 0x004D9960` carries its OWN copy of the
+        // `allowClear` Boolean, computed by a SECOND `SensorCountForHouse`
+        // call — `0x004D9A57 CALL 0x004870D0`, at the expiring object's
+        // `GetCoords` cell (`0x004D9A3D` vslot `+0x48`) for the RECEIVER's house
+        // (`param_1[0x87] + 0x30`) — under the same control-0 / nonnull /
+        // `+0x14` bit-0 guard as the Techno body. It gates the `+0x5A0`/`+0x5A4`
+        // PAIR clear below; the `+0x5A8` clear above it is unguarded. The two
+        // Booleans are equal in value because both read the receiver's house at
+        // the same cell, so the single `allow_clear` local models both.
         if listener
             .navigation
             .suspended_nav_com
@@ -2419,7 +2446,7 @@ impl Simulation {
             && expired_object_alive
             && expired_health > 0
             && !expired_is_selling;
-        if !retain_capture_nav {
+        if !retain_capture_nav && allow_clear {
             if listener
                 .navigation
                 .nav_com_aux
@@ -2539,6 +2566,27 @@ impl Simulation {
     /// runs the same `TechnoClass::PointerExpired` body as the UnInit path over
     /// the same registered-object roster. The detaching object survives, so no
     /// House-side BuildConst removal happens here.
+    ///
+    /// **The non-Techno listeners on that roster are control-INSENSITIVE**, read
+    /// this session and no longer a residual:
+    ///
+    /// * `WaveClass::PointerExpired @ 0x0075F610` (vtable `0x007F6BF4 + 0x28`)
+    ///   and `ParticleSystemClass::PointerExpired @ 0x0062FE90` branch on the
+    ///   control only inside the inherited `ObjectClass` call.
+    /// * `AnimClass`'s `+0x28` override is `0x00425150` (vtable
+    ///   `0x007E3354 + 0x28`; its only xref is that slot). It too forwards the
+    ///   control to `ObjectClass::PointerExpired` and takes no further branch on
+    ///   it.
+    /// * `BulletClass::PointerExpired @ 0x004684E0` branches on the control only
+    ///   for its trailing global-vector erase; the `+0x10C` target repair that
+    ///   substitutes `Get_CellClass` at the expired object's last cell — the arm
+    ///   VERA models in `HomingState::expire_object_target` — is unguarded.
+    /// * `ObjectClass::PointerExpired @ 0x005F5230` itself gates only the
+    ///   `+0x30` chain relink on a nonzero control; VERA models no `+0x30`
+    ///   chain, so it is correct by omission.
+    ///
+    /// So a torpedo already in flight at a diving submarine falling to the sub's
+    /// last cell instead of tracking it is native behavior, not an approximation.
     pub(crate) fn detach_all_pointer_expired(&mut self, expired_id: u64) {
         if !self.substrate.entities.contains(expired_id) {
             return;
