@@ -4935,6 +4935,7 @@ mod tests {
             add_radius: 2,
             remove_radius: 2,
             building_array: false,
+            detect_disguise_radius: 0,
         });
         sim.substrate.entities.insert(entity);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate

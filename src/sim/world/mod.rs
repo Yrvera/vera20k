@@ -7097,6 +7097,16 @@ impl Simulation {
                 // ordinary promote-only per-cell writer.
                 sim.clear_entity_playfield_membership_after_teleport(stable_id);
             } else if cell_before_movement != cell_after_movement {
+                // `FootClass::PerCellProcess @ 0x004D85D0` runs the `Sensors=`
+                // neighbour scan on its cell-enter arm, after the sensor
+                // deposit has moved (`0x004D8611`/`0x004D8621`, issued just
+                // above) and before its `FUN_006F5090` playfield-membership
+                // tail — which is the promote below.
+                if let Some(rules) = rules {
+                    crate::sim::world::techno_ai_cloak::uncloak_on_sensor_neighbour_after_cell_entry(
+                        sim, stable_id, rules,
+                    );
+                }
                 sim.promote_entity_playfield_membership_after_move(stable_id);
             }
 

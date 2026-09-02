@@ -142,6 +142,12 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
         detector.position.ry = cell.1;
     }
     sim.move_unit_sensor_after_cell_change(detector, Some(far_cell), Some(cell), &rules);
+    // CORRECTION: this used to require the sensor deposit to force-cloak the
+    // state-zero resident. `TechnoClass+0x420 @ 0x006F4EB0` gates that arm on
+    // `CellClass::IsVisibleToHouse` — the `CloakedByHouses` bit written only by
+    // a `CloakGenerator=yes` building's field, which stock YR does not ship.
+    // The deposit changes what the detector's house can SEE, never the
+    // resident's cloak state.
     assert_eq!(
         sim.substrate
             .entities
@@ -151,27 +157,20 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
             .as_ref()
             .unwrap()
             .state,
-        1,
-        "the same sensor add accepts StartCloaking(0) for the state-zero resident"
+        0,
+        "a sensor deposit never starts a cloak in stock YR"
     );
-    let cloak_sounds: Vec<_> = sim
-        .sound_events
-        .iter()
-        .filter_map(|event| match event {
-            crate::sim::world::SimSoundEvent::CloakSound { sound_id, .. } => Some(sound_id),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        cloak_sounds.len(),
-        1,
-        "the accepted sensor callback emits exactly one entering-cloak cue"
+    assert!(
+        !sim.sound_events.iter().any(|event| matches!(
+            event,
+            crate::sim::world::SimSoundEvent::CloakSound { .. }
+        )),
+        "and therefore emits no entering-cloak cue"
     );
-    assert_eq!(cloak_sounds[0], "NavalUnitEmerge");
     assert_eq!(
         tracker.update_object(build_update(&sim, entering), false),
         None,
-        "state-one entering cloak remains radar-visible on the callback edge"
+        "an uncloaked resident stays radar-visible across the callback edge"
     );
     assert!(
         tracker.is_registered(entering),

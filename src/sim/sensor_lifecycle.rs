@@ -19,6 +19,14 @@ pub struct SensorDeposit {
     pub add_radius: u16,
     pub remove_radius: i16,
     pub building_array: bool,
+    /// `DetectDisguiseRange=` (`TechnoTypeClass+0x5F4`) circle stamped by
+    /// `BuildingClass::AddDetectDisguiseAt @ 0x00455A80` alongside the sensor
+    /// array. Unlike the sensor array, its paired
+    /// `RemoveDetectDisguiseAt @ 0x00455980` reads the SAME field back
+    /// (`0x00455991` loads `+0x5F4`), so add and remove are symmetric and one
+    /// radius suffices.
+    #[serde(default)]
+    pub detect_disguise_radius: u16,
 }
 
 impl SensorDeposit {
@@ -29,16 +37,24 @@ impl SensorDeposit {
             add_radius: radius,
             remove_radius: radius as i16,
             building_array: false,
+            detect_disguise_radius: 0,
         }
     }
 
-    fn building(owner: InternedId, center: (u16, u16), add: u16, remove: i8) -> Self {
+    fn building(
+        owner: InternedId,
+        center: (u16, u16),
+        add: u16,
+        remove: i8,
+        detect_disguise_radius: u16,
+    ) -> Self {
         Self {
             owner,
             center,
             add_radius: add,
             remove_radius: i16::from(remove),
             building_array: true,
+            detect_disguise_radius,
         }
     }
 }
@@ -164,13 +180,32 @@ impl Simulation {
             .entities
             .get_mut(stable_id)
             .and_then(|entity| entity.sensor_deposit.take())?;
-        if deposit.building_array {
-            self.apply_building_sensor_remove(
+        if deposit.detect_disguise_radius > 0 {
+            // `BuildingClass::RemoveDetectDisguiseAt @ 0x00455980`, reached from
+            // `BuildingClass::Limbo @ 0x00445A58` through vtable `+0x500`. It
+            // walks the same circle it stamped and decrements
+            // `CellClass+0xAC[house]`; no resident callback is issued.
+            self.fog.disguise_detect_remove_at(
                 deposit.owner,
                 deposit.center,
-                deposit.remove_radius.max(0) as u16,
-                rules,
+                deposit.detect_disguise_radius,
             );
+        }
+        if deposit.building_array {
+            // A building that stamped only a disguise-detect circle never added
+            // sensor counts, so it must not run the asymmetric
+            // `CloakRadiusInCells=` decrement and manufacture negative fringe
+            // counts. VERA-internal guard; gamemd dispatches the two removals
+            // from separate vtable slots and the pairing is UNCHECKED, but no
+            // stock building reaches this case (NAPSIS carries both keys).
+            if deposit.add_radius > 0 {
+                self.apply_building_sensor_remove(
+                    deposit.owner,
+                    deposit.center,
+                    deposit.remove_radius.max(0) as u16,
+                    rules,
+                );
+            }
         } else {
             self.apply_unit_sensor_remove(
                 deposit.owner,
@@ -208,24 +243,46 @@ impl Simulation {
         }
     }
 
-    /// `BuildingClass::AddSensorArrayAt @ 0x00455820`, used only after map
-    /// initialization or construction completion and only while powered.
+    /// `BuildingClass::AddSensorArrayAt @ 0x00455820` and its sibling
+    /// `BuildingClass::AddDetectDisguiseAt @ 0x00455A80`, used only after map
+    /// initialization or construction completion and only while powered — both
+    /// open with the same `vt+0x350` powered test, and
+    /// `BuildingClass::OnConstructionComplete` dispatches them from adjacent
+    /// slots (`+0x4F8` and `+0x4FC`, the latter reached from `0x004467AD` after
+    /// reading `TechnoTypeClass+0xD31` `DetectDisguise=`).
+    ///
+    /// Stock authors: NAPSIS is the only building that stamps a disguise-detect
+    /// circle, because `DetectDisguiseRange=` defaults to zero
+    /// (`TechnoTypeClass::Constructor @ 0x0071100E`) and YAPSYT / NAPSYB carry
+    /// `DetectDisguise=yes` without a range.
     pub(crate) fn add_building_sensor_array_if_powered(&mut self, stable_id: u64, rules: &RuleSet) {
-        let Some((owner, center, sight, remove_radius, powered, in_limbo)) =
+        let Some((owner, center, sight, remove_radius, detect_radius, powered, in_limbo)) =
             self.substrate.entities.get(stable_id).and_then(|entity| {
                 let object = rules.object(self.interner.resolve(entity.type_ref))?;
                 if entity.category != EntityCategory::Structure
                     || object.category != ObjectCategory::Building
-                    || !object.sensor_array
-                    || object.sensors_sight == 0
                 {
+                    return None;
+                }
+                let sight = if object.sensor_array {
+                    u16::from(object.sensors_sight)
+                } else {
+                    0
+                };
+                let detect_radius = if object.detect_disguise {
+                    u16::from(object.detect_disguise_range)
+                } else {
+                    0
+                };
+                if sight == 0 && detect_radius == 0 {
                     return None;
                 }
                 Some((
                     entity.owner,
                     (entity.position.rx, entity.position.ry),
-                    u16::from(object.sensors_sight),
+                    sight,
                     object.cloak_radius_in_cells,
+                    detect_radius,
                     crate::sim::power_system::is_building_powered(
                         &self.power_states,
                         rules,
@@ -242,10 +299,23 @@ impl Simulation {
             return;
         }
         let _ = self.remove_cached_sensor_deposit(stable_id, Some(rules));
-        self.apply_sensor_add(owner, center, sight, Some(rules));
+        if sight > 0 {
+            self.apply_sensor_add(owner, center, sight, Some(rules));
+        }
+        if detect_radius > 0 {
+            // The disguise-detect walk issues no resident `+0x420` callback —
+            // it only increments `CellClass+0xAC[house]`.
+            self.fog
+                .disguise_detect_add_at(owner, center, detect_radius);
+        }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-            entity.sensor_deposit =
-                Some(SensorDeposit::building(owner, center, sight, remove_radius));
+            entity.sensor_deposit = Some(SensorDeposit::building(
+                owner,
+                center,
+                sight,
+                remove_radius,
+                detect_radius,
+            ));
         }
     }
 
@@ -455,6 +525,13 @@ mod tests {
             .unwrap();
         let soviet = sim.substrate.entities.get(older).unwrap().owner;
         let detector = sim.interner.intern("Americans");
+        // CORRECTION: this used to reveal the residents' own cell to their own
+        // house, on the reading that `CellClass::IsVisibleToHouse @ 0x004870B0`
+        // meant cell visibility. It is the `CloakedByHouses` bit, whose only
+        // writers sit in `BuildingClass::UpdateGapGenerator_Tick` behind
+        // `CloakGenerator=`, so the vt+0x420 cloak arm is dormant in stock YR.
+        // The FirstObject dispatch ORDER is what this test owns, and it is
+        // observable from the returned resident list alone.
         sim.fog.mark_visible_for_owner(soviet, 40, 30);
         for id in [older, newer] {
             let cloak = sim
@@ -484,20 +561,13 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .state,
-            1,
-            "+0x420 owner-visible CanAutoCloak calls StartCloaking"
+            0,
+            "no CloakGenerator field means the vt+0x420 cloak arm never fires"
         );
-        assert_eq!(
-            sim.sound_events.len(),
-            2,
-            "each accepted callback emits exactly once"
+        assert!(
+            sim.sound_events.is_empty(),
+            "a dormant cloak arm emits no CloakSound"
         );
-        assert!(sim.sound_events.iter().all(|event| matches!(
-            event,
-            crate::sim::world::SimSoundEvent::CloakSound { sound_id, .. }
-                if sound_id == "NavalUnitEmerge"
-        )));
-        sim.sound_events.clear();
 
         for id in [older, newer] {
             let cloak = sim
@@ -513,12 +583,7 @@ mod tests {
         }
         let removed = sim.apply_unit_sensor_remove(detector, (40, 30), 1, Some(&rules));
         assert_eq!(removed, vec![newer, older]);
-        assert_eq!(
-            sim.sound_events.len(),
-            2,
-            "remove mutation and callbacks synchronously emit one cue per accepted resident"
-        );
-        sim.sound_events.clear();
+        assert!(sim.sound_events.is_empty());
         assert!(
             sim.apply_unit_sensor_remove(detector, (40, 30), 1, Some(&rules))
                 .is_empty(),

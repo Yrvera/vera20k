@@ -29,10 +29,21 @@ pub struct CloakRuntime {
     /// Native signed progress delta, +1 cloaking and -1 uncloaking.
     pub step_delta: i32,
     pub step_timer: CloakStepTimer,
-    /// `ReCloakDelayTimer +0x2EC/+0x2F4`.
+    /// **ReCloak delay, native `TechnoClass+0x240/+0x248`.** The offsets on
+    /// this pair and on `secondary_gate_*` used to be written the other way
+    /// round; the writer settles it. `CloakingTick` state 3 → 0 at
+    /// `0x006FB9F8..0x006FBA07` does `LEA EDX,[ESI+0x240]` and stores
+    /// `ftol([Rules+0x1410] * 900.0)` — `[General] CloakDelay` in minutes ×
+    /// 900 frames — into `+0x248`. `CanAutoCloak @ 0x006FBDC0` reads it as its
+    /// LAST timer gate (`param_1[0x90]`/`[0x92]`).
     pub recloak_delay_start: i32,
     pub recloak_delay_frames: i32,
-    /// Independent `CanAutoCloak` gate timer at +0x240/+0x248.
+    /// **Weapon rearm (ROF) countdown, native `TechnoClass+0x2EC/+0x2F4`.**
+    /// Written by `TechnoClass::Fire_At @ 0x006FDD50` after every shot and read
+    /// by `GetFireError` (busy) and by `CanAutoCloak @ 0x006FBDC0` as its FIRST
+    /// timer gate (`param_1[0xbb]`/`[0xbd]`, checked immediately after the
+    /// `CloakState == 2` early-out). A sub that just fired therefore stays
+    /// surfaced for its whole `ROF=` before the CloakDelay above even starts.
     pub secondary_gate_start: i32,
     pub secondary_gate_frames: i32,
 }
@@ -68,6 +79,16 @@ pub struct CloakTickResult {
     /// one positional `[AudioVisual] CloakSound` request. Silent arg-one
     /// transitions and rejected state visits leave this clear.
     pub play_cloak_sound: bool,
+    /// An accepted `StartCloaking @ 0x00703770`, which opens with
+    /// `Detach_All(false)` (vtable +0xDC — Ghidra's `ObjectClass::Destroy`
+    /// label at `0x005F5280` is drift; the body is the LineTrail/Deselect/
+    /// LastRef teardown plus `DispatchPointerExpiredCleanup`). The caller owns
+    /// dispatching that to every registered object.
+    pub began_cloaking: bool,
+    /// The state 1 → 2 completion at `0x006FBA98`, which snapshots the
+    /// still-admitted targeters, runs `Detach_All(false)` again, then
+    /// re-`Assign_Target`s each saved one.
+    pub completed_cloak: bool,
 }
 
 impl CloakRuntime {
@@ -152,6 +173,8 @@ impl CloakRuntime {
             transitioned: false,
             consumed_scenario_rng: false,
             play_cloak_sound: false,
+            began_cloaking: false,
+            completed_cloak: false,
         };
         if self.state == 0 {
             if !facts.state_zero_head_allows || !facts.can_auto_cloak {
@@ -164,13 +187,10 @@ impl CloakRuntime {
                 rng.next_range_u32_inclusive(0, 99) < 4
             };
             if start {
-                let start = self.start_cloaking(
-                    facts.current_frame,
-                    facts.cloaking_speed,
-                    false,
-                );
+                let start = self.start_cloaking(facts.current_frame, facts.cloaking_speed, false);
                 result.transitioned = start.transitioned;
                 result.play_cloak_sound = start.play_sound;
+                result.began_cloaking = start.transitioned;
             }
             return result;
         }
@@ -209,16 +229,13 @@ impl CloakRuntime {
                             duration_frames: 0,
                         };
                         result.transitioned = true;
+                        result.completed_cloak = true;
                     }
                     _ => {}
                 }
             }
             2 if facts.should_uncloak => {
-                let start = self.start_uncloaking(
-                    facts.current_frame,
-                    facts.cloaking_speed,
-                    false,
-                );
+                let start = self.start_uncloaking(facts.current_frame, facts.cloaking_speed, false);
                 result.transitioned = start.transitioned;
                 result.play_cloak_sound = start.play_sound;
             }
@@ -238,13 +255,11 @@ impl CloakRuntime {
                     result.transitioned = true;
                 }
                 1 if facts.can_auto_cloak => {
-                    let start = self.start_cloaking(
-                        facts.current_frame,
-                        facts.cloaking_speed,
-                        true,
-                    );
+                    let start =
+                        self.start_cloaking(facts.current_frame, facts.cloaking_speed, true);
                     result.transitioned = start.transitioned;
                     result.play_cloak_sound = start.play_sound;
+                    result.began_cloaking = start.transitioned;
                 }
                 _ => {}
             },
@@ -258,6 +273,127 @@ impl CloakRuntime {
             && Self::timer_remaining(self.secondary_gate_start, self.secondary_gate_frames, now)
                 == 0
     }
+
+    /// `TechnoClass::Fire_At @ 0x006FDD50` arms the rearm countdown at
+    /// `+0x2EC/+0x2F4` on every shot; `CanAutoCloak @ 0x006FBDC0` refuses to
+    /// begin an auto-cloak while it is running. Called from the fire commit so
+    /// a Typhoon that surfaced to fire cannot dive again inside its own ROF.
+    pub fn arm_rearm_gate(&mut self, now: i32, rearm_frames: i32) {
+        self.secondary_gate_start = now;
+        self.secondary_gate_frames = rearm_frames.max(0);
+    }
+
+    /// `CloakState == 2` — fully cloaked. The only state the native target
+    /// legality gates reject; 1 (cloaking) and 3 (uncloaking) stay legal.
+    pub fn is_fully_cloaked(&self) -> bool {
+        self.state == 2
+    }
+}
+
+/// `TechnoClass::Evaluate_Candidate @ 0x006F7DA9` — the whole cloak arm of the
+/// per-candidate legality test, read from the disassembly:
+///
+/// ```text
+/// if (candidate->CloakState(+0x220) == 2) {
+///     idx  = attacker->pOwner->ArrayIndex(+0x30);
+///     cell = Get_CellClass_At_Coord(candidate->GetCoords());
+///     if (!CellClass::SensorCountForHouse(cell, idx)
+///         && candidate->pOwner != attacker->pOwner) reject;
+/// }
+/// ```
+///
+/// Two things this is NOT: it is not an alliance test (an ALLIED submerged sub
+/// is rejected too — only same-owner is exempt), and it does not look at
+/// cloaking/uncloaking states.
+pub fn cloak_rejects_candidate(
+    candidate_fully_cloaked: bool,
+    attacker_house_senses_candidate_cell: bool,
+    same_owner: bool,
+) -> bool {
+    candidate_fully_cloaked && !attacker_house_senses_candidate_cell && !same_owner
+}
+
+/// `UnitClass::IsDisguisedTo @ 0x00746750` and the byte-identical
+/// `InfantryClass::IsDisguisedTo @ 0x005227F0` (both vtable `+0xC8`).
+///
+/// ```text
+/// if (!IsDisguised(vt+0xC4)) return 0;
+/// if (IsAlliedWith(myOwner, house)) return 0;
+/// if (DisguiseDetectCountForHouse(myCell, house->ArrayIndex)) return 0;
+/// fake = DisguisedAsHouse(+0x51C);
+/// if (fake && fake != house && !IsAlliedWith(house, fake)) return 0;
+/// return 1;
+/// ```
+///
+/// "Disguise revealed" is never a stored state in gamemd — it is this
+/// per-observer predicate, re-evaluated per query. The last clause is why a
+/// Spy wearing a third party's colours is still shot at: only a disguise as
+/// the observer's own house or one of its allies actually hides it.
+pub fn is_disguised_to(
+    raw_disguised: bool,
+    owner_allied_with_observer: bool,
+    observer_detects_disguise_at_cell: bool,
+    disguised_as_is_observer_or_ally: bool,
+    disguised_as_house_present: bool,
+) -> bool {
+    if !raw_disguised || owner_allied_with_observer || observer_detects_disguise_at_cell {
+        return false;
+    }
+    !disguised_as_house_present || disguised_as_is_observer_or_ally
+}
+
+/// The disguise arm of `Evaluate_Candidate`, `0x006F84B1..0x006F854B`.
+///
+/// ```text
+/// if (candidate->vt+0xC8(attacker->pOwner)) {          // IsDisguisedTo
+///   if (attackerType->DetectDisguise(+0xD31) == 0) {
+///     rem = candidate->+0x1F4;
+///     if (candidate->+0x1EC != -1) { el = frame - +0x1EC;
+///                                    if (rem <= el) reject; rem -= el; }
+///     if (rem == 0) reject;                            // blink not running
+///     if (IsControlledByHuman(attacker->pOwner)) reject;
+///     if (RandomRanged(0,99) > Rules.DisabledDisguiseDetectionPercent[..])
+///         reject;                                      // AI houses only
+///   }
+/// }
+/// ```
+///
+/// Everything after the blink window is AI-only, so for a human-owned attacker
+/// the whole gate collapses to: reject unless the attacker type carries
+/// `DetectDisguise=`. `blink_frames_remaining` is the
+/// `DisguiseFakeBlinkTime` window `UnitClass::Fire_At @ 0x00741340` arms after
+/// each Mirage shot; a Spy never arms it, so a Spy is always rejected.
+pub fn disguise_rejects_candidate(
+    is_disguised_to_attacker: bool,
+    attacker_detects_disguise: bool,
+    blink_frames_remaining: i32,
+    attacker_house_is_human: bool,
+) -> DisguiseGateOutcome {
+    if !is_disguised_to_attacker || attacker_detects_disguise {
+        return DisguiseGateOutcome::Accept;
+    }
+    if blink_frames_remaining <= 0 {
+        return DisguiseGateOutcome::Reject;
+    }
+    if attacker_house_is_human {
+        return DisguiseGateOutcome::Reject;
+    }
+    DisguiseGateOutcome::AiDetectionRoll
+}
+
+/// Outcome of [`disguise_rejects_candidate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisguiseGateOutcome {
+    /// The candidate survives the disguise arm.
+    Accept,
+    /// Native rejects without drawing.
+    Reject,
+    /// Native reaches its one `RandomRanged(0, 99)` on the Scenario stream and
+    /// compares against `[General] DisabledDisguiseDetectionPercent`. Only an
+    /// AI-controlled attacking house gets here, and VERA has no AI opponent, so
+    /// no production caller can produce this variant yet — it is modelled, not
+    /// wired, and wiring it costs one Scenario draw per evaluated candidate.
+    AiDetectionRoll,
 }
 
 #[path = "cloak_transitions.rs"]
@@ -369,12 +505,8 @@ pub fn evaluate_fire_cloak_gates(
 ) -> FireCloakGateResult {
     FireCloakGateResult {
         should_call_reveal_area1: reveal_on_fire && target_house_passes_reveal_check,
-        fire_error_code: fire_requires_uncloaking(
-            decloak_to_fire,
-            current_cloak_state,
-            what_am_i,
-        )
-        .then_some(9),
+        fire_error_code: fire_requires_uncloaking(decloak_to_fire, current_cloak_state, what_am_i)
+            .then_some(9),
     }
 }
 
@@ -383,9 +515,7 @@ pub(crate) fn fire_requires_uncloaking(
     current_cloak_state: i32,
     what_am_i: i32,
 ) -> bool {
-    decloak_to_fire
-        && current_cloak_state != 0
-        && (what_am_i != 2 || current_cloak_state == 2)
+    decloak_to_fire && current_cloak_state != 0 && (what_am_i != 2 || current_cloak_state == 2)
 }
 
 #[cfg(test)]
@@ -495,7 +625,10 @@ mod tests {
         };
         let result = cloak.tick(facts(0), &mut actual);
         assert!(result.consumed_scenario_rng && !result.transitioned);
-        assert_eq!(cloak.state, 1, "the abort branch is inclusive only through 9");
+        assert_eq!(
+            cloak.state, 1,
+            "the abort branch is inclusive only through 9"
+        );
     }
 
     #[test]
