@@ -1,4 +1,4 @@
-//! sound.ini / soundmd.ini parser — maps sound IDs to .wav/.aud filenames.
+//! sound.ini / soundmd.ini parser — the `VocClass` registry.
 //!
 //! RA2's sound.ini has sections like:
 //! ```ini
@@ -6,48 +6,235 @@
 //! Sounds=vgcannon.wav
 //! Volume=100
 //! Priority=1
-//! Control=random,all
+//! Control=random
+//! Type=global
 //! ```
 //!
 //! Each section name is a sound ID referenced by weapons (Report=), units
 //! (VoiceSelect=, VoiceMove=, DieSound=), and EVA announcements.
-//! The `Sounds=` key lists one or more sound names separated by whitespace
-//! or commas. Names may have `$` or `#` prefixes (legacy Westwood markers,
-//! stripped at load time). When multiple sounds are listed, the game picks
-//! one at random.
+//!
+//! gamemd-derived: `VocClass::ReadINI @ 0x00750440` reads the fourteen keys
+//! below for every `[SoundList]` entry, in this order, with these defaults —
+//! `Sounds` (""), `Volume` ([Defaults] float, static 80.0), `VShift` (0),
+//! `MinVolume` ([Defaults] float, static 20.0), `Priority` ("NORMAL"),
+//! `Attack` (0), `Decay` (0), `Control` ([Defaults] flags, static 0), `Type`
+//! ([Defaults] flags, static SCREEN), `Limit` ([Defaults], static 5), `Loop`
+//! (0), `Range` ([Defaults], static 10), `Delay` (""), `FShift` (""). The
+//! `[Defaults]` section itself is read once by `VocClass::ReadSoundListINI @
+//! 0x007510D0` (`0x00751126..0x0075128C`). Token lists are split by
+//! `CRT strtok` on the delimiter string at `0x00846570` = `" \t\n"` — commas
+//! are NOT separators.
 //!
 //! ## Dependency rules
 //! - Part of rules/ — depends on rules/ini_parser. No sim/render dependencies.
 
 use std::collections::HashMap;
 
-use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_parser::{IniFile, IniSection};
+
+/// `Control=` flag words. gamemd-derived: the `(char*, u32)` table at
+/// `0x008160C0` walked by `AudioEventClass::ParseControlFlag @ 0x00406820`
+/// (strings read via `inspect_memory_content 0x00816100`). The compare is
+/// `FUN_007C8D20`, a case-insensitive ASCII compare; an unmatched token lands
+/// on the NULL terminator whose value is 0, so it ORs nothing.
+pub mod control {
+    pub const LOOP: u32 = 0x01;
+    pub const RANDOM: u32 = 0x02;
+    pub const ALL: u32 = 0x04;
+    pub const PREDELAY: u32 = 0x08;
+    pub const INTERRUPT: u32 = 0x10;
+    pub const ATTACK: u32 = 0x20;
+    pub const DECAY: u32 = 0x40;
+    pub const AMBIENT: u32 = 0x80;
+}
+
+/// `Type=` flag words. gamemd-derived: the table at `0x00816048` walked by
+/// `AudioEventClass::ParseTypeFlag @ 0x00406870`. `NORMAL` is a real entry
+/// carrying 0. SCREEN/LOCAL (`0x60`) and UNSHROUD/SHROUD (`0xC00`) are
+/// exclusive pairs: matching one clears the other member first.
+pub mod sound_type {
+    pub const NORMAL: u32 = 0x0;
+    pub const VIOLENT: u32 = 0x01;
+    pub const MOVEMENT: u32 = 0x02;
+    pub const QUIET: u32 = 0x04;
+    pub const LOUD: u32 = 0x08;
+    pub const GLOBAL: u32 = 0x10;
+    pub const SCREEN: u32 = 0x20;
+    pub const LOCAL: u32 = 0x40;
+    pub const PLAYER: u32 = 0x80;
+    pub const NOISE_SHY: u32 = 0x100;
+    pub const GUN_SHY: u32 = 0x200;
+    pub const UNSHROUD: u32 = 0x400;
+    pub const SHROUD: u32 = 0x800;
+    pub const AMBIENT: u32 = 0x1000;
+}
+
+const CONTROL_TABLE: [(&str, u32); 8] = [
+    ("ALL", control::ALL),
+    ("LOOP", control::LOOP),
+    ("RANDOM", control::RANDOM),
+    ("PREDELAY", control::PREDELAY),
+    ("INTERRUPT", control::INTERRUPT),
+    ("ATTACK", control::ATTACK),
+    ("DECAY", control::DECAY),
+    ("AMBIENT", control::AMBIENT),
+];
+
+const TYPE_TABLE: [(&str, u32); 14] = [
+    ("AMBIENT", sound_type::AMBIENT),
+    ("VIOLENT", sound_type::VIOLENT),
+    ("MOVEMENT", sound_type::MOVEMENT),
+    ("QUIET", sound_type::QUIET),
+    ("LOUD", sound_type::LOUD),
+    ("GLOBAL", sound_type::GLOBAL),
+    ("SCREEN", sound_type::SCREEN),
+    ("LOCAL", sound_type::LOCAL),
+    ("PLAYER", sound_type::PLAYER),
+    ("NORMAL", sound_type::NORMAL),
+    ("GUN_SHY", sound_type::GUN_SHY),
+    ("NOISE_SHY", sound_type::NOISE_SHY),
+    ("UNSHROUD", sound_type::UNSHROUD),
+    ("SHROUD", sound_type::SHROUD),
+];
+
+/// Native linear volume scale: `VolumeInterp` values are `0..=0x4000`.
+pub const VOLUME_SCALE: i32 = 0x4000;
+
+/// Sample slots per event: `VocClass::AddSample @ 0x004064A0` refuses the
+/// 33rd (`+0x134 == 0x20`).
+pub const MAX_SAMPLES: usize = 0x20;
+
+/// `[Defaults]` values. gamemd-derived: `VocClass::ReadSoundListINI @
+/// 0x007510D0` — Volume -> `0x008464B4` (static 80.0f), MinVolume ->
+/// `0x008464B8` (static 20.0f), Priority -> `0x008464B0` (static 2),
+/// Control -> `0x00B1D3B0` (static 0; reset to 0 before parsing only when a
+/// token exists), Type -> `0x008464BC` (static 0x20; reset to 0x20 before
+/// parsing only when a token exists), Limit -> `0x008464C4` (static 5),
+/// Range -> `0x008464C0` (static 10). Statics read via `read_memory`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SoundDefaults {
+    pub volume: f32,
+    pub min_volume: f32,
+    pub priority: u8,
+    pub control: u32,
+    pub type_flags: u32,
+    pub limit: i32,
+    pub range: i32,
+}
+
+impl Default for SoundDefaults {
+    fn default() -> Self {
+        Self {
+            volume: 80.0,
+            min_volume: 20.0,
+            priority: SOUND_PRIORITY_DEFAULT,
+            control: 0,
+            type_flags: sound_type::SCREEN,
+            limit: 5,
+            range: 10,
+        }
+    }
+}
+
+impl SoundDefaults {
+    fn read(section: Option<&IniSection>) -> Self {
+        let mut defaults = Self::default();
+        let Some(section) = section else {
+            return defaults;
+        };
+        defaults.volume = read_double(section, "Volume", defaults.volume);
+        defaults.min_volume = read_double(section, "MinVolume", defaults.min_volume);
+        defaults.priority = section
+            .get_ignoring_case("Priority")
+            .map_or(defaults.priority, parse_sound_priority);
+        if let Some(control) = parse_control_list(section.get_ignoring_case("Control")) {
+            defaults.control = control;
+        }
+        if let Some(type_flags) = parse_type_list(section.get_ignoring_case("Type")) {
+            defaults.type_flags = type_flags;
+        }
+        defaults.limit = section
+            .get_i32_ignoring_case("Limit")
+            .unwrap_or(defaults.limit);
+        defaults.range = section
+            .get_i32_ignoring_case("Range")
+            .unwrap_or(defaults.range);
+        defaults
+    }
+
+    /// The minimum-volume floor as the stored fraction (see
+    /// [`SoundEntry::min_volume`]).
+    pub fn min_volume_fraction(&self) -> f32 {
+        min_volume_fraction(self.min_volume)
+    }
+}
 
 /// A single sound definition from sound.ini.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SoundEntry {
     /// Section name / sound ID (e.g., "VGCannon1").
     pub id: String,
-    /// List of .wav filenames to choose from (e.g., ["vgcannon.wav"]).
+    /// Sample names in `Sounds=` order, `$`/`#` prefixes stripped, at most
+    /// [`MAX_SAMPLES`]. `Attack=` counts the first N as attack samples and
+    /// `Decay=` the last M as decay samples; the rest is the body.
     pub sounds: Vec<String>,
-    /// Playback volume (0-100, default from [Defaults] or 100).
+    /// Playback volume in percent, `0..=100`.
     pub volume: u8,
+    /// Native linear volume `ftol(clamp(Volume * 0.01, 0, 1) * 0x4000)` as
+    /// stored by `AudioEventClass::SetVolumeRamp @ 0x00406550`
+    /// (`0x007504EE..0x00750548`).
+    pub volume_linear: i32,
     /// Eviction priority, `LOWEST(0)`..`CRITICAL(4)`; higher survives longer.
     ///
     /// `sound(md).ini` writes this as a symbolic token, never a number.
     pub priority: u8,
-    /// Audible range in cells (default 10). Used for spatial audio:
-    /// max audible pixel distance = range * 60 (original engine multiplier).
+    /// Audible range in cells (default 10). `max audible pixel distance =
+    /// Range * 60` in `VocClass::CalcVolumeAndPan @ 0x00750AC0`.
     pub range: u16,
-    /// Minimum volume floor (0-100, default 0). For GLOBAL-type sounds,
-    /// volume never drops below this even at maximum distance.
-    pub min_volume: u8,
+    /// `MinVolume=` as the stored fraction `clamp(MinVolume * 0.01, 0, 1)`
+    /// (`0x00750589..0x007505E3`, `AudioEventClass::SetMinVolume @
+    /// 0x004065F0` at `+0x54`). The floor applies only for `Type=GLOBAL`.
+    pub min_volume: f32,
+    /// `Control=` flag bits ([`control`]), stored by
+    /// `AudioEventClass::SetControlFlags @ 0x00406570` at `+0x10`.
+    pub control: u32,
+    /// `Type=` flag bits ([`sound_type`]), stored at `+0x14`.
+    pub type_flags: u32,
+    /// `Limit=` concurrent-instance cap (`+0x48`).
+    pub limit: i32,
+    /// `Loop=` pass count for looping events (`+0x4C`, 0 = forever).
+    pub loop_count: i32,
+    /// `Delay=` pre-delay range in milliseconds `(min, max)` (`+0x58/+0x5C`);
+    /// a single token sets both, no token sets `(0, 0)`.
+    pub delay_ms: (i32, i32),
+    /// `FShift=` frequency shift range in percent `(min, max)`
+    /// (`+0x60/+0x64`); same one-or-two token rule as `Delay=`.
+    pub fshift: (i32, i32),
+    /// `VShift=` random volume reduction ceiling in percent, clamped
+    /// `0..=100` by `AudioEventClass::SetVShift @ 0x00406620` (`+0x68`).
+    pub vshift: i32,
+    /// Attack sample count (`+0x138`) after `SetControlFlags` normalisation:
+    /// 0 without `Control=ATTACK`, at least 1 with it.
+    pub attack: i32,
+    /// Decay sample count (`+0x13C`), normalised the same way for `DECAY`.
+    pub decay: i32,
+}
+
+impl SoundEntry {
+    /// Body sample index range `attack .. count - decay` (may be empty).
+    pub fn body_range(&self) -> std::ops::Range<usize> {
+        let count = self.sounds.len() as i32;
+        let start = self.attack.clamp(0, count);
+        let end = (count - self.decay).clamp(start, count);
+        start as usize..end as usize
+    }
 }
 
 /// Registry of all sound definitions, keyed by uppercase sound ID.
 #[derive(Debug, Clone, Default)]
 pub struct SoundRegistry {
     entries: HashMap<String, SoundEntry>,
+    defaults: SoundDefaults,
 }
 
 impl SoundRegistry {
@@ -57,23 +244,7 @@ impl SoundRegistry {
     /// Sections from soundmd override sound.ini on conflict.
     pub fn from_ini(ini: &IniFile) -> Self {
         let mut entries: HashMap<String, SoundEntry> = HashMap::new();
-
-        // Read [Defaults] section for fallback values (original engine behavior).
-        let default_volume: u8 = ini
-            .section("Defaults")
-            .and_then(|s| s.get_i32("Volume"))
-            .unwrap_or(100)
-            .clamp(0, 100) as u8;
-        let default_range: u16 = ini
-            .section("Defaults")
-            .and_then(|s| s.get_i32("Range"))
-            .unwrap_or(10)
-            .clamp(1, 1000) as u16;
-        let default_min_volume: u8 = ini
-            .section("Defaults")
-            .and_then(|s| s.get_i32("MinVolume"))
-            .unwrap_or(0)
-            .clamp(0, 100) as u8;
+        let defaults = SoundDefaults::read(ini.section("Defaults"));
 
         for name in ini.section_names() {
             let Some(section) = ini.section(name) else {
@@ -81,52 +252,61 @@ impl SoundRegistry {
             };
             // Skip meta-sections that aren't actual sound definitions.
             if name.eq_ignore_ascii_case("General")
-                || name.eq_ignore_ascii_case("Sounds")
+                || name.eq_ignore_ascii_case("SoundList")
                 || name.eq_ignore_ascii_case("Defaults")
             {
                 continue;
             }
 
-            let sounds_str: &str = match section.get("Sounds") {
+            let sounds_str: &str = match section.get_ignoring_case("Sounds") {
                 Some(s) => s,
                 None => continue,
             };
 
-            // Sounds= can be whitespace-separated (soundmd.ini) or comma-separated
-            // (sound.ini). Names may have $ or # prefixes (legacy, stripped).
-            // Inline comments starting with ; are filtered out.
-            let sounds: Vec<String> = sounds_str
-                .split_whitespace()
-                .flat_map(|token| token.split(','))
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty() && !s.starts_with(';'))
-                .map(|s| {
-                    s.trim_start_matches('$')
-                        .trim_start_matches('#')
-                        .to_string()
-                })
+            // `VocClass::AddSample @ 0x004064A0` skips every leading `$`/`#`
+            // and stops accepting at 32 samples.
+            let sounds: Vec<String> = split_tokens(sounds_str)
+                .map(|s| s.trim_start_matches(['$', '#']).to_string())
                 .filter(|s| !s.is_empty())
+                .take(MAX_SAMPLES)
                 .collect();
 
             if sounds.is_empty() {
                 continue;
             }
 
-            let volume: u8 = section
-                .get_i32("Volume")
-                .unwrap_or(default_volume as i32)
-                .clamp(0, 100) as u8;
+            let volume_raw = read_double(section, "Volume", defaults.volume);
+            let volume_linear = volume_linear(volume_raw);
+            let volume: u8 = (volume_raw.clamp(0.0, 100.0) as f64).round() as u8;
+            let vshift = section
+                .get_i32_ignoring_case("VShift")
+                .unwrap_or(0)
+                .clamp(0, 100);
+            let min_volume =
+                min_volume_fraction(read_double(section, "MinVolume", defaults.min_volume));
             let priority: u8 = section
-                .get("Priority")
+                .get_ignoring_case("Priority")
                 .map_or(SOUND_PRIORITY_DEFAULT, parse_sound_priority);
+            let attack_raw = section.get_i32_ignoring_case("Attack").unwrap_or(0);
+            let decay_raw = section.get_i32_ignoring_case("Decay").unwrap_or(0);
+            let control = parse_control_list(section.get_ignoring_case("Control"))
+                .unwrap_or(defaults.control);
+            // `AudioEventClass::SetControlFlags @ 0x00406570`: without the
+            // flag the count is zeroed; with it a zero count becomes 1.
+            let attack = normalise_envelope_count(attack_raw, control & control::ATTACK != 0);
+            let decay = normalise_envelope_count(decay_raw, control & control::DECAY != 0);
+            let type_flags =
+                parse_type_list(section.get_ignoring_case("Type")).unwrap_or(defaults.type_flags);
+            let limit = section
+                .get_i32_ignoring_case("Limit")
+                .unwrap_or(defaults.limit);
+            let loop_count = section.get_i32_ignoring_case("Loop").unwrap_or(0);
             let range: u16 = section
-                .get_i32("Range")
-                .unwrap_or(default_range as i32)
-                .clamp(1, 1000) as u16;
-            let min_volume: u8 = section
-                .get_i32("MinVolume")
-                .unwrap_or(default_min_volume as i32)
-                .clamp(0, 100) as u8;
+                .get_i32_ignoring_case("Range")
+                .unwrap_or(defaults.range)
+                .clamp(0, i32::from(u16::MAX)) as u16;
+            let delay_ms = parse_int_pair(section.get_ignoring_case("Delay"));
+            let fshift = parse_int_pair(section.get_ignoring_case("FShift"));
 
             entries.insert(
                 name.to_ascii_uppercase(),
@@ -134,15 +314,25 @@ impl SoundRegistry {
                     id: name.to_string(),
                     sounds,
                     volume,
+                    volume_linear,
                     priority,
                     range,
                     min_volume,
+                    control,
+                    type_flags,
+                    limit,
+                    loop_count,
+                    delay_ms,
+                    fshift,
+                    vshift,
+                    attack,
+                    decay,
                 },
             );
         }
 
         log::info!("SoundRegistry: loaded {} sound definitions", entries.len());
-        Self { entries }
+        Self { entries, defaults }
     }
 
     /// Merge another sound.ini (base RA2) into this registry.
@@ -170,6 +360,11 @@ impl SoundRegistry {
         self.entries.get(&sound_id.to_ascii_uppercase())
     }
 
+    /// The `[Defaults]` values this registry was read with.
+    pub fn defaults(&self) -> &SoundDefaults {
+        &self.defaults
+    }
+
     /// Total number of registered sound definitions.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -179,6 +374,157 @@ impl SoundRegistry {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+/// `CCINIClass::ReadDouble @ 0x005283D0`: `sscanf("%f")` into a float, times
+/// 0.01 when the text contains a `%`; absent or unparsable keeps the default.
+fn read_double(section: &IniSection, key: &str, default: f32) -> f32 {
+    let Some(raw) = section.get_ignoring_case(key) else {
+        return default;
+    };
+    let text = raw.trim_start();
+    let end = text
+        .char_indices()
+        .take_while(|(i, c)| {
+            c.is_ascii_digit() || *c == '.' || (*i == 0 && (*c == '-' || *c == '+'))
+        })
+        .map(|(i, c)| i + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+    let Ok(parsed) = text[..end].parse::<f32>() else {
+        return default;
+    };
+    if raw.contains('%') {
+        ((parsed as f64) * 0.01) as f32
+    } else {
+        parsed
+    }
+}
+
+/// `0x007504EE..0x00750548`: `Volume * 0.01f`, clamped to `[0, 1]`, times
+/// 16384, then `Math::ftol` (truncation).
+fn volume_linear(volume: f32) -> i32 {
+    let scaled = ((volume as f64) * (0.01f32 as f64)) as f32;
+    let clamped = if (scaled as f64) > 1.0 {
+        1.0f32
+    } else if scaled < 0.0 {
+        0.0
+    } else {
+        scaled
+    };
+    ((clamped as f64) * (VOLUME_SCALE as f64)).trunc() as i32
+}
+
+/// `0x00750589..0x007505E3`: `MinVolume * 0.01f` clamped to `[0, 1]`, kept
+/// as a float.
+fn min_volume_fraction(min_volume: f32) -> f32 {
+    let scaled = ((min_volume as f64) * (0.01f32 as f64)) as f32;
+    if (scaled as f64) > 1.0 {
+        1.0
+    } else if scaled < 0.0 {
+        0.0
+    } else {
+        scaled
+    }
+}
+
+fn normalise_envelope_count(raw: i32, flagged: bool) -> i32 {
+    match (flagged, raw) {
+        (false, _) => 0,
+        (true, 0) => 1,
+        (true, n) => n,
+    }
+}
+
+/// The native token split: `strtok` on `" \t\n"` (`0x00846570`).
+fn split_tokens(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split([' ', '\t', '\n'])
+        .filter(|token| !token.is_empty())
+}
+
+/// `Control=` list: `None` when the key is absent or has no token (the
+/// caller keeps the `[Defaults]` flags, `0x007506C9..0x00750700`).
+fn parse_control_list(raw: Option<&str>) -> Option<u32> {
+    let mut tokens = split_tokens(raw?).peekable();
+    tokens.peek()?;
+    Some(tokens.fold(0, |flags, token| flags | parse_control_token(token)))
+}
+
+/// `Type=` list: starts from SCREEN when at least one token exists
+/// (`0x00750759`), otherwise `None` so the caller keeps the `[Defaults]`
+/// flags.
+fn parse_type_list(raw: Option<&str>) -> Option<u32> {
+    let mut tokens = split_tokens(raw?).peekable();
+    tokens.peek()?;
+    let mut flags = sound_type::SCREEN;
+    for token in tokens {
+        apply_type_token(&mut flags, token);
+    }
+    Some(flags)
+}
+
+fn parse_control_token(token: &str) -> u32 {
+    CONTROL_TABLE
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(token))
+        .map_or(0, |&(_, value)| value)
+}
+
+/// `AudioEventClass::ParseTypeFlag @ 0x00406870`.
+fn apply_type_token(flags: &mut u32, token: &str) {
+    let value = TYPE_TABLE
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(token))
+        .map_or(0, |&(_, value)| value);
+    if value & (sound_type::SCREEN | sound_type::LOCAL) != 0 {
+        *flags &= !(sound_type::SCREEN | sound_type::LOCAL);
+    } else if value & (sound_type::UNSHROUD | sound_type::SHROUD) != 0 {
+        *flags &= !(sound_type::UNSHROUD | sound_type::SHROUD);
+    }
+    *flags |= value;
+}
+
+/// `Delay=` / `FShift=` (`0x0075083C..0x00750886`, `0x008B5..0x008FF`): the
+/// first token through `atoi` is the minimum; the second, when present, is
+/// the maximum, otherwise the minimum is reused. No token gives `(0, 0)`.
+fn parse_int_pair(raw: Option<&str>) -> (i32, i32) {
+    let Some(raw) = raw else {
+        return (0, 0);
+    };
+    let mut tokens = split_tokens(raw);
+    let Some(first) = tokens.next() else {
+        return (0, 0);
+    };
+    let min = crt_atoi(first);
+    let max = tokens.next().map_or(min, crt_atoi);
+    (min, max)
+}
+
+/// C `atoi`: leading whitespace, optional sign, decimal digits; anything
+/// else stops the parse (an empty prefix yields 0).
+fn crt_atoi(value: &str) -> i32 {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+        index += 1;
+    }
+    let mut negative = false;
+    match bytes.get(index) {
+        Some(b'-') => {
+            negative = true;
+            index += 1;
+        }
+        Some(b'+') => index += 1,
+        _ => {}
+    }
+    let mut magnitude: i64 = 0;
+    while let Some(digit) = bytes.get(index).filter(|b| b.is_ascii_digit()) {
+        magnitude = (magnitude * 10 + i64::from(digit - b'0')).min(i64::from(i32::MAX) + 1);
+        index += 1;
+    }
+    let signed = if negative { -magnitude } else { magnitude };
+    signed.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 /// Per-faction sound IDs for a single EVA event (e.g., EVA_ConstructionComplete).
@@ -288,35 +634,6 @@ const SOUND_PRIORITY_TABLE: [(&str, u8); 5] = [
     ("CRITICAL", 4),
 ];
 
-/// RESIDUAL (GSI-15.01) — the registry reads five keys and stock authors more,
-/// and pass 2 resolved the three that matter. `VocClass::ReadINI @ 0x00750440`
-/// reads fourteen keys in total; two previously unnamed strings are
-/// `0x00824314` = "Type" and `0x00824238` = "Loop".
-/// - `Control=` (594 stock, flag table at `0x008160C0`) selects RANDOM,
-///   INTERRUPT, PREDELAY, LOOP, ALL and AMBIENT. Unparsed, so variant choice is
-///   a plain counter and none of the other modes exist. An existing research doc
-///   has INTERRUPT and PREDELAY swapped — do not use it.
-/// - `Type=` (89 stock, flag table at `0x00816048`) is the one that gates
-///   volume: `CalcVolumeAndPan @ 0x00750AC0` applies the `MinVolume=` floor only
-///   for GLOBAL (`0x10`, 52 stock entries — `[Defaults]` is NOT global), skips
-///   the half-viewport subtraction only for LOCAL (`0x40`), and silences
-///   unrevealed cells for SHROUD (`0x800`). Parsing this is what unblocks the
-///   unconditional floor recorded in `audio/sfx.rs`.
-/// - `Limit=` (77) caps concurrent instances; 17 stock sounds cap at one.
-/// - `Loop=` is NO-DIFF — dead in stock.
-/// - `FShift=` (218), `VShift=` (153), `Attack=`/`Decay=` (12/9) and `Delay=`
-///   (64) remain unparsed pitch and envelope controls.
-/// - Trigger: playing any sound whose entry authors one of them, which is most
-///   of the registry.
-/// - Player effect: sounds do not interrupt or loop as authored, ambient beds
-///   cannot persist, repeated events stack without limit, and no envelope or
-///   pitch shift is applied.
-/// - Frequency: continuous.
-/// - Downstream risk: `Type=` is a pure parse and lands on its own. `Limit=` and
-///   `Control=INTERRUPT` need the channel arbitration that today lives inside
-///   the device-bound player, so they cannot be closed before that device-free
-///   arbiter is extracted (recorded on `audio/sfx.rs`).
-///
 /// The terminator's value in the same table.
 const SOUND_PRIORITY_DEFAULT: u8 = 2;
 
@@ -337,6 +654,13 @@ fn parse_sound_priority(raw: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stock `[Defaults]` block, verbatim from `soundmd.ini`.
+    const STOCK_DEFAULTS: &str = "[Defaults]\nMinVolume=50\nRange=10\nVolume=80\nLimit=5\nType= NORMAL SCREEN UNSHROUD\nPriority=NORMAL \n";
+
+    fn registry(body: &str) -> SoundRegistry {
+        SoundRegistry::from_ini(&IniFile::from_str(&format!("{STOCK_DEFAULTS}{body}")))
+    }
 
     #[test]
     fn test_parse_single_sound() {
@@ -369,15 +693,17 @@ mod tests {
         assert_eq!(parse_sound_priority("URGENT"), 2);
     }
 
+    /// `strtok` on `" \t\n"` — a comma is part of the sample name, so a
+    /// comma-joined list is one (missing) sample, never three.
     #[test]
-    fn test_parse_multi_sound() {
-        let ini: IniFile = IniFile::from_str(
-            "[E1Voice]\nSounds=e1sel01.wav,e1sel02.wav,e1sel03.wav\nVolume=100\n",
-        );
+    fn sounds_split_on_native_whitespace_only() {
+        let ini: IniFile =
+            IniFile::from_str("[E1Voice]\nSounds=e1sel01 e1sel02\te1sel03\nVolume=100\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("E1Voice").expect("should find entry");
-        assert_eq!(entry.sounds.len(), 3);
-        assert_eq!(entry.sounds[0], "e1sel01.wav");
+        assert_eq!(entry.sounds, vec!["e1sel01", "e1sel02", "e1sel03"]);
+        let comma = SoundRegistry::from_ini(&IniFile::from_str("[X]\nSounds=a.wav,b.wav\n"));
+        assert_eq!(comma.get("X").unwrap().sounds, vec!["a.wav,b.wav"]);
     }
 
     #[test]
@@ -410,16 +736,156 @@ mod tests {
         assert!(reg.get("SoundB").is_some());
     }
 
+    /// Without a `[Defaults]` section the static initialisers apply:
+    /// Volume 80, MinVolume 20, Type SCREEN, Limit 5, Range 10, Control 0.
     #[test]
-    fn test_defaults() {
+    fn static_defaults_match_the_binary_initialisers() {
         let ini: IniFile = IniFile::from_str("[MinimalSound]\nSounds=min.wav\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("MinimalSound").unwrap();
-        assert_eq!(entry.volume, 100);
+        assert_eq!(entry.volume, 80);
+        assert_eq!(entry.volume_linear, 13107); // ftol(0.8 * 16384)
+        assert!((entry.min_volume - 0.2).abs() < 1e-6);
         // `VocClass::ReadINI @ 0x00750440` passes the literal "NORMAL" as the
         // ReadString default, so an absent key lands on the same 2 the
         // terminator carries.
         assert_eq!(entry.priority, 2);
+        assert_eq!(entry.type_flags, sound_type::SCREEN);
+        assert_eq!(entry.control, 0);
+        assert_eq!(entry.limit, 5);
+        assert_eq!(entry.loop_count, 0);
+        assert_eq!(entry.range, 10);
+        assert_eq!(entry.delay_ms, (0, 0));
+        assert_eq!(entry.fshift, (0, 0));
+        assert_eq!(entry.vshift, 0);
+        assert_eq!((entry.attack, entry.decay), (0, 0));
+    }
+
+    /// The stock `[Defaults]` block: an entry authoring nothing but `Sounds=`
+    /// inherits NORMAL|SCREEN|UNSHROUD, a 0.5 floor, Limit 5 and Range 10.
+    #[test]
+    fn stock_defaults_flow_into_a_bare_entry() {
+        let reg = registry("[Bare]\nSounds=bare\n");
+        let entry = reg.get("Bare").unwrap();
+        assert_eq!(entry.type_flags, sound_type::SCREEN | sound_type::UNSHROUD);
+        assert_eq!(entry.min_volume, 0.5);
+        assert_eq!(entry.volume_linear, 13107);
+        assert_eq!(entry.limit, 5);
+        assert_eq!(entry.range, 10);
+        assert_eq!(reg.defaults().min_volume_fraction(), 0.5);
+        assert_eq!(reg.defaults().control, 0);
+    }
+
+    /// Stock `Type=` spellings. A `Type=` with any token restarts from SCREEN
+    /// (so `[Defaults]`' UNSHROUD is dropped), LOCAL replaces SCREEN, and
+    /// SHROUD replaces UNSHROUD.
+    #[test]
+    fn type_flags_follow_the_native_table_and_exclusive_pairs() {
+        let reg = registry(
+            "[G]\nSounds=g\nType=global\n[L]\nSounds=l\nType= Local\n[GS]\nSounds=gs\nType=global shroud\n[LS]\nSounds=ls\nType= local shroud\n[D]\nSounds=d\nType= NORMAL SCREEN UNSHROUD\n[U]\nSounds=u\nType=bogus\n[E]\nSounds=e\nType=\n",
+        );
+        use sound_type::*;
+        assert_eq!(reg.get("G").unwrap().type_flags, SCREEN | GLOBAL);
+        assert_eq!(reg.get("L").unwrap().type_flags, LOCAL);
+        assert_eq!(reg.get("GS").unwrap().type_flags, SCREEN | GLOBAL | SHROUD);
+        assert_eq!(reg.get("LS").unwrap().type_flags, LOCAL | SHROUD);
+        assert_eq!(reg.get("D").unwrap().type_flags, SCREEN | UNSHROUD);
+        assert_eq!(reg.get("U").unwrap().type_flags, SCREEN);
+        // An empty value has no token: the [Defaults] flags are kept.
+        assert_eq!(reg.get("E").unwrap().type_flags, SCREEN | UNSHROUD);
+        let mut flags = SCREEN | UNSHROUD;
+        apply_type_token(&mut flags, "shroud");
+        apply_type_token(&mut flags, "LOCAL");
+        apply_type_token(&mut flags, "screen");
+        assert_eq!(flags, SCREEN | SHROUD);
+    }
+
+    /// Stock `Control=` spellings through the `0x008160C0` table, plus the
+    /// attack/decay normalisation `SetControlFlags` applies afterwards.
+    #[test]
+    fn control_flags_and_envelope_counts_match_the_native_setters() {
+        let reg = registry(
+            "[R]\nSounds=r\nControl=random\n[RI]\nSounds=ri\nControl= random interrupt \n[RP]\nSounds=rp\nControl=random predelay\n[Amb]\nSounds=a\nControl= random loop all ambient\n[Env]\nSounds=a1 a2 a3 b1 b2 d1 d2 d3\nControl= loop random all decay attack\nAttack=3\nDecay=3\n[EnvNoCount]\nSounds=a b c\nControl= random attack decay\n[NoFlag]\nSounds=a b c\nControl=random\nAttack=2\nDecay=1\n[Empty]\nSounds=x\nControl=\n[Bogus]\nSounds=x\nControl=Random bogus\n",
+        );
+        use control::*;
+        assert_eq!(reg.get("R").unwrap().control, RANDOM);
+        assert_eq!(reg.get("RI").unwrap().control, RANDOM | INTERRUPT);
+        assert_eq!(reg.get("RP").unwrap().control, RANDOM | PREDELAY);
+        assert_eq!(
+            reg.get("Amb").unwrap().control,
+            RANDOM | LOOP | ALL | AMBIENT
+        );
+        let env = reg.get("Env").unwrap();
+        assert_eq!(env.control, LOOP | RANDOM | ALL | DECAY | ATTACK);
+        assert_eq!((env.attack, env.decay), (3, 3));
+        assert_eq!(env.body_range(), 3..5);
+        let env_no_count = reg.get("EnvNoCount").unwrap();
+        assert_eq!((env_no_count.attack, env_no_count.decay), (1, 1));
+        let no_flag = reg.get("NoFlag").unwrap();
+        assert_eq!((no_flag.attack, no_flag.decay), (0, 0));
+        assert_eq!(no_flag.body_range(), 0..3);
+        assert_eq!(reg.get("Empty").unwrap().control, 0);
+        assert_eq!(reg.get("Bogus").unwrap().control, RANDOM);
+        assert_eq!(parse_control_token("INTERRUPT"), 0x10);
+        assert_eq!(parse_control_token("predelay"), 0x08);
+    }
+
+    /// `Delay=`/`FShift=` one-or-two token rule and the `VShift=` clamp, using
+    /// the stock spellings including the lower-case `Fshift`/`Vshift` keys
+    /// (5 and 11 stock occurrences) that gamemd's case-insensitive INI reads.
+    #[test]
+    fn delay_fshift_vshift_follow_native_pairs_and_clamps() {
+        let reg = registry(
+            "[A]\nSounds=a\nDelay=0 400\nFShift= -10 10\nVShift=20\n[B]\nSounds=b\nDelay= 400\nFshift=-5 5\nVshift=15\n[C]\nSounds=c\nVShift=140\nFShift=\nDelay= 5000 8000 9000\n[D]\nSounds=d\nVShift=-3\n",
+        );
+        let a = reg.get("A").unwrap();
+        assert_eq!(a.delay_ms, (0, 400));
+        assert_eq!(a.fshift, (-10, 10));
+        assert_eq!(a.vshift, 20);
+        let b = reg.get("B").unwrap();
+        assert_eq!(b.delay_ms, (400, 400));
+        assert_eq!(b.fshift, (-5, 5));
+        assert_eq!(b.vshift, 15);
+        let c = reg.get("C").unwrap();
+        assert_eq!(c.vshift, 100);
+        assert_eq!(c.fshift, (0, 0));
+        assert_eq!(c.delay_ms, (5000, 8000));
+        assert_eq!(reg.get("D").unwrap().vshift, 0);
+        assert_eq!(crt_atoi(" -12x"), -12);
+        assert_eq!(crt_atoi("abc"), 0);
+    }
+
+    /// `Volume`/`MinVolume` go through `ReadDouble` (float, `%` scaling) and
+    /// the per-entry clamp before the 16384 scale.
+    #[test]
+    fn volume_and_min_volume_follow_read_double_and_the_clamps() {
+        let reg = registry(
+            "[Full]\nSounds=f\nVolume=100\n[Over]\nSounds=o\nVolume=250\nMinVolume=130\n[Neg]\nSounds=n\nVolume=-5\nMinVolume=-1\n[Pct]\nSounds=p\nVolume=5000%\n[Half]\nSounds=h\nVolume=50.5\nMinVolume=25\n[Lower]\nSounds=l\nvolume=60\n",
+        );
+        assert_eq!(reg.get("Full").unwrap().volume_linear, VOLUME_SCALE);
+        let over = reg.get("Over").unwrap();
+        assert_eq!(over.volume_linear, VOLUME_SCALE);
+        assert_eq!(over.min_volume, 1.0);
+        let neg = reg.get("Neg").unwrap();
+        assert_eq!(neg.volume_linear, 0);
+        assert_eq!(neg.min_volume, 0.0);
+        assert_eq!(reg.get("Pct").unwrap().volume_linear, 8192);
+        let half = reg.get("Half").unwrap();
+        assert_eq!(half.volume_linear, volume_linear(50.5));
+        assert_eq!(half.volume_linear, 8273); // ftol(0.505 * 16384)
+        assert_eq!(half.min_volume, 0.25);
+        assert_eq!(reg.get("Lower").unwrap().volume, 60);
+    }
+
+    /// 33 samples: the native slot table holds 32.
+    #[test]
+    fn sample_list_is_capped_at_the_native_slot_count() {
+        let list = (0..40)
+            .map(|i| format!("s{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let reg = SoundRegistry::from_ini(&IniFile::from_str(&format!("[Many]\nSounds={list}\n")));
+        assert_eq!(reg.get("Many").unwrap().sounds.len(), MAX_SAMPLES);
     }
 
     #[test]
@@ -443,7 +909,7 @@ mod tests {
 
     #[test]
     fn test_strip_hash_prefix() {
-        let ini: IniFile = IniFile::from_str("[HashTest]\nSounds= #sound1 #sound2\n");
+        let ini: IniFile = IniFile::from_str("[HashTest]\nSounds= #sound1 #$sound2\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("HashTest").expect("should find entry");
         assert_eq!(entry.sounds, vec!["sound1", "sound2"]);

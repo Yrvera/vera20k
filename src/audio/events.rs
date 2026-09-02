@@ -17,6 +17,41 @@
 //! - sim/ may reference this module to push events (acceptable because
 //!   it's pure data with zero audio-library dependencies).
 
+/// Where a positional sound plays: the world-pixel point the presentation
+/// frame draws it at, and the cell it occupies.
+///
+/// gamemd-derived: `VocClass::PlayAt @ 0x007509E0` receives the object's
+/// coordinate; `VocClass::CalcVolumeAndPan @ 0x00750AC0` projects it to the
+/// tactical client point for volume and pan and derives the cell as
+/// `coord >> 8` (`0x00750B32..0x00750B4E`) for the `Type=SHROUD` gate. VERA
+/// carries both halves so the app never has to invert a projection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SoundSource {
+    pub screen_x: f32,
+    pub screen_y: f32,
+    pub rx: u16,
+    pub ry: u16,
+}
+
+impl SoundSource {
+    pub fn new(screen: (f32, f32), cell: (u16, u16)) -> Self {
+        Self {
+            screen_x: screen.0,
+            screen_y: screen.1,
+            rx: cell.0,
+            ry: cell.1,
+        }
+    }
+
+    pub fn screen_pos(&self) -> (f32, f32) {
+        (self.screen_x, self.screen_y)
+    }
+
+    pub fn cell(&self) -> (u16, u16) {
+        (self.rx, self.ry)
+    }
+}
+
 /// A sound event produced by the game simulation or UI.
 #[derive(Debug, Clone)]
 pub enum GameSoundEvent {
@@ -32,14 +67,14 @@ pub enum GameSoundEvent {
     AnimationStarted {
         anim_id: u64,
         sound_id: String,
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// Release one animation's active handle, then optionally play StopSound.
     AnimationStopped {
         anim_id: u64,
         stop_sound_id: Option<String>,
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
     /// A weapon fired — play the weapon's Report= sound.
     WeaponFired {
@@ -47,7 +82,7 @@ pub enum GameSoundEvent {
         sound_id: String,
         /// Screen position of the sound source (for spatial audio).
         /// If None, plays at full volume (non-positional).
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// A unit was selected by the player — play VoiceSelect.
@@ -73,7 +108,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID from the entity's DieSound= field.
         sound_id: String,
         /// Screen position of the sound source (for spatial audio).
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// An entity was crushed by a vehicle — play CrushSound (the squish).
@@ -81,7 +116,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID from the entity's CrushSound= field.
         sound_id: String,
         /// Screen position of the sound source (for spatial audio).
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// An infantry entity entered the Deploying phase — play DeploySound.
@@ -89,7 +124,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID from the entity's DeploySound= field.
         sound_id: String,
         /// Screen position of the sound source (for spatial audio).
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// An infantry entity entered the Undeploying phase — play UndeploySound.
@@ -97,7 +132,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID from the entity's UndeploySound= field.
         sound_id: String,
         /// Screen position of the sound source (for spatial audio).
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// A chrono teleport happened — play the resolved warp sound at this position.
@@ -106,7 +141,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID — already resolved to the per-unit ChronoIn/OutSound by sim.
         sound_id: String,
         /// Screen position of the sound source (for spatial audio).
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// A local-player object crossed a veterancy rank — the positional
@@ -114,7 +149,7 @@ pub enum GameSoundEvent {
     /// (`VocClass::PlayAt` from `TechnoClass::AI_Update @ 0x006FA0BC`).
     UnitPromoted {
         sound_id: String,
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// The `EVA_UnitPromoted` voice that accompanies `UnitPromoted`.
@@ -124,7 +159,7 @@ pub enum GameSoundEvent {
     /// native StartUncloaking arg-zero transition.
     CloakSound {
         sound_id: String,
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// A building finished construction — play the EVA "Construction complete" or similar.
@@ -163,7 +198,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID for the SFX (resolves "BuildingGarrisoned" → file).
         sound_id: String,
         /// Screen position for spatial audio.
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// Positional SFX from `[SealPlaceBomb]` — plays at the attacker's screen
@@ -172,7 +207,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID for the SFX (resolves "SealPlaceBomb" → file).
         sound_id: String,
         /// Screen position for spatial audio.
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// Positional SFX played when a docked harvester departs after dumping.
@@ -182,7 +217,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID for the SFX.
         sound_id: String,
         /// Screen position for spatial audio.
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// Positional SFX for tank-bunker walls raising (install) or falling
@@ -193,7 +228,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID (BunkerWallsUpSound or BunkerWallsDownSound).
         sound_id: String,
         /// Screen position for spatial audio.
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// Positional SFX played when a paradropped passenger successfully opens
@@ -202,7 +237,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID for the SFX.
         sound_id: String,
         /// Screen position for spatial audio.
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// Positional SFX + EVA cue from a bridge repair triggered by an engineer
@@ -216,7 +251,7 @@ pub enum GameSoundEvent {
         /// `RepairBridgeSound=` is unset in rules.
         sound_id: String,
         /// Screen position for spatial audio.
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
         /// `Some(eva_id)` when the engineer's owner is the local human;
         /// `None` otherwise.
         eva_sound_id: Option<String>,
@@ -227,7 +262,7 @@ pub enum GameSoundEvent {
         /// sound.ini ID for the selected animation's StartSound/Report.
         sound_id: String,
         /// Screen position for spatial audio.
-        screen_pos: Option<(f32, f32)>,
+        source: Option<SoundSource>,
     },
 
     /// Generic UI sound (button click, error beep, etc.).
@@ -273,28 +308,33 @@ impl GameSoundEvent {
         }
     }
 
-    /// Get the screen position for spatial audio, if this event has one.
-    pub fn screen_pos(&self) -> Option<(f32, f32)> {
+    /// Get the positional source for spatial audio, if this event has one.
+    pub fn source(&self) -> Option<SoundSource> {
         match self {
-            Self::WeaponFired { screen_pos, .. } => *screen_pos,
-            Self::AnimationStarted { screen_pos, .. }
-            | Self::AnimationStopped { screen_pos, .. } => *screen_pos,
-            Self::EntityDestroyed { screen_pos, .. } => *screen_pos,
-            Self::EntityCrushed { screen_pos, .. } => *screen_pos,
-            Self::EntityDeployed { screen_pos, .. } => *screen_pos,
-            Self::EntityUndeployed { screen_pos, .. } => *screen_pos,
-            Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
-            Self::UnitPromoted { screen_pos, .. } => *screen_pos,
-            Self::CloakSound { screen_pos, .. } => *screen_pos,
-            Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
-            Self::C4Planted { screen_pos, .. } => *screen_pos,
-            Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,
-            Self::BunkerWalls { screen_pos, .. } => *screen_pos,
-            Self::ChuteSound { screen_pos, .. } => *screen_pos,
-            Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
-            Self::WorldEffectStarted { screen_pos, .. } => *screen_pos,
+            Self::WeaponFired { source, .. }
+            | Self::AnimationStarted { source, .. }
+            | Self::AnimationStopped { source, .. }
+            | Self::EntityDestroyed { source, .. }
+            | Self::EntityCrushed { source, .. }
+            | Self::EntityDeployed { source, .. }
+            | Self::EntityUndeployed { source, .. }
+            | Self::ChronoTeleport { source, .. }
+            | Self::UnitPromoted { source, .. }
+            | Self::CloakSound { source, .. }
+            | Self::BuildingGarrisonedSfx { source, .. }
+            | Self::C4Planted { source, .. }
+            | Self::RefineryExitSfx { source, .. }
+            | Self::BunkerWalls { source, .. }
+            | Self::ChuteSound { source, .. }
+            | Self::BridgeRepaired { source, .. }
+            | Self::WorldEffectStarted { source, .. } => *source,
             _ => None,
         }
+    }
+
+    /// Get the screen position for spatial audio, if this event has one.
+    pub fn screen_pos(&self) -> Option<(f32, f32)> {
+        self.source().map(|source| source.screen_pos())
     }
 }
 
@@ -376,7 +416,7 @@ mod tests {
     fn test_sound_id_accessor() {
         let evt: GameSoundEvent = GameSoundEvent::WeaponFired {
             sound_id: "VGCannon1".to_string(),
-            screen_pos: None,
+            source: None,
         };
         assert_eq!(evt.sound_id(), "VGCannon1");
     }
@@ -403,17 +443,18 @@ mod tests {
     fn test_building_garrisoned_sfx_screen_pos_accessor() {
         let evt: GameSoundEvent = GameSoundEvent::BuildingGarrisonedSfx {
             sound_id: "BuildingGarrisoned".to_string(),
-            screen_pos: Some((100.0, 200.0)),
+            source: Some(SoundSource::new((100.0, 200.0), (3, 4))),
         };
         assert_eq!(evt.sound_id(), "BuildingGarrisoned");
         assert_eq!(evt.screen_pos(), Some((100.0, 200.0)));
+        assert_eq!(evt.source().map(|s| s.cell()), Some((3, 4)));
     }
 
     #[test]
     fn test_chute_sound_screen_pos_accessor() {
         let evt = GameSoundEvent::ChuteSound {
             sound_id: "ParachuteDrop".to_string(),
-            screen_pos: Some((128.0, 256.0)),
+            source: Some(SoundSource::new((128.0, 256.0), (5, 6))),
         };
         assert_eq!(evt.sound_id(), "ParachuteDrop");
         assert_eq!(evt.screen_pos(), Some((128.0, 256.0)));
@@ -423,7 +464,7 @@ mod tests {
     fn test_bridge_repaired_carries_spatial_and_eva_sound_ids() {
         let evt = GameSoundEvent::BridgeRepaired {
             sound_id: "BridgeRepaired".to_string(),
-            screen_pos: Some((32.0, 64.0)),
+            source: Some(SoundSource::new((32.0, 64.0), (1, 2))),
             eva_sound_id: Some("EVA_BridgeRepaired".to_string()),
         };
 
