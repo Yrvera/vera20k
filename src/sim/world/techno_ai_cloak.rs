@@ -102,6 +102,37 @@ fn stock_cloak_tick_facts(
         owner_cloak_field_bit(sim, entity.owner, entity.position.rx, entity.position.ry);
 
     // `TechnoClass::CanAutoCloak @ 0x006FBDC0`, in native step order.
+    //
+    // Step 1's fall-through is `if (!CloakedByHouses(cell, owner) && +0x3D2 ==
+    // 0) return false`. `+0x3D2` is the raw stealth-ability byte:
+    // `TechnoClass::HasStealthAbility @ 0x0070C5A0` is literally `return
+    // +0x3D2 != 0`, and it is seeded at init from `TechnoTypeClass+0xCD0`
+    // (`Cloakable=`) — `InfantryClass::InitFromType @ 0x00517D80`,
+    // `UnitClass::Constructor @ 0x007355B4`, `TechnoClass::Constructor @
+    // 0x006F2F49`. `object.cloakable` below is that seed, so the term is
+    // modelled. TWO halves of it are not; both are inert in stock YR:
+    //
+    // RESIDUAL 1 — the Cloak CRATE also sets `+0x3D2 = 1` permanently, on every
+    // object within `[CrateRules] CrateRadius` (`Rules+0x172C`, 3.0 cells) of
+    // the picked-up crate: `CrateClass::PickupDispatch @ 0x0048294F`, the arm
+    // whose anim comes from the powerup anim table at `0x0081DAD8` (slot 3 =
+    // `Cloak`, anim `CLOAK`). VERA has no Cloak-crate producer.
+    // - Trigger: a unit picking up a Cloak crate.
+    // - Player effect: in gamemd every unit within three cells is permanently
+    //   cloakable afterwards; in VERA nothing happens.
+    // - Frequency: ZERO in stock. `[Powerups]` in `rulesmd.ini` does not spell
+    //   `Cloak=` at all, and an absent row takes `ReadPowerups`' `"0,NONE"`
+    //   default, so the Cloak crate's selection weight is 0 and it never
+    //   spawns. Only a mod that authors a nonzero `Cloak=` weight reaches it.
+    // - Downstream risk: none; it lands as one extra per-entity flag OR-ed into
+    //   `is_cloakable` here and in `should_uncloak` below.
+    //
+    // RESIDUAL 2 — native ORs the RAW `+0x3D2` here, not vt+0x288, so the two
+    // differ exactly when `FootClass::IsCloakable @ 0x004DBDA0` suppresses a
+    // stealth unit for `CloakStop=` while it is moving: native still passes
+    // step 1, VERA refuses. `grep -c '^CloakStop' ini/rulesmd.ini` is 0, so no
+    // stock type can trigger it. Same asymmetry in `should_uncloak` below.
+    // - Frequency: zero in stock; mod-only.
     let can_auto_cloak = (is_cloakable || rank_cloak || cloaked_by_own_house)
         // 2. already fully cloaked.
         && cloak_state != 2
@@ -114,9 +145,16 @@ fn stock_cloak_tick_facts(
         //    unit holding a target no weapon can engage, which VERA's
         //    acquisition and retaliation paths do not install.
         && !holds_target
-        // 5. `WhatAmI != Building && CloakProgress(+0x224) != 0`. This is why
-        //    the state-3 silent re-cloak branch is unreachable for units:
-        //    visual state 1 requires a nonzero progress.
+        // 5. `iVar3 = vt+0x2C(); if (iVar3 != 6 && CloakProgress(+0x224) != 0)
+        //    return false` — a BUILDING is exempt from the progress test, every
+        //    other category is not. This producer is entered only for
+        //    `EntityCategory::Unit` (see the head of this function), so
+        //    `WhatAmI != 6` holds for every object that reaches here and the
+        //    exemption is structurally unreachable rather than dropped. It is
+        //    also unreachable in gamemd data: no stock section pairs
+        //    `Cloakable=yes` with a building. This is why the state-3 silent
+        //    re-cloak branch is unreachable for units: visual state 1 requires
+        //    a nonzero progress.
         && cloak_progress == 0
         // 7. the mind-control arm (`+0x2B0` plus the FootClass `+0x6AD` byte).
         && !entity.mind_controlled
@@ -135,6 +173,10 @@ fn stock_cloak_tick_facts(
     // The tail therefore returns 1 in stock YR, so the predicate reduces to
     // "the object can no longer sustain its cloak" — EMP, chrono warp, a
     // pending deploy, `CloakStop=` while moving, or a lost stealth ability.
+    // The `|| +0x3D2` disjunct is the raw stealth byte; see the two `+0x3D2`
+    // residuals on `can_auto_cloak` above — `object.cloakable` inside
+    // `is_cloakable` is that byte's stock seed, and the crate-granted and
+    // `CloakStop=`-while-moving halves are both unreachable in stock data.
     let should_uncloak = if is_cloakable && !emp_active && !deploy_pending && !chrono_active {
         false
     } else if rank_cloak {

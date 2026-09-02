@@ -56,6 +56,10 @@ mod combat_cloak_fire_tests;
 mod combat_cloak_legality_tests;
 
 #[cfg(test)]
+#[path = "combat_cloak_damage_tests.rs"]
+mod combat_cloak_damage_tests;
+
+#[cfg(test)]
 #[path = "delayed_building_fire_tests.rs"]
 mod delayed_building_fire_tests;
 
@@ -3462,16 +3466,28 @@ fn commit_damage_events_with_isolation(
                 receive_outcome.is_some_and(|outcome| outcome.reached_survivor_postlude);
             let receive_state = receive_outcome.map(|outcome| outcome.state);
             // `TechnoClass::ReceiveDamage @ 0x0070281D` calls vtable `+0xFC`
-            // (`StartUncloaking(0) @ 0x00703850`) unconditionally once the
-            // `CMP EDI,4 / JZ` death branch at `0x007027EE` has been passed —
-            // so for results Unaffected/Damaged/Yellow/Red, and NOT for
-            // NowDead. It sits after the ObjectClass HP commit and after the
-            // `ToProtect` response, and before the `if (damage < 0) return`
-            // heal early-out, which is why a HEAL surfaces a diving submarine
-            // just as reliably as a shell does.
-            uncloak_after_damage = receive_state.is_some_and(|state| {
-                state != damage::DamageState::Dead
-            });
+            // (`StartUncloaking(0) @ 0x00703850`) once the `CMP EDI,4 / JZ`
+            // death branch at `0x007027EE` has been passed — so for results
+            // Unaffected/Damaged/Yellow/Red, and NOT for NowDead. It sits
+            // after the ObjectClass HP commit and after the `ToProtect`
+            // response, and before the `if (damage < 0) return` heal
+            // early-out, which is why a HEAL surfaces a diving submarine just
+            // as reliably as a shell does.
+            //
+            // The death branch is the only guard IMMEDIATELY before the call,
+            // but it is not the only way native misses it: every defensive
+            // gate in `TechnoClass::ReceiveDamage @ 0x00701900` returns above
+            // the `uVar7 = ObjectClass__ReceiveDamage(this)` join — the
+            // `TypeImmune` (`type+0xC8C`) same-type/same-owner arm, `vt+0x160`
+            // (IronCurtain/ForceShield), `vt+0x1D4` (warping in), the
+            // `AffectsAllies=no` (`warhead+0x179`) allied arm, and the
+            // accepted Psychedelic arm (`return 1`). None of those reaches
+            // `+0xFC`, so an Iron-Curtained, type-immune or ally-shielded
+            // cloaked object stays submerged. `reached_survivor_postlude` is
+            // exactly "the receiver delegated to ObjectClass and came back
+            // through the surviving-object tail", i.e. that join.
+            uncloak_after_damage = reached_survivor_postlude
+                && receive_state.is_some_and(|state| state != damage::DamageState::Dead);
             // TechnoClass's persistent hostile-hit byte is written in the
             // shared surviving post-Object tail. The source object must be
             // non-null, and alliance direction is target owner -> captured
@@ -5891,8 +5907,20 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             // attack record instead of the object, so the cloak runtime carries
             // its own copy of the same value; without it a Typhoon that
             // surfaced to fire could re-dive on the very next tick.
+            //
+            // The duration native stores is `CALL [EDX+0x318]` at 0x006FE49E
+            // — `TechnoClass::GetROF @ 0x006FCFA0` (vtable slot read at
+            // 0x007F4C78) — whose MID-BURST branch returns the inter-shot gap,
+            // not zero. Native keeps one timer; VERA splits it into
+            // `cooldown_ticks` (armed on the burst's last shot) and
+            // `burst_delay_ticks` (armed between burst shots). The two
+            // decrement together and the fire gate is their union, so the
+            // native `+0x2F4` value is whichever of the two this shot armed.
+            // With `[BoomerTorpedo] Burst=2` on a `Cloakable=yes` BSUB, taking
+            // the union is what stops a re-dive between the two torpedoes.
+            let rearm_gate_frames = i32::from(rof_cd).max(i32::from(burst_delay));
             if let Some(cloak) = entity.cloak.as_mut() {
-                cloak.arm_rearm_gate(binary_frame as i32, i32::from(rof_cd));
+                cloak.arm_rearm_gate(binary_frame as i32, rearm_gate_frames);
             }
         }
     }
@@ -6674,6 +6702,17 @@ pub(crate) fn resolve_attacker_fire(
     //
     // The range-zero/allied fall-through is modelled: a range-0 weapon against
     // an ALLIED invisible target is allowed through, everything else is not.
+    //
+    // RESIDUAL (SUBSTITUTION) — the range term is the SELECTED weapon's range;
+    // native's `GetWeaponRange(this, -1)` at `0x006FC27C` asks the object for
+    // its range across weapons, so the two differ only when the selected weapon
+    // has range 0 while another slot does not.
+    // - Trigger: a zero-range weapon aimed at an allied, fully cloaked,
+    //   unsensed target.
+    // - Player effect: VERA lets the shot through where native returns 6.
+    // - Frequency: none observed in stock — no stock weapon pairs range 0 with
+    //   a second armed slot on a unit that can hold an allied cloaked target.
+    // - Downstream risk: low; it is one range lookup.
     if let TargetKind::Entity(target_sid) = snap.target
         && entities
             .get(target_sid)
