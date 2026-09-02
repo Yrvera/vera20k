@@ -37,7 +37,7 @@ pub(crate) struct GerminatedCell {
 /// `CellClass::OverlayToTiberiumIndex @ 0x005FDD20` is -1. Otherwise it
 /// captures `TiberiumClass+0xB8 (Value)`, resolves all eight
 /// `g_DirectionOffsets @ 0x0089F688` neighbours (N, NE, E, SE, S, SW, W, NW;
-/// `EDI & 7` at `0x00481968`) through the stamping
+/// `AND EDX,0x7` on a copy of the loop counter at `0x00481966..0x00481968`) through the stamping
 /// `MapClass::Get_CellClass @ 0x005657A0` (`0x004819A6`; a miss stamps the
 /// shared dummy's coordinate and the read continues on that dummy), counts
 /// those whose `OverlayToTiberiumIndex` equals the receiver's, writes

@@ -1095,8 +1095,13 @@ Recorded open items, each with its native reading and owner. None is closed by P
   order (player-invisible; it changes only which missing neighbour the shared dummy's coordinate retains).
   Residuals kept open under G10: the per-cell Recalc / terrain-Anim scalar-delete-recreate chronology of
   that pass (the eager tile-anim set is the recreated set; `RecalcAttributes @ 0x0047D2B0` reads no
-  `+0x11E`, so no attribute differs), the ancillary slots shared with the ancillary-seam bullet, and the
-  synthetic `Full_Init` phase journal. The slice also opened OQ-38 (native queue rebuild parity: the
+  `+0x11E`, so no attribute differs), the ancillary slots shared with the ancillary-seam bullet, the
+  dummy's overlay identity at the `InitCellAttributes(1)` boundary (modelled as the post-Resize `-1`;
+  generator writes through `Get_CellClass` misses are UNCHECKED), and the synthetic `Full_Init` phase
+  journal. The crate Mark seam's own lookup (`resolve_crate_mark_cell`) still treats in-storage
+  off-diamond cells as real where native NULL slots resolve to the dummy (DRIFT, diamond-edge crates
+  only; fix by routing through `native_fixed_cell_index`, owner: the next crate slice). The slice also
+  opened OQ-38 (native queue rebuild parity: the
   admission predicates are verified, the heap insertion/pop order and the percentage/occupier gates
   are recorded DRIFT for the next slice).
 - **Value-only `Get_Tiberium_Value` aggregate / `MapClass+0x134` store (contract G6) — IMPLEMENTED

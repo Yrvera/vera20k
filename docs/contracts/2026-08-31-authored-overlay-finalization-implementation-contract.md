@@ -748,6 +748,14 @@ with the ancillary seam; OQ-38, native queue rebuild parity (`TiberiumClass::Reb
 front (equal-priority order differs on every map); native requires the percentage doubles `>= 1e-05`
 where Rust accepts `ppm >= 0`; native spread requires `CellClass+0xE4 FirstObject == 0` where Rust
 excludes only terrain-object cells; the Scenario flag gates are read from the map/rules booleans.
+Critic-recorded (slice C critic 1, PASS): the crate Mark seam lookup (`resolve_crate_mark_cell`) treats
+in-storage off-diamond cells as real; native NULL slots (`Get_CellClass @ 0x005657A0`,
+`0x005657A5..0x005657D5`) resolve to the dummy — DRIFT, diamond-edge crates only; fix by routing through
+`native_fixed_cell_index`. The dummy's overlay identity at the generated `InitCellAttributes(1)`
+boundary is modelled as the post-Resize `-1`; whether generator constructors stamped it through a
+`Get_CellClass` miss is UNCHECKED (G10). The eager generated projection's `bridge_facts.state_byte`
+keeps the painted density for ore cells after germination; its readers are bridge-family gated and the
+oracle export view, so only a per-cell `OverlayData` oracle comparison could observe it.
 
 ## Known Non-Requirements
 
