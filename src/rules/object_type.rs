@@ -422,6 +422,17 @@ pub struct ObjectType {
     /// Whether this unit fires a warhead at its own position on death (e.g.,
     /// Apocalypse Tank explosion damages nearby units).
     pub explodes: bool,
+    /// The full native `VeteranAbilities=` byte array (`TechnoTypeClass+0x29C`,
+    /// 18 bytes). The per-token bools below are projections of this for the
+    /// readers that predate it; new readers go through
+    /// `sim::combat::veterancy::has_weapon_ability`.
+    pub veteran_abilities: AbilityFlags,
+    /// The full native `EliteAbilities=` byte array (`TechnoTypeClass+0x2AE`).
+    pub elite_abilities: AbilityFlags,
+    /// `SelfHealing=` (`TechnoTypeClass+0xD14`, `ReadBool` at `0x00714AE8`).
+    /// A type with this set heals at every rank; otherwise the `SELF_HEAL`
+    /// ability gates the same pulse (`FUN_0070BE80`).
+    pub self_healing: bool,
     /// `EXPLODES` in `VeteranAbilities=`. Native treats this as an effective
     /// death-explosion gate once the object is veteran.
     pub veteran_explodes: bool,
@@ -1192,6 +1203,18 @@ impl ObjectType {
 
         let btm_f32: f32 = section.get_f32("BuildTimeMultiplier").unwrap_or(1.0);
 
+        // `TechnoTypeClass::ReadINI` reads `VeteranAbilities=` into `+0x29C`
+        // (`0x007154A3`) and `EliteAbilities=` into `+0x2AE` (`0x007154E8`).
+        // VERA's merged section already carries the last INI pass's value
+        // for a present key, and a key no pass authored is the constructor's
+        // all-clear array.
+        let veteran_abilities = AbilityFlags::parse(
+            section.get_list("VeteranAbilities"),
+            AbilityFlags::default(),
+        );
+        let elite_abilities =
+            AbilityFlags::parse(section.get_list("EliteAbilities"), AbilityFlags::default());
+
         Self {
             id: id.to_string(),
             category,
@@ -1338,16 +1361,19 @@ impl ObjectType {
             can_passive_acquire: section.get_bool("CanPassiveAquire").unwrap_or(true),
             distributed_fire: section.get_bool("DistributedFire").unwrap_or(false),
             explodes: section.get_bool("Explodes").unwrap_or(false),
-            veteran_explodes: ability_list_has(section.get_list("VeteranAbilities"), "EXPLODES"),
-            elite_explodes: ability_list_has(section.get_list("EliteAbilities"), "EXPLODES"),
-            veteran_stronger: ability_list_has(section.get_list("VeteranAbilities"), "STRONGER"),
-            elite_stronger: ability_list_has(section.get_list("EliteAbilities"), "STRONGER"),
-            veteran_scatter: ability_list_has(section.get_list("VeteranAbilities"), "SCATTER"),
-            elite_scatter: ability_list_has(section.get_list("EliteAbilities"), "SCATTER"),
-            veteran_cloak: ability_list_has(section.get_list("VeteranAbilities"), "CLOAK"),
-            elite_cloak: ability_list_has(section.get_list("EliteAbilities"), "CLOAK"),
-            veteran_crusher: ability_list_has(section.get_list("VeteranAbilities"), "CRUSHER"),
-            elite_crusher: ability_list_has(section.get_list("EliteAbilities"), "CRUSHER"),
+            veteran_abilities,
+            elite_abilities,
+            self_healing: section.get_bool("SelfHealing").unwrap_or(false),
+            veteran_explodes: veteran_abilities.has(Ability::Explodes),
+            elite_explodes: elite_abilities.has(Ability::Explodes),
+            veteran_stronger: veteran_abilities.has(Ability::Stronger),
+            elite_stronger: elite_abilities.has(Ability::Stronger),
+            veteran_scatter: veteran_abilities.has(Ability::Scatter),
+            elite_scatter: elite_abilities.has(Ability::Scatter),
+            veteran_cloak: veteran_abilities.has(Ability::Cloak),
+            elite_cloak: elite_abilities.has(Ability::Cloak),
+            veteran_crusher: veteran_abilities.has(Ability::Crusher),
+            elite_crusher: elite_abilities.has(Ability::Crusher),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             death_weapon_damage_modifier: section
                 .get_f32("DeathWeaponDamageModifier")
@@ -1358,14 +1384,8 @@ impl ObjectType {
             gap_generator: section.get_bool("GapGenerator").unwrap_or(false),
             radar: section.get_bool("Radar").unwrap_or(false),
             radar_invisible: section.get_bool("RadarInvisible").unwrap_or(false),
-            veteran_radar_invisible: ability_list_has(
-                section.get_list("VeteranAbilities"),
-                "RADAR_INVISIBLE",
-            ),
-            elite_radar_invisible: ability_list_has(
-                section.get_list("EliteAbilities"),
-                "RADAR_INVISIBLE",
-            ),
+            veteran_radar_invisible: veteran_abilities.has(Ability::RadarInvisible),
+            elite_radar_invisible: elite_abilities.has(Ability::RadarInvisible),
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
             insignificant: section.get_bool("Insignificant").unwrap_or(false),
             to_protect: section.get_bool("ToProtect").unwrap_or(false),
@@ -1420,8 +1440,8 @@ impl ObjectType {
             fire_prone_frame: 0,
             secondary_fire_frame: 0,
             secondary_prone_frame: 0,
-            veteran_fearless: ability_list_has(section.get_list("VeteranAbilities"), "FEARLESS"),
-            elite_fearless: ability_list_has(section.get_list("EliteAbilities"), "FEARLESS"),
+            veteran_fearless: veteran_abilities.has(Ability::Fearless),
+            elite_fearless: elite_abilities.has(Ability::Fearless),
             harvest_rate: section.get_i32("HarvestRate").unwrap_or(0).max(0) as u32,
             resource_gatherer: section.get_bool("ResourceGatherer").unwrap_or(false),
             resource_destination: section.get_bool("ResourceDestination").unwrap_or(false),
@@ -1735,10 +1755,143 @@ fn parse_ivec3_offset(raw: &str) -> IVec3 {
     IVec3::new(x, y, z)
 }
 
-fn ability_list_has(list: Option<Vec<&str>>, needle: &str) -> bool {
-    list.unwrap_or_default()
-        .into_iter()
-        .any(|ability| ability.eq_ignore_ascii_case(needle))
+/// One entry of the native ability table.
+///
+/// gamemd-derived: `AbilityClass::FindAbilityByName @ 0x0074FEFF` walks the
+/// 18-pointer table at `0x008463B8..0x008463FC` in this order and returns the
+/// index, which is the byte offset inside `VeteranAbilities` (`+0x29C`) and
+/// `EliteAbilities` (`+0x2AE`) on `TechnoTypeClass`. The discriminants ARE
+/// the native indices; the consumers read `+0x29C + idx` / `+0x2AE + idx`
+/// (`TechnoClass::HasWeaponAbility @ 0x0070D0D0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum Ability {
+    Faster = 0,
+    Stronger = 1,
+    Firepower = 2,
+    Scatter = 3,
+    Rof = 4,
+    Sight = 5,
+    Cloak = 6,
+    TiberiumProof = 7,
+    VeinProof = 8,
+    SelfHeal = 9,
+    Explodes = 10,
+    RadarInvisible = 11,
+    Sensors = 12,
+    Fearless = 13,
+    C4 = 14,
+    TiberiumHeal = 15,
+    GuardArea = 16,
+    Crusher = 17,
+}
+
+impl Ability {
+    /// The native name table, indexed by discriminant. Strings verified by
+    /// `search_strings` against the pointers the table holds.
+    pub const NAMES: [&'static str; 18] = [
+        "FASTER",
+        "STRONGER",
+        "FIREPOWER",
+        "SCATTER",
+        "ROF",
+        "SIGHT",
+        "CLOAK",
+        "TIBERIUM_PROOF",
+        "VEIN_PROOF",
+        "SELF_HEAL",
+        "EXPLODES",
+        "RADAR_INVISIBLE",
+        "SENSORS",
+        "FEARLESS",
+        "C4",
+        "TIBERIUM_HEAL",
+        "GUARD_AREA",
+        "CRUSHER",
+    ];
+
+    /// `AbilityClass::FindAbilityByName @ 0x0074FEFF`: a case-insensitive
+    /// (ASCII-only fold, `FUN_007C8D20`) walk of the table; `None` is the
+    /// native `-1`, which the list parser silently skips.
+    pub fn from_ini_token(token: &str) -> Option<Self> {
+        let index = Self::NAMES
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(token))?;
+        Some(Self::from_index(index))
+    }
+
+    fn from_index(index: usize) -> Self {
+        const ALL: [Ability; 18] = [
+            Ability::Faster,
+            Ability::Stronger,
+            Ability::Firepower,
+            Ability::Scatter,
+            Ability::Rof,
+            Ability::Sight,
+            Ability::Cloak,
+            Ability::TiberiumProof,
+            Ability::VeinProof,
+            Ability::SelfHeal,
+            Ability::Explodes,
+            Ability::RadarInvisible,
+            Ability::Sensors,
+            Ability::Fearless,
+            Ability::C4,
+            Ability::TiberiumHeal,
+            Ability::GuardArea,
+            Ability::Crusher,
+        ];
+        ALL[index]
+    }
+}
+
+/// One 18-byte native ability array.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct AbilityFlags([bool; 18]);
+
+impl AbilityFlags {
+    /// The list parser behind both keys (`FUN_00477640`, called from
+    /// `TechnoTypeClass::ReadINI` at `0x007154BB` / `0x007154FA`).
+    ///
+    /// gamemd-derived: a PRESENT key starts from an all-zero array and sets
+    /// one byte per recognised `strtok` token, so a later INI pass that
+    /// restates the key replaces the whole array rather than OR-ing into it;
+    /// unknown tokens are skipped. An ABSENT key copies the array already on
+    /// the type (`param_4`), which the caller passes as the default — so the
+    /// value carried from the previous pass survives. `None` here is that
+    /// absent-key case; the caller keeps its prior flags.
+    pub fn parse_present(list: &[&str]) -> Self {
+        let mut flags = [false; 18];
+        for token in list {
+            if let Some(ability) = Ability::from_ini_token(token.trim()) {
+                flags[ability as usize] = true;
+            }
+        }
+        Self(flags)
+    }
+
+    /// Parse one key's list, keeping `prior` when the key is absent.
+    pub fn parse(list: Option<Vec<&str>>, prior: Self) -> Self {
+        match list {
+            Some(list) => Self::parse_present(&list),
+            None => prior,
+        }
+    }
+
+    pub fn has(self, ability: Ability) -> bool {
+        self.0[ability as usize]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_abilities(abilities: &[Ability]) -> Self {
+        let mut flags = [false; 18];
+        for ability in abilities {
+            flags[*ability as usize] = true;
+        }
+        Self(flags)
+    }
 }
 
 /// Parse a CSV string list, trimming each entry and dropping empties. Returns
@@ -2164,9 +2317,8 @@ mod tests {
              [AIR_EXPLICIT]\nConsideredAircraft=no\n",
         );
 
-        let parse = |id, category| {
-            ObjectType::from_ini_section(id, ini.section(id).unwrap(), category)
-        };
+        let parse =
+            |id, category| ObjectType::from_ini_section(id, ini.section(id).unwrap(), category);
 
         assert!(!parse("VEH_DEFAULT", ObjectCategory::Vehicle).considered_aircraft);
         assert!(parse("AIR_DEFAULT", ObjectCategory::Aircraft).considered_aircraft);
@@ -2315,9 +2467,7 @@ mod tests {
 
     #[test]
     fn unit_weeder_is_independent_from_slave_ownership() {
-        let ini: IniFile = IniFile::from_str(
-            "[WEED]\nWeeder=yes\n[SLAVER]\nEnslaves=SLAV\n",
-        );
+        let ini: IniFile = IniFile::from_str("[WEED]\nWeeder=yes\n[SLAVER]\nEnslaves=SLAV\n");
         let weeder = ObjectType::from_ini_section(
             "WEED",
             ini.section("WEED").unwrap(),
@@ -2587,6 +2737,64 @@ mod tests {
         let section2: &IniSection = ini2.section("VEH").unwrap();
         let obj2 = ObjectType::from_ini_section("VEH", section2, ObjectCategory::Vehicle);
         assert_eq!(obj2.size, 3);
+    }
+
+    /// `AbilityClass::FindAbilityByName @ 0x0074FEFF` resolves every one of
+    /// the 18 native tokens to its table index; the parser (`FUN_00477640`)
+    /// sets one byte per recognised token, skips unknown ones, folds ASCII
+    /// case, and leaves the prior array alone when the key is absent.
+    #[test]
+    fn gsi_08_12_ability_lists_parse_the_full_native_token_table() {
+        let all = Ability::NAMES.join(",");
+        let ini = IniFile::from_str(&format!(
+            "[X]\nVeteranAbilities={all}\nEliteAbilities=self_heal,BOGUS,Rof\n"
+        ));
+        let obj =
+            ObjectType::from_ini_section("X", ini.section("X").unwrap(), ObjectCategory::Vehicle);
+        for (index, name) in Ability::NAMES.iter().enumerate() {
+            let ability = Ability::from_ini_token(name).expect("native token");
+            assert_eq!(
+                ability as usize, index,
+                "{name} sits at native index {index}"
+            );
+            assert!(obj.veteran_abilities.has(ability), "{name} parsed");
+        }
+        assert!(obj.elite_abilities.has(Ability::SelfHeal));
+        assert!(obj.elite_abilities.has(Ability::Rof));
+        assert!(!obj.elite_abilities.has(Ability::Faster));
+        assert_eq!(Ability::from_ini_token("BOGUS"), None);
+        // The projections the older readers consume come from the same array.
+        assert!(obj.veteran_explodes && obj.veteran_fearless && obj.veteran_crusher);
+        assert!(obj.veteran_radar_invisible && obj.veteran_cloak && obj.veteran_scatter);
+        assert!(!obj.elite_explodes);
+
+        let absent = IniFile::from_str("[Y]\nFixtureOnly=1\n");
+        let obj = ObjectType::from_ini_section(
+            "Y",
+            absent.section("Y").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(obj.veteran_abilities, AbilityFlags::default());
+        assert!(!obj.self_healing, "SelfHealing= defaults off");
+        let prior = AbilityFlags::from_abilities(&[Ability::Sight]);
+        assert_eq!(
+            AbilityFlags::parse(None, prior),
+            prior,
+            "absent key keeps the prior array"
+        );
+        assert_eq!(
+            AbilityFlags::parse(Some(vec!["ROF"]), prior),
+            AbilityFlags::from_abilities(&[Ability::Rof]),
+            "a present key replaces the whole array"
+        );
+
+        let healing = IniFile::from_str("[Z]\nSelfHealing=yes\n");
+        let obj = ObjectType::from_ini_section(
+            "Z",
+            healing.section("Z").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(obj.self_healing);
     }
 
     #[test]

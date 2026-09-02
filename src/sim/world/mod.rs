@@ -466,6 +466,22 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         world_z_leptons: i32,
     },
+    /// `TechnoClass::AI_Update @ 0x006FA054..0x006FA145` crossed a rank.
+    ///
+    /// Native plays `[AudioVisual] UpgradeVeteranSound=`/`UpgradeEliteSound=`
+    /// positionally at the object (`VocClass::PlayAt @ 0x007509E0`) and the
+    /// `EVA_UnitPromoted` voice (`0x00752700`), both only when
+    /// `HouseClass::IsHumanPlayer @ 0x0050B6F0` holds for the owner — in a
+    /// skirmish that is `owner == the local player`, which the app resolves.
+    /// `sound_id` is `None` when the rules key is absent or empty (native's
+    /// invalid Voc index is silence).
+    UnitPromoted {
+        owner: InternedId,
+        sound_id: Option<InternedId>,
+        elite: bool,
+        rx: u16,
+        ry: u16,
+    },
     /// A base structure / harvester took enemy damage — the radar ping is
     /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
     /// result (the BridgeRepaired pattern). App gates the EVA voice to the
@@ -4091,7 +4107,7 @@ impl Simulation {
         // the sight reveal immediately, before this action returns.
         let reveal_config = crate::sim::vision::VisionConfig {
             require_playfield_membership: true,
-            veteran_sight_bonus: rules.map_or(0, |rules| rules.general.veteran_sight),
+            veteran_sight: rules.map_or(0.0, |rules| rules.general.veteran_sight),
             leptons_per_sight_increase: rules
                 .map_or(0, |rules| rules.general.leptons_per_sight_increase),
             reveal_by_height: rules.is_none_or(|rules| rules.general.reveal_by_height),
@@ -4107,11 +4123,14 @@ impl Simulation {
             .flatten();
         for (stable_id, _, reveal) in membership_updates {
             if reveal && let Some(entity) = self.substrate.entities.get(stable_id) {
+                let sight_ability =
+                    crate::sim::vision::entity_has_sight_ability(entity, &self.interner, rules);
                 crate::sim::vision::reveal_entity_vision(
                     &mut self.fog,
                     entity,
                     &reveal_config,
                     height_grid.as_deref(),
+                    sight_ability,
                 );
             }
         }
@@ -5777,6 +5796,7 @@ impl Simulation {
             config,
             height_grid.as_deref(),
             &self.interner,
+            rules,
         );
 
         // Apply SpySat and Gap Generator effects if rules are available.
@@ -7212,7 +7232,7 @@ impl Simulation {
         // PRODUCES: fog state used by combat targeting (phase 5).
         let vision_config = vision::VisionConfig {
             require_playfield_membership: self.playfield_bounds.is_some(),
-            veteran_sight_bonus: rules.map_or(0, |r| r.general.veteran_sight),
+            veteran_sight: rules.map_or(0.0, |r| r.general.veteran_sight),
             leptons_per_sight_increase: rules.map_or(0, |r| r.general.leptons_per_sight_increase),
             // Height-based LOS: terrain 4+ levels above the viewer at the
             // obstruction cell blocks sight (a unit at a cliff base can't see over

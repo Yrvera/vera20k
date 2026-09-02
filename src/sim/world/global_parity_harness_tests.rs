@@ -355,8 +355,15 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // `FirstObject` occupier gate. This is behavior-bearing on every fixture with ore, so the
 // historical probes move as well; the RNG stream tuple and tick-for-tick record/replay
 // equality remain exact.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x6629_30DF_3D74_CFFC;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2606_8F5B_1593_4024;
+// 2026-09-02 veterancy effects (GSI-08.12): `TechnoClass+0x13C` is now written by the
+// first `AI_Update` promotion sample (-1 -> GetVeterancyLevel code), so every live
+// object's hashed `veterancy_rank_cache` moved. Composition of the hash is unchanged
+// and the RNG stream pins held (FINAL_STREAM_STATES), so no cadence or draw moved.
+// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
+// re-baseline both move the same constants, so the values below are the composed
+// measurement taken on the merged tree, not either side's number.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xDA76_4C03_F086_7BA9;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x3F5A_9EED_EC0A_9204;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -531,10 +538,13 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2606_8F5B_1593_4024;
 // shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 // prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 // current-schema composition moved.
-const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x7559_F045_E3B2_DD8B;
-const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x3AD8_7124_9E0F_C6EA;
-const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xC37B_4E5E_2944_D130;
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x6069_40F4_4234_DAB6;
+// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
+// re-baseline both move the same constants, so the values below are the composed
+// measurement taken on the merged tree, not either side's number.
+const GLOBAL_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x8637_8672_B2C7_DC94;
+const GLOBAL_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xB534_6D3F_8096_2143;
+const GLOBAL_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x036C_3475_4BE1_F73E;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x743D_0C0C_8931_EF37;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

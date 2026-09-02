@@ -375,8 +375,12 @@ fn techno_playfield_action_40_exact_recompute_and_mobile_reveal_callback() {
             .then_some((rx as u16, ry as u16))
         })
         .expect("effective veteran sight probe");
+    // `UpdateReveal @ 0x0070AF50`: the veteran bonus is `ftol(Sight *
+    // VeteranSight)` for a `SIGHT`-ability type, so the probe at distance 3
+    // needs `1 * 3` and the ability — not the old additive `1 + 3`.
     let rules = RuleSet::from_ini(&IniFile::from_str(
-        "[General]\nVeteranSight=3\nRevealByHeight=no\n",
+        "[General]\nVeteranSight=3\nRevealByHeight=no\n\
+         [VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nVeteranAbilities=SIGHT\n",
     ))
     .expect("effective-sight action fixture");
 

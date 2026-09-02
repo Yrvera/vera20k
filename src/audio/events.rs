@@ -109,6 +109,17 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// A local-player object crossed a veterancy rank — the positional
+    /// `[AudioVisual] UpgradeVeteranSound=`/`UpgradeEliteSound=` cue
+    /// (`VocClass::PlayAt` from `TechnoClass::AI_Update @ 0x006FA0BC`).
+    UnitPromoted {
+        sound_id: String,
+        screen_pos: Option<(f32, f32)>,
+    },
+
+    /// The `EVA_UnitPromoted` voice that accompanies `UnitPromoted`.
+    UnitPromotedEva { eva_sound_id: String },
+
     /// One-shot positional `[AudioVisual] CloakSound` requested by an accepted
     /// native StartUncloaking arg-zero transition.
     CloakSound {
@@ -240,6 +251,7 @@ impl GameSoundEvent {
             | Self::EntityDeployed { sound_id, .. }
             | Self::EntityUndeployed { sound_id, .. }
             | Self::ChronoTeleport { sound_id, .. }
+            | Self::UnitPromoted { sound_id, .. }
             | Self::CloakSound { sound_id, .. }
             | Self::BuildingReady { sound_id }
             | Self::UnitReady { sound_id }
@@ -255,9 +267,9 @@ impl GameSoundEvent {
             | Self::BridgeRepaired { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
             Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
-            Self::UnderAttackEva { eva_sound_id } | Self::OutcomeEva { eva_sound_id } => {
-                eva_sound_id
-            }
+            Self::UnderAttackEva { eva_sound_id }
+            | Self::OutcomeEva { eva_sound_id }
+            | Self::UnitPromotedEva { eva_sound_id } => eva_sound_id,
         }
     }
 
@@ -272,6 +284,7 @@ impl GameSoundEvent {
             Self::EntityDeployed { screen_pos, .. } => *screen_pos,
             Self::EntityUndeployed { screen_pos, .. } => *screen_pos,
             Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
+            Self::UnitPromoted { screen_pos, .. } => *screen_pos,
             Self::CloakSound { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             Self::C4Planted { screen_pos, .. } => *screen_pos,

@@ -371,56 +371,69 @@ fn test_sight_capped_at_max_range() {
     assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 31, 20));
 }
 
-/// Pins VERA's additive veteran-sight stand-in, NOT the engine's mechanism.
-///
-/// gamemd multiplies `Sight` by `VeteranSight` (a double) and only when the
-/// type owns the sight promotion ability. Stock `VeteranSight=0.0` makes the
-/// engine skip the multiply entirely and makes VERA's parsed integer 0, so the
-/// two agree in every unmodded match; they would diverge under a map or mod INI
-/// that sets the key. Recorded DRIFT — the fix needs a fractional rules value,
-/// which is not this module's to parse.
+/// `TechnoClass::UpdateReveal @ 0x0070AF50`: a `SIGHT`-ability veteran sees
+/// `ftol(Sight * VeteranSight)`; the same veteran of a type without the
+/// ability, or any rank under stock `VeteranSight=0.0`, keeps `Sight`.
 #[test]
-fn test_veteran_sight_bonus() {
-    let mut store = EntityStore::new();
-    // Spawn veteran unit (veterancy >= 100) with base sight 5.
-    let mut entity = GameEntity::new_at_frame_zero_for_test(
-        1,
-        10,
-        10,
-        0,
-        0,
-        intern::test_intern("Americans"),
-        Health {
-            current: 100,
-            max: 100,
-        },
-        intern::test_intern("E1"),
-        EntityCategory::Infantry,
-        100, // veterancy >= 100
-        5,   // vision_range
-        false,
-    );
-    entity.lifecycle.in_limbo = false;
-    store.insert(entity);
-
-    let config = VisionConfig {
-        require_playfield_membership: false,
-        veteran_sight_bonus: 2,
-        leptons_per_sight_increase: 0,
-        reveal_by_height: false,
-        fog_of_war: false,
+fn gsi_08_12_veteran_sight_multiplies_only_for_sight_ability_holders() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n1=E2\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [E1]\nStrength=125\nSight=5\nVeteranAbilities=SIGHT\n\
+         [E2]\nStrength=125\nSight=5\nVeteranAbilities=STRONGER\n\
+         [General]\nVeteranSight=1.5\n",
+        ))
+        .expect("sight fixture parses");
+    let fog_for = |type_id: &str, veteran_sight: f64| {
+        let mut store = EntityStore::new();
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            1,
+            10,
+            10,
+            0,
+            0,
+            intern::test_intern("Americans"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            intern::test_intern(type_id),
+            EntityCategory::Infantry,
+            100, // veteran
+            5,   // vision_range
+            false,
+        );
+        entity.lifecycle.in_limbo = false;
+        store.insert(entity);
+        let config = VisionConfig {
+            require_playfield_membership: false,
+            veteran_sight,
+            leptons_per_sight_increase: 0,
+            reveal_by_height: false,
+            fog_of_war: false,
+        };
+        recompute_owner_visibility_with_rules(
+            &store,
+            Some(&PathGrid::new(30, 30)),
+            &Default::default(),
+            &config,
+            &ti(),
+            Some(&rules),
+        )
     };
-    let fog = recompute_owner_visibility(
-        &store,
-        Some(&PathGrid::new(30, 30)),
-        &Default::default(),
-        &config,
-        &ti(),
-    );
-    // Effective sight = 5 + 2 = 7. Cell at distance 7 should be visible.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 17, 10));
-    // Cell at distance 8 should not be visible.
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 18, 10));
+    let owner = intern::test_intern("Americans");
+    // ftol(5 * 1.5) = 7: distance 7 visible, 8 not.
+    let fog = fog_for("E1", 1.5);
+    assert!(fog.is_cell_visible(owner, 17, 10));
+    assert!(!fog.is_cell_visible(owner, 18, 10));
+    // No SIGHT ability: plain 5.
+    let fog = fog_for("E2", 1.5);
+    assert!(fog.is_cell_visible(owner, 15, 10));
+    assert!(!fog.is_cell_visible(owner, 16, 10));
+    // Stock 0.0 disables the multiply rather than zeroing the sight.
+    let fog = fog_for("E1", 0.0);
+    assert!(fog.is_cell_visible(owner, 15, 10));
+    assert!(!fog.is_cell_visible(owner, 16, 10));
 }
 
 /// A level-8 plateau buys no extra sight, because the engine measures elevation
@@ -454,7 +467,7 @@ fn elevation_grants_no_sight_bonus_at_any_reachable_terrain_level() {
     store.insert(entity);
     let config = VisionConfig {
         require_playfield_membership: false,
-        veteran_sight_bonus: 0,
+        veteran_sight: 0.0,
         leptons_per_sight_increase: 2000,
         reveal_by_height: false,
         fog_of_war: false,
@@ -500,7 +513,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
     store.insert(entity);
     let config = VisionConfig {
         require_playfield_membership: false,
-        veteran_sight_bonus: 0,
+        veteran_sight: 0.0,
         leptons_per_sight_increase: 2000,
         reveal_by_height: false,
         fog_of_war: false,
@@ -543,7 +556,7 @@ fn test_elevation_sight_bonus_disabled_when_zero() {
     // leptons_per_sight_increase=0 → elevation bonus disabled.
     let config = VisionConfig {
         require_playfield_membership: false,
-        veteran_sight_bonus: 0,
+        veteran_sight: 0.0,
         leptons_per_sight_increase: 0,
         reveal_by_height: false,
         fog_of_war: false,
@@ -867,6 +880,7 @@ fn test_in_place_preserves_revealed() {
         &cfg,
         None,
         &ti(),
+        None,
     );
     assert!(fog.is_cell_revealed(intern::test_intern("Americans"), 5, 5));
     assert!(fog.is_cell_visible(intern::test_intern("Americans"), 5, 5));
@@ -884,6 +898,7 @@ fn test_in_place_preserves_revealed() {
         &cfg,
         None,
         &ti(),
+        None,
     );
     assert!(fog.is_cell_revealed(intern::test_intern("Americans"), 5, 5));
     assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 5, 5));
@@ -907,6 +922,7 @@ fn test_dead_owner_keeps_revealed() {
         &cfg,
         None,
         &ti(),
+        None,
     );
     assert!(fog.is_cell_revealed(intern::test_intern("Soviet"), 5, 5));
 
@@ -920,6 +936,7 @@ fn test_dead_owner_keeps_revealed() {
         &cfg,
         None,
         &ti(),
+        None,
     );
 
     // Soviet's revealed state persists, but nothing is visible.
@@ -949,6 +966,7 @@ fn test_in_place_matches_fresh() {
         &cfg,
         None,
         &ti(),
+        None,
     );
 
     // Both should have identical by_owner contents.

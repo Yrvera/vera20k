@@ -121,10 +121,17 @@ const MIN_DISTINCT_DECK_CELLS: usize = 6;
 // `FirstObject` occupier gate. This is behavior-bearing on every fixture with ore, so the
 // historical probes move as well; the RNG stream tuple and tick-for-tick record/replay
 // equality remain exact.
-const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x8211_8936_272A_AA53;
-const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x6CB4_48E4_0471_9419;
-const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x9996_B042_ACF6_7C2E;
-const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x32F4_252D_E18A_4139;
+// 2026-09-02 veterancy effects (GSI-08.12): `TechnoClass+0x13C` is now written by the
+// first `AI_Update` promotion sample (-1 -> GetVeterancyLevel code), so every live
+// object's hashed `veterancy_rank_cache` moved. Composition of the hash is unchanged
+// and the RNG stream pins held (FINAL_STREAM_STATES), so no cadence or draw moved.
+// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
+// re-baseline both move the same constants, so the values below are the composed
+// measurement taken on the merged tree, not either side's number.
+const BRIDGE_HARNESS_PRE_BASE_PLAN_V110_HASH: u64 = 0x1880_D391_E620_9834;
+const BRIDGE_HARNESS_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x7D9B_C414_D199_21CC;
+const BRIDGE_HARNESS_PRE_WALL_RUNTIME_V115_HASH: u64 = 0xE1C6_54FA_7B7B_9CB3;
+const BRIDGE_HARNESS_FINAL_HASH: u64 = 0x1422_9DF5_DB39_C07B;
 
 fn bridge_ini() -> IniFile {
     // One armed ground vehicle and one distant infantryman on a second house, so

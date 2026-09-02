@@ -6173,6 +6173,33 @@ pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16
 /// victim's cost, zeroed when the two houses are allied and otherwise doubled
 /// for a veteran victim or tripled for an elite one; the recipient's own cost
 /// then divides it inside `VeterancyClass::Add @ 0x0074FF50`.
+///
+/// Who receives it is the native redirection chain at
+/// `0x00702E9D..0x00702FF0`, in this order (`EDI` is the killer):
+/// 1. `killer+0x82` (`InOpenTransport`, set by
+///    `TechnoClass::SetInOpenTransport @ 0x00710470`) AND `killer+0x11C`
+///    (`Transporter`, written beside it in `InfantryClass::PerCellProcess` at
+///    `0x0051A463`) non-null AND the transporter's type `Trainable=` → the
+///    TRANSPORTER, with the transporter's cost (`0x00702EA7..0x00702EF0`).
+/// 2. else the killer's own type `Trainable=` → the killer
+///    (`0x00702EF5..0x00702F2C`).
+/// 3. else the killer's type `MissileSpawn=` (`+0xD68`) AND `killer+0x2D4`
+///    (spawn owner) non-null AND its type `Trainable=` → the spawn OWNER
+///    (`0x00702F31..0x00702F96`); stock `V3ROCKET`/`DMISL`/`CMISL` are
+///    `Trainable=no, MissileSpawn=yes`, which is how a V3 promotes.
+/// 4. else an occupied Building (`vtable+0x400`, RTTI 6) → the occupant at
+///    the building's fire index (`+0x688[+0x69C]`, `0x00702F98..0x00702FEA`).
+///    NOT MODELLED: it needs a `Trainable=no` occupiable type, and every stock
+///    `CanBeOccupied=yes` section leaves `Trainable=` at its default of yes,
+///    so branch 2 pays the BUILDING in stock and the occupant never promotes.
+/// 5. else nobody.
+///
+/// RESIDUAL — the costs on both sides are `TechnoTypeClass::GetActualCost`
+/// (vtable `+0x84`) evaluated with the VICTIM's house (`0x00702ED1`,
+/// `0x00702F13`, `0x00702F77`, `0x00702FD4`), not the bare `Cost=`. Stock
+/// countries author no cost multipliers, so the two agree in every unmodded
+/// match; a mod with per-country cost mults diverges. Frequency: zero in
+/// stock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn award_kill_experience(
     entities: &mut EntityStore,
@@ -6206,12 +6233,39 @@ pub(crate) fn award_kill_experience(
     else {
         return;
     };
-    let Some((killer_cost, trainable, killer_owner)) = entities.get(killer_id).and_then(|killer| {
-        rules
-            .object(interner.resolve(killer.type_ref))
-            .map(|obj| (obj.cost, obj.trainable, killer.owner))
-    }) else {
+    let Some(killer) = entities.get(killer_id) else {
         return;
+    };
+    let Some(killer_type) = rules.object(interner.resolve(killer.type_ref)) else {
+        return;
+    };
+    let killer_owner = killer.owner;
+    let trainable_cost = |id: u64| -> Option<(u64, i32)> {
+        let object = rules.object(interner.resolve(entities.get(id)?.type_ref))?;
+        object.trainable.then_some((id, object.cost))
+    };
+    // Branch 1: a passenger firing from an OpenTopped transport pays its
+    // transporter. `passenger_role.Inside` plus the transport's `OpenTopped=`
+    // is the `+0x82`/`+0x11C` pair.
+    let open_transporter = match killer.passenger_role {
+        crate::sim::passenger::PassengerRole::Inside { transport_id } => entities
+            .get(transport_id)
+            .and_then(|transport| rules.object(interner.resolve(transport.type_ref)))
+            .is_some_and(|transport_type| transport_type.open_topped)
+            .then_some(transport_id),
+        _ => None,
+    };
+    let recipient = if let Some(transporter) = open_transporter.and_then(trainable_cost) {
+        Some(transporter)
+    } else if killer_type.trainable {
+        // Branch 2: the killer itself.
+        Some((killer_id, killer_type.cost))
+    } else if killer_type.missile_spawn {
+        // Branch 3: a spawned missile pays its launcher.
+        killer.spawn_owner_id.and_then(trainable_cost)
+    } else {
+        // Branch 4 (garrison occupant) is stock-unreachable — see above.
+        None
     };
     // `0x00702E64` loads the KILLER's house and calls `HouseClass::IsAlly @
     // 0x004F9A90`, which reads only the asker's own ally bitfield — a one-way
@@ -6222,12 +6276,15 @@ pub(crate) fn award_kill_experience(
         interner.resolve(victim_owner),
     );
     let points = self::veterancy::kill_award_points(victim_cost, victim_rank, allied);
-    if let Some(killer) = entities.get_mut(killer_id) {
+    let Some((recipient_id, recipient_cost)) = recipient else {
+        return;
+    };
+    if let Some(recipient) = entities.get_mut(recipient_id) {
         self::veterancy::award_kill(
-            killer,
-            killer_cost,
+            recipient,
+            recipient_cost,
             points,
-            trainable,
+            true,
             rules.general.veteran_ratio,
             rules.general.veteran_cap,
         );
@@ -6937,15 +6994,30 @@ pub(crate) fn resolve_attacker_fire(
             .min(weapon_burst.saturating_sub(1))
     };
     let warhead = selected.warhead;
+    // `TechnoClass::Fire_At @ 0x006FDD50`, damage chain: the firepower fold
+    // (`0x006FE33D..0x006FE34D`, country x per-unit x `Damage=`, not
+    // modelled here — VERA reads the bare `Damage=`), THEN the FIREPOWER
+    // ability stage `ftol(damage * Rules.VeteranCombat)` at
+    // `0x006FE3C8..0x006FE3D8`, THEN the occupy multiplier. The firer's own
+    // rank and type decide the stage — for a garrison shot that is the
+    // building, exactly as native's `this` is.
+    let firer_rank = self::veterancy::rank_from_u16(snap.veterancy);
+    let veteran_damage = self::veterancy::scale_if_ability(
+        weapon.damage,
+        firer_rank,
+        obj,
+        crate::rules::object_type::Ability::Firepower,
+        rules.general.veteran_combat,
+    );
     // Garrison damage: apply OccupyDamageMultiplier to base damage before AoE or
     // single-target paths. Matches gamemd Fire_At which modifies damage before bullet
     // creation, so AoE splash uses the modified value.
     let base_damage = if is_garrison {
         sim_to_i32(
-            SimFixed::from_num(weapon.damage) * rules.garrison_rules.occupy_damage_multiplier,
+            SimFixed::from_num(veteran_damage) * rules.garrison_rules.occupy_damage_multiplier,
         )
     } else {
-        weapon.damage
+        veteran_damage
     };
     let persistent_delivery = classify_projectile_delivery(weapon, rules);
     if let ProjectileDelivery::Persistent {
@@ -7283,6 +7355,16 @@ pub(crate) fn resolve_attacker_fire(
             .push((snap.stable_id, current_remaining, burst_delay, 0));
     } else {
         let mut rof_ticks = rof_to_cooldown_frames(weapon.rof, scenario_rng);
+        // `GetROF @ 0x006FCFA0`, `0x006FD0E2..0x006FD14C`: a ROF-ability
+        // holder then stores `ftol(rof * Rules.VeteranROF)` — applied ONCE,
+        // after the jitter and before the garrison divides. The firer's rank
+        // and type decide it (a garrison shot reads the building's).
+        rof_ticks = veteran_rof_frames(
+            rof_ticks,
+            self::veterancy::rank_from_u16(snap.veterancy),
+            obj,
+            rules.general.veteran_rof,
+        );
         // Garrison ROF: divide by occupant count, then by multiplier.
         // More occupants = proportionally faster fire (gamemd GetROF 0x006FCFA0).
         if let Some(ref gs) = snap.garrison {
@@ -7364,7 +7446,9 @@ pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixe
 /// unconditional on this branch, so it must stay in the same slice as the
 /// mid-burst draw or the scenario stream shifts twice.
 ///
-/// RESIDUAL (GSI-08.05) — three arms of the native function are still absent.
+/// The `VeteranROF=` arm follows in `veteran_rof_frames`.
+///
+/// RESIDUAL (GSI-08.05) — two arms of the native function are still absent.
 /// - The per-house difficulty multiplier. Native scales `ROF` by the owning
 ///   house's difficulty ROF before the truncation; VERA parses no
 ///   `[Easy]/[Normal]/[Difficult] ROF=` and plumbs no per-house difficulty to
@@ -7372,13 +7456,6 @@ pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixe
 ///   stock value is `1.0`, and there is no AI opponent to carry another.
 ///   It becomes ±20% on every weapon in the game the moment a difficulty other
 ///   than Normal can reach a house.
-/// - `[General] VeteranROF=` (`RulesClass+0x690`, read at `0x0066EF61`, stock
-///   0.6). Native applies it ONCE — there is no `EliteROF` key in the binary —
-///   and only when the firer's `VeteranAbilities=`/`EliteAbilities=` list
-///   contains `ROF` (`TechnoTypeClass+0x2A0` / `+0x2B2`, 40 and 68 stock
-///   types). Frequency today: zero, because nothing promotes (GSI-08.12);
-///   continuous the moment promotion lands, which is why the two want
-///   sequencing.
 /// - `RadialFireSegments=` (`TechnoTypeClass+0x6A4`) is not parsed. One stock
 ///   author, `[AEGIS]`, which is buildable in an ordinary skirmish: native
 ///   replaces the launch direction with
@@ -7386,11 +7463,39 @@ pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixe
 ///   `TechnoClass+0x43C`. Player effect: the Aegis Cruiser fires straight at
 ///   one target instead of sweeping its flak arc. Frequency: every Aegis
 ///   engagement in an Allied naval match.
-/// - Downstream risk: all three change firing cadence or direction, so each
-///   moves combat-timing fixtures and the pinned replay hash.
+/// - Downstream risk: both change firing cadence or direction, so each moves
+///   combat-timing fixtures and the pinned replay hash.
 fn rof_to_cooldown_frames(rof_frames: i32, scenario_rng: &mut SimRng) -> u16 {
     let jitter = scenario_rng.next_range_u32_inclusive(0, 2) as i32;
     rof_frames.saturating_add(jitter).clamp(1, u16::MAX as i32) as u16
+}
+
+/// The `VeteranROF=` arm of `TechnoClass::GetROF @ 0x006FCFA0`.
+///
+/// gamemd-derived: `0x006FD0E2..0x006FD14C` — the inline `HasWeaponAbility(4)`
+/// (veteran byte `+0x2A0`, elite byte `+0x2B2`) selects
+/// `ftol(rof * Rules.VeteranROF)` (`FILD; FMUL [Rules+0x690]; ftol`) on the
+/// already-jittered integer. Applied ONCE — there is no `EliteROF` key in the
+/// binary. Stock `0.6` turns the elite Grizzly's 50..=52 into 30, 30, 31.
+///
+/// The `.max(1)` is VERA-internal: native stores whatever `ftol` yields, and
+/// a zero reload is only reachable with `ROF=1`/`ROF=0` weapons, which no
+/// stock type authors; it keeps the existing floor `rof_to_cooldown_frames`
+/// applies (gamemd equivalent UNCHECKED).
+fn veteran_rof_frames(
+    rof_ticks: u16,
+    rank: self::veterancy::VeterancyRank,
+    object: &ObjectType,
+    veteran_rof: f64,
+) -> u16 {
+    self::veterancy::scale_if_ability(
+        i32::from(rof_ticks),
+        rank,
+        object,
+        crate::rules::object_type::Ability::Rof,
+        veteran_rof,
+    )
+    .clamp(1, i32::from(u16::MAX)) as u16
 }
 
 pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};

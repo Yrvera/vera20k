@@ -200,8 +200,15 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // `FirstObject` occupier gate. This is behavior-bearing on every fixture with ore, so the
 // historical probes move as well; the RNG stream tuple and tick-for-tick record/replay
 // equality remain exact.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xDE9E_7A6C_EC29_29D1;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xED16_9102_5536_B67E;
+// 2026-09-02 veterancy effects (GSI-08.12): `TechnoClass+0x13C` is now written by the
+// first `AI_Update` promotion sample (-1 -> GetVeterancyLevel code), so every live
+// object's hashed `veterancy_rank_cache` moved. Composition of the hash is unchanged
+// and the RNG stream pins held (FINAL_STREAM_STATES), so no cadence or draw moved.
+// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
+// re-baseline both move the same constants, so the values below are the composed
+// measurement taken on the merged tree, not either side's number.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x9B0D_7430_8305_1769;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9694_A52E_B273_078B;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -336,10 +343,13 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xED16_9102_5536_B67E;
 // shared-dummy overlay identity/state folds. The dedicated pre-v115 probe reproduces the
 // prior current baseline exactly; this fixture builds a legacy `None`-count grid, so only
 // current-schema composition moved.
-const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0xCEBC_0EC3_08AA_C9B7;
-const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0xF6D7_06A1_4979_2F14;
-const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x4193_B427_916C_B830;
-const SLICE6_BASELINE_HASH: u64 = 0x00EE_8FFD_59DA_F4E6;
+// Merge 2026-09-02: main's veterancy re-baseline and this branch's queue-store
+// re-baseline both move the same constants, so the values below are the composed
+// measurement taken on the merged tree, not either side's number.
+const SLICE6_PRE_BASE_PLAN_V110_HASH: u64 = 0x8C10_E3FB_A724_DC45;
+const SLICE6_PRE_CRATE_AUTHORITY_V114_HASH: u64 = 0x85A5_BAF4_8901_5224;
+const SLICE6_PRE_WALL_RUNTIME_V115_HASH: u64 = 0x1A28_C2A9_C8E5_15BC;
+const SLICE6_BASELINE_HASH: u64 = 0x8A0C_1481_C5DC_F2F9;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

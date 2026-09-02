@@ -84,11 +84,7 @@ mod drive_ship_slope_hash_tests {
             _ => unreachable!(),
         };
         if stashed {
-            assert!(locomotor.begin_piggyback(
-                LocomotorKind::Teleport,
-                MovementLayer::Ground,
-                90,
-            ));
+            assert!(locomotor.begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground, 90,));
         }
         entity.locomotor = Some(locomotor);
         sim.substrate.entities.insert(entity);
@@ -240,17 +236,9 @@ mod shared_dummy_bridge_hash_tests {
     #[test]
     fn gsi_04_03_hashes_dummy_level_slope_without_retained_projectile() {
         let mut sim = Simulation::new();
-        sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(
-            0,
-            0,
-            Vec::new(),
-        ));
+        sim.install_resolved_terrain_for_new_map(ResolvedTerrainGrid::from_cells(0, 0, Vec::new()));
         let dummy = sim.effective_shared_cell_dummy();
-        let terrain_dummy = sim
-            .resolved_terrain
-            .as_ref()
-            .unwrap()
-            .shared_cell_dummy();
+        let terrain_dummy = sim.resolved_terrain.as_ref().unwrap().shared_cell_dummy();
         assert!(
             dummy.same_identity(&terrain_dummy),
             "the hash authority must be the dummy bound into production terrain"
@@ -1314,8 +1302,7 @@ impl Simulation {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
             if include_techno_constructor_v104
-                && (entity.techno_ctor_random_word != 0
-                    || entity.structure_upgrade_link.is_some())
+                && (entity.techno_ctor_random_word != 0 || entity.structure_upgrade_link.is_some())
             {
                 b"techno-constructor-v1".hash(hasher);
                 entity.techno_ctor_random_word.hash(hasher);
@@ -1439,6 +1426,12 @@ impl Simulation {
             // rank are distinct sim state.
             entity.veterancy_raw.bits().hash(hasher);
             entity.veterancy_rank_cache.hash(hasher);
+            // Folded only while armed so the legacy default-zero hash stream
+            // is preserved (the `no_damage` pattern).
+            if entity.elite_flash_frames != 0 {
+                b"elite-flash-v1".hash(hasher);
+                entity.elite_flash_frames.hash(hasher);
+            }
             entity.armor_multiplier.bits().hash(hasher);
             entity.berserk.hash(hasher);
             entity.was_attacked_by_enemy.hash(hasher);

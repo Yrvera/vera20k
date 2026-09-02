@@ -7670,6 +7670,72 @@ fn gsi_08_12_a_grizzly_promotes_through_the_damage_path() {
     assert_eq!(ranks, vec![0, 0, 100, 100, 200], "ranks after kills 1..5");
 }
 
+/// An elite Grizzly with the stock `ROF,FIREPOWER` grants fires through the
+/// production path with `ftol(65 * VeteranCombat 1.1) = 71` damage
+/// (`Fire_At @ 0x006FE3C8`) and reloads in `ftol((50 + jitter) * VeteranROF
+/// 0.6)` — 30 or 31 frames (`GetROF @ 0x006FD136`); a rookie of the same type
+/// keeps 65 and 50..=52.
+#[test]
+fn gsi_08_05_elite_rof_and_firepower_abilities_reach_the_fire_path() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n1=HTNK\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\nVeteranAbilities=STRONGER,FIREPOWER,ROF\nEliteAbilities=SELF_HEAL,FASTER\n\
+         [HTNK]\nStrength=400\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\n\
+         [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [General]\nVeteranCombat=1.1\nVeteranROF=0.6\n",
+    ))
+    .expect("elite-ability fixture parses");
+
+    // (damage dealt, reload the shot armed)
+    let fire_once = |elite: bool| -> (u16, u16) {
+        let mut store = EntityStore::new();
+        let mut firer = make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet");
+        if elite {
+            crate::sim::combat::veterancy::set_elite(&mut firer);
+        }
+        store.insert(firer);
+        let _ = test_intern("HTNK");
+        store.insert(make_entity_owned(2, "HTNK", 8, 5, 400, "Americans"));
+        let mut interner = test_interner();
+        issue_attack_command(&mut store, 1, 2, None, &interner);
+        if let Some(target) = store
+            .get_mut(1)
+            .and_then(|attacker| attacker.attack_target.as_mut())
+        {
+            target.cooldown_ticks = 0;
+        }
+        tick_combat(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+            &mut SimRng::new(0x475A_5A4C),
+        );
+        let dealt = 400 - store.get(2).expect("target").health.current;
+        let reload = store
+            .get(1)
+            .and_then(|attacker| attacker.attack_target.as_ref())
+            .map(|target| target.cooldown_ticks)
+            .expect("the shot armed a reload");
+        (dealt, reload)
+    };
+
+    let (rookie_damage, rookie_rof) = fire_once(false);
+    assert_eq!(rookie_damage, 65);
+    assert!(
+        (50..=52).contains(&rookie_rof),
+        "rookie reload {rookie_rof}"
+    );
+    let (elite_damage, elite_rof) = fire_once(true);
+    assert_eq!(elite_damage, 71, "ftol(65 * 1.1)");
+    assert!((30..=31).contains(&elite_rof), "elite reload {elite_rof}");
+}
+
 /// `UnitClass::Death_Explosion @ 0x00738680` plays one anim from the dying
 /// type's own `Explosion=` list and then one from `DestroyAnim=`, at its own
 /// coordinate, one `Random__Next()` draw each. Before this the type's list had

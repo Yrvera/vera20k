@@ -16,7 +16,6 @@ use crate::sim::pathfinding::cell_entry::{TerrainCheckResult, check_terrain};
 use crate::sim::world::{
     PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, Simulation, UninitContext,
 };
-use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 use crate::util::lepton;
 
 use super::production_queue::{credits_entry_for_owner, credits_for_owner};
@@ -392,10 +391,15 @@ fn sellbuilding_direct_scatter_handoff(
     );
     let start_cell = (pax.position.rx, pax.position.ry);
     let type_name = sim.interner.resolve(pax.type_ref).to_string();
-    let speed = rules
-        .object(&type_name)
-        .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
-        .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4));
+    // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: a veteran garrison occupant
+    // ejected by the sale scatters at its FASTER speed.
+    let sell_obj = rules.object(&type_name);
+    let speed = crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+        pax,
+        sell_obj,
+        sell_obj.map_or(4, |obj| obj.speed),
+        rules.general.veteran_speed,
+    );
 
     let jitter = sim.scatter_rng().next_range_u32_inclusive(0, 4) as i32 - 2;
     let start_dir = ((base_dir as i32 + jitter) & 7) as usize;
