@@ -5,6 +5,8 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::TargetKind;
 use crate::sim::intern::InternedId;
 use crate::sim::mission::concrete_effects::represented_assign_target;
+use crate::sim::movement::locomotor::MovementLayer;
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 use super::Simulation;
 
@@ -55,8 +57,12 @@ fn stock_cloak_tick_facts(
     // Unit override `0x00746C90` ORs in `DeployTarget(+0x6CC) != -1`), and
     // vt+0x1D4/+0x1D8 are the chrono warp-in/warp-out flags.
     //
-    // RESIDUAL — no EMP mechanism exists in VERA. `+0x504` has no Rust
-    // counterpart, so the EMP term is hardcoded false here.
+    // RESIDUAL — **EMP decloak is NOT IMPLEMENTED, and this requirement is
+    // therefore UNMET, not closed.** VERA has no EMP mechanism anywhere: there
+    // is no Rust counterpart to `+0x504`, nothing writes an EMP timer, and the
+    // term is hardcoded false at both of its uses in this file. Closing it is
+    // not a cloak change — it lands with an EMP weapon/warhead system, and this
+    // gate is one of that system's consumers.
     // - Trigger: any EMP warhead landing on a cloaked object (stock sources:
     //   the EMPulse Cannon superweapon and the Boomer/Robot EMP warheads).
     // - Player effect: in gamemd an EMP'd Typhoon or Mirage surfaces for the
@@ -315,16 +321,25 @@ pub(crate) fn sensor_reevaluate_stock_cloak(
 
 /// `ObjectClass::Detach_All(false)` (vtable `+0xDC`, `0x005F5280`; the
 /// `FootClass` override is `0x004D9720`) → `DispatchPointerExpiredCleanup @
-/// 0x007258D0` → `TechnoClass::PointerExpired @ 0x007077C0` on every registered
-/// object, which `StartCloaking @ 0x00703770` runs before its own state writes.
+/// 0x007258D0` with control 0 → `TechnoClass::PointerExpired @ 0x007077C0` on
+/// every registered object, which `StartCloaking @ 0x00703770` runs before its
+/// own state writes.
 ///
-/// The one clause that matters for cloak, verified from the decompile: the
-/// receiver's `Target(+0x2B4)` is cleared through `Assign_Target(NULL)` unless
+/// This is the SAME native body the UnInit broadcast runs, only with a
+/// different control value, so it is routed through the one Rust model of it
+/// (`Simulation::detach_all_pointer_expired`) rather than a cloak-local copy.
+/// A miniature copy would have cleared the receiver's Target and nothing else —
+/// no `RandomRanged(4, 8)` re-arm of the `+0x180/+0x188` targeting timer, no
+/// radio-contact null, no cargo/NavCom/manager slot clears, and none of it for
+/// the non-targeters `Detach_All` also visits.
+///
+/// The clause that matters most for cloak: the receiver's `Target(+0x2B4)` is
+/// cleared through `Assign_Target(NULL)` unless
 ///
 /// * `allowClear` was cancelled — the receiver's OWN house holds a sensor count
-///   on the expiring object's cell (`param_1[0x87]->ArrayIndex` at
-///   `0x00707A0D`'s guard); or
-/// * the expiring object has the same owner (`expired->vt+0x3C == my pOwner`).
+///   on the expiring object's cell (`0x00707994 CALL 0x004870D0`); or
+/// * the expiring object has the same owner (`expired->vt+0x3C == my +0x21C`,
+///   `0x007079B7..0x007079CB`).
 ///
 /// So a destroyer whose house covers the diving submarine keeps firing at it,
 /// and everyone else loses the target the instant the dive begins. Before this
@@ -334,54 +349,8 @@ pub(crate) fn sensor_reevaluate_stock_cloak(
 /// Running this after `CloakRuntime::tick` has written the new state instead of
 /// before it is output-equivalent: the admission test reads only the cloaker's
 /// cell, its owner and each receiver's house — never the cloak state.
-///
-/// RESIDUAL — the targeting-delay re-arm. Native, on each receiver it does
-/// clear, first re-arms the `+0x180/+0x188` timer with a `RandomRanged(4, 8)`
-/// draw whenever that timer has more than 10 frames left. VERA does not
-/// reproduce it, because the timer's identity is UNCHECKED — `passive_scan_timer`
-/// is only its likely counterpart, and spending a Scenario draw on a guess would
-/// put an unprovable shift into the lockstep stream.
-/// - Trigger: any attacker losing a target to a cloak (or any other pointer
-///   expiry) with more than 10 frames left on that timer.
-/// - Player effect: the attacker's next passive scan happens on VERA's plain
-///   cadence instead of 4-8 frames out, so a re-acquire can be up to ~24 frames
-///   early or late.
-/// - Frequency: once per attacker per dive — common in naval play.
-/// - Downstream risk: adding the draw later moves every Scenario consumer in the
-///   same tick, so it must land with a golden re-baseline.
-fn detach_targeters_on_cloak(sim: &mut Simulation, cloaker_id: u64) -> Vec<u64> {
-    let Some(cloaker) = sim.substrate.entities.get(cloaker_id) else {
-        return Vec::new();
-    };
-    let cloaker_owner = cloaker.owner;
-    let cloaker_cell = (cloaker.position.rx, cloaker.position.ry);
-    let dropped: Vec<u64> = sim
-        .substrate
-        .entities
-        .iter_sorted()
-        .filter_map(|(targeter_id, targeter)| {
-            if targeter_id == cloaker_id {
-                return None;
-            }
-            let targets_cloaker = targeter
-                .attack_target
-                .as_ref()
-                .is_some_and(|target| target.target == TargetKind::Entity(cloaker_id));
-            if !targets_cloaker || targeter.owner == cloaker_owner {
-                return None;
-            }
-            let keeps_through_sensor =
-                sim.fog
-                    .has_sensor_for_house(targeter.owner, cloaker_cell.0, cloaker_cell.1);
-            (!keeps_through_sensor).then_some(targeter_id)
-        })
-        .collect();
-    for &targeter_id in &dropped {
-        if let Some(targeter) = sim.substrate.entities.get_mut(targeter_id) {
-            represented_assign_target(targeter, None);
-        }
-    }
-    dropped
+fn detach_targeters_on_cloak(sim: &mut Simulation, cloaker_id: u64) {
+    sim.detach_all_pointer_expired(cloaker_id);
 }
 
 /// Clockwise-from-north neighbour offsets, native `g_DirectionOffsets`
@@ -397,6 +366,75 @@ const NEIGHBOUR_OFFSETS: [(i32, i32); 8] = [
     (-1, 0),
     (-1, -1),
 ];
+
+/// `CellClass::Find_Nearest_Object @ 0x0047C3D0`, read from the disassembly for
+/// the one callsite that matters here (`0x004D87DD`, which passes offset
+/// `{0, 0}`, `alt = 0` and `exclude = NULL`):
+///
+/// ```text
+/// dx7 = offset.X * 7;  dy7 = offset.Y * 7;
+/// for (o = cell->FirstObject(+0xE4); o; o = o->NextObject(+0x30)) {
+///   if (!(o->AbstractFlags(+0x14) & 1)) continue;   // Techno only
+///   if (o == exclude) continue;
+///   c  = o->GetCoords(vt+0x48);
+///   d  = ftol(Sqrt_Approx(sq((c.X & 0xFF) - dx7) + sq((c.Y & 0xFF) - dy7)));
+///   if (best == NULL || d < bestDistance) { best = o; bestDistance = d; }
+/// }
+/// ```
+///
+/// Three things this fixes over the previous "lowest stable id whose
+/// `position` matches" scan:
+///
+/// * **The candidate set is the cell's object list, not every entity parked on
+///   the coordinate.** `techno_limbo` never clears `entity.position`, so a
+///   limboed object keeps a map position for the rest of the match; native
+///   walks `CellClass::FirstObject`, which a limboed object is unlinked from.
+///   `substrate.occupancy` is VERA's model of that list — the same authority
+///   `sensor_lifecycle::sensor_residents_in_native_order` uses — and the
+///   `MovementLayer::Ground` list is the `+0xE4` chain (`+0xE8`, the `alt`
+///   chain, is selected only when `param_3 != 0`, and this callsite passes 0).
+/// * **Selection is nearest-to-the-cell-origin, not lowest id.** With a
+///   `{0, 0}` offset the distance is the object's own sub-cell lepton offset
+///   from the cell's NW corner, through the retail `Sqrt_Approx` LUT and a
+///   truncating `ftol` — so two objects whose distances truncate to the same
+///   integer are decided by list order, and `<` keeps the earlier one.
+/// * **The `+0x14` bit-0 test is the `AbstractFlags` *Techno identity* bit**
+///   (`TechnoClass__Constructor @ 0x006F3228` ORs in 1;
+///   `ObjectClass__Constructor @ 0x005F3B34` ORs in 2), not an on-map flag.
+///   Every `GameEntity` is a Techno, so it needs no counterpart here.
+fn find_nearest_object_in_cell(sim: &Simulation, cell: (u16, u16)) -> Option<u64> {
+    let occupancy = sim.substrate.occupancy.get(cell.0, cell.1)?;
+    let mut best: Option<(u64, i32)> = None;
+    for occupant in occupancy.iter_layer(MovementLayer::Ground) {
+        let Some(other) = sim.substrate.entities.get(occupant.entity_id) else {
+            continue;
+        };
+        let distance = native_subcell_distance_from_cell_origin(
+            other.position.sub_x.to_num::<i32>(),
+            other.position.sub_y.to_num::<i32>(),
+        );
+        if best.is_none_or(|(_, best_distance)| distance < best_distance) {
+            best = Some((occupant.entity_id, distance));
+        }
+    }
+    best.map(|(entity_id, _)| entity_id)
+}
+
+/// The x87 half of `Find_Nearest_Object`: `FILD` both signed deltas, square and
+/// sum them in `(dx*dx) + (dy*dy)` order, run the retail `Sqrt_Approx @
+/// 0x004CAC40` LUT, then `Math__ftol @ 0x007C5F00`.
+fn native_subcell_distance_from_cell_origin(sub_x: i32, sub_y: i32) -> i32 {
+    let dx = X87Chop53::load_i32(sub_x);
+    let dy = X87Chop53::load_i32(sub_y);
+    let squared = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
+    let Ok(root_bits) = sqrt_approx_f32(squared) else {
+        return i32::MAX;
+    };
+    let Ok(root) = X87Chop53::load_f32(root_bits) else {
+        return i32::MAX;
+    };
+    X87Chop53::ftol_i64(root).map_or(i32::MAX, |distance| distance as i32)
+}
 
 /// `FootClass::PerCellProcess @ 0x004D85D0`, the cell-enter (`param_2 == 2`)
 /// arm at `0x004D8802..0x004D8829` — the ONLY consumer of `Sensors=`
@@ -421,15 +459,10 @@ const NEIGHBOUR_OFFSETS: [(i32, i32); 8] = [
 /// is make the sub legal to target (the acquisition gate above) without touching
 /// its cloak state.
 ///
-/// Substitutions, both recorded rather than hidden:
-/// * `CellClass::Find_Nearest_Object`'s selection rule was NOT read, so which
-///   single object native inspects when a neighbour cell holds several is
-///   UNCHECKED. VERA takes the lowest stable id in the cell, preserving the
-///   one-object-per-cell shape. It can disagree only when a neighbour cell
-///   holds two or more objects and exactly one of them is the detector.
-/// * `HasWeaponAbility(0xC)` is the SENSORS veteran/elite ability. No stock
-///   type lists it (`grep 'Abilities=.*SENSORS' ini/rulesmd.ini` is empty), so
-///   only the `Sensors=` type flag is consulted here.
+/// One substitution, recorded rather than hidden: `HasWeaponAbility(0xC)` is
+/// the SENSORS veteran/elite ability. No stock type lists it
+/// (`grep 'Abilities=.*SENSORS' ini/rulesmd.ini` is empty), so only the
+/// `Sensors=` type flag is consulted here.
 pub(crate) fn uncloak_on_sensor_neighbour_after_cell_entry(
     sim: &mut Simulation,
     id: u64,
@@ -465,13 +498,7 @@ pub(crate) fn uncloak_on_sensor_neighbour_after_cell_entry(
         ) {
             continue;
         }
-        let Some(nearest) = sim
-            .substrate
-            .entities
-            .iter_sorted()
-            .find(|(_, other)| other.position.rx == nx && other.position.ry == ny)
-            .map(|(other_id, _)| other_id)
-        else {
+        let Some(nearest) = find_nearest_object_in_cell(sim, (nx, ny)) else {
             continue;
         };
         let Some(other) = sim.substrate.entities.get(nearest) else {

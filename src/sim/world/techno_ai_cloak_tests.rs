@@ -5,6 +5,7 @@ use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::game_entity::PendingBuildingFire;
 use crate::sim::snapshot::GameSnapshot;
+use crate::util::fixed_math::SimFixed;
 
 fn rules() -> RuleSet {
     RuleSet::from_ini(&IniFile::from_str(
@@ -665,6 +666,11 @@ fn start_cloaking_drops_every_targeter_whose_house_cannot_sense_the_cell() {
     let american = sim.substrate.entities.get(sensing).unwrap().owner;
     sim.fog.increment_sensor_at(american, cell.0, cell.1);
 
+    let timers_before: Vec<_> = [sensing, blind, same_owner]
+        .map(|id| sim.substrate.entities.get(id).unwrap().passive_scan_timer)
+        .to_vec();
+    let mut expected_rng = sim.scenario_rng.clone();
+    let rng_before = sim.scenario_rng.logical_state();
     tick_stock_cloak_producer(&mut sim, cloaker, &rules);
     assert_eq!(
         sim.substrate
@@ -704,4 +710,170 @@ fn start_cloaking_drops_every_targeter_whose_house_cannot_sense_the_cell() {
             .is_none(),
         "everyone else loses the pointer at the instant of StartCloaking"
     );
+
+    // `TechnoClass::PointerExpired @ 0x007079D1..0x00707A0D` re-arms the
+    // `+0x180/+0x188` targeting timer with `RandomRanged(4, 8)` — one Scenario
+    // draw — before `Assign_Target(NULL)`, and only on the arm that actually
+    // clears. So exactly one receiver here spends a draw. The healthy cloak
+    // producer itself consumes none (see
+    // `stock_cloak_producer_healthy_trace_uses_type_speed_and_no_rng`), so the
+    // whole delta below belongs to the detach.
+    assert_ne!(
+        sim.scenario_rng.logical_state(),
+        rng_before,
+        "the dive must spend the targeting-delay draw"
+    );
+    let drawn = expected_rng.next_range_u32_inclusive(4, 8);
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state(),
+        "only the receiver that loses its target spends the RandomRanged(4, 8) draw"
+    );
+    let timers_after: Vec<_> = [sensing, blind, same_owner]
+        .map(|id| sim.substrate.entities.get(id).unwrap().passive_scan_timer)
+        .to_vec();
+    assert_eq!(
+        timers_after[0], timers_before[0],
+        "a retained target leaves the sensing receiver's timer untouched"
+    );
+    assert_eq!(
+        timers_after[2], timers_before[2],
+        "the same-owner exemption also skips the re-arm"
+    );
+    assert_ne!(timers_after[1], timers_before[1]);
+    assert_eq!(timers_after[1].start_frame, sim.session.binary_frame);
+    assert_eq!(
+        timers_after[1].duration, drawn,
+        "the re-armed delay is the RandomRanged(4, 8) result"
+    );
+}
+
+#[test]
+fn a_dive_detaches_the_full_pointer_expiry_slot_family_not_just_the_target() {
+    // `Detach_All(false)` runs the SAME `TechnoClass::PointerExpired @
+    // 0x007077C0` body as UnInit over EVERY registered object, so a receiver
+    // that never targeted the diving object still loses its radio contact —
+    // `RadioClass::PointerExpired` nulls matching sparse slots regardless of
+    // the control value. Only the `+0x2B4`/`+0x2B8` pair is behind `allowClear`.
+    let (mut sim, rules, cloaker) = spawned_sub();
+    let cell = sim
+        .substrate
+        .entities
+        .get(cloaker)
+        .map(|entity| (entity.position.rx, entity.position.ry))
+        .unwrap();
+    let bystander = sim
+        .spawn_object_at_height("RANKED", "Neutral", cell.0 + 2, cell.1, 0, 0, &rules)
+        .unwrap();
+    sim.substrate
+        .entities
+        .get_mut(bystander)
+        .unwrap()
+        .mark_live_contact_with(cloaker);
+    // A non-targeter spends no draw: the re-arm is inside the Target arm.
+    let rng_before = sim.scenario_rng.logical_state();
+
+    tick_stock_cloak_producer(&mut sim, cloaker, &rules);
+
+    assert!(
+        !sim.substrate
+            .entities
+            .get(bystander)
+            .unwrap()
+            .has_live_contact_with(cloaker),
+        "the dive nulls the radio contact the old cloak-local sweep never visited"
+    );
+    assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+}
+
+#[test]
+fn a_limboed_entity_on_the_cell_no_longer_shadows_the_sensors_neighbour() {
+    // `CellClass::Find_Nearest_Object @ 0x0047C3D0` walks the cell's own object
+    // chain (`+0xE4`). `techno_limbo` unmarks the entity from the occupancy
+    // grid — VERA's model of that chain — but never clears `entity.position`,
+    // so a raw position scan kept finding the stale object and, taking the
+    // first match, hid the Destroyer behind it.
+    let (mut sim, rules, id) = spawned_sub();
+    let cell = sim
+        .substrate
+        .entities
+        .get(id)
+        .map(|entity| (entity.position.rx, entity.position.ry))
+        .unwrap();
+    sim.substrate
+        .entities
+        .get_mut(id)
+        .unwrap()
+        .cloak
+        .as_mut()
+        .unwrap()
+        .establish_unlimbo_fully_cloaked();
+
+    // Lower stable id than the Destroyer, and it carries no `Sensors=`.
+    let stale = sim
+        .spawn_object_at_height("RANKED", "Neutral", cell.0 + 1, cell.1, 0, 0, &rules)
+        .unwrap();
+    let dest = sim
+        .spawn_object_at_height("DEST", "Americans", cell.0 + 1, cell.1, 0, 0, &rules)
+        .unwrap();
+    assert!(stale < dest);
+    sim.techno_limbo_with_rules(stale, &rules);
+    assert_eq!(
+        sim.substrate.entities.get(stale).unwrap().position.rx,
+        cell.0 + 1,
+        "limbo leaves the stale map position in place, which is why the raw scan was wrong"
+    );
+
+    assert!(
+        uncloak_on_sensor_neighbour_after_cell_entry(&mut sim, id, &rules),
+        "an off-chain limboed object must not shadow the Destroyer"
+    );
+}
+
+#[test]
+fn the_sensors_neighbour_pick_is_nearest_to_the_cell_origin_not_lowest_id() {
+    // With the `{0, 0}` offset the callsite passes, `Find_Nearest_Object`
+    // ranks by `ftol(Sqrt_Approx((X & 0xFF)^2 + (Y & 0xFF)^2))` — the object's
+    // own sub-cell lepton offset from the cell's NW corner — and keeps the
+    // first of equal distances.
+    for dest_wins in [false, true] {
+        let (mut sim, rules, id) = spawned_sub();
+        let cell = sim
+            .substrate
+            .entities
+            .get(id)
+            .map(|entity| (entity.position.rx, entity.position.ry))
+            .unwrap();
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .cloak
+            .as_mut()
+            .unwrap()
+            .establish_unlimbo_fully_cloaked();
+
+        let blocker = sim
+            .spawn_object_at_height("RANKED", "Neutral", cell.0 + 1, cell.1, 0, 0, &rules)
+            .unwrap();
+        let dest = sim
+            .spawn_object_at_height("DEST", "Americans", cell.0 + 1, cell.1, 0, 0, &rules)
+            .unwrap();
+        let (near, far) = if dest_wins {
+            (dest, blocker)
+        } else {
+            (blocker, dest)
+        };
+        for (entity_id, offset) in [(near, 10i32), (far, 200i32)] {
+            let entity = sim.substrate.entities.get_mut(entity_id).unwrap();
+            entity.position.sub_x = SimFixed::from_num(offset);
+            entity.position.sub_y = SimFixed::from_num(offset);
+        }
+
+        assert_eq!(
+            uncloak_on_sensor_neighbour_after_cell_entry(&mut sim, id, &rules),
+            dest_wins,
+            "the single inspected object is the one nearest the cell origin"
+        );
+    }
 }
