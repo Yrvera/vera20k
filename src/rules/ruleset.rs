@@ -2336,6 +2336,9 @@ pub struct RuleSet {
     pub bridge_rules: BridgeRules,
     /// Scenario-start crate counts and crate overlay images from `[CrateRules]`.
     pub crate_rules: CrateRules,
+    /// The fixed nineteen-entry `[Powerups]` crate outcome table. Native keeps
+    /// it in four globals outside `RulesClass`; the slot order is what matters.
+    pub powerups: crate::rules::powerups::PowerupTable,
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
     pub garrison_rules: GarrisonRules,
     /// Per-cell radiation-field constants from [Radiation].
@@ -2518,9 +2521,11 @@ impl RuleSet {
         let processed = layers.process()?;
         let content_hash = processed.content_hash();
         let crate_rules = processed.crate_rules().clone();
+        let powerups = processed.powerups().clone();
         let ini = processed.into_projection_discarding_native_receipt();
         let mut rules = Self::from_projected_ini(&ini)?;
         rules.crate_rules = crate_rules;
+        rules.powerups = powerups;
         rules.source_ini_hash = content_hash;
         Ok(rules)
     }
@@ -2530,6 +2535,7 @@ impl RuleSet {
     ) -> Result<Self, RulesError> {
         let mut rules = Self::from_projected_ini(processed.ini())?;
         rules.crate_rules = processed.crate_rules().clone();
+        rules.powerups = processed.powerups().clone();
         rules.source_ini_hash = processed.content_hash();
         Ok(rules)
     }
@@ -2632,6 +2638,9 @@ impl RuleSet {
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
         let crate_rules = CrateRules::default();
+        // Overwritten from the processed layers by the two callers above; the
+        // projection path has no `[Powerups]` accumulator of its own.
+        let powerups = crate::rules::powerups::PowerupTable::default();
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
@@ -3103,6 +3112,7 @@ impl RuleSet {
             terrain_object_types,
             bridge_rules,
             crate_rules,
+            powerups,
             garrison_rules,
             radiation,
             radar_event_config,
