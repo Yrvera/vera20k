@@ -77,23 +77,63 @@ const MIN_VOLUME_CUTOFF: f64 = 0.05;
 
 /// Truncating `Math::ftol @ 0x007C5F00` (control word `0x0E7F`: round toward
 /// zero, 53-bit precision), applied to a double intermediate.
+///
+/// RESIDUAL (UNCHECKED) — out-of-`i32` inputs differ: `FISTP` stores the x87
+/// indefinite `0x80000000` for both signs, while Rust's `as i32` saturates to
+/// `i32::MIN` *or* `i32::MAX`. Trigger: a client point more than 2^31 pixels
+/// from the view centre. Player effect: none — the largest YR map is under
+/// 2^16 pixels across, so only a hand-built [`SpatialListener`] reaches it.
+/// Frequency: never in play. Downstream risk: none.
 fn ftol(value: f64) -> i32 {
     value.trunc() as i32
 }
 
-/// The listener: the tactical view rect in native pixels and its top-left in
-/// the same world-pixel frame the sound positions use.
+/// Native integer absolute value: `CDQ; XOR EAX,EDX; SUB EAX,EDX`
+/// (`0x00750BCF..0x00750BD2` and `0x00750BED..0x00750BF0`). The idiom **wraps**
+/// — `i32::MIN` comes back as `i32::MIN` — where Rust's `i32::abs` panics in a
+/// debug build, so the transcription must use the wrapping form.
+fn native_abs(value: i32) -> i32 {
+    value.wrapping_abs()
+}
+
+/// The listener: the tactical view rect and its top-left in the world-pixel
+/// frame the sound positions use.
 ///
 /// gamemd-derived: `CalcVolumeAndPan` reads the width/height globals
 /// `0x00886FA8`/`0x00886FAC` (written by `Set_View_Dimensions`) and projects
 /// the sound through `TacticalClass::CoordsToClient2 @ 0x006D2140`, which
-/// subtracts the view origin (`this+0xB0/+0xB4`).
+/// scales leptons by the fixed native 60/30-pixel tile (`iVar3 = (x*0x3c)/2 +
+/// (y*-0x3c)/2`, `>> 8`) and subtracts the view origin (`this+0xB0/+0xB4`).
+/// That fixed scale is VERA's world-pixel frame — `map::terrain::TILE_WIDTH`
+/// 60, `TILE_HEIGHT` 30 — so at `zoom == 1.0` `client_point` is the native
+/// client point exactly.
+///
+/// **Zoom is VERA-internal; gamemd has no zoom.** `tactical_width`/`_height`
+/// are the *device* pixels of the tactical viewport, and VERA's projection is
+/// `device = (world - camera) * zoom`, so the viewport spans
+/// `device / zoom` world pixels ([`SpatialListener::view_extent`]). Every
+/// operand handed to [`calc_volume_and_pan`] is therefore expressed in the
+/// world-pixel frame: the client point, the view extent, and `Range * 60`
+/// alike. Scaling the *client point* into device pixels instead would be the
+/// same algebra for the falloff shape and the pan, but it would silently
+/// redefine `Range=` — a cell count in `sound(md).ini` — as a device-pixel
+/// budget, so a `Range=10` cue would carry 2.5 cells at 4x zoom. Keeping the
+/// world frame makes zoom behave like a native resolution change, which is
+/// the only zoom-like thing gamemd actually does: a bigger view rect covers
+/// more world, while `Range` stays a fixed cell distance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpatialListener {
+    /// Tactical viewport width in device pixels (native `0x00886FA8`).
     pub tactical_width: i32,
+    /// Tactical viewport height in device pixels (native `0x00886FAC`).
     pub tactical_height: i32,
+    /// World-pixel position of the viewport's top-left corner.
     pub origin_x: f32,
+    /// World-pixel position of the viewport's top-left corner.
     pub origin_y: f32,
+    /// VERA-internal camera zoom (`app::input::camera`, 0.25..=4.0, default
+    /// 1.0). `1.0` reproduces gamemd bit for bit.
+    pub zoom: f32,
 }
 
 impl SpatialListener {
@@ -103,6 +143,24 @@ impl SpatialListener {
         (
             ftol(f64::from(screen_x) - f64::from(self.origin_x)),
             ftol(f64::from(screen_y) - f64::from(self.origin_y)),
+        )
+    }
+
+    /// The tactical view size in the same world-pixel frame as
+    /// [`Self::client_point`]. At `zoom == 1.0` this is the native
+    /// `(float)[0x00886FA8]` / `(float)[0x00886FAC]` cast unchanged (dividing
+    /// by exactly 1.0 is exact in IEEE-754).
+    ///
+    /// VERA-internal, gamemd equivalent UNCHECKED: the `max(EPSILON)` floor.
+    /// `zoom_level` is clamped to `MIN_ZOOM` 0.25 in `app::input::camera`, so
+    /// nothing in the app can reach it; it only stops a hand-built listener
+    /// from dividing by zero. Same guard the visible-bounds code already uses
+    /// (`presentation::instances::helpers`).
+    pub fn view_extent(&self) -> (f32, f32) {
+        let zoom = self.zoom.max(f32::EPSILON);
+        (
+            self.tactical_width as f32 / zoom,
+            self.tactical_height as f32 / zoom,
         )
     }
 }
@@ -170,9 +228,24 @@ impl SpatialGain {
 /// - `Type=SHROUD` (`0x800`): a sound in a cell whose shroud flags
 ///   (`CellClass+0x12C & 0x18`) are both clear returns 0 (`0x00750B2D..
 ///   0x00750BAA`). The cell test is the caller's: `shrouded`.
+///   RESIDUAL — the sentinel-cell early-out ahead of it is not modelled.
+///   `0x00750B51 CMP CX,[0x00b1d310]` / `0x00750B6C CMP AX,[0x00b1d312]`
+///   return 0.0f when the sound's cell equals that `CellStruct` pair, i.e.
+///   *before* the `CellClass` lookup at `0x00750B8F`. `get_xrefs_to` on both
+///   words shows one read (this site) and one write — the three-instruction
+///   setter at `0x007502B0` (`XOR EAX,EAX; MOV [0x00b1d310],AX; MOV
+///   [0x00b1d312],AX`), reached only through the vtable slot at `0x0081562C`
+///   — and the image bytes are already `00 00 00 00`, so the pair is the null
+///   cell `(0,0)` for the whole process lifetime. Trigger: a `Type=SHROUD`
+///   cue whose object sits on map cell `(0,0)`. Player effect: that one cue is
+///   silent. Frequency: never in ordinary play — cell `(0,0)` is outside every
+///   map's playable rectangle, and the 11 stock `SHROUD` cues are super-weapon
+///   ready/open sounds that VERA does not emit yet. Downstream risk: none; it
+///   is an early-out, so modelling it can only add silence.
 /// - `offsetX = clientX - halfW` kept as float (`FST [ESP+0x10]`); the
 ///   distances are `|ftol(clientX - halfW)|` and `|ftol(clientY - halfH)|`
-///   (`0x00750BBE..0x00750BF6`).
+///   (`0x00750BBE..0x00750BF6`), the abs taken by the wrapping `CDQ; XOR; SUB`
+///   idiom ([`native_abs`]).
 /// - Unless `Type=LOCAL` (`0x40`): subtract the half view from each and clamp
 ///   at 0 (`0x00750BFA..0x00750C37`). Then `distY *= 2` (`0x00750C3D`).
 /// - `volume = (maxRange - max(distX, distY)) / maxRange` only when both are
@@ -184,17 +257,27 @@ impl SpatialGain {
 /// - `pan = ftol(clamp(offsetX, -fullW, fullW) * 8192 / fullW + 8192)`
 ///   (`0x00750CDE..0x00750D24`); the `FCHS` builds `-fullW`, it does not
 ///   negate the offset.
+///
+/// `tactical_width`/`tactical_height` and `client_x`/`client_y` must be in the
+/// same pixel frame — see [`SpatialListener::view_extent`], which is what puts
+/// them there under VERA's zoom. Native passes the integer view globals here;
+/// an integral `f32` reproduces the `(float)` cast exactly.
 pub fn calc_volume_and_pan(
     client_x: i32,
     client_y: i32,
-    tactical_width: i32,
-    tactical_height: i32,
+    tactical_width: f32,
+    tactical_height: f32,
     source: SpatialSource,
     shrouded: bool,
 ) -> Option<SpatialGain> {
-    let half_w: f32 = tactical_width as f32 * 0.5;
-    let half_h: f32 = tactical_height as f32 * 0.5;
+    let half_w: f32 = tactical_width * 0.5;
+    let half_h: f32 = tactical_height * 0.5;
     let full_w: f32 = half_w + half_w;
+    // `LEA EAX,[EAX+EAX*2]; LEA EAX,[EAX+EAX*4]; SHL EAX,2` at
+    // `0x00750B0F..0x00750B17` — a 32-bit ×60 that wraps rather than trapping.
+    // `SoundEntry::range` is a `u16`, so the product cannot exceed 3_932_100;
+    // `wrapping_mul` is here to keep a hand-built `SpatialSource` on the
+    // native truncation instead of a debug-build panic.
     let max_range: f32 = (source.range_cells.wrapping_mul(RANGE_MULTIPLIER)) as f32;
 
     if source.type_flags & sound_type::SHROUD != 0 && shrouded {
@@ -202,8 +285,8 @@ pub fn calc_volume_and_pan(
     }
 
     let offset_x: f32 = (f64::from(client_x) - f64::from(half_w)) as f32;
-    let mut dist_x: f32 = ftol(f64::from(client_x) - f64::from(half_w)).abs() as f32;
-    let mut dist_y: f32 = ftol(f64::from(client_y) - f64::from(half_h)).abs() as f32;
+    let mut dist_x: f32 = native_abs(ftol(f64::from(client_x) - f64::from(half_w))) as f32;
+    let mut dist_y: f32 = native_abs(ftol(f64::from(client_y) - f64::from(half_h))) as f32;
 
     if source.type_flags & sound_type::LOCAL == 0 {
         dist_x -= half_w;
@@ -243,6 +326,9 @@ pub fn calc_volume_and_pan(
 }
 
 /// [`calc_volume_and_pan`] for a world-pixel position against a listener.
+///
+/// Both operands come out of the listener in the world-pixel frame, so the
+/// falloff distance and the pan stay in one unit at every zoom.
 pub fn spatial_gain(
     source: SpatialSource,
     screen_x: f32,
@@ -251,14 +337,8 @@ pub fn spatial_gain(
     shrouded: bool,
 ) -> Option<SpatialGain> {
     let (client_x, client_y) = listener.client_point(screen_x, screen_y);
-    calc_volume_and_pan(
-        client_x,
-        client_y,
-        listener.tactical_width,
-        listener.tactical_height,
-        source,
-        shrouded,
-    )
+    let (view_w, view_h) = listener.view_extent();
+    calc_volume_and_pan(client_x, client_y, view_w, view_h, source, shrouded)
 }
 
 /// DirectSound attenuation table, hundredths of a decibel, indexed by the
@@ -453,6 +533,19 @@ impl PlayShifts {
 /// decay buffer last when `Control=DECAY`, and the rest in `RandomRanged(0,
 /// remaining - 1)` pick-and-remove order for `RANDOM` or in load order
 /// otherwise.
+///
+/// **VERA-internal, gamemd equivalent UNCHECKED: every bounds guard below.**
+/// Native indexes the fixed 32-slot sample array at `AudioEventClass+0xB4`
+/// with no check at all, and `AudioEventClass::SetControlFlags @ 0x00406570`
+/// (read this session) normalises the attack/decay counts against the
+/// `Control=` flags *only* — never against how many names `Sounds=` actually
+/// listed. So `Attack=5` on a two-sample entry, or `Sounds=` omitted
+/// entirely, reads past the loaded pointers in gamemd; the observable result
+/// is whatever that garbage pointer does, which VERA cannot reproduce and
+/// must not pretend to. Trigger: only a hand-edited `sound(md).ini` whose
+/// `Attack=`/`Decay=` exceed its own `Sounds=` list — no stock entry does.
+/// Player effect: VERA plays a valid sample (or nothing) where gamemd would
+/// misbehave. Frequency: never on retail data. Downstream risk: none.
 pub fn select_playout(entry: &SoundEntry, rng: &mut impl SampleRng) -> Vec<usize> {
     let count = entry.sounds.len() as i32;
     if count == 0 {
@@ -465,6 +558,7 @@ pub fn select_playout(entry: &SoundEntry, rng: &mut impl SampleRng) -> Vec<usize
     let mut middle: Vec<usize> = Vec::new();
 
     if entry.attack > 0 {
+        // `.clamp`: VERA-internal, see the note above.
         attack = Some(rng.ranged(0, entry.attack - 1).clamp(0, count - 1) as usize);
     }
     if entry.control & control::ALL == 0 {
@@ -473,6 +567,8 @@ pub fn select_playout(entry: &SoundEntry, rng: &mut impl SampleRng) -> Vec<usize
         } else {
             body_start
         };
+        // `.contains`: VERA-internal, see the note above. An empty body range
+        // (`Attack + Decay >= count`) puts `body_start` at `count`.
         if (0..count).contains(&index) {
             middle.push(index as usize);
         }
@@ -480,6 +576,7 @@ pub fn select_playout(entry: &SoundEntry, rng: &mut impl SampleRng) -> Vec<usize
         middle.extend(body.clone());
     }
     if entry.decay > 0 {
+        // `.clamp`: VERA-internal, see the note above.
         decay = Some(
             rng.ranged(count - entry.decay, count - 1)
                 .clamp(0, count - 1) as usize,
@@ -494,6 +591,8 @@ pub fn select_playout(entry: &SoundEntry, rng: &mut impl SampleRng) -> Vec<usize
     if entry.control & control::RANDOM != 0 {
         while !middle.is_empty() {
             let pick = rng.ranged(0, middle.len() as i32 - 1) as usize;
+            // `.min`: VERA-internal, see the note above — `SampleRng` is a
+            // public trait, so an out-of-contract impl must not panic here.
             order.push(middle.remove(pick.min(middle.len() - 1)));
         }
     } else {
@@ -1677,8 +1776,8 @@ mod tests {
         registry.get("T").expect("entry").clone()
     }
 
-    const LISTENER_W: i32 = 1024;
-    const LISTENER_H: i32 = 600;
+    const LISTENER_W: f32 = 1024.0;
+    const LISTENER_H: f32 = 600.0;
 
     fn source(range_cells: i32, type_flags: u32, min_volume: f32) -> SpatialSource {
         SpatialSource {
@@ -1766,22 +1865,120 @@ mod tests {
     fn calc_volume_and_pan_truncates_distances_like_ftol() {
         let src = source(10, sound_type::LOCAL, 0.0);
         // clientX - 511.5 = 0.5 -> ftol 0 -> full volume; pan keeps the 0.5.
-        let g = calc_volume_and_pan(512, 300, 1023, LISTENER_H, src, false).unwrap();
+        let g = calc_volume_and_pan(512, 300, 1023.0, LISTENER_H, src, false).unwrap();
         assert_eq!(g.volume, 1.0);
         assert_eq!(g.pan, ftol(0.5 * 8192.0 / 1023.0 + 8192.0));
         // clientX - 511.5 = -0.5 -> ftol 0 as well (truncation toward zero).
-        let g = calc_volume_and_pan(511, 300, 1023, LISTENER_H, src, false).unwrap();
+        let g = calc_volume_and_pan(511, 300, 1023.0, LISTENER_H, src, false).unwrap();
         assert_eq!(g.volume, 1.0);
         assert_eq!(g.pan, ftol(-0.5 * 8192.0 / 1023.0 + 8192.0));
+    }
+
+    fn zoom_listener(zoom: f32) -> SpatialListener {
+        SpatialListener {
+            tactical_width: LISTENER_W as i32,
+            tactical_height: LISTENER_H as i32,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            zoom,
+        }
+    }
+
+    /// The listener rect and the sound positions must stay in one frame at
+    /// every zoom. VERA projects `device = (world - camera) * zoom`, so a
+    /// 1024x600 device viewport covers `1024/zoom` x `600/zoom` world pixels;
+    /// `SpatialListener::view_extent` is what puts the rect in the world frame
+    /// the positions already use.
+    ///
+    /// gamemd has no zoom, so nothing here is a native golden. What the
+    /// vectors pin is that zoom behaves like the one zoom-shaped thing gamemd
+    /// *does* have — a resolution change, which alters how much world the view
+    /// rect covers while `VocClass::CalcVolumeAndPan @ 0x00750AC0` keeps
+    /// `Range * 0x3C` as a fixed cell distance.
+    #[test]
+    fn spatial_gain_measures_one_frame_at_every_zoom() {
+        let src = source(10, sound_type::SCREEN, 0.5);
+        // At zoom 1.0 the world frame *is* the device frame, so the listener
+        // must reproduce the raw-device-size call bit for bit.
+        for x in [0.0f32, 256.0, 512.0, 1324.0, 1584.0] {
+            assert_eq!(
+                spatial_gain(src, x, 300.0, &zoom_listener(1.0), false),
+                calc_volume_and_pan(x as i32, 300, LISTENER_W, LISTENER_H, src, false),
+                "zoom 1.0 must equal the native device-pixel call at x={x}"
+            );
+        }
+
+        // `Range=10` is 600 world pixels — 10 cells — at every zoom. A sound
+        // exactly 300 world pixels past the right edge of the visible area is
+        // half volume whether the view covers 1024, 512 or 2048 world pixels.
+        for (zoom, view_w, centre_y) in [
+            (1.0f32, 1024.0f32, 300.0f32),
+            (2.0, 512.0, 150.0),
+            (0.5, 2048.0, 600.0),
+        ] {
+            let gain = spatial_gain(src, view_w + 300.0, centre_y, &zoom_listener(zoom), false)
+                .unwrap_or_else(|| panic!("audible at zoom {zoom}"));
+            assert_eq!(gain.volume, 0.5, "zoom {zoom} falloff");
+        }
+
+        // Pan is the position *within* the view, so a sound a quarter of the
+        // way across the visible area sits at the same 6144 at every zoom —
+        // and stays inside the view, hence full volume.
+        for (zoom, view_w, centre_y) in [
+            (1.0f32, 1024.0f32, 300.0f32),
+            (2.0, 512.0, 150.0),
+            (0.5, 2048.0, 600.0),
+        ] {
+            let gain = spatial_gain(src, view_w * 0.25, centre_y, &zoom_listener(zoom), false)
+                .unwrap_or_else(|| panic!("audible at zoom {zoom}"));
+            assert_eq!(
+                (gain.volume, gain.pan),
+                (1.0, 6144),
+                "zoom {zoom} quarter-width pan"
+            );
+        }
+
+        // The regression the frame mismatch hid: one fixed world position must
+        // move with the zoom. Ignoring zoom made all three of these 0.5/14688.
+        let fixed = (1324.0f32, 300.0f32);
+        assert_eq!(
+            spatial_gain(src, fixed.0, fixed.1, &zoom_listener(1.0), false),
+            Some(SpatialGain {
+                volume: 0.5,
+                pan: 14688
+            })
+        );
+        // Zoomed 2x the view covers 512x300 world px, so the same point is
+        // 812 px outside it — past `Range * 60` and silent.
+        assert_eq!(
+            spatial_gain(src, fixed.0, fixed.1, &zoom_listener(2.0), false),
+            None
+        );
+        // Zoomed out to 0.5x the view covers 2048x1200 world px, so the point
+        // is on screen: full volume, panned by its offset from the centre.
+        assert_eq!(
+            spatial_gain(src, fixed.0, fixed.1, &zoom_listener(0.5), false),
+            Some(SpatialGain {
+                volume: 1.0,
+                pan: 9392
+            })
+        );
+
+        // A degenerate zoom must neither divide by zero (the VERA-internal
+        // EPSILON floor) nor panic: the resulting half-view saturates the
+        // `ftol` cast to `i32::MIN`, which `native_abs` wraps the way
+        // `CDQ; XOR; SUB` does instead of trapping like `i32::abs`.
+        assert!(spatial_gain(src, 0.0, 0.0, &zoom_listener(0.0), false).is_some());
     }
 
     #[test]
     fn spatial_listener_projects_world_pixels_to_client_points() {
         let listener = SpatialListener {
-            tactical_width: LISTENER_W,
-            tactical_height: LISTENER_H,
+            tactical_width: LISTENER_W as i32,
+            tactical_height: LISTENER_H as i32,
             origin_x: 1000.25,
             origin_y: 2000.0,
+            zoom: 1.0,
         };
         assert_eq!(listener.client_point(1512.25, 2300.0), (512, 300));
         assert_eq!(listener.client_point(999.75, 1999.0), (0, -1));

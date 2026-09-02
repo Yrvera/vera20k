@@ -171,8 +171,13 @@ pub(crate) fn eva_faction_key(
 /// (`audio::sfx::spatial_gain`) against the tactical view rect — the native
 /// listener is the tactical view (`0x00886FA8`/`0x00886FAC`), never the whole
 /// window — with the local player's shroud standing in for the cell flags
-/// `CellClass+0x12C & 0x18`. Zoom is VERA-internal: the listener rect and
-/// positions are the unzoomed native pixels.
+/// `CellClass+0x12C & 0x18`.
+///
+/// Zoom is VERA-internal (gamemd has none). Sound positions are world pixels
+/// and the viewport size is device pixels, so the listener carries the zoom
+/// and `SpatialListener::view_extent` converts the rect into the world frame
+/// the positions already use — see that method for why the world frame is the
+/// side that is scaled.
 pub(crate) fn drain_sound_events(state: &mut AppState) {
     use crate::audio::events::{GameSoundEvent, SoundSource};
     use crate::audio::sfx::{SpatialGain, SpatialListener, SpatialSource, spatial_gain};
@@ -193,6 +198,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
         tactical_height: tactical_height as i32,
         origin_x: state.match_state.input.camera_x,
         origin_y: state.match_state.input.camera_y,
+        zoom: state.match_state.input.zoom_level,
     };
     let local_owner = preferred_local_owner_name(state);
     let sim = state
