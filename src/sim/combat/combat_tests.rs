@@ -6808,11 +6808,7 @@ fn gsi_04_07_damage_hostile_building_hit_latches_was_attacked_for_ai_repair() {
     let ally_owner = sim.interner.intern("ALLY");
     let scenario_ini = IniFile::from_str("[Houses]\n0=AI\n[AI]\nIQ=1\n");
     let scenario_houses =
-        crate::map::houses::parse_house_roster(
-            &scenario_ini,
-            &rules.color_schemes,
-            Some(&rules),
-        );
+        crate::map::houses::parse_house_roster(&scenario_ini, &rules.color_schemes, Some(&rules));
     let mut ai_house = HouseState::new(ai_owner, 0, None, false, 0, 51);
     ai_house.current_iq =
         scenario_houses.houses[0].scenario_current_iq(rules.general.max_iq_levels);

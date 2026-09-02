@@ -1781,7 +1781,20 @@ impl Simulation {
         let grows = self.production.ore_growth_config.grows;
         let spreads = self.production.ore_growth_config.spreads;
         let current_frame = self.session.binary_frame;
-        let native_rect = (self.session.map_width, self.session.map_height);
+        // The stores are sized and walked from the native `MapRect` (`[Map]
+        // Size`), never the cell-array extent in `session.map_*`. The rect the
+        // fresh load rebuilt with is serialized; a zero rect (no rebuild ever
+        // ran) falls back to the retained MapClass Size dimensions.
+        let mut native_rect = self.production.ore_growth_state.native_rect();
+        if native_rect == (0, 0)
+            && let (Some(bounds), Some(height)) =
+                (self.playfield_bounds, self.playfield_size_height)
+        {
+            native_rect = (
+                u16::try_from(bounds.base).unwrap_or(0),
+                u16::try_from(height).unwrap_or(0),
+            );
+        }
         Ok(self
             .production
             .ore_growth_state
@@ -1888,7 +1901,9 @@ mod tests {
 
     mod gsi_17_04_tests {
         use super::flat_terrain;
+        use crate::map::basic::{BasicSection, SpecialFlagsSection};
         use crate::map::entities::EntityCategory;
+        use crate::map::map_file::MapHeader;
         use crate::map::overlay_types::OverlayTypeRegistry;
         use crate::rules::ini_parser::IniFile;
         use crate::rules::ruleset::RuleSet;
@@ -1933,23 +1948,41 @@ mod tests {
         }
 
         fn base_sim(ore_id: u8, cells: &[(u16, u16)]) -> Simulation {
+            base_sim_sized(ore_id, 8, cells)
+        }
+
+        fn base_sim_sized(ore_id: u8, size: u16, cells: &[(u16, u16)]) -> Simulation {
             let mut sim = Simulation::with_seed(0x17_04);
             sim.session.binary_frame = 91;
-            sim.session.map_width = 8;
-            sim.session.map_height = 8;
+            sim.session.map_width = size;
+            sim.session.map_height = size;
             sim.production.ore_growth_config = OreGrowthConfig {
                 grows: true,
                 spreads: true,
                 growth_rate_seconds: 1,
             };
-            sim.production.ore_growth_state = OreGrowthState::new(8, 8);
-            let mut overlays = OverlayGrid::new(8, 8);
+            sim.production.ore_growth_state = OreGrowthState::new(size, size);
+            let mut overlays = OverlayGrid::new(size, size);
             for &(rx, ry) in cells {
                 overlays.place_overlay(rx, ry, ore_id, 5);
             }
             sim.overlay_grid = Some(overlays);
-            sim.install_resolved_terrain_for_new_map(flat_terrain(8, 8));
+            sim.install_resolved_terrain_for_new_map(flat_terrain(size, size));
             sim
+        }
+
+        fn map_header(width: u32, height: u32) -> MapHeader {
+            MapHeader {
+                theater: "TEMPERATE".to_string(),
+                fill: "Clear".to_string(),
+                level: 0,
+                width,
+                height,
+                local_left: 0,
+                local_top: 0,
+                local_width: width,
+                local_height: height,
+            }
         }
 
         fn add_marked_unit(sim: &mut Simulation, cell: (u16, u16), on_bridge: bool) {
@@ -2160,6 +2193,124 @@ mod tests {
             assert_eq!(spread_cells, BTreeSet::from([(4, 5), (6, 5)]));
             assert_eq!(class.growth_bitmap, growth_cells);
             assert_eq!(class.spread_bitmap, spread_cells);
+        }
+
+        /// The post-load rebuild walks the serialized native `MapRect`
+        /// (`0x0087F8DC` / `0x0087F8E0`), never the cell-array extent in
+        /// `session.map_*`. With 12x12 storage over an 8x8 `[Map] Size`,
+        /// (5, 5) lies on anti-diagonal 10: inside the (8, 8) walk (first
+        /// diagonal 9), outside a (12, 12) walk (first diagonal 13).
+        #[test]
+        fn gsi_17_04_postload_rebuild_walks_the_serialized_native_rect() {
+            let (rules, registry, ore_id) = tiberium_fixture();
+            let mut sim = base_sim_sized(ore_id, 12, &[(5, 5), (7, 7)]);
+            sim.install_playfield_from_map_header(&map_header(8, 8));
+            {
+                let overlay = sim.overlay_grid.as_ref().expect("fixture overlay grid");
+                let fresh = sim
+                    .production
+                    .ore_growth_state
+                    .rebuild_native_tiberium_queues_from_overlays(
+                        overlay,
+                        &registry,
+                        &rules.tiberium_types,
+                        sim.resolved_terrain.as_ref(),
+                        &BTreeSet::new(),
+                        true,
+                        true,
+                        7,
+                        (8, 8),
+                    );
+                assert_eq!(fresh.growth_entries, 2);
+            }
+            assert_eq!(sim.production.ore_growth_state.native_rect(), (8, 8));
+
+            let mut restored = restore_before_map_authority(&sim);
+            assert_eq!(
+                restored.production.ore_growth_state.native_rect(),
+                (8, 8),
+                "the rect survives the snapshot"
+            );
+            assert_eq!(restored.session.map_width, 12);
+            let output = restored
+                .restore_map_authority_after_snapshot_load(&rules, &registry)
+                .expect("all map-authority rebuild dependencies");
+            assert_eq!(output.native_tiberium_stats.growth_entries, 2);
+            assert_eq!(output.native_tiberium_stats.spread_entries, 2);
+            let class = &restored
+                .production
+                .ore_growth_state
+                .native_tiberium_state()
+                .classes[0];
+            assert_eq!(class.growth_bitmap, BTreeSet::from([(5, 5), (7, 7)]));
+            assert_eq!(
+                class.growth.capacity(),
+                crate::sim::ore_growth::native_tiberium_queue_capacity((8, 8))
+            );
+        }
+
+        /// A snapshot written before the rect was serialized deserializes it
+        /// as `(0, 0)`; the rebuild then falls back to the retained MapClass
+        /// `Size` (`+0xF4` width plus the separately retained height), never
+        /// the cell-array extent.
+        #[test]
+        fn gsi_17_04_postload_rebuild_zero_rect_falls_back_to_map_size() {
+            let (rules, registry, ore_id) = tiberium_fixture();
+            let mut sim = base_sim_sized(ore_id, 12, &[(5, 5), (7, 7)]);
+            sim.install_playfield_from_map_header(&map_header(8, 8));
+            sim.production
+                .ore_growth_state
+                .set_native_rect_for_tests((0, 0));
+
+            let mut restored = restore_before_map_authority(&sim);
+            assert_eq!(restored.production.ore_growth_state.native_rect(), (0, 0));
+            let output = restored
+                .restore_map_authority_after_snapshot_load(&rules, &registry)
+                .expect("all map-authority rebuild dependencies");
+            assert_eq!(output.native_tiberium_stats.growth_entries, 2);
+            assert_eq!(restored.production.ore_growth_state.native_rect(), (8, 8));
+        }
+
+        /// Fresh-load `InitGrowthQueues_All @ 0x00722D00` /
+        /// `InitSpreadQueues_All @ 0x00722240` read `Cell+0xE4 FirstObject`,
+        /// which `TerrainClass::Mark @ 0x0071BFF8` links for every terrain
+        /// object, spawning or not. A plain tree over ore keeps the cell out
+        /// of the spread store while `CanGrowTiberium @ 0x00483620` still
+        /// admits it to growth.
+        #[test]
+        fn oq_38_fresh_load_queue_init_counts_plain_terrain_objects_as_first_object() {
+            let (rules, registry, ore_id) = tiberium_fixture();
+            let mut sim = base_sim(ore_id, &[(4, 5), (5, 5)]);
+            add_live_terrain_object(&mut sim, (5, 5));
+            assert!(
+                !sim.production
+                    .tiberium_spawning_terrain_cells
+                    .contains(&(5, 5)),
+                "the tree is not an ore spawner"
+            );
+
+            let live_grid = sim.overlay_grid.take();
+            let stats = crate::sim::runtime::initialize_native_tiberium_queues(
+                &mut sim,
+                &BasicSection::default(),
+                &SpecialFlagsSection::default(),
+                &rules,
+                &registry,
+                live_grid.as_ref(),
+                (8, 8),
+            )
+            .expect("overlay grid present");
+            sim.overlay_grid = live_grid;
+
+            assert_eq!(stats.growth_entries, 2);
+            assert_eq!(stats.spread_entries, 1);
+            let class = &sim
+                .production
+                .ore_growth_state
+                .native_tiberium_state()
+                .classes[0];
+            assert_eq!(class.growth_bitmap, BTreeSet::from([(4, 5), (5, 5)]));
+            assert_eq!(class.spread_bitmap, BTreeSet::from([(4, 5)]));
         }
 
         #[test]

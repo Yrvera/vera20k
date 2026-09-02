@@ -783,8 +783,11 @@ Native evidence (decompiled live 2026-09-02 through the plugin's HTTP endpoints)
   `+0x11C == 0`, reject `MaxDensity - 1 <= OverlayData`, reject `GrowthPercentage (+0xB0) < 1e-05`.
 - `CanSpreadTiberium`: `SpecialFlags & 0x80` (`TiberiumSpreads`), index `!= -1`, reject `OverlayData <=
   tiberium_index / 2` (the class INDEX, not `MaxDensity`), `+0x11C == 0`, reject `SpreadPercentage
-  (+0xA0) < 1e-05`, then `CellClass+0xE4 FirstObject == 0` (`AddContent @ 0x0047E8A0` links units,
-  infantry and buildings into that ground list; the bridge list is `AltObject`).
+  (+0xA0) < 1e-05`, then `CellClass+0xE4 FirstObject == 0`. The `AddContent` wrapper `0x005683C0`
+  (sole caller of `CellClass::AddContent @ 0x0047E8A0`) links every ground-layer object into that
+  list: Technos through `TechnoClass::MarkCellLists @ 0x004D37DD` and `BuildingClass @ 0x0043F691`,
+  and every terrain object, ore spawner or not, through `TerrainClass::Mark @ 0x0071BFF8`; the
+  bridge list is `AltObject`.
 - `GrowthProcessor @ 0x00722F00`: return on null/empty heap or `GrowthPercentage <= 1e-05`
   (`FCOMP [0x007E3810]`, `TEST AH,0x41`); batch = `_ftol(FILD count * pct)` (`Math__ftol @ 0x007C5F00`
   loads control word `0x0E7F`: chop) clamped `[5, 50]`; one Scenario `Random::Next` for
@@ -803,8 +806,11 @@ Native evidence (decompiled live 2026-09-02 through the plugin's HTTP endpoints)
   rebuild when `counter >= capacity - 0x14`; append + draw + heap + flag.
 - `CanPlaceTiberium @ 0x004838E0` (target admission) rejects only a live Building (unless its type's
   `+0xC9A`/`+0x1701` flags) or a ChainReaction terrain object in the cell's list; no unit gate.
-- `native_x87` module contract: the process runs 53-bit precision with chop rounding, so `count * pct`
-  is chopped before `_ftol` (e.g. 50 * 0.06 -> 2, where round-to-nearest gives 3).
+- `native_x87` module contract: `Math__ftol @ 0x007C5F00` loads the control word `0x0E7F`
+  (`[0x00822D80]`, 53-bit precision, chop rounding) on its first call and never restores it, so after
+  the process's first `_ftol` every `FMUL` runs chopped and `count * pct` is chopped before `_ftol`
+  (e.g. 50 * 0.06 -> 2, where round-to-nearest gives 3). The very first processor call of a process
+  multiplies under the default control word before that install: UNCHECKED, once per process.
 
 Player effect and frequency: every map with ore, every growth/spread processor tick. Before this
 slice Rust (a) inserted rebuild entries in row-major order and consumed a stably sorted vector, so
@@ -824,13 +830,23 @@ Landed Rust:
   `native_percentage_admits` / `native_percentage_drives` (x87 compares against the `1e-05` bits),
   `native_processor_batch` (`X87Chop53` product + `ftol`), the processor rebuild triggers, the `0x0B`
   literal, `OreGrowthState::native_rect`, hashing of the whole store.
-- `src/sim/tiberium/mod.rs`: `NativeCellObjectView` (ground object-list view) carried by
-  `PlaceTiberiumContext` / `ReduceTiberiumContext`; the existing-cell spread feed and the removal
-  reseed apply the `FirstObject` gate.
-- Callers: `initialize_native_tiberium_queues` (authored and generated arms) and the post-map /
-  snapshot rebuilds pass the `[Map] Size` rect and the occupied set (terrain objects plus ground-list
-  Technos); the area-damage prelude/commit traits and the crater smudge path carry the occupancy view;
-  the harvester reduction path builds it from the live grid.
+- `src/sim/tiberium/mod.rs`: `NativeCellObjectView` (the `FirstObject != 0` read: the ground
+  occupancy list joined with `production.terrain_object_cells`, every terrain object spawner or not)
+  carried by `TiberiumPlacementObjectContext`, `PlaceTiberiumContext` and `ReduceTiberiumContext`;
+  the existing-cell spread feed and the removal reseed apply the `FirstObject` gate. The spawner
+  subset `tiberium_spawning_terrain_cells` gates only `CanPlaceTiberium` targets.
+- Callers: `initialize_native_tiberium_queues` (authored and generated arms) and the post-map
+  rebuild pass the `[Map] Size` rect and the occupied set (terrain objects plus ground-list Technos);
+  snapshot restore rebuilds from the serialized `OreGrowthState::native_rect` (fallback for a
+  pre-v116 snapshot: the retained MapClass `Size` width/height), never the cell-array extent in
+  `session.map_*`; the tick processors, the area-damage prelude/commit traits, the crater smudge
+  path, the harvester reduction, and the terrain-spawner placement all build the view from the live
+  occupancy grid and the live terrain cell index.
+- Processor edges: attempts `abs(raw) % batch + 1` in signed i32, so the word `0x80000000` yields a
+  non-positive count that pops one root and returns; the reinsert priority is `abs(raw % 50)` where
+  `AddToGrowthQueue`'s is `abs(raw) % 50`; a popped growth entry whose `PlaceTiberium` fails still
+  takes the `OverlayData < 0x0B` reinsert-or-clear test; `SpreadTiberium` spreads the cell's current
+  TiberiumClass, so a stale entry of another class spreads whatever now sits there.
 
 Recorded DRIFT (deferred, unreachable in ordinary play): the enqueue-side rebuild triggers need
 `counter > capacity - 10` (growth) / `counter >= capacity - 0x14` (spread) where `capacity = 2 * W *
@@ -838,6 +854,37 @@ Recorded DRIFT (deferred, unreachable in ordinary play): the enqueue-side rebuil
 (tens per processor tick every `Growth=2200` frames): hours of play on one map. The processor-side
 triggers are implemented. `MaxDensity` is the constant 12 (`TiberiumClass+0xE4` initializer not
 re-read); the native `atof` rounding of long percentage decimals is UNCHECKED (retail `.06`).
+
+Recorded residuals (open, named):
+- Scenario-flag equivalence UNCHECKED: the native gates read `Scenario+0x34A6` and `SpecialFlags &
+  0x80`; their bindings to `[Basic] TiberiumGrowthEnabled` and `[SpecialFlags] TiberiumSpreads` come
+  from `docs/research/CELLCLASS_CANGROW_CANSPREAD_PREDICATES_GHIDRA_REPORT.md` (readers `0x00689E90`,
+  `0x006B8CA0`), not re-read in this slice. Rust additionally ANDs `[General] TiberiumSpreads`
+  (`runtime.rs`, `scenario_post_map.rs`), whose native consumer is uncited.
+- Fallback post-map rebuild order: when a load carries no authored overlay registry
+  (`tiberium_queues_preinitialized == false`), `scenario_post_map.rs` rebuilds after Techno
+  construction and so counts pre-placed ground Technos in the `FirstObject` set, where `Full_Init`
+  seeds between the Terrain and Techno sections. Effect: on that path only, ore cells under
+  pre-placed units are excluded from the spread store at load. Authored and generated loads seed
+  before Technos.
+- The x87 chop premise holds after the process's first `_ftol` (above).
+
+Critic chain: critic 1 NEEDS_FIX on `80e41172` (live decompiles through the plugin's HTTP
+endpoints). B1 (snapshot restore rebuilt from `session.map_*`, the cell-array extent, so after a
+save/load every ore cell on the upper half of the diamond left both stores) and B2 (the tick and
+reduction paths modelled `FirstObject` with the spawner subset only, admitting ore under a plain tree
+as a spread source) are fixed as landed above; R1 (`0x80000000` attempts/priority word), R2 (stale
+cross-type spread entry), N1 (failed-growth pop skipped the `< 0x0B` test) and N3
+(`NativeTiberiumQueue::default()` lacked the unused slot 0) are fixed; R3 and R4 are the recorded
+residuals above; R5 is the reworded x87 premise; N2 is the reworded tie-break test comment.
+Regression tests: `gsi_17_04_postload_rebuild_walks_the_serialized_native_rect`,
+`gsi_17_04_postload_rebuild_zero_rect_falls_back_to_map_size`,
+`oq_38_fresh_load_queue_init_counts_plain_terrain_objects_as_first_object`,
+`native_cell_object_view_joins_terrain_objects_with_ground_occupancy`,
+`native_growth_processor_skips_spread_feed_under_a_plain_terrain_object`,
+`native_growth_processor_reinserts_submax_cell_and_counts_spread_feed` (un-ignored, native loop),
+`native_spread_processor_spreads_the_cells_current_type_for_a_stale_entry`,
+`growth_queue_priority_uses_signed_abs_raw_modulo`.
 
 ## Known Non-Requirements
 

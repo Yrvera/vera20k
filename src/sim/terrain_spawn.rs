@@ -228,6 +228,9 @@ pub struct TerrainSpawnContext<'a> {
     pub occupancy: Option<&'a OccupancyGrid>,
     pub rules: Option<&'a RuleSet>,
     pub interner: Option<&'a StringInterner>,
+    /// Terrain objects (trees, rocks) indexed by cell — the non-Techno half of the
+    /// native `Cell+0xE4` FirstObject list that `CanSpreadTiberium` reads.
+    pub terrain_object_cells: Option<&'a BTreeMap<(u16, u16), u64>>,
     pub rng: &'a mut SimRng,
 }
 
@@ -255,6 +258,7 @@ impl<'a> TerrainSpawnContext<'a> {
             occupancy: None,
             rules: None,
             interner: None,
+            terrain_object_cells: None,
             rng,
         }
     }
@@ -304,11 +308,13 @@ impl<'a> TerrainSpawnContext<'a> {
         occupancy: &'a OccupancyGrid,
         rules: &'a RuleSet,
         interner: &'a StringInterner,
+        terrain_object_cells: &'a BTreeMap<(u16, u16), u64>,
     ) -> Self {
         self.entities = Some(entities);
         self.occupancy = Some(occupancy);
         self.rules = Some(rules);
         self.interner = Some(interner);
+        self.terrain_object_cells = Some(terrain_object_cells);
         self
     }
 }
@@ -375,7 +381,13 @@ fn tick_terrain_spawner_one_inner(
         ctx.radar_dirty_generation.as_deref_mut(),
         ctx.tactical_dirty_cells.as_deref_mut(),
         ctx.spawning_terrain_cells,
-        live_object_context(ctx.entities, ctx.occupancy, ctx.rules, ctx.interner),
+        live_object_context(
+            ctx.entities,
+            ctx.occupancy,
+            ctx.rules,
+            ctx.interner,
+            ctx.terrain_object_cells,
+        ),
         ctx.rng,
     );
 }
@@ -440,6 +452,7 @@ pub(crate) fn tick_terrain_object_ai(
             &sim.substrate.occupancy,
             rules,
             &sim.interner,
+            &production.terrain_object_cells,
         )
         .with_validation_context(
             sim.resolved_terrain.as_ref(),
@@ -615,9 +628,14 @@ fn live_object_context<'a>(
     occupancy: Option<&'a OccupancyGrid>,
     rules: Option<&'a RuleSet>,
     interner: Option<&'a StringInterner>,
+    terrain_object_cells: Option<&'a BTreeMap<(u16, u16), u64>>,
 ) -> Option<TiberiumPlacementObjectContext<'a>> {
     Some(TiberiumPlacementObjectContext::new(
-        entities?, occupancy?, rules?, interner?,
+        entities?,
+        occupancy?,
+        rules?,
+        interner?,
+        terrain_object_cells?,
     ))
 }
 
@@ -1636,8 +1654,14 @@ SpreadPercentage=.06
         let interner = StringInterner::default();
         let entities = EntityStore::new();
         let occupancy = OccupancyGrid::new();
-        let live_objects =
-            TiberiumPlacementObjectContext::new(&entities, &occupancy, &rules, &interner);
+        let terrain_object_cells = BTreeMap::new();
+        let live_objects = TiberiumPlacementObjectContext::new(
+            &entities,
+            &occupancy,
+            &rules,
+            &interner,
+            &terrain_object_cells,
+        );
         let mut rng = SimRng::new(8);
         let mut expected_rng = rng.clone();
         let start_dir = expected_rng.next_range_u32(8) as usize;
@@ -1707,6 +1731,7 @@ SpreadPercentage=.06
             interner: &'a mut StringInterner,
             entities: &'a mut EntityStore,
             occupancy: &'a mut OccupancyGrid,
+            terrain_object_cells: &'a BTreeMap<(u16, u16), u64>,
         ) -> TiberiumPlacementObjectContext<'a> {
             let mut entity = GameEntity::test_default(1, type_name, "Neutral", 11, 10);
             entity.category = EntityCategory::Structure;
@@ -1720,19 +1745,27 @@ SpreadPercentage=.06
                 None,
                 CellListInsertion::AppendBuilding,
             );
-            TiberiumPlacementObjectContext::new(entities, occupancy, rules, interner)
+            TiberiumPlacementObjectContext::new(
+                entities,
+                occupancy,
+                rules,
+                interner,
+                terrain_object_cells,
+            )
         }
 
         for (type_name, expected) in [("GAPOWR", false), ("BRIDGEA", true), ("BRIDGEB", true)] {
             let mut interner = StringInterner::default();
             let mut entities = EntityStore::new();
             let mut occupancy = OccupancyGrid::new();
+            let terrain_object_cells = BTreeMap::new();
             let context = context_for(
                 type_name,
                 &rules,
                 &mut interner,
                 &mut entities,
                 &mut occupancy,
+                &terrain_object_cells,
             );
             let admission = NewTiberiumAdmission::compatibility_without_native_context(
                 None,

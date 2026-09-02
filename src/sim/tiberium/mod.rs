@@ -99,6 +99,9 @@ pub struct TiberiumPlacementObjectContext<'a> {
     occupancy: &'a OccupancyGrid,
     rules: &'a RuleSet,
     interner: &'a StringInterner,
+    /// Live terrain-object cell index (`production.terrain_object_cells`):
+    /// the terrain half of the native `FirstObject` list.
+    terrain_object_cells: &'a std::collections::BTreeMap<(u16, u16), u64>,
 }
 
 impl<'a> TiberiumPlacementObjectContext<'a> {
@@ -107,48 +110,67 @@ impl<'a> TiberiumPlacementObjectContext<'a> {
         occupancy: &'a OccupancyGrid,
         rules: &'a RuleSet,
         interner: &'a StringInterner,
+        terrain_object_cells: &'a std::collections::BTreeMap<(u16, u16), u64>,
     ) -> Self {
         Self {
             entities,
             occupancy,
             rules,
             interner,
+            terrain_object_cells,
         }
     }
 
     /// The ground object-list view of this context.
     pub(crate) fn object_view(&self) -> NativeCellObjectView<'a> {
-        NativeCellObjectView::new(self.occupancy)
+        NativeCellObjectView::new(self.occupancy, self.terrain_object_cells)
     }
 }
 
 /// Read-only view of the CellClass ground object lists for the
 /// `CellClass+0xE4 FirstObject` gates.
+///
+/// gamemd-derived: the `AddContent` wrapper `0x005683C0` (sole caller of
+/// `CellClass::AddContent @ 0x0047E8A0`) links every ground-layer object into
+/// `FirstObject`: Technos through `TechnoClass::MarkCellLists @ 0x004D37DD`
+/// and `BuildingClass @ 0x0043F691`, and every terrain object (spawning or
+/// not) through `TerrainClass::Mark @ 0x0071BFF8`. Rust keeps Technos in the
+/// occupancy grid and terrain objects in the production cell index, so the
+/// view joins both.
 #[derive(Clone, Copy)]
 pub struct NativeCellObjectView<'a> {
     occupancy: &'a OccupancyGrid,
+    terrain_object_cells: &'a std::collections::BTreeMap<(u16, u16), u64>,
 }
 
 impl<'a> NativeCellObjectView<'a> {
-    pub fn new(occupancy: &'a OccupancyGrid) -> Self {
-        Self { occupancy }
+    pub fn new(
+        occupancy: &'a OccupancyGrid,
+        terrain_object_cells: &'a std::collections::BTreeMap<(u16, u16), u64>,
+    ) -> Self {
+        Self {
+            occupancy,
+            terrain_object_cells,
+        }
     }
 
-    /// `CellClass+0xE4 FirstObject != 0` for a Techno: any member of the
-    /// cell's ground object list (`AddContent @ 0x0047E8A0` links units,
-    /// infantry, and buildings there; the bridge list is `AltObject`).
+    /// `CellClass+0xE4 FirstObject != 0`: a terrain object or any member of
+    /// the cell's ground object list (the bridge list is `AltObject`).
     pub(crate) fn ground_object_present(&self, cell: (u16, u16)) -> bool {
-        self.occupancy.count_on_layer(
-            cell.0,
-            cell.1,
-            crate::sim::movement::locomotor::MovementLayer::Ground,
-        ) > 0
+        self.terrain_object_cells.contains_key(&cell)
+            || self.occupancy.count_on_layer(
+                cell.0,
+                cell.1,
+                crate::sim::movement::locomotor::MovementLayer::Ground,
+            ) > 0
     }
 
-    /// Every cell whose ground object list holds a Techno.
+    /// Every cell whose ground object list is non-empty.
     pub(crate) fn occupied_ground_cells(&self) -> impl Iterator<Item = (u16, u16)> + 'a {
-        self.occupancy
-            .occupied_cells_on_layer(crate::sim::movement::locomotor::MovementLayer::Ground)
+        self.terrain_object_cells.keys().copied().chain(
+            self.occupancy
+                .occupied_cells_on_layer(crate::sim::movement::locomotor::MovementLayer::Ground),
+        )
     }
 }
 
@@ -638,6 +660,42 @@ mod tests {
     use crate::sim::snapshot::GameSnapshot;
     use crate::sim::world::Simulation;
 
+    /// `NativeCellObjectView` is the Rust read of `Cell+0xE4 FirstObject != 0`:
+    /// terrain objects live in the production cell index, Technos in the
+    /// ground occupancy list, and either alone makes the cell occupied.
+    #[test]
+    fn native_cell_object_view_joins_terrain_objects_with_ground_occupancy() {
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            6,
+            5,
+            1,
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::AppendBuilding,
+        );
+        let terrain_object_cells = std::collections::BTreeMap::from([((5u16, 5u16), 9u64)]);
+        let view = NativeCellObjectView::new(&occupancy, &terrain_object_cells);
+
+        assert!(view.ground_object_present((5, 5)), "plain terrain object");
+        assert!(view.ground_object_present((6, 5)), "ground-list Techno");
+        assert!(!view.ground_object_present((7, 5)));
+        assert_eq!(
+            view.occupied_ground_cells().collect::<BTreeSet<_>>(),
+            BTreeSet::from([(5, 5), (6, 5)])
+        );
+        assert!(crate::sim::ore_growth::cell_has_native_object(
+            &BTreeSet::new(),
+            Some(view),
+            (5, 5)
+        ));
+        assert!(!crate::sim::ore_growth::cell_has_native_object(
+            &BTreeSet::new(),
+            None,
+            (5, 5)
+        ));
+    }
+
     fn ore_node(density: u16) -> ResourceNode {
         ResourceNode {
             resource_type: ResourceType::Ore,
@@ -807,8 +865,14 @@ SpreadPercentage=.06
         let entities = EntityStore::new();
         let occupancy = OccupancyGrid::new();
         let interner = StringInterner::default();
-        let live_objects =
-            TiberiumPlacementObjectContext::new(&entities, &occupancy, &rules, &interner);
+        let terrain_object_cells = BTreeMap::new();
+        let live_objects = TiberiumPlacementObjectContext::new(
+            &entities,
+            &occupancy,
+            &rules,
+            &interner,
+            &terrain_object_cells,
+        );
         let runtime_admission = NewTiberiumAdmission::runtime(&terrain, None, live_objects);
 
         let mut overlay = OverlayGrid::new(1, 1);

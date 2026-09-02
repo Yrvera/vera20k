@@ -367,6 +367,7 @@ fn spawn_bolt(
             &mut sim.production.resource_nodes,
             &mut sim.production.ore_growth_state,
             &sim.production.tiberium_spawning_terrain_cells,
+            &sim.production.terrain_object_cells,
             binary_frame,
             spread_enabled,
             &mut sim.radar_terrain_dirty_cells,
@@ -406,10 +407,7 @@ fn spawn_bolt(
             },
             Some(terrain_objects),
             scenario_no_damage,
-            Some(
-                &mut cell_prelude
-                    as &mut dyn crate::sim::combat::combat_aoe::AoECellPrelude,
-            ),
+            Some(&mut cell_prelude as &mut dyn crate::sim::combat::combat_aoe::AoECellPrelude),
         );
         let receivers = aoe.receivers;
         drop(cell_prelude);
@@ -791,9 +789,7 @@ mod tests {
         let ground_zone_before = sim
             .zone_grid
             .as_ref()
-            .and_then(|zones| {
-                zones.map_for(crate::rules::locomotor_type::MovementZone::Normal)
-            })
+            .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
             .expect("normal zone map")
             .zone_at(5, 5, MovementLayer::Ground);
         assert_eq!(
@@ -812,9 +808,7 @@ mod tests {
         let ground_zone_after = sim
             .zone_grid
             .as_ref()
-            .and_then(|zones| {
-                zones.map_for(crate::rules::locomotor_type::MovementZone::Normal)
-            })
+            .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
             .expect("normal zone map")
             .zone_at(5, 5, MovementLayer::Ground);
         assert_ne!(

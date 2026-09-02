@@ -1055,6 +1055,9 @@ pub(crate) struct SimulationAreaDamageCellPrelude<'a> {
     resource_nodes: &'a mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
     ore_growth_state: &'a mut crate::sim::ore_growth::OreGrowthState,
     source_object_cells: &'a BTreeSet<(u16, u16)>,
+    /// Live terrain-object cell index: the terrain half of the native
+    /// `FirstObject` list for the reduction reseed.
+    terrain_object_cells: &'a BTreeMap<(u16, u16), u64>,
     binary_frame: u32,
     spread_enabled: bool,
     radar_dirty_cells: &'a mut Vec<(u16, u16)>,
@@ -1105,7 +1108,12 @@ impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationAreaDamageCell
             terrain,
             self.ore_growth_state,
             self.source_object_cells,
-            occupancy.map(crate::sim::tiberium::NativeCellObjectView::new),
+            occupancy.map(|occupancy| {
+                crate::sim::tiberium::NativeCellObjectView::new(
+                    occupancy,
+                    self.terrain_object_cells,
+                )
+            }),
             self.binary_frame,
             self.spread_enabled,
             self.radar_dirty_cells,
@@ -1155,6 +1163,7 @@ pub(crate) fn simulation_area_damage_cell_prelude<'a>(
     resource_nodes: &'a mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
     ore_growth_state: &'a mut crate::sim::ore_growth::OreGrowthState,
     source_object_cells: &'a BTreeSet<(u16, u16)>,
+    terrain_object_cells: &'a BTreeMap<(u16, u16), u64>,
     binary_frame: u32,
     spread_enabled: bool,
     radar_dirty_cells: &'a mut Vec<(u16, u16)>,
@@ -1177,6 +1186,7 @@ pub(crate) fn simulation_area_damage_cell_prelude<'a>(
         resource_nodes,
         ore_growth_state,
         source_object_cells,
+        terrain_object_cells,
         binary_frame,
         spread_enabled,
         radar_dirty_cells,
@@ -1322,6 +1332,7 @@ fn dispatch_smudge_inline(
     smudge_grid: Option<&mut crate::sim::smudge_grid::SmudgeGrid>,
     ore_growth_state: &mut crate::sim::ore_growth::OreGrowthState,
     source_object_cells: &BTreeSet<(u16, u16)>,
+    terrain_object_cells: &BTreeMap<(u16, u16), u64>,
     binary_frame: u32,
     spread_enabled: bool,
     radar_dirty_cells: &mut Vec<(u16, u16)>,
@@ -1340,7 +1351,10 @@ fn dispatch_smudge_inline(
         overlay_registry,
         tiberium_types: Some(&rules.tiberium_types),
         source_object_cells: Some(source_object_cells),
-        live_objects: Some(crate::sim::tiberium::NativeCellObjectView::new(occupancy)),
+        live_objects: Some(crate::sim::tiberium::NativeCellObjectView::new(
+            occupancy,
+            terrain_object_cells,
+        )),
         binary_frame,
         spread_enabled,
         radar_dirty_cells,
@@ -1731,7 +1745,12 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
             terrain,
             &mut self.sim.production.ore_growth_state,
             terrain_area_state.tiberium_spawning_terrain_cells(),
-            occupancy.map(crate::sim::tiberium::NativeCellObjectView::new),
+            occupancy.map(|occupancy| {
+                crate::sim::tiberium::NativeCellObjectView::new(
+                    occupancy,
+                    terrain_area_state.terrain_object_cells(),
+                )
+            }),
             binary_frame,
             spread_enabled,
             &mut self.sim.radar_terrain_dirty_cells,
@@ -1773,6 +1792,7 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_, '
             self.sim.smudge_grid.as_mut(),
             &mut self.sim.production.ore_growth_state,
             terrain_area_state.tiberium_spawning_terrain_cells(),
+            terrain_area_state.terrain_object_cells(),
             binary_frame,
             spread_enabled,
             &mut self.sim.radar_terrain_dirty_cells,
@@ -3556,6 +3576,7 @@ impl Simulation {
             self.smudge_grid.as_mut(),
             &mut self.production.ore_growth_state,
             &self.production.tiberium_spawning_terrain_cells,
+            &self.production.terrain_object_cells,
             binary_frame,
             spread_enabled,
             &mut self.radar_terrain_dirty_cells,
@@ -3611,6 +3632,7 @@ impl Simulation {
             source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
             live_objects: Some(crate::sim::tiberium::NativeCellObjectView::new(
                 &self.substrate.occupancy,
+                &self.production.terrain_object_cells,
             )),
             // ore growth/spread — scenario stream. Direct field (not ore_rng()): this
             // literal co-borrows other &mut self fields, so the all-self accessor conflicts.
@@ -3908,6 +3930,7 @@ impl Simulation {
                 &self.substrate.occupancy,
                 rules,
                 &self.interner,
+                &self.production.terrain_object_cells,
             );
             if let (Some(grid), Some(registry)) = (self.overlay_grid.as_mut(), overlay_registry) {
                 self.production.ore_growth_state.tick_native_growth_driver(
