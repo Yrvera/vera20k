@@ -25,14 +25,19 @@ const BUNKER_EXIT_SEARCH_MAX_RADIUS: i32 = 16;
 /// they exclude no stock bunkerable vehicle.) Resolved against `rules`, so this is
 /// called from the command dispatch (which has `rules`), never from the radio bus.
 ///
-/// RESIDUAL (UNCHECKED, deferred): the weapon half is `obj.primary`, and the
-/// native predicate for this gate has not been located. If it turns out to be
-/// `TechnoClass::Is_Armed` (vtable `+0x2AC`, `combat_weapon::is_armed`) then
-/// `[SREF]` is wrong here — the Prism Tank is `Bunkerable` by default (units
-/// default yes) but authors no live `Primary=`, so it is refused entry.
-/// Trigger: ordering a Prism Tank into a `[NATBNK]` Battle Bunker. Frequency:
-/// near zero — the Battle Bunker is Soviet and the Prism Tank Allied, so it
-/// needs an alliance or a capture. Downstream: none.
+/// RESIDUAL (UNCHECKED, deferred): the weapon half is `obj.primary` — the
+/// native `Primary` field (`TechnoTypeClass+0x898`), which for a `TurretCount>0`
+/// type is filled from `Weapon1=`, see `ObjectType::read_weapon_arrays` — and
+/// the native predicate for this gate has not been located. The two plausible
+/// candidates now agree on every stock type: `[SREF]` carries `Comet` in
+/// `+0x898`, so it is admitted whether the native gate is the raw field or
+/// `TechnoClass::Is_Armed` (vtable `+0x2AC`, `combat_weapon::is_armed`). The
+/// candidates could still differ for a `TurretCount>0` type whose *current*
+/// gunner slot is empty while slot 0 is not; none exists on retail data.
+/// Trigger: ordering a bunkerable vehicle into a `[NATBNK]` Tank Bunker.
+/// Frequency: near zero — `[NATBNK]` is the Yuri Tank Bunker
+/// (`Prerequisite=YACNST`), so a non-Yuri player needs an alliance or a
+/// capture. Downstream: none.
 pub fn can_auto_deploy_here(sim: &Simulation, unit_id: u64, rules: &RuleSet) -> bool {
     let Some(unit) = sim.substrate.entities.get(unit_id) else {
         return false;

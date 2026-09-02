@@ -676,6 +676,13 @@ fn capability_cursor_for_hover(
 /// property of that object alone, not of any unit in the selection. Both weapon
 /// slots count, matching the all-slots weapon-range query the object resolver
 /// itself uses.
+///
+/// `primary`/`secondary` here are the native weapon-array slots 0 and 1
+/// (`TechnoTypeClass+0x898`/`+0x8B4`, filled by `Weapon1=`/`Weapon2=` for a
+/// `TurretCount>0` type — see `ObjectType::read_weapon_arrays`), not the raw
+/// `Primary=`/`Secondary=` INI keys. Reading the keys made this return `false`
+/// unconditionally for `[SREF]` and `[YAGGUN]`, showing the out-of-range attack
+/// cursor over every enemy at any distance.
 fn resolved_unit_in_range(
     sim: &crate::sim::world::Simulation,
     actor_id: u64,
@@ -847,14 +854,16 @@ fn select_best_for_action(
             // The engine's weapon test queries *all* weapon slots, so a
             // secondary-only unit scores 5 just like a primary-armed one.
             //
-            // RESIDUAL (UNCHECKED, deferred): "all slots" is modelled as
-            // `Primary`+`Secondary`, which is empty for a `TurretCount>0` type
-            // — `[SREF]`, `[YAGGUN]` score 4 instead of 5. This only reorders
-            // `select_best_for_action`'s single-object pick within a mixed
-            // selection; the force-fire gate above is now the native
-            // `Is_Armed`. Trigger: a Prism Tank selected together with an
-            // unarmed vehicle at equal distance. Frequency: occasional.
-            // Downstream: cursor/order dispatch only, no sim state.
+            // `primary`/`secondary` are native weapon-array slots 0/1
+            // (`TechnoTypeClass+0x898`/`+0x8B4`), so a `TurretCount>0` type
+            // reads through here correctly: `[SREF]` scores 5 on `Weapon1`.
+            //
+            // RESIDUAL (UNCHECKED, deferred): "all slots" is modelled as slots
+            // 0 and 1 only, so a type whose sole weapon sits at slot >= 2 would
+            // score 4. No stock section is shaped that way — `[FV]`, `[YTNK]`
+            // and `[YAGGUN]` all author slot 0 — so the frequency is zero on
+            // retail data. Downstream: cursor/order dispatch only, no sim
+            // state.
             let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
             let has_weapon = obj.is_some_and(|o| {
                 [o.primary.as_ref(), o.secondary.as_ref()]

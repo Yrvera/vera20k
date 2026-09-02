@@ -237,50 +237,23 @@ impl TargetFacts<'_> {
     }
 }
 
-/// Whether this type's weapon array was filled from the `WeaponN=` loop
-/// rather than from `Primary=`/`Secondary=`.
+/// `Weapon[index]` (`TechnoTypeClass+0x898 + index*0x1C`).
 ///
-/// `TechnoTypeClass::ReadINI @ 0x007128B2`: `TurretCount > 0` runs the
-/// `Weapon%d`/`EliteWeapon%d` loop `WeaponCount` times and then skips the
-/// `Primary=` block; `TurretCount <= 0` reads `Primary=`/`Secondary=` and
-/// never looks at `WeaponN=`. Stock `TurretCount>0` types are FV, SREF,
-/// YTNK and YAGGUN.
-fn uses_weapon_list(obj: &ObjectType) -> bool {
-    obj.turret_count > 0
-}
-
-fn listed_weapon_at<'a>(
-    list: &'a [Option<String>],
-    obj: &ObjectType,
-    index: usize,
-) -> Option<&'a str> {
-    // Slots at or past `WeaponCount` were never written by the loop.
-    if i64::try_from(index).ok()? >= i64::from(obj.weapon_count) {
-        return None;
-    }
-    list.get(index).and_then(|slot| slot.as_deref())
-}
-
+/// `ObjectType::weapon_list` **is** that native array, and `obj.primary` /
+/// `obj.secondary` are slots 0 and 1 of it — `TechnoTypeClass::ReadINI
+/// @ 0x007128B2` writes `Weapon1=` and `Primary=` to the same `+0x898`, so the
+/// `TurretCount` branch is decided once, at parse time, in
+/// `rules::object_type::ObjectType::read_weapon_arrays`. Nothing downstream has
+/// to know which INI keys a type authored.
 fn base_weapon_at(obj: &ObjectType, index: usize) -> Option<&str> {
-    if uses_weapon_list(obj) {
-        return listed_weapon_at(&obj.weapon_list, obj, index);
-    }
-    match index {
-        0 => obj.primary.as_deref(),
-        1 => obj.secondary.as_deref(),
-        _ => None,
-    }
+    obj.weapon_list.get(index).and_then(|slot| slot.as_deref())
 }
 
+/// `EliteWeapon[index]` (`TechnoTypeClass+0xA94 + index*0x1C`).
 fn elite_weapon_at(obj: &ObjectType, index: usize) -> Option<&str> {
-    if uses_weapon_list(obj) {
-        return listed_weapon_at(&obj.elite_weapon_list, obj, index);
-    }
-    match index {
-        0 => obj.elite_primary.as_deref(),
-        1 => obj.elite_secondary.as_deref(),
-        _ => None,
-    }
+    obj.elite_weapon_list
+        .get(index)
+        .and_then(|slot| slot.as_deref())
 }
 
 /// `TechnoClass::GetWeapon @ 0x0070E140`: `-1` → no weapon; elite objects use
@@ -348,15 +321,12 @@ pub(crate) fn secondary_for_tier(obj: &ObjectType, veterancy: u16) -> Option<&st
 /// (`vt+0x400`, `BuildingClass::IsOccupied 0x00458DD0`) is armed
 /// unconditionally, otherwise it falls through to the Techno test.
 ///
-/// So `Secondary=` never makes an object armed, and a `TurretCount>0` type is
-/// armed only through its current gunner slot. The elite tier is applied by
-/// `GetWeapon`, which is why this goes through `weapon_for_index` rather than
-/// reading `Primary=` directly — and reading `Primary=` here is wrong for stock
-/// data: `TechnoTypeClass::ReadINI @ 0x007128B2` branches on `TurretCount > 0`
-/// and never reads `Primary=` for such a type, so `[SREF]` (Prism Tank, whose
-/// `Primary=Comet` is commented out in `rulesmd.ini`) and `[YAGGUN]` (Gattling
-/// Cannon, which authors no `Primary=` at all) carry their weapons only in
-/// `Weapon1..N`.
+/// So the `Secondary` slot never makes an object armed, and a `TurretCount>0`
+/// type is armed only through its *current gunner* slot — which is why this is
+/// still a distinct predicate from reading `obj.primary`, even now that
+/// `obj.primary` is the native `Primary` field for every type (see
+/// `ObjectType::read_weapon_arrays`). The elite tier is applied by `GetWeapon`,
+/// so the read goes through `weapon_for_index`.
 ///
 /// Verified call sites of this predicate, all reached in ordinary play:
 /// - `TechnoClass::CanAcquireTarget @ 0x007091D0` ends with
@@ -1904,6 +1874,11 @@ IsLocomotor=yes
         // slots from `WeaponN=` and jumps past the `Primary=` block; otherwise
         // `Primary=`/`Secondary=` are read and `WeaponN=` is ignored. Neither
         // side ever falls back to the other.
+        //
+        // The *keys* are mutually exclusive; the *storage* is shared. Whichever
+        // branch runs writes weapon-array slots 0/1 at `+0x898`/`+0x8B4`, which
+        // are the fields gamemd calls `Primary`/`Secondary` — so `obj.primary`
+        // must read as the resolved slot 0 either way.
         let ini = IniFile::from_str(
             "[VehicleTypes]\n0=TURRETED\n1=PLAINWEP\n\
              [TURRETED]\nStrength=100\nArmor=none\nTurretCount=2\nWeaponCount=2\n\
@@ -1920,8 +1895,14 @@ IsLocomotor=yes
              [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
         );
         let rules = RuleSet::from_ini(&ini).unwrap();
-        // TurretCount=2: WeaponN wins outright, Primary/Secondary are dead.
+        // TurretCount=2: the `WeaponN=` keys win outright, and they land in the
+        // `Primary`/`Secondary` FIELDS — the `Primary=`/`Secondary=` keys are
+        // dead but the fields they name are not.
         let turreted = rules.object("TURRETED").unwrap();
+        assert_eq!(turreted.primary.as_deref(), Some("SlotGun"));
+        assert_eq!(turreted.secondary.as_deref(), Some("SlotGun2"));
+        assert_eq!(turreted.elite_primary.as_deref(), Some("SlotGunE"));
+        assert_eq!(turreted.elite_secondary, None);
         assert_eq!(primary_for_tier(turreted, 0), Some("SlotGun"));
         assert_eq!(secondary_for_tier(turreted, 0), Some("SlotGun2"));
         assert_eq!(primary_for_tier(turreted, 200), Some("SlotGunE"));
@@ -1933,6 +1914,8 @@ IsLocomotor=yes
         // TurretCount unauthored (0): WeaponN is dead, and there is no
         // secondary even though Weapon2 names one.
         let plain = rules.object("PLAINWEP").unwrap();
+        assert_eq!(plain.primary.as_deref(), Some("PrimGun"));
+        assert_eq!(plain.secondary, None);
         assert_eq!(primary_for_tier(plain, 0), Some("PrimGun"));
         assert_eq!(secondary_for_tier(plain, 0), None);
         assert!(weapon_for_index(plain, 0, 1).is_none());

@@ -897,16 +897,25 @@ mod tests {
     /// GSI-08.02 regression: the Prism Tank and the Gattling Cannon must read
     /// as armed. `TechnoClass::Is_Armed @ 0x00701120` resolves ONE slot through
     /// `GetCurrentWeapon @ 0x0070E1A0`, which for a `TurretCount>0` type is
-    /// `GetWeapon(CurrentWeaponNumber)` — `Weapon1`, not `Primary=`.
+    /// `GetWeapon(CurrentWeaponNumber)`.
+    ///
+    /// This also pins the storage fact the whole crate now depends on:
+    /// `Weapon1=` writes the same `TechnoTypeClass+0x898` field that `Primary=`
+    /// does (`TechnoTypeClass::ReadINI`, cursor `0x007128D6 LEA EDI,[EBP+0xA94]`
+    /// storing at `0x0071294A MOV [EDI-0x1FC],EAX`, and `0xA94-0x1FC = 0x898`),
+    /// so `obj.primary` reads as the native field for these two types even
+    /// though neither section authors a live `Primary=` key.
     #[test]
     fn gsi_08_02_stock_sref_and_yaggun_are_armed_through_weapon_one() {
         let rules = gunner_rules();
         let sref_obj = rules.object("SREF").expect("SREF");
         let yaggun_obj = rules.object("YAGGUN").expect("YAGGUN");
 
-        // The premise: neither section authors the keys the old gates read.
-        assert!(sref_obj.primary.is_none() && sref_obj.secondary.is_none());
-        assert!(yaggun_obj.primary.is_none() && yaggun_obj.secondary.is_none());
+        // Same storage: `Weapon1=` lands in the `Primary` field, `Weapon2=` in
+        // `Secondary`. SREF stops at `WeaponCount=1`, so its slot 1 is empty.
+        assert_eq!(sref_obj.primary.as_deref(), Some("Comet"));
+        assert_eq!(sref_obj.secondary, None);
+        assert_eq!(yaggun_obj.primary.as_deref(), Some("AGGattling"));
 
         let mut sref = GameEntity::test_default(1, "SREF", "Americans", 5, 5);
         sref.category = EntityCategory::Unit;
@@ -919,9 +928,10 @@ mod tests {
 
     /// The gate this file owns: a Prism Tank must get past
     /// `acquire_best_target_for_entity`'s armed check and pick the enemy tank
-    /// next to it. Against the old `Primary=`/`Secondary=` predicate this
-    /// returns `None` — a Prism Tank on Guard never opened fire on anything
-    /// that walked past.
+    /// next to it. Against the old predicate — which read the raw
+    /// `Primary=`/`Secondary=` INI keys instead of the weapon-array fields they
+    /// name — this returns `None`, and a Prism Tank on Guard never opened fire
+    /// on anything that walked past.
     #[test]
     fn gsi_08_02_sref_acquires_a_target_through_the_armed_gate() {
         let rules = gunner_rules();
