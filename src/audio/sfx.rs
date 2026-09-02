@@ -1811,8 +1811,12 @@ mod tests {
         }
     }
 
+    /// `[SoundList]` is what registers an id (`VocClass::ReadSoundListINI @
+    /// 0x007510D0`), so the fixture names `[T]` there the way the stock file
+    /// names every sound.
     fn entry(body: &str) -> SoundEntry {
-        let registry = SoundRegistry::from_ini(&IniFile::from_str(body));
+        let registry =
+            SoundRegistry::from_ini(&IniFile::from_str(&format!("[SoundList]\n1=T\n{body}")));
         registry.get("T").expect("entry").clone()
     }
 
@@ -2215,7 +2219,7 @@ mod tests {
     #[test]
     fn cloak_sound_registered_resolution_rejects_raw_sample_and_invalid_names() {
         let registry = SoundRegistry::from_ini(&IniFile::from_str(
-            "[NavalUnitEmerge]\nSounds=vnavupa\nVolume=55\n",
+            "[SoundList]\n1=NavalUnitEmerge\n[NavalUnitEmerge]\nSounds=vnavupa\nVolume=55\n",
         ));
         let entry = registered_entry("NavalUnitEmerge", &registry)
             .expect("the retail Voc/event identity resolves to its registered entry");

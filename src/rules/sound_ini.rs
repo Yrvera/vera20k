@@ -13,8 +13,11 @@
 //! Each section name is a sound ID referenced by weapons (Report=), units
 //! (VoiceSelect=, VoiceMove=, DieSound=), and EVA announcements.
 //!
-//! gamemd-derived: `VocClass::ReadINI @ 0x00750440` reads the fourteen keys
-//! below for every `[SoundList]` entry, in this order, with these defaults —
+//! gamemd-derived: `VocClass::ReadSoundListINI @ 0x007510D0` walks
+//! `[SoundList]` by entry index and registers one sound per entry VALUE; the
+//! INI's sections are never scanned. `VocClass::ReadINI @ 0x00750440` then
+//! reads the fourteen keys below out of the section named by that value, in
+//! this order, with these defaults —
 //! `Sounds` (""), `Volume` ([Defaults] float, static 80.0), `VShift` (0),
 //! `MinVolume` ([Defaults] float, static 20.0), `Priority` ("NORMAL"),
 //! `Attack` (0), `Decay` (0), `Control` ([Defaults] flags, static 0), `Type`
@@ -31,6 +34,7 @@
 use std::collections::HashMap;
 
 use crate::rules::ini_parser::{IniFile, IniSection};
+use crate::rules::ini_value::parse_read_double;
 
 /// `Control=` flag words. gamemd-derived: the `(char*, u32)` table at
 /// `0x008160C0` walked by `AudioEventClass::ParseControlFlag @ 0x00406820`
@@ -217,7 +221,9 @@ pub struct SoundEntry {
     /// `Loop=` pass count for looping events (`+0x4C`, 0 = forever).
     pub loop_count: i32,
     /// `Delay=` pre-delay range in milliseconds `(min, max)` (`+0x58/+0x5C`);
-    /// a single token sets both, no token sets `(0, 0)`.
+    /// a single token sets both, no token sets `(0, 0)`. The pair is real — see
+    /// [`parse_int_pair`] for why the decompiler's single-value rendering of
+    /// this tail is wrong.
     pub delay_ms: (i32, i32),
     /// `FShift=` frequency shift range in percent `(min, max)`
     /// (`+0x60/+0x64`); same one-or-two token rule as `Delay=`.
@@ -233,6 +239,46 @@ pub struct SoundEntry {
 }
 
 impl SoundEntry {
+    /// The state a listed id keeps when its section does not exist.
+    ///
+    /// `VocClass::ReadINI @ 0x00750440` looks the section up by the event's own
+    /// name (`0x0075046A INIClass::FindSectionByName`) and returns at
+    /// `0x00750476` without reading a single key when it is missing, so the
+    /// object keeps what `AudioEventClass::FindOrCreate @ 0x004063B0` built:
+    /// a zero-filled `0x148` allocation plus `+0xC = 1`, `+0x10 = 0` (Control),
+    /// `+0x14 = 0x20` (Type SCREEN), `+0x40 = 2` (Priority NORMAL),
+    /// `+0x48 = 3` (Limit), `+0x50 = 10` (Range), `+0x54 = 0.2f` (MinVolume),
+    /// and the name `strncpy`d to 31 chars. Those are the **constructor's**
+    /// values, not `[Defaults]`' — the `Limit` differs (3 against the static
+    /// 5) precisely because `[Defaults]` was never applied here.
+    ///
+    /// The sample count `+0x134` stays 0, and `SoundEvent::UpdateState @
+    /// 0x004055C0` state 0 abandons the event when it is
+    /// (`0x0040563C CMP [EDI+0x134],EBX; JZ 0x004057A3`), so such an id is
+    /// registered and permanently silent. Stock `[SoundList]` reaches this once,
+    /// through a decorative `============ Mission Disk sounds ============`
+    /// entry.
+    fn unread(name: &str) -> Self {
+        Self {
+            id: name.to_string(),
+            sounds: Vec::new(),
+            volume: 0,
+            volume_linear: 0,
+            priority: SOUND_PRIORITY_DEFAULT,
+            range: 10,
+            min_volume: 0.2,
+            control: 0,
+            type_flags: sound_type::SCREEN,
+            limit: 3,
+            loop_count: 0,
+            delay_ms: (0, 0),
+            fshift: (0, 0),
+            vshift: 0,
+            attack: 0,
+            decay: 0,
+        }
+    }
+
     /// Body sample index range `attack .. count - decay` (may be empty).
     pub fn body_range(&self) -> std::ops::Range<usize> {
         let count = self.sounds.len() as i32;
@@ -252,108 +298,56 @@ pub struct SoundRegistry {
 impl SoundRegistry {
     /// Parse a SoundRegistry from sound.ini / soundmd.ini data.
     ///
-    /// Loads `soundmd.ini` first (YR), then `sound.ini` (base RA2) as fallback.
-    /// Sections from soundmd override sound.ini on conflict.
+    /// gamemd-derived: `VocClass::ReadSoundListINI @ 0x007510D0` reads
+    /// `[Defaults]` once, then finds `[SoundList]` (`0x00751298`) and walks it
+    /// by index — `GetEntryCount @ 0x00526960`, `GetEntryNameByIndex @
+    /// 0x00526CC0`, then `CCINIClass::ReadString @ 0x00528A10` for that
+    /// entry's **value**, which is the sound id (`0x007512C6..0x007512EE`). An
+    /// entry whose value reads back empty is skipped (`0x007512EC TEST EAX,EAX;
+    /// JZ`); every other value becomes an `AudioEventClass` through
+    /// `FindOrCreate @ 0x004063B0` and is filled in by `VocClass::ReadINI @
+    /// 0x00750440`.
+    ///
+    /// The INI's sections are **not** scanned, which is why this walks the list
+    /// rather than the file: a section `[SoundList]` never names is never
+    /// registered (stock `soundmd.ini` has exactly one, `[GuardianGiUnDeploy]`,
+    /// and no rules/art key references it), and a listed id whose section is
+    /// missing still registers — see [`SoundEntry::unread`].
+    ///
+    /// `merge_fallback` handles the base-RA2 `sound.ini` layer; native reads
+    /// one file per pass the same way.
     pub fn from_ini(ini: &IniFile) -> Self {
         let mut entries: HashMap<String, SoundEntry> = HashMap::new();
         let defaults = SoundDefaults::read(ini.section("Defaults"));
 
-        for name in ini.section_names() {
-            let Some(section) = ini.section(name) else {
-                continue;
-            };
-            // Skip meta-sections that aren't actual sound definitions.
-            if name.eq_ignore_ascii_case("General")
-                || name.eq_ignore_ascii_case("SoundList")
-                || name.eq_ignore_ascii_case("Defaults")
-            {
-                continue;
+        // No `[SoundList]` means no sounds: `0x0075129D TEST EAX,EAX; JZ`
+        // leaves the whole registration loop unexecuted.
+        let Some(list) = ini.section("SoundList") else {
+            log::info!("SoundRegistry: no [SoundList] section, 0 sound definitions");
+            return Self { entries, defaults };
+        };
+
+        // Values in source order, which is native's entry-index order. The INI
+        // parser has already dropped entries with an empty value, matching the
+        // `ReadString` length gate.
+        for value in list.get_values() {
+            let key = value.to_ascii_uppercase();
+            // `0x007512F4..0x0075133D` compares the id against the names of the
+            // events already created (`FUN_007C8D20`, case-insensitive) and,
+            // on a hit, hands that same object to `ReadINI` again under its
+            // FIRST spelling. `AddSample` appends rather than replaces, so a
+            // twice-listed id ends up carrying its sample list twice — stock
+            // `[SoundList]` lists `KirovVoiceDie` twice, in both sound files.
+            let previous: Option<SoundEntry> = entries.remove(&key);
+            let name: &str = previous.as_ref().map_or(value, |entry| entry.id.as_str());
+            let mut entry: SoundEntry = read_entry(ini, name, &defaults);
+            if let Some(previous) = previous {
+                let mut sounds: Vec<String> = previous.sounds;
+                sounds.extend(entry.sounds);
+                sounds.truncate(MAX_SAMPLES);
+                entry.sounds = sounds;
             }
-
-            // VERA-internal, gamemd equivalent UNCHECKED: using `Sounds=` as
-            // the section filter. Native never scans INI sections — it walks
-            // the `[SoundList]` entries (`VocClass::ReadSoundListINI @
-            // 0x007510D0`, `GetEntryCount`/`GetEntryNameByIndex`) and calls
-            // `VocClass::ReadINI @ 0x00750440` once per name, which reads
-            // `Sounds=` with an empty-string default and simply adds no
-            // samples when it is absent. VERA has no `[SoundList]` pass, so
-            // the key's presence is what separates a sound section from the
-            // rest of the file. Trigger: a `[SoundList]` name whose section
-            // omits `Sounds=`, or writes it empty (`IniFile` drops a key with
-            // an empty value, so the two are indistinguishable at this point).
-            // Player effect: VERA falls through to the audio-bag path for that
-            // id where gamemd would play nothing. Frequency: never on retail
-            // data — every stock `[SoundList]` section writes a non-empty
-            // `Sounds=`. Downstream risk: none.
-            let sounds_str: &str = match section.get_ignoring_case("Sounds") {
-                Some(s) => s,
-                None => continue,
-            };
-
-            // `VocClass::AddSample @ 0x004064A0` skips every leading `$`/`#`
-            // and stops accepting at 32 samples. An empty list is registered,
-            // not skipped: native's `VocClass` exists with a zero sample count
-            // and plays nothing, so the id must still resolve here rather than
-            // fall through to the audio-bag path.
-            let sounds: Vec<String> = split_tokens(sounds_str)
-                .map(|s| s.trim_start_matches(['$', '#']).to_string())
-                .filter(|s| !s.is_empty())
-                .take(MAX_SAMPLES)
-                .collect();
-
-            let volume_raw = read_double(section, "Volume", defaults.volume);
-            let volume_linear = volume_linear(volume_raw);
-            let volume: u8 = volume_raw.clamp(0.0, 100.0).round() as u8;
-            let vshift = section
-                .get_i32_ignoring_case("VShift")
-                .unwrap_or(0)
-                .clamp(0, 100);
-            let min_volume =
-                min_volume_fraction(read_double(section, "MinVolume", defaults.min_volume));
-            let priority: u8 = section
-                .get_ignoring_case("Priority")
-                .map_or(SOUND_PRIORITY_DEFAULT, parse_sound_priority);
-            let attack_raw = section.get_i32_ignoring_case("Attack").unwrap_or(0);
-            let decay_raw = section.get_i32_ignoring_case("Decay").unwrap_or(0);
-            let control = parse_control_list(section.get_ignoring_case("Control"))
-                .unwrap_or(defaults.control);
-            // `AudioEventClass::SetControlFlags @ 0x00406570`: without the
-            // flag the count is zeroed; with it a zero count becomes 1.
-            let attack = normalise_envelope_count(attack_raw, control & control::ATTACK != 0);
-            let decay = normalise_envelope_count(decay_raw, control & control::DECAY != 0);
-            let type_flags =
-                parse_type_list(section.get_ignoring_case("Type")).unwrap_or(defaults.type_flags);
-            let limit = section
-                .get_i32_ignoring_case("Limit")
-                .unwrap_or(defaults.limit);
-            let loop_count = section.get_i32_ignoring_case("Loop").unwrap_or(0);
-            let range: i32 = section
-                .get_i32_ignoring_case("Range")
-                .unwrap_or(defaults.range);
-            let delay_ms = parse_int_pair(section.get_ignoring_case("Delay"));
-            let fshift = parse_int_pair(section.get_ignoring_case("FShift"));
-
-            entries.insert(
-                name.to_ascii_uppercase(),
-                SoundEntry {
-                    id: name.to_string(),
-                    sounds,
-                    volume,
-                    volume_linear,
-                    priority,
-                    range,
-                    min_volume,
-                    control,
-                    type_flags,
-                    limit,
-                    loop_count,
-                    delay_ms,
-                    fshift,
-                    vshift,
-                    attack,
-                    decay,
-                },
-            );
+            entries.insert(key, entry);
         }
 
         log::info!("SoundRegistry: loaded {} sound definitions", entries.len());
@@ -401,6 +395,87 @@ impl SoundRegistry {
     }
 }
 
+/// One `VocClass::ReadINI @ 0x00750440` pass for `name`: read the fourteen keys
+/// out of `[name]`, or keep the constructor state when there is no such section
+/// (`0x0075046A..0x00750476`).
+///
+/// The section lookup is exact-case where native hashes the name through
+/// `CRCEngine::AddData` (`INIClass::FindSectionByName @ 0x00526810`). Both stock
+/// files spell all 820/500 `[SoundList]` values exactly as their section
+/// headers, so the two agree on retail data; a mod that spelled one differently
+/// would register the id with [`SoundEntry::unread`]'s silent state here.
+fn read_entry(ini: &IniFile, name: &str, defaults: &SoundDefaults) -> SoundEntry {
+    let Some(section) = ini.section(name) else {
+        return SoundEntry::unread(name);
+    };
+
+    // `VocClass::AddSample @ 0x004064A0` skips every leading `$`/`#` and stops
+    // accepting at 32 samples. An absent or token-less `Sounds=` is registered,
+    // not skipped: `ReadINI` reads it with the empty-string default at
+    // `0x0075049D` and simply adds nothing, so the id must still resolve here
+    // rather than fall through to the audio-bag path. Eight stock sections take
+    // that path — `Dummy`, `CampfireLoop`, `PropagandaTruck`, `DolphinFear`,
+    // `OspreyCollision`, `SquidFear`, `SubFear`, `RobotTankPowerDown` — and
+    // `Dummy.wav` is a real 1180-byte file in `audiomd.mix`, so registering the
+    // silent entry is what keeps `[AudioVisual] Construction=`/`GateUp=`/
+    // `GateDown=` from playing a buffer gamemd never starts.
+    let sounds: Vec<String> = split_tokens(section.get_ignoring_case("Sounds").unwrap_or(""))
+        .map(|s| s.trim_start_matches(['$', '#']).to_string())
+        .filter(|s| !s.is_empty())
+        .take(MAX_SAMPLES)
+        .collect();
+
+    let volume_raw = read_double(section, "Volume", defaults.volume);
+    let volume_linear = volume_linear(volume_raw);
+    let volume: u8 = volume_raw.clamp(0.0, 100.0).round() as u8;
+    let vshift = section
+        .get_i32_ignoring_case("VShift")
+        .unwrap_or(0)
+        .clamp(0, 100);
+    let min_volume = min_volume_fraction(read_double(section, "MinVolume", defaults.min_volume));
+    let priority: u8 = section
+        .get_ignoring_case("Priority")
+        .map_or(SOUND_PRIORITY_DEFAULT, parse_sound_priority);
+    let attack_raw = section.get_i32_ignoring_case("Attack").unwrap_or(0);
+    let decay_raw = section.get_i32_ignoring_case("Decay").unwrap_or(0);
+    let control =
+        parse_control_list(section.get_ignoring_case("Control")).unwrap_or(defaults.control);
+    // `AudioEventClass::SetControlFlags @ 0x00406570`: without the flag the
+    // count is zeroed; with it a zero count becomes 1.
+    let attack = normalise_envelope_count(attack_raw, control & control::ATTACK != 0);
+    let decay = normalise_envelope_count(decay_raw, control & control::DECAY != 0);
+    let type_flags =
+        parse_type_list(section.get_ignoring_case("Type")).unwrap_or(defaults.type_flags);
+    let limit = section
+        .get_i32_ignoring_case("Limit")
+        .unwrap_or(defaults.limit);
+    let loop_count = section.get_i32_ignoring_case("Loop").unwrap_or(0);
+    let range: i32 = section
+        .get_i32_ignoring_case("Range")
+        .unwrap_or(defaults.range);
+    let delay_ms = parse_int_pair(section.get_ignoring_case("Delay"));
+    let fshift = parse_int_pair(section.get_ignoring_case("FShift"));
+
+    SoundEntry {
+        id: name.to_string(),
+        sounds,
+        volume,
+        volume_linear,
+        priority,
+        range,
+        min_volume,
+        control,
+        type_flags,
+        limit,
+        loop_count,
+        delay_ms,
+        fshift,
+        vshift,
+        attack,
+        decay,
+    }
+}
+
 /// `0.01f` at `0x007EAAE0`, the *float* constant the sound reader multiplies a
 /// percentage by. It is `10737418 / 2^30`, i.e. slightly **below** 0.01, which
 /// is why the whole chain has to stay at x87 precision — see
@@ -414,31 +489,24 @@ const ONE_PERCENT_F32_AS_F64: f64 = 0.01f32 as f64;
 /// [ESP+0x38]`). When `strchr(text, '%')` hits, the double is multiplied by
 /// the *double* 0.01 at `0x007E3808` (`0x0052857E FMUL double`) and stored
 /// back as a double — there is no float narrowing on that path, so the result
-/// this function hands its caller carries 53 significant bits. Absent or
-/// unparsable keeps the caller's default, which reaches the native call as a
-/// `float32` static widened the same way (`0x007504EE FLD float [0x008464B4];
-/// FSTP double [ESP]`).
+/// this function hands its caller carries 53 significant bits. An absent
+/// section or key keeps the caller's default (`0x00528525`, `0x00528588`),
+/// which reaches the native call as a `float32` static widened the same way
+/// (`0x007504EE FLD float [0x008464B4]; FSTP double [ESP]`).
+///
+/// The value parse itself is [`parse_read_double`], the crate's existing
+/// reproduction of that same `sscanf("%f")` grammar (sign, mantissa, exponent,
+/// `strtrim` at both ends, `%` anywhere scaling by the double 0.01). Only the
+/// case-insensitive key lookup is local: 11 stock sections spell the key
+/// `volume=`/`Vshift=` in lower case, and native's INI lookup is
+/// case-insensitive. Keeping a second parser here diverged from the shared one
+/// on exponents (`1e2` → 1.0 instead of 100.0), on a second `.`, and on
+/// Unicode-vs-byte trimming; no stock `Volume=`/`MinVolume=` value differs
+/// under either, but the duplicate was drift waiting to happen.
 fn read_double(section: &IniSection, key: &str, default: f32) -> f64 {
-    let Some(raw) = section.get_ignoring_case(key) else {
-        return f64::from(default);
-    };
-    let text = raw.trim_start();
-    let end = text
-        .char_indices()
-        .take_while(|(i, c)| {
-            c.is_ascii_digit() || *c == '.' || (*i == 0 && (*c == '-' || *c == '+'))
-        })
-        .map(|(i, c)| i + c.len_utf8())
-        .last()
-        .unwrap_or(0);
-    let Ok(parsed) = text[..end].parse::<f32>() else {
-        return f64::from(default);
-    };
-    if raw.contains('%') {
-        f64::from(parsed) * 0.01
-    } else {
-        f64::from(parsed)
-    }
+    section
+        .get_ignoring_case(key)
+        .map_or(f64::from(default), parse_read_double)
 }
 
 /// `0x007504EE..0x00750548`: the `ReadDouble` result times the *float* 0.01
@@ -554,9 +622,20 @@ fn apply_type_token(flags: &mut u32, token: &str) {
     *flags |= value;
 }
 
-/// `Delay=` / `FShift=` (`0x0075083C..0x00750886`, `0x008B5..0x008FF`): the
-/// first token through `atoi` is the minimum; the second, when present, is
+/// `Delay=` / `FShift=` (`0x0075083C..0x00750886`, `0x0075089E..0x007508FF`):
+/// the first token through `atoi` is the minimum; the second, when present, is
 /// the maximum, otherwise the minimum is reused. No token gives `(0, 0)`.
+///
+/// **Read the disassembly, not the decompiler, for these two tails.** Ghidra's
+/// pseudocode for both shows the first token's value being *overwritten* by the
+/// second — i.e. a single-value read — and it is wrong. The instructions are
+/// unambiguous: `0x00750853 XOR EBX,EBX` seeds the minimum, `0x00750866 MOV
+/// EBX,EAX` takes `atoi(token1)`, `0x00750872 MOV ECX,EBX` pre-loads the
+/// maximum with the minimum, `0x0075087F MOV ECX,EAX` replaces it with
+/// `atoi(token2)` only when a second token exists, and `0x00750881 PUSH ECX;
+/// 0x00750884 MOV EDX,EBX; CALL SetDelay @ 0x00406600` passes the pair to
+/// `+0x58/+0x5C`. `FShift=` is the same shape through `EDI` into `SetFShift @
+/// 0x00406610` (`+0x60/+0x64`). Do not "simplify" this against the decompiler.
 fn parse_int_pair(raw: Option<&str>) -> (i32, i32) {
     let Some(raw) = raw else {
         return (0, 0);
@@ -727,14 +806,38 @@ mod tests {
     /// The stock `[Defaults]` block, verbatim from `soundmd.ini`.
     const STOCK_DEFAULTS: &str = "[Defaults]\nMinVolume=50\nRange=10\nVolume=80\nLimit=5\nType= NORMAL SCREEN UNSHROUD\nPriority=NORMAL \n";
 
+    /// Native registers only what `[SoundList]` names, so every fixture needs
+    /// one. This builds it the way the stock file does — numbered entries whose
+    /// values are the sound ids, in source order — from the section headers in
+    /// `body`, skipping the meta-sections retail never lists.
+    fn with_sound_list(body: &str) -> IniFile {
+        let mut list = String::from("[SoundList]\n");
+        let mut index = 0;
+        for name in body
+            .lines()
+            .filter_map(|line| line.strip_prefix('['))
+            .filter_map(|line| line.split(']').next())
+        {
+            if ["Defaults", "SoundList", "General"]
+                .iter()
+                .any(|meta| meta.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
+            index += 1;
+            list.push_str(&format!("{index}={name}\n"));
+        }
+        IniFile::from_str(&format!("{list}{body}"))
+    }
+
     fn registry(body: &str) -> SoundRegistry {
-        SoundRegistry::from_ini(&IniFile::from_str(&format!("{STOCK_DEFAULTS}{body}")))
+        SoundRegistry::from_ini(&with_sound_list(&format!("{STOCK_DEFAULTS}{body}")))
     }
 
     #[test]
     fn test_parse_single_sound() {
         let ini: IniFile =
-            IniFile::from_str("[VGCannon1]\nSounds=vgcannon.wav\nVolume=80\nPriority=high\n");
+            with_sound_list("[VGCannon1]\nSounds=vgcannon.wav\nVolume=80\nPriority=high\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         assert_eq!(reg.len(), 1);
         let entry: &SoundEntry = reg.get("VGCannon1").expect("should find entry");
@@ -767,36 +870,43 @@ mod tests {
     #[test]
     fn sounds_split_on_native_whitespace_only() {
         let ini: IniFile =
-            IniFile::from_str("[E1Voice]\nSounds=e1sel01 e1sel02\te1sel03\nVolume=100\n");
+            with_sound_list("[E1Voice]\nSounds=e1sel01 e1sel02\te1sel03\nVolume=100\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("E1Voice").expect("should find entry");
         assert_eq!(entry.sounds, vec!["e1sel01", "e1sel02", "e1sel03"]);
-        let comma = SoundRegistry::from_ini(&IniFile::from_str("[X]\nSounds=a.wav,b.wav\n"));
+        let comma = SoundRegistry::from_ini(&with_sound_list("[X]\nSounds=a.wav,b.wav\n"));
         assert_eq!(comma.get("X").unwrap().sounds, vec!["a.wav,b.wav"]);
     }
 
     #[test]
     fn test_case_insensitive_lookup() {
-        let ini: IniFile = IniFile::from_str("[TestSound]\nSounds=test.wav\n");
+        let ini: IniFile = with_sound_list("[TestSound]\nSounds=test.wav\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         assert!(reg.get("testsound").is_some());
         assert!(reg.get("TESTSOUND").is_some());
     }
 
+    /// Registration comes from `[SoundList]`, not from the section headers:
+    /// `VocClass::ReadSoundListINI @ 0x007510D0` only ever visits the ids that
+    /// list names, so a section it does not name stays unregistered however
+    /// complete it looks. Stock `soundmd.ini` has one such section,
+    /// `[GuardianGiUnDeploy]`, and nothing in rules/art references it.
     #[test]
-    fn test_skip_general_section() {
-        let ini: IniFile =
-            IniFile::from_str("[General]\nSounds=nothing.wav\n[Real]\nSounds=real.wav\n");
+    fn only_soundlist_names_register_however_complete_the_section() {
+        let ini: IniFile = IniFile::from_str(
+            "[SoundList]\n1=Real\n[General]\nSounds=nothing.wav\n[Real]\nSounds=real.wav\n[GuardianGiUnDeploy]\nSounds=vgrdund\nVolume=70\n",
+        );
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         assert!(reg.get("General").is_none());
-        assert!(reg.get("Real").is_some());
+        assert!(reg.get("GuardianGiUnDeploy").is_none());
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.get("Real").unwrap().sounds, vec!["real.wav"]);
     }
 
     #[test]
     fn test_merge_fallback() {
-        let ini1: IniFile = IniFile::from_str("[SoundA]\nSounds=a.wav\n");
-        let ini2: IniFile =
-            IniFile::from_str("[SoundA]\nSounds=a_old.wav\n[SoundB]\nSounds=b.wav\n");
+        let ini1: IniFile = with_sound_list("[SoundA]\nSounds=a.wav\n");
+        let ini2: IniFile = with_sound_list("[SoundA]\nSounds=a_old.wav\n[SoundB]\nSounds=b.wav\n");
         let mut reg: SoundRegistry = SoundRegistry::from_ini(&ini1);
         reg.merge_fallback(&ini2);
         // SoundA should keep ini1 version (YR precedence)
@@ -809,7 +919,7 @@ mod tests {
     /// Volume 80, MinVolume 20, Type SCREEN, Limit 5, Range 10, Control 0.
     #[test]
     fn static_defaults_match_the_binary_initialisers() {
-        let ini: IniFile = IniFile::from_str("[MinimalSound]\nSounds=min.wav\n");
+        let ini: IniFile = with_sound_list("[MinimalSound]\nSounds=min.wav\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("MinimalSound").unwrap();
         assert_eq!(entry.volume, 80);
@@ -955,6 +1065,11 @@ mod tests {
         assert_eq!(half.volume_linear, 8273); // ftol(0.505 * 16384)
         assert_eq!(half.min_volume, 0.25);
         assert_eq!(reg.get("Lower").unwrap().volume, 60);
+        // `sscanf("%f")` accepts an exponent, and the shared
+        // `ini_value::parse_read_double` reproduces it — the private copy this
+        // reader used to carry did not, and read `1e2` as 1.
+        let exponent = registry("[Exp]\nSounds=e\nVolume=1e2\n");
+        assert_eq!(exponent.get("Exp").unwrap().volume_linear, VOLUME_SCALE - 1);
     }
 
     /// The four stock `Volume=` values whose exact `Volume * 0.01f * 16384`
@@ -975,13 +1090,12 @@ mod tests {
     }
 
     /// Native registers a `[SoundList]` name whose `Sounds=` yields no usable
-    /// tokens as a zero-sample `VocClass` (`VocClass::ReadINI @ 0x00750440`
-    /// reads `Sounds=` with an empty default and `AddSample @ 0x004064A0`
-    /// stores nothing for a name that strips to nothing), so the id must still
-    /// resolve here — dropping it would let VERA's audio-bag fallback play a
-    /// file gamemd never would. A bare `Sounds=` cannot reach this: the INI
-    /// parser discards an empty value outright, so `Sounds=$` is the shortest
-    /// live trigger.
+    /// tokens as a zero-sample event (`VocClass::ReadINI @ 0x00750440` reads
+    /// `Sounds=` with the empty-string default at `0x0075049D` and
+    /// `AddSample @ 0x004064A0` stores nothing), so the id must still resolve
+    /// here — dropping it lets VERA's audio-bag fallback play a file gamemd
+    /// never starts, because `SoundEvent::UpdateState @ 0x004055C0` state 0
+    /// abandons an event with a zero sample count at `0x0040563C`.
     ///
     /// `Range=` is stored as a full int by `AudioEventClass::SetRange @
     /// 0x004065E0` (`MOV [ECX+0x50], EDX`) — no clamp, either end.
@@ -996,6 +1110,97 @@ mod tests {
         assert_eq!(reg.get("Named").unwrap().range, -4);
     }
 
+    /// The eight stock `soundmd.ini` sections that write no usable `Sounds=`,
+    /// in their retail shapes: six omit the key outright and two write only a
+    /// comment, which the INI parser truncates away. All eight are named in
+    /// `[SoundList]`, so all eight must register as silent entries.
+    ///
+    /// This is the case that matters in production: `Dummy.wav` really is in
+    /// `audiomd.mix` (1180 bytes, RIFF), and `rulesmd.ini` routes `Dummy`
+    /// through `[AudioVisual] Construction=`, `GateUp=` and `GateDown=`. If the
+    /// id did not resolve here, VERA's bag/MIX fallback would play that buffer
+    /// on every building start and gate cycle while gamemd stays silent.
+    #[test]
+    fn stock_sections_without_a_usable_sample_list_still_register_silently() {
+        let reg = registry(concat!(
+            "[Dummy]\nPriority=lowest\nVolume=0\n",
+            "[DolphinFear]\nVolume=100\nControl=random\n",
+            "[OspreyCollision]\nVolume=100\n",
+            "[SquidFear]\nVolume=100\n",
+            "[SubFear]\nVolume=100\n",
+            "[RobotTankPowerDown]\nVolume=100\n",
+            "[CampfireLoop]\nSounds= ;gcamlo1a gcamlo1b gcamlo1c\nControl=loop\n",
+            "[PropagandaTruck]\nSounds= ;GEF Removed because they won't be in AudioMD ;$aprotr1\nControl=loop\n",
+        ));
+        for id in [
+            "Dummy",
+            "CampfireLoop",
+            "PropagandaTruck",
+            "DolphinFear",
+            "OspreyCollision",
+            "SquidFear",
+            "SubFear",
+            "RobotTankPowerDown",
+        ] {
+            let entry = reg
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} is a [SoundList] name and must register"));
+            assert!(
+                entry.sounds.is_empty(),
+                "{id} must carry no samples, got {:?}",
+                entry.sounds
+            );
+        }
+        assert_eq!(reg.len(), 8);
+    }
+
+    /// A `[SoundList]` name with no section at all. `ReadINI` returns at
+    /// `0x00750476` without reading a key, so the entry keeps what
+    /// `AudioEventClass::FindOrCreate @ 0x004063B0` wrote: Priority 2, Limit 3
+    /// (not `[Defaults]`' 5), Range 10, MinVolume 0.2f, Type SCREEN, and no
+    /// samples. Stock hits this through the decorative
+    /// `============ Mission Disk sounds ============` list entry.
+    #[test]
+    fn listed_name_without_a_section_keeps_the_constructor_state() {
+        let ini = IniFile::from_str(&format!(
+            "{STOCK_DEFAULTS}[SoundList]\n1============= Mission Disk sounds ============\n2=Ghost\n"
+        ));
+        let reg = SoundRegistry::from_ini(&ini);
+        let ghost = reg.get("Ghost").expect("a listed id registers regardless");
+        assert!(ghost.sounds.is_empty());
+        assert_eq!(ghost.priority, 2);
+        assert_eq!(ghost.limit, 3);
+        assert_eq!(ghost.range, 10);
+        assert_eq!(ghost.min_volume, 0.2);
+        assert_eq!(ghost.type_flags, sound_type::SCREEN);
+        assert_eq!(ghost.volume_linear, 0);
+        // `[Defaults]` still applies to entries that do have a section.
+        assert_eq!(reg.defaults().limit, 5);
+    }
+
+    /// A twice-listed id: the dedupe scan at `0x007512F4` hands the existing
+    /// event back to `ReadINI`, and `AddSample` appends, so the sample list
+    /// arrives twice. Stock lists `KirovVoiceDie` twice in both sound files.
+    #[test]
+    fn a_twice_listed_id_reads_its_section_twice_and_appends_samples() {
+        let ini = IniFile::from_str(
+            "[SoundList]\n1=KirovVoiceDie\n2=KirovVoiceDie\n[KirovVoiceDie]\nSounds= $vkirdia $vkirdib $vkirdic $vkirdid\nControl= random\nPriority=low\nVolume=70\n",
+        );
+        let reg = SoundRegistry::from_ini(&ini);
+        assert_eq!(reg.len(), 1);
+        let entry = reg.get("KirovVoiceDie").unwrap();
+        assert_eq!(
+            entry.sounds,
+            vec![
+                "vkirdia", "vkirdib", "vkirdic", "vkirdid", "vkirdia", "vkirdib", "vkirdic",
+                "vkirdid"
+            ]
+        );
+        // The scalars are simply re-read, not accumulated.
+        assert_eq!(entry.priority, 1);
+        assert_eq!(entry.control, control::RANDOM);
+    }
+
     /// 33 samples: the native slot table holds 32.
     #[test]
     fn sample_list_is_capped_at_the_native_slot_count() {
@@ -1003,14 +1208,13 @@ mod tests {
             .map(|i| format!("s{i}"))
             .collect::<Vec<_>>()
             .join(" ");
-        let reg = SoundRegistry::from_ini(&IniFile::from_str(&format!("[Many]\nSounds={list}\n")));
+        let reg = SoundRegistry::from_ini(&with_sound_list(&format!("[Many]\nSounds={list}\n")));
         assert_eq!(reg.get("Many").unwrap().sounds.len(), MAX_SAMPLES);
     }
 
     #[test]
     fn test_whitespace_separated() {
-        let ini: IniFile =
-            IniFile::from_str("[GISelect]\nSounds= igisea igiseb igisec\nVolume=85\n");
+        let ini: IniFile = with_sound_list("[GISelect]\nSounds= igisea igiseb igisec\nVolume=85\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("GISelect").expect("should find entry");
         assert_eq!(entry.sounds, vec!["igisea", "igiseb", "igisec"]);
@@ -1020,7 +1224,7 @@ mod tests {
     #[test]
     fn test_strip_dollar_prefix() {
         let ini: IniFile =
-            IniFile::from_str("[VoiceTest]\nSounds= $igisea $igiseb $igisec\nVolume=85\n");
+            with_sound_list("[VoiceTest]\nSounds= $igisea $igiseb $igisec\nVolume=85\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("VoiceTest").expect("should find entry");
         assert_eq!(entry.sounds, vec!["igisea", "igiseb", "igisec"]);
@@ -1028,7 +1232,7 @@ mod tests {
 
     #[test]
     fn test_strip_hash_prefix() {
-        let ini: IniFile = IniFile::from_str("[HashTest]\nSounds= #sound1 #$sound2\n");
+        let ini: IniFile = with_sound_list("[HashTest]\nSounds= #sound1 #$sound2\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("HashTest").expect("should find entry");
         assert_eq!(entry.sounds, vec!["sound1", "sound2"]);
@@ -1036,8 +1240,7 @@ mod tests {
 
     #[test]
     fn test_inline_comment_filtered() {
-        let ini: IniFile =
-            IniFile::from_str("[CommentTest]\nSounds= irocdiea ;$irocdib $irocdic\n");
+        let ini: IniFile = with_sound_list("[CommentTest]\nSounds= irocdiea ;$irocdib $irocdic\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("CommentTest").expect("should find entry");
         assert_eq!(entry.sounds, vec!["irocdiea"]);
