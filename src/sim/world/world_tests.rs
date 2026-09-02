@@ -7527,6 +7527,11 @@ fn combat_death_not_repaired_then_freed_at_end_of_tick() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     let mut atk = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+    // The fixture `MTNK` authors no `Turret=`, so the native body gate
+    // (`UnitClass::GetFireError @ 0x00740FD0` step 17) compares its HULL
+    // `+0x388`. Face it east at the building so the death/drain ordering under
+    // test happens on the first tick instead of after a turn-to-fire.
+    atk.facing = 64;
     atk.health = Health {
         current: 300,
         max: 300,

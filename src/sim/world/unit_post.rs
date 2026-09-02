@@ -46,29 +46,70 @@ use crate::sim::intern::StringInterner;
 /// skips Units.
 pub(crate) const L2_UNIT_POST_AUTHORITATIVE: bool = true;
 
-/// Apply precomputed Unit barrel destinations (the write half of the post-Foot
+/// Apply the precomputed Unit Facing slot (the write half of the post-Foot
 /// Facing slot). `FacingClass::set` is pure in `(state, binary_frame)` and no
-/// system writes Unit barrels between the combat Phase-2 read window and this
+/// system writes Unit facings between the combat Phase-2 read window and this
 /// site, so the apply point within Phase 5 does not affect the resulting
 /// state. Idempotent — `set` is a no-op when the destination already matches.
 /// ROT byte refreshed from rules each apply, same as the legacy sweep.
+///
+/// Three writes land here, in native order:
+/// 1. the turret destination from `UnitClass::Facing_Update @ 0x00736990`
+///    (`None` = native calls no `Set`, so the turret holds its aim);
+/// 2. the hull destination from `UnitClass::Fire_At_Target @ 0x00736DF0` case 2
+///    (`FacingClass::Set(+0x388)` at `0x00737004`, then the hull's raw
+///    destination copied into the turret slot at `0x0073701C` — `FUN_004C9470`
+///    returns the DESTINATION dword, not the animated value);
+/// 3. the `+0x6AF` rotation latch (`0x00736AD5`/`0x00736B16`), read next tick by
+///    `UnitClass::GetFireError @ 0x00741233`.
+///
+/// It then mirrors the animated hull back into `entity.facing`, which is VERA's
+/// authoritative 8-bit heading. gamemd has no such byte — `+0x388` IS the
+/// heading — so the mirror is what keeps rendering, movement and the fire gate
+/// on the same value. Units the movement tick owns (`movement_target` set) are
+/// skipped: that path already mirrors, and clearing its interpolator here would
+/// fight it.
 pub(crate) fn apply_unit_facing(
     entities: &mut EntityStore,
-    updates: &[(u64, u16)],
+    updates: &[crate::sim::combat::UnitFacingUpdate],
     rules: &RuleSet,
     interner: &StringInterner,
     binary_frame: u32,
 ) {
-    for &(id, desired) in updates {
+    for update in updates {
+        let id = update.entity_id;
         let rot_byte: u8 = rules
             .object(interner.resolve(entities.get(id).map(|e| e.type_ref).unwrap_or_default()))
             .map(|obj| obj.turret_rot.clamp(0, 0xFF) as u8)
             .unwrap_or(5);
-        if let Some(entity) = entities.get_mut(id) {
+        let Some(entity) = entities.get_mut(id) else {
+            continue;
+        };
+        entity.turret_rotation_latch = update.latch;
+        if let Some(desired) = update.hull_destination {
+            let hull = entity.body_facing.get_or_insert_with(|| {
+                crate::sim::movement::FacingClass::new(u16::from(entity.facing) << 8, rot_byte)
+            });
+            hull.set_rot(rot_byte);
+            hull.set(desired, binary_frame);
+            let raw_destination = hull.destination();
             if let Some(ref mut barrel) = entity.barrel_facing {
                 barrel.set_rot(rot_byte);
-                barrel.set(desired, binary_frame);
+                barrel.set(raw_destination, binary_frame);
             }
+        }
+        if let Some(desired) = update.turret_destination
+            && let Some(ref mut barrel) = entity.barrel_facing
+        {
+            barrel.set_rot(rot_byte);
+            barrel.set(desired, binary_frame);
+        }
+        // Mirror the animated hull into the 8-bit heading. The movement tick
+        // owns that mirror while a path is live.
+        if entity.movement_target.is_none()
+            && let Some(ref hull) = entity.body_facing
+        {
+            entity.facing = (hull.current(binary_frame) >> 8) as u8;
         }
     }
 }

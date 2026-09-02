@@ -123,7 +123,53 @@ const REVEAL_ON_FIRE_RADIUS: u16 = 3;
 /// `0x007412C9`/`0x007412CC` and compared at `0x007412ED`/`0x007412EF`.
 const NATIVE_FIRE_FACING_TOLERANCE: i32 = 0x0800;
 
+/// The widened slack a HOMING weapon gets — 1/16 of a turn. Native builds the
+/// tolerance byte from the PROJECTILE's `ROT=` (`WeaponType+0xA0` →
+/// `BulletTypeClass+0x2DC`, read at `0x007412BC`) with
+/// `NEG`/`SBB`/`AND 8`/`ADD 8` at `0x007412C3`..`0x007412CC`: 8 when that ROT is
+/// zero, 0x10 when it is not, then `MOV CH,BL` shifts it into the high byte.
+const NATIVE_FIRE_FACING_TOLERANCE_HOMING: i32 = 0x1000;
+
+/// A voxel-turret BUILDING must match its target facing EXACTLY.
+/// `BuildingClass::GetFireError @ 0x00447F10` builds the same tolerance byte
+/// from `BuildingTypeClass+0x16C5` (`TurretAnimIsVoxel=`, read at `0x00448010`)
+/// but with `AND -8`, giving 0 for a voxel turret and 8 for an SHP one.
+const NATIVE_FIRE_FACING_TOLERANCE_VOXEL_TURRET: i32 = 0x0000;
+
 const ANIM_LIST_DAMAGE_STEP: u16 = 25;
+
+/// One Unit's post-Foot Facing slot output for this tick — the write half of
+/// `UnitClass::Facing_Update @ 0x00736990` plus the `Fire_At_Target @
+/// 0x00736DF0` case-2 hull turn, carried from the combat read window to
+/// `unit_post::apply_unit_facing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitFacingUpdate {
+    pub entity_id: u64,
+    /// Turret (`+0x3A0`) destination. `None` means native calls no `Set` on the
+    /// turret this frame — the difference between holding an aim and swinging
+    /// back to the hull.
+    pub turret_destination: Option<u16>,
+    /// Hull (`+0x388`) destination. Set by `Fire_At_Target` case 2 when a
+    /// TURRETLESS vehicle is refused for facing while stationary, and by the
+    /// `Facing_Update` arm-A mid-arc pin.
+    pub hull_destination: Option<u16>,
+    /// New value of the `+0x6AF` rotation latch.
+    pub latch: bool,
+}
+
+impl UnitFacingUpdate {
+    fn from_facing_update(
+        entity_id: u64,
+        update: crate::sim::movement::turret::FacingUpdate,
+    ) -> Self {
+        Self {
+            entity_id,
+            turret_destination: update.turret_destination,
+            hull_destination: update.hull_destination,
+            latch: update.latch,
+        }
+    }
+}
 
 /// Explicitly classified delivery decision at weapon fire.
 ///
@@ -831,10 +877,15 @@ pub fn issue_attack_command(
     };
 
     // Read attacker position before mutable borrow (needed for body-facing delta).
-    let attacker_pos = entities
-        .get(attacker_id)
-        .map(|a| (a.position.rx, a.position.ry, a.barrel_facing.is_some()));
-    let (arx, ary, has_turret) = match attacker_pos {
+    let attacker_pos = entities.get(attacker_id).map(|a| {
+        (
+            a.position.rx,
+            a.position.ry,
+            a.barrel_facing.is_some(),
+            a.category,
+        )
+    });
+    let (arx, ary, has_turret, category) = match attacker_pos {
         Some(p) => p,
         None => return false,
     };
@@ -845,11 +896,24 @@ pub fn issue_attack_command(
         None => return false,
     };
 
-    // Body-only: instantly face the target. For turreted units, the turret
-    // rotates over multiple ticks — driven by tick_turret_rotation reading
-    // attack_target — so we set NO facing here. This matches gamemd: command
-    // handlers set the target; Facing_Update drives the rotation.
-    if !has_turret {
+    // gamemd-derived: a target assignment writes the target pointer and nothing
+    // else — no facing. A TURRETLESS VEHICLE therefore gets no instant snap
+    // here: `UnitClass::Fire_At_Target @ 0x00736DF0` case 2 turns its hull at
+    // `ROT=` (`FacingClass::Set(+0x388)` at `0x00737004`) only once the fire
+    // gate refuses the shot for facing, and only while it is stationary.
+    //
+    // RESIDUAL (GSI-08.04) — infantry (and the aircraft/structure fallthrough)
+    // keep the order-time snap. Native snaps infantry `+0x388` with
+    // `FacingClass::UpdateFacing` at `0x0052091F`, inside
+    // `InfantryClass::Fire_At_Target @ 0x005206B0`, at the moment the FIRE
+    // sequence starts — not at order time, and with no angle gate either way.
+    // - Trigger: ordering any infantryman to attack.
+    // - Player effect: he turns to face while still walking in, instead of
+    //   snapping round as he opens fire.
+    // - Frequency: every infantry attack order.
+    // - Downstream risk: none to the fire decision — infantry are not
+    //   angle-gated at all — but the rendered approach facing differs.
+    if !has_turret && category != EntityCategory::Unit {
         let dx: i32 = trx as i32 - arx as i32;
         let dy: i32 = try_ as i32 - ary as i32;
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
@@ -941,9 +1005,10 @@ pub fn issue_attack_cell_command(
             a.position.ry,
             a.barrel_facing.is_some(),
             has_weapon,
+            a.category,
         )
     });
-    let (arx, ary, has_turret, has_weapon) = match attacker_info {
+    let (arx, ary, has_turret, has_weapon, category) = match attacker_info {
         Some(info) => info,
         None => return false,
     };
@@ -967,7 +1032,9 @@ pub fn issue_attack_cell_command(
         None => return false,
     };
 
-    if !has_turret {
+    // See `issue_attack_command` — a turretless VEHICLE turns through
+    // `Fire_At_Target` case 2, not at order time.
+    if !has_turret && category != EntityCategory::Unit {
         let dx: i32 = trx as i32 - arx as i32;
         let dy: i32 = try_ as i32 - ary as i32;
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
@@ -1312,12 +1379,13 @@ pub struct CombatTickResult {
     /// Hookless-test adapter for smudge requests. Empty on the production world
     /// path because each producer commits before returning.
     pub smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
-    /// (unit_id, desired 16-bit barrel destination) — captured at Phase-2
-    /// entry before current-frame attacker damage; that Unit's own explicit
-    /// retarget/remove may replace it. Applied post-batch by
+    /// Per-Unit post-Foot Facing slot output — captured at Phase-2 entry before
+    /// current-frame attacker damage; that Unit's own explicit retarget/remove
+    /// may replace it, and its `Fire_At_Target` case-2 hull turn is appended
+    /// during the fire pass. Applied post-batch by
     /// `unit_post::apply_unit_facing`. Transient — never stored, serialized, or
     /// hashed.
-    pub unit_facing: Vec<(u64, u16)>,
+    pub unit_facing: Vec<UnitFacingUpdate>,
     /// Base-structure / harvester enemy-damage pings produced at the damage
     /// apply site. Drained by the world into BaseUnderAttack/MinerUnderAttack
     /// radar events + the local player's EVA dispatch.
@@ -4032,11 +4100,10 @@ pub(crate) struct CombatEmit {
     /// Native `CurrentWeaponNumber` writes emitted by live weapon selection.
     /// The per-attacker host commits these before that attack's receivers run.
     pub(crate) current_weapon_updates: Vec<(u64, u8, InternedId)>,
-    /// (unit_id, desired 16-bit barrel destination) — captured at Phase-2
-    /// entry before current-frame attacker damage; that Unit's own explicit
-    /// retarget/remove may replace it. Applied post-batch by
-    /// `unit_post::apply_unit_facing`.
-    pub(crate) unit_facing: Vec<(u64, u16)>,
+    /// Per-Unit post-Foot Facing slot output — captured at Phase-2 entry before
+    /// current-frame attacker damage; that Unit's own explicit retarget/remove
+    /// may replace it. Applied post-batch by `unit_post::apply_unit_facing`.
+    pub(crate) unit_facing: Vec<UnitFacingUpdate>,
     /// (parent_id, target) — a `Spawner=yes` weapon reached its fire point.
     /// gamemd's `Fire_At` hands the target to the parent's `SpawnManager` and
     /// returns NULL, so no bullet, damage or rearm follows.
@@ -5619,16 +5686,22 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     // but that approximation must not make this frame's barrel destination
     // observe a target loss native Facing_Update cannot yet see.
     for snap in &snapshots {
-        let Some(entity) = entities.get(snap.stable_id).filter(|entity| {
-            entity.category == EntityCategory::Unit && entity.barrel_facing.is_some()
-        }) else {
-            continue;
-        };
-        let Some(desired) = crate::sim::movement::turret::desired_turret_facing(entity, entities)
+        let Some(entity) = entities
+            .get(snap.stable_id)
+            .filter(|entity| entity.category == EntityCategory::Unit)
         else {
             continue;
         };
-        emit.unit_facing.push((snap.stable_id, desired));
+        emit.unit_facing.push(UnitFacingUpdate::from_facing_update(
+            snap.stable_id,
+            crate::sim::movement::turret::facing_update(
+                entity,
+                entities,
+                Some(rules),
+                interner,
+                binary_frame,
+            ),
+        ));
     }
 
     // Phase 2: per-attacker fire decision + emission, in live-LOGIC snapshot
@@ -5791,19 +5864,16 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             .map(|&(_, tid)| tid);
         let own_removed = emit.remove_attack[n_remove..].contains(&snap.stable_id);
         let replacement: Option<u16> = if let Some(tid) = own_retarget {
-            Some(match entities.get(tid) {
-                Some(t) => crate::sim::movement::turret::facing_toward_lepton(
-                    e.position.rx,
-                    e.position.ry,
-                    e.position.sub_x,
-                    e.position.sub_y,
-                    t.position.rx,
-                    t.position.ry,
-                    t.position.sub_x,
-                    t.position.sub_y,
-                ),
-                None => crate::sim::movement::turret::body_facing_to_turret(e.facing),
-            })
+            Some(
+                crate::sim::movement::turret::facing_toward_target(
+                    e,
+                    &TargetKind::Entity(tid),
+                    entities,
+                    Some(rules),
+                    interner,
+                )
+                .unwrap_or_else(|| crate::sim::movement::turret::body_facing_to_turret(e.facing)),
+            )
         } else if own_removed {
             Some(crate::sim::movement::turret::body_facing_to_turret(
                 e.facing,
@@ -5812,12 +5882,12 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             None
         };
         if let Some(replacement) = replacement {
-            let (_, desired) = emit
+            let update = emit
                 .unit_facing
                 .iter_mut()
-                .find(|(id, _)| *id == snap.stable_id)
-                .expect("turreted Unit attacker was seeded before fire");
-            *desired = replacement;
+                .find(|u| u.entity_id == snap.stable_id)
+                .expect("Unit attacker was seeded before fire");
+            update.turret_destination = Some(replacement);
         }
     }
     // S3 residual: every Unit not in the attacker snapshot set (target-less,
@@ -5825,7 +5895,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     // all attack ReceiveDamage/death-helper calls, so its target read observes
     // the same live state the next native object window would expose.
     {
-        let mut computed: Vec<u64> = emit.unit_facing.iter().map(|&(id, _)| id).collect();
+        let mut computed: Vec<u64> = emit.unit_facing.iter().map(|u| u.entity_id).collect();
         computed.sort_unstable();
         for &id in &keys {
             if fire_suppressed.contains(&id) {
@@ -5838,11 +5908,16 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             if e.category != EntityCategory::Unit {
                 continue;
             }
-            let Some(desired) = crate::sim::movement::turret::desired_turret_facing(e, entities)
-            else {
-                continue;
-            };
-            emit.unit_facing.push((id, desired));
+            emit.unit_facing.push(UnitFacingUpdate::from_facing_update(
+                id,
+                crate::sim::movement::turret::facing_update(
+                    e,
+                    entities,
+                    Some(rules),
+                    interner,
+                    binary_frame,
+                ),
+            ));
         }
     }
     // Every projectile, missile, and live-order attack damage event emitted so
@@ -5918,6 +5993,14 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     }
     for &(attacker_id, burst_rem, burst_delay, rof_cd) in &burst_updates {
         if let Some(entity) = entities.get_mut(attacker_id) {
+            // gamemd-derived: `TechnoClass::Fire_At @ 0x006FF743` stores
+            // `g_CurrentFrameCounter` into `+0x120` once the shot is committed.
+            // With the constructor at `0x006F2B9C` that is the ONLY writer of
+            // that field on a TechnoClass in the image, which is what makes
+            // `UnitClass::Facing_Update`'s idle dwell a since-my-last-shot
+            // timer rather than a since-target-loss one. `burst_updates` carries
+            // exactly one entry per committed shot, so this is that store.
+            entity.last_fire_frame = i64::from(binary_frame);
             if let Some(ref mut attack) = entity.attack_target {
                 attack.burst_remaining = burst_rem;
                 attack.burst_delay_ticks = burst_delay;
@@ -6182,6 +6265,7 @@ pub(crate) fn build_attacker_snapshot(
         pending_infantry_fire,
         pending_building_fire,
         barrel_facing: entity.barrel_facing,
+        hull_facing: entity.body_facing,
         burst_remaining,
         burst_delay_ticks,
         weapon_override: entity.weapon_override,
@@ -6922,8 +7006,43 @@ pub(crate) fn resolve_attacker_fire(
         }
     }
 
-    // Turret alignment check (FacingClass: destination match + not rotating).
-    if let Some(ref barrel) = snap.barrel_facing {
+    // ---- Facing arm of the fire gate ------------------------------------
+    //
+    // gamemd-derived: `UnitClass::GetFireError @ 0x00740FD0` step 17
+    // (`0x00741288`..`0x007412EF`, read this session by `disassemble_bytes`;
+    // Ghidra has no function boundary there) and its structure twin
+    // `BuildingClass::GetFireError @ 0x00447F10` (`0x00447FE1`..`0x00448045`).
+    //
+    // Native picks the facing to test by `Turret=` (`TechnoType+0xCA1`), NOT by
+    // whether a turret interpolator exists: `Turret=yes` compares the turret
+    // `+0x3A0`, `Turret=no` compares the HULL `+0x388`. Both use the same
+    // tolerance, both take the 16-bit signed difference against
+    // `DirectionToTarget`, and the `JGE` at `0x007412EF` skips the error return
+    // — so `|delta| == tol` passes and `tol + 1` fails. There is no
+    // not-rotating term.
+    //
+    // Infantry are NOT angle-gated: `InfantryClass::Fire_At_Target @
+    // 0x005206B0` snaps `+0x388` with `UpdateFacing` at `0x0052091F` the moment
+    // firing becomes possible and applies no test. A turretless STRUCTURE gets
+    // no gate either (`0x00447FE3` requires `HasTurret`, vtable `+0x3FC`).
+    //
+    // RESIDUAL (GSI-08.04) — an AIRCRAFT is gated only when it carries a turret.
+    // `AircraftClass::GetFireError @ 0x0041A9E0` reads `+0x3A0` unconditionally
+    // at `0x0041AA22`, but behind an embedded-interface predicate
+    // (`AircraftClass+0x6C0`, slot `+0x1C`) whose identity is UNCHECKED and
+    // whose `+0x3A0` writers were not decoded. Trigger: any aircraft attack.
+    // Player effect: unknown; no stock aircraft sets `Turret=`, so no stock
+    // entity has an interpolator to test and the arm is unreachable today.
+    // Frequency: zero in stock. Downstream risk: none until the writers land.
+    let facing_gate_applies = match snap.category {
+        EntityCategory::Unit => true,
+        // `0x00447FE3` requires `HasTurret` (vtable `+0x3FC`) before the
+        // building facing test — a turretless structure is never angle-gated.
+        EntityCategory::Structure | EntityCategory::Aircraft => snap.barrel_facing.is_some(),
+        // Infantry are gated by their FIRE sequence, never by angle.
+        EntityCategory::Infantry => false,
+    };
+    if facing_gate_applies && !weapon.omni_fire {
         let desired: u16 = crate::sim::movement::turret::facing_toward_lepton(
             snap.pos_rx,
             snap.pos_ry,
@@ -6934,53 +7053,56 @@ pub(crate) fn resolve_attacker_fire(
             target_sub_x,
             target_sub_y,
         );
-        // gamemd-derived: the turret alignment arm of the fire gate —
-        // `UnitClass::GetFireError @ 0x00740FD0`, tolerance built at
-        // `0x007412C3`..`0x007412CC` and compared at
-        // `0x007412D4`..`0x007412EF`. Native does NOT require an exact match
-        // and has no not-rotating term: it takes the 16-bit signed difference
-        // between the animated facing and the desired one, and fires whenever
-        // `|delta| <= tolerance`. The `JGE` skips the error return, so `0x0800`
-        // itself passes and `0x0801` fails. `AircraftClass::GetFireError @
-        // 0x0041A9E0` hardcodes the same `0x800`.
-        //
-        // DRIFT (GSI-08.03) — the wider arm is not modelled. Native widens the
-        // tolerance to `0x1000` when `[type+0x2DC]` is set
-        // (`NEG`/`SBB`/`AND 8`/`ADD 8` at `0x007412C3`), and
-        // `BuildingClass::GetFireError @ 0x00447F10` narrows it to `0x0000`
-        // when its own flag is set. Both flags are UNCHECKED, so only the
-        // common `0x0800` constant is implemented.
-        // - Trigger: firing a weapon whose type sets `+0x2DC`.
-        // - Player effect: that weapon holds fire through an arc native would
-        //   already shoot through — at most one extra 1/32-turn of swing.
-        // - Frequency: unknown until `+0x2DC` is identified; bounded by however
-        //   many weapon types set it.
-        // - Downstream risk: none structural; the constant becomes a lookup.
-        // RESIDUAL (GSI-08.04) — this gate exists only for entities that have a
-        // `barrel_facing`, and native gates one more class of firer.
-        // `UnitClass::GetFireError @ 0x00740FD0` tests a TURRETLESS vehicle on
-        // its body facing (`this+0x388`) with the same 0x0800 tolerance, and
-        // `BuildingClass::GetFireError @ 0x00447F10` gates a turreted structure
-        // the same way. Infantry are NOT angle-gated at all — they are gated by
-        // their FIRE animation sequence in `InfantryClass::Fire_At_Target @
-        // 0x005206B0` — so VERA's lack of an angle test for them is correct,
-        // and a turretless STRUCTURE gets no gate in native either.
-        // - Trigger: any turretless vehicle acquiring a target off its heading.
-        // - Player effect: no turn-to-fire delay — an artillery piece fires the
-        //   frame it acquires instead of after swinging round, so first shots
-        //   land early and the unit never visibly lines up.
-        // - Frequency: continuous for the artillery/V3/Dreadnought family; the
-        //   infantry half of pass 1's claim was wrong, which removes most of the
-        //   volume it attributed here.
-        // - Downstream risk: the gate cannot land alone. On failure native
-        //   returns code 2 and `UnitClass::Fire_At_Target @ 0x00736DF0` commands
-        //   the body toward the target without consuming cooldown; VERA emits a
-        //   facing destination only for turreted units, so gating a turretless
-        //   attacker today would freeze it — it would never turn and never fire.
-        //   The emitter comes first, then the gate, and both move engagement
-        //   outcomes and the pinned replay hash.
-        let delta = i32::from(barrel.current(binary_frame).wrapping_sub(desired) as i16);
-        let aligned = delta.abs() <= NATIVE_FIRE_FACING_TOLERANCE;
+        // `Turret=yes` reads the turret, `Turret=no` reads the hull. VERA gives
+        // a turret interpolator to exactly the `Turret=yes` types, so its
+        // presence is the same predicate.
+        let current: u16 = match snap.barrel_facing {
+            Some(ref barrel) => barrel.current(binary_frame),
+            None => match snap.hull_facing {
+                Some(ref hull) => hull.current(binary_frame),
+                None => crate::sim::movement::turret::body_facing_to_turret(snap.facing),
+            },
+        };
+        // A BUILDING narrows to an exact match when its turret art is a voxel
+        // (`BuildingTypeClass+0x16C5`); everything else widens to 1/16 of a turn
+        // when the PROJECTILE homes (`BulletTypeClass+0x2DC != 0`).
+        let is_voxel_turret_building =
+            snap.category == EntityCategory::Structure && obj.turret_anim_is_voxel;
+        let tolerance: i32 = if is_voxel_turret_building {
+            NATIVE_FIRE_FACING_TOLERANCE_VOXEL_TURRET
+        } else if weapon
+            .projectile
+            .as_deref()
+            .and_then(|id| rules.projectile(id))
+            .is_some_and(|projectile| projectile.rot != 0)
+        {
+            NATIVE_FIRE_FACING_TOLERANCE_HOMING
+        } else {
+            NATIVE_FIRE_FACING_TOLERANCE
+        };
+        let delta = i32::from(current.wrapping_sub(desired) as i16);
+        let mut aligned = delta.abs() <= tolerance;
+
+        // `BuildingClass::Mission_Attack @ 0x0044ACF0` gives a voxel turret a
+        // second chance in the SAME visit: when the miss is within one `ROT=`
+        // step (`0x0044B068`..`0x0044B0A4`, or unconditionally when
+        // `BuildingType+0x71C` is zero) it snaps `+0x388` with `UpdateFacing`
+        // at `0x0044B0AC` and re-runs `GetFireError`. That is why a Grand
+        // Cannon at `ROT=1` fires on the tick it comes within one step instead
+        // of waiting a further frame.
+        if !aligned && is_voxel_turret_building {
+            let rot_step: i32 = i32::from(obj.turret_rot.clamp(0, 0x7F) as u8) << 8;
+            if obj.turret_rot == 0 || delta.abs() <= rot_step {
+                if let Some(barrel) = entities
+                    .get_mut(snap.stable_id)
+                    .and_then(|entity| entity.barrel_facing.as_mut())
+                {
+                    barrel.snap(desired, binary_frame);
+                }
+                aligned = true;
+            }
+        }
+
         if !aligned {
             if pending_at_fire_frame {
                 out.pending_infantry_updates.push((snap.stable_id, None));
@@ -6988,6 +7110,24 @@ pub(crate) fn resolve_attacker_fire(
                     snap.stable_id,
                     infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
                 ));
+            }
+            // `UnitClass::Fire_At_Target @ 0x00736DF0` case 2
+            // (`0x00736FB6`..`0x0073701C`): a TURRETLESS vehicle that is
+            // stationary with no destination turns its HULL toward the target at
+            // its own `ROT=` — `FacingClass::Set(+0x388)` at `0x00737004`, with
+            // no locomotor involvement — and copies the hull's raw destination
+            // into the turret slot at `0x0073701C`. A moving one does not turn
+            // at all. This is the emitter the gate above depends on: without it
+            // an artillery piece would be refused every frame and never line up.
+            if snap.category == EntityCategory::Unit
+                && snap.barrel_facing.is_none()
+                && !snap.has_movement
+                && let Some(update) = out
+                    .unit_facing
+                    .iter_mut()
+                    .find(|u| u.entity_id == snap.stable_id)
+            {
+                update.hull_destination = Some(desired);
             }
             // FireDecision::Facing — drives gattling spin-up via
             // drives_gattling_spinup() == true.
@@ -7951,7 +8091,13 @@ mod impact_height_tests {
         let mut store = EntityStore::new();
         // `test_interner` snapshots the thread-local, so the entity's type and
         // owner strings must be interned before the snapshot is taken.
-        store.insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        let mut firer = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        // The fixture `MTNK` authors no `Turret=`, so its HULL is what the
+        // native body gate compares (`UnitClass::GetFireError @ 0x00740FD0`
+        // step 17). Face it south at the force-fire cell so this test measures
+        // impact height, not turn-to-fire.
+        firer.facing = 128;
+        store.insert(firer);
         let mut interner = test_interner();
         assert!(
             issue_attack_cell_command(&mut store, 1, 5, 6, Some(&rules), &interner),

@@ -86,6 +86,14 @@ fn default_foundation() -> String {
     "1x1".to_string()
 }
 
+/// `TechnoClass::Constructor @ 0x006F2B9C` seeds `+0x120` with `-100`, so a
+/// freshly built object is already past the idle-turret dwell on frame 0.
+pub(crate) const NATIVE_LAST_FIRE_FRAME_INIT: i64 = -100;
+
+fn default_last_fire_frame() -> i64 {
+    NATIVE_LAST_FIRE_FRAME_INIT
+}
+
 fn default_base_plan_type_index() -> i32 {
     -1
 }
@@ -575,6 +583,22 @@ pub struct GameEntity {
     /// Independent turret/barrel facing — only on entities with Turret=yes in rules.ini.
     /// Timer-based 16-bit interpolator mirroring gamemd's BarrelFacing primitive.
     pub barrel_facing: Option<crate::sim::movement::FacingClass>,
+    /// Turret rotation latch — `UnitClass+0x6AF`, written only by
+    /// `UnitClass::Facing_Update @ 0x00736990` (cleared at `0x00736AD5`, re-set
+    /// from `FacingClass::Is_Rotating` at `0x00736B16`) and read only by
+    /// `UnitClass::GetFireError @ 0x00741233`. While set, the aim block is
+    /// skipped so the turret finishes the arc it started instead of
+    /// re-snapshotting every frame, and the fire gate answers FIRE_ROTATING(4).
+    #[serde(default)]
+    pub turret_rotation_latch: bool,
+    /// Frame of this object's own last shot — `TechnoClass+0x120`. The
+    /// constructor seeds `-100` (`0x006F2B9C`) and the single other writer in
+    /// the image is `TechnoClass::Fire_At @ 0x006FF743`, which stores
+    /// `g_CurrentFrameCounter`. `UnitClass::Facing_Update` gates the idle turret
+    /// return on `frame - this >= GuardAreaTargetingDelay + 5`, so the dwell is
+    /// measured from the unit's own last shot, NOT from target loss.
+    #[serde(default = "default_last_fire_frame")]
+    pub last_fire_frame: i64,
     /// Building construction animation progress.
     pub building_up: Option<BuildingUp>,
     /// Reverse build-up animation — building is undeploying into a mobile unit.
@@ -1138,6 +1162,8 @@ impl GameEntity {
             last_attacker_id: None,
             was_attacked_by_enemy: false,
             barrel_facing: None,
+            turret_rotation_latch: false,
+            last_fire_frame: NATIVE_LAST_FIRE_FRAME_INIT,
             building_up: None,
             building_down: None,
             building_anim_overlays: None,

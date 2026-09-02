@@ -94,6 +94,10 @@ pub(crate) struct AttackerSnapshot {
     pub pending_infantry_fire: Option<super::PendingInfantryFire>,
     pub pending_building_fire: Option<crate::sim::game_entity::PendingBuildingFire>,
     pub barrel_facing: Option<crate::sim::movement::FacingClass>,
+    /// Hull interpolator (`+0x388`), live only while the body is turning. The
+    /// facing gate reads it for `Turret=no` firers so the comparison uses the
+    /// full 16-bit animated value rather than the 8-bit mirrored heading.
+    pub hull_facing: Option<crate::sim::movement::FacingClass>,
     pub burst_remaining: u8,
     pub burst_delay_ticks: u8,
     /// Weapon-selection override (Gunner-IFV slot OR open-topped passenger weapon).
@@ -166,6 +170,7 @@ pub fn acquire_best_target_for_entity(
         pending_infantry_fire: None,
         pending_building_fire: None,
         barrel_facing: entity.barrel_facing,
+        hull_facing: entity.body_facing,
         burst_remaining: 0,
         burst_delay_ticks: 0,
         weapon_override: entity.weapon_override,
@@ -938,10 +943,14 @@ pub fn tick_retaliation(
                 None => continue,
             };
             if let Some(entity) = entities.get_mut(entity_id) {
-                if entity.barrel_facing.is_none() {
-                    // Body-only retaliator — instantly face the attacker. Turreted
-                    // retaliators get their turret rotation driven by
-                    // tick_turret_rotation in subsequent ticks (matches gamemd).
+                if entity.barrel_facing.is_none() && entity.category != EntityCategory::Unit {
+                    // Body-only retaliator — instantly face the attacker.
+                    // Turreted retaliators get their turret driven by
+                    // `Facing_Update`, and a TURRETLESS VEHICLE turns its hull
+                    // through `UnitClass::Fire_At_Target @ 0x00736DF0` case 2
+                    // once the fire gate refuses it for facing — assignment
+                    // itself writes no facing in gamemd. Infantry keep the snap;
+                    // see the residual on `combat::issue_attack_command`.
                     let dx: i32 = attacker_pos.0 as i32 - entity.position.rx as i32;
                     let dy: i32 = attacker_pos.1 as i32 - entity.position.ry as i32;
                     entity.facing = crate::sim::movement::facing_from_delta(dx, dy);
