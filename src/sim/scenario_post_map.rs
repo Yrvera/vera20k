@@ -65,6 +65,10 @@ impl Simulation {
         &mut self,
         input: ScenarioPostMapInput<'_>,
     ) -> ScenarioPostMapOutput {
+        // Retain the scenario's parsed ordinary lighting so the runtime crate
+        // regeneration rung reaches `OverlayClass::Mark` with the same source
+        // this startup pass uses.
+        self.scenario_normal_lighting = input.normal_lighting;
         let tiberium_queues = if input.tiberium_queues_preinitialized {
             None
         } else if let Some(overlay_grid) = self.overlay_grid.as_ref() {
@@ -137,7 +141,7 @@ impl Simulation {
             // cache built earlier in the load funnel, so rebuild it from the
             // now-final CellClass projection and publish matching first-frame
             // navigation without consuming OverlayGrid's dirty receipt.
-            if self.refresh_bridge_runtime_after_startup_crates() {
+            if self.refresh_bridge_runtime_after_crate_mark() {
                 navigation_published = self.rebuild_dynamic_navigation(input.rules);
             }
             #[cfg(test)]
@@ -180,7 +184,12 @@ impl Simulation {
         }
     }
 
-    fn refresh_bridge_runtime_after_startup_crates(&mut self) -> bool {
+    /// Rebuild the derived bridge runtime cache after a crate `OverlayClass::Mark`
+    /// batch. Native Mark mutates live CellClass state synchronously; Rust builds
+    /// `BridgeRuntimeState` earlier in the load funnel, so both the startup batch
+    /// and the per-tick regeneration rung refresh it from the now-final CellClass
+    /// projection.
+    pub(crate) fn refresh_bridge_runtime_after_crate_mark(&mut self) -> bool {
         let Some((destroyable, bridge_strength)) = self
             .bridge_state
             .as_ref()

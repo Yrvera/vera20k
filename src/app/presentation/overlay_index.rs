@@ -61,6 +61,22 @@ impl OverlayRenderIndex {
         synced
     }
 
+    /// Drop the render entries for cells whose overlay identity was erased.
+    ///
+    /// [`OverlayRenderIndex::upsert_occupied`] only ever adds or rewrites an
+    /// occupied cell, so a removal has to arrive on its own channel. Returns the
+    /// number of entries actually dropped.
+    pub(crate) fn remove_cells(&mut self, cells: &[(u16, u16)]) -> usize {
+        if cells.is_empty() {
+            return 0;
+        }
+        let removed: std::collections::HashSet<(u16, u16)> = cells.iter().copied().collect();
+        let before = self.entries.len();
+        self.entries
+            .retain(|entry| !removed.contains(&(entry.rx, entry.ry)));
+        before - self.entries.len()
+    }
+
     pub(crate) fn iter(&self) -> std::slice::Iter<'_, OverlayEntry> {
         self.entries.iter()
     }
@@ -95,14 +111,20 @@ mod tests {
         assert_eq!(coords, vec![(5, 5), (3, 3)]);
 
         // First dynamic appearances append in update order.
-        assert_eq!(index.upsert_occupied(vec![entry(9, 9, 20, 1), entry(1, 1, 21, 2)]), 2);
+        assert_eq!(
+            index.upsert_occupied(vec![entry(9, 9, 20, 1), entry(1, 1, 21, 2)]),
+            2
+        );
         let coords: Vec<_> = index.iter().map(|e| (e.rx, e.ry)).collect();
         assert_eq!(coords, vec![(5, 5), (3, 3), (9, 9), (1, 1)]);
 
         // Updating an existing coordinate retains its slot.
         assert_eq!(index.upsert_occupied(vec![entry(3, 3, 12, 4)]), 1);
         let third = &index.as_slice()[1];
-        assert_eq!((third.rx, third.ry, third.overlay_id, third.frame), (3, 3, 12, 4));
+        assert_eq!(
+            (third.rx, third.ry, third.overlay_id, third.frame),
+            (3, 3, 12, 4)
+        );
         assert_eq!(index.as_slice().len(), 4);
 
         // Reoccupation with a different ID reuses the slot (tombstoned

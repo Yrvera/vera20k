@@ -2224,6 +2224,24 @@ impl ResolvedTerrainGrid {
         true
     }
 
+    /// Project the two literal field writes a crate removal performs.
+    ///
+    /// `CrateSlot__RemoveCrateOverlayFromCell @ 0x004A1AA0` stores
+    /// `CellClass+0x44 = -1` at `0x004A1BE1` and `CellClass+0x11E = 0` at
+    /// `0x004A1BE8` and touches nothing else — no `RecalcAttributes` tail and
+    /// no bridge setter. The derived bridge layer/deck projection therefore
+    /// stays as it is: the random placer only admits cells that already carry
+    /// no overlay, so a removal can never be undoing a bridge identity in
+    /// stock rules.
+    pub(crate) fn clear_runtime_overlay_identity(&mut self, rx: u16, ry: u16) -> bool {
+        let Some(cell) = self.cell_mut(rx, ry) else {
+            return false;
+        };
+        cell.bridge_facts.overlay_id = None;
+        cell.bridge_facts.state_byte = 0;
+        true
+    }
+
     /// Project only allocated real-cell values for a setter that already ran
     /// synchronously through [`CellClassBridgeFlagState`]. This performs no
     /// GetCell fallback and cannot stamp or mutate the shared dummy.

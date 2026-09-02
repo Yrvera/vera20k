@@ -878,6 +878,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         let mut drained_combat_lights = Vec::new();
         let mut frame_overlay_updates = Vec::new();
+        let mut frame_overlay_removals: Vec<(u16, u16)> = Vec::new();
         let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
@@ -898,6 +899,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 trigger_effects: frame_trigger_effects,
                 lifecycle_outputs: frame_lifecycle_outputs,
                 overlay_updates,
+                overlay_removals,
                 sound_events: frame_sound_events,
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
@@ -906,6 +908,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             let sim = &mut rt.simulation;
             trigger_effects = frame_trigger_effects;
             frame_overlay_updates = overlay_updates;
+            frame_overlay_removals = overlay_removals;
             frame_committed = tick_result.frame_committed;
             if tick_result.frame_committed {
                 drained_combat_lights = crate::app::presentation::combat_lights::materialize_simulation_impacts(
@@ -1450,6 +1453,18 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
 
         // Simulation has already finalized identity, passability, navigation,
         // and the returned hash. The app only updates its render-side list.
+        // Removals first: a cell can be erased and re-marked in one frame, and
+        // the upsert must win.
+        if !frame_overlay_removals.is_empty() {
+            let dropped = state
+                .match_state
+                .match_presentation
+                .overlays
+                .remove_cells(&frame_overlay_removals);
+            if dropped != 0 {
+                log::trace!("Dropped {dropped} erased overlay cells from state.overlays");
+            }
+        }
         if !frame_overlay_updates.is_empty() {
             upsert_occupied_overlay_render_entries(state, frame_overlay_updates);
         }
