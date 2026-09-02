@@ -132,11 +132,91 @@ fn connect_startup_crate_overlays(
     synced
 }
 
+/// Refresh the legacy generated presentation entries whose overlay resolves
+/// to a TiberiumClass from the live grid. The generator tail's final
+/// `InitCellAttributes(1)` rewrote every ore density after those entries were
+/// built from the raw packs; non-resource identities keep their source frame.
+fn refresh_generated_tiberium_presentation_frames(
+    overlays_connected: &mut [OverlayEntry],
+    overlay_grid: &crate::sim::overlay_grid::OverlayGrid,
+    overlay_registry: &OverlayTypeRegistry,
+    tiberium_types: &crate::rules::tiberium_type::TiberiumTypeRegistry,
+) -> usize {
+    let mut refreshed = 0;
+    for entry in overlays_connected {
+        if overlay_registry
+            .tiberium_type_for_overlay(tiberium_types, entry.overlay_id)
+            .is_none()
+        {
+            continue;
+        }
+        let cell = overlay_grid.cell(entry.rx, entry.ry);
+        if cell.overlay_id == Some(entry.overlay_id) && cell.overlay_data != entry.frame {
+            entry.frame = cell.overlay_data;
+            refreshed += 1;
+        }
+    }
+    refreshed
+}
+
 #[cfg(test)]
 mod startup_crate_presentation_tests {
     use super::*;
     use crate::sim::crates::CrateSlot;
     use crate::sim::overlay_grid::OverlayGrid;
+
+    #[test]
+    fn generated_presentation_frames_follow_germinated_ore_densities_only() {
+        let ini = IniFile::from_str(
+            "[Tiberiums]\n0=Riparius\n[Riparius]\nImage=1\n\
+             [OverlayTypes]\n0=TIBCELL\n1=BRIDGE\n\
+             [TIBCELL]\nTiberium=yes\n[BRIDGE]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("presentation rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let mut grid = OverlayGrid::new(8, 8);
+        grid.place_overlay(2, 3, 0, 11);
+        grid.place_overlay(4, 4, 1, 9);
+        grid.place_overlay(5, 5, 0, 4);
+        let mut entries = vec![
+            OverlayEntry {
+                rx: 2,
+                ry: 3,
+                overlay_id: 0,
+                frame: 5,
+            },
+            OverlayEntry {
+                rx: 4,
+                ry: 4,
+                overlay_id: 1,
+                frame: 2,
+            },
+            OverlayEntry {
+                rx: 5,
+                ry: 5,
+                overlay_id: 0,
+                frame: 4,
+            },
+        ];
+
+        assert_eq!(
+            refresh_generated_tiberium_presentation_frames(
+                &mut entries,
+                &grid,
+                &registry,
+                &rules.tiberium_types,
+            ),
+            1
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.rx, entry.ry, entry.overlay_id, entry.frame))
+                .collect::<Vec<_>>(),
+            vec![(2, 3, 0, 11), (4, 4, 1, 2), (5, 5, 0, 4)],
+            "only the resource identity with a changed density is rewritten"
+        );
+    }
 
     #[test]
     fn startup_crate_presentation_appends_visible_slots_and_excludes_ghosts() {
@@ -2484,6 +2564,53 @@ pub(crate) fn load_map_from_initial(
                     );
                 },
             )?;
+            // `RandomMapGenerator::Generate @ 0x00598960` tail (`0x00599370..
+            // 0x0059945B`): after the generator constructors and its final
+            // whole-map Recalc (`0x0059937D`), `TiberiumClass::InitGrowthQueues_All
+            // @ 0x00722D00` then `InitSpreadQueues_All @ 0x00722240` scan the
+            // then-current painted densities; only afterwards does
+            // `MapClass::InitCellAttributes(1)` (`push 1` at `0x0059943F`, call
+            // at `0x0059944C`) rewrite every ore cell's density from its
+            // same-class neighbours. The post-map tail must not rebuild those
+            // queues from the germinated state.
+            let ruleset = rules
+                .as_ref()
+                .expect("offline skirmish requires rules before the generator tail");
+            let queue_stats = crate::sim::runtime::initialize_native_tiberium_queues(
+                &mut staged_simulation,
+                &map_data.basic,
+                &map_data.special_flags,
+                ruleset,
+                &overlay_registry,
+                Some(&overlay_grid),
+            );
+            if let Some(stats) = queue_stats {
+                log::info!(
+                    "Initialized generated native tiberium queues before germination: {} growth, {} spread",
+                    stats.growth_entries,
+                    stats.spread_entries,
+                );
+            }
+            let germination = crate::sim::tiberium_germinate::run_generated_final_cell_attributes(
+                &*resolved_terrain,
+                &mut overlay_grid,
+                &ruleset.tiberium_types,
+                &overlay_registry,
+                map_data.header.width as u16,
+                map_data.header.height as u16,
+            );
+            log::info!(
+                "Generated final InitCellAttributes(1): {} of {} real cells germinated (value total {})",
+                germination.germinated_cells,
+                germination.real_cells,
+                germination.tiberium_value_total,
+            );
+            if germination.unallocated_cells != 0 {
+                log::error!(
+                    "Generated final InitCellAttributes(1) reached {} unallocated iterator cells",
+                    germination.unallocated_cells,
+                );
+            }
             overlay_grid
         }
     };
@@ -2776,6 +2903,20 @@ pub(crate) fn load_map_from_initial(
         overlays_connected.retain(|entry| {
             overlay_grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id)
         });
+        let refreshed = refresh_generated_tiberium_presentation_frames(
+            &mut overlays_connected,
+            &overlay_grid,
+            &overlay_registry,
+            &rules
+                .as_ref()
+                .expect("merged rules were installed before atlas construction")
+                .tiberium_types,
+        );
+        if refreshed != 0 {
+            log::info!(
+                "Refreshed {refreshed} generated ore presentation frame(s) from the germinated grid"
+            );
+        }
     }
     let rules_for_post_map = rules
         .as_ref()
@@ -2789,7 +2930,10 @@ pub(crate) fn load_map_from_initial(
             overlay_grid,
             &house_roster,
             Some(&match_launch_descriptor),
-            materialization == FreshMapMaterialization::Authored,
+            // Both arms already ran the native growth-then-spread queue
+            // initialization at its native point (authored: between Terrain
+            // and Techno; generated: before the generator tail's germination).
+            true,
         );
         if let Some(stats) = output.tiberium_queues {
             log::info!(
