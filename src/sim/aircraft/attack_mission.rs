@@ -103,6 +103,18 @@ pub fn tick_attack_state(
     let type_str = interner.resolve(type_ref);
     let obj = rules.object(type_str);
     // Get weapon range in cells.
+    //
+    // `primary` is native weapon-array slot 0 (`TechnoTypeClass+0x898`), so the
+    // `TurretCount>0` types read correctly here — but no aircraft authors
+    // `TurretCount=`, so that costs nothing either way.
+    //
+    // RESIDUAL (UNCHECKED, deferred): this reads the base slot directly instead
+    // of `TechnoClass::GetWeapon @ 0x0070E140`, so `ElitePrimary=` is bypassed.
+    // Whether `AircraftClass::Mission_Attack`'s range read goes through
+    // `GetWeapon` was not established. Trigger: an elite Harrier or Black Eagle
+    // whose `ElitePrimary` has a different `Range=`. Player effect: the scan
+    // range is derived from the base weapon. Frequency: only after promotion.
+    // Downstream: attack-run geometry only, no deterministic state.
     let weapon_range_cells: SimFixed = obj
         .and_then(|o| {
             let wpn_name = o.primary.as_ref()?;
