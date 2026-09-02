@@ -219,6 +219,14 @@ pub fn veteran_speed_leptons_per_second(
 /// (`0x0054AC40..0x0054DFA0`) or rocket body calls it, so an aircraft's fly
 /// speed and a jumpjet's `JumpjetSpeed` never see `VeteranSpeed`. That
 /// resolves the builder's UNCHECKED "aircraft FASTER" residual: not applied.
+///
+/// `Teleport` stays inside the gate deliberately. Native's teleport locomotor
+/// does not query `+0x538` either, but VERA's teleport machine ignores
+/// `MovementTarget::speed` outright (stock `[CLEG] Speed=5` is a dummy the INI
+/// itself comments as unused), and a teleporter that piggybacks Drive carries
+/// `LocomotorKind::Drive` here — where the drive locomotor really does query
+/// the getter. So admitting `Teleport` changes no observable speed and keeps
+/// the piggyback case correct.
 pub fn locomotor_consults_current_speed(kind: Option<LocomotorKind>) -> bool {
     !matches!(
         kind,

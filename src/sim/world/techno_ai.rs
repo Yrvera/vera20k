@@ -569,11 +569,14 @@ fn veterancy_promotion_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
 /// type lookup: the type speed, the house multiplier and the crate multiplier
 /// are stable for the life of a path or are separate open rows.
 ///
-/// RESIDUAL: a unit promoted while its group is speed-matched to the slowest
-/// member (the `movement_tick` group-min clamp, VERA-internal — gamemd has no
-/// such clamp) leaves the formation speed until the next order. Trigger:
-/// promotion during a group move. Frequency: rare. Downstream risk: none —
-/// the clamp re-applies on the next path.
+/// RESIDUAL, and unreachable today: a unit promoted while its group is
+/// speed-matched to the slowest member (the `movement_tick` group-min clamp,
+/// VERA-internal — gamemd has no such clamp) would keep the formation speed
+/// until the next order. Every production `Command::Move` currently passes
+/// `group_id: None`, so `sync_formation_speeds_after_live_pass` never clamps
+/// and this cannot fire. Trigger: promotion during a group move, once group
+/// moves carry an id. Frequency: zero today. Downstream risk: none — the
+/// clamp re-applies on the next path.
 fn refresh_mover_speed_after_promotion(sim: &mut Simulation, id: u64, rules: &RuleSet) {
     let Some(entity) = sim.substrate.entities.get(id) else {
         return;
