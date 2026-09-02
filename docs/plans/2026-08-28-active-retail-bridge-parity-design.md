@@ -1173,7 +1173,7 @@ Recorded open items, each with its native reading and owner. None is closed by P
   subsystem, transaction 20, and transaction 21/OQ-19; transaction 3 continuation owes the ordered
   seam and the negative no-`BridgeFacts` assertion.
 - **Retained wall plane `None` acceptance (contract G7) — IMPLEMENTED by transaction-3 slice E
-  (`feature/bridge-retained-wall-plane`).** `OverlayGrid::from_native_overlay_packs` — the generated
+  (`feature/bridge-transaction3-residuals`).** `OverlayGrid::from_native_overlay_packs` — the generated
   launch's overlay authority, and the only production caller of that boundary (an authored load
   reaches `from_finalized_map_payload` instead) — now owns the `CellClass+0x122` wall plane instead
   of leaving the legacy `None` compatibility mode: it starts at
@@ -1209,9 +1209,12 @@ Recorded open items, each with its native reading and owner. None is closed by P
   `0x004FCFCA`, `+0x50 = -1` at `0x004FCFDD`), then runs `RecalcAttributes(-1)` at `0x004FCFE7` and
   `PostDestructionWallCleanup(0)` at `0x004FCFFB` — whose per-cell gate rejects the just-cleared
   sold cell at `0x004807CA` — and touches `CellClass+0x122` nowhere in its body. A sold wall's eight
-  increments stay in the byte permanently. Rust matches exactly: the sale clears through
-  `OverlayGrid::clear_overlay` with no plane decrement, and the cross skips the sold cell because it
-  is no longer a wall. That is the mechanism by which the plane, being a history counter, genuinely
+  increments stay in the byte permanently. Rust matches it on the plane accounting: the sale
+  clears through `OverlayGrid::clear_overlay` with no plane decrement, and the cross skips the sold
+  cell because it is no longer a wall. The claim is scoped to the player sale, which native reaches
+  from `EventClass::Execute @ 0x004C6FCE`; the same routine is also called from
+  `BuildingClass::Unlimbo @ 0x0044065C` and `@ 0x00440720` on the wall-over-wall replacement path,
+  which is UNCHECKED against the Rust stamp transaction. That is the mechanism by which the plane, being a history counter, genuinely
   differs from what a final-identity rescan would produce, and it is ordinary play — selling a wall
   segment to reopen a lane permanently inflates the pathfinding blocker count on its eight
   neighbours, exactly as gamemd does. Before this row a generated launch rescanned identities, so

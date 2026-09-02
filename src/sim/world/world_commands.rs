@@ -410,6 +410,14 @@ impl Simulation {
             .cloned()
             .or_else(|| self.path_grid.as_deref().cloned());
         let sold_navigation_changed = if let Some(grid) = self.overlay_grid.as_mut() {
+            // gamemd-derived: `HouseClass::Sell_Building_At_Cell @ 0x004FCE80`
+            // clears the wall identity itself (`+0x44 = -1` at `0x004FCFBC`,
+            // `+0x11E = 0` at `0x004FCFCA`, `+0x50 = -1` at `0x004FCFDD`) and
+            // never touches `CellClass+0x122` anywhere in its body; the
+            // `PostDestructionWallCleanup(0)` it runs at `0x004FCFFB` then skips
+            // the just-cleared cell at `0x004807CA`. The absent plane decrement
+            // here is that behaviour, not an oversight: a sold wall keeps its
+            // eight neighbour contributions permanently.
             grid.clear_overlay(rx, ry);
             if let Some(terrain) = self.resolved_terrain.as_mut() {
                 let changed = recalc_overlay_passability(grid, terrain, overlays, rx, ry);
