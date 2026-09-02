@@ -53,15 +53,30 @@ pub(crate) const L2_UNIT_POST_AUTHORITATIVE: bool = true;
 /// state. Idempotent — `set` is a no-op when the destination already matches.
 /// ROT byte refreshed from rules each apply, same as the legacy sweep.
 ///
-/// Three writes land here, in native order:
-/// 1. the turret destination from `UnitClass::Facing_Update @ 0x00736990`
-///    (`None` = native calls no `Set`, so the turret holds its aim);
-/// 2. the hull destination from `UnitClass::Fire_At_Target @ 0x00736DF0` case 2
+/// Four writes land here, and their ORDER is native, not incidental:
+/// 1. the hull destination from `UnitClass::Fire_At_Target @ 0x00736DF0` case 2
 ///    (`FacingClass::Set(+0x388)` at `0x00737004`, then the hull's raw
 ///    destination copied into the turret slot at `0x0073701C` — `FUN_004C9470`
-///    returns the DESTINATION dword, not the animated value);
-/// 3. the `+0x6AF` rotation latch (`0x00736AD5`/`0x00736B16`), read next tick by
-///    `UnitClass::GetFireError @ 0x00741233`.
+///    returns the DESTINATION dword, not the animated value). Native runs the
+///    whole of `Fire_At_Target` before `Facing_Update`
+///    (`0x007365E1`/`0x007365E8`), so this precedes everything below;
+/// 2. `Facing_Update` arm A's aim `Set` on the turret, `0x00736A89`
+///    (`None` = native calls no `Set`, so the turret holds its aim);
+/// 3. the `+0x6AF` rotation latch — `MOV [ESI+0x6AF],AL` at `0x00736B16`, the
+///    value being `FacingClass::Is_Rotating(+0x3A0) @ 0x004C9480` called at
+///    `0x00736B11`, with the unconditional clear at `0x00736AD5` covering the
+///    turretless and not-rotating cases. Read next tick by
+///    `UnitClass::GetFireError @ 0x00741233`;
+/// 4. `Facing_Update` arm B's idle-return `Set` on the turret, `0x00736BDD`.
+///
+/// Steps 3 and 4 are in that order in the binary, and it matters:
+/// `FacingClass::Set @ 0x004C9220` writes `duration = abs(delta)/rate` and
+/// `start = g_CurrentFrameCounter`, so any `Set` of one or more `ROT=` steps
+/// makes `Is_Rotating` true immediately. An aim `Set` therefore arms the latch
+/// on the frame it is issued — which is what keeps the fire gate refusing for
+/// the whole arc, including its first one or two frames — while an idle-return
+/// `Set` leaves the latch clear, so a unit that re-acquires a target during an
+/// idle swing-back is free to aim at it on the next frame.
 ///
 /// It then mirrors the animated hull back into `entity.facing`, which is VERA's
 /// authoritative 8-bit heading. gamemd has no such byte — `+0x388` IS the
@@ -85,7 +100,8 @@ pub(crate) fn apply_unit_facing(
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
-        entity.turret_rotation_latch = update.latch;
+        // 1. `Fire_At_Target` case 2's hull turn, which native completes before
+        //    `Facing_Update` is entered at all (`0x007365E1`/`0x007365E8`).
         if let Some(desired) = update.hull_destination {
             let hull = entity.body_facing.get_or_insert_with(|| {
                 crate::sim::movement::FacingClass::new(u16::from(entity.facing) << 8, rot_byte)
@@ -98,7 +114,28 @@ pub(crate) fn apply_unit_facing(
                 barrel.set(raw_destination, binary_frame);
             }
         }
+        // 2. arm A's aim `Set` (`0x00736A89`) — before the latch store.
         if let Some(desired) = update.turret_destination
+            && !update.turret_destination_is_idle_return
+            && let Some(ref mut barrel) = entity.barrel_facing
+        {
+            barrel.set_rot(rot_byte);
+            barrel.set(desired, binary_frame);
+        }
+        // 3. the `+0x6AF` store (`0x00736B16`), evaluated on the barrel as it
+        //    stands after the writes above. `is_some_and` reproduces the
+        //    `0x00736AD5` clear for a turretless unit, which native leaves at 0
+        //    because the `Type+0xCA1` test at `0x00736ADC` sends it past both
+        //    `Is_Rotating` calls.
+        let latch = entity
+            .barrel_facing
+            .as_ref()
+            .is_some_and(|barrel| barrel.is_rotating(binary_frame));
+        entity.turret_rotation_latch = latch;
+        // 4. arm B's idle-return `Set` (`0x00736BDD`) — after the latch store,
+        //    so the swing-back arc does not arm it.
+        if let Some(desired) = update.turret_destination
+            && update.turret_destination_is_idle_return
             && let Some(ref mut barrel) = entity.barrel_facing
         {
             barrel.set_rot(rot_byte);

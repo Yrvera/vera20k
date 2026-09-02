@@ -120,8 +120,17 @@ pub(crate) struct FacingUpdate {
     pub turret_destination: Option<u16>,
     /// Hull (`+0x388`) destination from the turretless arm-A commit.
     pub hull_destination: Option<u16>,
-    /// New value of the `+0x6AF` rotation latch.
-    pub latch: bool,
+    /// Which side of the `+0x6AF` store `turret_destination` belongs on.
+    ///
+    /// Native writes the latch mid-arm-B: `MOV [ESI+0x6AF],AL` at
+    /// `0x00736B16` sits BETWEEN arm A's aim `Set` (`0x00736A89`) and arm B's
+    /// idle-return `Set` (`0x00736BDD`), so an aim `Set` arms the latch on the
+    /// same frame while an idle-return `Set` does not. `apply_unit_facing`
+    /// commits the two in that order and reads the latch in between; this flag
+    /// is how it tells them apart. There is no `latch` field: the latch is not
+    /// a decision this pure read can make, it is `Is_Rotating(+0x3A0)`
+    /// evaluated on the barrel as it stands after the aim write.
+    pub turret_destination_is_idle_return: bool,
 }
 
 /// `UnitClass::Facing_Update @ 0x00736990` — verified this session by
@@ -156,7 +165,9 @@ pub(crate) struct FacingUpdate {
 /// `frame - LastFireFrame(+0x120) >= GuardAreaTargetingDelay(Rules+0xE04) + 5`
 /// (41 frames in stock) and suppressed while the unit is bunkered (`+0x2E4`).
 /// The destination is the MOVE DESTINATION when a NavCom is set, else the hull
-/// heading.
+/// heading. The latch VALUE is committed by `apply_unit_facing` rather than
+/// here, because native's store sits between this arm's two `Set` calls — see
+/// [`FacingUpdate::turret_destination_is_idle_return`].
 ///
 /// **C. CACHE** (`0x00736BE2`) writes `+0x4A0 = Is_Rotating()`; that field has
 /// no verified consumer, so it is not modelled.
@@ -198,7 +209,7 @@ pub(crate) fn facing_update(
     let mut out = FacingUpdate {
         turret_destination: None,
         hull_destination: None,
-        latch: entity.turret_rotation_latch,
+        turret_destination_is_idle_return: false,
     };
     let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));
     let has_turret = entity.barrel_facing.is_some();
@@ -225,33 +236,25 @@ pub(crate) fn facing_update(
     }
 
     // --- B. IDLE --------------------------------------------------------
-    // `0x00736AD5` clears the latch before the `Turret=` test, for every unit.
-    out.latch = false;
+    // The `+0x6AF` write itself is NOT made here — `apply_unit_facing` makes
+    // it, between the two `Set` calls, exactly where `0x00736B16` sits. What
+    // this arm still owns is the BRANCH: native picks between "commit to the
+    // arc" and "idle return" with `Is_Rotating(+0x3A0)` evaluated AFTER arm A's
+    // `Set` (`CALL 0x004C9480` at `0x00736AF2`), while the read below runs
+    // before it. The two agree in every reachable case, which is why the branch
+    // may stay in this pure read: arm A only `Set`s when a target exists, the
+    // idle return only runs when none does, and when native's post-`Set`
+    // `Is_Rotating` is false with a target held it falls into the idle arm and
+    // is thrown straight back out by the `Target != 0` test at `0x00736B21`.
     if has_turret {
         let barrel = entity.barrel_facing.as_ref().expect("has_turret");
-        if barrel.is_rotating(binary_frame) {
-            // `0x00736B11`..`0x00736B16` — commit to the arc; arm A stays shut
-            // until it finishes, so the turret steps in completed turns rather
-            // than re-snapshotting `prev` every frame against a mover.
-            //
-            // DRIFT (GSI-08.14), deferred — this is a PURE READ, so
-            // `is_rotating` is evaluated against the barrel as it stood at the
-            // start of the frame, i.e. BEFORE arm A's own `Set` above (which
-            // `apply_unit_facing` commits post-batch). Native evaluates it
-            // after, because `Facing_Update` mutates `+0x3A0` in place. Effect:
-            // on the FIRST frame of an arc VERA reports `latch = false` where
-            // native reports true, so arm A runs once more on the next frame
-            // and re-snapshots `prev` — one extra re-aim per arc against a
-            // moving target, exactly what the latch exists to prevent. The arc
-            // still ends on the same frame (the destination is unchanged when
-            // the target has not moved), and the fire gate is unaffected,
-            // because it reads the previous tick's committed latch either way.
-            // Trigger: any turreted vehicle starting an arc at a mover.
-            // Frequency: once per arc, so every engagement opening.
-            // Downstream risk: closing it means committing the turret write
-            // before the latch read, i.e. splitting this pure read in two.
-            out.latch = true;
-        } else if entity.attack_target.is_none() {
+        // `0x00736AF9` not taken — the unit has committed to an arc, arm A
+        // stays shut until it finishes, and there is no idle return on that
+        // path (`JMP 0x00736BE2` at `0x00736B1C`). The turret therefore steps
+        // in completed turns instead of re-snapshotting `prev` every frame
+        // against a mover.
+        let committed_to_an_arc = barrel.is_rotating(binary_frame);
+        if !committed_to_an_arc && entity.attack_target.is_none() {
             let dwell = rules.map_or(NATIVE_IDLE_TURRET_DWELL_FALLBACK, |r| {
                 i64::from(r.general.guard_area_targeting_delay)
             }) + NATIVE_IDLE_TURRET_DWELL_BIAS;
@@ -263,6 +266,10 @@ pub(crate) fn facing_update(
                     Some(nav) => nav,
                     None => hull_facing_16(entity, binary_frame),
                 });
+                // `Set` at `0x00736BDD`, which native reaches only AFTER the
+                // `+0x6AF` store — so the arc this starts leaves the latch
+                // clear on its first frame.
+                out.turret_destination_is_idle_return = true;
             }
         }
     }

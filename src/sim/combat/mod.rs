@@ -153,8 +153,11 @@ pub struct UnitFacingUpdate {
     /// TURRETLESS vehicle is refused for facing while stationary, and by the
     /// `Facing_Update` arm-A mid-arc pin.
     pub hull_destination: Option<u16>,
-    /// New value of the `+0x6AF` rotation latch.
-    pub latch: bool,
+    /// True when `turret_destination` is arm B's idle return (`Set` at
+    /// `0x00736BDD`), which native runs AFTER the `+0x6AF` store at
+    /// `0x00736B16`; false for arm A's aim `Set` at `0x00736A89`, which runs
+    /// before it. `apply_unit_facing` commits the latch between the two.
+    pub turret_destination_is_idle_return: bool,
 }
 
 impl UnitFacingUpdate {
@@ -166,7 +169,7 @@ impl UnitFacingUpdate {
             entity_id,
             turret_destination: update.turret_destination,
             hull_destination: update.hull_destination,
-            latch: update.latch,
+            turret_destination_is_idle_return: update.turret_destination_is_idle_return,
         }
     }
 }
@@ -5863,6 +5866,16 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             .find(|&&(aid, _)| aid == snap.stable_id)
             .map(|&(_, tid)| tid);
         let own_removed = emit.remove_attack[n_remove..].contains(&snap.stable_id);
+        // Which side of the `+0x6AF` store at `0x00736B16` the replacement
+        // belongs on. A retarget still leaves `Target != 0`, so native reaches
+        // it through arm A's `Set` at `0x00736A89` and the arc arms the latch
+        // on its first frame. A removal leaves `Target == 0`, so native's arm A
+        // does not run at all and the only `Set` left is arm B's idle return at
+        // `0x00736BDD`, which the store precedes — that arc starts with a clear
+        // latch. (VERA swings back on the removal tick rather than after the
+        // dwell; that difference is the pre-existing S3 kill-tick behaviour,
+        // not this flag.)
+        let replacement_is_idle_return = own_retarget.is_none();
         let replacement: Option<u16> = if let Some(tid) = own_retarget {
             Some(
                 crate::sim::movement::turret::facing_toward_target(
@@ -5888,6 +5901,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
                 .find(|u| u.entity_id == snap.stable_id)
                 .expect("Unit attacker was seeded before fire");
             update.turret_destination = Some(replacement);
+            update.turret_destination_is_idle_return = replacement_is_idle_return;
         }
     }
     // S3 residual: every Unit not in the attacker snapshot set (target-less,
@@ -7033,12 +7047,15 @@ pub(crate) fn resolve_attacker_fire(
     // latch would delay the aim but not the shot, and every re-aim wider than
     // one tolerance step would open fire two to three frames early.
     //
-    // Unit-and-turret only. `+0x6AF` is read by `UnitClass::GetFireError`
-    // alone (`search_instructions` over `+ 0x6af]` — the other reads on this
-    // layout are Receive_Radio, Mission_Unload, Scatter, PassiveAcquireGate and
-    // the checksum walk; `BuildingClass`/`InfantryClass::GetFireError` have no
-    // such term), and the only writer, `UnitClass::Facing_Update @ 0x00736B16`,
-    // sets it exclusively inside the `Turret=yes` arm.
+    // Unit-and-turret only. This is the only FIRE gate that reads `+0x6AF`
+    // (`search_instructions` over `+ 0x6af]` — the other readers on this layout
+    // are Receive_Radio, Mission_Unload, Scatter, PassiveAcquireGate, the
+    // not-moving-and-not-rotating sound test in `FUN_00740E80 @ 0x00740EA7`,
+    // and the checksum walk; `BuildingClass`/`InfantryClass::GetFireError` have
+    // no such term). The only writer that ever SETS it is
+    // `UnitClass::Facing_Update @ 0x00736B16`, exclusively inside the
+    // `Turret=yes` arm; the other two writes are the `FootClass::Constructor`
+    // zero-fill at `0x004D3420` and the unconditional clear at `0x00736AD5`.
     //
     // The firing-sequence byte needs no VERA analogue: of the 21 references to
     // `+0x68D`, the only store of 1 is `InfantryClass::Fire_At_Target @
@@ -7047,7 +7064,10 @@ pub(crate) fn resolve_attacker_fire(
     // `UnitClass::Fire_At_Target` (`0x00736EF9`, `0x0073702D`, `0x0073704B`)
     // and never set, so for a vehicle the first test always falls through.
     if snap.category == EntityCategory::Unit && snap.turret_rotation_latch && !projectile_homes {
-        // FireDecision::Rotating — native code 4, also a gattling spin-up code.
+        // Native code 4, which is also one of the {0, 2, 3, 4} codes that drive
+        // gattling spin-up. `FireDecision` has no variant for it and no
+        // producer at all — that gap is the residual recorded on the enum in
+        // `fire_decision.rs`, not something this return introduces.
         return;
     }
 

@@ -1068,9 +1068,10 @@ fn gsi_08_14_rotation_latch_suppresses_the_aim_while_the_arc_runs() {
     let rules = rules_with_mtnk_rot(1);
     sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
 
-    // The first tick's read window sees an untouched barrel and only writes the
-    // destination at the post-batch apply; the latch arms on the next visit,
-    // once `Is_Rotating` is true.
+    // The first tick's read window sees an untouched barrel; the destination
+    // and the latch both land at the post-batch apply, the latch armed by that
+    // same `Set` (`0x00736B16` follows `0x00736A89`). A second tick leaves the
+    // arc running, which is the state under test.
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
     let attacker = sim.substrate.entities.get(1).unwrap();
@@ -1138,6 +1139,23 @@ fn rules_with_homing_projectile(projectile_rot: u32) -> RuleSet {
     );
     let ini: IniFile = IniFile::from_str(&ini_str);
     RuleSet::from_ini(&ini).expect("homing fixture should parse")
+}
+
+/// MTNK with an `OmniFire=` primary and no projectile — a weapon the step-17
+/// angle arm never tests (`WeaponTypeClass+0x12B`, read at `0x0074125C`) but
+/// step 14 still refuses.
+fn rules_with_omni_fire() -> RuleSet {
+    let ini_str: String = "[VehicleTypes]\n0=MTNK\n\n\
+[InfantryTypes]\n\n\
+[BuildingTypes]\n0=GAPILE\n\n\
+[AircraftTypes]\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\nROT=5\nTurret=yes\n\n\
+[GAPILE]\nStrength=300\nArmor=heavy\n\n\
+[105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\nOmniFire=yes\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n"
+        .to_string();
+    let ini: IniFile = IniFile::from_str(&ini_str);
+    RuleSet::from_ini(&ini).expect("omni-fire fixture should parse")
 }
 
 #[test]
@@ -1326,11 +1344,44 @@ fn gsi_08_04_rotation_latch_refuses_the_shot_until_the_arc_finishes() {
         !fires_with_latch(true, 0, 0),
         "an armed +0x6AF refuses the shot even when the turret is dead on"
     );
-    // The refusal precedes the tolerance test, so it also refuses a shot the
-    // angle arm would have passed at the edge of 0x0800.
+    // A shot the angle arm would have passed at the very edge of 0x0800 is
+    // still refused. (This does not by itself pin WHERE the refusal sits: a
+    // refusal placed after a passing angle test returns the same answer. The
+    // OmniFire pair below is the case that does pin it.)
     assert!(
         !fires_with_latch(true, 0, 0x0800),
-        "and it is checked before the angle test, not after it"
+        "an armed latch refuses even at the edge the angle arm accepts"
+    );
+
+    // The placement pin. `0x0074125C` — the OmniFire test that skips the whole
+    // step-17 angle arm — is the JUMP TARGET of all three step-14 skips, so
+    // step 14 runs BEFORE it: an OmniFire weapon, which never turns its turret
+    // and is never angle-gated, is still refused while `+0x6AF` holds. Put the
+    // refusal inside VERA's `!weapon.omni_fire` block instead and this case
+    // fires. The offset is a quarter turn, far outside any tolerance, to prove
+    // the angle arm really is being skipped.
+    fn fires_with_latch_omni(latch: bool) -> bool {
+        let rules = rules_with_omni_fire();
+        let mut sim = Simulation::new();
+        spawn_turreted(&mut sim, 1, 5, 5, 5);
+        spawn_target(&mut sim, 2, 5, 9);
+        use_test_interner(&mut sim);
+        let attacker = sim.substrate.entities.get_mut(1).unwrap();
+        attacker.attack_target = Some(AttackTarget::new(2));
+        attacker.barrel_facing = Some(FacingClass::new(
+            facing_from_5_5_to_5_9().wrapping_add(0x4000),
+            5,
+        ));
+        attacker.turret_rotation_latch = latch;
+        !run_combat_direct(&mut sim, &rules).fire_events.is_empty()
+    }
+    assert!(
+        fires_with_latch_omni(false),
+        "an OmniFire weapon shoots a quarter turn off-axis: the angle arm is skipped"
+    );
+    assert!(
+        !fires_with_latch_omni(true),
+        "but step 14 precedes that skip, so an armed +0x6AF still refuses it"
     );
 
     // `MOV EDX,[EBX+0xA0]; MOV EAX,[EDX+0x2DC]; TEST; JNZ 0x0074125C` at
@@ -1395,5 +1446,83 @@ fn gsi_08_04_no_shot_lands_while_the_turret_is_still_swinging() {
     assert!(
         fired_on_tick.is_some(),
         "the refusal must not deadlock the unit - the arc ends and the shot lands"
+    );
+}
+
+#[test]
+fn gsi_08_04_a_two_step_re_aim_is_refused_for_the_whole_arc_not_only_its_first_frame() {
+    // Where the `+0x6AF` store SITS, in frames a player can count.
+    //
+    // Native writes the latch at `0x00736B16`, which is AFTER arm A's
+    // `FacingClass::Set @ 0x004C9220` (`CALL` at `0x00736A89`) and after the
+    // `Is_Rotating @ 0x004C9480` call at `0x00736B11` that supplies its value.
+    // `Set` stores `duration = abs(delta)/rate` and `start = frame`, so a `Set`
+    // of one or more `ROT=` steps makes `Is_Rotating` true on that same frame:
+    // the arc is latched from frame one, not from frame two.
+    //
+    // At `[MTNK] ROT=5` the step is 0x0500 and a 0x0A00 re-aim (about 14
+    // degrees, the band a tracked target drifts into between shots) takes two
+    // frames. The whole engagement, per the binary:
+    //
+    //   tick 0  arm A `Set`s; the angle test refuses (0x0A00 > 0x0800);
+    //           latch := Is_Rotating == true
+    //   tick 1  latch refuses, and the animated turret is ALREADY inside
+    //           0x0800 — a latch committed pre-`Set` would fire here
+    //   tick 2  latch still refuses; the turret has arrived
+    //   tick 3  the arc is over, the latch clears, the shot lands
+    //
+    // Committing the latch before the `Set` reads false on tick 0 and fires on
+    // tick 1: two frames early, which moves the damage frame and this shot's
+    // position in the RNG stream.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 9);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    let desired = facing_from_5_5_to_5_9();
+    {
+        let attacker = sim.substrate.entities.get_mut(1).unwrap();
+        attacker.attack_target = Some(AttackTarget::new(2));
+        // A finished arc that the target has since drifted two ROT steps away
+        // from: not rotating, so nothing but this tick's own `Set` can arm the
+        // latch.
+        attacker.barrel_facing = Some(FacingClass::new(desired.wrapping_add(0x0A00), 5));
+    }
+
+    let start_hp = sim.substrate.entities.get(2).unwrap().health.current;
+    let mut fired_on_tick = None;
+    let mut aimed_on_tick = None;
+    for tick in 0..16u32 {
+        let frame = sim.session.binary_frame;
+        let attacker = sim.substrate.entities.get(1).unwrap();
+        let animated = attacker.barrel_facing.as_ref().unwrap().current(frame);
+        let off_axis = i32::from(animated.wrapping_sub(desired) as i16).abs();
+        if off_axis <= 0x0800 && aimed_on_tick.is_none() {
+            aimed_on_tick = Some(tick);
+        }
+        sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+        let hp = sim
+            .substrate
+            .entities
+            .get(2)
+            .map_or(0, |target| target.health.current);
+        if hp < start_hp {
+            fired_on_tick = Some(tick);
+            break;
+        }
+    }
+
+    // The angle arm alone would have let the shot through here, so this is what
+    // separates a latch committed post-`Set` from one committed pre-`Set`.
+    assert_eq!(
+        aimed_on_tick,
+        Some(1),
+        "fixture check: the animated turret must already be inside 0x0800 on tick 1"
+    );
+    assert_eq!(
+        fired_on_tick,
+        Some(3),
+        "gamemd holds fire for the whole two-frame arc; firing on tick 1 means the \
+         latch was committed before arm A's Set instead of after it"
     );
 }
