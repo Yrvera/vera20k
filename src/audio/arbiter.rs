@@ -61,6 +61,12 @@ pub const VOLUME_BUCKETS: usize = 10;
 /// spills into `bucket[prio + 1][0]` — harmless with the 7-row array, but it
 /// makes a full-volume entry look one priority tier higher to
 /// [`SoundArbiter::find_lowest_priority`], i.e. harder to preempt.
+///
+/// The spill is reproduced, not clamped away: the ranking insert at
+/// `0x004044CA` (`LEA EBX,[EAX*8 + 0x87de38]`, row stride 120) and
+/// `0x0040454D` (`LEA ECX,[EBX + ECX*4]`, bucket stride 12) applies **no
+/// bound to either index**, so the write is a flat byte offset from the array
+/// base and bucket 10 of row `p` is bucket 0 of row `p + 1`.
 pub const BUCKET_DIVISOR: i32 = 1638;
 
 /// Age gap two equal-priority channels need before the older one is taken.
@@ -337,8 +343,11 @@ struct EntryRuntime {
     best_priority: i32,
     /// `+0xB0`, the best volume bucket seen this ranking pass.
     best_bucket: i32,
-    /// Where the entry currently sits in the bucket array, if anywhere.
-    bucket_slot: Option<(usize, usize)>,
+    /// Where the entry currently sits in the bucket array, if anywhere, as a
+    /// **flat** slot. Native addresses the array as one byte offset
+    /// (`base + 120*row + 12*bucket`) with no per-index bound, so a flat
+    /// index is what reproduces the bucket-10 spill into the next row.
+    bucket_slot: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -716,8 +725,17 @@ impl SoundArbiter {
     /// `AdvancePlaylist @ 0x004047B0` step 2 asked from the device side: may
     /// this looping event start another pass?
     ///
+    /// The whole body is gated on `Voc+0x58 < 0x21 || (flags & 0x20)` (first
+    /// line of the decompiled body), and step 2 itself is
     /// `(Control & LOOP) && !(flags & 0x20) && (Loop == 0 || iteration <
-    /// Loop - 1)`. Consumes one iteration when it answers yes.
+    /// Loop - 1)`. The two combine to `Delay.min < 0x21 && !(flags & 0x20)
+    /// && ...`: an entry whose `Delay=` low bound is 33 ms or more never
+    /// reaches the LOOP branch at all — its sustain is instead the streaming
+    /// callback `FUN_00405AC0` parking the token and re-drawing
+    /// `RandomRanged(Delay.min, Delay.max)` between samples, which is the
+    /// pre-delay path [`EventState::PreDelay`] already models.
+    ///
+    /// Consumes one iteration when it answers yes.
     pub fn advance_loop(&mut self, id: EventId) -> bool {
         let Some(event) = self.event(id) else {
             return false;
@@ -728,6 +746,9 @@ impl SoundArbiter {
         let Some(facts) = self.entries[event.entry as usize].facts else {
             return false;
         };
+        if facts.delay_ms.0 >= PREDELAY_FLOOR_MS {
+            return false;
+        }
         if facts.control & control::LOOP == 0 {
             return false;
         }
@@ -865,6 +886,12 @@ impl SoundArbiter {
     /// `g_PriorityVolumeBuckets` rows `[0, priority)` — **strictly lower
     /// priority only, equal priority is never preempted here** — and inside a
     /// row take the quietest bucket first. Returns the losing entry.
+    ///
+    /// The row bound is `for (p = 0; p < param_1; p++)` with no upper clamp —
+    /// native would walk past the 7-row array for a priority above 7. The
+    /// `PRIORITY_ROWS` ceiling here is VERA-internal, gamemd equivalent
+    /// UNCHECKED; it is unreachable on stock data, where `Priority=` tops out
+    /// at `CRITICAL(4)`.
     fn find_lowest_priority(&mut self, priority: i32) -> Option<u32> {
         for row in 0..priority.clamp(0, PRIORITY_ROWS as i32) as usize {
             for bucket in 0..VOLUME_BUCKETS {
@@ -1141,14 +1168,33 @@ impl SoundArbiter {
             }
             entry.best_priority = priority;
             entry.best_bucket = bucket;
-            if let Some((row, column)) = entry.bucket_slot.take() {
-                self.buckets[row * VOLUME_BUCKETS + column]
-                    .retain(|other| *other != entry_index as u32);
+            if let Some(slot) = entry.bucket_slot.take() {
+                self.buckets[slot].retain(|other| *other != entry_index as u32);
             }
-            let row = (priority.clamp(0, PRIORITY_ROWS as i32 - 1)) as usize;
-            let column = bucket.clamp(0, VOLUME_BUCKETS as i32 - 1) as usize;
-            self.buckets[row * VOLUME_BUCKETS + column].push(entry_index as u32);
-            self.entries[entry_index].bucket_slot = Some((row, column));
+            // `0x004044CA` / `0x0040454D`: the insert address is
+            // `0x0087DE38 + 120*row + 12*bucket` with **no clamp on either
+            // index**, so a full-scale instance's bucket 10 lands in
+            // `bucket[row + 1][0]` — a full-volume entry reads as one
+            // priority tier higher to `find_lowest_priority`, i.e. harder to
+            // preempt. Compute the same flat slot.
+            let slot = priority * VOLUME_BUCKETS as i32 + bucket;
+            // VERA-internal, gamemd equivalent UNCHECKED: native has no bound
+            // here and would write past the 7x10 array. Unreachable on stock
+            // data — `Priority=` parses to `LOWEST(0)..CRITICAL(4)` and the
+            // spill costs one row, so the highest slot a stock cue can reach
+            // is row 5, bucket 0. Trigger: an effective priority of 6 or more,
+            // or a negative one. Player effect if it ever fired: the entry is
+            // simply not rankable, so `preempt_for_sample_memory` cannot pick
+            // it. Frequency: never on stock `soundmd.ini`. Downstream risk:
+            // none — nothing else reads the bucket array.
+            let Ok(slot) = usize::try_from(slot) else {
+                continue;
+            };
+            if slot >= self.buckets.len() {
+                continue;
+            }
+            self.buckets[slot].push(entry_index as u32);
+            self.entries[entry_index].bucket_slot = Some(slot);
         }
 
         let target = if volume_sum > MANY_SOUNDS_THRESHOLD {
@@ -1168,12 +1214,17 @@ impl SoundArbiter {
     ///
     /// **Its native trigger is sample-memory starvation, not channel
     /// starvation.** The start pass reaches it only when
-    /// `SoundEvent::PreparePlayout @ 0x00404700` returns 0, and the only
-    /// runtime way that happens is `SoundEvent::LoadSamples @ 0x004048B0`
-    /// getting nothing back from `SampleTracker::LoadSample` — i.e. the
-    /// streaming pool (`FUN_004019E0(idx, 0x100000, 200, 0x2000)` at
-    /// `0x00403F29`: 127 blocks of 8 KB inside a 1 MB budget) is full.
-    /// Stopping lower-priority entries frees those blocks.
+    /// `SoundEvent::PreparePlayout @ 0x00404700` returns 0. That function has
+    /// three `return 0` paths: a zero loaded-sample count (`+0xA8`, i.e.
+    /// `SoundEvent::LoadSamples @ 0x004048B0` got nothing back from
+    /// `SampleTracker::LoadSample`), `flags & 0x20` (NO_REPLAY), and
+    /// `+0x1E0 < 1` after the attack/decay reservation. **On stock data only
+    /// the first is reachable** — all 33 `Control=attack`/`decay` entries in
+    /// `soundmd.ini` carry at least three `Sounds=`, so the reservation
+    /// cannot empty the list — and it means the streaming pool
+    /// (`FUN_004019E0(idx, 0x100000, 200, 0x2000)` at `0x00403F29`: 127
+    /// blocks of 8 KB inside a 1 MB budget) is full. Stopping lower-priority
+    /// entries frees those blocks.
     ///
     /// RESIDUAL (UNCHECKED trigger) — VERA decodes each cue into an owned
     /// `Vec<f32>` with no fixed budget, so nothing here can starve and this
@@ -1749,5 +1800,77 @@ mod tests {
         arbiter.stop(first);
         arbiter.update_tick(100);
         assert_eq!(arbiter.validate_loop_handle(7), None);
+    }
+
+    /// `AdvancePlaylist @ 0x004047B0` opens with
+    /// `if ((Voc+0x58 < 0x21) || (flags & 0x20))`, so a `Control=loop` entry
+    /// whose `Delay=` low bound is 33 ms or more never reaches the LOOP
+    /// branch: its sustain is the streaming callback re-drawing
+    /// `RandomRanged(Delay.min, Delay.max)` between samples, not a chained
+    /// restart. Every stock entry of that shape is an ambient
+    /// (`_Amb_*`, `PropagandaTruck`, `CruiseShipAmbience`, 24 in all).
+    #[test]
+    fn a_loop_entry_with_a_delay_floor_never_reaches_the_loop_branch() {
+        let mut spaced = facts(2, 0);
+        spaced.control = control::LOOP;
+        spaced.delay_ms = (PREDELAY_FLOOR_MS, 5000);
+        let mut arbiter = SoundArbiter::new(0);
+        let event = arbiter
+            .submit(&request("AMB", spaced, VOLUME_SCALE), 0)
+            .expect("pool slot");
+        arbiter.update_tick(100);
+        assert!(!arbiter.advance_loop(event));
+
+        // One millisecond under the floor and the same entry loops.
+        let mut tight = spaced;
+        tight.delay_ms = (PREDELAY_FLOOR_MS - 1, 5000);
+        let mut arbiter = SoundArbiter::new(0);
+        let event = arbiter
+            .submit(&request("AMB", tight, VOLUME_SCALE), 0)
+            .expect("pool slot");
+        arbiter.update_tick(100);
+        assert!(arbiter.advance_loop(event));
+    }
+
+    /// The ranking insert applies no bound to the volume column
+    /// (`0x004044CA LEA EBX,[EAX*8 + 0x87de38]`, `0x0040454D
+    /// LEA ECX,[EBX + ECX*4]`), so a full-scale instance's bucket
+    /// `0x4000 / 1638 = 10` is written at `base + 120*prio + 120` —
+    /// `bucket[prio + 1][0]`. A full-volume entry therefore reads one
+    /// priority tier higher to `FindLowestPriority` and survives a caller
+    /// that takes its quieter same-priority peer.
+    #[test]
+    fn a_full_volume_entry_spills_into_the_next_priority_row() {
+        let mut arbiter = SoundArbiter::new(0);
+        let loud = arbiter
+            .submit(&request("LOUD", facts(2, 0), VOLUME_SCALE), 0)
+            .expect("pool slot");
+        let quiet = arbiter
+            .submit(&request("QUIET", facts(2, 0), VOLUME_SCALE / 4), 0)
+            .expect("pool slot");
+        arbiter.update_tick(100);
+
+        // `VOLUME_SCALE / 4 = 4096` buckets to 2 and stays in row 2 (slot
+        // 22); `VOLUME_SCALE` buckets to 10 and lands at slot 30, which is
+        // row 3 bucket 0.
+        let loud_entry = arbiter.entry_index("LOUD") as usize;
+        let quiet_entry = arbiter.entry_index("QUIET") as usize;
+        assert_eq!(
+            arbiter.entries[loud_entry].bucket_slot,
+            Some(3 * VOLUME_BUCKETS)
+        );
+        assert_eq!(
+            arbiter.entries[quiet_entry].bucket_slot,
+            Some(2 * VOLUME_BUCKETS + 2)
+        );
+
+        // Rows `[0, 3)` reach row 2, where only the quiet entry sits.
+        assert_eq!(arbiter.preempt_for_sample_memory(3), vec![quiet]);
+        // Asked again, the same caller finds nothing: the loud entry is out
+        // of its reach. Clamping the column to 9 would have put it in row 2
+        // and surrendered it here.
+        assert!(arbiter.preempt_for_sample_memory(3).is_empty());
+        // It takes a caller one tier higher to reach it.
+        assert_eq!(arbiter.preempt_for_sample_memory(4), vec![loud]);
     }
 }

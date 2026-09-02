@@ -883,6 +883,40 @@ struct LoopQueue {
     finished: bool,
 }
 
+/// The EVA/speech suspend counter, `g_VoxSuspendDepth (DAT_00b1d428)`.
+///
+/// `GamePause::Enter @ 0x00406F00` calls `VoxClass::PauseEVA @ 0x007535B0`
+/// unconditionally, which raises this counter (`DAT_00b1d428 += 1`) after
+/// pausing the sounding announcement; `GamePause::Exit @ 0x00406F40` calls
+/// `VoxClass::UnpauseEVA @ 0x00753620`, which lowers it with a floor of 0
+/// (`if (d != 0) { d -= 1; if (d < 0) d = 0; }`).
+///
+/// `VoxClass::PlayNextQueued @ 0x00752780` — the dequeue the pump runs every
+/// pass — gates its **entire** body on `DAT_00b1d428 == 0` (read at
+/// `0x007527D5`; `get_xrefs_to 0x00b1d428` shows the only other readers are
+/// `PauseEVA`/`UnpauseEVA`). So a paused game neither finishes the line it is
+/// speaking nor starts the next queued one.
+#[derive(Debug, Clone, Copy, Default)]
+struct VoiceSuspend {
+    depth: i32,
+}
+
+impl VoiceSuspend {
+    /// One `GamePause::Enter`/`Exit` edge.
+    fn set_paused(&mut self, paused: bool) {
+        if paused {
+            self.depth += 1;
+        } else if self.depth != 0 {
+            self.depth = (self.depth - 1).max(0);
+        }
+    }
+
+    /// `VoxClass::PlayNextQueued`'s `DAT_00b1d428 == 0` gate.
+    fn dequeue_allowed(&self) -> bool {
+        self.depth == 0
+    }
+}
+
 /// Manages sound effect playback with separate SFX pool and voice slot.
 ///
 /// Matches the original engine's architecture:
@@ -932,6 +966,8 @@ pub struct SfxPlayer {
     /// Whether the game is paused, so [`Self::set_paused`] only acts on the
     /// edge the way `GamePause::Enter`/`Exit` do.
     paused: bool,
+    /// `g_VoxSuspendDepth (DAT_00b1d428)`: the EVA/speech suspend counter.
+    voice_suspend: VoiceSuspend,
     /// Presentation-side RNG standing in for `g_MainRng @ 0x00886B88`.
     rng: SfxRng,
 }
@@ -958,6 +994,7 @@ impl SfxPlayer {
             output_scale: 1.0,
             focus_output_scale: 1.0,
             paused: false,
+            voice_suspend: VoiceSuspend::default(),
             rng: SfxRng::from_clock(),
         })
     }
@@ -1317,7 +1354,15 @@ impl SfxPlayer {
     }
 
     /// Starts the next queued EVA cue if the dedicated voice slot is idle.
+    ///
+    /// `VoxClass::PlayNextQueued @ 0x00752780` wraps its whole body in
+    /// `... && (DAT_00b1d428 == 0)` (`0x007527D5`), so while the game is
+    /// paused the queue does not advance and the slot is not even recycled.
+    /// The guard is first, as it is there.
     pub fn advance_voice_queue(&mut self) {
+        if !self.voice_suspend.dequeue_allowed() {
+            return;
+        }
         if self
             .voice_player
             .as_ref()
@@ -1637,6 +1682,16 @@ impl SfxPlayer {
     /// (`SoundSystem::SuspendAll @ 0x00404FD0`) and stopping the actively
     /// playing channels (`DSoundChannel::PauseAll @ 0x00403770`).
     ///
+    /// The EVA/speech stream is a **second, unconditional** half of the same
+    /// edge: `Enter` calls `VoxClass::PauseEVA @ 0x007535B0` (which reaches
+    /// `StreamPlayer::Pause` whenever an announcement is sounding, then
+    /// raises [`VoiceSuspend`]) and tail-calls `SpeechSystem::Pause @
+    /// 0x00753500` (`StreamPlayer::Pause` again for the speech stream);
+    /// `Exit` calls `SpeechSystem::Resume @ 0x00753510` then
+    /// `VoxClass::UnpauseEVA @ 0x00753620`. Neither call sits behind the
+    /// `FUN_0053bad0` gate that the SFX half does. VERA serves EVA and unit
+    /// voices from one slot, so both halves land on `voice_player`.
+    ///
     /// Idempotent — call it with the current pause state every frame.
     pub fn set_paused(&mut self, paused: bool, now_ms: u64) {
         self.now_ms = now_ms;
@@ -1644,14 +1699,21 @@ impl SfxPlayer {
             return;
         }
         self.paused = paused;
+        self.voice_suspend.set_paused(paused);
         if paused {
             self.arbiter.suspend_all(now_ms);
             for output in self.live.values() {
                 output.player.pause();
             }
+            if let Some(output) = self.voice_player.as_ref() {
+                output.player.pause();
+            }
         } else {
             self.arbiter.resume_all(now_ms);
             for output in self.live.values() {
+                output.player.play();
+            }
+            if let Some(output) = self.voice_player.as_ref() {
                 output.player.play();
             }
         }
@@ -2895,5 +2957,39 @@ mod tests {
     fn test_decode_pcm_empty() {
         let samples = decode_pcm(&[], 1, 16);
         assert!(samples.is_empty());
+    }
+
+    /// Pausing stops the EVA/speech stream **and** freezes the announcement
+    /// queue. `GamePause::Enter @ 0x00406F00` calls
+    /// `VoxClass::PauseEVA @ 0x007535B0` unconditionally, which raises
+    /// `DAT_00b1d428`, and `VoxClass::PlayNextQueued @ 0x00752780` refuses to
+    /// dequeue anything while that counter is non-zero (`0x007527D5`).
+    /// `VoxClass::UnpauseEVA @ 0x00753620` lowers it with a floor of 0.
+    ///
+    /// This pins the decision half. The matching `Player::pause()` on
+    /// `voice_player` is device-side and shares residual R7 with the rest of
+    /// the rodio plumbing.
+    #[test]
+    fn pausing_suspends_the_eva_queue_until_every_pause_is_lifted() {
+        let mut suspend = VoiceSuspend::default();
+        assert!(suspend.dequeue_allowed());
+
+        suspend.set_paused(true);
+        assert!(!suspend.dequeue_allowed());
+        suspend.set_paused(true);
+        assert!(!suspend.dequeue_allowed());
+
+        // Native's counter is a depth, not a flag: one resume is not enough.
+        suspend.set_paused(false);
+        assert!(!suspend.dequeue_allowed());
+        suspend.set_paused(false);
+        assert!(suspend.dequeue_allowed());
+
+        // `if (d != 0) { d -= 1; if (d < 0) d = 0; }` — an unmatched resume
+        // never drives the counter negative, so the next pause still blocks.
+        suspend.set_paused(false);
+        assert!(suspend.dequeue_allowed());
+        suspend.set_paused(true);
+        assert!(!suspend.dequeue_allowed());
     }
 }

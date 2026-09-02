@@ -522,11 +522,15 @@ pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
 /// the game frame, so `SoundSystem::UpdateTick @ 0x004041D0` keeps reaping
 /// finished events, enforcing `Limit=`, ranking and servicing the EVA queue
 /// during a pause, an open menu, a modal dialog and a loading screen. The
-/// `> 33 ms` gate lives inside `SfxPlayer::pump`, as it does in native.
+/// `> 33 ms` gate lives inside `SfxPlayer::pump`, as it does in native. The
+/// EVA *dequeue* is the one part a pause does stop: `VoxClass::PlayNextQueued
+/// @ 0x00752780` gates its whole body on `DAT_00b1d428 == 0`, which
+/// `VoxClass::PauseEVA @ 0x007535B0` raises.
 ///
 /// Pause is the explicit `GamePause::Enter @ 0x00406F00` path: suspend every
-/// event and stop the playing channels. VERA's separate "in-game menu open"
-/// state is deliberately NOT treated as a pause — gamemd reaches
+/// event, stop the playing channels, and pause the EVA/speech stream. VERA's
+/// separate "in-game menu open" state is deliberately NOT treated as a pause
+/// — gamemd reaches
 /// `GamePause::Enter` only through `ScenarioPause::Enter @ 0x00684060` and
 /// `StateMachine::EnterPause @ 0x00683EB0`, and whether the YR options dialog
 /// routes through either of those is UNCHECKED.
