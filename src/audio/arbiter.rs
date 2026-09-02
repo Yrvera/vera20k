@@ -136,22 +136,55 @@ pub const RAMP_SPAN_MS: u32 = 1000;
 /// `Control=loop` yields that same one sample from either loader and then
 /// ends.
 ///
-/// Frequency: **zero today**, and the audible set is the union of the two
-/// halves above, not just the chaining one. Chaining diverges for an
-/// above-floor entry with more than one `Sounds=` name — 22 entries.
-/// Sustain diverges for every above-floor `Control=loop` entry, single-sample
-/// ones included: `SelectNextSample` ends a cue only on
-/// `((flags & 1) == 0 && pass == 1)` or
-/// `((flags & 1) != 0 && Voc+0x4C != 0 && Voc+0x4C <= pass)`, and **no**
-/// section in `ini/soundmd.ini` sets `Loop=`, so all 24 sustain forever
-/// natively while [`SoundArbiter::advance_loop`] refuses them. Two of the 24
-/// carry a single `Sounds=` name and so fall outside the chaining set —
-/// `CruiseShipAmbience` (`gship1a`, wired as `AmbientSound=`) and
-/// `_Amb_DesertHawk`. Union: 24 entries, every one an ambient plus the debug
-/// `TestRandomLoopDelayAll`, and `AmbientSound=` has no producer anywhere in
-/// the crate. All 41 distinct `MoveSound=` values in `ini/rulesmd.ini`
-/// resolve to entries with `Delay` min 0. It goes live the day ambients get a
-/// producer. Downstream risk:
+/// The two halves diverge over **different sets, and neither contains the
+/// other** — state each with its own criterion rather than adding them up.
+/// Both are counted off `ini/soundmd.ini` with the native tokenizer (`strtok`
+/// on `" \t\n"`, the delimiter string at `0x00846570`), so `Delay=` min is the
+/// first token and `Delay=10000 20000` is above the floor.
+///
+/// - **Chaining set — 22 entries**: above the floor, `Control=all`, and more
+///   than one `Sounds=` name. All three terms are load-bearing. Dropping the
+///   `Control=` term would give 24, but wrongly: without `all`,
+///   `select_playout_pass` (`src/audio/sfx.rs`) pushes a single index too, so
+///   `CowAmbient` (`random interrupt ambient`) and `MIGMove`
+///   (`random predelay`) yield one sample from either loader and cannot
+///   chain. `Control=attack`/`decay` would qualify as well, but that arm is
+///   vacuous on stock data — no above-floor entry writes `Attack=` or
+///   `Decay=`.
+/// - **Sustain set — 24 entries**: above the floor and `Control=loop`,
+///   single-sample ones included. `SelectNextSample` ends a cue only on
+///   `((flags & 1) == 0 && pass == 1)` or
+///   `((flags & 1) != 0 && Voc+0x4C != 0 && Voc+0x4C <= pass)`, and `Voc+0x4C`
+///   is `Loop=` read with **default 0**: `VocClass::ReadINI @ 0x00750834`
+///   calls `CCINIClass::ReadInt(section, "Loop", 0)` (key string at
+///   `0x00824238`) into `AudioEventClass::SetLoop @ 0x00406640`
+///   (`MOV [ECX+0x4C],EDX`). The file's one `Loop=` is
+///   `[TestEnvelopeFShift] Loop=3`, which is out of scope twice over — its
+///   `Delay=` is commented out so it sits below the floor, and its
+///   `Control= random` carries no loop bit. So all 24 leave `Voc+0x4C == 0`,
+///   the second disjunct can never fire, and every one sustains forever
+///   natively while [`SoundArbiter::advance_loop`] refuses it.
+///
+/// The two sets share **21** entries, so their union is 22 + 24 − 21 = **25**.
+/// Four entries break a naive reading of one criterion or the other, and they
+/// are why the union is not the larger set: `CruiseShipAmbience` (`gship1a`)
+/// and `_Amb_DesertHawk` sustain but carry a single `Sounds=` name and no
+/// `all`, so they never chain; `ChimpAmbient` (`random all ambient`) chains
+/// but carries no `loop`, so it is the one chaining entry outside the sustain
+/// set; and `PropagandaTruck` is above-floor `Control=loop` carrying **zero**
+/// `Sounds=` names — its list is commented out at `ini/soundmd.ini:2012` — so
+/// it is in the sustain set yet silent under either engine. Audibly
+/// divergent is therefore 25 − 1 = **24**, every one `Control=ambient` except
+/// the debug `TestRandomLoopDelayAll` (`random loop all`, `Priority=HIGH`).
+/// Beware that this 24 and the sustain set's 24 are equal-sized *different*
+/// sets: the sustain set holds `PropagandaTruck` and not `ChimpAmbient`, the
+/// audible union the reverse.
+///
+/// Frequency: **zero today**. `rulesmd.ini` points `AmbientSound=` at six of
+/// the 25, but `AmbientSound=` has no producer anywhere in the crate — the
+/// token appears in `src/` only in this comment. All 41 distinct `MoveSound=`
+/// values in `ini/rulesmd.ini` resolve to entries with `Delay` min 0. It goes
+/// live the day ambients get a producer. Downstream risk:
 /// closing it needs the per-buffer playlist that residuals R4 and R9 also
 /// wait on, plus a port of `SelectNextSample`'s separate cursor state — it
 /// is a mechanism port, not a gate on the existing one, which is why the
@@ -1886,8 +1919,10 @@ mod tests {
     /// whose `Delay=` low bound is 33 ms or more never reaches the LOOP
     /// branch: its sustain is the streaming callback re-drawing
     /// `RandomRanged(Delay.min, Delay.max)` between samples, not a chained
-    /// restart. Every stock entry of that shape is an ambient
-    /// (`_Amb_*`, `PropagandaTruck`, `CruiseShipAmbience`, 24 in all).
+    /// restart. 24 stock entries have that shape — the sustain set of
+    /// [`PREDELAY_FLOOR_MS`] — and every one is `Control=ambient` (`_Amb_*`,
+    /// `PropagandaTruck`, `CruiseShipAmbience`) except the debug
+    /// `TestRandomLoopDelayAll`.
     #[test]
     fn a_loop_entry_with_a_delay_floor_never_reaches_the_loop_branch() {
         let mut spaced = facts(2, 0);
