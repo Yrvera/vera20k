@@ -1177,17 +1177,35 @@ Recorded open items, each with its native reading and owner. None is closed by P
   launch's overlay authority, and any authored pack reaching that boundary — now owns the
   `CellClass+0x122` wall plane instead of leaving the legacy `None` compatibility mode: it starts at
   zero and wrapping-increments the eight neighbours of every accepted wall stamp in N, NE, E, SE, S,
-  SW, W, NW order (`OverlayClass::Mark`'s wall tail, the same increment the authored finalizer
-  models), dropping off-grid steps because native resolves those to the shared dummy CellClass whose
-  byte no real cell reads. Snapshot restore rejects a current-version state with no plane
+  SW, W, NW order — `OverlayClass::Mark @ 0x005FC570`'s wall tail (`0x005FC758..0x005FC775`: eight
+  `MapCoord_StepByDir_GetCell @ 0x00481810` steps over `g_DirectionOffsets`, each an 8-bit `INC DL`
+  on `CellClass+0x122`, the anchor never incremented). Neighbour resolution goes through the
+  allocation-aware lookup the runtime wall path uses, because `MapClass::Get_CellClass @ 0x005657A0`
+  returns the shared dummy both for an out-of-array index and for a NULL pointer-table slot: a
+  neighbour inside the storage rectangle but outside the allocated playfield takes no increment.
+  Snapshot restore rejects a current-version state with no plane
   (`SnapshotRestoreError::MissingRetainedWallNeighborPlane`) rather than falling through to the
   identity rescan, so the blocker-count owner's legacy scan is now reachable only from test-only
-  legacy constructors. Player-visible effect today: none. The retail random-map generator emits only
-  tiberium (`GEM01`-`GEM12`, `TIB01`-`TIB12`), low-bridge deck and `SROCK`/`TROCK` overlay indices,
-  and no index in those ranges carries `Wall=yes` in `rulesmd.ini` (walls are `GASAND`, `CYCL`,
-  `GAWALL`, `NAWALL`, `CAFNCB`, `CAFNCW`, `CAKRMW`, `CAFNCP`), so a generated launch keeps an
-  all-zero plane and the observable counts are unchanged. The row closes the authority hole: a
-  runtime-destroyed wall no longer silently drops its Mark history from the count.
+  legacy constructors. The retail random-map generator emits only tiberium (`GEM01`-`GEM12` ids
+  27-38, `TIB01`-`TIB12` ids 102-113), low-bridge deck (74-77, 98) and `SROCK`/`TROCK` (168-177)
+  indices; the `Wall=yes` ids in `rulesmd.ini` are `GASAND` 0, `GAWALL` 2, `NAWALL` 26, `CAFNCB` 203,
+  `CAFNCW` 204, `CAKRMW` 240, `CAFNCP` 241 and `GAFWLL` 243 (registry ids in declaration order, not
+  INI keys; `CYCL` has no section and so is not a wall), none of which the generator can emit — note
+  `NAWALL` 26 sits one index below `GEM_BASE` 27, so an off-by-one there would start stamping walls.
+  A generated launch therefore keeps an all-zero plane and nothing changes until a wall is built;
+  from then on the count source is the Mark history rather than a final-identity rescan, and the two
+  differ only for a wall whose neighbour set touches an unallocated cell at the playfield boundary.
+  The row closes the authority hole: a runtime-destroyed wall no longer silently drops its Mark
+  history from the count.
+  Residuals recorded: (a) the map-pack boundary models only the `+0x122` tail of that wall branch —
+  the `0x0047C620` acceptance gate whose failure aborts the whole Mark, `PostDestructionWallCleanup
+  @ 0x00480630`, the `MergeAdjacentCellZone @ 0x0056D5A0` / `IncrementalRebuildZoneGraphAroundCell @
+  0x00584550` pair, the `Cell+0x50` write and the per-miss shared-dummy coordinate restamp are
+  UNCHECKED at this boundary and unreachable while the generator emits no wall id; (b) the wrapping
+  byte cannot overflow from wall Marks alone (at most eight increments per cell), but the
+  `BuildingClass::Unlimbo` contribution to the same byte was not re-derived, so overflow overall is
+  UNCHECKED; (c) `SNAPSHOT_VERSION` stays 116, so a v116 state saved by an earlier build of this
+  repo on a generated map is now rejected at load.
 - **CellAnim child fields.** `OverlayClass::Mark`'s ordinary tail constructs the CellAnim at
   `Location+0x180` per axis with `GetGroundHeight`, then, when the cell has a tiberium type, writes
   `Anim+0xD4 = ColorScheme[Tiberium+0xC0]+0x30C` and `Anim+0xFC = cell.nZAdjust_Ground`. The

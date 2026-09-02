@@ -530,7 +530,7 @@ pub enum SnapshotRestoreError {
     )]
     RetainedWallNeighborStorageMismatch { expected: usize, found: usize },
     #[error(
-        "snapshot overlay grid carries no retained wall-neighbor plane; every current-version map          authority owns one"
+        "snapshot overlay grid carries no retained wall-neighbor plane; every current-version map authority owns one"
     )]
     MissingRetainedWallNeighborPlane,
     #[error("snapshot real-cell bridge flags do not match restored CellClass allocation")]
@@ -2497,6 +2497,9 @@ mod tests {
             3,
             1,
         );
+        // This fixture places a live wall but is not a blocker-count subject:
+        // the zero plane only satisfies the map-authority restore gate. A real
+        // wall always carries its `OverlayClass::Mark` increments.
         runtime_overlays.retain_zero_wall_plane_for_tests();
         sim.overlay_grid = Some(runtime_overlays);
         sim.install_resolved_terrain_for_new_map(map_terrain.clone());

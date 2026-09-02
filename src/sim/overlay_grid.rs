@@ -152,11 +152,26 @@ pub struct OverlayGrid {
     synchronous_navigation_cells: Vec<(u16, u16)>,
 }
 
-/// `OverlayClass::Mark`'s wall tail: wrapping-increment `CellClass+0x122` on
-/// the anchor's eight neighbours in N, NE, E, SE, S, SW, W, NW order. Native
-/// resolves an out-of-map neighbour to the shared dummy CellClass, whose byte
-/// no real cell ever reads, so an off-grid step is dropped here.
-fn increment_wall_neighbor_plane(plane: &mut [u8], width: u16, height: u16, rx: u16, ry: u16) {
+/// `OverlayClass::Mark @ 0x005FC570`'s wall tail (`0x005FC758..0x005FC775`):
+/// eight `MapCoord_StepByDir_GetCell @ 0x00481810` steps over
+/// `g_DirectionOffsets` in N, NE, E, SE, S, SW, W, NW order, each
+/// wrapping-incrementing the byte at `CellClass+0x122` (`INC DL`). The anchor
+/// itself is never incremented.
+///
+/// `MapClass::Get_CellClass @ 0x005657A0` returns the shared dummy both for an
+/// index outside the cell array and for a NULL pointer-table slot, so a
+/// neighbour inside the storage rectangle but outside the allocated playfield
+/// also lands on the dummy, whose byte no real cell reads. Resolution
+/// therefore goes through the same allocation-aware lookup the runtime wall
+/// path uses, not a rectangle test.
+fn increment_wall_neighbor_plane(
+    plane: &mut [u8],
+    width: u16,
+    height: u16,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+) {
     const ADJACENT_8: [(i32, i32); 8] = [
         (0, -1),
         (1, -1),
@@ -168,9 +183,14 @@ fn increment_wall_neighbor_plane(plane: &mut [u8], width: u16, height: u16, rx: 
         (-1, -1),
     ];
     for (dx, dy) in ADJACENT_8 {
-        let nx = i32::from(rx) + dx;
-        let ny = i32::from(ry) + dy;
-        let (Ok(nx), Ok(ny)) = (u16::try_from(nx), u16::try_from(ny)) else {
+        let target = native_runtime_overlay_cell_lookup(
+            width,
+            height,
+            resolved_terrain,
+            i32::from(rx) + dx,
+            i32::from(ry) + dy,
+        );
+        let Some(NativeRuntimeOverlayCell::Real(nx, ny)) = target else {
             continue;
         };
         let Some(index) = index_of(width, height, nx, ny) else {
@@ -378,6 +398,7 @@ impl OverlayGrid {
                         &mut wall_neighbor_counts,
                         width,
                         height,
+                        Some(terrain),
                         entry.rx,
                         entry.ry,
                     );
@@ -2555,6 +2576,45 @@ mod tests {
             plane,
             &[1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0][..],
             "the eight neighbours of the wall anchor each took one increment"
+        );
+    }
+
+    /// `MapClass::Get_CellClass @ 0x005657A0` returns the shared dummy for a
+    /// NULL pointer-table slot as well as an out-of-array index, so a
+    /// neighbour inside the storage rectangle but outside the allocated
+    /// playfield takes no increment either.
+    #[test]
+    fn map_pack_wall_plane_skips_unallocated_neighbors() {
+        let registry = map_pack_wall_registry();
+        let mut terrain = clear_terrain_grid(3, 3);
+        // Everything around (1,1) is allocated except its east neighbour.
+        terrain.test_set_native_allocated_cells(&[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 1),
+            (0, 2),
+            (1, 2),
+            (2, 2),
+        ]);
+        let grid = OverlayGrid::from_native_overlay_packs(
+            &[OverlayEntry {
+                rx: 1,
+                ry: 1,
+                overlay_id: 2,
+                frame: 0,
+            }],
+            &OverlayDataPack::from_cells([(1, 1, 0)]),
+            &mut terrain,
+            &registry,
+            &BTreeSet::from([2u8]),
+            true,
+        );
+        assert_eq!(
+            grid.retained_wall_neighbor_counts(),
+            Some(&[1u8, 1, 1, 1, 0, 0, 1, 1, 1][..]),
+            "the unallocated east neighbour resolves to the shared dummy"
         );
     }
 
