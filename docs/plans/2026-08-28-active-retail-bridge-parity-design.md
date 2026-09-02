@@ -1174,8 +1174,9 @@ Recorded open items, each with its native reading and owner. None is closed by P
   seam and the negative no-`BridgeFacts` assertion.
 - **Retained wall plane `None` acceptance (contract G7) — IMPLEMENTED by transaction-3 slice E
   (`feature/bridge-retained-wall-plane`).** `OverlayGrid::from_native_overlay_packs` — the generated
-  launch's overlay authority, and any authored pack reaching that boundary — now owns the
-  `CellClass+0x122` wall plane instead of leaving the legacy `None` compatibility mode: it starts at
+  launch's overlay authority, and the only production caller of that boundary (an authored load
+  reaches `from_finalized_map_payload` instead) — now owns the `CellClass+0x122` wall plane instead
+  of leaving the legacy `None` compatibility mode: it starts at
   zero and wrapping-increments the eight neighbours of every accepted wall stamp in N, NE, E, SE, S,
   SW, W, NW order — `OverlayClass::Mark @ 0x005FC570`'s wall tail (`0x005FC758..0x005FC775`: eight
   `MapCoord_StepByDir_GetCell @ 0x00481810` steps over `g_DirectionOffsets`, each an 8-bit `INC DL`
@@ -1197,15 +1198,23 @@ Recorded open items, each with its native reading and owner. None is closed by P
   differ only for a wall whose neighbour set touches an unallocated cell at the playfield boundary.
   The row closes the authority hole: a runtime-destroyed wall no longer silently drops its Mark
   history from the count.
+  The per-miss shared-dummy coordinate restamp IS modelled: `MapClass::Get_CellClass` writes the
+  requested packed coordinate to the dummy's `+0x24` on every miss (`0x005657C8`), and the
+  allocation-aware lookup does the same, so after a wall stamp the dummy carries the last missed
+  neighbour in `ADJACENT_8` order.
   Residuals recorded: (a) the map-pack boundary models only the `+0x122` tail of that wall branch —
-  the `0x0047C620` acceptance gate whose failure aborts the whole Mark, `PostDestructionWallCleanup
-  @ 0x00480630`, the `MergeAdjacentCellZone @ 0x0056D5A0` / `IncrementalRebuildZoneGraphAroundCell @
-  0x00584550` pair, the `Cell+0x50` write and the per-miss shared-dummy coordinate restamp are
-  UNCHECKED at this boundary and unreachable while the generator emits no wall id; (b) the wrapping
-  byte cannot overflow from wall Marks alone (at most eight increments per cell), but the
+  the `0x0047C620` acceptance gate whose failure aborts the whole Mark, the constructor-side
+  `FUN_0047C550 @ 0x0047C550` gate that decides whether `ObjectClass::Unlimbo @ 0x005F4EC0` runs at
+  all, `PostDestructionWallCleanup @ 0x00480630`, the `MergeAdjacentCellZone @ 0x0056D5A0` /
+  `IncrementalRebuildZoneGraphAroundCell @ 0x00584550` pair and the `Cell+0x50` write are UNCHECKED
+  at this boundary and unreachable while the generator emits no wall id; (b) the wrapping byte
+  cannot overflow from wall Marks alone (at most eight increments per cell), but the
   `BuildingClass::Unlimbo` contribution to the same byte was not re-derived, so overflow overall is
   UNCHECKED; (c) `SNAPSHOT_VERSION` stays 116, so a v116 state saved by an earlier build of this
-  repo on a generated map is now rejected at load.
+  repo on a generated map is now rejected at load; (d) the Rust runs the eight increments before
+  each stamp's `recalc_overlay_passability` where Mark runs its tail last — the counts are
+  unaffected (they accumulate in a local plane and recalc never reads them), but the shared-dummy
+  coordinate both paths stamp can end on a different value once a wall can reach this boundary.
 - **CellAnim child fields.** `OverlayClass::Mark`'s ordinary tail constructs the CellAnim at
   `Location+0x180` per axis with `GetGroundHeight`, then, when the cell has a tiberium type, writes
   `Anim+0xD4 = ColorScheme[Tiberium+0xC0]+0x30C` and `Anim+0xFC = cell.nZAdjust_Ground`. The

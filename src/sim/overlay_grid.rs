@@ -367,8 +367,11 @@ impl OverlayGrid {
         // so it starts the plane at zero and increments per accepted wall
         // stamp instead of leaving the legacy `None` compatibility mode. The
         // retail random-map generator emits only tiberium, low-bridge deck and
-        // rock overlay indices, so a generated launch keeps an all-zero plane;
-        // an authored pack reaching this boundary still gets its counts.
+        // rock overlay indices, so a generated launch keeps an all-zero plane.
+        // Only the `+0x122` tail is modelled here: the wall branch's own
+        // acceptance gate, `PostDestructionWallCleanup`, the zone merge/rebuild
+        // pair and the `Cell+0x50` write are not, so this boundary is a partial
+        // Mark that owns the counts and nothing else.
         let mut wall_neighbor_counts = vec![0u8; usize::from(width) * usize::from(height)];
 
         // The identity pass is deliberately stricter than raw/internal setup.
@@ -2540,7 +2543,12 @@ mod tests {
         let shp_available = BTreeSet::from([0u8, 1, 2]);
 
         let no_wall = OverlayGrid::from_native_overlay_packs(
-            &[],
+            &[OverlayEntry {
+                rx: 1,
+                ry: 1,
+                overlay_id: 1,
+                frame: 0,
+            }],
             &data,
             &mut terrain.clone(),
             &registry,
@@ -2550,7 +2558,7 @@ mod tests {
         assert_eq!(
             no_wall.retained_wall_neighbor_counts(),
             Some(&[0u8; 12][..]),
-            "a pack with no wall still retains an all-zero plane"
+            "a stamped non-wall overlay still retains an all-zero plane"
         );
 
         let walled = OverlayGrid::from_native_overlay_packs(

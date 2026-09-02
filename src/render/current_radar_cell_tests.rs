@@ -1,11 +1,13 @@
 use super::*;
 
 use crate::map::bridge_facts::{
-    Axis, BRIDGE_FLAG_EXTRA_SIDE, BRIDGE_FLAG_STRUCTURAL, BridgeAnchorRelation, BridgeCellFacts,
-    BridgeStampFamily, BridgeStampSlot, BridgeheadAnchorClass,
+    Axis, BRIDGE_FLAG_EXTRA_SIDE, BRIDGE_FLAG_STRUCTURAL, BridgeAnchorRelation,
+    BridgeCellFacts, BridgeStampFamily, BridgeStampSlot, BridgeheadAnchorClass,
 };
 use crate::map::playfield::PlayfieldBounds;
-use crate::map::resolved_terrain::{RadarColorMetadata, ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{
+    RadarColorMetadata, ResolvedTerrainCell, ResolvedTerrainGrid,
+};
 use crate::map::terrain::{TerrainGrid, build_terrain_grid_from_resolved};
 use crate::render::minimap::{MinimapCellRadarSource, MinimapOverlayDatum};
 use crate::render::minimap_helpers::OverlayClassification;
@@ -184,10 +186,11 @@ fn projection<'a>(
     )
 }
 
-fn raw_pair(projection: &MinimapPlayfieldProjection, cell: (u16, u16)) -> [[u8; 3]; 2] {
-    let geometry = projection
-        .native_radar_surface
-        .expect("native radar surface");
+fn raw_pair(
+    projection: &MinimapPlayfieldProjection,
+    cell: (u16, u16),
+) -> [[u8; 3]; 2] {
+    let geometry = projection.native_radar_surface.expect("native radar surface");
     let raw = projection
         .native_radar_terrain
         .as_ref()
@@ -319,7 +322,10 @@ fn snapshot_restored_collapsed_high_runtime(
     );
     let resources = SimResources::empty();
     restored
-        .restore_map_authority_after_snapshot_load(&resources.rules, &resources.overlay_registry)
+        .restore_map_authority_after_snapshot_load(
+            &resources.rules,
+            &resources.overlay_registry,
+        )
         .expect("restored current map authority");
     SimRuntime {
         simulation: restored,
@@ -333,9 +339,18 @@ fn gsi_04_01_structural_high_bridge_wins_in_full_and_incremental_paths() {
     let cell = central_cell(&grid, expanded_bounds());
     mark_high_bridge_source(resolved.cell_mut(cell.0, cell.1).unwrap());
     let colors = colors();
-    let stale_destroyed =
-        runtime_with_overlay(resolved.clone(), cell, Some(false), Some((0x4A, 9)));
-    let current_high = runtime_with_overlay(resolved, cell, Some(true), Some((0x4A, 9)));
+    let stale_destroyed = runtime_with_overlay(
+        resolved.clone(),
+        cell,
+        Some(false),
+        Some((0x4A, 9)),
+    );
+    let current_high = runtime_with_overlay(
+        resolved,
+        cell,
+        Some(true),
+        Some((0x4A, 9)),
+    );
 
     let full = projection(&grid, &current_high, &[], expanded_bounds(), &colors);
     assert_eq!(raw_pair(&full, cell), [BRIDGE_COLOR; 2]);
@@ -352,9 +367,16 @@ fn gsi_04_01_intact_low_overlay_stays_overlay_in_full_and_incremental_paths() {
     let cell = central_cell(&grid, expanded_bounds());
     let colors = colors();
     let absent = runtime_with_overlay(resolved.clone(), cell, None, None);
-    for (overlay_id, expected) in [(0x4A, LOW_BRIDGE_COLOR), (0xCD, LOW_BRIDGE_CD_COLOR)] {
-        let intact_low =
-            runtime_with_overlay(resolved.clone(), cell, Some(true), Some((overlay_id, 9)));
+    for (overlay_id, expected) in [
+        (0x4A, LOW_BRIDGE_COLOR),
+        (0xCD, LOW_BRIDGE_CD_COLOR),
+    ] {
+        let intact_low = runtime_with_overlay(
+            resolved.clone(),
+            cell,
+            Some(true),
+            Some((overlay_id, 9)),
+        );
 
         let full = projection(&grid, &intact_low, &[], expanded_bounds(), &colors);
         assert_eq!(raw_pair(&full, cell), [expected; 2]);
@@ -412,8 +434,11 @@ fn gsi_04_01_high_collapse_uses_runtime_overlay_then_repairs_in_full_and_increme
     assert_eq!(raw_pair(&repaired_full, cell), [BRIDGE_COLOR; 2]);
 
     for destroyed_overlay in [0xE7, 0xE8, u8::MAX] {
-        let destroyed =
-            structural_runtime_with_stale_grid(resolved.clone(), cell, destroyed_overlay);
+        let destroyed = structural_runtime_with_stale_grid(
+            resolved.clone(),
+            cell,
+            destroyed_overlay,
+        );
         // This is the same full projection used for load/action-40 rebuilds.
         let full = projection(&grid, &destroyed, &[], expanded_bounds(), &colors);
         assert_eq!(raw_pair(&full, cell), [BASE_COLOR; 2]);
@@ -453,8 +478,11 @@ fn gsi_04_01_snapshot_high_collapse_uses_runtime_overlay_after_structural_flag_c
     );
 
     for saved_overlay in [0xE7, 0xE8, u8::MAX] {
-        let restored =
-            snapshot_restored_collapsed_high_runtime(&terrain_template, cell, saved_overlay);
+        let restored = snapshot_restored_collapsed_high_runtime(
+            &terrain_template,
+            cell,
+            saved_overlay,
+        );
         let restored_cell = restored
             .simulation
             .resolved_terrain
@@ -552,7 +580,11 @@ fn gsi_04_01_damaged_tmp_pair_rebuilds_and_repairs_in_full_and_incremental_paths
         damaged_state.apply_damaged_variant_flood_fill(cell.0, cell.1, false, &resolved),
         vec![cell],
     );
-    let repaired = live_runtime(resolved, damaged_state, OverlayGrid::new(SIDE, SIDE));
+    let repaired = live_runtime(
+        resolved,
+        damaged_state,
+        OverlayGrid::new(SIDE, SIDE),
+    );
     let repaired_full = projection(&grid, &repaired, &[], expanded_bounds(), &colors);
     assert_eq!(raw_pair(&repaired_full, cell), [BASE_COLOR; 2]);
     apply_incremental(&mut incremental, &repaired, cell, &colors);
@@ -564,7 +596,12 @@ fn gsi_04_01_destroyed_low_overlay_falls_through_in_full_and_incremental_paths()
     let (grid, resolved) = fixture(None);
     let cell = central_cell(&grid, expanded_bounds());
     let colors = colors();
-    let intact_low = runtime_with_overlay(resolved.clone(), cell, Some(true), Some((0x4A, 0)));
+    let intact_low = runtime_with_overlay(
+        resolved.clone(),
+        cell,
+        Some(true),
+        Some((0x4A, 0)),
+    );
     let destroyed_low = runtime_with_overlay(resolved, cell, Some(false), Some((100, 1)));
 
     let full = projection(&grid, &destroyed_low, &[], expanded_bounds(), &colors);
@@ -581,7 +618,12 @@ fn gsi_04_01_absent_live_cell_clears_full_and_incremental_bridge_sources() {
     let (grid, resolved) = fixture(None);
     let cell = central_cell(&grid, expanded_bounds());
     let colors = colors();
-    let intact_low = runtime_with_overlay(resolved.clone(), cell, Some(true), Some((0x4A, 0)));
+    let intact_low = runtime_with_overlay(
+        resolved.clone(),
+        cell,
+        Some(true),
+        Some((0x4A, 0)),
+    );
     let absent = runtime_with_overlay(resolved, cell, None, None);
 
     let full = projection(&grid, &absent, &[], expanded_bounds(), &colors);
@@ -611,13 +653,7 @@ fn gsi_04_01_load_intact_bridge_discards_abandoned_destroyed_pixels() {
     let stale_destroyed = [presentation_overlay(cell, 239, 0)];
     assert_eq!(
         raw_pair(
-            &projection(
-                &grid,
-                &abandoned,
-                &stale_destroyed,
-                expanded_bounds(),
-                &colors
-            ),
+            &projection(&grid, &abandoned, &stale_destroyed, expanded_bounds(), &colors),
             cell,
         ),
         [BASE_COLOR; 2],
@@ -625,13 +661,7 @@ fn gsi_04_01_load_intact_bridge_discards_abandoned_destroyed_pixels() {
     );
     assert_eq!(
         raw_pair(
-            &projection(
-                &grid,
-                &restored,
-                &stale_destroyed,
-                expanded_bounds(),
-                &colors
-            ),
+            &projection(&grid, &restored, &stale_destroyed, expanded_bounds(), &colors),
             cell,
         ),
         [BRIDGE_COLOR; 2],
@@ -657,24 +687,13 @@ fn gsi_04_01_load_destroyed_bridge_discards_abandoned_repair_pixels() {
     let stale_repaired = [presentation_overlay(cell, 0xCD, 1)];
     assert_eq!(
         raw_pair(
-            &projection(
-                &grid,
-                &abandoned,
-                &stale_repaired,
-                expanded_bounds(),
-                &colors
-            ),
+            &projection(&grid, &abandoned, &stale_repaired, expanded_bounds(), &colors),
             cell,
         ),
         [BRIDGE_COLOR; 2],
     );
-    let restored_projection = projection(
-        &grid,
-        &restored,
-        &stale_repaired,
-        expanded_bounds(),
-        &colors,
-    );
+    let restored_projection =
+        projection(&grid, &restored, &stale_repaired, expanded_bounds(), &colors);
     assert_eq!(raw_pair(&restored_projection, cell), [BASE_COLOR; 2]);
     assert!(
         restored_projection
