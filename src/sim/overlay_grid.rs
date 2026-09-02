@@ -369,9 +369,10 @@ impl OverlayGrid {
         // retail random-map generator emits only tiberium, low-bridge deck and
         // rock overlay indices, so a generated launch keeps an all-zero plane.
         // Only the `+0x122` tail is modelled here: the wall branch's own
-        // acceptance gate, `PostDestructionWallCleanup`, the zone merge/rebuild
-        // pair and the `Cell+0x50` write are not, so this boundary is a partial
-        // Mark that owns the counts and nothing else.
+        // acceptance gate, the constructor-side gate that decides whether
+        // `ObjectClass::Unlimbo` runs at all, `PostDestructionWallCleanup`, the
+        // zone merge/rebuild pair and the `Cell+0x50` write are not, so this
+        // boundary is a partial Mark that owns the counts and nothing else.
         let mut wall_neighbor_counts = vec![0u8; usize::from(width) * usize::from(height)];
 
         // The identity pass is deliberately stricter than raw/internal setup.
@@ -2554,6 +2555,11 @@ mod tests {
             &registry,
             &shp_available,
             true,
+        );
+        assert_eq!(
+            no_wall.cell(1, 1).overlay_id,
+            Some(1),
+            "the non-wall overlay was accepted, so the zero plane is not a filter artifact"
         );
         assert_eq!(
             no_wall.retained_wall_neighbor_counts(),

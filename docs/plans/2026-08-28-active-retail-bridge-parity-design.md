@@ -1188,7 +1188,8 @@ Recorded open items, each with its native reading and owner. None is closed by P
   (`SnapshotRestoreError::MissingRetainedWallNeighborPlane`) rather than falling through to the
   identity rescan, so the blocker-count owner's legacy scan is now reachable only from test-only
   legacy constructors. The retail random-map generator emits only tiberium (`GEM01`-`GEM12` ids
-  27-38, `TIB01`-`TIB12` ids 102-113), low-bridge deck (74-77, 98) and `SROCK`/`TROCK` (168-177)
+  27-38, `TIB01`-`TIB12` ids 102-113), low-bridge deck (74-77 and 83-86 for the run cells, 92, 94,
+  96 and 98 for the four end cells) and `SROCK`/`TROCK` (168-177)
   indices; the `Wall=yes` ids in `rulesmd.ini` are `GASAND` 0, `GAWALL` 2, `NAWALL` 26, `CAFNCB` 203,
   `CAFNCW` 204, `CAKRMW` 240, `CAFNCP` 241 and `GAFWLL` 243 (registry ids in declaration order, not
   INI keys; `CYCL` has no section and so is not a wall), none of which the generator can emit — note
@@ -1211,7 +1212,11 @@ Recorded open items, each with its native reading and owner. None is closed by P
   cannot overflow from wall Marks alone (at most eight increments per cell), but the
   `BuildingClass::Unlimbo` contribution to the same byte was not re-derived, so overflow overall is
   UNCHECKED; (c) `SNAPSHOT_VERSION` stays 116, so a v116 state saved by an earlier build of this
-  repo on a generated map is now rejected at load; (d) the Rust runs the eight increments before
+  repo on a generated map is now rejected at load, and `Simulation::state_hash` folds the plane in
+  (`retained-wall-neighbor-counts-v1`), so a generated launch's hash differs from `origin/main`'s
+  from frame zero — intended, since the plane is authoritative state, and nothing was re-baselined
+  because no committed hash golden reaches this constructor (the harness fixtures build their grids
+  through `OverlayGrid::new`); (d) the Rust runs the eight increments before
   each stamp's `recalc_overlay_passability` where Mark runs its tail last — the counts are
   unaffected (they accumulate in a local plane and recalc never reads them), but the shared-dummy
   coordinate both paths stamp can end on a different value once a wall can reach this boundary.
