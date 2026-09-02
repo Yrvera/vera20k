@@ -177,7 +177,7 @@ pub struct SpatialSource {
 impl SpatialSource {
     pub fn from_entry(entry: &SoundEntry) -> Self {
         Self {
-            range_cells: i32::from(entry.range),
+            range_cells: entry.range,
             type_flags: entry.type_flags,
             min_volume: entry.min_volume,
         }
@@ -275,9 +275,10 @@ pub fn calc_volume_and_pan(
     let full_w: f32 = half_w + half_w;
     // `LEA EAX,[EAX+EAX*2]; LEA EAX,[EAX+EAX*4]; SHL EAX,2` at
     // `0x00750B0F..0x00750B17` — a 32-bit ×60 that wraps rather than trapping.
-    // `SoundEntry::range` is a `u16`, so the product cannot exceed 3_932_100;
-    // `wrapping_mul` is here to keep a hand-built `SpatialSource` on the
-    // native truncation instead of a debug-build panic.
+    // `AudioEventClass::SetRange @ 0x004065E0` stores `Range=` as a full int,
+    // so `wrapping_mul` is the transcription of the native overflow, not a
+    // guard: it is what keeps a `Range=` past 35_791_394 on the native
+    // truncation instead of panicking in a debug build.
     let max_range: f32 = (source.range_cells.wrapping_mul(RANGE_MULTIPLIER)) as f32;
 
     if source.type_flags & sound_type::SHROUD != 0 && shrouded {
@@ -370,12 +371,34 @@ fn attenuation_amplitude(hundredths_db: i16) -> f32 {
 
 /// Product of two native linear volumes: `DSoundBuffer::CombineInterps
 /// FUN_004010C0` (`0x004010C7..0x004010D6`), `(a * b) >> 14`.
+///
+/// **VERA-internal, gamemd equivalent UNCHECKED: both `.clamp`s.** The native
+/// volume path is `SHR EDX,0x10; SHR EAX,0x10; IMUL EDX,EAX; SHR EDX,0xe`
+/// (`disassemble_function 0x004010C0`, read this session) — no bound at all;
+/// the two operands are merely the top halves of 32-bit fixed-point fields, so
+/// native accepts anything up to `0xFFFF` on each side and can return well
+/// past `0x4000`. (The *pan* path at `0x00401116..0x0040114C` does clamp to
+/// `0..0x4000`; the volume path does not, so this is not borrowed from there.)
+/// Trigger: an operand outside `0..=0x4000`, which no VERA producer can make —
+/// `SoundEntry::volume_linear` comes out of the native `[0, 1]` clamp times
+/// 16384, and [`PlayShifts::volume_linear`] is `0x4000 - ((vshift << 14)/100)`
+/// with `vshift` already held to `0..=100` by native `SetVShift @ 0x00406620`.
+/// Player effect: none reachable. Frequency: never. Downstream risk: the guard
+/// is what keeps [`native_volume_amplitude`]'s fixed 101-entry table index in
+/// bounds, where Rust would panic and gamemd would read past the table.
 pub fn combine_linear(a: i32, b: i32) -> i32 {
     (a.clamp(0, VOLUME_SCALE) * b.clamp(0, VOLUME_SCALE)) >> 14
 }
 
 /// Amplitude the DirectSound layer produces for one combined linear volume:
 /// `FUN_0040A6D0` indexes the table with `volume * 25 >> 12` (0..=100).
+///
+/// VERA-internal, gamemd equivalent UNCHECKED: the `.clamp`. `FUN_0040A6D0`
+/// computes `(v >> 16) * 25 >> 12` and indexes `DAT_00816380` with it
+/// unchecked, so an out-of-range volume reads past the 101-entry table in
+/// gamemd; in Rust that is a panic, which is not a behaviour worth
+/// reproducing. Trigger and frequency: as [`combine_linear`] — unreachable
+/// from any VERA producer.
 pub fn native_volume_amplitude(linear: i32) -> f32 {
     let index = (linear.clamp(0, VOLUME_SCALE) * 25) >> 12;
     attenuation_amplitude(DSOUND_ATTENUATION_TABLE[index as usize])
@@ -387,6 +410,12 @@ pub fn native_volume_amplitude(linear: i32) -> f32 {
 /// `p = (pan * 25 >> 11) - 100` and calls `SetPan(table[100 - |p|])` for a
 /// left pan (negative DirectSound pan attenuates the right channel) and
 /// `SetPan(-table[100 - p])` for a right pan (attenuates the left channel).
+///
+/// VERA-internal, gamemd equivalent UNCHECKED: the `.clamp`, for the same
+/// reason as [`native_volume_amplitude`] — native indexes the table
+/// unchecked. `CalcVolumeAndPan` produces the pan as
+/// `ftol(clamp(offsetX, -fullW, fullW) * 8192 / fullW + 8192)`, which is
+/// already `0..=0x4000`, so nothing in VERA can reach the guard.
 pub fn pan_channel_gains(pan: i32) -> (f32, f32) {
     let p = ((pan.clamp(0, PAN_SCALE) * 25) >> 11) - 100;
     let attenuated = attenuation_amplitude(DSOUND_ATTENUATION_TABLE[(100 - p.abs()) as usize]);
@@ -511,7 +540,18 @@ impl PlayShifts {
         }
     }
 
-    /// Playback rate: `FUN_00401190` returns `(pct * rate) / 100`.
+    /// Playback rate: `FUN_00401190` returns `(pct * rate) / 100`
+    /// (`SHR ECX,0x10; IMUL ECX,EDX;` then the `0x51EB851F` magic divide by
+    /// 100, truncating toward zero).
+    ///
+    /// VERA-internal, gamemd equivalent UNCHECKED: the `.max(1)`. The native
+    /// body has no floor — it hands the raw quotient to the DirectSound
+    /// buffer's `SetFrequency`, which rejects 0 at the device layer. VERA
+    /// instead feeds the rate to its own resampler, where 0 is not a
+    /// well-defined input. Trigger: `frequency_pct <= 0`, i.e. a `FShift=`
+    /// whose low bound is at or below -100; the widest stock `FShift=` is
+    /// `-15 15`. Player effect: none reachable. Frequency: never on retail
+    /// data. Downstream risk: none.
     pub fn shifted_sample_rate(&self, sample_rate: u32) -> u32 {
         ((i64::from(self.frequency_pct) * i64::from(sample_rate)) / 100).max(1) as u32
     }

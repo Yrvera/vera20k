@@ -142,8 +142,11 @@ impl SoundDefaults {
         let Some(section) = section else {
             return defaults;
         };
-        defaults.volume = read_double(section, "Volume", defaults.volume);
-        defaults.min_volume = read_double(section, "MinVolume", defaults.min_volume);
+        // `VocClass::ReadSoundListINI @ 0x007510D0` narrows both back to the
+        // float32 statics: `_DAT_008464b4 = (float)fVar8`,
+        // `_DAT_008464b8 = (float)fVar8`.
+        defaults.volume = read_double(section, "Volume", defaults.volume) as f32;
+        defaults.min_volume = read_double(section, "MinVolume", defaults.min_volume) as f32;
         defaults.priority = section
             .get_ignoring_case("Priority")
             .map_or(defaults.priority, parse_sound_priority);
@@ -165,7 +168,7 @@ impl SoundDefaults {
     /// The minimum-volume floor as the stored fraction (see
     /// [`SoundEntry::min_volume`]).
     pub fn min_volume_fraction(&self) -> f32 {
-        min_volume_fraction(self.min_volume)
+        min_volume_fraction(f64::from(self.min_volume))
     }
 }
 
@@ -178,11 +181,17 @@ pub struct SoundEntry {
     /// [`MAX_SAMPLES`]. `Attack=` counts the first N as attack samples and
     /// `Decay=` the last M as decay samples; the rest is the body.
     pub sounds: Vec<String>,
-    /// Playback volume in percent, `0..=100`.
+    /// Playback volume in percent, `0..=100`. VERA-internal, gamemd
+    /// equivalent UNCHECKED: native keeps no percentage — `ReadINI` converts
+    /// straight to [`Self::volume_linear`] and throws the percentage away.
+    /// This rounded copy exists for display and tests and feeds no playback
+    /// path.
     pub volume: u8,
-    /// Native linear volume `ftol(clamp(Volume * 0.01, 0, 1) * 0x4000)` as
+    /// Native linear volume `ftol(clamp(Volume * 0.01f, 0, 1) * 16384f)` as
     /// stored by `AudioEventClass::SetVolumeRamp @ 0x00406550`
-    /// (`0x007504EE..0x00750548`).
+    /// (`0x007504EE..0x00750548`). The x87 chain truncates, so `Volume=100`
+    /// yields 16383, not `0x4000` — only the high clamp reaches `0x4000`. See
+    /// [`volume_linear`] for why the whole product must stay in `f64`.
     pub volume_linear: i32,
     /// Eviction priority, `LOWEST(0)`..`CRITICAL(4)`; higher survives longer.
     ///
@@ -190,7 +199,10 @@ pub struct SoundEntry {
     pub priority: u8,
     /// Audible range in cells (default 10). `max audible pixel distance =
     /// Range * 60` in `VocClass::CalcVolumeAndPan @ 0x00750AC0`.
-    pub range: u16,
+    ///
+    /// A full `int`, as `AudioEventClass::SetRange @ 0x004065E0` stores it
+    /// (`MOV [ECX+0x50], EDX; RET` — no clamp of any kind).
+    pub range: i32,
     /// `MinVolume=` as the stored fraction `clamp(MinVolume * 0.01, 0, 1)`
     /// (`0x00750589..0x007505E3`, `AudioEventClass::SetMinVolume @
     /// 0x004065F0` at `+0x54`). The floor applies only for `Type=GLOBAL`.
@@ -258,26 +270,40 @@ impl SoundRegistry {
                 continue;
             }
 
+            // VERA-internal, gamemd equivalent UNCHECKED: using `Sounds=` as
+            // the section filter. Native never scans INI sections — it walks
+            // the `[SoundList]` entries (`VocClass::ReadSoundListINI @
+            // 0x007510D0`, `GetEntryCount`/`GetEntryNameByIndex`) and calls
+            // `VocClass::ReadINI @ 0x00750440` once per name, which reads
+            // `Sounds=` with an empty-string default and simply adds no
+            // samples when it is absent. VERA has no `[SoundList]` pass, so
+            // the key's presence is what separates a sound section from the
+            // rest of the file. Trigger: a `[SoundList]` name whose section
+            // omits `Sounds=`, or writes it empty (`IniFile` drops a key with
+            // an empty value, so the two are indistinguishable at this point).
+            // Player effect: VERA falls through to the audio-bag path for that
+            // id where gamemd would play nothing. Frequency: never on retail
+            // data — every stock `[SoundList]` section writes a non-empty
+            // `Sounds=`. Downstream risk: none.
             let sounds_str: &str = match section.get_ignoring_case("Sounds") {
                 Some(s) => s,
                 None => continue,
             };
 
             // `VocClass::AddSample @ 0x004064A0` skips every leading `$`/`#`
-            // and stops accepting at 32 samples.
+            // and stops accepting at 32 samples. An empty list is registered,
+            // not skipped: native's `VocClass` exists with a zero sample count
+            // and plays nothing, so the id must still resolve here rather than
+            // fall through to the audio-bag path.
             let sounds: Vec<String> = split_tokens(sounds_str)
                 .map(|s| s.trim_start_matches(['$', '#']).to_string())
                 .filter(|s| !s.is_empty())
                 .take(MAX_SAMPLES)
                 .collect();
 
-            if sounds.is_empty() {
-                continue;
-            }
-
             let volume_raw = read_double(section, "Volume", defaults.volume);
             let volume_linear = volume_linear(volume_raw);
-            let volume: u8 = (volume_raw.clamp(0.0, 100.0) as f64).round() as u8;
+            let volume: u8 = volume_raw.clamp(0.0, 100.0).round() as u8;
             let vshift = section
                 .get_i32_ignoring_case("VShift")
                 .unwrap_or(0)
@@ -301,10 +327,9 @@ impl SoundRegistry {
                 .get_i32_ignoring_case("Limit")
                 .unwrap_or(defaults.limit);
             let loop_count = section.get_i32_ignoring_case("Loop").unwrap_or(0);
-            let range: u16 = section
+            let range: i32 = section
                 .get_i32_ignoring_case("Range")
-                .unwrap_or(defaults.range)
-                .clamp(0, i32::from(u16::MAX)) as u16;
+                .unwrap_or(defaults.range);
             let delay_ms = parse_int_pair(section.get_ignoring_case("Delay"));
             let fshift = parse_int_pair(section.get_ignoring_case("FShift"));
 
@@ -376,11 +401,26 @@ impl SoundRegistry {
     }
 }
 
-/// `CCINIClass::ReadDouble @ 0x005283D0`: `sscanf("%f")` into a float, times
-/// 0.01 when the text contains a `%`; absent or unparsable keeps the default.
-fn read_double(section: &IniSection, key: &str, default: f32) -> f32 {
+/// `0.01f` at `0x007EAAE0`, the *float* constant the sound reader multiplies a
+/// percentage by. It is `10737418 / 2^30`, i.e. slightly **below** 0.01, which
+/// is why the whole chain has to stay at x87 precision — see
+/// [`volume_linear`].
+const ONE_PERCENT_F32_AS_F64: f64 = 0.01f32 as f64;
+
+/// `CCINIClass::ReadDouble @ 0x005283D0` — returns a **double**.
+///
+/// `sscanf("%f")` parses into a `float`, which is then widened to double and
+/// kept there (`0x0052855D FLD float [ESP+0x2C]; 0x00528569 FSTP double
+/// [ESP+0x38]`). When `strchr(text, '%')` hits, the double is multiplied by
+/// the *double* 0.01 at `0x007E3808` (`0x0052857E FMUL double`) and stored
+/// back as a double — there is no float narrowing on that path, so the result
+/// this function hands its caller carries 53 significant bits. Absent or
+/// unparsable keeps the caller's default, which reaches the native call as a
+/// `float32` static widened the same way (`0x007504EE FLD float [0x008464B4];
+/// FSTP double [ESP]`).
+fn read_double(section: &IniSection, key: &str, default: f32) -> f64 {
     let Some(raw) = section.get_ignoring_case(key) else {
-        return default;
+        return f64::from(default);
     };
     let text = raw.trim_start();
     let end = text
@@ -392,39 +432,68 @@ fn read_double(section: &IniSection, key: &str, default: f32) -> f32 {
         .last()
         .unwrap_or(0);
     let Ok(parsed) = text[..end].parse::<f32>() else {
-        return default;
+        return f64::from(default);
     };
     if raw.contains('%') {
-        ((parsed as f64) * 0.01) as f32
+        f64::from(parsed) * 0.01
     } else {
-        parsed
+        f64::from(parsed)
     }
 }
 
-/// `0x007504EE..0x00750548`: `Volume * 0.01f`, clamped to `[0, 1]`, times
-/// 16384, then `Math::ftol` (truncation).
-fn volume_linear(volume: f32) -> i32 {
-    let scaled = ((volume as f64) * (0.01f32 as f64)) as f32;
-    let clamped = if (scaled as f64) > 1.0 {
-        1.0f32
-    } else if scaled < 0.0 {
-        0.0
+/// `0x007504EE..0x00750548`: the `ReadDouble` result times the *float* 0.01
+/// at `0x007EAAE0`, clamped to `[0, 1]`, times the float 16384 at `0x007EF38C`,
+/// then `Math::ftol` (truncation) into `AudioEventClass::SetVolumeRamp @
+/// 0x00406550`.
+///
+/// **The product never leaves the x87 stack.** Between `0x00750507 FMUL float
+/// [0x007EAAE0]` and the `ftol` call at `0x0075053F` there is no `FSTP float`
+/// of any kind — only `FCOM`/`FLD` of the clamp constants — and no game code
+/// narrows the x87 precision control (every `FLDCW` site in the image is CRT
+/// or math code saving and restoring its own word), so the chain carries the
+/// MSVC default 53-bit mantissa all the way into the truncation. Reproducing
+/// that in `f64` is load-bearing: with an `f32` intermediate, `Volume=`
+/// 25/50/75/100 (and the `Volume=5000%` form) each round *up* across a linear
+/// step and land one higher than gamemd — 4096/8192/12288/16384 instead of
+/// 4095/8191/12287/16383 — because `0.01f` sits just below 0.01, so the exact
+/// product sits just below the round value. 55 stock `soundmd.ini` sections
+/// write one of those four.
+///
+/// The clamp constants are asymmetric and are transcribed as the binary has
+/// them: the high test compares against the *double* 1.0 at `0x007E1718` and
+/// substitutes the *float* 1.0 at `0x007E2AC8`; the low test compares against
+/// the float 0.0 at `0x007E1748` and takes "less **or** equal"
+/// (`0x0075052C TEST AH,0x41`).
+fn volume_linear(volume: f64) -> i32 {
+    let product = volume * ONE_PERCENT_F32_AS_F64;
+    let clamped = if product > 1.0 {
+        f64::from(1.0f32)
+    } else if product <= 0.0 {
+        f64::from(0.0f32)
     } else {
-        scaled
+        product
     };
-    ((clamped as f64) * (VOLUME_SCALE as f64)).trunc() as i32
+    (clamped * f64::from(VOLUME_SCALE)).trunc() as i32
 }
 
-/// `0x00750589..0x007505E3`: `MinVolume * 0.01f` clamped to `[0, 1]`, kept
-/// as a float.
-fn min_volume_fraction(min_volume: f32) -> f32 {
-    let scaled = ((min_volume as f64) * (0.01f32 as f64)) as f32;
-    if (scaled as f64) > 1.0 {
+/// `0x00750589..0x007505E3`: `MinVolume * 0.01f` clamped to `[0, 1]`, stored
+/// as a float by `AudioEventClass::SetMinVolume @ 0x004065F0` at `+0x54`.
+///
+/// Unlike [`volume_linear`] this chain *does* narrow: `0x007505A8 FST float
+/// [ESP+8]` writes the product to a float32 slot while leaving the
+/// full-precision value in `ST0`, so the `> 1.0` test at `0x007505AC` compares
+/// the **un-narrowed** product against the double 1.0, and the `<= 0.0f` test
+/// at `0x007505C7` reloads the **narrowed** float. Both clamps then write the
+/// literal bit patterns `0x3F800000` / `0x00000000`.
+fn min_volume_fraction(min_volume: f64) -> f32 {
+    let product = min_volume * ONE_PERCENT_F32_AS_F64;
+    let narrowed = product as f32;
+    if product > 1.0 {
         1.0
-    } else if scaled < 0.0 {
+    } else if narrowed <= 0.0 {
         0.0
     } else {
-        scaled
+        narrowed
     }
 }
 
@@ -855,26 +924,76 @@ mod tests {
         assert_eq!(crt_atoi("abc"), 0);
     }
 
-    /// `Volume`/`MinVolume` go through `ReadDouble` (float, `%` scaling) and
-    /// the per-entry clamp before the 16384 scale.
+    /// `Volume`/`MinVolume` go through `ReadDouble` (a double, `%` scaling)
+    /// and the per-entry clamp before the 16384 scale.
+    ///
+    /// The exact values are derived from the native chain, not from VERA: the
+    /// product stays at x87 precision from `0x00750507 FMUL float 0.01f` to
+    /// `0x0075053F CALL Math::ftol`, so `Volume=100` truncates
+    /// `100 * 0.01f * 16384 = 16383.99963...` to **16383**, one below the
+    /// round `0x4000`. `Volume=250` reaches `0x4000` only through the high
+    /// clamp, which substitutes the literal float `1.0` at `0x007E2AC8`.
     #[test]
     fn volume_and_min_volume_follow_read_double_and_the_clamps() {
         let reg = registry(
             "[Full]\nSounds=f\nVolume=100\n[Over]\nSounds=o\nVolume=250\nMinVolume=130\n[Neg]\nSounds=n\nVolume=-5\nMinVolume=-1\n[Pct]\nSounds=p\nVolume=5000%\n[Half]\nSounds=h\nVolume=50.5\nMinVolume=25\n[Lower]\nSounds=l\nvolume=60\n",
         );
-        assert_eq!(reg.get("Full").unwrap().volume_linear, VOLUME_SCALE);
+        // Just under 0x4000: `100 * 0.01f` is `1073741800/2^30`, so the ×16384
+        // product is 16383.9996337890625 and `ftol` truncates.
+        assert_eq!(reg.get("Full").unwrap().volume_linear, VOLUME_SCALE - 1);
         let over = reg.get("Over").unwrap();
+        // Only the clamp reaches exactly 0x4000.
         assert_eq!(over.volume_linear, VOLUME_SCALE);
         assert_eq!(over.min_volume, 1.0);
         let neg = reg.get("Neg").unwrap();
         assert_eq!(neg.volume_linear, 0);
         assert_eq!(neg.min_volume, 0.0);
-        assert_eq!(reg.get("Pct").unwrap().volume_linear, 8192);
+        // `5000%` -> `ReadDouble` returns the double 50.0, then the same chain.
+        assert_eq!(reg.get("Pct").unwrap().volume_linear, 8191);
         let half = reg.get("Half").unwrap();
         assert_eq!(half.volume_linear, volume_linear(50.5));
         assert_eq!(half.volume_linear, 8273); // ftol(0.505 * 16384)
         assert_eq!(half.min_volume, 0.25);
         assert_eq!(reg.get("Lower").unwrap().volume, 60);
+    }
+
+    /// The four stock `Volume=` values whose exact `Volume * 0.01f * 16384`
+    /// product sits just *below* the round linear step. An `f32` intermediate
+    /// anywhere in the chain rounds each of them up and yields
+    /// 4096/8192/12288/16384; the native x87 chain truncates to one less.
+    /// 55 stock `soundmd.ini` sections write one of these four.
+    #[test]
+    fn quarter_volumes_truncate_one_below_the_round_linear_step() {
+        assert_eq!(volume_linear(25.0), 4095);
+        assert_eq!(volume_linear(50.0), 8191);
+        assert_eq!(volume_linear(75.0), 12287);
+        assert_eq!(volume_linear(100.0), 16383);
+        // Values whose product lands above the step are unaffected.
+        assert_eq!(volume_linear(80.0), 13107);
+        assert_eq!(volume_linear(85.0), 13926);
+        assert_eq!(volume_linear(90.0), 14745);
+    }
+
+    /// Native registers a `[SoundList]` name whose `Sounds=` yields no usable
+    /// tokens as a zero-sample `VocClass` (`VocClass::ReadINI @ 0x00750440`
+    /// reads `Sounds=` with an empty default and `AddSample @ 0x004064A0`
+    /// stores nothing for a name that strips to nothing), so the id must still
+    /// resolve here — dropping it would let VERA's audio-bag fallback play a
+    /// file gamemd never would. A bare `Sounds=` cannot reach this: the INI
+    /// parser discards an empty value outright, so `Sounds=$` is the shortest
+    /// live trigger.
+    ///
+    /// `Range=` is stored as a full int by `AudioEventClass::SetRange @
+    /// 0x004065E0` (`MOV [ECX+0x50], EDX`) — no clamp, either end.
+    #[test]
+    fn empty_sample_list_registers_a_zero_sample_entry_and_range_keeps_the_native_int() {
+        let reg = registry("[Silent]\nSounds=$\nRange=100000\n[Named]\nSounds=x\nRange=-4\n");
+        let silent = reg
+            .get("Silent")
+            .expect("a sigil-only Sounds= still registers");
+        assert!(silent.sounds.is_empty());
+        assert_eq!(silent.range, 100_000);
+        assert_eq!(reg.get("Named").unwrap().range, -4);
     }
 
     /// 33 samples: the native slot table holds 32.
