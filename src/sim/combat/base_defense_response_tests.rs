@@ -423,3 +423,73 @@ fn gsi_04_05_draw_boundary_and_strict_budget_overshoot_are_literal() {
     assert_eq!(add_assigned_cost(100, 1, 100), (101, true));
     assert_eq!(add_assigned_cost(i32::MAX, 1, -1), (i32::MIN, false));
 }
+
+/// `TechnoClass::Is_Armed @ 0x00701120` consults exactly ONE weapon slot:
+/// `GetCurrentWeapon (vt+0x3F4, 0x0070E1A0)` asks `GetWeapon(0)` for a plain
+/// type and `GetWeapon(CurrentWeaponNumber)` for a `TurretCount>0` one. A
+/// `Secondary=` alone never arms an object, an 18-slot weapon array that is
+/// entirely unauthored never arms one either, and `BuildingClass::Is_Armed
+/// @ 0x00458DB0` arms an occupied building unconditionally.
+#[test]
+fn gsi_04_05_is_armed_reads_one_slot_not_the_whole_weapon_array() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=ARMED\n1=UNARMED\n\
+         [VehicleTypes]\n0=GUNNER\n1=TURRETNOGUN\n\
+         [WeaponTypes]\n0=Gun\n\
+         [ARMED]\nStrength=100\nArmor=none\nCost=100\nPrimary=Gun\n\
+         [UNARMED]\nStrength=100\nArmor=none\nCost=100\n\
+         [GUNNER]\nStrength=100\nArmor=none\nCost=100\nTurretCount=4\nWeaponCount=2\n\
+         Weapon1=Gun\nWeapon2=Gun\n\
+         [TURRETNOGUN]\nStrength=100\nArmor=none\nCost=100\nTurretCount=4\nWeaponCount=0\n\
+         Primary=Gun\n\
+         [Gun]\nDamage=10\nROF=10\nRange=5\nWarhead=WH\n\
+         [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("is_armed fixture");
+
+    let armed = GameEntity::test_default(1, "ARMED", "Armed", 1, 1);
+    let unarmed = GameEntity::test_default(2, "UNARMED", "Unarmed", 2, 1);
+    let gunner = GameEntity::test_default(3, "GUNNER", "Gunner", 3, 1);
+    // `TurretCount>0` takes the `WeaponN=` branch of `TechnoTypeClass::ReadINI
+    // @ 0x007128B2` and never reads `Primary=`, and `WeaponCount=0` leaves
+    // every slot NULL — so `GetWeapon(0)` has no `WeaponType`.
+    let turret_no_gun = GameEntity::test_default(4, "TURRETNOGUN", "Empty turret", 4, 1);
+
+    assert!(is_armed(&armed, rules.object("ARMED").expect("ARMED")));
+    assert!(!is_armed(
+        &unarmed,
+        rules.object("UNARMED").expect("UNARMED")
+    ));
+    assert!(is_armed(&gunner, rules.object("GUNNER").expect("GUNNER")));
+    assert!(!is_armed(
+        &turret_no_gun,
+        rules.object("TURRETNOGUN").expect("TURRETNOGUN")
+    ));
+
+    // `FootClass::Evaluate_Target_Threat @ 0x004D97A0` scores 0 only when the
+    // candidate's existing target is an ARMED Techno; an unarmed one falls
+    // through to the real distance/cost score.
+    let mut entities = EntityStore::new();
+    entities.insert(armed.clone());
+    entities.insert(unarmed.clone());
+    let mut candidate = GameEntity::test_default(9, "ARMED", "Responder", 9, 9);
+    let interner = test_interner();
+
+    candidate.attack_target = Some(crate::sim::combat::AttackTarget::new(1));
+    assert_eq!(
+        current_target_disposition(&candidate, 99, &entities, &rules, &interner),
+        ExistingTargetDisposition::OtherArmedTarget
+    );
+
+    candidate.attack_target = Some(crate::sim::combat::AttackTarget::new(2));
+    assert_eq!(
+        current_target_disposition(&candidate, 99, &entities, &rules, &interner),
+        ExistingTargetDisposition::NoneOrUnarmed
+    );
+
+    candidate.attack_target = Some(crate::sim::combat::AttackTarget::new(99));
+    assert_eq!(
+        current_target_disposition(&candidate, 99, &entities, &rules, &interner),
+        ExistingTargetDisposition::RequestedAttacker
+    );
+}

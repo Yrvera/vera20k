@@ -732,6 +732,25 @@ fn targeting_fire_error_blocks(
     }
 }
 
+/// Turn a ladder index into the weapon it names and apply the GetFireError
+/// targeting verdicts.
+///
+/// RESIDUAL (UNCHECKED) — `BuildingClass::GetWeapon @ 0x004526F0` (vtable
+/// `+0x3F8`) is a real override: when `IsOccupied (vt+0x400)` is set and a
+/// firing occupant is selected, it returns the occupant type's `OccupyWeapon`
+/// (`+0xE04`, elite `+0xE20`), falling back to that occupant's `GetWeapon(0)`,
+/// instead of the building's own slot. Ladder arm B therefore resolves to the
+/// occupant's weapon natively, not to the building's `Primary=`. VERA performs
+/// the substitution only on the fire path (`select_garrison_weapon`) and in the
+/// dedicated garrison auto-acquire scan (`combat::tick_combat`, the
+/// `can_be_occupied && can_occupy_fire` block); `resolve_index` here reads the
+/// building's own slot 0. *Trigger:* a garrisoned building reached through
+/// `can_retaliate` or `calculate_ai_threat_score`. *Player effect:* a garrisoned
+/// civilian building (no `Primary=` of its own) resolves to no weapon, so it
+/// does not retaliate in the same tick it is shot and scores no AI threat; the
+/// auto-acquire scan still picks the shooter up on a later tick, so the shot
+/// itself is not lost. *Frequency:* every garrisoned building on a city map that
+/// takes fire. *Downstream:* AI threat ranking only; no deterministic state.
 fn resolve_index<'a>(
     rules: &'a RuleSet,
     obj: &'a ObjectType,
@@ -854,9 +873,14 @@ fn current_weapon_number_from_override(weapon_override: Option<WeaponOverride>) 
 ///   one building being ordered onto a second Drainable one; effect: the
 ///   drain beam is selected again instead of the laser; frequency: rare.
 /// - `is_overpowered_building` = false (`BuildingClass+0x661`, writer
-///   `BuildingClass::Update 0x0044015B`). Trigger: a Tesla Coil charged by
-///   three troopers or one under full power; effect: the coil never fires
-///   `OPCoilBolt`; frequency: every Soviet charged-coil defense.
+///   `BuildingClass::Update 0x0044015B`). This is a DEFERRAL, not an
+///   approximation: false is the genuine constructor state, so VERA behaves as
+///   a game in which no coil is ever charged rather than guessing a charge
+///   model. Trigger: a player deliberately parking three Tesla Troopers on an
+///   `Overpowerable=true` building (stock: TESLA, CAEAST01/02, CAPARS01), or
+///   one while the house is at full power ratio; effect: the coil never fires
+///   `OPCoilBolt`; frequency: only that micro, which is far rarer than the
+///   gattling residual above.
 /// - `aircraft_spawn_collision` = false (`AircraftClass+0x6CA`, writer
 ///   `SpawnRetreat__Push 0x0054E47D`). Trigger: Hornet/ASW pushed to
 ///   retreat; effect: the collision secondary is never chosen; frequency:
