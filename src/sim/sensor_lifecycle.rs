@@ -14,6 +14,11 @@ use crate::sim::world::Simulation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SensorDeposit {
+    /// The house the circle was stamped FOR — native reads
+    /// `this->Owner->ArrayIndex` live at add time and has no such cache. It is
+    /// a record of the add, not the removal's authority: every native remove
+    /// re-reads the live owner (`0x00455980`, `0x004556D0`, `0x004DE940`), so
+    /// `remove_cached_sensor_deposit` must not consult this field.
     pub owner: InternedId,
     pub center: (u16, u16),
     pub add_radius: u16,
@@ -170,16 +175,38 @@ impl Simulation {
         callbacks
     }
 
+    /// Every native remove takes its house index from `this->Owner->ArrayIndex`
+    /// at REMOVAL time, never from anything recorded when the circle was
+    /// stamped. `BuildingClass::RemoveDetectDisguiseAt @ 0x00455980` opens with
+    /// `0045598A MOV EDX,[ECX+0x21C]` / `004559A1 MOV EAX,[EDX+0x30]`;
+    /// `BuildingClass::RemoveSensorArrayAt @ 0x004556D0` and
+    /// `TechnoClass::RemoveSensorsAt @ 0x004DE940` open with the identical
+    /// `*(int *)(param_1[0x87] + 0x30)` read, and so do both adds
+    /// (`0x00455820`, `0x00455A80`). `TechnoClass::ChangeOwner @ 0x007014A0`
+    /// overwrites that pointer (`param_1[0x87] = param_2`), so the live owner
+    /// is whoever holds the object now.
+    ///
+    /// For units the two agree: `FootClass::ChangeOwner @ 0x004DBED0` dispatches
+    /// the remove (`vt+0x4EC`) BEFORE the pointer flip and the add
+    /// (`vt+0x4E8`) after, and VERA calls
+    /// `transfer_sensor_before_owner_change` from the same slot. For BUILDINGS
+    /// they diverge permanently, and that asymmetry is native map state:
+    /// construction credits the builder, `ChangeOwner` dispatches neither add
+    /// nor remove, and Limbo debits the CAPTOR. See the residual on
+    /// `transfer_sensor_before_owner_change_inner`.
     fn remove_cached_sensor_deposit(
         &mut self,
         stable_id: u64,
         rules: Option<&RuleSet>,
     ) -> Option<SensorDeposit> {
-        let deposit = self
-            .substrate
-            .entities
-            .get_mut(stable_id)
-            .and_then(|entity| entity.sensor_deposit.take())?;
+        let (deposit, remove_owner) =
+            self.substrate
+                .entities
+                .get_mut(stable_id)
+                .and_then(|entity| {
+                    let deposit = entity.sensor_deposit.take()?;
+                    Some((deposit, entity.owner))
+                })?;
         if deposit.detect_disguise_radius > 0 {
             // `BuildingClass::RemoveDetectDisguiseAt @ 0x00455980`, reached
             // ONLY from `BuildingClass::Limbo` — `0x00445A58` reads
@@ -190,7 +217,7 @@ impl Simulation {
             // BuildingClass site program-wide, which is why the owner-change
             // path below must not come through here.
             self.fog.disguise_detect_remove_at(
-                deposit.owner,
+                remove_owner,
                 deposit.center,
                 deposit.detect_disguise_radius,
             );
@@ -204,7 +231,7 @@ impl Simulation {
             // stock building reaches this case (NAPSIS carries both keys).
             if deposit.add_radius > 0 {
                 self.apply_building_sensor_remove(
-                    deposit.owner,
+                    remove_owner,
                     deposit.center,
                     deposit.remove_radius.max(0) as u16,
                     rules,
@@ -212,7 +239,7 @@ impl Simulation {
             }
         } else {
             self.apply_unit_sensor_remove(
-                deposit.owner,
+                remove_owner,
                 deposit.center,
                 deposit.remove_radius.max(0) as u16,
                 rules,
@@ -381,8 +408,25 @@ impl Simulation {
     /// `OnConstructionComplete` and `Limbo`. So gamemd leaves BOTH the sensor
     /// array and the disguise-detect circle stamped for the CONSTRUCTING house
     /// until the building is limboed: capturing a Psychic Sensor transfers
-    /// neither, and the eventual sell decrements exactly what construction
-    /// incremented.
+    /// neither.
+    ///
+    /// DRIFT-BY-DESIGN — this reproduces a permanent native counter skew, it
+    /// does not avoid one. Limbo's removes read the LIVE owner
+    /// (`RemoveDetectDisguiseAt @ 0x00455980` opens `0045598A MOV
+    /// EDX,[ECX+0x21C]` / `004559A1 MOV EAX,[EDX+0x30]`; `RemoveSensorArrayAt
+    /// @ 0x004556D0` repeats the read) and
+    /// `CellClass::DecrementDisguiseDetectCount @ 0x00487180` decrements
+    /// unconditionally. So selling or losing a captured Psychic Sensor debits
+    /// the CAPTOR for the circles the BUILDER was credited with.
+    /// *Trigger:* engineer capture of a building carrying `SensorArray=` or
+    /// `DetectDisguise=` (stock: NAPSIS only), then its limbo. *Player effect:*
+    /// the constructing house keeps a phantom detection circle over that ground
+    /// for the rest of the match, and the capturing house's counters go negative
+    /// there, silently cancelling the detection of the next such building it
+    /// puts on the same cells. *Frequency:* uncommon per match, but the state is
+    /// permanent once it happens. *Downstream risk:* none new — the asymmetric
+    /// `CloakRadiusInCells=` remove radius already produces negative sensor
+    /// fringe counts without a capture, so no reader gains an unseen case.
     fn transfer_sensor_before_owner_change_inner(
         &mut self,
         stable_id: u64,
@@ -492,8 +536,13 @@ mod tests {
         assert!(!sim.fog.has_sensor_for_house(americans, 57, 30));
         assert!(sim.fog.has_sensor_for_house(soviet, 57, 30));
 
-        // Drift every live fact after the deposit. Limbo must still remove the
-        // cached Soviet/30,20/radius8 footprint, not current owner/position.
+        // Drift every live fact after the deposit. The cached center still
+        // decides WHICH cells the removal walks, but the HOUSE is re-read live:
+        // `TechnoClass::RemoveSensorsAt @ 0x004DE940` opens with
+        // `*(int *)(param_1[0x87] + 0x30)`, the same read as the BuildingClass
+        // pair. gamemd cannot reach this state for a Foot — only
+        // `FootClass::ChangeOwner @ 0x004DBED0` moves `+0x21C`, and it dispatches
+        // `vt+0x4EC` first — so this pins the read, not a reachable scenario.
         let neutral = sim.interner.intern("Neutral");
         {
             let entity = sim.substrate.entities.get_mut(second).unwrap();
@@ -502,7 +551,15 @@ mod tests {
             entity.position.ry = 5;
         }
         sim.techno_limbo_with_rules(second, &rules);
-        assert!(!sim.fog.has_sensor_for_house(soviet, 57, 30));
+        assert!(
+            sim.fog.has_sensor_for_house(soviet, 57, 30),
+            "the removal debits the live owner, not the deposit's recorded house"
+        );
+        let index = 30 * usize::from(sim.fog.width) + 57;
+        assert_eq!(
+            sim.fog.sensors_by_house[&neutral][index], 0,
+            "and the unit remove's positive pre-count gate leaves no negative residue"
+        );
     }
 
     #[test]
@@ -558,9 +615,11 @@ mod tests {
     /// `+0x4F4`/`+0x4FC` are dispatched only by `OnConstructionComplete`
     /// (`0x004467A1` / `0x004467C3`) and `+0x4F8`/`+0x500` only by `Limbo`
     /// (`0x00445A4C` / `0x00445A6C`). So the counters stay attached to the
-    /// CONSTRUCTING house until the building is limboed, and the eventual sell
-    /// decrements exactly the house that construction incremented — no
-    /// negative residue on the capturing house.
+    /// CONSTRUCTING house until the building is limboed — while the removals
+    /// read the LIVE owner (`0x00455980` / `0x004556D0`), which is what the
+    /// limbo tail below and
+    /// `selling_a_captured_psychic_sensor_debits_the_captor_and_leaves_the_builder_detecting`
+    /// pin.
     #[test]
     fn capturing_a_psychic_sensor_leaves_both_circles_with_the_constructing_house() {
         let rules = rules();
@@ -612,19 +671,93 @@ mod tests {
         assert_eq!(deposit.owner, soviet);
         assert_eq!(deposit.detect_disguise_radius, 15);
 
-        // Selling under the NEW owner still unwinds the OLD owner's counters,
-        // symmetrically for the disguise circle (same `+0x5F4` radius both
-        // ways) and with the asymmetric `CloakRadiusInCells=` fringe for the
-        // sensor array.
+        // Selling under the NEW owner unwinds the NEW owner: both removals read
+        // `this->Owner->ArrayIndex` at removal time, and `ChangeOwner` has
+        // already overwritten that pointer (`0x007014A0 param_1[0x87] =
+        // param_2`). The builder's credit is therefore never returned.
         sim.techno_limbo_with_rules(id, &rules);
         let index = 40 * usize::from(sim.fog.width) + 54;
         assert_eq!(
-            sim.fog.disguise_detect_by_house[&soviet][index], 0,
-            "add and remove walk the same circle"
+            sim.fog.disguise_detect_by_house[&soviet][index], 1,
+            "the builder's increment is permanent: no +0x500 ever names it again"
+        );
+        assert_eq!(
+            sim.fog.disguise_detect_by_house[&americans][index], -1,
+            "0x00455980 debits the LIVE owner and 0x00487180 decrements unconditionally"
+        );
+    }
+
+    /// Capture, then sell, end to end — the permanent counter skew gamemd
+    /// leaves behind, on BOTH planes.
+    ///
+    /// Adds credit `*(int *)(param_1[0x87] + 0x30)` at add time
+    /// (`BuildingClass::AddSensorArrayAt @ 0x00455820`,
+    /// `AddDetectDisguiseAt @ 0x00455A80`); `BuildingClass::ChangeOwner @
+    /// 0x00448260` dispatches neither an add nor a remove but does overwrite
+    /// `+0x21C` through `TechnoClass::ChangeOwner @ 0x007014A0`; and Limbo's
+    /// removes (`0x004556D0`, `0x00455980`) re-read `+0x21C` live. Net: the
+    /// builder keeps `SensorsSight=15` and `DetectDisguiseRange=15`, the captor
+    /// takes `-1` over the `CloakRadiusInCells=20` sensor circle and over the
+    /// 15-cell disguise circle.
+    #[test]
+    fn selling_a_captured_psychic_sensor_debits_the_captor_and_leaves_the_builder_detecting() {
+        let rules = rules();
+        let mut sim = sim_with_map_authority();
+        sim.spawn_object_at_height("NAPOWR", "Soviet", 30, 40, 0, 0, &rules)
+            .unwrap();
+        let id = sim
+            .spawn_object_at_height("NAPSIS", "Soviet", 40, 40, 0, 0, &rules)
+            .unwrap();
+        let soviet = sim.substrate.entities.get(id).unwrap().owner;
+        sim.substrate.entities.get_mut(id).unwrap().building_up = Some(BuildingUp {
+            elapsed_ticks: 0,
+            total_ticks: 1,
+        });
+        sim.advance_tick(
+            &[],
+            Some(&rules),
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            67,
+        );
+
+        let americans = sim.interner.intern("Americans");
+        sim.change_owner(id, americans);
+        sim.techno_limbo_with_rules(id, &rules);
+
+        let row = 40 * usize::from(sim.fog.width);
+        let inside = row + 54; // inside both the 15-cell add and the 20-cell remove
+        let fringe = row + 55; // outside the add, inside the sensor remove only
+
+        assert_eq!(
+            sim.fog.sensors_by_house[&soviet][inside], 1,
+            "the builder's SensorsSight credit is never returned"
+        );
+        assert_eq!(
+            sim.fog.sensors_by_house[&americans][inside], -1,
+            "0x004556D0 debits the live owner over CloakRadiusInCells"
+        );
+        assert_eq!(sim.fog.sensors_by_house[&soviet][fringe], 0);
+        assert_eq!(
+            sim.fog.sensors_by_house[&americans][fringe], -1,
+            "the asymmetric remove radius reaches past the add circle too"
         );
         assert!(
-            !sim.fog.disguise_detect_by_house.contains_key(&americans),
-            "the captor's plane was never touched, so no negative residue"
+            sim.fog.has_sensor_for_house(soviet, 54, 40),
+            "the builder keeps submarine detection over ground it no longer owns"
+        );
+        assert!(!sim.fog.has_sensor_for_house(americans, 54, 40));
+
+        assert_eq!(sim.fog.disguise_detect_by_house[&soviet][inside], 1);
+        assert_eq!(
+            sim.fog.disguise_detect_by_house[&americans][inside], -1,
+            "the disguise circle is symmetric in radius but not in house"
+        );
+        assert!(sim.fog.detects_disguise_for_house(soviet, 54, 40));
+        assert!(
+            !sim.fog.detects_disguise_for_house(americans, 54, 40),
+            "a later NAPSIS the captor builds here needs two increments to see again"
         );
     }
 
