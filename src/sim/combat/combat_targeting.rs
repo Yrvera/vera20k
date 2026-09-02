@@ -128,8 +128,15 @@ pub fn acquire_best_target_for_entity(
         }
     }
     let obj = rules.object(interner.resolve(entity.type_ref))?;
-    // Need at least one weapon to acquire targets.
-    if obj.primary.is_none() && obj.secondary.is_none() {
+    // Native `TechnoClass::Greatest_Threat @ 0x006F8DF0` has no weapon
+    // early-out of its own; the armed requirement sits upstream in
+    // `TechnoClass::CanAcquireTarget @ 0x007091D0`, whose last term is
+    // `Is_Armed` (vtable `+0x2AC`). This is the same predicate, kept here
+    // because VERA's acquisition entry is also reached from the order and
+    // deployed-reacquire paths. It must NOT read `Primary=`: a `TurretCount>0`
+    // type never parses that key (`TechnoTypeClass::ReadINI @ 0x007128B2`), so
+    // `[SREF]` and `[YAGGUN]` were classified unarmed and could never acquire.
+    if !super::combat_weapon::is_armed(entity, obj) {
         return None;
     }
 
@@ -171,9 +178,13 @@ pub fn acquire_best_target_for_entity(
     )
 }
 
-fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId) -> u8 {
-    match rules.object(interner.resolve(type_id)) {
-        Some(obj) if obj.primary.is_some() => 0,
+/// VERA's own four-bucket target ordering (see the GSI-08.01 residual below).
+/// The "armed" bucket uses the native `Is_Armed` model rather than `Primary=`
+/// so that a `TurretCount>0` candidate — `[SREF]`, `[YAGGUN]` — is not ranked
+/// as an unarmed bystander; those types carry no `Primary=` at all.
+fn threat_class(rules: &RuleSet, interner: &StringInterner, candidate: &GameEntity) -> u8 {
+    match rules.object(interner.resolve(candidate.type_ref)) {
+        Some(obj) if super::combat_weapon::is_armed(candidate, obj) => 0,
         Some(obj) => match obj.category {
             ObjectCategory::Vehicle | ObjectCategory::Aircraft | ObjectCategory::Infantry => 1,
             ObjectCategory::Building => 2,
@@ -404,7 +415,7 @@ pub(crate) fn acquire_best_target(
             continue;
         }
 
-        let class = threat_class(rules, interner, candidate.type_ref);
+        let class = threat_class(rules, interner, candidate);
         let rank = (dist_sq, class, candidate.stable_id);
         match best {
             Some(current) if rank >= current => {}
@@ -843,5 +854,96 @@ pub fn tick_retaliation(
         if let Some(entity) = entities.get_mut(entity_id) {
             entity.last_attacker_id = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::intern::test_interner;
+
+    /// Stock key shape for the two `TurretCount>0` types that carry NO live
+    /// `Primary=`, copied from retail `ini/rulesmd.ini`:
+    ///
+    /// ```text
+    /// [SREF]    ; Primary=Comet          <- commented out by Westwood
+    ///           ; ElitePrimary=SuperComet
+    ///           TurretCount=4  WeaponCount=1  Weapon1=Comet
+    /// [YAGGUN]  (no Primary=, no Secondary= anywhere in the section)
+    ///           IsGattling=yes  TurretCount=1  WeaponCount=6  Weapon1=AGGattling ...
+    /// ```
+    ///
+    /// `TechnoTypeClass::ReadINI @ 0x007128B2` branches on `TurretCount > 0`
+    /// and jumps past the `Primary=` block, so those keys are never read for
+    /// either type and `obj.primary`/`obj.secondary` stay `None`.
+    fn gunner_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=SREF\n1=HTNK\n\
+             [BuildingTypes]\n0=YAGGUN\n\
+             [WeaponTypes]\n0=Comet\n1=AGGattling\n\
+             [SREF]\nStrength=300\nArmor=heavy\nCost=1200\n\
+             TurretCount=4\nWeaponCount=1\nWeapon1=Comet\nEliteWeapon1=Comet\n\
+             [YAGGUN]\nStrength=810\nArmor=steel\nCost=1000\n\
+             IsGattling=yes\nTurretCount=1\nWeaponCount=6\nWeapon1=AGGattling\n\
+             [HTNK]\nStrength=400\nArmor=heavy\nCost=900\nPrimary=Comet\n\
+             [Comet]\nDamage=100\nROF=110\nRange=6\nWarhead=WH\n\
+             [AGGattling]\nDamage=15\nROF=10\nRange=6\nWarhead=WH\n\
+             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("gunner fixture")
+    }
+
+    /// GSI-08.02 regression: the Prism Tank and the Gattling Cannon must read
+    /// as armed. `TechnoClass::Is_Armed @ 0x00701120` resolves ONE slot through
+    /// `GetCurrentWeapon @ 0x0070E1A0`, which for a `TurretCount>0` type is
+    /// `GetWeapon(CurrentWeaponNumber)` — `Weapon1`, not `Primary=`.
+    #[test]
+    fn gsi_08_02_stock_sref_and_yaggun_are_armed_through_weapon_one() {
+        let rules = gunner_rules();
+        let sref_obj = rules.object("SREF").expect("SREF");
+        let yaggun_obj = rules.object("YAGGUN").expect("YAGGUN");
+
+        // The premise: neither section authors the keys the old gates read.
+        assert!(sref_obj.primary.is_none() && sref_obj.secondary.is_none());
+        assert!(yaggun_obj.primary.is_none() && yaggun_obj.secondary.is_none());
+
+        let mut sref = GameEntity::test_default(1, "SREF", "Americans", 5, 5);
+        sref.category = EntityCategory::Unit;
+        let mut yaggun = GameEntity::test_default(2, "YAGGUN", "YuriCountry", 9, 9);
+        yaggun.category = EntityCategory::Structure;
+
+        assert!(super::super::combat_weapon::is_armed(&sref, sref_obj));
+        assert!(super::super::combat_weapon::is_armed(&yaggun, yaggun_obj));
+    }
+
+    /// The gate this file owns: a Prism Tank must get past
+    /// `acquire_best_target_for_entity`'s armed check and pick the enemy tank
+    /// next to it. Against the old `Primary=`/`Secondary=` predicate this
+    /// returns `None` — a Prism Tank on Guard never opened fire on anything
+    /// that walked past.
+    #[test]
+    fn gsi_08_02_sref_acquires_a_target_through_the_armed_gate() {
+        let rules = gunner_rules();
+        let mut entities = EntityStore::new();
+
+        let mut sref = GameEntity::test_default(1, "SREF", "Americans", 5, 5);
+        sref.category = EntityCategory::Unit;
+        sref.lifecycle.in_limbo = false;
+        entities.insert(sref);
+
+        let mut enemy = GameEntity::test_default(2, "HTNK", "Russians", 6, 5);
+        enemy.category = EntityCategory::Unit;
+        enemy.lifecycle.in_limbo = false;
+        entities.insert(enemy);
+
+        // Snapshot the thread-local test interner only after `test_default`
+        // has interned both owners and both type names.
+        let interner = test_interner();
+
+        assert_eq!(
+            acquire_best_target_for_entity(&entities, &rules, &interner, 1, None, None, false),
+            Some(2)
+        );
     }
 }

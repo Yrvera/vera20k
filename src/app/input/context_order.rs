@@ -1105,9 +1105,14 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     )
                 } else if force_fire && !cell_is_shrouded {
                     // Force-fire on empty terrain: per-unit dispatch matching
-                    // gamemd What_Action_OnCell — armed mobile units fire at
-                    // the cell, unarmed (Engineer/Harvester/MCV) fall through
-                    // to plain Move.
+                    // gamemd `TechnoClass::What_Action_OnCell @ 0x00700600` —
+                    // armed mobile units fire at the cell, unarmed
+                    // (Engineer/Harvester/MCV) fall through to plain Move. The
+                    // armed test is the inlined `TechnoClass::Is_Armed` at
+                    // `0x007008BD` (one weapon slot, via `GetCurrentWeapon`),
+                    // not `Primary=`/`Secondary=`: those keys are never parsed
+                    // for a `TurretCount>0` type, so the Prism Tank and the
+                    // Gattling Cannon were routed to Move instead of firing.
                     let unit_armed = sim
                         .entities()
                         .get(stable_id)
@@ -1115,7 +1120,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             let type_str = sim.interner.resolve(e.type_ref);
                             Some(&resources.rules)
                                 .and_then(|r| r.object(type_str))
-                                .map(|obj| obj.primary.is_some() || obj.secondary.is_some())
+                                .map(|obj| crate::sim::combat::combat_weapon::is_armed(e, obj))
                         })
                         .unwrap_or(false);
                     let is_harvester = sim

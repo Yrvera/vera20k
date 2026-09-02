@@ -12,41 +12,10 @@ use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::ground_height_leptons;
 
 use super::super::combat_weapon::{
-    VersesGate, attacker_facts, primary_for_tier, target_is_high_flying, verses_gate,
-    weapon_for_index,
+    VersesGate, is_armed, primary_for_tier, target_is_high_flying, verses_gate,
 };
 use super::super::{TargetKind, armor_index, object_world_z_leptons};
 use super::{BaseDefenseResponseContext, ExistingTargetDisposition, ResponderPeekFireError};
-
-/// Native "is this object armed" predicate.
-///
-/// gamemd-derived: `TechnoClass::Is_Armed @ 0x00701120` (vtable `+0x2AC`;
-/// Foot/Infantry/Unit/Aircraft all inherit it) is
-/// `w = GetCurrentWeapon(); w != NULL && w->WeaponType != NULL`.
-/// `TechnoClass::GetCurrentWeapon @ 0x0070E1A0` (vtable `+0x3F4`) asks
-/// `GetWeapon(CurrentWeaponNumber (+0x138))` when
-/// `TechnoTypeClass::HasTurrets @ 0x00717880` (`TurretCount (+0x808) > 0`) and
-/// `GetWeapon(0)` otherwise. `BuildingClass::Is_Armed @ 0x00458DB0` overrides
-/// the slot: an occupied building (`vt+0x400`) is armed unconditionally, and
-/// otherwise falls through to the Techno test.
-///
-/// So only ONE slot is consulted — `Secondary=` never makes an object armed,
-/// and a `TurretCount>0` type is armed only through its current gunner slot.
-/// The elite tier is applied by `GetWeapon`, which is why this reads
-/// `weapon_for_index` rather than the raw `Primary=` field.
-pub(super) fn is_armed(entity: &GameEntity, object: &ObjectType) -> bool {
-    let facts = attacker_facts(entity, object);
-    // `BuildingClass::Is_Armed 0x00458DB0`: `IsOccupied() → 1`.
-    if facts.is_occupied_building {
-        return true;
-    }
-    let index = if object.turret_count > 0 {
-        facts.current_weapon_number
-    } else {
-        0
-    };
-    weapon_for_index(object, facts.veterancy, index).is_some()
-}
 
 pub(super) fn entity_coord(entity: &GameEntity, terrain: Option<&ResolvedTerrainGrid>) -> [i32; 3] {
     [
@@ -230,19 +199,53 @@ pub(super) fn primary_range_leptons(
 /// open until those active-YR producers and the Unit/Infantry overrides have
 /// executable coverage.
 ///
-/// RESIDUAL (UNCHECKED) — three GetFireError arms this peek still omits:
-/// - `0x006FC76A..0x006FC7CA` (naval `-1`) and `0x006FC7D0..0x006FC868`
-///   (`LandTargeting==1` off water) both need the target's occupied-cell
-///   `LandType`, which the response has no terrain handle for here. Trigger: a
-///   Dolphin/Squid/Sub recruited against a land attacker. Player effect: it is
-///   admitted to the response list and walks to a shot it cannot take.
-///   Frequency: only in naval-base defence. Downstream: none — the real fire
-///   path re-runs the full verdict.
+/// RESIDUAL (UNCHECKED) — four GetFireError arms this peek still omits. All
+/// four make VERA *more* permissive: a candidate gamemd rejects with 5 is
+/// admitted to the response list here. Downstream on all four: none — the real
+/// fire path re-runs the full verdict, so the candidate simply walks to a shot
+/// it cannot take.
+/// - `0x006FC76A..0x006FC7CA` (naval `-1`). `0x006FC775`/`0x006FC789` set BL
+///   when the **target**'s `GetOccupiedCell()->LandType (+0xEC)` is Water(2) or
+///   Beach(6); `0x006FC79D` clears it for an `IsHighFlying` target and
+///   `0x006FC7A6` clears it for one standing `OnBridge (+0x8C)`. Only with BL
+///   set does `0x006FC7C1` call the attacker's `NavalTargeting` selector
+///   (`vt+0x2E8`), and `-1` returns 5. So the trigger is **the target being on
+///   water**, not the responder. The stock types whose selector can answer `-1`
+///   are the `NavalTargeting=6` set — `[DOG]`, `[ADOG]`, `[YDOG]`, `[YADOG]`,
+///   `[AEGIS]`, `[NASAM]`, `[NAFLAK]`, `[CAOS]`, `[DRON]` — plus `[ASW]`
+///   (`=2`, `-1` against anything not `Underwater`), and every default
+///   (`NavalTargeting` unset) type against a *submerged* `Underwater` target.
+///   `[DLPH]`/`[SUB]` (`=5`) and `[SQD]` (`=3`) never answer `-1`.
+///   Frequency: whenever a base-defence responder is recruited against an
+///   attacker standing on water or a beach — a naval or amphibious raid on a
+///   coastal base, which is ordinary play on any water map.
+/// - `0x006FC7D0..0x006FC868` (`LandTargeting==1`) is the **opposite** arm: it
+///   is reached on the BL-clear path (`0x006FC7E1 TEST BL,BL / JNZ` skips it
+///   when the target is on water), after `target->vt+0x50` (`IsLowFlying` for
+///   an ObjectClass target) is true, and returns 5 when the **attacker**'s
+///   `Type.LandTargeting (+0x604) == 1`. Stock authors: `[NASAM]` (Patriot) and
+///   `[NAFLAK]` (Flak Cannon) — the standard AA base defences on every map —
+///   plus `[AEGIS]`, `[ASW]`, `[DLPH]`, `[SQD]`, `[SUB]`. So the live case is
+///   an AA defence recruited against an ordinary ground attacker, not a naval
+///   one. Frequency: every base-defence response that reaches a Patriot or Flak
+///   Cannon while the attacker is on land.
+///   Both arms need the target's occupied-cell `LandType`, which this call site
+///   has no terrain handle for.
+/// - `0x006FC742..0x006FC75C` (Foot-layer AA gate): a target with
+///   `AbstractFlags (+0x14) & 4` (Foot) whose `InWhichLayer (vt+0x78) != 2` and
+///   a non-AA projectile jumps to `0x006FC86A` = 5. VERA has no layer model
+///   (see `combat_weapon` R1). Trigger: an airborne-but-low target — a
+///   Rocketeer or Kirov just after lift-off. Frequency: brief windows per
+///   flight.
 /// - `0x006FC727` splits the high-flying verdict into 3 (the target is this
-///   object's `DeployedFrom`, `TechnoClass+0x2AC`) and 5, and the caller admits
-///   3. VERA reports `Illegal` for both, so such a candidate is rejected where
-///   gamemd keeps it. Trigger: shooting at the structure one deployed out of.
-///   Frequency: rare. Downstream: none.
+///   object's `DeployedFrom`, instance field `TechnoClass+0x2AC`) and 5, and
+///   the caller admits 3 (`0x00708282`/`0x007084B8` are `CMP EAX,0x5 / JZ
+///   <reject>` — only 5 rejects). VERA reports `Illegal` for both, so such a
+///   candidate is rejected where gamemd keeps it — the one arm here that makes
+///   VERA *less* permissive. Trigger: `0x006FC70E` must first find the target
+///   `IsHighFlying`, and `+0x2AC` links to the structure this object deployed
+///   out of, which is never at flight level. Frequency: practically
+///   unreachable on stock data.
 pub(crate) fn responder_peek_fire_error(
     candidate: &GameEntity,
     target: &GameEntity,

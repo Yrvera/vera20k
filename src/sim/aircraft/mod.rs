@@ -243,6 +243,13 @@ pub fn tick_aircraft_missions(
                 };
                 let type_str = sim.interner.resolve(entity.type_ref);
                 let obj = rules.object(type_str);
+                // `Primary=` is the armed test here rather than
+                // `combat_weapon::is_armed` (`TechnoClass::Is_Armed
+                // @ 0x00701120`). The two agree on every stock aircraft: no
+                // aircraft section authors `TurretCount=`, so the single slot
+                // `GetCurrentWeapon` would read is slot 0 = `Primary=`.
+                // UNCHECKED which predicate the native idle/return-to-airfield
+                // path uses; zero stock frequency either way.
                 let has_weapon = obj.map_or(false, |o| o.primary.is_some());
                 let airport_bound = obj.map_or(false, |o| o.airport_bound);
                 let is_airborne = entity

@@ -178,6 +178,12 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // Ctrl+Alt is guard area — neither force-fires — so this reads the resolved
     // modifier verb rather than raw Ctrl. The armed test runs on the one
     // resolved object, matching gamemd's single-object dispatch.
+    //
+    // The armed predicate is the native one: `TechnoClass::What_Action_OnCell
+    // @ 0x00700600` inlines `TechnoClass::Is_Armed` at `0x007008BD` and skips
+    // every ACTION_ATTACK arm when it fails. It consults ONE weapon slot, so
+    // `Primary=`/`Secondary=` is the wrong test for a `TurretCount>0` type —
+    // it hid the force-fire cursor for the Prism Tank and the Gattling Cannon.
     if modifier == crate::app::input::context_order::OrderModifier::ForceFire {
         let best_is_armed = best_id.is_some_and(|id| {
             sim.entities().get(id).is_some_and(|e| {
@@ -185,7 +191,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
                 state
                     .rules()
                     .and_then(|r| r.object(type_str))
-                    .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
+                    .is_some_and(|obj| crate::sim::combat::combat_weapon::is_armed(e, obj))
             })
         });
         if best_is_armed {
@@ -840,6 +846,15 @@ fn select_best_for_action(
         } else {
             // The engine's weapon test queries *all* weapon slots, so a
             // secondary-only unit scores 5 just like a primary-armed one.
+            //
+            // RESIDUAL (UNCHECKED, deferred): "all slots" is modelled as
+            // `Primary`+`Secondary`, which is empty for a `TurretCount>0` type
+            // — `[SREF]`, `[YAGGUN]` score 4 instead of 5. This only reorders
+            // `select_best_for_action`'s single-object pick within a mixed
+            // selection; the force-fire gate above is now the native
+            // `Is_Armed`. Trigger: a Prism Tank selected together with an
+            // unarmed vehicle at equal distance. Frequency: occasional.
+            // Downstream: cursor/order dispatch only, no sim state.
             let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
             let has_weapon = obj.is_some_and(|o| {
                 [o.primary.as_ref(), o.secondary.as_ref()]

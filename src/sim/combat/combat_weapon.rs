@@ -333,6 +333,66 @@ pub(crate) fn secondary_for_tier(obj: &ObjectType, veterancy: u16) -> Option<&st
     weapon_for_index(obj, veterancy, 1).map(|(weapon_id, _)| weapon_id)
 }
 
+/// The native "does this object have a weapon" predicate. **Exactly one weapon
+/// slot decides.**
+///
+/// gamemd-derived: `TechnoClass::Is_Armed @ 0x00701120` (vtable `+0x2AC`;
+/// `read_memory 0x007F4C0C`, and the Aircraft/Foot/Infantry/Unit tables at
+/// `0x007E2550`/`0x007E8F40`/`0x007EB304`/`0x007F5F1C` hold the same body) is
+/// `w = GetCurrentWeapon(); w != NULL && w->WeaponType != NULL`.
+/// `TechnoClass::GetCurrentWeapon @ 0x0070E1A0` (vtable `+0x3F4`) asks
+/// `GetWeapon(CurrentWeaponNumber (+0x138))` when
+/// `TechnoTypeClass::HasTurrets @ 0x00717880` (`TurretCount (+0x808) > 0`) and
+/// `GetWeapon(0)` otherwise. `BuildingClass::Is_Armed @ 0x00458DB0`
+/// (`read_memory 0x007E4168`) overrides the slot: an occupied building
+/// (`vt+0x400`, `BuildingClass::IsOccupied 0x00458DD0`) is armed
+/// unconditionally, otherwise it falls through to the Techno test.
+///
+/// So `Secondary=` never makes an object armed, and a `TurretCount>0` type is
+/// armed only through its current gunner slot. The elite tier is applied by
+/// `GetWeapon`, which is why this goes through `weapon_for_index` rather than
+/// reading `Primary=` directly — and reading `Primary=` here is wrong for stock
+/// data: `TechnoTypeClass::ReadINI @ 0x007128B2` branches on `TurretCount > 0`
+/// and never reads `Primary=` for such a type, so `[SREF]` (Prism Tank, whose
+/// `Primary=Comet` is commented out in `rulesmd.ini`) and `[YAGGUN]` (Gattling
+/// Cannon, which authors no `Primary=` at all) carry their weapons only in
+/// `Weapon1..N`.
+///
+/// Verified call sites of this predicate, all reached in ordinary play:
+/// - `TechnoClass::CanAcquireTarget @ 0x007091D0` ends with
+///   `vt+0x2AC` — the gate behind every passive target scan
+///   (`TechnoClass::PassiveAcquireGate 0x00709290` consumes it).
+/// - `TechnoClass::What_Action_OnCell @ 0x00700600` inlines the whole body at
+///   `0x007008BD..0x007008CE` (`CALL [EDX+0x3F4]` / `TEST EAX,EAX` /
+///   `CMP dword [EAX],0x0`, both misses jumping past the ATTACK arms to
+///   `0x00700AB7`) — the force-fire cursor and order gate.
+/// - `TechnoClass::RespondToBaseAttack @ 0x00708080` victim/candidate gates and
+///   `FootClass::Evaluate_Target_Threat @ 0x004D97A0`.
+/// - `UnitClass::Can_Enter_Cell @ 0x0073F0A0` wall-overlay and enemy-gate arms.
+///
+/// RESIDUAL (UNCHECKED, zero stock frequency): `BuildingClass::GetWeapon
+/// @ 0x004526F0` resolves a non-occupied building's slot through an upgrade
+/// loop (`count [+0x702]` over `[+0x5EC]`) that VERA does not model. No stock
+/// section pairs a weaponised upgrade with a building; only `[GAPOWR]`/
+/// `[YAPOWR]` declare `Upgrades=`, and those are capacity upgrades. Native also
+/// tests the resolved `WeaponType` pointer where VERA tests whether the slot
+/// names an id, so a type naming a weapon absent from `[WeaponTypes]` is armed
+/// here and unarmed in gamemd — a data-error-only divergence.
+pub(crate) fn is_armed(entity: &GameEntity, obj: &ObjectType) -> bool {
+    let facts = attacker_facts(entity, obj);
+    // `BuildingClass::Is_Armed 0x00458DB0`: `IsOccupied() → 1`.
+    if facts.is_occupied_building {
+        return true;
+    }
+    // `GetCurrentWeapon 0x0070E1A0`: gunner slot iff `HasTurrets`, else slot 0.
+    let index = if obj.turret_count > 0 {
+        facts.current_weapon_number
+    } else {
+        0
+    };
+    weapon_for_index(obj, facts.veterancy, index).is_some()
+}
+
 fn deploy_fire_weapon_index(obj: &ObjectType) -> i32 {
     obj.deploy_fire_weapon
         .unwrap_or(DEFAULT_DEPLOY_FIRE_WEAPON_INDEX)

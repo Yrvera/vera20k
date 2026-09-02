@@ -811,6 +811,22 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
                     {
                         continue;
                     }
+                    // RESIDUAL (DRIFT, deferred): native's enemy-gate arm in
+                    // `UnitClass::Can_Enter_Cell @ 0x0073F0A0` is
+                    // `if (!IsAllied) { if (!this->vt+0x2AC()) return 7; max(5) }`
+                    // — `TechnoClass::Is_Armed`, one weapon slot through
+                    // `GetCurrentWeapon`, not `Primary=`/`Secondary=`. Those
+                    // keys are never parsed for a `TurretCount>0` type
+                    // (`TechnoTypeClass::ReadINI @ 0x007128B2`), so `[SREF]`
+                    // and `[YAGGUN]` answer 7 (Impassable) here where gamemd
+                    // answers 5 (EnemyBlock). Trigger: a Prism Tank leaving a
+                    // war factory onto a cell held by an enemy gate. Player
+                    // effect: an A* edge-cost/admission difference on the exit
+                    // cell only. Frequency: negligible — needs an enemy gate
+                    // inside the producer's exit footprint. Downstream: none.
+                    // Left with the other armed-predicate readers outside this
+                    // mechanism rather than changed from the weapon-selection
+                    // branch.
                     return ProductionUnitAdmission::nonzero(
                         if allied {
                             3
@@ -904,6 +920,16 @@ pub(in crate::sim) fn produced_unit_unlimbo_entry_at_resolved_cell(
         }
         if raw_bits & 0x1F != 0 {
             if !regular_crusher {
+                // RESIDUAL (DRIFT, deferred): native's matching arm in
+                // `UnitClass::Can_Enter_Cell @ 0x0073F0A0` is richer than an
+                // armed test — `Type+0xC94 == 0 && (GetWeapon()->WeaponType ==
+                // NULL || GetWeapon(0)->Projectile->AG (+0x2A5) == 0)` returns
+                // 7, else 5. VERA models only the "names a weapon" half, and
+                // reads `Primary=`/`Secondary=` for it, which answers "no
+                // weapon" for a `TurretCount>0` type. Trigger: a Prism Tank
+                // exiting onto an occupied non-crushable cell. Player effect:
+                // 7 (Impassable) where gamemd answers 5. Frequency: rare —
+                // needs a blocked exit cell. Downstream: none.
                 return ProductionUnitAdmission::nonzero(
                     if object.primary.is_some() || object.secondary.is_some() {
                         5

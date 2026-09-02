@@ -905,6 +905,15 @@ pub(crate) fn retarget_preserving_rearm(entity: &mut GameEntity, new_target_sid:
 /// Aborts (returns `false`) if the attacker has no weapon — caller filters
 /// unarmed units client-side, but this defensive check keeps a stray command
 /// from corrupting state.
+///
+/// gamemd-derived: `TechnoClass::What_Action_OnCell @ 0x00700600` inlines
+/// `TechnoClass::Is_Armed` at `0x007008BD..0x007008CE` —
+/// `CALL [EDX+0x3F4]` (`GetCurrentWeapon`), `TEST EAX,EAX`,
+/// `CMP dword [EAX],0x0`, both misses jumping to `0x00700AB7` past every arm
+/// that can return 5 (ACTION_ATTACK). That is the gate, and it is a single
+/// weapon slot — not `Primary=` plus `Secondary=`. Reading the INI keys
+/// refused force-fire for `[SREF]` and `[YAGGUN]`, whose weapons live only in
+/// `Weapon1..N`.
 pub fn issue_attack_cell_command(
     entities: &mut EntityStore,
     attacker_id: u64,
@@ -918,7 +927,7 @@ pub fn issue_attack_cell_command(
         let type_str = interner.resolve(a.type_ref);
         let has_weapon = rules
             .and_then(|r| r.object(type_str))
-            .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some());
+            .is_some_and(|obj| combat_weapon::is_armed(a, obj));
         (
             a.position.rx,
             a.position.ry,
@@ -5333,8 +5342,11 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             if !is_within_range_leptons(dist_sq, scan_range) {
                 continue;
             }
+            // Same VERA-internal two-bucket ordering as `threat_class`, on the
+            // native `Is_Armed` model rather than `Primary=` so a `[SREF]` or
+            // `[YAGGUN]` candidate is not ranked as an unarmed bystander.
             let class = match rules.object(interner.resolve(candidate.type_ref)) {
-                Some(o) if o.primary.is_some() => 0u8,
+                Some(o) if combat_weapon::is_armed(candidate, o) => 0u8,
                 _ => 1,
             };
             let rank = (dist_sq, class, candidate.stable_id);

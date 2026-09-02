@@ -279,8 +279,9 @@ pub(crate) fn add_assigned_cost(accumulated: i32, cost: i32, budget: i32) -> (i3
 
 mod admission;
 
+use super::combat_weapon::is_armed;
 use admission::{
-    candidate_admitted, current_target_disposition, destination_cell, entity_coord, is_armed,
+    candidate_admitted, current_target_disposition, destination_cell, entity_coord,
     primary_range_leptons, should_be_on_bridge_for_response,
 };
 
