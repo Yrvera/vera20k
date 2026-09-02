@@ -115,7 +115,16 @@ impl CrateRulesAccumulator {
             }
             // Every ReadString call in this body is given capacity 0x80, so
             // truncation owns both the retained identity and the earlier late
-            // allocation.
+            // allocation. `OverlayTypeClass__FindOrCreate @ 0x005FEC70` returns
+            // 0 for both `<none>` and `none` and the result is stored
+            // unconditionally, so unlike the sound below these keys really do
+            // null on a sentinel.
+            //
+            // VERA-internal, gamemd equivalent UNCHECKED: native keeps an
+            // OverlayTypeClass pointer and no string at all, so there is no
+            // native casing to match. Upper-casing makes the retained name a
+            // stable lookup key for the later consumer; every comparison
+            // against it is case-insensitive regardless.
             let value = section.read_string(key, "", 0x80);
             *target = (!is_native_none_type_name(&value)).then(|| value.to_ascii_uppercase());
         }

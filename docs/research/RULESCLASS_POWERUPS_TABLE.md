@@ -44,8 +44,11 @@ INI line format:
     does `EAX = ftol(magnitude); EDX = EAX + 0x384; RandomRanged(EAX, EDX)`
     (`0x00482484..0x004824A0`), so stock `Money=20,MONEY,yes,2000` pays
     **2000–2900**. The retail INI's own trailing comment `(maximum cash)` is
-    wrong and this doc inherited it. In game mode zero the draw is skipped
-    entirely and `[CrateRules] SoloCrateMoney` is paid flat.
+    wrong and this doc inherited it. The solo override is narrower than it
+    looks: `PickupDispatch` loads `SoloCrateMoney` only when `g_GameMode == 0`
+    **and** the cell's overlay data byte is zero, and the draw is then skipped
+    only when that loaded value is non-zero — a `SoloCrateMoney=0` still rolls
+    the random amount.
   - Armor/Firepower/Speed → multiplier applied to nearby units
   - Veteran → veteran levels added
   - Invulnerability → duration in minutes

@@ -167,10 +167,18 @@ impl IniSection {
     /// like it does, and NOT `util::sim_to_i32`, which floors toward −∞ (DRIFT
     /// on negatives, ledger #18).
     ///
-    /// One residual: `Math__ftol` executes `FISTP qword` and keeps only the low
-    /// dword, so an out-of-range magnitude WRAPS, while `f64 as i32` saturates.
-    /// Reaching it needs |value| >= 8388608 cells; NaN agrees either way,
-    /// because x87 integer-indefinite has a zero low dword.
+    /// Two residuals at the extremes, both out of reach of retail data:
+    ///
+    /// * `Math__ftol` executes `FISTP qword` and the caller keeps only the low
+    ///   dword, so a magnitude past `i32` WRAPS while `f64 as i32` saturates.
+    ///   That band starts at |value| >= 8388608 cells and ends at 2^63, beyond
+    ///   which `FISTP` stores integer-indefinite and the low dword is zero.
+    ///   `±inf` therefore yields 0 natively against `i32::MAX` here.
+    /// * A NaN never reaches `ftol` at all: `FCOM` against `-1.0` sets C3 for
+    ///   unordered as well as equal, and the `TEST AH,0x40` at `0x0047463E`
+    ///   takes the sentinel exit, returning the caller's default. Rust returns
+    ///   `0`. Inert in practice because `parse_read_double` scans a numeric
+    ///   prefix and cannot produce NaN.
     ///
     /// The lepton scale is load-bearing and was missing here until it was
     /// re-derived from the disassembly on 2026-09-02 — the Ghidra decompiler
