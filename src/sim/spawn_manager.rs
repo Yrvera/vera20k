@@ -772,6 +772,7 @@ fn step_manager_mode(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame
                     owner_id,
                     &target,
                     terrain,
+                    Some(&sim.house_alliances),
                 )
             });
             if !target_is_legal {

@@ -144,6 +144,13 @@ pub struct DockPad {
 /// Native `AddOccupy1..8` / `RemoveOccupy1..8` storage cardinality.
 pub const HIDDEN_OCCUPY_SLOT_COUNT: usize = 8;
 
+/// Native `TechnoTypeClass::Weapon[]` / `EliteWeapon[]` slot count.
+///
+/// gamemd-derived: `TechnoClass::SetGunnerWeapon @ 0x0070DC70` accepts
+/// `0 <= idx < 18`, and `EliteWeapon[]` (`+0xA94`) sits `18 * 0x1C` (+4)
+/// bytes after `Weapon[]` (`+0x898`).
+pub const WEAPON_SLOT_COUNT: usize = 18;
+
 /// Immutable building-type inputs for the separate hidden-object cell counter.
 ///
 /// Missing numbered offsets remain `None` in their native slot instead of being
@@ -883,9 +890,67 @@ pub struct ObjectType {
     /// true; other object categories default false.
     pub bunkerable: bool,
 
-    /// Indexed weapon list for IFV (Weapon1..Weapon17 in rules.ini).
-    /// Only populated when Gunner=yes. Index 0 = Weapon1.
-    pub weapon_list: Vec<String>,
+    /// `Weapon1..Weapon18` by slot index (`weapon_list[i]` = `Weapon{i+1}`).
+    /// Always `WEAPON_SLOT_COUNT` long; unauthored slots are `None`.
+    ///
+    /// gamemd-derived: `TechnoTypeClass::ReadINI @ 0x007128B2` branches on
+    /// `TurretCount`. `TurretCount > 0` runs the `Weapon%d` (`0x007128E5`) /
+    /// `EliteWeapon%d` (`0x007128F9`) loop `WeaponCount` times into the
+    /// `Weapon[]` (`+0x898`) and `EliteWeapon[]` (`+0xA94`) arrays, stride
+    /// `0x1C`, then jumps past the `Primary=` block (`0x0071299E ->
+    /// 0x00712A8F`). `TurretCount <= 0` takes the `Primary=` block at
+    /// `0x007129A3` instead and never reads `Weapon%d`. The two are
+    /// **mutually exclusive**: a turreted type ignores `Primary=`/`Secondary=`
+    /// entirely, and an ordinary type ignores `WeaponN=`. Resolution lives in
+    /// `sim::combat::combat_weapon::weapon_for_index`.
+    pub weapon_list: Vec<Option<String>>,
+
+    /// `EliteWeapon1..EliteWeapon18` by slot index; same shape as
+    /// `weapon_list`.
+    pub elite_weapon_list: Vec<Option<String>>,
+
+    /// `WeaponCount=` (`TechnoTypeClass+0x80C`, ReadINI `0x00712873`). Bounds
+    /// the `Weapon%d`/`EliteWeapon%d` loop; slots at or past it keep their
+    /// constructor value, so a `TurretCount>0` type with `WeaponCount=1`
+    /// (stock `[SREF]`) has no secondary at all. Constructor default 0: the
+    /// ReadINI store at `0x00712878` is the only write to `+0x80C` in the
+    /// image, so the field arrives block-cleared (UNCHECKED — the clearing
+    /// instruction itself was not located).
+    pub weapon_count: i32,
+
+    /// `NavalTargeting=` (`TechnoTypeClass+0x600`, ReadINI `0x007121CB`,
+    /// ctor default 0 @ `0x00711024`). Consumed by
+    /// `TechnoClass::SelectNavalTargetingWeapon @ 0x006F3820`.
+    pub naval_targeting: i32,
+
+    /// `LandTargeting=` (`TechnoTypeClass+0x604`, ReadINI `0x007121B1`,
+    /// ctor default 0 @ `0x0071102A`). `2` selects slot 1 against land in
+    /// `What_Weapon_Should_I_Use`; `1` is a `GetFireError` ILLEGAL verdict.
+    pub land_targeting: i32,
+
+    /// `Underwater=` (`TechnoTypeClass+0xD69`, ReadINI `0x00714D88`).
+    pub underwater: bool,
+
+    /// `Organic=` (`TechnoTypeClass+0xD97`, ReadINI `0x0071503F`).
+    pub organic: bool,
+
+    /// `Unnatural=` (`TechnoTypeClass+0x694`, ReadINI `0x0071496D`).
+    pub unnatural: bool,
+
+    /// `IsGattling=` (`TechnoTypeClass+0xCD5`, ReadINI `0x0071402A`).
+    pub is_gattling: bool,
+
+    /// `TurretCount=` (`TechnoTypeClass+0x808`, ReadINI `0x0071285E`, ctor
+    /// default 0 @ `0x0071136F`). `> 0` short-circuits weapon selection to
+    /// `CurrentWeaponNumber` unless the type is gattling.
+    pub turret_count: i32,
+
+    /// `Drainable=` (`TechnoTypeClass+0x5EF`, ReadINI `0x007143B0`).
+    pub drainable: bool,
+
+    /// `Overpowerable=` (`BuildingTypeClass+0x1575`, ReadINI `0x00460029`).
+    /// Constructor default UNCHECKED; every stock author writes it explicitly.
+    pub overpowerable: bool,
 
     /// Whether this unit shows an `Attack` cursor even on friendly targets.
     /// Parsed from `AttackCursorOnFriendlies=yes` in rules.ini.
@@ -1594,13 +1659,26 @@ impl ObjectType {
             bunkerable: section
                 .get_bool("Bunkerable")
                 .unwrap_or(category == ObjectCategory::Vehicle),
-            weapon_list: if section.get_bool("Gunner").unwrap_or(false) {
-                (1..=17)
-                    .filter_map(|i| section.get(&format!("Weapon{}", i)).map(|s| s.to_string()))
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            weapon_list: (1..=WEAPON_SLOT_COUNT)
+                .map(|i| section.get(&format!("Weapon{}", i)).map(|s| s.to_string()))
+                .collect(),
+            elite_weapon_list: (1..=WEAPON_SLOT_COUNT)
+                .map(|i| {
+                    section
+                        .get(&format!("EliteWeapon{}", i))
+                        .map(|s| s.to_string())
+                })
+                .collect(),
+            weapon_count: section.get_i32("WeaponCount").unwrap_or(0),
+            naval_targeting: section.get_i32("NavalTargeting").unwrap_or(0),
+            land_targeting: section.get_i32("LandTargeting").unwrap_or(0),
+            underwater: section.get_bool("Underwater").unwrap_or(false),
+            organic: section.get_bool("Organic").unwrap_or(false),
+            unnatural: section.get_bool("Unnatural").unwrap_or(false),
+            is_gattling: section.get_bool("IsGattling").unwrap_or(false),
+            turret_count: section.get_i32("TurretCount").unwrap_or(0),
+            drainable: section.get_bool("Drainable").unwrap_or(false),
+            overpowerable: section.get_bool("Overpowerable").unwrap_or(false),
             attack_cursor_on_friendlies: section
                 .get_bool("AttackCursorOnFriendlies")
                 .unwrap_or(false),
@@ -2601,7 +2679,8 @@ mod tests {
         assert_eq!(obj.size, 3);
         assert!(!obj.open_topped);
         assert!(!obj.gunner);
-        assert!(obj.weapon_list.is_empty());
+        assert_eq!(obj.weapon_list.len(), WEAPON_SLOT_COUNT);
+        assert!(obj.weapon_list.iter().all(Option::is_none));
     }
 
     #[test]
@@ -2626,7 +2705,76 @@ mod tests {
         assert_eq!(obj.passengers, 1);
         assert_eq!(obj.size_limit, 1);
         assert!(obj.gunner);
-        assert_eq!(obj.weapon_list, vec!["Missiles", "FlakGun", "RepairArm"]);
+        assert_eq!(obj.weapon_list.len(), WEAPON_SLOT_COUNT);
+        assert_eq!(obj.weapon_list[0].as_deref(), Some("Missiles"));
+        assert_eq!(obj.weapon_list[1].as_deref(), Some("FlakGun"));
+        assert_eq!(obj.weapon_list[2].as_deref(), Some("RepairArm"));
+        assert!(obj.weapon_list[3..].iter().all(Option::is_none));
+        assert!(obj.elite_weapon_list.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn weapon_slot_lists_parse_for_non_gunner_types_and_selector_flags_parse() {
+        // Stock YAGGUN shape: IsGattling with six WeaponN/EliteWeaponN slots
+        // and no Gunner=. Stock DEST shape: NavalTargeting=1.
+        let ini: IniFile = IniFile::from_str(
+            "[YAGGUN]\nIsGattling=yes\nTurretCount=1\nWeaponCount=6\nWeapon1=AG1\nEliteWeapon1=AG1E\n\
+             Weapon2=AA1\nWeapon6=AA3\nEliteWeapon6=AA3E\n\
+             [DEST]\nNavalTargeting=1\nNaval=yes\n\
+             [BSUB]\nLandTargeting=2\nUnderwater=yes\nUnnatural=yes\n\
+             [SQD]\nOrganic=yes\nNavalTargeting=3\n\
+             [GAPOWR]\nDrainable=yes\n[TESLA]\nOverpowerable=true\n",
+        );
+        let yaggun = ObjectType::from_ini_section(
+            "YAGGUN",
+            ini.section("YAGGUN").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(yaggun.is_gattling);
+        assert_eq!(yaggun.turret_count, 1);
+        assert_eq!(yaggun.weapon_count, 6);
+        assert_eq!(yaggun.weapon_list[0].as_deref(), Some("AG1"));
+        assert_eq!(yaggun.elite_weapon_list[0].as_deref(), Some("AG1E"));
+        assert_eq!(yaggun.weapon_list[1].as_deref(), Some("AA1"));
+        assert!(yaggun.weapon_list[2].is_none());
+        assert_eq!(yaggun.weapon_list[5].as_deref(), Some("AA3"));
+        assert_eq!(yaggun.elite_weapon_list[5].as_deref(), Some("AA3E"));
+        let dest = ObjectType::from_ini_section(
+            "DEST",
+            ini.section("DEST").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(dest.naval_targeting, 1);
+        assert_eq!(dest.land_targeting, 0);
+        assert!(!dest.underwater);
+        let bsub = ObjectType::from_ini_section(
+            "BSUB",
+            ini.section("BSUB").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(bsub.land_targeting, 2);
+        assert!(bsub.underwater);
+        assert!(bsub.unnatural);
+        let sqd = ObjectType::from_ini_section(
+            "SQD",
+            ini.section("SQD").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(sqd.organic);
+        assert_eq!(sqd.naval_targeting, 3);
+        let powr = ObjectType::from_ini_section(
+            "GAPOWR",
+            ini.section("GAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(powr.drainable);
+        assert!(!powr.overpowerable);
+        let tesla = ObjectType::from_ini_section(
+            "TESLA",
+            ini.section("TESLA").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(tesla.overpowerable);
     }
 
     #[test]

@@ -29,9 +29,12 @@
 
 use std::collections::BTreeMap;
 
-use super::combat_weapon::{VersesGate, select_weapon_with_override, verses_gate};
+use super::combat_weapon::{
+    VersesGate, attacker_facts, attacker_facts_from_snapshot, is_ally_by_object,
+    select_weapon_for_target, techno_target_facts, verses_gate,
+};
 use super::threat_range::{ScanMission, ScanRange, scan_mission_for, scan_range};
-use super::{armor_index, combat_target_category, is_within_range_leptons, lepton_distance_sq_raw};
+use super::{armor_index, is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{HouseAllianceMap, is_allied_with};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -317,23 +320,32 @@ pub(crate) fn acquire_best_target(
             }
         }
 
-        // Check if any weapon can engage this target (projectile flags + Verses > 0%).
-        let target_cat: EntityCategory = combat_target_category(candidate, rules, interner);
-        let target_armor: &str = rules
-            .object(interner.resolve(candidate.type_ref))
-            .map(|o| o.armor.as_str())
-            .unwrap_or("none");
-        let selected = match select_weapon_with_override(
-            rules,
-            attacker_obj,
-            target_cat,
-            target_armor,
-            attacker.veterancy,
-            attacker.weapon_override,
-        ) {
-            Some(s) => s,
-            None => continue, // No weapon can engage this target.
+        // Run the selection ladder and the GetFireError targeting subset for
+        // this candidate. Allies were filtered above, so the ally fact is
+        // false whenever a fog/alliance view exists.
+        let Some(candidate_obj) = rules.object(interner.resolve(candidate.type_ref)) else {
+            continue;
         };
+        let scanner_facts = entities
+            .get(attacker.stable_id)
+            .map(|entity| attacker_facts(entity, attacker_obj))
+            .unwrap_or_else(|| attacker_facts_from_snapshot(attacker, attacker_obj));
+        let candidate_facts = techno_target_facts(
+            candidate,
+            candidate_obj,
+            terrain,
+            is_ally_by_object(
+                fog.map(|fog_state| &fog_state.alliances),
+                interner,
+                attacker.owner,
+                candidate.owner,
+            ),
+        );
+        let selected =
+            match select_weapon_for_target(rules, attacker_obj, &scanner_facts, &candidate_facts) {
+                Some(s) => s,
+                None => continue, // The selected weapon cannot engage this target.
+            };
 
         // For passive acquisition, skip targets where Verses is Suppressed (1%).
         if verses_gate(selected.verses_pct) == VersesGate::Suppressed {
@@ -409,28 +421,28 @@ fn can_retaliate(
     attacker: &GameEntity,
     rules: &RuleSet,
     interner: &StringInterner,
+    terrain: Option<&ResolvedTerrainGrid>,
+    alliances: Option<&HouseAllianceMap>,
 ) -> bool {
     let obj = match rules.object(interner.resolve(entity.type_ref)) {
         Some(o) => o,
         None => return false,
     };
-    let target_cat: EntityCategory = combat_target_category(attacker, rules, interner);
-    let target_armor: &str = rules
-        .object(interner.resolve(attacker.type_ref))
-        .map(|o| o.armor.as_str())
-        .unwrap_or("none");
-    let selected = match select_weapon_with_override(
-        rules,
-        obj,
-        target_cat,
-        target_armor,
-        entity.veterancy,
-        entity.weapon_override,
-    ) {
-        Some(s) => s,
-        None => return false,
+    let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) else {
+        return false;
     };
-    // 0% is already filtered by select_weapon_with_override (returns None).
+    let target_facts = techno_target_facts(
+        attacker,
+        attacker_obj,
+        terrain,
+        is_ally_by_object(alliances, interner, entity.owner, attacker.owner),
+    );
+    let selected =
+        match select_weapon_for_target(rules, obj, &attacker_facts(entity, obj), &target_facts) {
+            Some(s) => s,
+            None => return false,
+        };
+    // 0% is already filtered by the GetFireError subset (returns None).
     // 1% (Suppressed) also blocks retaliation.
     verses_gate(selected.verses_pct) != VersesGate::Suppressed
 }
@@ -474,6 +486,7 @@ pub(crate) fn calculate_ai_threat_score(
     rules: &RuleSet,
     interner: &StringInterner,
     terrain: Option<&ResolvedTerrainGrid>,
+    alliances: Option<&HouseAllianceMap>,
 ) -> Option<X87Value> {
     let scorer = entities.get(scorer_id)?;
     let candidate = entities.get(candidate_id)?;
@@ -489,14 +502,17 @@ pub(crate) fn calculate_ai_threat_score(
 
     // B: the candidate's selected weapon against the scorer. A candidate
     // already targeting the scorer contributes the negated term.
-    let scorer_category = combat_target_category(scorer, rules, interner);
-    if let Some(selected) = select_weapon_with_override(
+    let scorer_as_target = techno_target_facts(
+        scorer,
+        scorer_type,
+        terrain,
+        is_ally_by_object(alliances, interner, candidate.owner, scorer.owner),
+    );
+    if let Some(selected) = select_weapon_for_target(
         rules,
         candidate_type,
-        scorer_category,
-        &scorer_type.armor,
-        candidate.veterancy,
-        candidate.weapon_override,
+        &attacker_facts(candidate, candidate_type),
+        &scorer_as_target,
     ) {
         let verses =
             load_threat_double(selected.warhead.verses_f64[armor_index(&scorer_type.armor)])?;
@@ -522,14 +538,17 @@ pub(crate) fn calculate_ai_threat_score(
 
     // A: the scorer's selected weapon against the candidate. Retain the
     // selected weapon for the native range term below.
-    let candidate_category = combat_target_category(candidate, rules, interner);
-    let selected_scorer_weapon = select_weapon_with_override(
+    let candidate_as_target = techno_target_facts(
+        candidate,
+        candidate_type,
+        terrain,
+        is_ally_by_object(alliances, interner, scorer.owner, candidate.owner),
+    );
+    let selected_scorer_weapon = select_weapon_for_target(
         rules,
         scorer_type,
-        candidate_category,
-        &candidate_type.armor,
-        scorer.veterancy,
-        scorer.weapon_override,
+        &attacker_facts(scorer, scorer_type),
+        &candidate_as_target,
     );
     if let Some(selected) = selected_scorer_weapon.as_ref() {
         let verses =
@@ -670,18 +689,20 @@ pub(crate) fn should_retaliate_from_damage(
     if is_human && victim.attack_target.is_some() {
         return false;
     }
-    let target_category = combat_target_category(attacker, rules, interner);
-    let target_armor = rules
-        .object(interner.resolve(attacker.type_ref))
-        .map(|object| object.armor.as_str())
-        .unwrap_or("none");
-    let Some(selected) = select_weapon_with_override(
+    let Some(attacker_type) = rules.object(interner.resolve(attacker.type_ref)) else {
+        return false;
+    };
+    let attacker_as_target = techno_target_facts(
+        attacker,
+        attacker_type,
+        terrain,
+        is_ally_by_object(Some(alliances), interner, victim.owner, attacker.owner),
+    );
+    let Some(selected) = select_weapon_for_target(
         rules,
         victim_type,
-        target_category,
-        target_armor,
-        victim.veterancy,
-        victim.weapon_override,
+        &attacker_facts(victim, victim_type),
+        &attacker_as_target,
     ) else {
         return false;
     };
@@ -693,8 +714,24 @@ pub(crate) fn should_retaliate_from_damage(
         && let Some(super::TargetKind::Entity(current_id)) =
             victim.attack_target.as_ref().map(|target| target.target)
         && let (Some(current_score), Some(attacker_score)) = (
-            calculate_ai_threat_score(entities, victim_id, current_id, rules, interner, terrain),
-            calculate_ai_threat_score(entities, victim_id, attacker_id, rules, interner, terrain),
+            calculate_ai_threat_score(
+                entities,
+                victim_id,
+                current_id,
+                rules,
+                interner,
+                terrain,
+                Some(alliances),
+            ),
+            calculate_ai_threat_score(
+                entities,
+                victim_id,
+                attacker_id,
+                rules,
+                interner,
+                terrain,
+                Some(alliances),
+            ),
         )
         // This comparison changed behaviour in the GSI-05.13 slice, and the
         // change is a correction rather than a side effect: `X87Chop53::compare`
@@ -722,6 +759,8 @@ pub fn tick_retaliation(
     rules: &RuleSet,
     interner: &StringInterner,
     live_order: &[u64],
+    terrain: Option<&ResolvedTerrainGrid>,
+    alliances: Option<&HouseAllianceMap>,
 ) {
     // Collect retaliation candidates: (retaliator_id, attacker_id).
     let mut retaliators: Vec<(u64, u64)> = Vec::new();
@@ -776,7 +815,7 @@ pub fn tick_retaliation(
                     continue;
                 }
             };
-            can_retaliate(entity, attacker, rules, interner)
+            can_retaliate(entity, attacker, rules, interner, terrain, alliances)
         };
 
         if retaliate {

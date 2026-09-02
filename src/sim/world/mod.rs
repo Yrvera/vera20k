@@ -7674,6 +7674,8 @@ impl Simulation {
                 rules,
                 &self.interner,
                 &logic_order,
+                self.resolved_terrain.as_ref(),
+                Some(&self.house_alliances),
             );
             passenger_ownership_changed = passenger::tick_passenger_system(self, rules);
             self.tick_order_intents_post_combat_with_overlay_registry(

@@ -59,9 +59,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sim::miner::ResourceNode;
 
-use self::combat_weapon::{
-    WeaponSlot, select_deploy_fire_weapon, select_weapon_slot, select_weapon_with_override,
-};
+use self::combat_weapon::{WeaponSlot, select_weapon_against, select_weapon_slot};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -102,7 +100,6 @@ use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53};
 
 use super::animation::SequenceKind;
-use super::deploy::DeployPhase;
 use super::game_entity::{GameEntity, PendingBuildingFire};
 use super::occupancy::OccupancyGrid;
 use super::production::foundation_dimensions;
@@ -622,13 +619,6 @@ fn infantry_idle_sequence(is_prone: bool, is_fully_deployed: bool) -> SequenceKi
     }
 }
 
-fn uses_deploy_fire_weapon(entity: &GameEntity) -> bool {
-    matches!(
-        entity.deploy_state,
-        Some(DeployPhase::Deploying { .. } | DeployPhase::Deployed)
-    )
-}
-
 impl AttackTarget {
     /// Entity-targeted attack: fire at a specific entity by stable ID.
     pub fn new(target_stable_id: u64) -> Self {
@@ -738,6 +728,7 @@ pub(crate) fn can_fire_at_target(
     attacker_id: u64,
     target: &TargetKind,
     terrain: &ResolvedTerrainGrid,
+    alliances: Option<&HouseAllianceMap>,
 ) -> bool {
     let Some(attacker) = entities.get(attacker_id) else {
         return false;
@@ -745,29 +736,16 @@ pub(crate) fn can_fire_at_target(
     let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) else {
         return false;
     };
-    let (target_category, target_armor) = match *target {
-        TargetKind::Entity(target_id) => {
-            let Some(target_entity) = entities.get(target_id) else {
-                return false;
-            };
-            let armor = rules
-                .object(interner.resolve(target_entity.type_ref))
-                .map(|object| object.armor.as_str())
-                .unwrap_or("none");
-            (
-                combat_target_category(target_entity, rules, interner),
-                armor,
-            )
-        }
-        TargetKind::Cell(_, _) => (EntityCategory::Structure, attacker_obj.armor.as_str()),
-    };
-    let Some(selected) = select_weapon_with_override(
+    let Some(selected) = select_weapon_against(
         rules,
         attacker_obj,
-        target_category,
-        target_armor,
-        attacker.veterancy,
-        attacker.weapon_override,
+        &combat_weapon::attacker_facts(attacker, attacker_obj),
+        attacker.owner,
+        target,
+        entities,
+        interner,
+        Some(terrain),
+        alliances,
     ) else {
         return false;
     };
@@ -796,67 +774,31 @@ pub(crate) fn can_fire_at_target(
 /// Uses the same weapon-select inputs as the combat tick's Phase 2 weapon
 /// selection so pursuit and combat agree on "in range" at the boundary.
 ///
-/// For `Entity` targets: uses the target's actual category and armor.
-/// For `Cell` targets: synthesizes `Structure` + attacker's own armor,
-/// matching the cell-target synthesis in the combat tick.
-///
-/// Returns `None` if no weapon engages the target (Verses 0% or projectile
-/// AA/AG mismatch). Pursuit treats `None` as "skip — combat tick will drop
-/// the attack on its own weapon-select fail."
+/// Returns `None` if the selected weapon cannot legally fire at the target
+/// (GetFireError targeting subset). Pursuit treats `None` as "skip — combat
+/// tick will drop the attack on its own weapon-select fail."
 pub(crate) fn pursuit_weapon_range(
     entity: &GameEntity,
     target: &TargetKind,
     entities: &EntityStore,
     rules: &RuleSet,
     interner: &StringInterner,
+    terrain: Option<&ResolvedTerrainGrid>,
+    alliances: Option<&HouseAllianceMap>,
 ) -> Option<SimFixed> {
-    use self::combat_weapon::select_weapon_with_override;
-    use crate::map::entities::EntityCategory;
-
     let attacker_obj = rules.object(interner.resolve(entity.type_ref))?;
-    let (target_cat, target_armor) = match *target {
-        TargetKind::Entity(id) => {
-            let target_entity = entities.get(id)?;
-            let armor = rules
-                .object(interner.resolve(target_entity.type_ref))
-                .map(|o| o.armor.clone())
-                .unwrap_or_else(|| "none".to_string());
-            (
-                combat_target_category(target_entity, rules, interner),
-                armor,
-            )
-        }
-        TargetKind::Cell(_, _) => {
-            // Synthetic — must match the combat tick's cell-target synthesis.
-            // Using attacker's own armor here is the pre-existing convention.
-            let armor = rules
-                .object(interner.resolve(entity.type_ref))
-                .map(|o| o.armor.clone())
-                .unwrap_or_else(|| "none".to_string());
-            (EntityCategory::Structure, armor)
-        }
-    };
-    let selected = if uses_deploy_fire_weapon(entity) {
-        select_deploy_fire_weapon(
-            rules,
-            attacker_obj,
-            target_cat,
-            &target_armor,
-            entity.veterancy,
-            entity.weapon_override,
-        )
-    } else {
-        select_weapon_with_override(
-            rules,
-            attacker_obj,
-            target_cat,
-            &target_armor,
-            entity.veterancy,
-            entity.weapon_override,
-        )
-    };
-
-    selected.map(|sel| sel.weapon.range)
+    let selected = select_weapon_against(
+        rules,
+        attacker_obj,
+        &combat_weapon::attacker_facts(entity, attacker_obj),
+        entity.owner,
+        target,
+        entities,
+        interner,
+        terrain,
+        alliances,
+    )?;
+    Some(selected.weapon.range)
 }
 
 /// Issue an attack command: make `attacker` fire at `target`.
@@ -6507,16 +6449,41 @@ pub(crate) fn resolve_attacker_fire(
         .map(|o| o.armor.clone())
         .unwrap_or_else(|| "none".to_string());
 
-    // Weapon selection: garrison uses occupant's OccupyWeapon, standard uses IFV/Primary/Secondary.
+    // Target facts for `What_Weapon_Should_I_Use` and the GetFireError
+    // targeting subset. Cell targets read the terrain cell; entity targets
+    // read the target's occupied cell, altitude, bridge and cloak state.
+    let target_facts = match snap.target {
+        TargetKind::Entity(target_id) => {
+            let Some((target_entity, target_obj)) = entities.get(target_id).and_then(|t| {
+                rules
+                    .object(interner.resolve(t.type_ref))
+                    .map(|target_obj| (t, target_obj))
+            }) else {
+                if delayed_building_slot.is_none() {
+                    out.remove_attack.push(snap.stable_id);
+                }
+                return;
+            };
+            let is_ally = combat_weapon::is_ally_by_object(
+                fog.map(|fog_state| &fog_state.alliances),
+                interner,
+                snap.owner,
+                target_entity.owner,
+            );
+            combat_weapon::techno_target_facts(
+                target_entity,
+                target_obj,
+                terrain.as_deref(),
+                is_ally,
+            )
+        }
+        TargetKind::Cell(rx, ry) => combat_weapon::cell_target_facts(rx, ry, terrain.as_deref()),
+    };
+
+    // Weapon selection: garrison uses occupant's OccupyWeapon, everything
+    // else runs the native selection ladder.
     let (selected, is_garrison) = if let Some(saved_slot) = delayed_building_slot {
-        match select_weapon_slot(
-            rules,
-            obj,
-            target_cat,
-            &target_armor,
-            snap.veterancy,
-            saved_slot,
-        ) {
+        match select_weapon_slot(rules, obj, snap.veterancy, saved_slot, &target_facts) {
             Some(selected) => (selected, false),
             None => return,
         }
@@ -6535,29 +6502,11 @@ pub(crate) fn resolve_attacker_fire(
             }
         }
     } else {
-        let deploy_fire_weapon_active = entities
+        let attacker_facts = entities
             .get(snap.stable_id)
-            .is_some_and(uses_deploy_fire_weapon);
-        let selected = if deploy_fire_weapon_active {
-            select_deploy_fire_weapon(
-                rules,
-                obj,
-                target_cat,
-                &target_armor,
-                snap.veterancy,
-                snap.weapon_override,
-            )
-        } else {
-            select_weapon_with_override(
-                rules,
-                obj,
-                target_cat,
-                &target_armor,
-                snap.veterancy,
-                snap.weapon_override,
-            )
-        };
-        match selected {
+            .map(|entity| combat_weapon::attacker_facts(entity, obj))
+            .unwrap_or_else(|| combat_weapon::attacker_facts_from_snapshot(snap, obj));
+        match combat_weapon::select_weapon_for_target(rules, obj, &attacker_facts, &target_facts) {
             Some(s) => (s, false),
             None => {
                 out.remove_attack.push(snap.stable_id);
