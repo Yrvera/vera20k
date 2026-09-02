@@ -767,6 +767,10 @@ pub fn tick_aircraft_missions(
         .filter_map(|m| m.move_to.map(|(rx, ry)| (m.id, rx, ry)))
         .collect();
     for (id, rx, ry) in air_moves {
+        // No FASTER stage here: `FlyLocomotionClass` never calls the
+        // `FootClass::GetCurrentSpeed` vtable slot (`+0x538`) — see
+        // `veterancy::locomotor_consults_current_speed` — so a promoted
+        // aircraft flies at its plain `Speed=`.
         let speed = sim
             .substrate
             .entities

@@ -49,7 +49,7 @@ use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
+use crate::util::fixed_math::SimFixed;
 
 /// Maximum number of spiral directions to try per scatter operation.
 /// The original engine uses `0x15F` (351).
@@ -387,19 +387,13 @@ fn resolve_entity_speed(
     };
     // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: FASTER scales the truncated
     // per-frame type speed ahead of the locomotor fraction.
-    let rank = crate::sim::combat::veterancy::rank_of(entity.veterancy_raw);
-    let base_speed = rules
-        .and_then(|r| {
-            r.object(interner.resolve(entity.type_ref)).map(|obj| {
-                crate::sim::combat::veterancy::veteran_speed_leptons_per_second(
-                    ra2_speed_to_leptons_per_second(obj.speed),
-                    rank,
-                    obj,
-                    r.general.veteran_speed,
-                )
-            })
-        })
-        .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4));
+    let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));
+    let base_speed = crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+        entity,
+        obj,
+        obj.map_or(4, |o| o.speed),
+        rules.map_or(1.0, |r| r.general.veteran_speed),
+    );
     let loco_mult = entity
         .locomotor
         .as_ref()

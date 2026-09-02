@@ -165,9 +165,20 @@ or chain paths may still route the XP elsewhere — see "Attribution chain" belo
 
 `RecordKill` picks the entity that actually receives the XP via a priority chain:
 
-1. If `killer->field_0x11C` (offset 0x47 as int*) is non-null AND that linked entity's
-   TechnoType has `Trainable=yes` → the linked entity receives XP.
-   (This handles **mind-controlled kills** — the mind controller is the linked entity.)
+1. If `killer->+0x82` (`InOpenTransport`) is set AND `killer->+0x11C` is non-null AND that
+   linked entity's TechnoType has `Trainable=yes` → the linked entity receives XP.
+   **Corrected 2026-09-02:** `+0x11C` is the **Transporter** back-pointer, NOT a
+   mind-controller link, so this branch handles **kills scored by a passenger firing from
+   an OpenTopped transport** (IFV, Battle Fortress) — the transport gets the XP.
+   Verified via `disassemble_function 0x00710470` (`SetInOpenTransport`: `MOV byte ptr
+   [ESI+0x82],0x1`) and `disassemble_bytes 0x0051A440` inside
+   `InfantryClass::PerCellProcess`, where the boarding path tests the transport type's
+   `+0x5E4` (`OpenTopped`), calls `0x00710470` on the passenger, and then writes the
+   transport pointer into the passenger at `0x0051A463: MOV dword ptr [ESI+0x11c], EDI`
+   (`ESI` = passenger, `EDI` = transport). Earlier passes read this as a mind-control
+   link — **WRONG**; mind control is a separate field.
+   Note the fall-through: when the transporter's type is `Trainable=no`, control does not
+   stop here, it falls into branch 2 (killer receives XP).
 2. Else if the killer's own TechnoType has `Trainable=yes` → killer receives XP.
 3. Else if the killer's TechnoType flag at `+0xD68` is set → route XP to the linked
    parent at `killer->+0x2D4` if that parent's type is `Trainable=yes`. **Identified
@@ -224,18 +235,25 @@ for (i = 0; i < country->veteran_type_count; i++) {
     }
 }
 
-// Step 2: InitialVeteran path — if house->+0x2BF is set AND the unit's type
-//         is Trainable (+0xC8E), also promote to veteran.
+// Step 2: house->+0x2BF path — if that house byte is set AND the unit's type
+//         is Trainable (+0xC8E), promote to veteran.
 if (house->+0x2BF != 0 && type->+0xC8E != 0) {
     this->Veterancy.SetVeteran(1);
 }
 ```
 
-So `[SpecialFlags] InitialVeteran=yes` (which sets the global bit 9 per §5)
-must be propagated into every `HouseClass` instance at `+0x2BF` during house
-construction — the per-spawn InitFromType check reads it from the house, not
-the global. That house-side propagation step was not decompiled in this pass;
-left as open question #6.
+**Corrected 2026-09-02: step 2 is NOT the `InitialVeteran` path.** `house+0x2BF` is the
+**spy-in-barracks** flag: the only writer is `BuildingClass::OnSpyInfiltrate`, at
+`0x0045751E: MOV byte ptr [EDI+0x2bf], BL` (verified via `disassemble_bytes 0x00457510`,
+which reaches that store only on the `CMP ECX,0x10` infiltration-kind branch and also sets
+`+0x1FC`). `InfantryClass::InitFromType` reads it at `0x00517D2A: MOV CL, byte ptr
+[EAX+0x2bf]`, gates on the type's `Trainable` byte `+0xC8E`, and calls
+`VeterancyClass::SetVeteran(1)` at `0x00517D4C` (verified via
+`disassemble_function 0x00517CC0` and `search_instructions function=InfantryClass__InitFromType
+operand=0x2bf`). So this step makes **infantry trained after a spy infiltrates a barracks**
+come out veteran (1.0f) — a separate feature from `InitialVeteran`, which takes the
+starting-unit path in §5. There is no missing house-side propagation of SpecialFlags bit 9;
+former open question #6 is closed.
 
 ## 5. InitialVeteran — `[SpecialFlags]` bit 9 (CORRECTED)
 
@@ -251,7 +269,25 @@ by the engine** — that section's parser (`RulesClass::ReadGeneral`) never read
 In stock rulesmd.ini the `[SpecialFlags]` section is not present at all, so the bit stays
 at its default (false). Mods must add `[SpecialFlags]\nInitialVeteran=yes` to activate it.
 
-When bit 9 is set, units spawn with `this->Veterancy = 1.0f` (promoted to veteran at birth).
+**Corrected 2026-09-02: bit 9 produces ELITE (2.0f), not veteran (1.0f), and only for the
+multiplayer starting units.** The consumer is the starting-unit generator, verified via
+`disassemble_bytes 0x005D73E8`:
+
+```
+005d73f5: MOV  ECX, dword ptr [0x00a8b230]   ; g_Scenario
+005d73fb: MOV  EAX, dword ptr [ECX]          ; SpecialFlags bitmask
+005d73fd: TEST AH, 0x2                       ; bit 9 = InitialVeteran
+005d7400: JZ   0x005d740f
+005d7402: PUSH 0x1
+005d7404: LEA  ECX, [EDI + 0x150]            ; &unit->Veterancy
+005d740a: CALL 0x007500b0                    ; VeterancyClass::SetElite(1)
+```
+
+`SetElite(1) @ 0x007500B0` stores `0x40000000` = **2.0f** (`disassemble_function 0x007500B0`);
+`SetVeteran(1) @ 0x00750090` stores `0x3F800000` = 1.0f and is *not* on this path. The call
+is also unconditional on `Trainable=`. Earlier passes said "units spawn with
+`this->Veterancy = 1.0f`" — **WRONG** on both the rank and the scope (it is the starting-unit
+generator, not every spawn). The 1.0f spawn path is the spy-in-barracks house byte in §4.
 
 ---
 

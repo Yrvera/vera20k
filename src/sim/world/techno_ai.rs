@@ -551,6 +551,57 @@ fn veterancy_promotion_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
             rx,
             ry,
         });
+    refresh_mover_speed_after_promotion(sim, id, rules);
+}
+
+/// Re-derive a moving unit's `FASTER` speed the moment its rank crosses.
+///
+/// gamemd never caches a mover speed: the ground locomotors call
+/// `FootClass::GetCurrentSpeed @ 0x004DB1A0` through vtable slot `+0x538` on
+/// every frame they step (`DriveLocomotionClass::Process_Drive_Track
+/// @ 0x004B1274`, `WalkLocomotionClass::ProcessMovement @ 0x0075BFC0`,
+/// `ShipLocomotionClass::Process_Drive_Track @ 0x006A093C`,
+/// `HoverLocomotionClass::Move @ 0x00514372`), so a unit promoted mid-path
+/// speeds up on the very next frame. VERA stamps `MovementTarget::speed` once,
+/// at path creation, and recomputes only `current_speed` per frame — so the
+/// rank is the one input to the getter that can change while a path is live.
+/// Refreshing it here reproduces the native observable without a per-frame
+/// type lookup: the type speed, the house multiplier and the crate multiplier
+/// are stable for the life of a path or are separate open rows.
+///
+/// RESIDUAL: a unit promoted while its group is speed-matched to the slowest
+/// member (the `movement_tick` group-min clamp, VERA-internal — gamemd has no
+/// such clamp) leaves the formation speed until the next order. Trigger:
+/// promotion during a group move. Frequency: rare. Downstream risk: none —
+/// the clamp re-applies on the next path.
+fn refresh_mover_speed_after_promotion(sim: &mut Simulation, id: u64, rules: &RuleSet) {
+    let Some(entity) = sim.substrate.entities.get(id) else {
+        return;
+    };
+    if entity.movement_target.is_none() {
+        return;
+    }
+    let obj = sim.object_type(entity.type_ref, rules);
+    let loco_multiplier = entity
+        .locomotor
+        .as_ref()
+        .map(|loco| loco.speed_multiplier)
+        .unwrap_or(crate::util::fixed_math::SIM_ONE);
+    let base = crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+        entity,
+        obj,
+        obj.map_or(4, |o| o.speed),
+        rules.general.veteran_speed,
+    );
+    let speed = (base * loco_multiplier).max(crate::util::fixed_math::SimFixed::lit("25"));
+    if let Some(target) = sim
+        .substrate
+        .entities
+        .get_mut(id)
+        .and_then(|e| e.movement_target.as_mut())
+    {
+        target.speed = speed;
+    }
 }
 
 /// The self-heal pulse of `TechnoClass::AI_Update @ 0x006FA743..0x006FA757`:

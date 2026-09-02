@@ -1116,8 +1116,21 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        // `VoxClass::Play("EVA_UnitPromoted") @ 0x006FA0CB`
-                        // follows the positional `VocClass::PlayAt`.
+                        // Native order: the positional `VocClass::PlayAt` first
+                        // (`0x006FA0BC` elite / `0x006FA12A` veteran), then
+                        // `VoxClass::Play("EVA_UnitPromoted")` (`0x006FA0CB` /
+                        // `0x006FA139`). Both are queued here in that order,
+                        // so the arm pushes its own events and never falls
+                        // through to the shared push below.
+                        if let Some(sound_id) = sound_id {
+                            let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                            state.match_state.match_audio.sound_events.push(
+                                GameSoundEvent::UnitPromoted {
+                                    sound_id: sim.interner.resolve(sound_id).to_string(),
+                                    screen_pos: Some((sx, sy)),
+                                },
+                            );
+                        }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.match_state.match_presentation.house_roster,
@@ -1134,14 +1147,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                                 .sound_events
                                 .push(GameSoundEvent::UnitPromotedEva { eva_sound_id });
                         }
-                        let Some(sound_id) = sound_id else {
-                            continue;
-                        };
-                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-                        GameSoundEvent::UnitPromoted {
-                            sound_id: sim.interner.resolve(sound_id).to_string(),
-                            screen_pos: Some((sx, sy)),
-                        }
+                        continue;
                     }
                     SimSoundEvent::CloakSound {
                         sound_id,

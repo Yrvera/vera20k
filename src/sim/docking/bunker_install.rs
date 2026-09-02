@@ -350,8 +350,19 @@ fn start_install_force_track(
     }
     let facing = facing_from_delta(dcx, dcy);
     let track = octant_install_track(facing);
-    let speed_raw = sim.object_type(tref, rules).map(|o| o.speed).unwrap_or(4);
-    let speed = crate::util::fixed_math::ra2_speed_to_leptons_per_second(speed_raw.max(1));
+    // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: the install turn track is a
+    // drive-track like any other, so the FASTER stage applies.
+    let install_obj = sim.object_type(tref, rules);
+    let speed_raw = install_obj.map(|o| o.speed).unwrap_or(4).max(1);
+    let speed = match sim.substrate.entities.get(unit_id) {
+        Some(unit) => crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+            unit,
+            install_obj,
+            speed_raw,
+            rules.general.veteran_speed,
+        ),
+        None => crate::util::fixed_math::ra2_speed_to_leptons_per_second(speed_raw),
+    };
     // Native passes the building's exact GetCoords result, not merely its cell
     // origin. Express that absolute head relative to the unit's current origin.
     let Some(forced) = begin_forced_turn_track(

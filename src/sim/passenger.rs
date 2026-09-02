@@ -961,6 +961,30 @@ fn restore_unloaded_passenger_after_reveal_failure(
     }
 }
 
+/// `FootClass::GetCurrentSpeed @ 0x004DB1A0` for an ejected passenger.
+///
+/// The passenger entity is already unlimboed when this runs, so its rank and
+/// locomotor are readable; a rank the entity does not carry yet (or a missing
+/// entity) falls back to the plain type speed.
+fn scatter_speed_for_passenger(
+    sim: &Simulation,
+    rules: &RuleSet,
+    pax_id: u64,
+    pax_type_str: &str,
+) -> crate::util::fixed_math::SimFixed {
+    let obj = rules.object(pax_type_str);
+    let raw = obj.map_or(4, |o| o.speed);
+    match sim.substrate.entities.get(pax_id) {
+        Some(pax) => crate::sim::combat::veterancy::entity_mover_speed_leptons_per_second(
+            pax,
+            obj,
+            raw,
+            rules.general.veteran_speed,
+        ),
+        None => ra2_speed_to_leptons_per_second(raw),
+    }
+}
+
 fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_id: u64) {
     let (trx, try_, tz) = match sim.substrate.entities.get(transport_id) {
         Some(e) => (e.position.rx, e.position.ry, e.position.z),
@@ -1030,10 +1054,9 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
         return;
     }
 
-    let scatter_speed = rules
-        .object(&pax_type_str)
-        .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
-        .unwrap_or(ra2_speed_to_leptons_per_second(4));
+    // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: a veteran passenger scatters at
+    // its FASTER speed like any other ordered move.
+    let scatter_speed = scatter_speed_for_passenger(sim, rules, pax_id, &pax_type_str);
     let start_dir = sim.scatter_rng().next_u32() as usize % 8;
     for i in 0..8 {
         let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
@@ -1167,10 +1190,7 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
         // Scatter: issue a short move to a random adjacent cell so ejected
         // infantry flee the building footprint (gamemd mission 0xF / Scatter).
-        let scatter_speed = rules
-            .object(&pax_type_str)
-            .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
-            .unwrap_or(ra2_speed_to_leptons_per_second(4));
+        let scatter_speed = scatter_speed_for_passenger(sim, rules, pax_id, &pax_type_str);
         let start_dir = sim.scatter_rng().next_u32() as usize % 8;
         for i in 0..8 {
             let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];

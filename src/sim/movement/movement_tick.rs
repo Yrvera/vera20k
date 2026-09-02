@@ -36,7 +36,7 @@ use crate::sim::rng::SimRng;
 use crate::sim::world::EnterOrderCounter;
 use crate::util::fixed_math::{
     SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, fixed_distance, isqrt_i64,
-    native_movement_frame_fraction, ra2_speed_to_leptons_per_second,
+    native_movement_frame_fraction,
 };
 
 use super::bump_crush;
@@ -751,19 +751,14 @@ fn process_pending_drive_arrivals(
         // `FootClass::GetCurrentSpeed @ 0x004DB1A0`: the FASTER multiply sits
         // on the truncated per-frame type speed, before the locomotor's own
         // fraction — see `veterancy::veteran_speed_leptons_per_second`.
-        let rank = crate::sim::combat::veterancy::rank_of(entity.veterancy_raw);
         let veteran_speed = rules.map_or(1.0, |r| r.general.veteran_speed);
-        let speed = (obj
-            .map(|o| {
-                crate::sim::combat::veterancy::veteran_speed_leptons_per_second(
-                    ra2_speed_to_leptons_per_second(o.speed),
-                    rank,
-                    o,
-                    veteran_speed,
-                )
-            })
-            .unwrap_or(ra2_speed_to_leptons_per_second(4))
-            * speed_multiplier)
+        let speed = (crate::sim::combat::veterancy::mover_speed_leptons_per_second(
+            obj.map_or(4, |o| o.speed),
+            Some(loco_kind),
+            crate::sim::combat::veterancy::rank_of(entity.veterancy_raw),
+            obj,
+            veteran_speed,
+        ) * speed_multiplier)
             .max(SimFixed::lit("25"));
         let dx = path[1].0 as i32 - path[0].0 as i32;
         let dy = path[1].1 as i32 - path[0].1 as i32;

@@ -1044,6 +1044,9 @@ fn adjacent_cell(rx: u16, ry: u16, direction: u8) -> (u16, u16) {
     )
 }
 
+/// No FASTER stage: spawned children fly, and neither `FlyLocomotionClass` nor
+/// the rocket controller calls the `FootClass::GetCurrentSpeed` vtable slot
+/// (`veterancy::locomotor_consults_current_speed`).
 fn child_air_speed(
     sim: &Simulation,
     rules: &RuleSet,

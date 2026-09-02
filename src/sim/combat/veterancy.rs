@@ -14,6 +14,7 @@
 //! stored as a float — the accumulator lives as its `f32` bit pattern, so
 //! hashing, snapshots and replay stay integer-exact.
 
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::object_type::{Ability, ObjectType};
 use crate::sim::game_entity::GameEntity;
 use crate::util::fixed_math::SimFixed;
@@ -185,6 +186,9 @@ pub fn scale_if_ability(
 /// then multiplied by the locomotor's current-speed fraction. VERA carries
 /// the per-frame integer as leptons per second (`* 15`), so the multiply runs
 /// on the recovered integer and the result is re-widened the same way.
+///
+/// Prefer [`mover_speed_leptons_per_second`] at call sites: it owns the whole
+/// getter, so a new speed resolver cannot silently skip this stage.
 pub fn veteran_speed_leptons_per_second(
     base_leptons_per_second: SimFixed,
     rank: VeterancyRank,
@@ -198,6 +202,76 @@ pub fn veteran_speed_leptons_per_second(
     let per_frame =
         (base_leptons_per_second / SimFixed::from_num(FRAMES_PER_SECOND)).to_num::<i32>();
     SimFixed::from_num(ftol_scale(per_frame, veteran_speed) * FRAMES_PER_SECOND)
+}
+
+/// Which locomotors ask `FootClass::GetCurrentSpeed` for their movement speed.
+///
+/// gamemd-derived: `0x004DB1A0` sits in vtable slot `+0x538` of the
+/// FootClass-family vtables (`0x007E27DC`, `0x007E91CC`, `0x007F61A8`, plus
+/// the `InfantryClass::GetMovementSpeed @ 0x00521D80` wrapper). A program-wide
+/// scan for `CALL dword ptr [reg + 0x538]` finds it only in the ground movers'
+/// per-frame processors — `DriveLocomotionClass::Process_Drive_Track
+/// @ 0x004B1274`, `WalkLocomotionClass::ProcessMovement @ 0x0075BFC0`,
+/// `ShipLocomotionClass::Process_Drive_Track @ 0x006A093C`,
+/// `HoverLocomotionClass::Move @ 0x00514372/0x005144A3` — and in the
+/// `Is_Moving_Now` / `LocomotionClass::Apparent_Speed @ 0x0055AD19` readers.
+/// No `FlyLocomotionClass` (`0x004CC9A0..0x004D03A0`), `JumpjetLocomotionClass`
+/// (`0x0054AC40..0x0054DFA0`) or rocket body calls it, so an aircraft's fly
+/// speed and a jumpjet's `JumpjetSpeed` never see `VeteranSpeed`. That
+/// resolves the builder's UNCHECKED "aircraft FASTER" residual: not applied.
+pub fn locomotor_consults_current_speed(kind: Option<LocomotorKind>) -> bool {
+    !matches!(
+        kind,
+        Some(LocomotorKind::Fly | LocomotorKind::Jumpjet | LocomotorKind::Rocket)
+    )
+}
+
+/// `FootClass::GetCurrentSpeed @ 0x004DB1A0`, stages 1 and 2, as the single
+/// entry point every mover-speed derivation goes through.
+///
+/// gamemd-derived: `ftol(typeSpeed * houseMult * [this+0x580])` produces the
+/// integer per-frame speed, then `HasWeaponAbility(0)` (`FASTER`) gates
+/// `ftol(speed * Rules.VeteranSpeed)`. Stage 3, the `[this+0x578]` locomotor
+/// fraction, is VERA's per-frame `MovementTarget::current_speed`, so this
+/// helper stops one stage short deliberately. The house and crate multipliers
+/// are separate open rows and are not applied here.
+///
+/// Call this instead of `ra2_speed_to_leptons_per_second` wherever a type
+/// `Speed=` becomes an entity's movement speed — native reaches the FASTER
+/// stage on every speed query a mover makes, so a resolver that skips it runs
+/// a promoted unit at rookie speed.
+pub fn mover_speed_leptons_per_second(
+    raw_type_speed: i32,
+    loco_kind: Option<LocomotorKind>,
+    rank: VeterancyRank,
+    object: Option<&ObjectType>,
+    veteran_speed: f64,
+) -> SimFixed {
+    let base = crate::util::fixed_math::ra2_speed_to_leptons_per_second(raw_type_speed);
+    let Some(object) = object else {
+        return base;
+    };
+    if !locomotor_consults_current_speed(loco_kind) {
+        return base;
+    }
+    veteran_speed_leptons_per_second(base, rank, object, veteran_speed)
+}
+
+/// [`mover_speed_leptons_per_second`] with the rank and locomotor read off the
+/// entity — the shape nearly every production speed resolver wants.
+pub fn entity_mover_speed_leptons_per_second(
+    entity: &GameEntity,
+    object: Option<&ObjectType>,
+    raw_type_speed: i32,
+    veteran_speed: f64,
+) -> SimFixed {
+    mover_speed_leptons_per_second(
+        raw_type_speed,
+        entity.locomotor.as_ref().map(|loco| loco.kind),
+        rank_of(entity.veterancy_raw),
+        object,
+        veteran_speed,
+    )
 }
 
 /// `TechnoClass::UpdateReveal @ 0x0070AF50`, the SIGHT arm.
